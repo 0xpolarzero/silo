@@ -8,8 +8,13 @@ export const workspaceStorageStateSchema = z.object({
     reclaimedBytes: bytes.nullable(),
     error: z.string().nullable(),
   })).max(50).default([]),
-  workspaceHostBytes: bytes,
-  runtimeHostBytes: bytes,
+  /** Host allocation of the workspace disk and its layers; null when Silo could not find it. */
+  workspaceHostBytes: bytes.nullable(),
+  /** Host allocation of the sandbox's runtime disks; null when Silo could not find them. */
+  runtimeHostBytes: bytes.nullable(),
+  /** Host space the sandbox's checkpoints use; null when it could not be measured. */
+  checkpointHostBytes: bytes.nullable().default(null),
+  checkpointCount: z.number().int().nonnegative().default(0),
   workspaceUsedBytes: bytes.nullable(),
   workspaceCapacityBytes: bytes.nullable(),
   lastReclaimedBytes: bytes.nullable(),
@@ -18,3 +23,9 @@ export const workspaceStorageStateSchema = z.object({
 })
 
 export type WorkspaceStorageState = z.infer<typeof workspaceStorageStateSchema>
+
+/** Binary units, as the host allocation figures are measured. */
+export function formatStorageBytes(bytes: number) {
+  if (bytes === 0) return "0 B"
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB` : `${(bytes / 1024 ** 2).toFixed(1)} MiB`
+}

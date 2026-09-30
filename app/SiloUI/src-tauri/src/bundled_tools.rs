@@ -21,7 +21,7 @@ pub(crate) fn is_packaged_linux(bundle: Option<BundleType>) -> bool {
     matches!(bundle, Some(BundleType::AppImage | BundleType::Deb | BundleType::Rpm))
 }
 
-fn resolve(
+pub(crate) fn resolve(
     executable: &Path,
     _resources: &Path,
     bundle: Option<BundleType>,

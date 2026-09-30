@@ -90,7 +90,19 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
                 None,
                 scheme,
             ))?;
-            crate::remote_network::host_state(app)
+            crate::remote_network::fresh_host_state(app)
+        }
+        "network.unpublish" => {
+            // The owner's mapping is shared by every controller; removing it from one
+            // removes it here too, like removing the port on this computer.
+            let name = vm_name(app, params)?;
+            let port = params["port"]
+                .as_u64()
+                .and_then(|p| u16::try_from(p).ok())
+                .filter(|p| *p != 0)
+                .ok_or("Invalid port.")?;
+            tauri::async_runtime::block_on(crate::network::remove_network_port(app.clone(), name, port))?;
+            crate::remote_network::fresh_host_state(app)
         }
         // Pushes are bound to the repository, branch and commit the user confirmed;
         // the older unbound "repository.push" method is no longer served.

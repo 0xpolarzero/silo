@@ -7,6 +7,10 @@ import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { DesktopActionsMenu, NativeDesktopActionsMenu, type DesktopMenuProps } from "./linux-desktop-menu"
 
+// Guest pages draw inside Silo's window, so anything inside the frame,
+// including dialogs that look like Silo's, comes from the sandbox (G-20).
+const GUEST_CONTENT_NOTICE = "Everything inside the amber frame comes from the sandbox. Silo's own controls are only in this bar."
+
 export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry, onFullscreen, screenRef, toolsUpdated = false, lcuUpdated = false, MenuComponent = DesktopActionsMenu }: {
   name: string
   state: LinuxDesktopState | null
@@ -42,6 +46,7 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
   return <TooltipProvider><main className="flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
       <Monitor aria-hidden="true" className="size-4" /><h1 className="min-w-0 flex-1 truncate text-xs font-medium">{name}</h1>
+      {running && <span className="shrink-0 rounded-sm border border-amber-500 px-1.5 text-xs text-amber-700 dark:text-amber-400" title={GUEST_CONTENT_NOTICE}>Sandbox content</span>}
       {confirm ? <div role="alert" className="flex min-w-0 items-center gap-2 text-xs">
         <p className="truncate" title="This closes the desktop's graphical applications.">{confirm === "stop" ? "Stopping" : "Restarting"} the desktop closes its graphical applications.</p>
         <Button size="xs" variant="ghost" onClick={() => setConfirm(null)}>Cancel</Button>
@@ -68,7 +73,10 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
       <Button variant="ghost" size="icon-xs" aria-label="Toggle fullscreen" onClick={onFullscreen}><Maximize /></Button>
       {running && <MenuComponent busy={busy} onSelect={action => { setMenuError(null); setConfirm(action) }} onError={setMenuError} />}
     </header>
-    {running ? <div ref={screenRef} className="min-h-0 flex-1" aria-label="Linux desktop display" /> : <div className="grid min-h-0 flex-1 place-items-center p-6 text-center" aria-busy={busy}>
+    {running ? <section aria-label="Sandbox display" aria-description={GUEST_CONTENT_NOTICE} className="flex min-h-0 flex-1 bg-amber-500 p-1">
+      {/* The guest webview covers only this element; the frame around it stays Silo's. */}
+      <div ref={screenRef} className="min-h-0 flex-1 bg-background" aria-label="Linux desktop display" />
+    </section> : <div className="grid min-h-0 flex-1 place-items-center p-6 text-center" aria-busy={busy}>
       <div className="grid max-w-sm justify-items-center gap-3">
         <Monitor aria-hidden="true" className="size-8 text-muted-foreground" />
         <p className="text-sm">{busy && state?.ludaState === "installing" ? "Setting up agent tools…" : busy || state?.state === "starting" ? "Connecting to desktop…" : !state ? "Desktop unavailable" : state.state === "uninstalled" ? "Desktop is not installed" : state.state === "failed" ? "Desktop needs attention" : state.state === "vm-stopped" ? "Sandbox is stopped" : "Desktop is stopped"}</p>

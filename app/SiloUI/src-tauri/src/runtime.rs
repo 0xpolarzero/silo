@@ -567,6 +567,8 @@ struct ApplicationWorkspace {
     pending_checkpoint_restore: Option<checkpoints::PendingRestore>,
     #[serde(skip_serializing_if = "Option::is_none")]
     checkpoint_operation: Option<checkpoints::Operation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unfinished_restore: Option<checkpoints::UnfinishedRestore>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -852,7 +854,7 @@ pub(crate) fn run_msb(
             if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
                 .find(|machine| machine.is_vm() && machine.name() == name) {
                 if checkpoints::needs_explicit_start(paths, machine.id())? {
-                    return Err(RuntimeError::Invalid("This stopped fork requires an explicit Start before other workspace actions.".into()));
+                    return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(paths, machine.id(), machine.name())));
                 }
             }
         }
@@ -3759,6 +3761,7 @@ fn unread_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
+        unfinished_restore: None,
     }
 }
 
@@ -3800,6 +3803,7 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
             match checkpoints::load(paths, workspace.machine.id()) {
                 Ok(checkpoint) => {
                     workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
+                    workspace.unfinished_restore = checkpoints::view_unfinished_restore(&checkpoint);
                     workspace.checkpoints = checkpoint.checkpoints;
                     let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
                     workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|operation| checkpoint_operation_view(operation, live));
@@ -3809,6 +3813,7 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
                     workspace.checkpoints = Vec::new();
                     workspace.pending_checkpoint_restore = None;
                     workspace.checkpoint_operation = None;
+                    workspace.unfinished_restore = None;
                     workspace.attention = Some(WorkspaceAttention {
                         level: AttentionLevel::Error,
                         message: format!("{error} Checkpoints and actions that need them are unavailable for this sandbox."),
@@ -3996,6 +4001,7 @@ fn vm_workspace(
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
+        unfinished_restore: None,
     }
 }
 
@@ -4225,7 +4231,7 @@ fn workspace_action_with(
         if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
             .find(|machine| machine.is_vm() && machine.name() == name) {
             if checkpoints::needs_explicit_start(paths, machine.id())? {
-                return Err(RuntimeError::Invalid("This fork needs its first explicit Start from the workspace view.".into()));
+                return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(paths, machine.id(), machine.name())));
             }
         }
     }
@@ -4316,6 +4322,7 @@ fn apply_whole_configuration_with_progress(
             forget_github_state(&paths.home, machine.name());
             crate::github::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             remove_machine_volumes(paths, machine)?;
+            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name());
             checkpoints::forget_removed(paths, machine.id())?;
             progress("workspace-removal", machine.name(), 1);
         }
@@ -8504,13 +8511,23 @@ esac
             let mut outputs = vec![attempt.clone(), attempt];
             if stops { outputs.push(json!(null)); }
             outputs.push(json!(null));
+            outputs.extend([
+                json!([{"snapshot_id": "restore-snapshot", "group": "dev", "name": "c000000000000000000000000000000"}]),
+                json!([]), // No remaining VM builds on the snapshot.
+                json!({"head": "restore-snapshot"}),
+                json!(null), // Native snapshot removal.
+            ]);
             let runner = StubRunner::successful_json(outputs);
             apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
             let calls = runner.calls.lock().unwrap();
             let commands: Vec<&str> = calls.iter().map(|args| args[0].as_str()).collect();
-            let expected: &[&str] = if stops { &["inspect", "inspect", "stop", "remove"] } else { &["inspect", "inspect", "remove"] };
+            let expected: &[&str] = if stops { &["inspect", "inspect", "stop", "remove", "snapshot", "list", "snapshot", "snapshot"] } else { &["inspect", "inspect", "remove", "snapshot", "list", "snapshot", "snapshot"] };
             assert_eq!(commands, expected, "{status}");
-            assert!(calls.last().unwrap().contains(&"dev".to_string()));
+            assert_eq!(calls[calls.len() - 5], ["remove", "--quiet", "dev"]);
+            assert_eq!(calls[calls.len() - 4], ["snapshot", "list", "--format", "json"]);
+            assert_eq!(calls[calls.len() - 3], ["list", "--format", "json"]);
+            assert_eq!(calls[calls.len() - 2], ["snapshot", "head", "dev", "--format", "json"]);
+            assert_eq!(calls.last().unwrap(), &["snapshot", "remove", "dev:c000000000000000000000000000000", "--quiet"]);
             // The runtime VM is removed before Silo forgets the sandbox and its record.
             assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
             assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{}.json", vm().id())).exists());
@@ -8523,9 +8540,16 @@ esac
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         pending_restore_record(&paths, false);
-        let runner = StubRunner::new(vec![missing_sandbox(), missing_sandbox()]);
+        let runner = StubRunner::new(vec![
+            missing_sandbox(), missing_sandbox(),
+            Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() }),
+            Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() }),
+        ]);
         apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
-        assert!(runner.calls.lock().unwrap().iter().all(|args| args[0] == "inspect"));
+        assert_eq!(
+            *runner.calls.lock().unwrap(),
+            vec![vec!["inspect", "dev", "--format", "json"], vec!["inspect", "dev", "--format", "json"], vec!["snapshot", "list", "--format", "json"], vec!["list", "--format", "json"]],
+        );
         assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
     }
 

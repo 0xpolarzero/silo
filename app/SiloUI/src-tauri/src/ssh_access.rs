@@ -164,7 +164,7 @@ fn host_name() -> String {
         .trim_end_matches('\0')
         .to_owned()
 }
-fn addresses() -> Vec<String> {
+pub(crate) fn addresses() -> Vec<String> {
     let mut list = std::ptr::null_mut();
     let mut result = BTreeSet::new();
     // SAFETY: getifaddrs owns a linked list until freeifaddrs. Check family before casting.

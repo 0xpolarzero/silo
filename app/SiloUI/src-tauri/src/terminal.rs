@@ -49,7 +49,8 @@ pub(crate) fn command_file(command: &str) -> Result<std::path::PathBuf, String> 
     file.into_temp_path().keep().map_err(|_| "Could not keep terminal command.".into())
 }
 pub(crate) fn launch(mut command: Command) -> Result<(), String> {
-    let mut child = command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|_| "The selected terminal could not be opened.")?;
+    // Under an AppImage the terminal gets the system environment (G-24).
+    let mut child = applications::launch::sanitize_child(&mut command).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map_err(|_| "The selected terminal could not be opened.")?;
     // GUI launchers may stay alive for the lifetime of their window. Detect early
     // failures, then reap asynchronously without blocking the Silo action.
     std::thread::sleep(Duration::from_millis(150));
@@ -61,7 +62,11 @@ pub(crate) fn launch(mut command: Command) -> Result<(), String> {
 }
 pub(crate) fn linux_arguments(executable: &Path) -> Result<&'static [&'static str], String> {
     match executable.file_name().and_then(|n| n.to_str()) {
-        Some("gnome-terminal" | "kgx") => Ok(&["--"]),
+        // xdg-terminal-exec runs its arguments in the preferred terminal;
+        // Debian's x-terminal-emulator must accept -e (G-25).
+        Some("xdg-terminal-exec") => Ok(&[]),
+        Some("x-terminal-emulator") => Ok(&["-e"]),
+        Some("gnome-terminal" | "kgx" | "ptyxis") => Ok(&["--"]),
         Some("wezterm") => Ok(&["start", "--"]),
         Some("xfce4-terminal") => Ok(&["--execute"]),
         Some("ghostty" | "konsole" | "alacritty" | "kitty" | "xterm" | "tilix") => Ok(&["-e"]),
@@ -100,6 +105,9 @@ mod tests {
     fn terminal_adapters_use_argument_boundaries_and_reject_unknown_apps() {
         assert_eq!(linux_arguments(Path::new("/bin/gnome-terminal")).unwrap(), ["--"]);
         assert_eq!(linux_arguments(Path::new("/bin/wezterm")).unwrap(), ["start", "--"]);
+        assert_eq!(linux_arguments(Path::new("/usr/bin/ptyxis")).unwrap(), ["--"]);
+        assert!(linux_arguments(Path::new("/usr/bin/xdg-terminal-exec")).unwrap().is_empty());
+        assert_eq!(linux_arguments(Path::new("/usr/bin/x-terminal-emulator")).unwrap(), ["-e"]);
         assert!(linux_arguments(Path::new("/bin/unknown")).is_err());
     }
 }

@@ -1,9 +1,13 @@
 //! Private loopback gateway: native cookie authentication, guest Basic auth,
-//! bounded HTTP headers and transparent upgraded WebSocket streams.
+//! bounded HTTP headers and transparent upgraded WebSocket streams. The guest
+//! side is the SSH tunnel's Unix socket in a private directory (G-04), so no
+//! other local process can reach the guest through it or impersonate it.
 use base64::{engine::general_purpose::STANDARD, Engine};
 use std::{
     io::{Read, Write},
     net::{Shutdown, TcpListener, TcpStream},
+    os::unix::net::UnixStream,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
@@ -24,6 +28,35 @@ impl Drop for Proxy {
     }
 }
 
+/// A byte stream the relay can bound with timeouts and half-close.
+trait Stream: Read + Write + Send + 'static {
+    fn read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()>;
+    fn write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()>;
+    fn shutdown_write(&self);
+}
+impl Stream for TcpStream {
+    fn read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.set_read_timeout(timeout)
+    }
+    fn write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.set_write_timeout(timeout)
+    }
+    fn shutdown_write(&self) {
+        let _ = self.shutdown(Shutdown::Write);
+    }
+}
+impl Stream for UnixStream {
+    fn read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.set_read_timeout(timeout)
+    }
+    fn write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+        self.set_write_timeout(timeout)
+    }
+    fn shutdown_write(&self) {
+        let _ = self.shutdown(Shutdown::Write);
+    }
+}
+
 struct Request {
     header: String,
     body_length: u64,
@@ -35,7 +68,7 @@ fn request_header(
     port: u16,
     cookie_name: &str,
     token: &str,
-    upstream: u16,
+    guest_port: u16,
     authorization: &str,
 ) -> Result<Request, ()> {
     let mut lines = header.split("\r\n");
@@ -109,17 +142,17 @@ fn request_header(
     if websocket && body_length.is_some_and(|n| n != 0) {
         return Err(());
     }
-    Ok(Request { body_length: body_length.unwrap_or(0), websocket, header: format!("{first}\r\nHost: 127.0.0.1:{upstream}\r\nOrigin: http://127.0.0.1:{upstream}\r\nAuthorization: Basic {authorization}\r\nConnection: {}\r\n{}\r\n\r\n", if websocket { "Upgrade" } else { "close" }, kept.join("\r\n")) })
+    Ok(Request { body_length: body_length.unwrap_or(0), websocket, header: format!("{first}\r\nHost: 127.0.0.1:{guest_port}\r\nOrigin: http://127.0.0.1:{guest_port}\r\nAuthorization: Basic {authorization}\r\nConnection: {}\r\n{}\r\n\r\n", if websocket { "Upgrade" } else { "close" }, kept.join("\r\n")) })
 }
 fn forward_body(
-    mut from: TcpStream,
-    mut to: TcpStream,
+    mut from: impl Stream,
+    mut to: impl Stream,
     mut remaining: u64,
     stop: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
 ) {
-    let _ = from.set_read_timeout(Some(Duration::from_millis(250)));
-    let _ = to.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = from.read_timeout(Some(Duration::from_millis(250)));
+    let _ = to.write_timeout(Some(Duration::from_secs(5)));
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut bytes = [0; 32 * 1024];
     while remaining > 0
@@ -150,12 +183,12 @@ fn forward_body(
     // Content-Length already delimits a complete request. A FIN here can make
     // some servers close the connection before returning the HTTP response.
     if remaining > 0 {
-        let _ = to.shutdown(Shutdown::Write);
+        to.shutdown_write();
     }
 }
-fn relay(mut from: TcpStream, mut to: TcpStream, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>) {
-    let _ = from.set_read_timeout(Some(Duration::from_millis(250)));
-    let _ = to.set_write_timeout(Some(Duration::from_secs(5)));
+fn relay(mut from: impl Stream, mut to: impl Stream, stop: Arc<AtomicBool>, ended: Arc<AtomicBool>) {
+    let _ = from.read_timeout(Some(Duration::from_millis(250)));
+    let _ = to.write_timeout(Some(Duration::from_secs(5)));
     let mut bytes = [0; 32 * 1024];
     while !stop.load(Ordering::Acquire) && !ended.load(Ordering::Acquire) {
         match from.read(&mut bytes) {
@@ -176,12 +209,14 @@ fn relay(mut from: TcpStream, mut to: TcpStream, stop: Arc<AtomicBool>, ended: A
             Err(_) => break,
         }
     }
-    let _ = to.shutdown(Shutdown::Write);
+    to.shutdown_write();
 }
+#[allow(clippy::too_many_arguments)]
 fn serve(
     mut client: TcpStream,
     port: u16,
-    upstream: u16,
+    upstream: &Path,
+    guest_port: u16,
     cookie_name: &str,
     token: &str,
     authorization: &str,
@@ -206,7 +241,7 @@ fn serve(
         }
     }
     let header = std::str::from_utf8(&bytes).ok().and_then(|text| {
-        request_header(text, port, cookie_name, token, upstream, authorization).ok()
+        request_header(text, port, cookie_name, token, guest_port, authorization).ok()
     });
     let Some(header) = header else {
         client.write_all(
@@ -214,10 +249,7 @@ fn serve(
         )?;
         return Ok(());
     };
-    let mut server = match TcpStream::connect_timeout(
-        &format!("127.0.0.1:{upstream}").parse().unwrap(),
-        Duration::from_secs(3),
-    ) {
+    let mut server = match UnixStream::connect(upstream) {
         Ok(server) => server,
         Err(_) => {
             client.write_all(
@@ -246,8 +278,15 @@ fn serve(
     Ok(())
 }
 impl Proxy {
-    pub fn start(upstream: u16, username: &str, password: &str) -> Result<Self, String> {
-        if upstream == 0
+    /// `upstream` is the tunnel's Unix socket; `guest_port` is the guest's own
+    /// listener, named in the Host and Origin headers the guest receives.
+    pub fn start(
+        upstream: PathBuf,
+        guest_port: u16,
+        username: &str,
+        password: &str,
+    ) -> Result<Self, String> {
+        if guest_port == 0
             || username.contains(':')
             || username.contains(['\r', '\n'])
             || password.contains(['\r', '\n'])
@@ -280,15 +319,18 @@ impl Proxy {
                             continue;
                         }
                         active.fetch_add(1, Ordering::AcqRel);
-                        let (stop, token, cookie, auth, count) = (
+                        let (stop, token, cookie, auth, count, upstream) = (
                             worker_stop.clone(),
                             worker_token.clone(),
                             worker_cookie.clone(),
                             authorization.clone(),
                             active.clone(),
+                            upstream.clone(),
                         );
                         thread::spawn(move || {
-                            let _ = serve(socket, port, upstream, &cookie, &token, &auth, stop);
+                            let _ = serve(
+                                socket, port, &upstream, guest_port, &cookie, &token, &auth, stop,
+                            );
                             count.fetch_sub(1, Ordering::AcqRel);
                         });
                     }
@@ -310,6 +352,16 @@ impl Proxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::net::UnixListener;
+
+    /// The guest end of the tunnel: a Unix socket in a private directory.
+    fn guest() -> (tempfile::TempDir, UnixListener, PathBuf) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("desktop.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        (directory, listener, path)
+    }
+
     #[test]
     fn only_authenticated_same_origin_requests_reach_guest() {
         let valid = "GET /websockify HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nCookie: session=secret\r\nOrigin: http://127.0.0.1:8000\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nAuthorization: Basic attacker\r\n\r\n";
@@ -334,9 +386,8 @@ mod tests {
     }
     #[test]
     fn forwards_authenticated_http_and_rejects_missing_cookie() {
-        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let proxy =
-            Proxy::start(upstream.local_addr().unwrap().port(), "silo", "password").unwrap();
+        let (_directory, upstream, socket) = guest();
+        let proxy = Proxy::start(socket, 6901, "silo", "password").unwrap();
         let worker = thread::spawn(move || {
             let (mut stream, _) = upstream.accept().unwrap();
             stream
@@ -348,9 +399,11 @@ mod tests {
                 stream.read_exact(&mut byte).unwrap();
                 data.push(byte[0]);
             }
-            assert!(String::from_utf8(data)
-                .unwrap()
-                .contains("Authorization: Basic c2lsbzpwYXNzd29yZA=="));
+            let data = String::from_utf8(data).unwrap();
+            assert!(data.contains("Authorization: Basic c2lsbzpwYXNzd29yZA=="));
+            // The guest sees its own listener, not a host port.
+            assert!(data.contains("Host: 127.0.0.1:6901\r\n"));
+            assert!(data.contains("Origin: http://127.0.0.1:6901\r\n"));
             stream
                 .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
                 .unwrap();
@@ -384,9 +437,8 @@ mod tests {
 
     #[test]
     fn accepted_nonblocking_client_waits_for_fragmented_request_headers() {
-        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let (_directory, upstream, socket) = guest();
         upstream.set_nonblocking(true).unwrap();
-        let upstream_port = upstream.local_addr().unwrap().port();
         let upstream_worker = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(3);
             let (mut stream, _) = loop {
@@ -399,6 +451,7 @@ mod tests {
                     Err(error) => panic!("upstream accept failed: {error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
@@ -436,7 +489,8 @@ mod tests {
             serve(
                 accepted,
                 port,
-                upstream_port,
+                &socket,
+                6901,
                 "session",
                 "secret",
                 "c2lsbzpwYXNzd29yZA==",
@@ -465,9 +519,8 @@ mod tests {
 
     #[test]
     fn completed_http_requests_keep_write_side_open_for_response() {
-        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let (_directory, upstream, socket) = guest();
         upstream.set_nonblocking(true).unwrap();
-        let upstream_port = upstream.local_addr().unwrap().port();
         let upstream_worker = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(5);
             for _ in 0..2 {
@@ -481,6 +534,7 @@ mod tests {
                         Err(error) => panic!("upstream accept failed: {error}"),
                     }
                 };
+                stream.set_nonblocking(false).unwrap();
                 stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
                 let mut request = Vec::new();
                 let mut byte = [0];
@@ -519,7 +573,7 @@ mod tests {
             }
         });
 
-        let proxy = Proxy::start(upstream_port, "silo", "password").unwrap();
+        let proxy = Proxy::start(socket, 6901, "silo", "password").unwrap();
         for (method, body) in [("GET", &b""[..]), ("POST", &b"body"[..])] {
             let mut client = TcpStream::connect(("127.0.0.1", proxy.port)).unwrap();
             client.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
@@ -569,9 +623,8 @@ mod tests {
     }
     #[test]
     fn pipelined_unauthenticated_request_never_reaches_guest() {
-        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let proxy =
-            Proxy::start(upstream.local_addr().unwrap().port(), "silo", "password").unwrap();
+        let (_directory, upstream, guest_socket) = guest();
+        let proxy = Proxy::start(guest_socket, 6901, "silo", "password").unwrap();
         let worker = thread::spawn(move || {
             let (mut stream, _) = upstream.accept().unwrap();
             stream
@@ -611,9 +664,8 @@ mod tests {
     }
     #[test]
     fn websocket_streams_bidirectionally_and_closes_when_viewer_drops() {
-        let upstream = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        let proxy =
-            Proxy::start(upstream.local_addr().unwrap().port(), "silo", "password").unwrap();
+        let (_directory, upstream, guest_socket) = guest();
+        let proxy = Proxy::start(guest_socket, 6901, "silo", "password").unwrap();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let worker = thread::spawn(move || {
             let (mut stream, _) = upstream.accept().unwrap();

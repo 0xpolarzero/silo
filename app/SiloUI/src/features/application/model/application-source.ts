@@ -1,6 +1,6 @@
 import type { OperationQueue } from "./operation-queue"
 import type { WorkspaceStorageState } from "./workspace-storage"
-import type { PendingCheckpointRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
+import type { CheckpointUsage, PendingCheckpointRestore, UnfinishedRestore, WorkspaceCheckpoint, WorkspaceCheckpointOperation } from "./checkpoint-source"
 import type { LogLoader, LogQuery } from "./logs"
 import type { RemoteComputer, RemoteManagement, WorkspaceComputer } from "./remote-computers"
 import type { DirectoryLoader } from "./directory-store"
@@ -177,6 +177,8 @@ export interface ApplicationWorkspace {
     message: string
   }
   freshness: "fresh" | "stale"
+  /** The native read overlapped an operation; runtime fields retain their last settled values. */
+  settling?: boolean
   host: string
   repositories: ApplicationRepository[]
   files: ApplicationFileEntry[]
@@ -187,6 +189,7 @@ export interface ApplicationWorkspace {
   checkpoints?: WorkspaceCheckpoint[]
   checkpointOperation?: WorkspaceCheckpointOperation | null
   pendingCheckpointRestore?: PendingCheckpointRestore | null
+  unfinishedRestore?: UnfinishedRestore | null
 }
 
 export interface ApplicationSecret {
@@ -309,6 +312,12 @@ export interface ApplicationActions {
   createCheckpoint?: (workspace: string, name: string) => Promise<void>
   forkCheckpoint?: (workspace: string, checkpointId: string | null, newName: string) => Promise<void>
   restoreCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
+  /** Give up an unfinished Restore of a sandbox on this computer, keeping its current state. */
+  abandonRestore?: (workspace: string) => Promise<void>
+  /** Delete one checkpoint of a sandbox on this computer. */
+  deleteCheckpoint?: (workspace: string, checkpointId: string) => Promise<void>
+  /** Checkpoint sizes and Delete availability for a sandbox on this computer, by its ID. */
+  readCheckpointUsage?: (workspaceId: string) => Promise<CheckpointUsage>
   readWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
   reclaimWorkspaceStorage?: (workspaceId: string) => Promise<WorkspaceStorageState>
   refreshRepositories?: () => Promise<void>
@@ -319,7 +328,7 @@ export interface ApplicationActions {
   setRemoteManagement?: (enabled: boolean) => Promise<void>
   setupComputerKey?: (address: string) => Promise<void>
   authorizeComputer?: (address: string) => Promise<void>
-  connectComputer?: (address: string) => Promise<void>
+  connectComputer?: (address: string, options?: { replaceAddress?: boolean }) => Promise<void>
   removeComputer?: (hostId: string) => Promise<void>
   saveRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration, expected?: SetupMachineConfiguration) => Promise<void>
   deleteRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration) => Promise<void>
