@@ -3363,7 +3363,7 @@ fn apply_configuration_with_progress(
                 request,
                 retry_workspace.as_deref(),
                 &progress,
-            ).and_then(|_| configuration_recovery::finish(paths))
+            )
         });
     let mut outcome = machine_progress(
         request_id,
@@ -3823,8 +3823,10 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
     activities.extend(crate::secrets::activities().map_err(RuntimeError::Unavailable)?);
     activities.sort_by(|a,b| b["occurredAt"].as_str().cmp(&a["occurredAt"].as_str()));
     activities.truncate(200);
+    // Only a local VM can start at launch (`start_at_launch_with` rejects SSH entries).
     let startup_workspace_ids = workspaces
-        .first()
+        .iter()
+        .find(|workspace| workspace.machine.is_vm())
         .map(|workspace| vec![workspace.machine.id().to_string()])
         .unwrap_or_default();
     Ok(ApplicationSource {
@@ -4454,6 +4456,7 @@ fn verify_guest_tools(
     Ok(())
 }
 
+#[cfg(test)]
 fn create_machine(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
@@ -4680,57 +4683,6 @@ pub(crate) fn disk_path(paths: &RuntimePaths, machine_name: &str, role: &str) ->
     paths.volumes.join(machine_name).join(format!("{role}.raw"))
 }
 
-fn create_disk_volume(path: &Path, size_gib: u32) -> Result<(), RuntimeError> {
-    if path.exists() {
-        return Err(RuntimeError::Invalid(format!(
-            "Silo storage already exists at {}. No existing disk was changed.",
-            path.display()
-        )));
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| RuntimeError::Invalid("Silo's managed disk path is invalid.".into()))?;
-    fs::create_dir_all(parent).map_err(|error| {
-        RuntimeError::Unavailable(format!("Silo could not prepare managed disks: {error}"))
-    })?;
-    let stage = tempfile::Builder::new()
-        .prefix(".disk-stage-")
-        .tempdir_in(parent)
-        .map_err(|error| {
-            RuntimeError::Unavailable(format!("Silo could not stage a managed disk: {error}"))
-        })?;
-    let staged = stage.path().join("disk.raw");
-    let size_bytes = u64::from(size_gib)
-        .checked_mul(1024 * 1024 * 1024)
-        .ok_or_else(|| RuntimeError::Invalid("The managed disk size is too large.".into()))?;
-    microsandbox_image::ext4::format_ext4(
-        &staged,
-        &microsandbox_image::ext4::Ext4FormatOptions {
-            size_bytes,
-            ..Default::default()
-        },
-    )
-    .map_err(|error| RuntimeError::Failed {
-        operation: "Creating a managed disk".into(),
-        exit_code: None,
-        detail: error.to_string(),
-    })?;
-    File::open(&staged)
-        .and_then(|file| file.sync_all())
-        .map_err(|error| {
-            RuntimeError::Unavailable(format!("Silo could not save a managed disk: {error}"))
-        })?;
-    fs::rename(&staged, path).map_err(|error| {
-        RuntimeError::Unavailable(format!("Silo could not publish a managed disk: {error}"))
-    })?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| {
-            RuntimeError::Unavailable(format!("Silo could not publish a managed disk: {error}"))
-        })?;
-    Ok(())
-}
-
 fn remove_disk_path(path: &Path) -> Result<(), RuntimeError> {
     match fs::remove_file(path) {
         Ok(()) => {}
@@ -4787,18 +4739,12 @@ fn update_machine(
     previous: &MachineConfiguration,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
+    // Renames, storage resizes, VM/SSH switches and desktop removal are rejected here.
     validate_machine_update(previous, machine)?;
     if crate::desktop::only_desktop_changed(previous, machine) {
         return crate::desktop::configure_with(runner, paths, machine.name(), crate::desktop::configuration(previous), crate::desktop::configuration(machine).ok_or_else(|| RuntimeError::Invalid("Desktop removal is not supported.".into()))?);
     }
-    if previous.name() != machine.name() {
-        return Err(RuntimeError::Invalid(format!(
-            "Bundled MicroSandbox 0.7.2 cannot rename persistent sandbox '{}'. Keep its current name or create a new sandbox.",
-            previous.name()
-        )));
-    }
     match (previous, machine) {
-        (MachineConfiguration::Ssh { .. }, MachineConfiguration::Ssh { .. }) => Ok(()),
         (
             MachineConfiguration::Vm { name, .. },
             MachineConfiguration::Vm {
@@ -4812,21 +4758,6 @@ fn update_machine(
                 ..
             },
         ) => {
-            let MachineConfiguration::Vm {
-                workspace_storage_gib: previous_workspace,
-                runtime_storage_gib: previous_runtime,
-                ..
-            } = previous
-            else {
-                unreachable!()
-            };
-            if workspace_storage_gib != previous_workspace
-                || runtime_storage_gib != previous_runtime
-            {
-                return Err(RuntimeError::Invalid(format!(
-                    "Storage disks for sandbox '{name}' cannot be resized in place. Keep both saved sizes or create a new sandbox. No disk was changed."
-                )));
-            }
             let inspected = inspect_workspace(runner, paths, name)?;
             ensure_managed(&inspected)?;
             if inspected.status == "Running" {
@@ -4879,10 +4810,8 @@ fn update_machine(
             }
             Ok(())
         }
-        _ => Err(RuntimeError::Invalid(format!(
-            "Sandbox '{}' cannot change between a local VM and an SSH configuration.",
-            previous.name()
-        ))),
+        // An SSH entry has no local runtime to change.
+        _ => Ok(()),
     }
 }
 
@@ -7252,6 +7181,19 @@ esac
     }
 
     #[test]
+    fn default_startup_selection_never_picks_an_ssh_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let ssh = MachineConfiguration::Ssh { id: "00000000-0000-4000-8000-000000000009".into(), name: "remote".into(), host: "example.test".into(), user: "me".into(), port: 22 };
+        write_metadata(&paths.metadata, &request(vec![ssh, vm()])).unwrap();
+        let runner = StubRunner::successful_json(vec![
+            json!([{"name":"dev","status":"Running","image":"ubuntu"}]),
+            inspect(&paths, "Running"),
+        ]);
+        let encoded = serde_json::to_value(read_application_state_with(&runner, &paths).unwrap()).unwrap();
+        assert_eq!(encoded["preferences"]["startupWorkspaceIds"], json!([vm().id()]));    }
+
+    #[test]
     fn read_refuses_missing_runtime_rows_instead_of_publishing_false_success() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -7260,18 +7202,6 @@ esac
 
         let error = read_application_state_with(&runner, &paths).unwrap_err();
         assert!(error.to_string().contains("does not match"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn managed_disk_capacity_does_not_reserve_its_logical_size() {
-        use std::os::unix::fs::MetadataExt;
-        let directory = tempfile::tempdir().unwrap();
-        let disk = directory.path().join("workspace.raw");
-        create_disk_volume(&disk, 220).unwrap();
-        let metadata = fs::metadata(&disk).unwrap();
-        assert_eq!(metadata.len(), 220 * 1024 * 1024 * 1024);
-        assert!(metadata.blocks() * 512 < metadata.len() / 100);
     }
 
     #[test]
