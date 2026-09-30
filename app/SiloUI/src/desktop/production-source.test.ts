@@ -1212,7 +1212,7 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
-  it("keeps a visible failed restore result when native operation state is malformed", async () => {
+  it("keeps the requested restore running and reports malformed native operation state (H-35)", async () => {
     let broken = false
     const mock = native()
     mock.invoke.mockImplementation(async (command: string) => {
@@ -1224,8 +1224,9 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.backupActions.startRestore(backup.archives[0], "restored", "dev")
-    await vi.waitFor(() => expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result", operation: "restore", outcome: "failed", targetName: "restored" }))
-    expect(store.getSnapshot().backup.operation).toMatchObject({ message: expect.stringContaining("invalid backup state") })
+    await vi.waitFor(() => expect(store.getSnapshot().backup.availabilityMessage).toContain("invalid backup state"))
+    // A malformed read is not evidence that the restore failed.
+    expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running", operation: "restore", targetName: "restored" })
     store.dispose()
   })
 

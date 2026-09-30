@@ -270,7 +270,6 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let pendingBackupOperation = false
   let localBackupOperation: BackupOperation | null = null
   const dismissedBackupResults = new Set<string>()
-  let requestedOperation: { operation: "backup" | "restore"; archive: BackupArchive; targetName?: string } | null = null
 
   /** Identity of one repository's push across native results, pending pushes and dismissals. */
   function pushKey(workspace: string, repositoryPath: string) { return JSON.stringify([workspace, repositoryPath]) }
@@ -416,7 +415,6 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         if (operation.kind === "running") dismissedBackupResults.clear()
       }
     }
-    if (operation?.kind === "result") requestedOperation = null
     const next = { ...base, backup: { ...base.backup, operation } }
     if (!base.source) return next
     const networkRows = new Map((network?.workspaces ?? []).map(row => [row.workspace, row]))
@@ -515,10 +513,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return github.hostIdentity === undefined ? { ...github, hostIdentity: previous.hostIdentity } : github
   }
 
+  // A failed or malformed read says nothing about an export or import in progress:
+  // keep the last known state (including a running or just-requested operation)
+  // and report the problem, instead of inventing a failed result whose Retry the
+  // still-running operation would reject.
   function unreadableBackup(message: string): BackupState {
-    const state = unavailableBackup(message)
-    if (requestedOperation) state.operation = backupFailure(requestedOperation.operation, requestedOperation.archive, message, requestedOperation.targetName)
-    return state
+    return { ...snapshot.backup, availability: "unavailable", availabilityMessage: message }
   }
 
   async function readSetupActivity(requestId?: string) {
@@ -1446,7 +1446,6 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     ++refreshSequence
     const previous = view.backup.operation
     if (previous?.kind === "result") dismissedBackupResults.add(JSON.stringify(previous))
-    requestedOperation = { operation, archive, targetName }
     localBackupOperation = { operation, archive, targetName, runningNames: [], kind: "running", progress: 0, indeterminate: true, canCancel: false,
       phases: [{ title: operation === "backup" ? "Preparing backup" : "Checking backup", detail: operation === "backup" ? "Preparing the selected sandboxes." : "Verifying the archive before restoring it.", tone: "running" }],
     }

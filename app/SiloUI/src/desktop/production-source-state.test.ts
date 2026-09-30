@@ -552,6 +552,29 @@ describe("overlapping state reads", () => {
   })
 })
 
+describe("export and import state", () => {
+  it("keeps a running export through a transient read failure instead of inventing a failure (H-35)", async () => {
+    const archive = { name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Not completed", size: "Unknown", destination: "/tmp", sandboxes: ["dev"] }
+    const running: BackupState = { ...backup, operation: { operation: "backup", archive, runningNames: ["dev"], kind: "running", progress: 40, phases: [{ title: "Exporting dev", detail: "", tone: "running" }] } }
+    let failing = false
+    const mock = bridge(command => {
+      if (command === "read_backup_state") { if (failing) throw new Error("bridge timed out"); return structuredClone(running) }
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running", progress: 40 })
+      failing = true
+      await store.refresh()
+      expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running", progress: 40 })
+      expect(store.getSnapshot().backup.availabilityMessage).toContain("bridge timed out")
+      failing = false
+      await store.refresh()
+      expect(store.getSnapshot().backup).toMatchObject({ availability: "available", operation: { kind: "running" } })
+    } finally { store.dispose() }
+  })
+})
+
 describe("GitHub state from full reads", () => {
   it("shows the unavailable state a failed GitHub read reports without a policy revision (H-20)", async () => {
     let failed = false
