@@ -40,14 +40,14 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
     const id = "logs-export"
     setExporting(true)
     showOperationProgress(id, {
-      title: "Exporting logs…",
+      title: "Saving logs…",
       cancel: actions.cancelLogExport ? { onCancel: () => void actions.cancelLogExport?.().catch(cause => showActionFailure("Cancellation failed", cause, undefined, { native: false })) } : undefined,
     })
     try {
       if (await actions.exportLogs(results.map(result => result.request))) showOperationSuccess(id, "Logs saved")
       else dismissOperationToast(id)
     } catch (cause) {
-      showOperationFailure(id, "Export failed", { description: errorMessage(cause), retry: () => void exportMatches() })
+      showOperationFailure(id, "Could not save logs", { description: errorMessage(cause), retry: () => void exportMatches() })
     } finally { setExporting(false) }
   }
   const total = results.reduce((sum, result) => sum + result.page.totalMatches, 0)
@@ -59,7 +59,7 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
       <Button size="icon-xs" variant="outline" aria-label="Refresh logs" title="Refresh logs" disabled={busy || invalidRange || query !== searchQuery} onClick={() => void refresh()}><RefreshCw aria-hidden="true" className={busy && ready && !loadingOlder ? "motion-safe:animate-spin" : undefined} /></Button>
       <Button size="xs" variant="outline" aria-pressed={following} onClick={() => setFollowing(value => !value)}>{following ? "Pause" : "Follow"}</Button>
       <CopyButton variant="outline" size="xs" title="Copy the logs in this list" value={copiedLogs} disabled={!rows.length || invalidRange} labels={{ idle: "Copy logs", copied: "Logs copied", failed: "Copy logs failed" }} text={{ idle: "Copy", copied: "Copied", failed: "Copy failed" }} />
-      {actions.exportLogs && <Button size="xs" variant="outline" title="Save all logs matching your search and filters to a file" disabled={busy || invalidRange || Boolean(error) || query !== searchQuery || !results.length || exporting} onClick={() => void exportMatches()}>Export…</Button>}
+      {actions.exportLogs && <Button size="xs" variant="outline" title="Save all logs matching your search and filters to a file" disabled={busy || invalidRange || Boolean(error) || query !== searchQuery || !results.length || exporting} onClick={() => void exportMatches()}>Save logs…</Button>}
     </div>
     <LogFilters source={source} since={since} until={until} onChange={filters => {
       setSource(filters.source); setSince(filters.since); setUntil(filters.until)
