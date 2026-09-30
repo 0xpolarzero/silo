@@ -79,6 +79,28 @@ fn settings_for_launch(
     Ok(settings)
 }
 
+/// Launch continues after lifecycle recovery (D-23): actions that could not be
+/// resumed are reported but never stop update recovery or automatic start. Only
+/// when the saved actions could not be listed at all is automatic start withheld
+/// (`None`), since one of them may be an explicit stop.
+fn after_lifecycle_recovery(
+    result: Result<crate::runtime::lifecycle_recovery::Recovered, String>,
+) -> (Option<HashSet<String>>, Option<String>) {
+    match result {
+        Ok(recovered) => {
+            let failure = (!recovered.failures.is_empty()).then(|| format!(
+                "Some saved sandbox actions could not resume. Their progress was preserved.\n\n{}",
+                recovered.failures.join("\n")
+            ));
+            (Some(recovered.keep_stopped), failure)
+        }
+        Err(message) => (
+            None,
+            Some(format!("{message}\n\nSandboxes selected to start at launch were not started. Start them manually.")),
+        ),
+    }
+}
+
 fn start_selected(
     settings: &Map<String, Value>,
     cancelled: &AtomicBool,
@@ -129,22 +151,20 @@ pub(crate) fn install(app: &AppHandle) {
             }
             return;
         }
-        let recovered_stops = match crate::runtime::lifecycle_recovery::recover(&app) {
-            Ok(stopped) => stopped,
-            Err(message) => {
-                crate::notifications::notify(&app, crate::notifications::failure(
-                    "startup:actions", "Sandbox actions couldn\u{2019}t resume", &message, None));
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = crate::system_integrations::show_integration_error(app.clone(), window, message);
-                }
-                return;
+        let (recovered_stops, failure) = after_lifecycle_recovery(crate::runtime::lifecycle_recovery::recover(&app));
+        if let Some(message) = failure {
+            crate::notifications::notify(&app, crate::notifications::failure(
+                "startup:actions", "Sandbox actions couldn\u{2019}t resume", &message, None));
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = crate::system_integrations::show_integration_error(app.clone(), window, message);
             }
-        };
+        }
         match crate::runtime::update_recovery::recover(&app) {
             Ok(true) => return, // Preserve the exact pre-update running set, even if empty.
             Ok(false) => (),
             Err(message) => { crate::updates::recovery_failed(&app, message); return; }
         }
+        let Some(recovered_stops) = recovered_stops else { return; };
         let result = crate::settings::current_settings(&app).and_then(|settings| {
             let paths = crate::runtime::runtime_paths(&app)?;
             let settings = settings_for_launch(settings, &paths.metadata, &recovered_stops)?;
@@ -281,6 +301,22 @@ mod tests {
         let mut settings = serde_json::json!({"onboardingComplete":true,"startWorkspacesAtLaunch":true,"startupWorkspaceIds":["stopped","other"]}).as_object().unwrap().clone();
         preserve_recovered_stops(&mut settings, &HashSet::from(["stopped".into()]));
         assert_eq!(selected_sandboxes(&settings), vec!["other"]);
+    }
+
+    #[test]
+    fn failed_saved_actions_are_reported_without_stopping_launch() {
+        use crate::runtime::lifecycle_recovery::Recovered;
+        let (stops, failure) = after_lifecycle_recovery(Ok(Recovered {
+            keep_stopped: HashSet::from(["stopped".to_owned()]),
+            failures: vec!["dev: The sandbox was replaced.".into()],
+        }));
+        assert_eq!(stops, Some(HashSet::from(["stopped".to_owned()])));
+        assert!(failure.unwrap().contains("dev: The sandbox was replaced."));
+        assert_eq!(after_lifecycle_recovery(Ok(Recovered::default())), (Some(HashSet::new()), None));
+        // Without the list of saved actions an explicit stop could be among them.
+        let (stops, failure) = after_lifecycle_recovery(Err("Saved sandbox actions could not be read.".into()));
+        assert_eq!(stops, None);
+        assert!(failure.unwrap().contains("were not started"));
     }
 
     #[test]
