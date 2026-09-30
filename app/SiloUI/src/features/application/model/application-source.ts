@@ -62,6 +62,17 @@ export interface ApplicationRepository {
   ahead: number
   behind: number
   dirty: boolean
+  /** GitHub `owner/name` of the `origin` remote; absent when it is not a GitHub repository or the owner predates push binding. */
+  repository?: string | null
+  /** Commit at the tip of `branch`. */
+  head?: string | null
+}
+
+/** The repository, branch and commit the user confirmed; the host pushes exactly these or nothing. */
+export interface RepositoryPushTarget {
+  repository: string
+  branch: string
+  commit: string
 }
 
 export type RepositoryPushOperation = {
@@ -70,6 +81,8 @@ export type RepositoryPushOperation = {
   workspace: string
   repositoryPath: string
   commitCount: number
+  /** What this push publishes, as confirmed by the user. */
+  target?: RepositoryPushTarget
 } & (
   | { status: "pushing"; message?: string }
   | { status: "unknown"; message: string }
@@ -320,7 +333,8 @@ export interface ApplicationActions {
   dismissMachineConfigurationError: () => void
   retryMachineConfiguration: (workspace: string) => void
   dismissRepositoryPush?: (workspace: string, repositoryPath: string) => void
-  pushRepository: (workspace: string, repositoryPath: string) => void
+  /** Push exactly the confirmed `target`; the host aborts if the sandbox no longer matches it. */
+  pushRepository: (workspace: string, repositoryPath: string, target: RepositoryPushTarget) => void
   startWorkspace: (workspace: string) => void
   stopWorkspace: (workspace: string) => void
   restartWorkspace: (workspace: string) => void

@@ -1803,12 +1803,86 @@ fn narrow_checked(
     }
 }
 
+/// A credential for one explicit host push. Silo's scoped token is revoked as
+/// soon as the push ends (owner decision 1); a personal token is never revoked.
+pub(crate) struct HostPushCredential {
+    token: String,
+    repository: String,
+    expires_at: Option<u64>,
+    retire: Option<(tauri::AppHandle, String)>,
+}
+impl HostPushCredential {
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+    /// GitHub's canonical `owner/name` for the authorized repository.
+    pub(crate) fn repository(&self) -> &str {
+        &self.repository
+    }
+    /// Unix time after which GitHub rejects Silo's token; `None` for a personal token.
+    pub(crate) fn expires_at(&self) -> Option<u64> {
+        self.expires_at
+    }
+}
+impl Drop for HostPushCredential {
+    fn drop(&mut self) {
+        if let Some((app, workspace)) = self.retire.take() {
+            retire_host_push_token(
+                &self.token,
+                |token| {
+                    token_operation(Operation::RevokeToken, json!({"accessToken":token})).map(|_| ())
+                },
+                |token| remember_token(&app, &workspace, token),
+            );
+        }
+    }
+}
+/// Revoke now. When GitHub cannot be reached, keep the token in the durable
+/// retirement ledger so the GitHub worker revokes it later.
+fn retire_host_push_token(
+    token: &str,
+    revoke: impl FnOnce(&str) -> Result<(), String>,
+    remember: impl FnOnce(&str) -> Result<(), String>,
+) {
+    if let Err(error) = revoke(token) {
+        eprintln!("Could not revoke the host push credential: {error}");
+        if let Err(error) = remember(token) {
+            eprintln!("Could not record the host push credential for revocation: {error}");
+        }
+    }
+}
+/// Scoped tokens end with the account credential. Renew an account credential
+/// that would expire within this time so a long push keeps a working token.
+const HOST_PUSH_LIFETIME: u64 = 30 * 60;
+fn host_push_account_credential() -> Result<Credential, String> {
+    let current = credential()?.ok_or("Connect GitHub first.")?;
+    let mut pending = PENDING_REFRESH
+        .lock()
+        .map_err(|_| "GitHub credential state is unavailable.")?;
+    refresh_credential_with(
+        current,
+        &mut pending,
+        now() + HOST_PUSH_LIFETIME,
+        |refresh| {
+            from_response(token_operation(
+                Operation::Refresh,
+                json!({"refreshToken":refresh}),
+            )?)
+        },
+        store,
+    )
+}
+/// `contents: write` and `metadata: read` for exactly one repository.
+fn host_push_scope(access_token: &str, owner: u64, repository_id: u64) -> Value {
+    json!({"accessToken":access_token,"ownerId":owner,"repositoryIds":[repository_id],"allowChanges":true,"purpose":"hostPush"})
+}
+
 /// Explicit host Push only: does not grant write access to the guest or modify its policy.
 pub(crate) fn host_push_credential(
     app: &tauri::AppHandle,
     workspace: &str,
     repository: &str,
-) -> Result<String, String> {
+) -> Result<HostPushCredential, String> {
     let _guard = crate::sync::lock_or_recover(&OPERATION, "GitHub operation");
     let d = load(app)?;
     let policy = d
@@ -1818,10 +1892,19 @@ pub(crate) fn host_push_credential(
         .ok_or("This sandbox has no GitHub repository authorization.")?;
     validate(std::slice::from_ref(policy))?;
     // Disable access and the per-repository push grant apply to every sign-in method.
-    if !d.access_enabled { return Err("Enable GitHub access before pushing.".into()); }
+    if !d.access_enabled {
+        return Err("Enable GitHub access before pushing.".into());
+    }
     push_authorized(policy, repository)?;
-    if personal_token::selected(policy) { return personal_token::value(); }
-    let c = active_credential()?;
+    if personal_token::selected(policy) {
+        return Ok(HostPushCredential {
+            token: personal_token::value()?,
+            repository: repository.into(),
+            expires_at: None,
+            retire: None,
+        });
+    }
+    let c = host_push_account_credential()?;
     let catalog = catalog(&c)?;
     let repo = catalog
         .iter()
@@ -1831,22 +1914,31 @@ pub(crate) fn host_push_credential(
                 .is_some_and(|name| name.eq_ignore_ascii_case(repository))
         })
         .ok_or("GitHub no longer authorizes this repository.")?;
+    let name = repo["name"]
+        .as_str()
+        .ok_or("Invalid repository name.")?
+        .to_owned();
     let owner = repo["ownerId"]
         .as_u64()
         .ok_or("Invalid repository owner.")?;
     let id = repo["id"]
         .as_u64()
         .ok_or("Invalid repository identifier.")?;
-    let response = token_operation(
-        Operation::Scope,
-        json!({"accessToken":c.access_token,"ownerId":owner,"repositoryIds":[id],"allowChanges":true}),
-    )?;
-    token_expiry(&response)?;
-    response["accessToken"]
+    let response = token_operation(Operation::Scope, host_push_scope(&c.access_token, owner, id))?;
+    let token = response["accessToken"]
         .as_str()
         .filter(|s| !s.is_empty())
-        .map(str::to_owned)
-        .ok_or_else(|| "GitHub returned no restricted push credential.".into())
+        .ok_or("GitHub returned no restricted push credential.")?
+        .to_owned();
+    // From here on, dropping the credential revokes the token.
+    let mut credential = HostPushCredential {
+        token,
+        repository: name,
+        expires_at: None,
+        retire: Some((app.clone(), workspace.into())),
+    };
+    credential.expires_at = Some(token_expiry(&response)?);
+    Ok(credential)
 }
 
 /// Host push publishes changes, so the sandbox needs a push (write) grant for
@@ -1874,6 +1966,40 @@ fn push_authorized(policy: &Value, repository: &str) -> Result<(), String> {
 #[cfg(test)]
 mod host_push_authorization_tests {
     use serde_json::json;
+
+    #[test]
+    fn host_push_requests_a_contents_only_token_for_one_repository() {
+        let request = super::host_push_scope("parent", 7, 11);
+        assert_eq!(request["purpose"], "hostPush");
+        assert_eq!(request["repositoryIds"], json!([11]));
+        assert!(request.get("allRepositories").is_none());
+    }
+
+    #[test]
+    fn host_push_tokens_are_revoked_or_kept_for_later_revocation() {
+        let remembered = std::cell::RefCell::new(Vec::<String>::new());
+        super::retire_host_push_token(
+            "revoked",
+            |token| {
+                assert_eq!(token, "revoked");
+                Ok(())
+            },
+            |token| {
+                remembered.borrow_mut().push(token.into());
+                Ok(())
+            },
+        );
+        assert!(remembered.borrow().is_empty());
+        super::retire_host_push_token(
+            "offline",
+            |_| Err("GitHub is unreachable.".into()),
+            |token| {
+                remembered.borrow_mut().push(token.into());
+                Ok(())
+            },
+        );
+        assert_eq!(*remembered.borrow(), ["offline"]);
+    }
 
     #[test]
     fn host_push_requires_a_write_grant_and_ignores_name_case() {
