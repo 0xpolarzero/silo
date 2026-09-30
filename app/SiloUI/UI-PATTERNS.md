@@ -49,8 +49,10 @@ drafts, expanded details, and scroll positions. A descendant that animates inher
 visibility can remain painted after its panel is hidden, as described in
 [MDN’s visibility interpolation](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/visibility#interpolation).
 
-`src/test/transition-styles.test.ts` checks the compiled application CSS for this
-rule, including shared components, variants, and custom styles.
+`src/test/transition-styles.test.ts` builds every stylesheet that application
+modules import through the production Vite and Tailwind pipeline, without
+bundling the application, and checks the compiled CSS for this rule, including
+shared components, variants, and custom styles.
 
 ## Tooltips
 
@@ -66,14 +68,40 @@ Nested providers inherit it, and tooltip content receives it through
 Tooltips disable entry and exit animations for either the app preference or
 the system's `prefers-reduced-motion` setting.
 
+## Fixture preview
+
+`npm --prefix app/SiloUI run dev` serves the browser preview. `/` is the
+production entry and only shows "Open Silo in the desktop app." outside the
+desktop app. Open `/preview.html` instead: it renders deterministic fixtures,
+never Silo services, and is a development-only entry that `vite build` does not
+bundle (the build input is `index.html` alone). URL parameters choose the
+surface and its fixtures; there is no on-page selector, so edit the URL.
+
+| Parameter | Values | Source |
+| --- | --- | --- |
+| `view` | `onboarding` (default), `app`, `status-bar`, `desktop` | `src/fixtures/surfaces.ts` |
+| `scenario` | `running`, `complete`, `dependency-failure`, `bootstrap-failure`, `stress-running`; the app and status bar default to `running`, onboarding to `complete` | `src/fixtures/scenarios.ts` |
+| `github` | `disconnected`, `connecting`, `connected` | `src/fixtures/scenarios.ts` |
+| `status-bar` | `stale`, `empty`, `long-list` | `src/fixtures/status-bar-scenarios.ts` |
+| `sandbox-state`, `sandbox-change`, `system-issue`, `repository-push`, `github-operation` | See each `…FixtureModes` list | `src/fixtures/application-scenarios.ts` |
+| `activity` | See `activityFixtureModes` | `src/fixtures/application-activity.ts` |
+| `backup-operation` | See `backupFixtureModes` | `src/fixtures/application-backup.ts` |
+| `resource-notice` | `create-storage`, `start-memory` | `src/fixtures/application-resources.ts` |
+| `operations` | `running`, `stuck` | `src/fixtures/operation-queue.ts` |
+| `appearance` | `light`, `dark`; otherwise the fixture's theme preference | `src/fixtures/preview.tsx` |
+
+For example, `/preview.html?view=status-bar&status-bar=long-list` or
+`/preview.html?view=app&scenario=complete&system-issue=needed`. Opening Silo
+from finished onboarding or choosing **Open Silo…** in the status bar switches
+the URL to `view=app`. `glass.html` is a separate material study
+(`docs/SiloUI-GLASS-STUDY.md`) that always shows the complete app scenario.
+
 ## Status bar preview
 
-`src/fixtures/status-bar-preview.tsx` renders the status bar against the app's
-existing fixture snapshots, and its Preview selector adds stale status, an empty
-list, and a long list. There is no browser route for it yet: `npm run dev` only
-shows a desktop-app notice and `glass.html` renders the main app fixture.
-`status-bar-preview.test.tsx` exercises it. Repair and error notices and the
-footer remain visible while only the sandbox list scrolls.
+Open `/preview.html?view=status-bar`. The `scenario` and `system-issue`
+parameters reuse the app's fixture snapshots; `status-bar` adds stale status,
+an empty list, or a long list. Repair and error notices and the footer remain
+visible while only the sandbox list scrolls.
 
 Repositories with outgoing commits add one compact line under their sandbox,
 with the repository name and a **Push N commits** action. Progress and the brief
