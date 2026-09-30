@@ -121,9 +121,9 @@ To run the native app while developing:
 npm --prefix app/SiloUI run desktop
 ```
 
-This prepares the runtime and opens Silo. Keep the terminal running. `npm --prefix app/SiloUI run dev` starts only the frontend server. The main page requires the native app; it cannot run VMs or complete GitHub setup in a browser. For an interactive browser demo with sample data, use the [website preview](../website/README.md#run).
+This prepares the runtime and opens Silo Dev, a separate build channel (`org.silo.dev`) with its own data, Keychain items and remote-management identity, so it never touches an installed Silo. `npm --prefix app/SiloUI run dev:import-production-settings` copies your installed Silo's configuration (not sandboxes) into it; see [build channels](SiloUI-BUILD-CHANNELS.md). Keep the terminal running. `npm --prefix app/SiloUI run dev` starts only the frontend server. The main page requires the native app; it cannot run VMs or complete GitHub setup in a browser. For an interactive browser demo with sample data, use the [website preview](../website/README.md#run).
 
-For an optimized app you can launch without the development terminal, use the command for your platform. These commands disable updater artifact signing, so you do not need the project's release signing keys.
+For an optimized app you can launch without the development terminal, use the command for your platform. These are production-channel builds (`org.silo.preview`) and share data with an installed Silo. These commands disable updater artifact signing, so you do not need the project's release signing keys.
 
 **macOS:**
 

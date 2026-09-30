@@ -59,7 +59,7 @@ For a local macOS debug bundle:
 npm --prefix app/SiloUI run desktop:build:debug
 ```
 
-Output: `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app`.
+Output: `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app`.
 
 For an optimized local macOS app without installer or updater signing:
 
@@ -69,8 +69,18 @@ npm --prefix app/SiloUI run desktop:build
 
 Output: `app/SiloUI/src-tauri/target/release/bundle/macos/Silo.app`. On macOS, this command creates only a local app, applies the existing exact-engine VM signing policy, and verifies the final bundle. No distribution certificate or updater key is required. The previous explicit `--bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'` arguments remain supported. Linux builds retain the native Tauri packaging behavior. Follow the release guide for distributable packages; a local app build does not publish anything. Set an absolute `CARGO_TARGET_DIR` to rebuild separately from an app currently running from the usual output.
 
+## Build channels
+
+Only two builds exist and they never share state: production (`org.silo.preview`,
+"Silo": `desktop:build`, releases) and development (`org.silo.dev`, "Silo Dev":
+`npm run desktop`, `desktop:build:debug`, any `--debug` build). Every host name
+(home dir, Keychain services, remote bridge link, editor profile) comes from
+`src-tauri/src/channel.rs`; never hard-code one. Production names must never change.
+See `docs/SiloUI-BUILD-CHANNELS.md`.
+
 ## Running and debugging
 
+- Use the Dev build (`Silo Dev`) for development and automation. Never drive, launch for testing, or modify the production app, its data, Keychain items, `~/.silo`, `~/.local/bin/silo-remote`, or VS Code `Silo` profile. Tests use temp HOMEs and fixtures. The owner runs `npm --prefix app/SiloUI run dev:import-production-settings`; agents must not run it against real data.
 - Rebuild before inspecting a packaged change. Launch the exact bundle path with `open`, not an arbitrary installed copy with `open -a Silo`.
 - Before a manual launch, inspect any existing instance and verify its executable path and ownership. Do not interrupt the user's running app or VMs as routine test cleanup.
 - Closing the window leaves the app running. Graceful Quit stops Silo-owned local VMs; it does not stop remote VMs. A shutdown failure leaves the app open. Account for these side effects before exercising Quit against real state.
