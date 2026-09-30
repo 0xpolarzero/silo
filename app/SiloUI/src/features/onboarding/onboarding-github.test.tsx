@@ -1,4 +1,5 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { setupFakeTimerUser } from "@/test/fake-timer-user"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 
@@ -95,7 +96,8 @@ it("continues with zero repository access and keeps connected GitHub complete", 
 
 
 it("renders stable disconnected, connecting, and connected GitHub states", async () => {
-  const user = userEvent.setup()
+  vi.useFakeTimers()
+  const user = setupFakeTimerUser()
   const disconnected = renderScenario("running", "disconnected")
   await user.click(screen.getByRole("tab", { name: /GitHub/ }))
 
@@ -107,7 +109,10 @@ it("renders stable disconnected, connecting, and connected GitHub states", async
   expect(screen.getByRole("heading", { name: "Connecting to GitHub…" })).toBeVisible()
   expect(screen.getByLabelText("Git name for dev")).toBeEnabled()
   expect(screen.queryByLabelText("Add repository to dev")).not.toBeInTheDocument()
-  expect(await screen.findByRole("heading", { name: "Connected to GitHub" }, { timeout: 1500 })).toBeVisible()
+  await act(async () => { await vi.advanceTimersByTimeAsync(699) })
+  expect(screen.getByRole("heading", { name: "Connecting to GitHub…" })).toBeVisible()
+  await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+  expect(screen.getByRole("heading", { name: "Connected to GitHub" })).toBeVisible()
   expect(screen.getByLabelText("Add repository to dev")).toBeVisible()
   disconnected.unmount()
 
