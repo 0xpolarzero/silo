@@ -1074,8 +1074,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       remoteManagementError = undefined
       publish({ ...snapshot })
     },
-    connectComputer: async address => {
-      remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address }))
+    connectComputer: async (address, options) => {
+      remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address, replace: options?.replaceAddress ?? false }))
       await refreshComputers()
     },
     removeComputer: async hostId => {

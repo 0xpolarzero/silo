@@ -7,7 +7,10 @@ import { showActionFailure } from "@/lib/operation-toast"
 import type { ApplicationActions, ApplicationSource } from "../model/application-source"
 import type { RemoteManagement } from "../model/remote-computers"
 
-export function ConnectComputerForm({ connect, authorize, setupKey, onClose }: { setupKey?: (address: string) => Promise<void>; authorize?: (address: string) => Promise<void>; connect: (address: string) => Promise<void>; onClose: () => void }) {
+// The backend refuses to move a saved computer to a new address unless the user confirms.
+const alreadySaved = "is already saved at"
+
+export function ConnectComputerForm({ connect, authorize, setupKey, onClose }: { setupKey?: (address: string) => Promise<void>; authorize?: (address: string) => Promise<void>; connect: (address: string, options?: { replaceAddress?: boolean }) => Promise<void>; onClose: () => void }) {
   const [address, setAddress] = useState("")
   const [busy, setBusy] = useState(false)
   // Connection failures stay inline: the form is where the user corrects the address, and the
@@ -26,8 +29,9 @@ export function ConnectComputerForm({ connect, authorize, setupKey, onClose }: {
     <label className="grid gap-1 text-xs">Computer address<Input technical autoFocus aria-label="Computer address" placeholder="user@computer or SSH alias" value={address} disabled={busy} onChange={event => setAddress(event.target.value)} /></label>
     <p className="text-xs text-muted-foreground">Open Silo on that computer and enable remote management. Uses your existing SSH keys and configuration.</p>
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
-    {error && authorize && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => authorize(address.trim())) }}>Authorize SSH in Terminal…</Button><p className="text-xs text-muted-foreground">Confirm the computer’s fingerprint and unlock your SSH key, then connect again.</p></div>}
-    {error && setupKey && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => setupKey(address.trim())) }}>Set up Silo SSH key…</Button><p className="text-xs text-muted-foreground">Adds Silo’s public SSH key to your account on the other computer. You may be asked for its password. Then connect again.</p></div>}
+    {error.includes(alreadySaved) && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(async () => { await connect(address.trim(), { replaceAddress: true }); onClose() }) }}>Use this address</Button><p className="text-xs text-muted-foreground">Only if that computer now uses this address. Its sandboxes and connections stay as they are.</p></div>}
+    {error && !error.includes(alreadySaved) && authorize && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => authorize(address.trim())) }}>Authorize SSH in Terminal…</Button><p className="text-xs text-muted-foreground">Confirm the computer’s fingerprint and unlock your SSH key, then connect again.</p></div>}
+    {error && !error.includes(alreadySaved) && setupKey && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => setupKey(address.trim())) }}>Set up Silo SSH key…</Button><p className="text-xs text-muted-foreground">Adds Silo’s public SSH key to your account on the other computer. You may be asked for its password. Then connect again.</p></div>}
     <div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button><Button size="sm" disabled={busy || !address.trim()}>{busy ? "Connecting…" : "Connect"}</Button></div>
   </form>
 }

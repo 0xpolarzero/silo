@@ -129,8 +129,8 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     return <SiloWindow title="Silo" label="Connect another computer">
       <div className="mx-auto w-full max-w-lg p-6">
         <h1 className="mb-3 text-sm font-semibold">Connect another computer</h1>
-        <ConnectComputerForm authorize={source.applicationActions.authorizeComputer} onClose={() => setConnectingComputer(false)} connect={async address => {
-          await source.applicationActions.connectComputer!(address)
+        <ConnectComputerForm authorize={source.applicationActions.authorizeComputer} onClose={() => setConnectingComputer(false)} connect={async (address, options) => {
+          await (options ? source.applicationActions.connectComputer!(address, options) : source.applicationActions.connectComputer!(address))
           await updateSettings({ onboardingComplete: true })
           await store.flush()
           const error = store.getSnapshot().saveError

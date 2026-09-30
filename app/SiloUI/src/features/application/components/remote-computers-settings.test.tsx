@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
-import { RemoteComputersSettings } from "./remote-computers-settings"
+import { ConnectComputerForm, RemoteComputersSettings } from "./remote-computers-settings"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { remoteManagementSchema } from "../model/remote-computers"
 import type { ApplicationActions, ApplicationSource } from "../model/application-source"
@@ -45,6 +45,31 @@ describe("RemoteComputersSettings", () => {
     const status = remoteManagementSchema.parse({ enabled: true, hostId: "office", name: "studio", address: "ana@studio" })
     render(<RemoteComputersSettings source={source(status)} actions={actions()} />)
     expect(screen.getByRole("button", { name: "Copy ana@studio" })).toBeInTheDocument()
+  })
+
+  it("replaces a saved computer's address only after the user confirms", async () => {
+    const connect = vi.fn()
+      .mockRejectedValueOnce(new Error("Office is already saved at office.local. Use 10.0.0.9 for it instead only if that computer moved to this address."))
+      .mockResolvedValueOnce(undefined)
+    const onClose = vi.fn()
+    render(<ConnectComputerForm connect={connect} onClose={onClose} />)
+    fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: "10.0.0.9" } })
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("already saved at office.local")
+    expect(connect).toHaveBeenCalledWith("10.0.0.9")
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "Use this address" }))
+    await waitFor(() => expect(onClose).toHaveBeenCalled())
+    expect(connect).toHaveBeenLastCalledWith("10.0.0.9", { replaceAddress: true })
+  })
+
+  it("offers no replacement for other connection errors", async () => {
+    const connect = vi.fn().mockRejectedValue(new Error("SSH authentication failed."))
+    render(<ConnectComputerForm connect={connect} onClose={vi.fn()} />)
+    fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: "office" } })
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }))
+    await screen.findByRole("alert")
+    expect(screen.queryByRole("button", { name: "Use this address" })).not.toBeInTheDocument()
   })
 
   it("shows no problem when remote management works", () => {

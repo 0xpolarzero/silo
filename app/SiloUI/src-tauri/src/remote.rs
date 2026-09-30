@@ -30,7 +30,7 @@ const VERSION: u32 = 2;
 const LIMIT: usize = 4 * 1024 * 1024;
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 static REMOTE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteHost {
     pub id: String,
@@ -960,7 +960,7 @@ pub async fn remote_checkpoint_action(
 }
 
 #[tauri::command]
-pub async fn connect_remote_host(address: String) -> Result<RemoteHost, String> {
+pub async fn connect_remote_host(address: String, replace: Option<bool>) -> Result<RemoteHost, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let address = address.trim().to_owned();
         let handshake = json!({"version": VERSION, "method": "handshake", "params": {"sshKey": silo_public_key()}});
@@ -985,20 +985,38 @@ pub async fn connect_remote_host(address: String) -> Result<RemoteHost, String> 
             address,
         };
         let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
-        let mut config = read_config()?;
-        if config.host_id == host.id {
-            return Err(
-                "This address points to this computer. Its VMs are already available locally."
-                    .into(),
-            );
-        }
-        config.hosts.retain(|saved| saved.id != host.id);
-        config.hosts.push(host.clone());
-        save_config(&config)?;
-        Ok(host)
+        save_connected_host(&directory()?, host, &self::name(), replace.unwrap_or(false))
     })
     .await
     .map_err(|error| error.to_string())?
+}
+/// Shown when a computer's identity is already saved at another address; the connect
+/// form offers to replace the saved address after it.
+const ALREADY_SAVED: &str = "is already saved at";
+/// Saves the computer that answered at `host.address`. The identity is reported by that
+/// computer, so it never silently takes over another saved entry: a known identity at a new
+/// address is saved only when the user confirmed (`replace`).
+fn save_connected_host(dir: &Path, host: RemoteHost, local_name: &str, replace: bool) -> Result<RemoteHost, String> {
+    let mut config = read_config_in(dir)?;
+    if config.host_id == host.id {
+        return Err(if host.name == local_name {
+            "This address points to this computer. Its VMs are already available locally.".into()
+        } else {
+            format!("{} uses this computer's Silo identity, probably because its Silo settings were copied from here. On {}, quit Silo, delete ~/.silo/desktop-remote/config.json, and open Silo again.", host.name, host.name)
+        });
+    }
+    if let Some(saved) = config.hosts.iter().find(|saved| saved.id == host.id) {
+        if saved.address != host.address && !replace {
+            return Err(format!(
+                "{} {ALREADY_SAVED} {}. Use {} for it instead only if that computer moved to this address.",
+                saved.name, saved.address, host.address
+            ));
+        }
+    }
+    config.hosts.retain(|saved| saved.id != host.id);
+    config.hosts.push(host.clone());
+    save_config_in(dir, &config)?;
+    Ok(host)
 }
 
 #[tauri::command]
@@ -1984,6 +2002,46 @@ mod authorized_key_tests {
         assert!(!restrict_authorized_keys_file(&link, &public).unwrap());
         assert_eq!(fs::read_to_string(&target).unwrap(), format!("{public}\n"));
         assert!(!restrict_authorized_keys_file(&home.path().join("missing"), &public).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod connect_tests {
+    use super::*;
+    fn host(id: &str, name: &str, address: &str) -> RemoteHost {
+        RemoteHost { id: id.into(), name: name.into(), address: address.into() }
+    }
+    fn saved(dir: &Path) -> Vec<(String, String, String)> {
+        read_config_in(dir).unwrap().hosts.into_iter().map(|h| (h.id, h.name, h.address)).collect()
+    }
+
+    #[test]
+    fn a_reported_identity_never_silently_takes_over_a_saved_computer() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = directory_in(home.path()).unwrap();
+        let office = uuid::Uuid::new_v4().to_string();
+        save_connected_host(&dir, host(&office, "Office", "office.local"), "Laptop", false).unwrap();
+        // Same computer, same address: the name is refreshed.
+        save_connected_host(&dir, host(&office, "Office Mac", "office.local"), "Laptop", false).unwrap();
+        assert_eq!(saved(&dir), [(office.clone(), "Office Mac".into(), "office.local".into())]);
+        // Another address claims the saved identity: refused until the user confirms.
+        let error = save_connected_host(&dir, host(&office, "Office Mac", "10.0.0.9"), "Laptop", false).unwrap_err();
+        assert!(error.contains(ALREADY_SAVED) && error.contains("office.local") && error.contains("10.0.0.9"), "{error}");
+        assert_eq!(saved(&dir), [(office.clone(), "Office Mac".into(), "office.local".into())]);
+        save_connected_host(&dir, host(&office, "Office Mac", "10.0.0.9"), "Laptop", true).unwrap();
+        assert_eq!(saved(&dir), [(office, "Office Mac".into(), "10.0.0.9".into())]);
+    }
+
+    #[test]
+    fn this_computers_identity_is_named_as_itself_or_as_a_copy() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = directory_in(home.path()).unwrap();
+        let own = read_config_in(&dir).unwrap().host_id;
+        let error = save_connected_host(&dir, host(&own, "Laptop", "localhost"), "Laptop", true).unwrap_err();
+        assert!(error.contains("points to this computer"));
+        let error = save_connected_host(&dir, host(&own, "Studio", "studio.local"), "Laptop", true).unwrap_err();
+        assert!(error.contains("Studio uses this computer's Silo identity"), "{error}");
+        assert!(saved(&dir).is_empty());
     }
 }
 
