@@ -104,7 +104,7 @@ impl Registry {
 
     fn lock(&self) -> MutexGuard<'_, State> {
         // Plain maps; a panic elsewhere cannot leave them half-updated.
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        crate::sync::lock_or_recover(&self.state, "remote changes")
     }
 
     /// Accept, run once, or attach to one change named by `submission.id`.

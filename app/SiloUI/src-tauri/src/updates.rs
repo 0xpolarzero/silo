@@ -6,7 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Mutex, RwLock, RwLockReadGuard},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex, RwLock, RwLockReadGuard,
+    },
     time::{Duration, SystemTime},
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -16,11 +19,21 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 // prevents an update from overtaking a queued write, and rejects new writes while
 // installation owns the process. Readers never wait behind the installer.
 static ADMISSION: RwLock<()> = RwLock::new(());
-pub(crate) fn operation_guard() -> Result<RwLockReadGuard<'static, ()>, String> {
+/// Admitted operations, so readiness can be probed without taking any lock.
+static ADMITTED: AtomicUsize = AtomicUsize::new(0);
+pub(crate) struct AdmissionGuard(#[allow(dead_code)] RwLockReadGuard<'static, ()>);
+impl Drop for AdmissionGuard {
+    fn drop(&mut self) {
+        ADMITTED.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+pub(crate) fn operation_guard() -> Result<AdmissionGuard, String> {
     crate::runtime::shutdown::ensure_accepting_operations()?;
-    ADMISSION
+    let guard = ADMISSION
         .try_read()
-        .map_err(|_| "Silo is installing an update. Try again after it restarts.".into())
+        .map_err(|_| "Silo is installing an update. Try again after it restarts.")?;
+    ADMITTED.fetch_add(1, Ordering::SeqCst);
+    Ok(AdmissionGuard(guard))
 }
 const RELEASE_URL: &str = "https://github.com/0xpolarzero/silo/releases/latest";
 const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
@@ -164,18 +177,24 @@ fn busy(phase: &str) -> bool {
     matches!(phase, "checking" | "downloading" | "installing")
 }
 fn ready(app: &AppHandle) -> Result<(), String> {
-    let _admission = ADMISSION
-        .try_write()
-        .map_err(|_| "Wait for active operations to finish before updating.")?;
-    crate::backup_controller::update_ready(app)?;
-    let _github = crate::github::update_guard()?;
-    let _secrets = crate::secrets::update_guard()?;
-    // Fast readiness check only: refuse if any sandbox operation is active or queued.
-    if !crate::runtime::OPERATIONS.is_idle() {
-        return Err("Wait for sandbox operations to finish before updating.".into());
+    readiness(|| {
+        crate::backup_controller::update_ready(app)?;
+        // Fast readiness check only: refuse if any sandbox operation is active or queued.
+        if !crate::runtime::OPERATIONS.is_idle() {
+            return Err("Wait for sandbox operations to finish before updating.".into());
+        }
+        crate::runtime::shutdown::ensure_accepting_operations()
+    })
+}
+/// Read-only probe for the settings card, polled every few seconds. Taking the
+/// admission write lock or the GitHub/secret operation locks here, even briefly,
+/// made concurrent operations fail as busy. Installation still takes every guard
+/// and reports the exact blocker.
+fn readiness(checks: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+    if ADMITTED.load(Ordering::SeqCst) > 0 {
+        return Err("Wait for active operations to finish before updating.".into());
     }
-    crate::runtime::shutdown::ensure_accepting_operations()?;
-    Ok(())
+    checks()
 }
 pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     let path = app
@@ -241,7 +260,16 @@ pub(crate) fn focused(app: &AppHandle) {
 #[tauri::command]
 pub(crate) async fn get_update_state(app: AppHandle) -> Result<Snapshot, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let readiness = ready(&app);
+        let installing = app
+            .state::<Controller>()
+            .state
+            .lock()
+            .map_or(true, |state| state.snapshot.phase == "installing");
+        let readiness = if installing {
+            Err("An update operation is already running.".to_string())
+        } else {
+            ready(&app)
+        };
         // Do not compete with an active runtime mutation just to refresh a settings card.
         let running = readiness.and_then(|_| {
             crate::runtime::update_recovery::running_names(&app).map_err(|_| {
@@ -281,21 +309,58 @@ pub(crate) async fn set_update_automatic_checks(
 pub(crate) async fn check_for_update(app: AppHandle) -> Result<Snapshot, String> {
     check(app, false).await
 }
+/// Background checks never replace verified bytes, a pending download or install
+/// retry, or an installed update waiting for a relaunch. An update that was only
+/// found (not downloaded) can be superseded.
+fn blocks_automatic_check(
+    phase: &str,
+    retry_action: Option<&str>,
+    has_update: bool,
+    has_bytes: bool,
+) -> bool {
+    has_bytes || (has_update && phase != "available") || retry_action == Some("relaunch")
+}
+/// Apply a successful check. A verified download of the same version survives the
+/// check; returns true when the pending update (and its bytes) should be kept.
+fn settle_check(
+    snapshot: &mut Snapshot,
+    bytes: &mut Option<Vec<u8>>,
+    pending: Option<&str>,
+    found: Option<(&str, Option<&str>)>,
+) -> bool {
+    let keep = bytes.is_some() && found.is_some_and(|(version, _)| Some(version) == pending);
+    snapshot.retry_action = None;
+    if keep {
+        snapshot.phase = "ready".into();
+    } else {
+        *bytes = None;
+        snapshot.phase = if found.is_some() { "available" } else { "idle" }.into();
+        snapshot.downloaded_bytes = 0;
+        snapshot.total_bytes = None;
+    }
+    snapshot.available_version = found.map(|(version, _)| version.to_owned());
+    snapshot.release_notes = found.and_then(|(_, notes)| notes.map(str::to_owned));
+    keep
+}
 async fn check(app: AppHandle, automatic: bool) -> Result<Snapshot, String> {
-    {
+    let previous_phase = {
         let controller = app.state::<Controller>();
         let mut state = controller
             .state
             .lock()
             .map_err(|_| "Update state is unavailable.")?;
-        // Admit automatic checks under the same lock as manual actions. Never
-        // discard a discovered update, a download retry, or verified bytes.
+        // Admit automatic checks under the same lock as manual actions.
         if automatic
             && !state.schedule.due(
                 SystemTime::now(),
                 state.snapshot.automatic_checks,
                 busy(&state.snapshot.phase),
-                state.update.is_some() || state.bytes.is_some(),
+                blocks_automatic_check(
+                    &state.snapshot.phase,
+                    state.snapshot.retry_action.as_deref(),
+                    state.update.is_some(),
+                    state.bytes.is_some(),
+                ),
             )
         {
             return Ok(state.snapshot.clone());
@@ -303,13 +368,13 @@ async fn check(app: AppHandle, automatic: bool) -> Result<Snapshot, String> {
         if busy(&state.snapshot.phase) {
             return Err("An update operation is already running.".into());
         }
-        state.snapshot.phase = "checking".into();
+        // Keep a discovered update and verified bytes until the result is known.
+        let previous = std::mem::replace(&mut state.snapshot.phase, "checking".into());
         state.snapshot.error = None;
         state.snapshot.error_details = None;
-        state.update = None;
-        state.bytes = None;
         let _ = app.emit("silo://update-state", &state.snapshot);
-    }
+        previous
+    };
     let result = async {
         app.updater_builder()
             .timeout(Duration::from_secs(30))
@@ -324,22 +389,34 @@ async fn check(app: AppHandle, automatic: bool) -> Result<Snapshot, String> {
             s.snapshot.last_checked = time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
                 .ok();
-            s.snapshot.retry_action = None;
-            s.snapshot.phase = if update.is_some() {
-                "available"
-            } else {
-                "idle"
+            let pending = s.update.as_ref().map(|u| u.version.clone());
+            let found = update.as_ref().map(|u| (u.version.as_str(), u.body.as_deref()));
+            // The kept bytes were verified against the pending update's signature.
+            if !settle_check(&mut s.snapshot, &mut s.bytes, pending.as_deref(), found) {
+                s.update = update;
             }
-            .into();
-            s.snapshot.available_version = update.as_ref().map(|u| u.version.clone());
-            s.snapshot.release_notes = update.as_ref().and_then(|u| u.body.clone());
-            s.snapshot.downloaded_bytes = 0;
-            s.snapshot.total_bytes = None;
-            s.update = update;
         }),
         Err(e) => {
             modify(&app, |s| s.schedule.completed(SystemTime::now(), false))?;
-            fail(&app, check_error_message(&e), e)
+            let pending = app
+                .state::<Controller>()
+                .state
+                .lock()
+                .map_or(false, |s| s.update.is_some());
+            if !pending {
+                return fail(&app, check_error_message(&e), e);
+            }
+            // A failed re-check leaves a found or downloaded update actionable.
+            modify(&app, |s| {
+                s.snapshot.phase = if matches!(previous_phase.as_str(), "available" | "ready") {
+                    previous_phase
+                } else {
+                    "error".into()
+                };
+                s.snapshot.error = Some(check_error_message(&e).into());
+                s.snapshot.error_details = Some(e.to_string());
+                s.snapshot.retry_action = Some("check".into());
+            })
         }
     }
 }
@@ -502,6 +579,110 @@ fn available_install_space(parent: &Path) -> Result<u64, String> {
         .ok_or_else(|| "Available installation space is invalid.".into())
 }
 
+/// How an installation that did not restart Silo ended.
+enum InstallError {
+    /// Nothing was installed (sandboxes were restored where possible); retry the install.
+    Failed(String),
+    /// The package is installed, but this process could not be replaced.
+    NotRestarted(String),
+}
+impl From<String> for InstallError {
+    fn from(error: String) -> Self {
+        Self::Failed(error)
+    }
+}
+/// `exec` skips `RunEvent::Exit` and every `Drop`, so first close what exit closes
+/// (SSH tunnels and listeners, desktop viewers); otherwise their helper processes
+/// keep the ports and the new instance cannot bind them. `restart` returns only if
+/// the process could not be replaced: the stopped sandboxes are then resumed.
+fn restart_after_install(
+    close: impl FnOnce(),
+    restart: impl FnOnce() -> String,
+    resume: impl FnOnce() -> Result<(), String>,
+) -> InstallError {
+    close();
+    let error = restart();
+    InstallError::NotRestarted(match resume() {
+        Ok(()) => error,
+        Err(resume) => format!("{error}\nSandboxes could not resume: {resume}"),
+    })
+}
+fn relaunch_required(snapshot: &mut Snapshot, details: String) {
+    snapshot.phase = "error".into();
+    snapshot.error = Some("Silo was updated but could not restart. Quit and reopen Silo to finish.".into());
+    snapshot.error_details = Some(details);
+    snapshot.retry_action = Some("relaunch".into());
+    snapshot.install_status = None;
+    snapshot.can_install = false;
+}
+/// Debian installs through APT with system authentication. Authentication, the
+/// source check, the refresh and the download all happen while sandboxes keep
+/// running; they are stopped only once the package is ready to install, and
+/// restored if installation then fails.
+fn install_debian(app: &AppHandle, version: &str, consent: bool) -> Result<(), InstallError> {
+    debian::preflight()?;
+    // Refuse new work while the update prepares; the helper's timeout bounds this.
+    let admission = ADMISSION
+        .try_write()
+        .map_err(|_| "Wait for active operations to finish before updating.".to_string())?;
+    let backup = crate::backup_controller::update_guard(app)?;
+    let github = crate::github::update_guard()?;
+    let secrets = crate::secrets::update_guard()?;
+    crate::runtime::shutdown::ensure_accepting_operations()?;
+    let mut runtime = None;
+    let result = debian::install(
+        version,
+        |status| {
+            let _ = modify(app, |s| s.snapshot.install_status = Some(status.into()));
+        },
+        || {
+            // Only now wait for computer-wide work, so Quit is never queued behind
+            // an authentication prompt or a download.
+            let guard = crate::runtime::OPERATIONS
+                .kind(crate::runtime::operation_gate::OperationKind::Shutdown)
+                .computer("Installing update")
+                .map_err(|e| e.to_string())?;
+            runtime = Some(guard);
+            crate::runtime::shutdown::ensure_accepting_operations()?;
+            crate::settings::flush_for_update(app)?;
+            crate::runtime::update_recovery::prepare(app, consent)
+        },
+    );
+    if let Err(error) = result {
+        // Sandboxes can only have stopped once the install stage took the gate.
+        if runtime.is_some() {
+            if let Err(resume) = crate::runtime::update_recovery::restore_locked(app) {
+                return Err(InstallError::Failed(format!(
+                    "{error}\nSandboxes could not resume: {resume}. Relaunch Silo to retry."
+                )));
+            }
+        }
+        return Err(InstallError::Failed(error));
+    }
+    // Close admission before releasing installation guards. The update journal
+    // retains the running set for startup to restore after restart. Keep the VM
+    // operation gate: the SSH monitor cannot reopen listeners, and a failed restart
+    // resumes the sandboxes under it.
+    crate::runtime::shutdown::begin();
+    drop((admission, backup, github, secrets));
+    let outcome = restart_after_install(
+        || {
+            crate::ssh_access::close_all();
+            crate::remote_network::close_all();
+            crate::desktop_viewer::close_all();
+            // exec also skips the single-instance plugin's cleanup: release the
+            // claim so the replacement process does not find it and exit (F-09).
+            crate::single_instance::release(app);
+        },
+        debian::restart,
+        || {
+            crate::runtime::shutdown::cancel();
+            crate::runtime::update_recovery::restore_locked(app)
+        },
+    );
+    drop(runtime);
+    Err(outcome)
+}
 #[tauri::command]
 pub(crate) async fn install_update(
     app: AppHandle,
@@ -540,8 +721,11 @@ pub(crate) async fn install_update(
         (update, bytes, is_debian)
     };
     let worker = app.clone();
-    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<(), InstallError> {
         crate::startup::cancel_and_wait(&worker);
+        if is_debian {
+            return install_debian(&worker, &update.version, stop_sandboxes);
+        }
         // Reservation uses the same atomic gate as backup/restore admission.
         let admission = (|| {
             let admission = ADMISSION.try_write().map_err(|_| "Wait for active operations to finish before updating.")?;
@@ -557,19 +741,16 @@ pub(crate) async fn install_update(
         })();
         let (_admission, _backup, _github, _secrets, _runtime) = match admission {
             Ok(guards) => guards,
-            Err(error) => { let _ = modify(&worker, |s| { if !is_debian { s.bytes = Some(bytes); } }); return Err(error); }
+            Err(error) => { let _ = modify(&worker, |s| s.bytes = Some(bytes)); return Err(error.into()); }
         };
-        let result = (if is_debian { debian::preflight() } else { installation_preflight(&bytes) })
+        let result = installation_preflight(&bytes)
             .and_then(|_| crate::settings::flush_for_update(&worker))
-            .and_then(|_| crate::runtime::update_recovery::prepare(&worker, stop_sandboxes)).and_then(|_| {
-                if is_debian { debian::install(&update.version, |status| {
-                    let _ = modify(&worker, |s| s.snapshot.install_status = Some(status.into()));
-                }) } else { update.install(&bytes).map_err(|e| e.to_string()) }
-            });
+            .and_then(|_| crate::runtime::update_recovery::prepare(&worker, stop_sandboxes))
+            .and_then(|_| update.install(&bytes).map_err(|e| e.to_string()));
         if let Err(error) = result {
             let restore = crate::runtime::update_recovery::restore_locked(&worker);
-            let _ = modify(&worker, |s| { if !is_debian { s.bytes = Some(bytes); } });
-            return Err(match restore { Ok(()) => error, Err(resume) => format!("{error}\nSandboxes could not resume: {resume}. Relaunch Silo to retry.") });
+            let _ = modify(&worker, |s| s.bytes = Some(bytes));
+            return Err(match restore { Ok(()) => error, Err(resume) => format!("{error}\nSandboxes could not resume: {resume}. Relaunch Silo to retry.") }.into());
         }
         // Settings are flushed before installation and the UI stays inert.
         // Tauri restart cannot be deferred by the ordinary exit flush handler.
@@ -577,16 +758,17 @@ pub(crate) async fn install_update(
         // journal retains the running set for startup to restore after restart.
         crate::runtime::shutdown::begin();
         drop((_admission, _backup, _github, _secrets, _runtime));
-        if is_debian {
-            let result = debian::restart();
-            crate::runtime::shutdown::cancel();
-            result?;
-        }
         worker.restart()
-    }).await.unwrap_or_else(|_| Err("Update installation was interrupted. Relaunch Silo to restore the saved sandbox state, then download the update again.".into()));
+    }).await.unwrap_or_else(|_| Err(InstallError::Failed("Update installation was interrupted. Relaunch Silo to restore the saved sandbox state, then download the update again.".into())));
     match result {
         Ok(()) => get_update_state(app).await,
-        Err(e) => fail(
+        Err(InstallError::NotRestarted(details)) => modify(&app, |s| {
+            // Offering the installed version again would reinstall and stop sandboxes again.
+            s.update = None;
+            s.bytes = None;
+            relaunch_required(&mut s.snapshot, details);
+        }),
+        Err(InstallError::Failed(e)) => fail(
             &app,
             if is_debian {
                 debian::failure_message(&e)
@@ -598,19 +780,10 @@ pub(crate) async fn install_update(
     }
 }
 #[tauri::command]
-pub(crate) async fn open_update_release() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let opener = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
-        std::process::Command::new(opener)
-            .arg(RELEASE_URL)
-            .spawn()
-            .map(|_| ())
-            .map_err(|_| "The browser could not be opened.".to_string())
-    })
+pub(crate) async fn open_update_release(app: tauri::AppHandle) -> Result<(), String> {
+    // The shared browser opener honours the browser setting and leaves no
+    // unreaped child process (F-25).
+    tauri::async_runtime::spawn_blocking(move || crate::applications::open_browser(&app, RELEASE_URL))
     .await
     .map_err(|_| "The browser could not be opened.".to_string())?
 }
@@ -628,6 +801,120 @@ mod tests {
             check_error_message(&invalid.into()),
             "The update service returned invalid release information. Try again later."
         );
+    }
+    fn snapshot(phase: &str) -> Snapshot {
+        Snapshot {
+            phase: phase.into(),
+            last_checked: None,
+            retry_action: None,
+            current_version: "1.0.0".into(),
+            available_version: None,
+            release_notes: None,
+            downloaded_bytes: 0,
+            total_bytes: None,
+            automatic_checks: true,
+            package_kind: "macos".into(),
+            release_url: RELEASE_URL.into(),
+            error: None,
+            error_details: None,
+            running_sandboxes: vec![],
+            can_install: false,
+            install_block_reason: None,
+            install_status: None,
+        }
+    }
+    #[test]
+    fn recheck_keeps_a_verified_download_and_replaces_a_superseded_release() {
+        let mut state = snapshot("checking");
+        state.downloaded_bytes = 3;
+        state.total_bytes = Some(3);
+        let mut bytes = Some(vec![1, 2, 3]);
+        assert!(settle_check(&mut state, &mut bytes, Some("1.2.0"), Some(("1.2.0", None))));
+        assert_eq!(state.phase, "ready");
+        assert_eq!(bytes.as_deref(), Some(&[1, 2, 3][..]));
+        assert_eq!((state.downloaded_bytes, state.total_bytes), (3, Some(3)));
+        assert_eq!(state.available_version.as_deref(), Some("1.2.0"));
+        // A newer release supersedes the pending one; its download no longer applies.
+        assert!(!settle_check(&mut state, &mut bytes, Some("1.2.0"), Some(("1.3.0", Some("notes")))));
+        assert_eq!(state.phase, "available");
+        assert!(bytes.is_none());
+        assert_eq!((state.downloaded_bytes, state.total_bytes), (0, None));
+        assert_eq!(state.available_version.as_deref(), Some("1.3.0"));
+        assert_eq!(state.release_notes.as_deref(), Some("notes"));
+        // Same version without a download: refresh the release, nothing to keep.
+        assert!(!settle_check(&mut state, &mut bytes, Some("1.3.0"), Some(("1.3.0", None))));
+        assert_eq!(state.phase, "available");
+        assert!(!settle_check(&mut state, &mut bytes, Some("1.3.0"), None));
+        assert_eq!(state.phase, "idle");
+        assert!(state.available_version.is_none());
+    }
+    #[test]
+    fn automatic_checks_run_while_an_update_is_only_available() {
+        // A newer release can supersede one that was found but not downloaded.
+        assert!(!blocks_automatic_check("available", None, true, false));
+        assert!(!blocks_automatic_check("idle", None, false, false));
+        // A failed check keeps retrying on its backoff.
+        assert!(!blocks_automatic_check("error", Some("check"), false, false));
+        // Verified bytes and download or install retries are never replaced in the background.
+        assert!(blocks_automatic_check("ready", None, true, true));
+        assert!(blocks_automatic_check("error", Some("download"), true, false));
+        assert!(blocks_automatic_check("error", Some("install"), true, true));
+        // An installed update waiting for a relaunch must not be offered again.
+        assert!(blocks_automatic_check("error", Some("relaunch"), false, false));
+    }
+    #[test]
+    fn restart_closes_tunnels_first_and_a_failed_exec_resumes_sandboxes_and_asks_to_relaunch() {
+        let events = std::cell::RefCell::new(vec![]);
+        let outcome = restart_after_install(
+            || events.borrow_mut().push("close tunnels and listeners"),
+            || {
+                events.borrow_mut().push("exec");
+                "exec failed".into()
+            },
+            || {
+                events.borrow_mut().push("resume sandboxes");
+                Ok(())
+            },
+        );
+        assert_eq!(
+            events.into_inner(),
+            ["close tunnels and listeners", "exec", "resume sandboxes"]
+        );
+        let InstallError::NotRestarted(details) = outcome else {
+            panic!("an installed package must not be offered for reinstallation");
+        };
+        assert_eq!(details, "exec failed");
+        let InstallError::NotRestarted(details) =
+            restart_after_install(|| {}, || "exec failed".into(), || Err("dev: start failed".into()))
+        else {
+            panic!("an installed package must not be offered for reinstallation");
+        };
+        assert!(details.contains("exec failed") && details.contains("dev: start failed"));
+        let mut state = snapshot("installing");
+        state.install_status = Some("Installing Silo…".into());
+        state.can_install = true;
+        relaunch_required(&mut state, details);
+        assert_eq!(state.phase, "error");
+        assert_eq!(state.retry_action.as_deref(), Some("relaunch"));
+        assert!(state.error.as_deref().unwrap().contains("Quit and reopen Silo"));
+        assert!(state.error_details.as_deref().unwrap().contains("dev: start failed"));
+        assert!(!state.can_install && state.install_status.is_none());
+    }
+    #[test]
+    fn readiness_probe_never_rejects_concurrent_operations() {
+        // The settings card polls readiness every few seconds while an update is ready.
+        // Operations admitted during a probe must not fail as if an update were installing.
+        readiness(|| {
+            let _admitted = operation_guard().expect("a readiness probe must not block admission");
+            Ok(())
+        })
+        .unwrap();
+        let active = operation_guard().unwrap();
+        assert!(readiness(|| Ok(()))
+            .unwrap_err()
+            .contains("active operations"));
+        drop(active);
+        readiness(|| Ok(())).unwrap();
     }
     #[test]
     fn missing_preferences_enable_checks_but_corrupt_preferences_do_not() {

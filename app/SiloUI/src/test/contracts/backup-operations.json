@@ -15,6 +15,7 @@
     "targetName": "restored",
     "kind": "running",
     "progress": 5,
+    "canCancel": false,
     "phases": [
       {
         "title": "Restore",

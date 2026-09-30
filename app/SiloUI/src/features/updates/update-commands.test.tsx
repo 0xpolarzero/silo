@@ -152,3 +152,10 @@ it("runs the Debian update action from the palette without opening GitHub", asyn
   expect(backend.download).not.toHaveBeenCalled()
   expect(backend.openRelease).not.toHaveBeenCalled()
 })
+
+it("offers no update commands while Silo must be relaunched to finish an installed update", () => {
+  const snapshot: UpdateSnapshot = { ...initial, packageKind: "debian", phase: "error", retryAction: "relaunch",
+    error: "Silo was updated but could not restart. Quit and reopen Silo to finish." }
+  const updates = { snapshot, connectionError: null, pending: false } as unknown as Updates
+  expect(updateCommands(updates, vi.fn())).toEqual([])
+})

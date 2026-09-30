@@ -660,7 +660,7 @@ pub async fn create_checkpoint(
         shutdown::ensure_accepting_operations()?;
         let _ = worker_app.emit("silo://application-state-changed", ());
         let result = capture_with(&ProcessRunner, &paths, &workspace_id, &name, "manual")
-            .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
+            .and_then(|_| application_state_response(&worker_app, &paths));
         let _ = worker_app.emit("silo://application-state-changed", ());
         result.map_err(|e| e.to_string())
     })
@@ -738,6 +738,7 @@ pub(super) fn pending_workspace(
         lifecycle_failure: None,
         attention: None,
         freshness: Freshness::Fresh,
+        settling: false,
         host: "127.0.0.1".into(),
         repositories: Vec::new(),
         files: Vec::new(),
@@ -1313,7 +1314,7 @@ pub async fn fork_checkpoint(
             checkpoint_id.as_deref(),
             &new_name,
         )
-        .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
+        .and_then(|_| application_state_response(&worker_app, &paths));
         let _ = worker_app.emit("silo://application-state-changed", ());
         result.map_err(|error| error.to_string())
     })
@@ -1707,7 +1708,7 @@ pub async fn restore_checkpoint(
         let _guard = guard;
         shutdown::ensure_accepting_operations()?;
         let result = restore_with(&ProcessRunner, &paths, &workspace_id, &checkpoint_id)
-            .and_then(|_| read_application_state_with(&ProcessRunner, &paths));
+            .and_then(|_| application_state_response(&worker_app, &paths));
         let _ = worker_app.emit("silo://application-state-changed", ());
         result.map_err(|error| error.to_string())
     })

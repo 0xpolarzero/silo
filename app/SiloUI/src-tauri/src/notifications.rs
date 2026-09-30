@@ -272,8 +272,7 @@ pub(crate) fn lifecycle_notice(
     }
 }
 
-/// Notice for an export (`backup`) or import (`restore`). `restart-required` means the
-/// transfer itself finished but a sandbox that was running did not restart.
+/// Notice for an export (`backup`) or import (`restore`).
 pub(crate) fn transfer_notice(
     operation: &str,
     label: &str,
@@ -294,11 +293,6 @@ pub(crate) fn transfer_notice(
         "failed" => (
             Category::Failures,
             format!("Couldn\u{2019}t {noun} {label}"),
-            bounded_body(message),
-        ),
-        "restart-required" => (
-            Category::Failures,
-            format!("{done} {label}, but it didn\u{2019}t restart"),
             bounded_body(message),
         ),
         "success" if elapsed >= LONG_OPERATION => (
@@ -426,15 +420,13 @@ mod tests {
         let failed = transfer_notice("backup", "dev", sandbox(), SHORT, "failed", "disk full").unwrap();
         assert_eq!((failed.category, failed.title.as_str(), failed.key.as_str()), (Category::Failures, "Couldn\u{2019}t export dev", "vm:1:transfer"));
         assert_eq!(failed.body, "disk full");
-        let restart = transfer_notice("backup", "dev", sandbox(), SHORT, "restart-required", "did not restart").unwrap();
-        assert_eq!(restart.category, Category::Failures);
-        assert!(restart.title.contains("didn\u{2019}t restart"));
         assert!(transfer_notice("restore", "dev", sandbox(), SHORT, "success", "").is_none());
         let long = transfer_notice("restore", "dev", sandbox(), LONG, "success", "").unwrap();
         assert_eq!((long.category, long.title.as_str()), (Category::Completions, "Imported dev"));
         assert_eq!(transfer_notice("backup", "3 sandboxes", None, LONG, "success", "").unwrap().key, "transfer");
         for operation in ["backup", "restore"] {
-            for outcome in ["cancelled", "running"] {
+            // Exports no longer stop sandboxes, so there is no restart outcome to report.
+            for outcome in ["cancelled", "running", "restart-required"] {
                 assert!(transfer_notice(operation, "dev", sandbox(), LONG, outcome, "x").is_none());
             }
         }

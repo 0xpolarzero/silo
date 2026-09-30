@@ -4,9 +4,17 @@ import { errorMessage, showActionFailure, showOperationFailure, showOperationPro
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import type { ApplicationActions, ApplicationWorkspace, NetworkPort, NetworkState } from "@/features/application/model/application-source"
 
-export function networkAddress(port: NetworkPort) {
+/** Where a forwarded port is reached on this computer. Websites use their sandbox's own
+ * `*.localhost` name when the backend supplies one, so browsers keep each sandbox's cookies
+ * apart from other local services; plain TCP ports and other browsers use 127.0.0.1. */
+export function networkAddress(port: NetworkPort, host?: string | null) {
   if (port.hostPort === null) return null
-  return `${port.scheme ? `${port.scheme}://` : ""}127.0.0.1:${port.hostPort}`
+  return port.scheme ? `${port.scheme}://${host ?? "127.0.0.1"}:${port.hostPort}` : `127.0.0.1:${port.hostPort}`
+}
+
+/** The same port at 127.0.0.1, for development servers that reject unfamiliar host names. */
+export function networkLoopbackAddress(port: NetworkPort) {
+  return networkAddress(port, null)
 }
 
 /** The human-readable state of a port, accounting for VM lifecycle and stale/failed discovery. */
@@ -75,7 +83,10 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   }
 
   const localWorkspaces = workspaces.filter(workspace => workspace.machine.kind === "vm")
-  const rows = workspaces.flatMap(workspace => (network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))?.ports ?? []).map(port => ({ workspace, port })))
+  const rows = workspaces.flatMap(workspace => {
+    const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))
+    return (item?.ports ?? []).map(port => ({ workspace, port, host: item?.host ?? null }))
+  })
     .sort((a, b) => a.workspace.machine.name.localeCompare(b.workspace.machine.name) || a.port.port - b.port.port)
   const errors = workspaces.flatMap(workspace => {
     const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))

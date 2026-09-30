@@ -61,10 +61,7 @@ struct Tunnels {
 static TUNNELS: OnceLock<Mutex<Tunnels>> = OnceLock::new();
 /// A short data lock: never held while ssh starts or a port is probed.
 fn tunnels() -> MutexGuard<'static, Tunnels> {
-    TUNNELS
-        .get_or_init(|| Mutex::new(Tunnels::default()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    crate::sync::lock_or_recover(TUNNELS.get_or_init(|| Mutex::new(Tunnels::default())), "remote tunnels")
 }
 const TUNNEL_LIMIT: usize = 128;
 /// How long a new tunnel may take to accept connections.
@@ -90,7 +87,7 @@ fn cached(
     max_age: Duration,
     compute: impl FnOnce() -> Result<Value, String>,
 ) -> Result<Value, String> {
-    let mut cache = cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut cache = crate::sync::lock_or_recover(cache, "remote network state");
     if let Some((at, value)) = cache.as_ref() {
         if at.elapsed() < max_age {
             return Ok(value.clone());
@@ -136,7 +133,8 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, String> {
             return Err(error);
         }
     };
-    let projection = project_ports(value, host, &mut tunnels())?;
+    let hosts = crate::network::uses_sandbox_hosts(app);
+    let projection = project_ports(value, host, &mut tunnels(), hosts)?;
     let Projection { value, closed, reconnect } = projection;
     drop(closed);
     for (key, intent, remote_port) in reconnect {
@@ -152,9 +150,11 @@ struct Projection {
     /// Intended tunnels to open again: key, intent, the owner's current endpoint.
     reconnect: Vec<(Key, Intent, u16)>,
 }
-/// Rewrites the owner's rows for this computer: ports show this computer's tunnel, never
-/// the owner's loopback endpoint. Dead or outdated tunnels with an intent are reopened.
-fn project_ports(mut value: Value, host: &str, tunnels: &mut Tunnels) -> Result<Projection, String> {
+/// Rewrites the owner's rows for this computer: rows become remote targets, ports show this
+/// computer's tunnel (never the owner's loopback endpoint), and with `hosts` each sandbox
+/// gets the host name its websites open at here (C-24; the owner's own host choice is
+/// ignored). Dead or outdated tunnels with an intent are reopened.
+fn project_ports(mut value: Value, host: &str, tunnels: &mut Tunnels, hosts: bool) -> Result<Projection, String> {
     let mut observed = HashSet::new();
     let mut closed = Vec::new();
     let mut reconnect = Vec::new();
@@ -166,6 +166,12 @@ fn project_ports(mut value: Value, host: &str, tunnels: &mut Tunnels) -> Result<
             .as_str()
             .ok_or("Missing remote VM identity.")?
             .to_owned();
+        let name = row["workspace"].as_str().unwrap_or("").to_owned();
+        row["host"] = if hosts {
+            json!(crate::network::sandbox_host(&name, &vm))
+        } else {
+            Value::Null
+        };
         row["workspace"] = json!(format!("silo-remote:{host}:{vm}"));
         for port in row["ports"]
             .as_array_mut()
@@ -445,11 +451,20 @@ pub async fn remote_open_network_port(
             .ok_or("This port is not a website.")?;
         let local = endpoint["hostPort"]
             .as_u64()
+            .and_then(|port| u16::try_from(port).ok())
             .ok_or("This service is not connected.")?;
-        crate::applications::open_browser(&app, &format!("{scheme}://127.0.0.1:{local}"))
+        let url = crate::network::website_url(scheme, row_host(&state, &target), local);
+        crate::applications::open_browser(&app, &url)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+fn row_host<'a>(state: &'a Value, target: &str) -> Option<&'a str> {
+    state["workspaces"]
+        .as_array()?
+        .iter()
+        .find(|row| row["workspace"] == target)?["host"]
+        .as_str()
 }
 /// Closes every tunnel (quit).
 pub(crate) fn close_all() {
@@ -507,16 +522,28 @@ mod tests {
     #[test]
     fn owner_loopback_is_not_a_controller_endpoint_until_a_tunnel_exists() {
         let mut tunnels = Tunnels::default();
-        let result = project_ports(observed(Some(32000)), "office", &mut tunnels).unwrap();
+        let result = project_ports(observed(Some(32000)), "office", &mut tunnels, false).unwrap();
         assert_eq!(result.value["workspaces"][0]["workspace"], "silo-remote:office:vm");
         assert!(port(&result)["hostPort"].is_null());
         assert_eq!(port(&result)["configured"], false);
         tunnels.live.insert(key("office"), tunnel(43000, 32000));
         tunnels.intents.insert(key("office"), intent(43000));
-        let result = project_ports(observed(Some(32000)), "office", &mut tunnels).unwrap();
+        let result = project_ports(observed(Some(32000)), "office", &mut tunnels, false).unwrap();
         assert_eq!(port(&result)["hostPort"], 43000);
         assert_eq!(port(&result)["configured"], true);
         assert!(result.reconnect.is_empty() && result.closed.is_empty());
+    }
+
+    #[test]
+    fn remote_sandboxes_open_at_their_own_host_on_this_computer() {
+        let mut tunnels = Tunnels::default();
+        let value = json!({"workspaces":[{"workspace":"dev","vmId":"1a2b3c4d-0000-4000-8000-000000000001","host":"owner-choice.localhost","ports":[]}]});
+        let result = project_ports(value.clone(), "office", &mut tunnels, true).unwrap();
+        assert_eq!(result.value["workspaces"][0]["host"], "dev-1a2b3c4d.localhost");
+        assert_eq!(row_host(&result.value, "silo-remote:office:1a2b3c4d-0000-4000-8000-000000000001"), Some("dev-1a2b3c4d.localhost"));
+        // This computer's browser decides, not the owner's.
+        let result = project_ports(value, "office", &mut tunnels, false).unwrap();
+        assert!(result.value["workspaces"][0]["host"].is_null());
     }
 
     #[test]
@@ -525,20 +552,20 @@ mod tests {
         tunnels.live.insert(key("office"), tunnel(43000, 32000));
         tunnels.intents.insert(key("office"), intent(43000));
         // The VM restarted and the owner published the port on a new endpoint.
-        let result = project_ports(observed(Some(32001)), "office", &mut tunnels).unwrap();
+        let result = project_ports(observed(Some(32001)), "office", &mut tunnels, false).unwrap();
         assert_eq!(result.closed.len(), 1);
         assert_eq!(result.reconnect, [(key("office"), intent(43000), 32001)]);
         assert_eq!(port(&result)["configuredHostPort"], 43000);
         assert_eq!(port(&result)["state"], "waiting");
         // A reconnect already under way is not started twice.
-        assert!(project_ports(observed(Some(32001)), "office", &mut tunnels).unwrap().reconnect.is_empty());
+        assert!(project_ports(observed(Some(32001)), "office", &mut tunnels, false).unwrap().reconnect.is_empty());
         tunnels.connecting.clear();
         // A tunnel that died (sleep) is reopened too.
         let mut dead = tunnel(43000, 32001);
         dead.child.kill().unwrap();
         dead.child.wait().unwrap();
         tunnels.live.insert(key("office"), dead);
-        let result = project_ports(observed(Some(32001)), "office", &mut tunnels).unwrap();
+        let result = project_ports(observed(Some(32001)), "office", &mut tunnels, false).unwrap();
         assert_eq!(result.reconnect, [(key("office"), intent(43000), 32001)]);
     }
 
@@ -547,12 +574,12 @@ mod tests {
         let mut tunnels = Tunnels::default();
         tunnels.live.insert(key("office"), tunnel(43000, 32000));
         tunnels.intents.insert(key("office"), intent(43000));
-        let result = project_ports(observed(None), "office", &mut tunnels).unwrap();
+        let result = project_ports(observed(None), "office", &mut tunnels, false).unwrap();
         assert!(result.closed.is_empty() && result.reconnect.is_empty());
         assert!(port(&result)["hostPort"].is_null());
         assert_eq!(port(&result)["configuredHostPort"], 43000);
         // Back on the same endpoint: usable again without reconnecting.
-        let result = project_ports(observed(Some(32000)), "office", &mut tunnels).unwrap();
+        let result = project_ports(observed(Some(32000)), "office", &mut tunnels, false).unwrap();
         assert_eq!(port(&result)["hostPort"], 43000);
         assert!(result.reconnect.is_empty());
     }
@@ -564,7 +591,7 @@ mod tests {
             tunnels.live.insert(key(host), tunnel(43000, 32000));
             tunnels.intents.insert(key(host), intent(43000));
         }
-        let result = project_ports(json!({"workspaces":[]}), "office", &mut tunnels).unwrap();
+        let result = project_ports(json!({"workspaces":[]}), "office", &mut tunnels, false).unwrap();
         assert_eq!(result.closed.len(), 1);
         assert!(!tunnels.live.contains_key(&key("office")) && !tunnels.intents.contains_key(&key("office")));
         assert!(tunnels.live.contains_key(&key("other")) && tunnels.intents.contains_key(&key("other")));

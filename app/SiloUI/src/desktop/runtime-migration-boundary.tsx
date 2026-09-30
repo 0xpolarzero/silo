@@ -33,6 +33,10 @@ const nativeBackend: RuntimeMigrationBackend = {
   subscribe: async (refresh) => listen("silo://application-state-changed", refresh),
 }
 
+function message(cause: unknown) {
+  return cause instanceof Error ? cause.message : String(cause)
+}
+
 function issueUrl(state: RuntimeMigrationState) {
   const title = "Silo VM migration failed"
   const body = [
@@ -50,6 +54,8 @@ export function RuntimeMigrationBoundary({ children, backend = nativeBackend }: 
   const [busy, setBusy] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [acknowledged, setAcknowledged] = useState(false)
+  // Each attempt subscribes and reads again, so Retry recovers from either failing.
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -57,23 +63,28 @@ export function RuntimeMigrationBoundary({ children, backend = nativeBackend }: 
     let eventSeen = false
     void backend.subscribe(() => {
       eventSeen = true
-      void backend.read().then(next => { if (active) { setState(next); setError(null) } }).catch(cause => { if (active) setError(String(cause)) })
+      void backend.read().then(next => { if (active) { setState(next); setError(null) } }).catch(cause => { if (active) setError(message(cause)) })
     }).then(stop => {
       if (!active) { stop(); return }
       unsubscribe = stop
-      return backend.read().then(next => { if (active && !eventSeen) setState(next) })
-    }).catch(cause => { if (active) setError(String(cause)) })
+      return backend.read().then(next => { if (active && !eventSeen) { setState(next); setError(null) } })
+    }).catch(cause => { if (active) setError(message(cause)) })
     return () => { active = false; unsubscribe?.() }
-  }, [backend])
+  }, [backend, attempt])
 
   async function run(operation: () => Promise<RuntimeMigrationState>) {
     setBusy(true)
     setError(null)
-    try { setState(await operation()) } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
+    try { setState(await operation()) } catch (cause) { setError(message(cause)) }
     finally { setBusy(false) }
   }
 
   if (state?.status === "not-required" || state?.status === "complete") return children
+  // Most launches need no migration: stay neutral until the first status arrives
+  // instead of briefly announcing an update that is not happening.
+  if (!state && !error) return <SiloWindow title="Silo" label="Silo">
+    <span role="status" className="sr-only">Opening Silo…</span>
+  </SiloWindow>
   const failed = state?.status === "failed"
   const issue = state ? issueUrl(state) : null
   return <SiloWindow title="Silo" label="Silo migration">
@@ -87,6 +98,7 @@ export function RuntimeMigrationBoundary({ children, backend = nativeBackend }: 
       </div>
       {state && <p role="status" className="text-xs text-muted-foreground">{state.migratedCount} of {state.totalCount} migrated{state.failedCount ? ` · ${state.failedCount} failed` : ""}</p>}
       {(state?.error || error) && <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/[.06] p-3 text-sm text-destructive">{error ?? state?.error}</p>}
+      {error && !failed && <div><Button size="sm" disabled={busy} onClick={() => { setError(null); setAttempt(value => value + 1) }}>Retry</Button></div>}
       {state && <section aria-label="Migration log" className="min-h-0 rounded-md border bg-muted/30">
         <div className="flex items-center justify-between border-b px-3 py-2"><h2 className="text-xs font-medium">Live migration log</h2><Button size="xs" variant="ghost" onClick={() => setShowLogs(value => !value)}>{showLogs ? "Hide logs" : "Show logs"}</Button></div>
         {showLogs && <div className="p-3"><pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px]" aria-live="polite">{state.logs.length ? state.logs.join("\n") : "Waiting for migration output…"}</pre>{state.logPath && <p className="mt-2 break-all text-[11px] text-muted-foreground">Full log: {state.logPath}</p>}</div>}

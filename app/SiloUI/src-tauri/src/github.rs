@@ -10,20 +10,47 @@ use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Write},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Condvar, Mutex, OnceLock,
+        Condvar, Mutex, MutexGuard, OnceLock, PoisonError,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{Emitter, Manager};
 
 static OPERATION: Mutex<()> = Mutex::new(());
+// Serializes whole OAuth connection flows, including their waits for the browser.
+static CONNECTION_FLOW: Mutex<()> = Mutex::new(());
 // Never hold this lock during a GitHub request. It orders desired saves
 // and local profile attachment so an older network result cannot restore access.
 static STATE: Mutex<()> = Mutex::new(());
+// Mutex poison policy (K-24): these serialization locks guard no data, and GitHub
+// state is re-read from disk after taking them, so one panic must not disable GitHub,
+// or block app updates through `update_guard`, until restart.
+fn serialize(lock: &'static Mutex<()>) -> MutexGuard<'static, ()> {
+    crate::sync::lock_or_recover(lock, "GitHub")
+}
+fn try_serialize(lock: &'static Mutex<()>) -> Option<MutexGuard<'static, ()>> {
+    crate::sync::try_lock_or_recover(lock, "GitHub")
+}
+/// Runtime work that can take minutes (a guest command that may boot the VM, or
+/// `msb modify`) never holds STATE, so saves, Disable access, disconnect, cancel and
+/// forks are not held behind it. `check` runs under STATE and returns `None` when the
+/// work is no longer current; the caller re-takes STATE and re-checks before recording
+/// the result. The runtime's per-VM revision lock rejects an older attach that arrives
+/// after a newer one.
+fn outside_state<P, W>(
+    check: impl FnOnce() -> Result<Option<P>, String>,
+    work: impl FnOnce(P) -> W,
+) -> Result<Option<W>, String> {
+    let prepared = {
+        let _state = serialize(&STATE);
+        check()?
+    };
+    Ok(prepared.map(work))
+}
 static ACTIVE: OnceLock<Mutex<std::collections::HashMap<String, Vec<RuntimeGrant>>>> =
     OnceLock::new();
 #[derive(Clone)]
@@ -58,6 +85,25 @@ fn schedule(delay: Duration) {
     if let Ok(mut pending) = PENDING.get_or_init(|| Mutex::new(None)).lock() {
         *pending = Some(Instant::now() + delay);
     }
+    wake_worker();
+}
+// The worker sleeps until its next deadline instead of polling; `schedule` wakes it.
+static WORKER_WOKEN: Mutex<bool> = Mutex::new(false);
+static WORKER_WAKE: Condvar = Condvar::new();
+/// Longest worker sleep: bounds deadlines measured on the wall clock (which can jump,
+/// for example after the computer sleeps) and ones not announced by `schedule`.
+const WORKER_MAX_SLEEP: Duration = Duration::from_secs(60);
+const WORKER_MIN_SLEEP: Duration = Duration::from_millis(100);
+fn wake_worker() {
+    *WORKER_WOKEN.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    WORKER_WAKE.notify_all();
+}
+fn worker_sleep(timeout: Duration) {
+    let woken = WORKER_WOKEN.lock().unwrap_or_else(PoisonError::into_inner);
+    let (mut woken, _) = WORKER_WAKE
+        .wait_timeout_while(woken, timeout, |woken| !*woken)
+        .unwrap_or_else(PoisonError::into_inner);
+    *woken = false;
 }
 static RESTORED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// A sandbox just started from a checkpoint; its GitHub settings must be applied once.
@@ -106,41 +152,67 @@ static AUTHORIZATION: Mutex<PendingAuthorization> = Mutex::new(PendingAuthorizat
 // jobs out of order. This queue contains local updates only, never HTTP calls.
 struct IntentQueue {
     issued: AtomicU64,
-    turn: Mutex<u64>,
+    turn: Mutex<Turn>,
     ready: Condvar,
+}
+/// The ticket whose turn it is, and tickets given up before their turn came.
+struct Turn {
+    next: u64,
+    abandoned: std::collections::BTreeSet<u64>,
 }
 impl IntentQueue {
     const fn new() -> Self {
         Self {
             issued: AtomicU64::new(0),
-            turn: Mutex::new(1),
+            turn: Mutex::new(Turn { next: 1, abandoned: std::collections::BTreeSet::new() }),
             ready: Condvar::new(),
         }
     }
-    fn ticket(&self) -> u64 {
-        self.issued.fetch_add(1, Ordering::SeqCst) + 1
+    fn ticket(&self) -> IntentTicket<'_> {
+        IntentTicket { queue: self, number: Some(self.issued.fetch_add(1, Ordering::SeqCst) + 1) }
     }
-    fn wait(&self, ticket: u64) -> Result<IntentTurn<'_>, String> {
-        let mut turn = self
-            .turn
-            .lock()
-            .map_err(|_| "GitHub settings queue is unavailable.")?;
-        while *turn != ticket {
-            turn = self
-                .ready
-                .wait(turn)
-                .map_err(|_| "GitHub settings queue is unavailable.")?;
+    fn advance(&self, turn: &mut Turn) {
+        turn.next += 1;
+        while turn.abandoned.remove(&turn.next) {
+            turn.next += 1;
         }
-        Ok(IntentTurn(self))
+        self.ready.notify_all();
+    }
+}
+/// A place in the queue. Dropping it without waiting (an early return or a panic
+/// before its turn) gives the place up instead of blocking every later intent.
+struct IntentTicket<'a> {
+    queue: &'a IntentQueue,
+    number: Option<u64>,
+}
+impl<'a> IntentTicket<'a> {
+    // The queue position is plain data that stays valid after a panic elsewhere (K-24).
+    fn wait(mut self) -> Result<IntentTurn<'a>, String> {
+        let queue = self.queue;
+        let ticket = self.number.take().ok_or("GitHub settings queue is unavailable.")?;
+        let mut turn = queue.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        while turn.next != ticket {
+            turn = queue.ready.wait(turn).unwrap_or_else(PoisonError::into_inner);
+        }
+        Ok(IntentTurn(queue))
+    }
+}
+impl Drop for IntentTicket<'_> {
+    fn drop(&mut self) {
+        let Some(ticket) = self.number else { return };
+        let mut turn = self.queue.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        if turn.next == ticket {
+            self.queue.advance(&mut turn);
+        } else if turn.next < ticket {
+            turn.abandoned.insert(ticket);
+        }
     }
 }
 struct IntentTurn<'a>(&'a IntentQueue);
 impl Drop for IntentTurn<'_> {
     fn drop(&mut self) {
-        if let Ok(mut turn) = self.0.turn.lock() {
-            *turn += 1;
-            self.0.ready.notify_all();
-        }
+        let mut turn = self.0.turn.lock().unwrap_or_else(PoisonError::into_inner);
+        self.0.advance(&mut turn);
     }
 }
 static INTENTS: IntentQueue = IntentQueue::new();
@@ -171,17 +243,28 @@ struct Credential {
 // background reconciliation must never reopen a dismissed permission dialog.
 // A failed write keeps the new value in memory (a rotated credential must stay
 // usable) and marks it unsaved; the store is retried by `flush`, never by `write`.
-struct SessionSecret<T>(Mutex<SecretSlot<T>>);
+struct SessionSecret<T>(Mutex<SecretSlot<T>>, Mutex<Option<Result<T, String>>>);
 struct SecretSlot<T> {
     value: Option<Result<T, String>>,
     unsaved: Option<String>,
     blocked: bool,
 }
 impl<T: Clone + PartialEq> SessionSecret<T> {
-    const fn new() -> Self { Self(Mutex::new(SecretSlot { value: None, unsaved: None, blocked: false })) }
+    const fn new() -> Self { Self(Mutex::new(SecretSlot { value: None, unsaved: None, blocked: false }), Mutex::new(None)) }
+    /// Mirror the cached value for `peek`; the mirror is never held across the store.
+    fn publish(&self, value: &Option<Result<T, String>>) {
+        *self.1.lock().unwrap_or_else(PoisonError::into_inner) = value.clone();
+    }
+    /// The value already known this session, without opening the credential store or
+    /// waiting for a read or permission prompt in progress. `None` means not read yet.
+    fn peek(&self) -> Option<Result<T, String>> {
+        self.1.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
     fn read(&self, read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
         let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
-        state.value.get_or_insert_with(read).clone()
+        let value = state.value.get_or_insert_with(read).clone();
+        self.publish(&state.value);
+        value
     }
     fn write(&self, value: T, write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
         let mut state = self.0.lock().map_err(|_| "Credential state is unavailable.")?;
@@ -190,12 +273,14 @@ impl<T: Clone + PartialEq> SessionSecret<T> {
             if let Some(error) = state.unsaved.clone() {
                 // Keep the newest value usable in memory; `flush` stores it later.
                 state.value = Some(Ok(value));
+                self.publish(&state.value);
                 return Err(error);
             }
         }
         if state.unsaved.is_none() && matches!(state.value.as_ref(), Some(Ok(current)) if current == &value) { return Ok(()); }
         let result = write();
         state.value = Some(Ok(value));
+        self.publish(&state.value);
         state.unsaved = result.clone().err();
         state.blocked = state.unsaved.is_some();
         result
@@ -214,6 +299,7 @@ impl<T: Clone + PartialEq> SessionSecret<T> {
         if let Ok(mut state) = self.0.lock() {
             if matches!(state.value.as_ref(), Some(Err(_))) { state.value = None; }
             state.blocked = false;
+            self.publish(&state.value);
         }
     }
 }
@@ -301,14 +387,55 @@ struct Document {
     access_errors: std::collections::HashMap<String, String>,
     #[serde(default)]
     disconnect_pending: bool,
+    /// Server-imposed waiting deadlines per GitHub rate class, kept across relaunch.
     #[serde(default)]
-    rate_retry_at: u64,
+    rate_retry: std::collections::BTreeMap<String, u64>,
+    /// Per sandbox name: which revision last changed its saved choices, and from which
+    /// view. Kept after a policy is removed so a stale save cannot bring it back.
+    #[serde(default)]
+    policy_stamps: std::collections::BTreeMap<String, PolicyStamp>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PolicyStamp {
+    revision: u64,
+    /// The `policyRevision` the writer's view was based on; `None` for changes Silo made
+    /// itself (a fork copying an assignment, a sandbox deletion).
+    #[serde(default)]
+    base: Option<u64>,
+}
+/// Record that `workspace`'s choices changed in the document's current revision.
+fn stamp(d: &mut Document, workspace: &str, base: Option<u64>) {
+    d.policy_stamps.insert(workspace.into(), PolicyStamp { revision: d.revision, base });
+    // Bound stamps of removed sandboxes; the oldest are the least likely to be raced.
+    while d.policy_stamps.len() > 256 {
+        let oldest = d
+            .policy_stamps
+            .iter()
+            .filter(|(name, _)| !d.workspaces.iter().any(|w| w["workspace"].as_str() == Some(name.as_str())))
+            .min_by_key(|(_, stamp)| stamp.revision)
+            .map(|(name, _)| name.clone());
+        match oldest {
+            Some(name) => d.policy_stamps.remove(&name),
+            None => break,
+        };
+    }
+}
+/// Whether a save based on `base` would overwrite choices it never saw: a change Silo
+/// made after that view (a fork's copied assignment, a deletion), or a save from a newer
+/// view. Saves from the same or an older view (such as rapid edits sent before the page
+/// saw the previous result) are the user's own ordered intent and apply in order.
+fn stale_save(d: &Document, workspace: &str, base: Option<u64>) -> bool {
+    let Some(base) = base else { return false };
+    d.policy_stamps.get(workspace).is_some_and(|stamp| {
+        stamp.revision > base && stamp.base.is_none_or(|writer| writer > base)
+    })
 }
 
 /// Copy the source's current GitHub assignment for a stopped checkpoint fork.
 /// The child obtains its own runtime identity and resolves credentials at Start.
 pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str) -> Result<(), String> {
-    let _state = STATE.try_lock().map_err(|_| "GitHub settings are busy. Retry the fork.".to_string())?;
+    let _state = serialize(&STATE);
     let mut document = load(app)?;
     if let Some(mut assignment) = document.workspaces.iter()
         .find(|value| value["workspace"].as_str() == Some(source)).cloned() {
@@ -316,6 +443,7 @@ pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str
         document.workspaces.retain(|value| value["workspace"].as_str() != Some(target));
         document.workspaces.push(assignment);
         document.revision = document.revision.saturating_add(1);
+        stamp(&mut document, target, None);
         if !document.access_pending.iter().any(|name| name == target) {
             document.access_pending.push(target.into());
         }
@@ -328,14 +456,58 @@ pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str
 }
 
 pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Result<(), String> {
-    let _state = STATE.try_lock().map_err(|_| "GitHub settings are busy.".to_string())?;
+    let _state = serialize(&STATE);
     let mut document = load(app)?;
-    document.workspaces.retain(|value| value["workspace"].as_str() != Some(target));
-    document.access_pending.retain(|name| name != target);
-    document.identity_pending.retain(|name| name != target);
-    document.operations.retain(|value| value["workspace"].as_str() != Some(target));
+    forget_workspace(&mut document, target);
     document.revision = document.revision.saturating_add(1);
+    stamp(&mut document, target, None);
     save(app, &document)
+}
+
+/// Remove every saved choice and pending result for a sandbox. Returns whether any existed.
+fn forget_workspace(d: &mut Document, workspace: &str) -> bool {
+    let named = |value: &Value| value["workspace"].as_str() == Some(workspace);
+    let existed = d.workspaces.iter().any(named)
+        || d.operations.iter().any(named)
+        || d.access_pending.iter().chain(&d.identity_pending).any(|name| name == workspace)
+        || d.access_errors.contains_key(workspace)
+        || d.identity_errors.contains_key(workspace);
+    d.workspaces.retain(|value| !named(value));
+    d.operations.retain(|value| !named(value));
+    d.access_pending.retain(|name| name != workspace);
+    d.identity_pending.retain(|name| name != workspace);
+    d.access_errors.remove(workspace);
+    d.identity_errors.remove(workspace);
+    existed
+}
+
+/// A sandbox was deleted. GitHub choices are keyed by sandbox name, so a new sandbox
+/// reusing the name must not inherit its repository or write access: remove its policy
+/// and pending work, drop its cached attachments, and let the worker revoke the tokens
+/// issued to it (they stay in the retirement ledger until GitHub confirms).
+pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
+    let Some(document) = document_path() else {
+        return Ok(());
+    };
+    {
+        let _state = serialize(&STATE);
+        let mut d = load_at(&document)?;
+        if forget_workspace(&mut d, workspace) {
+            d.revision = d.revision.saturating_add(1);
+            stamp(&mut d, workspace, None);
+            save_at(&document, &d)?;
+        }
+    }
+    let key = format!("{}:{workspace}", document.display());
+    active().lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+    issued().lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+    personal_token::forget(&key);
+    RESTORED.lock().unwrap_or_else(PoisonError::into_inner).retain(|name| name != workspace);
+    if let Some(app) = OBSERVATION_APP.get() {
+        let _ = app.emit("silo://application-state-changed", ());
+    }
+    schedule(Duration::ZERO);
+    Ok(())
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -418,8 +590,29 @@ fn path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|_| "Cannot locate application data.")?
         .join("github.json"))
 }
+#[cfg(test)]
+thread_local! {
+    static TEST_DOCUMENT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+/// Tests on this thread use `path` as the GitHub document for app-less entry points.
+#[cfg(test)]
+pub(crate) fn use_test_document(path: Option<PathBuf>) {
+    TEST_DOCUMENT.with(|test| *test.borrow_mut() = path);
+}
+/// The GitHub document for entry points without an app handle (the runtime's delete path).
+/// `None` before `install`, when there is no GitHub state to change.
+fn document_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_DOCUMENT.with(|test| test.borrow().clone()) {
+        return Some(path);
+    }
+    OBSERVATION_APP.get().and_then(|app| path(app).ok())
+}
 fn load(app: &tauri::AppHandle) -> Result<Document, String> {
-    match fs::read(path(app)?) {
+    load_at(&path(app)?)
+}
+fn load_at(path: &std::path::Path) -> Result<Document, String> {
+    match fs::read(path) {
         Ok(b) if b.len() <= 16 * 1024 * 1024 => {
             serde_json::from_slice(&b).map_err(|_| "GitHub configuration is invalid.".into())
         }
@@ -429,10 +622,19 @@ fn load(app: &tauri::AppHandle) -> Result<Document, String> {
     }
 }
 fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
+    save_at(&path(app)?, d)?;
+    let _ = app.emit("silo://application-state-changed", ());
+    Ok(())
+}
+fn save_at(p: &std::path::Path, d: &Document) -> Result<(), String> {
     let mut saved = d.clone();
-    saved.rate_retry_at = saved.rate_retry_at.max(crate::github_http::retry_floor());
+    for (class, until) in crate::github_http::retry_floors() {
+        let floor = saved.rate_retry.entry(class).or_default();
+        *floor = (*floor).max(until);
+    }
+    let at = now();
+    saved.rate_retry.retain(|_, until| *until > at);
     let d = &saved;
-    let p = path(app)?;
     let parent = p.parent().ok_or("Missing configuration directory.")?;
     fs::create_dir_all(parent).map_err(|_| "Cannot create configuration directory.")?;
     let mut f = tempfile::NamedTempFile::new_in(parent)
@@ -442,12 +644,11 @@ fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
     f.as_file()
         .sync_all()
         .map_err(|_| "Cannot sync GitHub configuration.")?;
-    f.persist(&p)
+    f.persist(p)
         .map_err(|_| "Cannot save GitHub configuration.")?;
     fs::File::open(parent)
         .and_then(|f| f.sync_all())
         .map_err(|_| "Cannot sync GitHub configuration directory.".to_string())?;
-    let _ = app.emit("silo://application-state-changed", ());
     Ok(())
 }
 fn token_configuration() -> Result<Configuration, String> {
@@ -500,6 +701,103 @@ fn revocation_credential() -> Result<Option<Credential>, String> {
             .filter(|p| p.previous_access == current.access_token)
             .map_or(current, |p| p.renewed.clone())
     }))
+}
+
+/// Whether two GitHub logins name the same account. One account has one authorization
+/// (grant) for the App, shared by every credential issued to it.
+fn same_account(previous: Option<&str>, login: &str) -> bool {
+    previous.is_some_and(|previous| previous.eq_ignore_ascii_case(login))
+}
+/// Revoking a whole authorization also revokes the stored credential of the same
+/// account, so a credential that shares it is revoked alone.
+fn discard_operation(shares_grant: bool) -> Operation {
+    if shares_grant {
+        Operation::RevokeToken
+    } else {
+        Operation::RevokeAuthorization
+    }
+}
+fn discard_credential(c: &Credential, shares_grant: bool) {
+    let _ = token_operation(discard_operation(shares_grant), json!({"accessToken":c.access_token}));
+}
+/// A credential from a completed code exchange that Silo has not kept. Dropping it (any
+/// failure or cancellation after the exchange) revokes it, so a new authorization is
+/// never left live without Silo knowing it.
+struct Unstored {
+    credential: Option<Credential>,
+    /// Whether the stored credential may belong to the same account (and grant).
+    shares_grant: bool,
+    revoke: fn(&Credential, bool),
+}
+impl Unstored {
+    fn new(credential: Credential, shares_grant: bool) -> Self {
+        Self { credential: Some(credential), shares_grant, revoke: discard_credential }
+    }
+    fn kept(&mut self) {
+        self.credential = None;
+    }
+}
+impl Drop for Unstored {
+    fn drop(&mut self) {
+        if let Some(credential) = self.credential.take() {
+            (self.revoke)(&credential, self.shares_grant);
+        }
+    }
+}
+/// An access token that can still act for `c`'s authorization: the current one, or a
+/// renewed one when it expired (GitHub answers 404 for an expired token, which revocation
+/// would take for success). `None` when nothing can act for it any more: no refresh token,
+/// or GitHub rejected the renewal because the authorization is already gone.
+fn live_access_token(
+    c: &Credential,
+    at: u64,
+    renew: impl FnOnce(&str) -> Result<Credential, String>,
+) -> Result<Option<String>, String> {
+    if c.expires_at > at + 120 {
+        return Ok(Some(c.access_token.clone()));
+    }
+    let Some(refresh) = c.refresh_token.as_deref() else {
+        return Ok(None);
+    };
+    match renew(refresh) {
+        Ok(renewed) => Ok(Some(renewed.access_token)),
+        Err(error) if crate::github_http::authorization_rejected(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+/// The token that revokes the account's authorization on Disconnect. An expired token is
+/// renewed first through `active` (which stores the renewal, so a failed revocation can be
+/// retried with it): GitHub answers 404 for an expired token, which revocation would take
+/// for success while the authorization and its refresh token stay live.
+fn disconnect_token(
+    current: Option<Credential>,
+    at: u64,
+    active: impl FnOnce() -> Result<Credential, String>,
+) -> Result<Option<String>, String> {
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    live_access_token(&current, at, |_| active())
+}
+/// Revoke the credential a reconnect replaced (best effort). The same account's new
+/// credential shares its authorization, so only the old token is revoked then; another
+/// account's authorization is revoked entirely, renewing an expired token first.
+fn revoke_replaced(old: &Credential, same_account: bool) {
+    let _ = if same_account {
+        if old.expires_at <= now() {
+            return;
+        }
+        token_operation(Operation::RevokeToken, json!({"accessToken":old.access_token})).map(|_| ())
+    } else {
+        live_access_token(old, now(), |refresh| {
+            from_response(token_operation(Operation::Refresh, json!({"refreshToken":refresh}))?)
+        })
+        .and_then(|token| {
+            token.map_or(Ok(()), |token| {
+                token_operation(Operation::RevokeAuthorization, json!({"accessToken":token})).map(|_| ())
+            })
+        })
+    };
 }
 
 fn active_credential() -> Result<Credential, String> {
@@ -612,12 +910,17 @@ fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
     Err("GitHub installation catalog exceeds the supported size.".into())
 }
 
+/// The host Git identity without waiting for Git: snapshots are taken on every state
+/// refresh and sometimes under GitHub locks, so they never spawn Git themselves.
+fn host_identity() -> Option<crate::host_identity::HostIdentity> {
+    crate::host_identity::cached(|| {
+        if let Some(app) = OBSERVATION_APP.get() {
+            let _ = app.emit("silo://application-state-changed", ());
+        }
+    })
+}
 pub fn snapshot(app: &tauri::AppHandle) -> Result<Value, String> {
-    let mut value = observed_snapshot(
-        load(app)?,
-        observed_credential(),
-        crate::host_identity::read(),
-    );
+    let mut value = observed_snapshot(load(app)?, observed_credential(), host_identity());
     // Saved choices for a sandbox that has no runtime yet are not a failure; they apply
     // once it starts.
     if let Some(operations) = value["workspaceOperations"].as_array_mut() {
@@ -695,7 +998,7 @@ fn remember_token(app: &tauri::AppHandle, workspace: &str, token: &str) -> Resul
         tokens.push(token.into());
     }
     LEDGER_SECRET.write(ledger.clone(), || save_ledger(&entry, &ledger))?;
-    let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+    let _state = serialize(&STATE);
     let mut document = load(app)?;
     document.grants_issued = true;
     save(app, &document)
@@ -794,6 +1097,27 @@ fn access_update_due(d: &Document, name: &str, at: u64, restored: bool, previous
     let verified = d.operations.iter().any(|op| op["workspace"].as_str() == Some(name) && op["status"] == "succeeded");
     !verified || previous.iter().any(|g| g.expires_at.saturating_sub(120) <= at)
 }
+/// Whether `identity` is still the saved Git identity for this sandbox.
+fn identity_is_current(d: &Document, name: &str, identity: &Value) -> bool {
+    d.workspaces
+        .iter()
+        .any(|w| w["workspace"].as_str() == Some(name) && w["identity"] == *identity)
+}
+/// How long the worker can sleep before `worker_due` can next become true for `d`.
+fn worker_wait(d: &Document, pending: Option<Instant>, at: u64, instant: Instant) -> Duration {
+    let wait = match pending {
+        Some(deadline) => deadline.saturating_duration_since(instant),
+        None if d.session != session() => Duration::ZERO,
+        None => {
+            let mut next = d.refresh_at;
+            if d.access_enabled && d.account.is_some() && !d.disconnect_pending {
+                next = next.min(d.catalog_refresh_at);
+            }
+            Duration::from_secs(next.saturating_sub(at))
+        }
+    };
+    wait.clamp(WORKER_MIN_SLEEP, WORKER_MAX_SLEEP)
+}
 fn worker_due(d: &Document, pending: Option<Instant>, at: u64, instant: Instant) -> bool {
     match pending {
         Some(deadline) => instant >= deadline,
@@ -810,11 +1134,11 @@ fn apply(
     apply_identity: bool,
 ) -> Result<(), String> {
     let d = {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         load(app)?
     };
     let narrowing_error = {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         if load(app)?.revision != d.revision { schedule(Duration::ZERO); return Ok(()); }
         narrow_each(app, &d)
     };
@@ -831,7 +1155,7 @@ fn apply(
         // A sandbox pending checkpoint restore has no runtime yet. Its saved choices stay
         // pending and apply when it starts (`workspace_restored`); this is not a failure.
         if is_pending_restore(app, name) {
-            let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+            let _state = serialize(&STATE);
             let mut current = load(app)?;
             if current.revision == d.revision && current.operations.iter().any(|op| op["workspace"].as_str() == Some(name)) {
                 current.operations.retain(|op| op["workspace"].as_str() != Some(name));
@@ -842,23 +1166,33 @@ fn apply(
         // Identity changes are independent of token issuance, including offline edits.
         let identity_requested = apply_identity || d.identity_pending.iter().any(|n| n == name);
         if identity_requested {
-            let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
-            if load(app)?.revision != d.revision {
+            let identity = &w["identity"];
+            let Some(result) = outside_state(
+                || Ok((load(app)?.revision == d.revision).then_some(())),
+                |()| crate::runtime::apply_github_identity(app, name, identity),
+            )?
+            else {
                 schedule(Duration::from_millis(500));
                 return Ok(());
-            }
-            let result = crate::runtime::apply_github_identity(app, name, &w["identity"]);
+            };
+            let _state = serialize(&STATE);
             let mut current = load(app)?;
-            current.identity_pending.retain(|n| n != name);
-            match result {
-                Ok(()) => {
-                    current.identity_errors.remove(name);
+            // Record only the identity that is still requested; a newer edit made during
+            // the guest command stays pending and is applied next.
+            if identity_is_current(&current, name, identity) {
+                current.identity_pending.retain(|n| n != name);
+                match result {
+                    Ok(()) => {
+                        current.identity_errors.remove(name);
+                    }
+                    Err(error) => {
+                        current.identity_errors.insert(name.into(), error);
+                    }
                 }
-                Err(error) => {
-                    current.identity_errors.insert(name.into(), error);
-                }
+                save(app, &current)?;
+            } else {
+                schedule(Duration::from_millis(500));
             }
-            save(app, &current)?;
         }
         let key = active_key(app, name)?;
         let previous = active()
@@ -877,22 +1211,30 @@ fn apply(
             let result = if let Some(error) = narrowing_error.for_workspace(name) { Err(error.clone()) } else if personal_token::selected(w) {
                 personal_token::apply(app, name, d.revision)
             } else { runtime_grants_for(app, &d, w, &previous).and_then(|grants| {
-                let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
-                if load(app)?.revision != d.revision {
-                    return Err("GitHub access changed. Applying your latest choices.".into());
-                }
-                if let Some(expiry) = grants.iter().map(|g| g.expires_at).min() {
-                    refresh_at = refresh_at.min(expiry.saturating_sub(120));
-                }
-                // Comparing credentials too avoids reconnecting unchanged sessions.
-                if grants != previous || d.session != session() || !crate::runtime::github_policy_is_cached(app, name, &profile(&grants))? {
-                    crate::runtime::apply_github_policy(app, name, d.revision, &profile(&grants))?;
-                    active()
-                        .lock()
-                        .map_err(|_| "GitHub state is unavailable.")?
-                        .insert(key, grants);
-                }
-                Ok(())
+                outside_state(
+                    || {
+                        if load(app)?.revision != d.revision {
+                            return Err("GitHub access changed. Applying your latest choices.".into());
+                        }
+                        if let Some(expiry) = grants.iter().map(|g| g.expires_at).min() {
+                            refresh_at = refresh_at.min(expiry.saturating_sub(120));
+                        }
+                        let attached = profile(&grants);
+                        // Comparing credentials too avoids reconnecting unchanged sessions.
+                        if grants == previous && d.session == session() && crate::runtime::github_policy_is_cached(app, name, &attached)? {
+                            return Ok(None);
+                        }
+                        // Record the grants before attaching them: a save that narrows
+                        // meanwhile (under STATE) must see, and remove, what this attach adds.
+                        active()
+                            .lock()
+                            .map_err(|_| "GitHub state is unavailable.")?
+                            .insert(key.clone(), grants.clone());
+                        Ok(Some(attached))
+                    },
+                    |attached| crate::runtime::apply_github_policy(app, name, d.revision, &attached),
+                )?
+                .unwrap_or(Ok(()))
             })
             };
             let retirement = if d.grants_issued || load(app)?.grants_issued {
@@ -906,7 +1248,7 @@ fn apply(
                 .get(name)
                 .map_or(Ok(()), |message| Err(message.clone()))
         };
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut current = load(app)?;
         if current.revision != d.revision {
             schedule(Duration::from_millis(500));
@@ -1467,7 +1809,7 @@ pub(crate) fn host_push_credential(
     workspace: &str,
     repository: &str,
 ) -> Result<String, String> {
-    let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+    let _guard = crate::sync::lock_or_recover(&OPERATION, "GitHub operation");
     let d = load(app)?;
     let policy = d
         .workspaces
@@ -1593,6 +1935,14 @@ fn callback(request: &str, state: &str) -> Result<Option<String>, String> {
 
 // An unauthenticated local connection is not an OAuth result. Read a complete,
 // bounded header before parsing it; ignore incomplete or malformed traffic.
+/// Prepare an accepted callback connection for a bounded blocking read. On macOS an
+/// accepted socket inherits the listener's non-blocking mode, which ignores the read
+/// timeout: an early read fails with WouldBlock and the single-use code is lost.
+fn callback_stream(stream: TcpStream) -> std::io::Result<TcpStream> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+    Ok(stream)
+}
 fn read_callback_request(reader: &mut impl Read) -> Option<String> {
     let deadline = Instant::now() + Duration::from_secs(2);
     let mut bytes = Vec::new();
@@ -1610,35 +1960,30 @@ fn read_callback_request(reader: &mut impl Read) -> Option<String> {
     }
     None
 }
-fn open_browser(url: &str) -> Result<(), String> {
-    let opener = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    if std::process::Command::new(opener)
-        .arg(url)
-        .status()
-        .map_err(|_| "Cannot open the browser.")?
-        .success()
-    {
-        Ok(())
-    } else {
-        Err("Cannot open the browser.".into())
-    }
+/// Open GitHub pages with the browser chosen in Settings. The platform launcher returns
+/// once the browser was asked to open, so the callback wait is never blocked by it.
+/// One bounded network or store step of a connection: it holds the GitHub network lock
+/// and the update guard only while it runs, never across a wait for the user.
+fn network_step<T>(step: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _update = crate::updates::operation_guard()?;
+    let _network = serialize(&OPERATION);
+    step()
 }
-fn open_authorization_browser(generation: u64, url: &str) -> Result<(), String> {
+fn open_browser(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
+    crate::applications::open_browser(app, url)
+}
+fn open_authorization_browser(app: &tauri::AppHandle, generation: u64, url: &str) -> Result<(), String> {
     {
         let mut pending = AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?;
         if CANCELLATION.load(Ordering::SeqCst) != generation { return Err("GitHub connection cancelled.".into()); }
         pending.0 = Some((generation, url.to_owned()));
     }
-    open_browser(url)
+    open_browser(app, url)
 }
 
 fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         if CANCELLATION.load(Ordering::SeqCst) != generation { return Err("GitHub connection cancelled.".into()); }
         CONNECTING.store(true, Ordering::SeqCst);
     }
@@ -1677,7 +2022,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
-    open_authorization_browser(generation, url.as_str())?;
+    open_authorization_browser(app, generation, url.as_str())?;
     let deadline = Instant::now() + Duration::from_secs(300);
     let code = loop {
         if CANCELLATION.load(Ordering::SeqCst) != generation {
@@ -1687,8 +2032,8 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             return Err("GitHub connection timed out. Try again.".into());
         };
         match listener.accept() {
-            Ok((mut stream, _)) => {
-                stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+            Ok((stream, _)) => {
+                let Ok(mut stream) = callback_stream(stream) else { continue };
                 let result = read_callback_request(&mut stream)
                     .map(|request| callback(&request, &state))
                     .unwrap_or(Ok(None));
@@ -1711,24 +2056,33 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     };
     AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?.clear(generation);
     if CANCELLATION.load(Ordering::SeqCst) != generation { return Err("GitHub connection cancelled.".into()); }
-    let c = from_response(token_operation(
-        Operation::Exchange,
-        json!({"code":code,"codeVerifier":verifier,"redirectUri":redirect}),
-    )?)?;
-    let user = github(&c.access_token, "/user")?;
-    let account = Some(
-        user["login"]
+    // Only the exchange and the store steps hold the GitHub network lock and the update
+    // guard. The browser and App-installation waits (up to 5 minutes each) must not block
+    // token renewal, repository refresh, host push or app updates.
+    let previous_account = load(app).ok().and_then(|d| d.account);
+    let (c, mut unstored, account, mut repos, installed) = network_step(|| {
+        let c = from_response(token_operation(
+            Operation::Exchange,
+            json!({"code":code,"codeVerifier":verifier,"redirectUri":redirect}),
+        )?)?;
+        // From here every failure or cancellation revokes the new credential. Until its
+        // account is known, assume it may share the stored connection's authorization.
+        let mut unstored = Unstored::new(c.clone(), previous_account.is_some());
+        let user = github(&c.access_token, "/user")?;
+        let login: String = user["login"]
             .as_str()
             .ok_or("GitHub account name is missing.")?
-            .into(),
-    );
-    let (mut repos, installed) = catalog_installations(&c)?;
+            .into();
+        unstored.shares_grant = same_account(previous_account.as_deref(), &login);
+        let (repos, installed) = catalog_installations(&c)?;
+        Ok((c, unstored, Some(login), repos, installed))
+    })?;
     if !installed {
         let slug = APP_SLUG.ok_or("GitHub App is not configured in this build.")?;
         if !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             return Err("GitHub App identifier is invalid.".into());
         }
-        open_authorization_browser(generation, &format!("https://github.com/apps/{slug}/installations/new"))?;
+        open_authorization_browser(app, generation, &format!("https://github.com/apps/{slug}/installations/new"))?;
         let deadline = Instant::now() + Duration::from_secs(300);
         loop {
             if CANCELLATION.load(Ordering::SeqCst) != generation {
@@ -1748,8 +2102,10 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     if CANCELLATION.load(Ordering::SeqCst) != generation {
         return Err("GitHub connection cancelled.".into());
     }
-    {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+    let replaced = network_step(|| {
+        // The credential this connection replaces, read before taking STATE.
+        let replaced = revocation_credential().ok().flatten();
+        let _state = serialize(&STATE);
         if CANCELLATION.load(Ordering::SeqCst) != generation {
             return Err("GitHub connection cancelled.".into());
         }
@@ -1784,12 +2140,25 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             .lock()
             .map_err(|_| "GitHub state is unavailable.")?
             .retain(|key, _| !key.starts_with(&prefix));
-        store(&c)?;
+        let stored = store(&c);
+        // A failed store write keeps the new credential in use in memory and stores it
+        // later, so it is kept; only a credential that Silo holds nowhere is revoked.
+        if stored.is_ok() || ACCOUNT_SECRET.peek() == Some(Ok(Some(c.clone()))) {
+            unstored.kept();
+        }
+        stored?;
+        let same = account.as_deref().is_some_and(|login| same_account(d.account.as_deref(), login));
         record_connection(&mut d, account, repos);
         for (name, error) in detach_errors.workspaces {
             d.access_errors.insert(name, error);
         }
         save(app, &d)?;
+        Ok(replaced.filter(|old| old.access_token != c.access_token).map(|old| (old, same)))
+    })?;
+    // The replaced credential is no longer stored anywhere; revoke it rather than leave
+    // its authorization (and a refresh token valid for months) live.
+    if let Some((old, same)) = replaced {
+        revoke_replaced(&old, same);
     }
     schedule(Duration::from_millis(500));
     if let Some(window) = app.get_webview_window("main") {
@@ -1818,8 +2187,10 @@ fn catalog_refresh_due(d: &Document, now: u64) -> bool {
 /// Re-establish host-only grants after relaunch and renew them before expiry.
 pub fn install(app: &tauri::AppHandle) {
     let _ = OBSERVATION_APP.set(app.clone());
+    // Start the first host identity read now so the first GitHub view already has it.
+    host_identity();
     if let Ok(document) = load(app) {
-        crate::github_http::restore_retry_floor(document.rate_retry_at);
+        crate::github_http::restore_retry_floors(&document.rate_retry);
     }
     let app = app.clone();
     std::thread::spawn(move || loop {
@@ -1831,9 +2202,11 @@ pub fn install(app: &tauri::AppHandle) {
         let pending_due = pending_deadline.is_some_and(|time| Instant::now() >= time);
         personal_token::check(&app);
         flush_account_credential();
-        if let Ok(_network) = OPERATION.try_lock() {
+        // Another GitHub operation holds the network lock: look again shortly.
+        let mut wait = Duration::from_secs(1);
+        if let Some(_network) = try_serialize(&OPERATION) {
             let observed = {
-                let _state = STATE.lock().ok();
+                let _state = serialize(&STATE);
                 load(&app)
             };
             if let Ok(mut d) = observed {
@@ -1851,7 +2224,7 @@ pub fn install(app: &tauri::AppHandle) {
                             .is_ok_and(|c| c.is_some_and(|c| c.expires_at <= now() + 120))
                     {
                         if let Err(message) = active_credential() {
-                            if let Ok(_state) = STATE.lock() {
+                            { let _state = serialize(&STATE);
                                 if let Ok(mut current) = load(&app) {
                                     current.catalog_error = Some(message);
                                     let _ = save(&app, &current);
@@ -1861,7 +2234,7 @@ pub fn install(app: &tauri::AppHandle) {
                     }
                     if catalog_refresh_due(&d, now()) && credential().is_ok_and(|c| c.is_some()) {
                         let result = active_credential().and_then(|c| catalog(&c));
-                        if let Ok(_state) = STATE.lock() {
+                        { let _state = serialize(&STATE);
                             if let Ok(mut current) = load(&app) {
                                 match result {
                                     Ok(repos) => {
@@ -1894,29 +2267,30 @@ pub fn install(app: &tauri::AppHandle) {
                         }
                     }
                     if d.disconnect_pending {
-                        let result = revocation_credential().and_then(|c| {
-                            c.map_or(Ok(()), |c| {
-                                token_operation(
-                                    Operation::RevokeAuthorization,
-                                    json!({"accessToken":c.access_token}),
-                                )
-                                .map(|_| ())
-                            })
-                        });
-                        if let Ok(_state) = STATE.lock() {
+                        let result = revocation_credential()
+                            .and_then(|c| disconnect_token(c, now(), active_credential))
+                            .and_then(|token| {
+                                token.map_or(Ok(()), |token| {
+                                    token_operation(
+                                        Operation::RevokeAuthorization,
+                                        json!({"accessToken":token}),
+                                    )
+                                    .map(|_| ())
+                                })
+                            });
+                        // The credential store can wait on a permission prompt; never
+                        // delete from it under STATE. Connect cannot interleave: this
+                        // worker pass holds OPERATION.
+                        let result = result.and_then(|()| delete_account_credential());
+                        { let _state = serialize(&STATE);
                             if let Ok(mut current) = load(&app) {
                                 match result {
-                                    Ok(()) => match delete_account_credential() {
-                                        Ok(()) => {
-                                            current.disconnect_pending = false;
-                                            current.account = None;
-                                            current.repositories.clear();
-                                            current.catalog_error = None;
-                                        }
-                                        Err(error) => {
-                                            current.catalog_error = Some(error);
-                                        }
-                                    },
+                                    Ok(()) => {
+                                        current.disconnect_pending = false;
+                                        current.account = None;
+                                        current.repositories.clear();
+                                        current.catalog_error = None;
+                                    }
                                     Err(message) => {
                                         current.catalog_error = Some(message);
                                     }
@@ -1940,7 +2314,7 @@ pub fn install(app: &tauri::AppHandle) {
                         }
                     }
                     let account_credential = credential();
-                    if let Ok(_state) = STATE.lock() {
+                    { let _state = serialize(&STATE);
                         if let Ok(mut current) = load(&app) {
                             current.session = session().into();
                             if current.workspaces.is_empty() {
@@ -1965,10 +2339,18 @@ pub fn install(app: &tauri::AppHandle) {
                             let _ = save(&app, &current);
                         }
                     }
+                    // Re-evaluate promptly against the document this pass saved.
+                    wait = WORKER_MIN_SLEEP;
+                } else {
+                    wait = worker_wait(&d, pending_deadline, now(), Instant::now());
                 }
+            } else {
+                wait = Duration::from_secs(5);
             }
         }
-        std::thread::sleep(Duration::from_millis(100));
+        // Sleep until the next deadline (not a 100 ms poll that re-read the whole
+        // document for the app's lifetime); `schedule` wakes the worker early.
+        worker_sleep(wait.min(personal_token::next_check()).max(WORKER_MIN_SLEEP));
     });
 }
 
@@ -1986,7 +2368,7 @@ async fn run(
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+        let _guard = serialize(&OPERATION);
         f(&app)
     })
     .await
@@ -2007,8 +2389,8 @@ pub async fn connect_github(
     retry_credential_access();
     let generation = CANCELLATION.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        let _update = crate::updates::operation_guard()?;
-        let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+        // One connection flow at a time; it takes OPERATION only for its network steps.
+        let _flow = serialize(&CONNECTION_FLOW);
         connect(&app, generation)
     }).await.map_err(|_| "GitHub operation failed.")?
 }
@@ -2017,7 +2399,7 @@ pub async fn cancel_github_connection(app: tauri::AppHandle, window: tauri::Webv
     require_main(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         // Serialize with credential publication, not with the browser/network wait.
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut pending = AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?;
         CANCELLATION.fetch_add(1, Ordering::SeqCst);
         pending.0 = None;
@@ -2034,7 +2416,7 @@ pub async fn reopen_github_authorization(window: tauri::WebviewWindow) -> Result
     tauri::async_runtime::spawn_blocking(move || {
         let url = AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?
             .url(CANCELLATION.load(Ordering::SeqCst))?;
-        open_browser(&url)
+        open_browser(window.app_handle(), &url)
     }).await.map_err(|_| "Cannot reopen GitHub authorization.")?
 }
 
@@ -2046,7 +2428,7 @@ pub async fn manage_github_repositories(window: tauri::WebviewWindow) -> Result<
         if !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
             return Err("Invalid GitHub App slug.".into());
         }
-        open_browser(&format!("https://github.com/apps/{slug}/installations/new"))
+        open_browser(window.app_handle(), &format!("https://github.com/apps/{slug}/installations/new"))
     }).await.map_err(|_| "Cannot open GitHub repository access.")?
 }
 
@@ -2060,7 +2442,7 @@ pub async fn refresh_github_repositories(
     crate::github_http::reset_retries();
     run(app, |app| {
         let result = active_credential().and_then(|c| catalog(&c));
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut d = load(app)?;
         match result {
             Ok(repos) => {
@@ -2094,9 +2476,9 @@ pub async fn disconnect_github(
     let ticket = INTENTS.ticket();
     CANCELLATION.fetch_add(1, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        let _turn = INTENTS.wait(ticket)?;
+        let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut d = load(&app)?;
         d.access_enabled = false;
         d.disconnect_pending = true;
@@ -2123,9 +2505,9 @@ pub async fn set_github_access_enabled(
         CANCELLATION.fetch_add(1, Ordering::SeqCst);
     }
     tauri::async_runtime::spawn_blocking(move || {
-        let _turn = INTENTS.wait(ticket)?;
+        let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut d = load(&app)?;
         if d.access_enabled == enabled {
             return snapshot(&app);
@@ -2182,6 +2564,77 @@ fn mark_pending(d: &mut Document) {
         .collect();
     mark_pending_for(d, &d.access_pending.clone());
 }
+/// Apply saved sandbox choices as per-sandbox patches: sandboxes not listed keep their
+/// choices (for example an assignment a fork just copied), and a patch built from a view
+/// older than a change it would overwrite is refused (see `stale_save`). Returns the
+/// sandboxes now pending, or `None` when nothing changed.
+fn apply_patches(
+    d: &mut Document,
+    patches: &[Value],
+    base: Option<u64>,
+    oauth_connected: bool,
+    token_connected: bool,
+) -> Result<Option<Vec<String>>, String> {
+    let mut changed_policies = Vec::new();
+    let mut access_changed = d.access_pending.clone();
+    let mut identity_changed = Vec::new();
+    for w in patches {
+        let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
+        let previous = d.workspaces.iter().find(|old| old["workspace"] == w["workspace"]);
+        if previous == Some(w) {
+            continue;
+        }
+        if stale_save(d, name, base) {
+            return Err(format!(
+                "GitHub settings for {name} changed while you were editing them. Review them and try again."
+            ));
+        }
+        validate_method_change(previous, w, oauth_connected, token_connected)?;
+        if previous.is_none_or(|old| access_choice(old) != access_choice(w))
+            && !access_changed.iter().any(|n| n == name)
+        {
+            access_changed.push(name.to_owned());
+        }
+        if previous.is_none_or(|old| old["identity"] != w["identity"]) {
+            identity_changed.push(name.to_owned());
+        }
+        changed_policies.push(w);
+    }
+    if changed_policies.is_empty() {
+        return Ok(None);
+    }
+    let mut workspaces = d.workspaces.clone();
+    for w in &changed_policies {
+        match workspaces.iter_mut().find(|old| old["workspace"] == w["workspace"]) {
+            Some(slot) => *slot = (*w).clone(),
+            None => workspaces.push((*w).clone()),
+        }
+    }
+    validate(&workspaces)?;
+    d.workspaces = workspaces;
+    d.revision += 1;
+    for w in &changed_policies {
+        if let Some(name) = w["workspace"].as_str() {
+            stamp(d, name, base);
+        }
+    }
+    for name in identity_changed {
+        if !d.identity_pending.contains(&name) {
+            d.identity_pending.push(name);
+        }
+    }
+    let mut changed = access_changed.clone();
+    changed.extend(d.identity_pending.iter().cloned());
+    changed.sort();
+    changed.dedup();
+    mark_pending_for(d, &changed);
+    d.access_pending = access_changed;
+    Ok(Some(changed))
+}
+/// Save sandbox choices: `workspaces` holds only the sandboxes the caller changed, and
+/// `baseRevision` the `policyRevision` its view was based on. Access on/off is never
+/// changed here (a stale save must not undo Disable access); use
+/// `set_github_access_enabled`. An `accessEnabled` field is ignored.
 #[tauri::command]
 pub async fn save_github_configuration(
     app: tauri::AppHandle,
@@ -2193,60 +2646,24 @@ pub async fn save_github_configuration(
         .as_array()
         .ok_or("Missing sandbox policies.")?;
     validate(ws)?;
-    configuration["accessEnabled"]
-        .as_bool()
-        .ok_or("Missing GitHub access choice.")?;
+    let base = match &configuration["baseRevision"] {
+        Value::Null => None,
+        value => Some(value.as_u64().ok_or("Invalid GitHub settings revision.")?),
+    };
     let ticket = INTENTS.ticket();
     tauri::async_runtime::spawn_blocking(move || {
         let ws = configuration["workspaces"]
             .as_array()
             .ok_or("Missing sandbox policies.")?;
-        validate(ws)?;
-        let enabled = configuration["accessEnabled"]
-            .as_bool()
-            .ok_or("Missing GitHub access choice.")?;
-        let _turn = INTENTS.wait(ticket)?;
+        let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut d = load(&app)?;
-        if d.workspaces == *ws && d.access_enabled == enabled {
+        let oauth_connected = observed_credential().is_some_and(|v| v.is_ok_and(|expiry| expiry.is_some_and(|at| at > now())));
+        let Some(changed) = apply_patches(&mut d, ws, base, oauth_connected, personal_token::connected())? else {
             return snapshot(&app);
-        }
+        };
         CANCELLATION.fetch_add(1, Ordering::SeqCst);
-        let mut access_changed = d.access_pending.clone();
-        for w in ws {
-            let previous = d
-                .workspaces
-                .iter()
-                .find(|old| old["workspace"] == w["workspace"]);
-            validate_method_change(previous, w,
-                observed_credential().is_some_and(|v| v.is_ok_and(|expiry| expiry.is_some_and(|at| at > now()))),
-                personal_token::connected())?;
-            if d.access_enabled != enabled
-                || previous.is_none_or(|old| access_choice(old) != access_choice(w))
-            {
-                if let Some(name) = w["workspace"].as_str() {
-                    if !access_changed.iter().any(|n| n == name) {
-                        access_changed.push(name.into());
-                    }
-                }
-            }
-            if previous.is_none_or(|old| old["identity"] != w["identity"]) {
-                let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
-                if !d.identity_pending.iter().any(|n| n == name) {
-                    d.identity_pending.push(name.into());
-                }
-            }
-        }
-        d.workspaces = ws.clone();
-        d.access_enabled = enabled;
-        d.revision += 1;
-        let mut changed = access_changed.clone();
-        changed.extend(d.identity_pending.iter().cloned());
-        changed.sort();
-        changed.dedup();
-        mark_pending_for(&mut d, &changed);
-        d.access_pending = access_changed;
         // Persist first so a worker completing concurrently cannot publish old choices.
         save(&app, &d)?;
         let result = narrow_now(&app, &mut d);
@@ -2279,9 +2696,9 @@ pub async fn retry_github_configuration(
     let ticket = INTENTS.ticket();
     crate::github_http::reset_retries();
     tauri::async_runtime::spawn_blocking(move || {
-        let _turn = INTENTS.wait(ticket)?;
+        let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = serialize(&STATE);
         let mut d = load(&app)?;
         for w in &d.workspaces {
             if let Some(name) = w["workspace"].as_str() {
@@ -2307,6 +2724,22 @@ pub async fn retry_github_configuration(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_panic_under_the_github_locks_does_not_block_updates_or_settings() {
+        for lock in [&super::OPERATION, &super::STATE] {
+            let _ = std::thread::spawn(move || {
+                let _guard = lock.lock().unwrap();
+                panic!("simulated panic while holding a GitHub lock");
+            })
+            .join();
+            assert!(lock.is_poisoned());
+        }
+        // K-24: a poisoned lock is not "busy" forever.
+        drop(super::update_guard().unwrap());
+        assert!(crate::sync::try_lock_or_recover(&super::STATE, "GitHub state").is_some());
+        assert!(!super::OPERATION.is_poisoned() && !super::STATE.is_poisoned());
+    }
+
     #[test]
     fn one_failing_detach_does_not_stop_the_others() {
         let mut errors = super::NarrowErrors::default();
@@ -2372,6 +2805,30 @@ mod tests {
         cache.write(Some(2), || panic!("Unchanged write after flush")).unwrap();
     }
     #[test]
+    fn peeking_a_secret_never_waits_for_the_credential_store() {
+        let cache = super::SessionSecret::<Option<u64>>::new();
+        assert_eq!(cache.peek(), None);
+        let (started, reading) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                cache.read(move || {
+                    started.send(()).unwrap();
+                    released.recv().unwrap();
+                    Ok(Some(1))
+                })
+            });
+            reading.recv_timeout(Duration::from_secs(1)).unwrap();
+            // A read waiting on the store (or its permission prompt) does not block peek.
+            assert_eq!(cache.peek(), None);
+            release.send(()).unwrap();
+        });
+        assert_eq!(cache.peek(), Some(Ok(Some(1))));
+        // A failed write keeps the newest value in memory, and peek sees it too.
+        assert!(cache.write(Some(2), || Err("store locked".into())).is_err());
+        assert_eq!(cache.peek(), Some(Ok(Some(2))));
+    }
+    #[test]
     fn concurrent_secret_reads_share_one_keychain_request() {
         let cache = super::SessionSecret::new();
         let reads = std::sync::atomic::AtomicUsize::new(0);
@@ -2432,6 +2889,132 @@ mod tests {
             first + Duration::from_millis(900)
         ));
     }
+    fn saved_policy(name: &str, all: bool) -> Value {
+        json!({"workspace":name,"repositoryMode":if all {"all"} else {"selected"},"allRepositoriesAllowChanges":all,
+            "repositories":[],"identity":{"name":"","email":"","apply":false}})
+    }
+    #[test]
+    fn a_save_patches_only_its_sandboxes_and_never_changes_access() {
+        let mut d = Document { revision: 5, access_enabled: false, workspaces: vec![saved_policy("dev", false)], ..Default::default() };
+        // A fork copied its source's assignment after the page last read the settings.
+        d.workspaces.push(saved_policy("fork", true));
+        stamp(&mut d, "fork", None);
+        let changed = apply_patches(&mut d, &[saved_policy("dev", true)], Some(4), true, false).unwrap().unwrap();
+        assert_eq!(changed, vec!["dev".to_string()]);
+        assert_eq!(d.workspaces, vec![saved_policy("dev", true), saved_policy("fork", true)], "the fork's copied assignment was dropped");
+        assert!(!d.access_enabled, "a save re-enabled access after Disable access");
+        assert_eq!(d.revision, 6);
+        assert_eq!(d.policy_stamps["dev"], PolicyStamp { revision: 6, base: Some(4) });
+        // Saving what is already stored changes nothing.
+        assert_eq!(apply_patches(&mut d, &[saved_policy("dev", true)], Some(4), true, false).unwrap(), None);
+        assert_eq!(d.revision, 6);
+    }
+    #[test]
+    fn a_save_from_a_view_older_than_a_change_it_would_overwrite_is_refused() {
+        let mut d = Document { revision: 5, workspaces: vec![saved_policy("fork", true)], ..Default::default() };
+        stamp(&mut d, "fork", None);
+        // The page still showed the fork without its copied assignment.
+        assert!(apply_patches(&mut d, &[saved_policy("fork", false)], Some(4), true, false).is_err());
+        assert_eq!(d.workspaces, vec![saved_policy("fork", true)]);
+        assert_eq!(d.revision, 5);
+        // After seeing it, the same edit applies.
+        assert!(apply_patches(&mut d, &[saved_policy("fork", false)], Some(5), true, false).unwrap().is_some());
+        // Rapid edits sent from one view before its first result arrived apply in order.
+        let mut edit = saved_policy("fork", false);
+        edit["identity"] = json!({"name":"Name","email":"name@example.test","apply":true});
+        assert!(apply_patches(&mut d, &[edit.clone()], Some(5), true, false).unwrap().is_some());
+        assert_eq!(d.workspaces, vec![edit.clone()]);
+        // A save from a newer view wins over a later-arriving one from an older view.
+        assert!(apply_patches(&mut d, &[saved_policy("fork", true)], Some(7), true, false).unwrap().is_some());
+        assert!(apply_patches(&mut d, &[edit], Some(5), true, false).is_err());
+        // A deleted sandbox's stale choices are not brought back for a new one with its name.
+        forget_workspace(&mut d, "fork");
+        d.revision += 1;
+        stamp(&mut d, "fork", None);
+        assert!(apply_patches(&mut d, &[saved_policy("fork", true)], Some(8), true, false).is_err());
+        assert!(d.workspaces.is_empty());
+        // A caller without a base revision is not checked.
+        assert!(apply_patches(&mut d, &[saved_policy("fork", true)], None, true, false).unwrap().is_some());
+    }
+    #[test]
+    fn a_deleted_sandbox_leaves_no_assignment_or_attachment_for_a_new_one_with_its_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let document = directory.path().join("github.json");
+        let policy = |name: &str| json!({"workspace":name,"repositoryMode":"all","allRepositoriesAllowChanges":true,"repositories":[],
+            "identity":{"name":"","email":"","apply":false}});
+        let d = Document {
+            revision: 4,
+            access_enabled: true,
+            workspaces: vec![policy("dev"), policy("other")],
+            access_pending: vec!["dev".into()],
+            identity_pending: vec!["dev".into()],
+            operations: vec![json!({"workspace":"dev","status":"failed","message":"old","canRetry":true})],
+            access_errors: [("dev".to_string(), "old".to_string())].into(),
+            identity_errors: [("dev".to_string(), "old".to_string())].into(),
+            ..Default::default()
+        };
+        save_at(&document, &d).unwrap();
+        let key = format!("{}:dev", document.display());
+        active().lock().unwrap().insert(key.clone(), vec![test_grant()]);
+        issued().lock().unwrap().insert(key.clone(), vec![IssuedToken { owner: 1, all: true, write: true, ids: vec![], token: "old-write".into(), expires_at: now() + 1000 }]);
+        use_test_document(Some(document.clone()));
+        let result = workspace_removed("dev");
+        use_test_document(None);
+        result.unwrap();
+        let after = load_at(&document).unwrap();
+        assert_eq!(after.workspaces, vec![policy("other")]);
+        assert!(after.access_pending.is_empty() && after.identity_pending.is_empty());
+        assert!(after.operations.is_empty() && after.access_errors.is_empty() && after.identity_errors.is_empty());
+        assert!(after.revision > 4);
+        // No grant or issued token of the deleted sandbox is reused or kept live; the
+        // retirement ledger revokes them because no policy names "dev" any more.
+        assert!(!active().lock().unwrap().contains_key(&key));
+        assert!(!issued().lock().unwrap().contains_key(&key));
+        assert!(after.workspaces.iter().all(|w| w["workspace"] != "dev"));
+        *PENDING.get_or_init(|| Mutex::new(None)).lock().unwrap() = None;
+        // Without an installed document there is nothing to forget.
+        assert!(workspace_removed("dev").is_ok());
+    }
+    #[test]
+    fn idle_worker_sleeps_until_its_next_deadline_instead_of_polling() {
+        let instant = Instant::now();
+        let mut d = Document { session: session().into(), refresh_at: 1_000 + 3_600, ..Default::default() };
+        // Nothing due for an hour: sleep the longest bounded interval, not 100 ms.
+        assert_eq!(worker_wait(&d, None, 1_000, instant), WORKER_MAX_SLEEP);
+        d.refresh_at = 1_010;
+        assert_eq!(worker_wait(&d, None, 1_000, instant), Duration::from_secs(10));
+        // A connected account also wakes for its catalog refresh.
+        d.access_enabled = true;
+        d.account = Some("owner".into());
+        d.catalog_refresh_at = 1_003;
+        assert_eq!(worker_wait(&d, None, 1_000, instant), Duration::from_secs(3));
+        // A scheduled edit wakes at its (debounced) deadline.
+        let deadline = instant + Duration::from_millis(500);
+        assert_eq!(worker_wait(&d, Some(deadline), 1_000, instant), Duration::from_millis(500));
+        // A new app session is due at once (never faster than the minimum sleep).
+        d.session = "older".into();
+        assert_eq!(worker_wait(&d, None, 1_000, instant), WORKER_MIN_SLEEP);
+    }
+    #[test]
+    fn scheduling_wakes_a_sleeping_worker() {
+        // Other tests schedule work without a worker; start from a consumed wake-up.
+        *WORKER_WOKEN.lock().unwrap() = false;
+        let (done, finished) = std::sync::mpsc::channel();
+        let sleeper = std::thread::spawn(move || {
+            let started = Instant::now();
+            worker_sleep(Duration::from_secs(30));
+            done.send(started.elapsed()).unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        schedule(Duration::ZERO);
+        assert!(finished.recv_timeout(Duration::from_secs(5)).unwrap() < Duration::from_secs(5));
+        sleeper.join().unwrap();
+        // The wake-up was consumed: the next sleep waits for its timeout.
+        let started = Instant::now();
+        worker_sleep(Duration::from_millis(50));
+        assert!(started.elapsed() >= Duration::from_millis(50));
+        *PENDING.get_or_init(|| Mutex::new(None)).lock().unwrap() = None;
+    }
     #[test]
     fn identity_only_edit_does_not_request_access_or_postpone_renewal() {
         let d = Document {
@@ -2490,23 +3073,186 @@ mod tests {
     }
     #[test]
     fn local_edits_preserve_submission_order_without_holding_network_lock() {
-        let queue = std::sync::Arc::new(IntentQueue::new());
+        let queue = IntentQueue::new();
         let first = queue.ticket();
         let second = queue.ticket();
-        let first_turn = queue.wait(first).unwrap();
+        let first_turn = first.wait().unwrap();
         let (sent, received) = std::sync::mpsc::channel();
-        let other = queue.clone();
-        let worker = std::thread::spawn(move || {
-            let _turn = other.wait(second).unwrap();
-            sent.send("second applied").unwrap();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _turn = second.wait().unwrap();
+                sent.send("second applied").unwrap();
+            });
+            assert!(received.try_recv().is_err());
+            drop(first_turn);
+            assert_eq!(
+                received.recv_timeout(Duration::from_secs(1)).unwrap(),
+                "second applied"
+            );
         });
-        assert!(received.try_recv().is_err());
-        drop(first_turn);
-        assert_eq!(
-            received.recv_timeout(Duration::from_secs(1)).unwrap(),
-            "second applied"
-        );
-        worker.join().unwrap();
+    }
+    thread_local! {
+        static DISCARDED: std::cell::RefCell<Vec<(String, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    fn record_discard(c: &Credential, shares_grant: bool) {
+        DISCARDED.with(|d| d.borrow_mut().push((c.access_token.clone(), shares_grant)));
+    }
+    fn fixture_credential(token: &str, expires_at: u64) -> Credential {
+        Credential { access_token: token.into(), refresh_token: Some(format!("{token}-refresh")), expires_at }
+    }
+    #[test]
+    fn a_new_credential_is_revoked_unless_it_was_kept() {
+        DISCARDED.with(|d| d.borrow_mut().clear());
+        // A failure after the exchange (catalog, App-install timeout, cancellation, store).
+        drop(Unstored { credential: Some(fixture_credential("new", 0)), shares_grant: false, revoke: record_discard });
+        let mut kept = Unstored { credential: Some(fixture_credential("stored", 0)), shares_grant: true, revoke: record_discard };
+        kept.kept();
+        drop(kept);
+        assert_eq!(DISCARDED.with(|d| d.borrow().clone()), vec![("new".to_string(), false)]);
+        // The same account shares one authorization with the stored credential: revoking
+        // the whole authorization would disconnect it too.
+        assert!(matches!(discard_operation(true), Operation::RevokeToken));
+        assert!(matches!(discard_operation(false), Operation::RevokeAuthorization));
+        assert!(same_account(Some("Octo-Cat"), "octo-cat"));
+        assert!(!same_account(Some("octo-cat"), "other"));
+        assert!(!same_account(None, "octo-cat"));
+    }
+    #[test]
+    fn revocation_renews_an_expired_token_and_skips_a_gone_authorization() {
+        let at = 1_000;
+        let live = fixture_credential("live", at + 600);
+        assert_eq!(live_access_token(&live, at, |_| panic!("renewed a live token")).unwrap(), Some("live".into()));
+        // An expired token would get a 404 that looks like success; renew it first.
+        let expired = fixture_credential("expired", at);
+        let renewed = live_access_token(&expired, at, |refresh| {
+            assert_eq!(refresh, "expired-refresh");
+            Ok(fixture_credential("renewed", at + 600))
+        });
+        assert_eq!(renewed.unwrap(), Some("renewed".into()));
+        // GitHub rejected the refresh token: the authorization is already gone.
+        let gone = live_access_token(&expired, at, |_| {
+            Err("GitHub rejected the authorization. Connect GitHub again. Automatic retries stopped.".into())
+        });
+        assert_eq!(gone.unwrap(), None);
+        // A network failure is retried later instead of skipping the revocation.
+        assert!(live_access_token(&expired, at, |_| Err("Cannot reach GitHub.".into())).is_err());
+        let mut no_refresh = expired.clone();
+        no_refresh.refresh_token = None;
+        assert_eq!(live_access_token(&no_refresh, at, |_| panic!("renewed without a refresh token")).unwrap(), None);
+    }
+    #[test]
+    fn disconnect_revokes_with_a_renewed_token_when_the_stored_one_expired() {
+        let at = 1_000;
+        assert_eq!(disconnect_token(None, at, || panic!("renewed without a credential")).unwrap(), None);
+        let live = fixture_credential("live", at + 600);
+        assert_eq!(disconnect_token(Some(live), at, || panic!("renewed a live token")).unwrap(), Some("live".into()));
+        let expired = fixture_credential("expired", at);
+        let renewed = disconnect_token(Some(expired.clone()), at, || Ok(fixture_credential("renewed", at + 600)));
+        assert_eq!(renewed.unwrap(), Some("renewed".into()));
+        // A renewal GitHub rejects means the authorization is gone: finish disconnecting.
+        let gone = disconnect_token(Some(expired.clone()), at, || {
+            Err("GitHub rejected the authorization. Connect GitHub again.".into())
+        });
+        assert_eq!(gone.unwrap(), None);
+        // A network failure keeps Disconnect pending so it is retried.
+        assert!(disconnect_token(Some(expired), at, || Err("Cannot reach GitHub.".into())).is_err());
+    }
+    #[test]
+    fn a_connection_holds_the_network_lock_only_for_its_steps() {
+        // Waiting for the browser or App installation holds nothing.
+        drop(update_guard().expect("the network lock is held outside a step"));
+        let during = network_step(|| Ok(update_guard().is_err())).unwrap();
+        assert!(during, "a network step must block updates and other GitHub operations");
+        drop(update_guard().expect("a network step kept the lock after it finished"));
+        assert!(network_step(|| Err::<(), _>("exchange failed".into())).is_err());
+        drop(update_guard().expect("a failed step kept the lock"));
+    }
+    #[test]
+    fn runtime_work_runs_without_the_state_lock_after_a_checked_revision() {
+        let result = outside_state(
+            || {
+                assert!(STATE.try_lock().is_err(), "the revision check must hold STATE");
+                Ok(Some(7))
+            },
+            // A guest command or `msb modify` here can take minutes.
+            |value| (value, STATE.try_lock().is_ok()),
+        )
+        .unwrap();
+        assert_eq!(result, Some((7, true)), "runtime work held STATE");
+        assert_eq!(outside_state(|| Ok(None::<()>), |()| panic!("stale work ran")).unwrap(), None);
+        assert!(outside_state(|| Err::<Option<()>, _>("changed".into()), |()| panic!("stale work ran")).is_err());
+    }
+    #[test]
+    fn identity_written_during_a_newer_edit_is_not_recorded_as_applied() {
+        let old = json!({"name":"Old","email":"old@example.test","apply":true});
+        let new = json!({"name":"New","email":"new@example.test","apply":true});
+        let mut d = Document { workspaces: vec![json!({"workspace":"dev","identity":old.clone()})], ..Default::default() };
+        assert!(identity_is_current(&d, "dev", &old));
+        d.workspaces[0]["identity"] = new.clone();
+        assert!(!identity_is_current(&d, "dev", &old));
+        assert!(identity_is_current(&d, "dev", &new));
+        assert!(!identity_is_current(&d, "other", &new));
+    }
+    #[test]
+    fn a_panic_under_a_github_lock_does_not_disable_github_or_block_updates() {
+        for lock in [&OPERATION, &STATE] {
+            let _ = std::thread::spawn(move || {
+                let _guard = lock.lock().unwrap();
+                panic!("test panic while holding a GitHub lock");
+            })
+            .join();
+            assert!(lock.is_poisoned());
+        }
+        drop(update_guard().expect("a poisoned operation lock blocked app updates"));
+        drop(try_serialize(&STATE).expect("a poisoned state lock reported busy"));
+        drop(serialize(&STATE));
+        let queue = IntentQueue::new();
+        let ticket = queue.ticket();
+        std::thread::scope(|scope| {
+            let _ = scope
+                .spawn(|| {
+                    let _turn = queue.turn.lock().unwrap();
+                    panic!("test panic while holding the intent queue");
+                })
+                .join();
+        });
+        drop(ticket.wait().expect("a poisoned intent queue stopped settings changes"));
+        let next = queue.ticket();
+        drop(next.wait().unwrap());
+        OPERATION.clear_poison();
+        STATE.clear_poison();
+    }
+    #[test]
+    fn an_abandoned_intent_never_blocks_later_intents() {
+        let queue = IntentQueue::new();
+        let first = queue.ticket();
+        let second = queue.ticket();
+        let third = queue.ticket();
+        let fourth = queue.ticket();
+        // Given up before its turn (for example an early return before waiting).
+        drop(second);
+        let first_turn = first.wait().unwrap();
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _turn = third.wait().unwrap();
+                sent.send("third applied").unwrap();
+            });
+            assert!(received.try_recv().is_err());
+            drop(first_turn);
+            assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), "third applied");
+        });
+        // Given up exactly at its turn.
+        drop(fourth);
+        let fifth = queue.ticket();
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let _turn = fifth.wait().unwrap();
+                sent.send("fifth applied").unwrap();
+            });
+            assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), "fifth applied");
+        });
     }
     #[test]
     fn invalid_remaining_selection_never_preserves_removed_repository_access() {
@@ -2948,6 +3694,35 @@ mod tests {
         assert!(read_callback_request(&mut Fragmented(&vec![b'a'; 9000])).is_none());
     }
     #[test]
+    fn callback_waits_for_a_browser_that_sends_its_request_late() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let browser = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(address).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            stream
+                .write_all(b"GET /github/callback?state=right&code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+                .unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let stream = loop {
+            match listener.accept() {
+                Ok((stream, _)) => break stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(10))
+                }
+                Err(error) => panic!("accept failed: {error}"),
+            }
+        };
+        // Accepted sockets can inherit the listener's non-blocking mode (macOS); an
+        // early read must wait for the request instead of losing the single-use code.
+        let mut stream = callback_stream(stream).unwrap();
+        let request = read_callback_request(&mut stream).expect("the early read lost the callback");
+        assert_eq!(callback(&request, "right").unwrap(), Some("x".into()));
+        browser.join().unwrap();
+    }
+    #[test]
     fn callback_rejects_wrong_state_and_duplicate_code() {
         assert!(callback(
             "GET /github/callback?state=wrong&code=x HTTP/1.1\r\n",
@@ -3098,5 +3873,5 @@ mod tests {
 }
 
 pub(crate) fn update_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
-    OPERATION.try_lock().map_err(|_| "Wait for the GitHub operation to finish before updating.".into())
+    try_serialize(&OPERATION).ok_or_else(|| "Wait for the GitHub operation to finish before updating.".into())
 }

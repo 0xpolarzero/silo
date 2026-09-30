@@ -10,16 +10,17 @@ Use your usual editor and terminal, give an AI agent a Linux desktop, and choose
 
 ## What you can do
 
-- **Work across computers.** Create, start, stop, and monitor local and remote sandboxes in one app.
+- **Work across computers.** Create, start, stop, and monitor local and remote sandboxes in one app. Each sandbox has its own page for its settings, checkpoints, storage, and SSH access.
 - **Use familiar tools.** Open projects in your editor or terminal, browse files, and connect to development servers through local addresses.
 - **Give agents a desktop.** Add an interactive Linux desktop with [Luda tools](docs/SiloUI-LUDA.md) for supported agents, including Codex, Claude Code, and Cursor. Install and sign in to the agents inside the sandbox yourself.
 - **Control GitHub access.** Connect through OAuth and select repositories for each sandbox, with read-only access by default. Alternatively, use a [personal token](docs/SiloUI-GITHUB-PERSONAL-TOKENS.md), which grants the token's full permissions.
 - **Scope API credentials.** Store credentials in your computer's credential store and choose the sandboxes and HTTPS domains that can use them. See [how secrets work](docs/SiloUI-SECRETS.md).
-- **Back up and troubleshoot.** Export local sandbox disks, restore backups as new sandboxes, and search or export logs alongside activity history.
+- **Save and branch state.** Create checkpoints of a sandbox, restore it to an earlier checkpoint, or fork a new sandbox with a copy of its files.
+- **Move sandboxes and troubleshoot.** Export a local sandbox or checkpoint to an export file and import it as a new sandbox on this or another computer. Search or export logs alongside activity history.
 
 ## Install
 
-The VM runtime, base Linux image, and Git tools are bundled. Optional desktop packages download when you add a desktop.
+The sandbox runtime, base Linux image, and Git tools are bundled. Optional desktop packages download when you add a desktop.
 
 | Platform | Requirements | Download |
 | --- | --- | --- |
@@ -29,7 +30,7 @@ The VM runtime, base Linux image, and Git tools are bundled. Optional desktop pa
 
 **macOS:** open the DMG and drag Silo to Applications. The app is not notarized; first launch may require **System Settings → Privacy & Security → Open Anyway**.
 
-**Linux:** in the download directory, run `sudo apt install ./Silo-linux-x64.deb` (use `Silo-linux-arm64.deb` for ARM64). Accept the update-source prompt to receive releases through Software Updater. For AppImage, enable **Allow executing file as program** in its file properties, then launch it. Local VMs require KVM access; GitHub and secrets require a working Secret Service credential store, such as GNOME Keyring.
+**Linux:** in the download directory, run `sudo apt install ./Silo-linux-x64.deb` (use `Silo-linux-arm64.deb` for ARM64). Accept the update-source prompt to receive releases through Software Updater. For AppImage, enable **Allow executing file as program** in its file properties, then launch it. Local sandboxes require KVM access; GitHub and secrets require a working Secret Service credential store, such as GNOME Keyring.
 
 Upgrading an older installation? Read the [release notes](https://github.com/0xpolarzero/silo/releases/latest) for required migration steps.
 
@@ -46,11 +47,11 @@ Stopping a sandbox ends its running programs and preserves its files. Names and 
 
 Install Silo on both computers. You can connect during setup without creating a local sandbox.
 
-1. On the computer that will run the VMs, enable SSH access (**Remote Login** on macOS). In **Settings → Computers**, enable **Allow remote management** and copy the address.
+1. On the computer that will run the sandboxes, enable SSH access (**Remote Login** on macOS). In **Settings → Computers**, enable **Allow remote management** and copy the address.
 2. On your computer, choose **Add → Connect computer…**, paste the address, and follow the SSH setup prompts.
 3. Use its sandboxes alongside your local ones. Choose **Run on** when creating a sandbox to select its computer.
 
-Keep Silo running on the computer hosting the VMs. Manage its GitHub account, secrets, and backups there. See [remote computer setup](docs/SiloUI-REMOTE-COMPUTERS.md) for details.
+Keep Silo running on the computer hosting the sandboxes. Manage its GitHub account, secrets, exports, and imports there. See [remote computer setup](docs/SiloUI-REMOTE-COMPUTERS.md) for details.
 
 ## Develop Silo
 

@@ -3,6 +3,11 @@
 An independent 15-second motion study at 1920 × 1080, 60 fps. Open
 `output/silo-yours.mp4` or `preview.html` to play it.
 
+The rendered media (`output/silo-yours.mp4` and its storyboard) was removed from `main` to keep clones small.
+It is preserved on the `archive/media-and-experiments` branch and in
+[this directory at `df8efdd`](https://github.com/0xpolarzero/silo/tree/df8efdd6ac31b6e5805a58cb2735b9675003a6ba/artifacts/silo-motion-study/output); the recorded verification files and
+checksums remain here.
+
 Ivory, ink black, and orange; oversized condensed typography; a perspective
 machine that separates into independent blocks; animated network paths; a
 layered Linux desktop; permission typography; a six-panel montage; and a

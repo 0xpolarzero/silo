@@ -28,6 +28,20 @@ describe("Network", () => {
     expect(actions.openNetworkPort).toHaveBeenCalledWith("dev",3000)
     expect(screen.queryByText(/silo.test/)).not.toBeInTheDocument()
   })
+  it("shows websites at the sandbox's own host name and offers the 127.0.0.1 address as a fallback", async () => {
+    const named: NetworkState = { workspaces: [{ ...network.workspaces[0], host: "dev-1a2b3c4d.localhost" }] }
+    const {user,actions} = setup({}, named)
+    expect(screen.getByText("http://dev-1a2b3c4d.localhost:43000")).toBeVisible()
+    // Plain TCP services have no host name to separate; they stay at 127.0.0.1.
+    expect(screen.getByText("127.0.0.1:45432")).toBeVisible()
+    expect(screen.getAllByRole("button",{name:"Copy 127.0.0.1:45432"})).toHaveLength(1)
+    await user.click(screen.getByRole("button",{name:"Copy http://dev-1a2b3c4d.localhost:43000"}))
+    expect(await navigator.clipboard.readText()).toBe("http://dev-1a2b3c4d.localhost:43000")
+    await user.click(screen.getByRole("button",{name:"Copy http://127.0.0.1:43000"}))
+    expect(await navigator.clipboard.readText()).toBe("http://127.0.0.1:43000")
+    await user.click(screen.getByRole("button",{name:"Open http://dev-1a2b3c4d.localhost:43000 in Firefox"}))
+    expect(actions.openNetworkPort).toHaveBeenCalledWith("dev",3000)
+  })
   it("adds an explicit mapping with automatic local port and preserves errors", async () => {
     const save = vi.fn().mockRejectedValueOnce(new Error("Local port is already in use.")).mockResolvedValueOnce(undefined)
     const {user} = setup({saveNetworkPort:save})

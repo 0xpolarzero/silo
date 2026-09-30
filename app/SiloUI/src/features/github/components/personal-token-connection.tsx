@@ -34,7 +34,7 @@ export function PersonalTokenConnection({ status, onSave, onRemove }: {
   return <ListCard className="shrink-0">
     <ListRow icon={<ListRowIcon>{busy ? <Loader2 className="size-3.5 animate-spin" /> : connected ? <Check className="size-3.5 text-emerald-600" /> : <KeyRound className="size-3.5" />}</ListRowIcon>}
       title={<h3 className="text-sm">{connected ? `Token connected as @${status.account}` : "Personal access token"}</h3>}
-      detail={status?.message ?? (connected ? "Available to VMs that select Use token." : "Connect a token with the GitHub permissions you choose.")}
+      detail={status?.message ?? (connected ? "Available to sandboxes that select Use token." : "Connect a token with the GitHub permissions you choose.")}
       actions={<div className="flex gap-1">
         <Button size="xs" variant="outline" disabled={busy || !onSave} onClick={() => { setEditing(true) }}>{status?.saved ? "Replace token" : "Add token"}</Button>
         {status?.saved && <Button size="xs" variant="ghost" disabled={busy || !onRemove} onClick={() => void remove()}>Remove token</Button>}

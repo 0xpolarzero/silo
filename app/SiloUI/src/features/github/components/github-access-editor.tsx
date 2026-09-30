@@ -240,7 +240,7 @@ export function GitHubAccessEditor({
   onResetWorkspaceIdentity,
   compactConnection = false,
   connectedTitle = "Connected to GitHub",
-  connectedDetail = "Repository credentials are scoped to each workspace.",
+  connectedDetail = "Repository credentials are scoped to each sandbox.",
   connectionProgress,
   connectedActions,
   notice,
@@ -321,7 +321,7 @@ export function GitHubAccessEditor({
                               <GitBranch aria-hidden="true" className="size-3.5" />
                             </span>
                           </TooltipTrigger>
-                          <TooltipContent>Name and email used for Git commits in this VM.</TooltipContent>
+                          <TooltipContent>Name and email used for Git commits in this sandbox.</TooltipContent>
                         </Tooltip>
                       </TooltipProvider>
                       <Input technical
@@ -403,7 +403,7 @@ export function GitHubAccessEditor({
                                 onChange={() => onWorkspaceRepositoryAccessChange(name, { ...access, authenticationMethod: "token" })} />
                               Use token
                             </label>
-                          </TooltipTrigger><TooltipContent>Full token access. This VM can perform every action permitted by the token, with no additional Silo repository restrictions. Credentials remain outside the VM.</TooltipContent></Tooltip></TooltipProvider>
+                          </TooltipTrigger><TooltipContent>Full token access. This sandbox can perform every action permitted by the token, with no additional Silo repository restrictions. Credentials remain outside the sandbox.</TooltipContent></Tooltip></TooltipProvider>
                         </div>
                         {connectionState === "connected" && access.authenticationMethod !== "token" && (
                           <div className="ml-auto flex flex-wrap items-center justify-end gap-x-4 gap-y-2 text-xs">
@@ -447,7 +447,7 @@ export function GitHubAccessEditor({
                                         <Info aria-hidden="true" className="size-3" />
                                       </Button>
                                     </TooltipTrigger>
-                                    <TooltipContent>Allow Git pushes and GitHub changes, such as issues and pull requests, from this VM.</TooltipContent>
+                                    <TooltipContent>Allow Git pushes and GitHub changes, such as issues and pull requests, from this sandbox.</TooltipContent>
                                   </Tooltip>
                                 </TooltipProvider>
                               </span>

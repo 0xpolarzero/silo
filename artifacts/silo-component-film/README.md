@@ -4,6 +4,11 @@
 Final output: `output/silo-computers.mp4`. Open `preview.html` for comparison
 with the three silent eight-second motion studies.
 
+The rendered media (`output/silo-computers.mp4`) was removed from `main` to keep clones small.
+It is preserved on the `archive/media-and-experiments` branch and in
+[this directory at `df8efdd`](https://github.com/0xpolarzero/silo/tree/df8efdd6ac31b6e5805a58cb2735b9675003a6ba/artifacts/silo-component-film/output); the recorded verification files and
+checksums remain here.
+
 The film follows one project from a remote VM to an SSH workspace, through a
 forwarded development server, into an agent's Linux desktop. The same office
 computer, sandbox, and example application remain identifiable throughout.

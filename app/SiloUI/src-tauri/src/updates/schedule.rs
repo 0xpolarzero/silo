@@ -30,8 +30,9 @@ impl Schedule {
             self.next_check = now;
         }
     }
-    pub(super) fn due(&self, now: SystemTime, enabled: bool, busy: bool, has_update: bool) -> bool {
-        enabled && !busy && !has_update && now >= self.next_check
+    /// `pending`: a verified download or a download/install retry must not be replaced.
+    pub(super) fn due(&self, now: SystemTime, enabled: bool, busy: bool, pending: bool) -> bool {
+        enabled && !busy && !pending && now >= self.next_check
     }
     pub(super) fn completed(&mut self, now: SystemTime, success: bool) {
         self.last_check = now;

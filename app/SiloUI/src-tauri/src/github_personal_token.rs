@@ -85,41 +85,56 @@ pub(super) fn value() -> Result<String, String> {
 fn fingerprint(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
+/// The connected token's fingerprint from memory only, like `value()` without the store.
+fn current_fingerprint() -> Option<String> {
+    if !connected() {
+        return None;
+    }
+    match SECRET.peek() {
+        Some(Ok(Some(token))) => Some(fingerprint(&token.token)),
+        _ => None,
+    }
+}
 fn applied() -> &'static Mutex<HashMap<String, String>> {
     APPLIED.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub(super) fn apply(app: &tauri::AppHandle, name: &str, revision: u64) -> Result<(), String> {
-    let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
-    let d = load(app)?;
-    if d.revision != revision {
-        return Err("GitHub access changed. Applying your latest choices.".into());
-    }
-    // Narrowing has already detached the token; never attach it while access is disabled.
-    if !d.access_enabled {
-        return Ok(());
-    }
-    let token = value()?;
-    let profile = json!({"version":2,"owners":[],"personalToken":token});
-    if crate::runtime::github_policy_is_cached(app, name, &profile)?
-        && applied()
-            .lock()
-            .map_err(|_| "GitHub token state is unavailable.")?
-            .get(&active_key(app, name)?)
-            == Some(&fingerprint(&token))
-    {
-        return Ok(());
-    }
-    crate::runtime::apply_github_policy(app, name, revision, &profile)?;
-    applied()
-        .lock()
-        .map_err(|_| "GitHub token state is unavailable.")?
-        .insert(active_key(app, name)?, fingerprint(&token));
-    active()
-        .lock()
-        .map_err(|_| "GitHub state is unavailable.")?
-        .remove(&active_key(app, name)?);
-    Ok(())
+    // The credential store can wait on a permission prompt; never read it under STATE.
+    let token = value();
+    let key = active_key(app, name)?;
+    outside_state(
+        || {
+            let d = load(app)?;
+            if d.revision != revision {
+                return Err("GitHub access changed. Applying your latest choices.".into());
+            }
+            // Narrowing has already detached the token; never attach it while access is disabled.
+            if !d.access_enabled {
+                return Ok(None);
+            }
+            let token = token?;
+            let profile = json!({"version":2,"owners":[],"personalToken":token});
+            let mut applied = applied()
+                .lock()
+                .map_err(|_| "GitHub token state is unavailable.")?;
+            if crate::runtime::github_policy_is_cached(app, name, &profile)?
+                && applied.get(&key) == Some(&fingerprint(&token))
+            {
+                return Ok(None);
+            }
+            // Record the attachment before `msb modify` runs without STATE, so a narrowing
+            // meanwhile (a switch, removal or Disable access) detaches the token after it.
+            applied.insert(key.clone(), fingerprint(&token));
+            active()
+                .lock()
+                .map_err(|_| "GitHub state is unavailable.")?
+                .remove(&key);
+            Ok(Some(profile))
+        },
+        |profile| crate::runtime::apply_github_policy(app, name, revision, &profile),
+    )?
+    .unwrap_or(Ok(()))
 }
 
 /// Disable access is a global kill switch: no VM keeps the personal token while it is off.
@@ -142,7 +157,9 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
         Ok(cached) => cached.clone(),
         Err(_) => return errors.record_all("GitHub token state is unavailable.".into()),
     };
-    let current = value().ok().map(|token| fingerprint(&token));
+    // Narrowing runs under STATE, so it never opens the credential store (which can wait
+    // on a permission prompt). A token not read yet this session was never attached.
+    let current = current_fingerprint();
     let detach = |name: &str, key: &str| -> Result<(), String> {
         detach_result(
             app,
@@ -188,7 +205,7 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
     }
 }
 fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String> {
-    let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+    let _state = serialize(&STATE);
     let mut d = load(app)?;
     if let Some(removing) = removing {
         d.personal_token_removing = removing;
@@ -215,9 +232,17 @@ fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String>
     result
 }
 
+/// A deleted sandbox no longer holds the token; forget its attachment.
+pub(super) fn forget(key: &str) {
+    applied().lock().unwrap_or_else(PoisonError::into_inner).remove(key);
+}
+/// Time until `check` validates the token again, so the worker can sleep until then.
+pub(super) fn next_check() -> Duration {
+    Duration::from_secs(CHECK_AT.load(Ordering::SeqCst).saturating_sub(now()))
+}
 /// Called by the existing serialized worker. Snapshot reads never touch secure storage.
 pub(super) fn check(app: &tauri::AppHandle) {
-    let Ok(_operation) = TOKEN_OPERATION.try_lock() else {
+    let Some(_operation) = try_serialize(&TOKEN_OPERATION) else {
         return;
     };
     if now() < CHECK_AT.load(Ordering::SeqCst) {
@@ -243,7 +268,7 @@ pub(super) fn check(app: &tauri::AppHandle) {
     if publish(next) {
         if let Err(message) = changed(app, None) {
             // Keep the failed detachment visible and retry it through the normal worker.
-            let _state = STATE.lock().ok();
+            let _state = serialize(&STATE);
             if let Ok(mut d) = load(app) {
                 for name in d
                     .workspaces
@@ -268,9 +293,7 @@ pub async fn save_github_personal_token(
     require_main(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _network = TOKEN_OPERATION
-            .lock()
-            .map_err(|_| "GitHub operation failed.")?;
+        let _network = serialize(&TOKEN_OPERATION);
         // Saving a token is an explicit retry; never leave validation blocked by earlier failures.
         crate::github_http::reset_retries();
         let token = validated(token.trim())?;
@@ -298,9 +321,7 @@ pub async fn remove_github_personal_token(
     require_main(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _network = TOKEN_OPERATION
-            .lock()
-            .map_err(|_| "GitHub operation failed.")?;
+        let _network = serialize(&TOKEN_OPERATION);
         // Detach before deletion so a storage failure cannot leave guest access silently enabled.
         publish(json!({"state":"disconnected","saved":true,"message":"Removing personal token."}));
         changed(&app, Some(true))?;

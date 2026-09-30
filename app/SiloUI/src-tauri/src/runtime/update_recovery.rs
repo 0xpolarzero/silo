@@ -151,6 +151,7 @@ pub(crate) fn running_names(app: &AppHandle) -> Result<Vec<String>, String> {
 /// Caller holds the operation gate (computer scope) for the whole installation,
 /// including every stop.
 pub(crate) fn prepare(app: &AppHandle, consent: bool) -> Result<(), String> {
+    debug_assert!(operation_gate::held(), "update preparation requires the operation gate");
     let paths = runtime_paths(app)?;
     if load(&paths)?.is_some() {
         return Err(
@@ -164,7 +165,11 @@ pub(crate) fn prepare(app: &AppHandle, consent: bool) -> Result<(), String> {
         inspect_exact(&ProcessRunner, &paths, machine)?;
         workspace_action_with(&ProcessRunner, &paths, &host, "stop", &machine.name)
             .map_err(|e| safe_activity_error(&e))
-    })
+    })?;
+    // Only the saved running set resumes after the update; a saved action for any
+    // other VM (for example a failed start kept for Retry) must not start it (D-22).
+    let resuming = machines.into_iter().map(|machine| machine.id).collect();
+    lifecycle_recovery::retire_except(&paths, &resuming).map_err(|e| e.to_string())
 }
 fn stop_selected(
     paths: &RuntimePaths,
@@ -184,6 +189,7 @@ fn stop_selected(
 
 /// Caller holds the operation gate. Each success is persisted, making replay idempotent.
 pub(crate) fn restore_locked(app: &AppHandle) -> Result<(), String> {
+    debug_assert!(operation_gate::held(), "update restore requires the operation gate");
     let paths = runtime_paths(app)?;
     let host = host_resources().map_err(|e| e.to_string())?;
     restore_pending(&paths, |machine| {

@@ -56,7 +56,7 @@ export function UpdatesCard() {
           <p className="mt-1 text-[11px] text-muted-foreground">{percent === undefined ? `${(state.downloadedBytes / 1048576).toFixed(1)} MB downloaded` : `${percent}%`}</p>
         </div>}
         {error && <div role="alert" className="mx-2 mb-2 rounded-md border border-destructive/25 bg-destructive/[.06] p-2 text-xs">
-          <div className="flex items-center justify-between gap-2"><p>{error}</p>{!confirm && <Button size="xs" variant="outline" disabled={busy || (state?.retryAction === "install" && !state.canInstall)} onClick={retry}>Retry</Button>}</div>
+          <div className="flex items-center justify-between gap-2"><p>{error}</p>{!confirm && state?.retryAction !== "relaunch" && <Button size="xs" variant="outline" disabled={busy || (state?.retryAction === "install" && !state.canInstall)} onClick={retry}>Retry</Button>}</div>
           {state?.errorDetails && <details className="mt-1 text-[11px] text-muted-foreground"><summary className="cursor-pointer">Details</summary><p className="mt-1 whitespace-pre-wrap break-words">{state.errorDetails}</p></details>}
         </div>}
         {state?.packageKind === "manual" && state.phase === "available" && <details className="px-2 pb-2 text-[11px] text-muted-foreground">

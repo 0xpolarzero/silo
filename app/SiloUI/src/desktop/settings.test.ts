@@ -159,6 +159,21 @@ describe("native settings transport", () => {
     ])
   })
 
+  it("stops waiting for setup work after a time limit and still saves and completes Quit", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    native.invoke.mockResolvedValue(snapshot())
+    const settings = store()
+    await settings.initialize()
+    const beforeFlush = vi.fn(() => new Promise<void>(() => {}))
+    cleanups.push(await connectSettingsLifecycle(settings, true, beforeFlush, 20))
+    native.handlers.get("settings:flush-request")?.({ payload: null })
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("complete_settings_flush"))
+    expect(native.invoke).not.toHaveBeenCalledWith("cancel_settings_flush")
+    expect(native.invoke.mock.calls.map(([command]) => command)).toEqual([
+      "read_settings", "begin_settings_flush", "flush_settings", "read_settings", "complete_settings_flush",
+    ])
+  })
+
   it("waits for pending updates before acknowledging normal Quit", async () => {
     const write = deferred<ReturnType<typeof snapshot>>()
     let state = snapshot()

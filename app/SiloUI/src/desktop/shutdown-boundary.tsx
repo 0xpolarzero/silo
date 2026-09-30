@@ -15,8 +15,11 @@ import {
   type OperationQueue,
 } from "@/features/application/model/operation-queue"
 
-/** Keep the existing screen visible while the native owner finishes Quit. */
-export function ShutdownBoundary({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
+/**
+ * Keep the existing screen visible while the native owner finishes Quit.
+ * `pendingWork` names frontend setup work Quit waits for (it is not in the queue).
+ */
+export function ShutdownBoundary({ children, compact = false, pendingWork }: { children: ReactNode; compact?: boolean; pendingWork?: string }) {
   const [quitting, setQuitting] = useState(false)
   const [queue, setQueue] = useState<OperationQueue>(emptyOperationQueue)
   const previousFocus = useRef<HTMLElement | null>(null)
@@ -43,9 +46,14 @@ export function ShutdownBoundary({ children, compact = false }: { children: Reac
     if (!quitting) return
     let disposed = false
     let unsubscribe: (() => void) | undefined
-    const read = () => invoke<unknown>("read_operation_queue")
-      .then(value => { if (!disposed) setQueue(operationQueueSchema.parse(value)) })
-      .catch(error => console.error("Silo shutdown queue:", error))
+    // Reads are not ordered: only the latest request's answer may replace the queue.
+    let sequence = 0
+    const read = () => {
+      const request = ++sequence
+      return invoke<unknown>("read_operation_queue")
+        .then(value => { if (!disposed && request === sequence) setQueue(operationQueueSchema.parse(value)) })
+        .catch(error => console.error("Silo shutdown queue:", error))
+    }
     void listen("silo://operation-queue-changed", () => { void read() }).then(stop => {
       if (disposed) { stop(); return }
       unsubscribe = stop
@@ -54,6 +62,8 @@ export function ShutdownBoundary({ children, compact = false }: { children: Reac
     return () => { disposed = true; unsubscribe?.(); setQueue(emptyOperationQueue) }
   }, [quitting])
   const waitingLabel = shutdownWaitingLabel(queue)
+  // The native shutdown entry names the VM it is stopping ("Stopping dev (1 of 2)").
+  const stopping = queue.running.find(entry => entry.kind === "shutdown")?.label
   const cancellable = cancellableRunning(queue)
   const cancelAndQuit = () => { for (const entry of cancellable) void invoke("cancel_operation", { id: entry.id }).catch(error => console.error("Silo cancel operation:", error)) }
   // The status window measures this wrapper before resizing. Preserve its
@@ -72,7 +82,7 @@ export function ShutdownBoundary({ children, compact = false }: { children: Reac
           <Dialog.Title className="sr-only">Quitting Silo</Dialog.Title>
           <div role="status" className="flex max-w-sm flex-col items-center gap-3 px-6 text-center">
             <LoaderCircle aria-hidden="true" strokeWidth={1.5} className={cn("size-6 text-muted-foreground", !settings.reduceMotion && "animate-spin motion-reduce:animate-none")} />
-            <Dialog.Description className="text-[13px] font-medium text-foreground">{waitingLabel ?? "Stopping local sandboxes…"}</Dialog.Description>
+            <Dialog.Description className="text-[13px] font-medium text-foreground">{waitingLabel ?? pendingWork ?? (stopping ? `${stopping}…` : "Stopping local sandboxes…")}</Dialog.Description>
             {waitingLabel && (cancellable.length > 0
               ? <Button type="button" size="sm" variant="outline" onClick={cancelAndQuit}>Cancel and quit</Button>
               : <p className="text-xs text-muted-foreground">Quit will finish once this work completes.</p>)}

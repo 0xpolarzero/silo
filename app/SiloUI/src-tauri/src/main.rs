@@ -44,9 +44,12 @@ mod secrets;
 mod ssh_access;
 mod ssh_connection;
 mod settings;
+mod single_instance;
 mod startup;
 mod status_panel;
+mod sync;
 mod system_integrations;
+mod system_shutdown;
 mod tray;
 mod terminal;
 mod updates;
@@ -57,9 +60,9 @@ use tauri::{Emitter, Manager, WindowEvent};
 fn main() {
     #[cfg(target_os = "linux")]
     if std::env::current_exe().is_ok_and(|path| path == std::path::Path::new("/usr/bin/silo-ui"))
-        && std::path::Path::new("/var/lib/silo/package-update-in-progress").exists()
+        && std::path::Path::new(system_integrations::PACKAGE_UPDATE_MARKER).exists()
     {
-        eprintln!("Silo is being updated. Finish the package update, then open Silo again.");
+        system_integrations::explain_unfinished_package_update();
         return;
     }
 
@@ -75,7 +78,11 @@ fn main() {
         if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
         return;
     }
-    tauri::Builder::default()
+    // Plugins initialize while the app is built, in registration order, and the
+    // setup hook runs only after that. A second launch therefore exits inside
+    // the single-instance plugin before any migration, remote-management or VM work.
+    let app = tauri::Builder::default()
+        .plugin(single_instance::plugin())
         .on_page_load(|webview, _| {
             #[cfg(target_os = "macos")]
             if webview.label() == "main" {
@@ -182,6 +189,7 @@ fn main() {
             backup_controller::choose_backup_destination,
             backup_controller::choose_backup_archive,
             backup_controller::inspect_backup_archive,
+            backup_controller::cancel_backup_inspection,
             backup_controller::reveal_backup_archive,
             backup_controller::start_backup,
             backup_controller::start_restore,
@@ -201,7 +209,6 @@ fn main() {
             runtime::checkpoints::create_checkpoint,
             runtime::checkpoints::fork_checkpoint,
             runtime::checkpoints::restore_checkpoint,
-            backup_controller::retry_workspace_start,
             runtime::read_setup_activity,
             runtime::read_operation_queue,
             runtime::cancel_operation,
@@ -209,7 +216,10 @@ fn main() {
             runtime::change_machine_configuration
         ])
         .setup(|app| {
+            // Tauri panics on a setup error. Explain the failure and exit instead.
+            let result = (|| -> Result<(), Box<dyn std::error::Error>> {
             settings::install(app.handle());
+            system_shutdown::install(app.handle());
             let queue_app = app.handle().clone();
             runtime::OPERATIONS.set_listener(move || {
                 let _ = queue_app.emit("silo://operation-queue-changed", ());
@@ -252,24 +262,56 @@ fn main() {
             runtime::storage::start_monitor(app.handle());
             startup::install(app.handle());
             Ok(())
+            })();
+            if let Err(error) = result {
+                startup_failed(app.handle(), &error.to_string());
+            }
+            Ok(())
         })
         .build(tauri::generate_context!())
-        .expect("failed to build Silo")
-        .run(|_app, _event| {
-            if let tauri::RunEvent::Exit = &_event {
-                ssh_access::close_all();
-                remote_network::close_all();
-            }
-            if let tauri::RunEvent::ExitRequested { api, .. } = &_event {
-                settings::prevent_exit_until_saved(_app, api);
-            }
-            #[cfg(target_os = "macos")]
-            if let tauri::RunEvent::Reopen {
-                has_visible_windows: false,
-                ..
-            } = _event
-            {
-                status_panel::report(status_panel::open_main(_app.clone(), None));
-            }
+        .unwrap_or_else(|error| {
+            eprintln!("Silo could not start: {error}");
+            std::process::exit(1);
         });
+    // tao installs its AppKit delegate while the event loop is created; add the
+    // terminate handler before AppKit finishes launching.
+    #[cfg(target_os = "macos")]
+    system_shutdown::install_terminate_handler(app.handle());
+    app.run(|_app, _event| {
+        if let tauri::RunEvent::Exit = &_event {
+            settings::exit_backstop(_app);
+            ssh_access::close_all();
+            remote_network::close_all();
+        }
+        if let tauri::RunEvent::ExitRequested { api, code, .. } = &_event {
+            settings::prevent_exit_until_saved(_app, api, *code);
+        }
+        #[cfg(target_os = "macos")]
+        if let tauri::RunEvent::Reopen {
+            has_visible_windows: false,
+            ..
+        } = _event
+        {
+            status_panel::report(status_panel::open_main(_app.clone(), None));
+        }
+    });
+}
+
+/// Setup stopped part-way, so some native state the UI relies on is missing. Stop
+/// the UI from using it, explain the failure, and exit without the Quit path: it
+/// would stop VMs that this process never managed.
+fn startup_failed(app: &tauri::AppHandle, error: &str) {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+    eprintln!("Silo could not start: {error}");
+    settings::exit_without_shutdown(app);
+    if let Ok(blank) = "about:blank".parse::<tauri::Url>() {
+        for window in app.webview_windows().values() {
+            let _ = window.navigate(blank.clone());
+        }
+    }
+    app.dialog()
+        .message(format!("Silo could not start.\n\n{error}"))
+        .title("Silo")
+        .kind(MessageDialogKind::Error)
+        .show(|_| std::process::exit(1));
 }

@@ -7,7 +7,7 @@ disposable private repository
 not exercise the guest-side broker path for real hosts. Full report (private,
 credential-free): `deployments/diagnostic-d1/evidence/gate-c-real-provider/report.json`
 (runs `579c97ec`, `c06a34c6`). Script: tracked
-[`experiments/e2b-local/real-provider-qualification.py`](../../experiments/e2b-local/real-provider-qualification.py).
+[`experiments/e2b-local/real-provider-qualification.py`](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/real-provider-qualification.py).
 
 ## Results (9/9 passed)
 
@@ -47,7 +47,7 @@ GraphQL broker policy is a product decision, not resolved here.
 
 ## Addendum (same day): policy-layer revocation with the real provider
 
-[`experiments/e2b-local/real-provider-revocation-qualification.py`](../../experiments/e2b-local/real-provider-revocation-qualification.py)
+[`experiments/e2b-local/real-provider-revocation-qualification.py`](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/real-provider-revocation-qualification.py)
 adds a labeled qualification harness (not the fixture broker): a
 one-placeholder substitution proxy for one allowed real operation (REST read
 of the qualification repo) forwarding through a hostname-only CONNECT

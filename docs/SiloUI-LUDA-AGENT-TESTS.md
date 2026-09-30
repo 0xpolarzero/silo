@@ -7,7 +7,8 @@ acceptance testing, not exhaustive coverage of every agent or GUI application.
 
 ## Environment and method
 
-- Published Silo 1.0.0 macOS ARM64 archive, verified against its release SHA256SUMS.
+- Silo 1.0.0 macOS ARM64 archive, verified against its release SHA256SUMS. That
+  mistaken version was withdrawn; the identical application shipped as 0.9.0.
 - App: `/private/tmp/silo-1.0.0-agent-test/Silo.app`.
 - One isolated CLI-created VM and one VM created through Silo's normal UI, both
   using the released runtime and Ubuntu 24.04 v3 image.
@@ -178,7 +179,7 @@ client approval/sandbox variants remain separate acceptance cases.
 5. Fix failed-removal rendering and recovery in Silo; retain the backend's
    running-VM safety check.
 
-Primary code seams: [Silo desktop startup](https://github.com/0xpolarzero/silo/blob/v1.0.0/app/SiloUI/src-tauri/guest/setup-desktop.sh),
+Primary code seams: [Silo desktop startup](https://github.com/0xpolarzero/silo/blob/v0.9.0/app/SiloUI/src-tauri/guest/setup-desktop.sh),
 [Luda session launcher](https://github.com/0xpolarzero/luda/blob/v0.3.0/src/luda/session.py),
 [reconnect](https://github.com/0xpolarzero/luda/blob/v0.3.0/src/luda/session_reconnect.py),
 [application filtering](https://github.com/0xpolarzero/luda/blob/v0.3.0/src/luda/_app_helper.py),

@@ -1,9 +1,10 @@
 import { Monitor, Power } from "lucide-react"
-import { useRef } from "react"
+import { useRef, type ReactNode } from "react"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { SiloMark } from "@/components/silo-mark"
 import { Button } from "@/components/ui/button"
 import { ListCard, ListRowIcon } from "@/components/list-row"
+import { desktopCommand } from "@/desktop/commands"
 import { useStatusPanelSize } from "@/desktop/use-status-panel-size"
 import { ApplicationShell } from "@/features/application/components/application-shell"
 import { ApplicationCommandMenu } from "@/features/application/components/application-command-menu"
@@ -23,24 +24,45 @@ function LoadingControls() {
 }
 const unavailable = () => {}
 
-export function ApplicationLoading({ machines, statusPanel = false }: { machines: SetupMachineConfiguration[]; statusPanel?: boolean }) {
-  const { settings } = useSettings()
+/**
+ * The status panel's frame while it has no application state (loading or failed).
+ * It sizes the native panel like the loaded view and keeps Open Silo and Quit usable.
+ */
+function StatusPanelFrame({ busy = false, children }: { busy?: boolean; children: ReactNode }) {
   const content = useRef<HTMLDivElement>(null)
   useStatusPanelSize(content)
-  const detail = <span className="flex h-4 items-center"><Skeleton className="h-2.5 w-20" /></span>
-  if (statusPanel) return <div ref={content} role="dialog" aria-label="Silo" aria-busy="true" className="silo-window flex max-h-[520px] w-[380px] flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground">
+  return <div ref={content} role="dialog" aria-label="Silo" aria-busy={busy || undefined} className="silo-window flex max-h-[520px] w-[380px] flex-col overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground">
     <div className="flex max-h-[518px] shrink-0 flex-col overflow-hidden">
-      <span role="status" className="sr-only">Loading sandbox state</span>
-      <div className="shrink-0 px-2 pt-2" />
-      <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">{machines.length ? <ListCard className="border-0"><ol aria-label="Sandboxes" className="divide-y">
-        {machines.map((machine) => <SandboxListItem key={machine.id}><SandboxListRow name={machine.name} kind={machine.kind} detail={detail} actions={<LoadingControls />} /></SandboxListItem>)}
-      </ol></ListCard> : <div className="grid justify-items-center gap-1.5 py-8 text-center"><ListRowIcon><Monitor className="size-3.5" /></ListRowIcon><p className="text-[13px] font-medium">No sandboxes yet</p><p className="text-[11px] text-muted-foreground">Add your first sandbox in Silo.</p></div>}</div>
+      {children}
       <footer className="flex shrink-0 items-center justify-between border-t px-2 py-2">
-        <Button variant="ghost" size="sm" className="gap-2" disabled><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
-        <Button variant="ghost" size="icon-xs" aria-label="Quit Silo" disabled><Power /></Button>
+        <Button variant="ghost" size="sm" className="gap-2" onClick={() => { void desktopCommand("open_main") }}><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
+        <Button variant="ghost" size="icon-xs" aria-label="Quit Silo" onClick={() => { void desktopCommand("quit_app") }}><Power /></Button>
       </footer>
     </div>
   </div>
+}
+
+/** A panel-sized failure for the status window, which must never show the full-window error. */
+export function StatusPanelUnavailable({ message, retry, checking = false }: { message: string; retry?: () => void; checking?: boolean }) {
+  return <StatusPanelFrame>
+    <div role="alert" className="grid justify-items-center gap-1.5 px-4 py-6 text-center">
+      <p className="text-[13px] font-medium">Silo could not load</p>
+      <p className="whitespace-pre-wrap text-[11px] text-muted-foreground select-text">{message}</p>
+      {retry && <Button type="button" variant="outline" size="xs" className="mt-1" disabled={checking} onClick={retry}>{checking ? "Checking…" : "Retry"}</Button>}
+    </div>
+  </StatusPanelFrame>
+}
+
+export function ApplicationLoading({ machines, statusPanel = false }: { machines: SetupMachineConfiguration[]; statusPanel?: boolean }) {
+  const { settings } = useSettings()
+  const detail = <span className="flex h-4 items-center"><Skeleton className="h-2.5 w-20" /></span>
+  if (statusPanel) return <StatusPanelFrame busy>
+    <span role="status" className="sr-only">Loading sandbox state</span>
+    <div className="shrink-0 px-2 pt-2" />
+    <div className="min-h-0 overflow-y-auto overscroll-contain px-2 pb-2">{machines.length ? <ListCard className="border-0"><ol aria-label="Sandboxes" className="divide-y">
+      {machines.map((machine) => <SandboxListItem key={machine.id}><SandboxListRow name={machine.name} kind={machine.kind} detail={detail} actions={<LoadingControls />} /></SandboxListItem>)}
+    </ol></ListCard> : <div className="grid justify-items-center gap-1.5 py-8 text-center"><ListRowIcon><Monitor className="size-3.5" /></ListRowIcon><p className="text-[13px] font-medium">No sandboxes yet</p><p className="text-[11px] text-muted-foreground">Add your first sandbox in Silo.</p></div>}</div>
+  </StatusPanelFrame>
   return <ApplicationShell activeTab="workspaces" workspaceSection="overview" settingsSection="general"
     systemIssueStatus={null} workspaceAttention={{ errors: 0, warnings: 0 }} navigationDisabled
     onTabChange={unavailable} onWorkspaceSectionChange={unavailable} onSettingsSectionChange={unavailable}

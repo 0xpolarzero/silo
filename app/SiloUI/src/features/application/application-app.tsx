@@ -14,6 +14,7 @@ import { ApplicationCommandMenu } from "@/features/application/components/applic
 import { applicationCommands } from "@/features/application/components/application-commands"
 import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
+import { defaultStartupWorkspaceIds } from "@/features/application/model/startup-workspaces"
 import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
 import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
@@ -77,10 +78,9 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
 type ApplicationAppProps = { source: ApplicationSource; actions: ApplicationActions; backup: BackupController; initialRoute?: ApplicationInitialRoute; routeRequest?: ApplicationInitialRoute }
 
 export function ApplicationApp(props: ApplicationAppProps) {
-  const initialWorkspace = props.source.workspaces.find(({ machine }) => machine.name === "dev") ?? props.source.workspaces[0]
   return <SettingsProvider initialSettings={{
     ...props.source.preferences,
-    startupWorkspaceIds: props.source.preferences.startupWorkspaceIds ?? (initialWorkspace ? [initialWorkspace.machine.id] : []),
+    startupWorkspaceIds: props.source.preferences.startupWorkspaceIds ?? defaultStartupWorkspaceIds(props.source.workspaces),
   }}><ApplicationContent {...props} /></SettingsProvider>
 }
 
@@ -159,14 +159,22 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     })
   }, [source.workspaces])
 
+  // The latest native snapshot, for saves that settle after later snapshots arrived.
+  const latestSource = useRef(source)
+  useLayoutEffect(() => { latestSource.current = source }, [source])
+
+  // Each optimistic state yields only to its own authoritative field, so a configuration
+  // snapshot never discards a push in flight, or the reverse.
   useEffect(() => {
     // The native bridge clears or replaces the pending operation alongside its authoritative snapshot.
     // oxlint-disable-next-line react/set-state-in-effect
     setSandboxConfigurationOperation(source.sandboxConfigurationOperation)
+  }, [source.sandboxConfigurationOperation])
+  useEffect(() => {
     // The native bridge replaces local push progress with its authoritative operation result.
     // oxlint-disable-next-line react/set-state-in-effect
     setRepositoryPushOperations(source.repositoryPushOperations)
-  }, [source.sandboxConfigurationOperation, source.repositoryPushOperations])
+  }, [source.repositoryPushOperations])
 
   function changeApplicationPreferences(next: ApplicationPreferenceSelection) {
     void updateSettings(applicationPreferenceChanges(applicationPreferences, next))
@@ -182,11 +190,15 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       result: null,
       error: null,
     })
-    // A stale-baseline rejection is handled inline by the editor; drop the optimistic
-    // applying state here so it does not linger, and re-raise so the editor can react.
-    const outcome = Promise.resolve(actions.saveMachineConfiguration(candidate, baseline))
-    return outcome.catch((cause) => {
-      setSandboxConfigurationOperation(source.sandboxConfigurationOperation)
+    const outcome = actions.saveMachineConfiguration(candidate, baseline)
+    // Without a promise, only the next snapshot reports the change; keep the optimistic state until then.
+    if (!outcome || typeof outcome.then !== "function") return Promise.resolve()
+    // Once the save settles the native snapshot is authoritative: adopt the latest one. A no-op
+    // save publishes nothing, and a late stale-baseline rejection must not restore the operation
+    // from when the save began. Re-raise a rejection so the editor can react.
+    const settle = () => setSandboxConfigurationOperation(latestSource.current.sandboxConfigurationOperation)
+    return outcome.then(settle, (cause: unknown) => {
+      settle()
       throw cause
     })
   }
@@ -234,6 +246,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const canCheckUpdates = Boolean(updates && !updates.pending && !["checking", "downloading", "installing"].includes(updates.snapshot?.phase ?? ""))
   // The review popover anchors to the sandbox list's Add button, so show the list first.
   const openImport = () => { navigation.selectWorkspaceSection("overview"); navigation.closeSandbox(); void transfer.beginImport() }
+  const createSandbox = () => { navigation.selectWorkspaceSection("overview"); setNewSandboxRequest(++nextSandboxRequest.current) }
   const nativeMenu = useAppMenu({ ready: true, busy: installingUpdate,
     canGoBack: navigation.canGoBack, canGoForward: navigation.canGoForward,
     canCreateSandbox, canImport, canCheckUpdates, sidebarCollapsed,
@@ -246,7 +259,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         if (canCheckUpdates) updates?.check()
         break
       case "new-sandbox":
-        if (canCreateSandbox) { navigation.selectWorkspaceSection("overview"); setNewSandboxRequest(++nextSandboxRequest.current) }
+        if (canCreateSandbox) createSandbox()
         break
       case "import-sandbox":
         if (canImport) openImport()
@@ -303,6 +316,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
           } }} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
+            source={applicationSource}
             onSectionChange={navigation.selectWorkspaceSection}
             network={source.network}
             networkError={source.networkError}
@@ -322,6 +336,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
             onLogQueryChange={setLogQuery}
             onPushRepository={pushRepository}
             onDismissRepositoryPush={dismissRepositoryPush}
+            onCreateSandbox={canCreateSandbox && !installingUpdate ? createSandbox : undefined}
           />
         )}
       </section>

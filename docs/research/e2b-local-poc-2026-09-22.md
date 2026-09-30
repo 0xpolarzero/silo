@@ -5,7 +5,7 @@ host VM ran three separate Firecracker desktop VMs. Agent GUI operations,
 human takeover, memory-and-disk checkpoints, forks, pause/resume, controller
 reconnection and recovery across a clean host shutdown all passed.
 
-The implementation is in [experiments/e2b-local](../../experiments/e2b-local/README.md).
+The implementation is in [experiments/e2b-local](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/README.md).
 It provides a local browser control page and HTTP API, separately from Silo's
 shipped Tauri backend. No production Silo runtime, user VM, Docker context or
 cloud account was changed. This establishes feasibility, not a completed Silo
@@ -149,7 +149,7 @@ Bluefin. A desktop's 1.3 GiB installed filesystem and a full host deployment's
 
 ## Reproduce and inspect
 
-Follow the [runbook](../../experiments/e2b-local/README.md). The current control
+Follow the [runbook](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/README.md). The current control
 page is `http://127.0.0.1:13800`. Test desktops remain available for inspection;
 their one-hour runtime timeout is configured to pause, not kill. Use the
 provided `stop` command for an orderly host shutdown.

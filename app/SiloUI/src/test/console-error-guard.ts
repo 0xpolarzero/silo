@@ -18,13 +18,6 @@ const allowedConsoleErrors: ReadonlyArray<{ pattern: RegExp; reason: string }> =
     pattern: /^Silo shutdown queue: ZodError/,
     reason: "K-05: shared native bridge mock that rejects unhandled commands",
   },
-  {
-    // NetworkPage renders an unkeyed list child ("edits protocol without fixing
-    // an automatic port" in network-page.test.tsx). Production bug in
-    // features/application/pages/network-page.tsx, owned by WP-C.
-    pattern: /unique "key" prop[\s\S]*passed a child from NetworkPage/,
-    reason: "Untracked: reported to the coordinator for WP-C",
-  },
 ]
 
 let recorded: string[] = []

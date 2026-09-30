@@ -5,10 +5,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window"
 
 import "./index.css"
 import { createApplicationService, emptyApplicationCatalog } from "@/desktop/applications"
+import { StatusPanelUnavailable } from "@/desktop/application-loading"
 import { createNativeDependencyStore } from "@/desktop/dependencies"
 import { desktopViewerRoute } from "@/desktop/linux-desktop-state"
 import { NativeLinuxDesktopViewer } from "@/desktop/linux-desktop-viewer"
-import { ProductionSurface, Unavailable } from "@/desktop/production-surface"
+import { ProductionSurface, StartupLoading, Unavailable } from "@/desktop/production-surface"
 import { createProductionSource } from "@/desktop/production-source"
 import { createDesktopSettingsStore, connectSettingsLifecycle } from "@/desktop/settings"
 import { connectSystemIntegrationLifecycle, createDesktopSystemIntegrationStore } from "@/desktop/system-integrations"
@@ -18,67 +19,95 @@ import { SystemIntegrationProvider } from "@/features/preferences/system-integra
 import { initializeTheme } from "@/features/preferences/theme"
 
 const desktop = isTauri()
-const statusPanel = desktop && getCurrentWindow().label === "status"
+const windowLabel = desktop ? getCurrentWindow().label : ""
+const statusPanel = windowLabel === "status"
 document.documentElement.classList.toggle("native-status", statusPanel)
-document.documentElement.classList.toggle("native-material", desktop && getCurrentWindow().label === "main" && /Mac/.test(navigator.platform))
+document.documentElement.classList.toggle("native-material", windowLabel === "main" && /Mac/.test(navigator.platform))
 const settings = createDesktopSettingsStore({}, !statusPanel)
 const production = createProductionSource()
+// One root for the session: the loading shell, a startup failure, Retry and the app
+// render into it. Hot reload unmounts it, so the old tree never stays subscribed to
+// a disposed source when this module runs again.
+const root = createRoot(document.getElementById("root")!)
+const cleanup: Array<() => void> = [() => settings.dispose(), () => production.dispose()]
+let disposed = false
+/** Stop `stop` on hot reload, or at once when it arrives after the module was disposed. */
+function track(stop: () => void) { if (disposed) stop(); else cleanup.push(stop) }
+if (import.meta.hot) import.meta.hot.dispose(() => {
+  disposed = true
+  root.unmount()
+  for (const stop of cleanup.splice(0).reverse()) stop()
+})
 
-async function start() {
+function start() {
   if (!desktop) {
-    createRoot(document.getElementById("root")!).render(<Unavailable message="Open Silo in the desktop app." />)
+    root.render(<Unavailable message="Open Silo in the desktop app." />)
     return
   }
 
   const viewer = desktopViewerRoute()
-  if (getCurrentWindow().label.startsWith("desktop-") && viewer) {
-    createRoot(document.getElementById("root")!).render(<NativeLinuxDesktopViewer {...viewer} />)
+  if (windowLabel.startsWith("desktop-") && viewer) {
+    root.render(<NativeLinuxDesktopViewer {...viewer} />)
     return
   }
 
+  // Rust has already shown the window: paint before any native call.
+  root.render(<StartupLoading statusPanel={statusPanel} />)
   const dependencies = !statusPanel ? createNativeDependencyStore() : null
   dependencies?.retry()
-  const stopSettingsLifecycle = await connectSettingsLifecycle(settings, !statusPanel, () => production.drainSetup())
-  if (!statusPanel) await invoke("initialize_settings")
-  await settings.initialize()
-  await production.loadConfiguration()
+  if (dependencies) track(() => dependencies.dispose())
+  // Independent of the reads below. Quit must reach the settings flush as early as possible.
+  void connectSettingsLifecycle(settings, !statusPanel, () => production.drainSetup()).then(track)
+  // Only feeds the loading skeleton; its failure leaves the list empty.
+  void production.loadConfiguration()
   const systemIntegrations = createDesktopSystemIntegrationStore(settings)
-  if (!statusPanel) await systemIntegrations.initialize()
-  const stopSystemLifecycle = !statusPanel ? connectSystemIntegrationLifecycle(systemIntegrations) : () => {}
+  track(() => systemIntegrations.dispose())
+  if (!statusPanel) {
+    // Reports its own failures; the switches stay disabled until it has read the OS state.
+    void systemIntegrations.initialize()
+    track(connectSystemIntegrationLifecycle(systemIntegrations))
+  }
   // Resolved defaults are local to each webview's store, not saved settings.
   // Both windows must discover them; the provider refreshes them on focus.
   const applicationService = createApplicationService(settings)
-  const applicationCatalog = await applicationService.read().catch((error: unknown) => {
-    console.error("Silo applications:", error)
-    return emptyApplicationCatalog
-  })
-  const stopTheme = initializeTheme(settings)
-  void production.initialize().catch((error: unknown) => console.error("Silo live updates:", error))
+  let started = false
 
-  if (import.meta.hot) import.meta.hot.dispose(() => {
-    dependencies?.dispose()
-    production.dispose()
-    stopTheme()
-    stopSettingsLifecycle()
-    stopSystemLifecycle()
-    systemIntegrations.dispose()
-    settings.dispose()
-  })
+  // The only steps a Retry repeats: settings must be ready before the app renders.
+  async function boot() {
+    if (!statusPanel) await invoke("initialize_settings")
+    await settings.initialize()
+    const applicationCatalog = await applicationService.read().catch((error: unknown) => {
+      console.error("Silo applications:", error)
+      return emptyApplicationCatalog
+    })
+    if (disposed) return
+    if (!started) {
+      started = true
+      track(initializeTheme(settings))
+      void production.initialize().catch((error: unknown) => console.error("Silo live updates:", error))
+    }
+    root.render(
+      <StrictMode>
+        <SettingsProvider store={settings}>
+          <SystemIntegrationProvider store={systemIntegrations}>
+            <ApplicationCatalogProvider initialCatalog={applicationCatalog} service={applicationService}>
+              <ProductionSurface source={production} dependencyStore={dependencies} statusPanel={statusPanel} />
+            </ApplicationCatalogProvider>
+          </SystemIntegrationProvider>
+        </SettingsProvider>
+      </StrictMode>,
+    )
+  }
 
-  createRoot(document.getElementById("root")!).render(
-    <StrictMode>
-      <SettingsProvider store={settings}>
-        <SystemIntegrationProvider store={systemIntegrations}>
-          <ApplicationCatalogProvider initialCatalog={applicationCatalog} service={applicationService}>
-            <ProductionSurface source={production} dependencyStore={dependencies} statusPanel={statusPanel} />
-          </ApplicationCatalogProvider>
-        </SystemIntegrationProvider>
-      </SettingsProvider>
-    </StrictMode>,
-  )
+  function run() {
+    void boot().catch((error: unknown) => {
+      if (disposed) return
+      const message = `Silo startup failed: ${error instanceof Error ? error.message : String(error)}. No sandbox state changed.`
+      const retry = () => { root.render(<StartupLoading statusPanel={statusPanel} />); run() }
+      root.render(statusPanel ? <StatusPanelUnavailable message={message} retry={retry} /> : <Unavailable message={message} retry={retry} retryLabel="Retry" />)
+    })
+  }
+  run()
 }
 
-void start().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error)
-  createRoot(document.getElementById("root")!).render(<Unavailable message={`Silo startup failed: ${message}. No sandbox state changed.`} />)
-})
+start()

@@ -29,6 +29,12 @@ const SILO_KEY_COMMENT: &str = "Silo remote management";
 const VERSION: u32 = 2;
 const LIMIT: usize = 4 * 1024 * 1024;
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
+/// Serializes `config.json` reads and writes. Every holder reloads the file (written
+/// atomically) after locking, so a panic under the lock leaves no in-memory state to
+/// distrust: recover instead of reporting "Settings unavailable" until restart (C-25).
+fn config_lock() -> std::sync::MutexGuard<'static, ()> {
+    crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings")
+}
 static REMOTE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -201,10 +207,7 @@ fn status(config: &Config) -> ManagementStatus {
             .unwrap_or_else(|| format!("{user}@{name}")),
         addresses,
         name,
-        error: START_ERROR
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone(),
+        error: crate::sync::lock_or_recover(&START_ERROR, "remote management status").clone(),
     }
 }
 /// Why remote management is not working although Silo runs, such as another Silo
@@ -216,11 +219,11 @@ fn record_start_error(error: Option<String>) {
     if let Some(error) = &error {
         eprintln!("Remote management is unavailable: {error}");
     }
-    *START_ERROR.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
+    *crate::sync::lock_or_recover(&START_ERROR, "remote management status") = error;
 }
 #[tauri::command]
 pub fn remote_management_status() -> Result<ManagementStatus, String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     Ok(status(&read_config()?))
 }
 /// The executable the bridge link should name: the AppImage file itself when running
@@ -278,7 +281,7 @@ fn link_bridge_for_this_account() -> Result<(), String> {
 }
 #[tauri::command]
 pub fn set_remote_management(app: AppHandle, enabled: bool) -> Result<ManagementStatus, String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     if enabled {
         link_bridge_for_this_account()?;
     }
@@ -295,14 +298,14 @@ pub fn set_remote_management(app: AppHandle, enabled: bool) -> Result<Management
 }
 #[tauri::command]
 pub fn remote_host_list() -> Result<Vec<RemoteHost>, String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     Ok(read_config()?.hosts)
 }
 #[tauri::command]
-pub async fn remove_remote_host(host_id: String) -> Result<(), String> {
+pub async fn remove_remote_host(app: AppHandle, host_id: String) -> Result<(), String> {
     // Closing tunnels and viewers waits for their processes; keep it off the main thread.
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let _guard = config_lock();
         let mut config = read_config()?;
         config.hosts.retain(|h| h.id != host_id);
         save_config(&config)?;
@@ -310,6 +313,10 @@ pub async fn remove_remote_host(host_id: String) -> Result<(), String> {
         poll_succeeded(&host_id);
         crate::remote_network::close_host(&host_id);
         crate::desktop_viewer::close_host(&host_id);
+        // This computer's SSH keys for that computer's sandboxes are no longer needed (C-15).
+        if let Ok(paths) = crate::runtime::runtime_paths(&app) {
+            let _ = crate::ssh_connection::forget_host(&paths.home, &host_id);
+        }
         Ok(())
     })
     .await
@@ -483,14 +490,11 @@ fn silo_key() -> Option<PathBuf> {
         .filter(|key| key.is_file())
 }
 fn preferred_identity(address: &str) -> Identity {
-    let any = ANY_KEY_ADDRESSES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .contains(address);
+    let any = crate::sync::lock_or_recover(&ANY_KEY_ADDRESSES, "remote SSH identities").contains(address);
     if any { Identity::AnyKey } else { Identity::SiloOnly }
 }
 fn remember_identity(address: &str, identity: Identity) {
-    let mut addresses = ANY_KEY_ADDRESSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut addresses = crate::sync::lock_or_recover(&ANY_KEY_ADDRESSES, "remote SSH identities");
     match identity {
         Identity::AnyKey => addresses.insert(address.to_owned()),
         Identity::SiloOnly => addresses.remove(address),
@@ -881,7 +885,7 @@ pub(crate) fn call_remote(
 ) -> Result<Value, String> {
     crate::runtime::shutdown::ensure_accepting_operations()?;
     let host = {
-        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let _guard = config_lock();
         read_config()?
             .hosts
             .into_iter()
@@ -991,7 +995,7 @@ pub async fn connect_remote_host(address: String, replace: Option<bool>) -> Resu
             name: name.into(),
             address,
         };
-        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let _guard = config_lock();
         save_connected_host(&directory()?, host, &self::name(), replace.unwrap_or(false))
     })
     .await
@@ -1077,10 +1081,10 @@ fn revoked(error: &str) -> bool {
     .any(|marker| error.starts_with(marker))
 }
 pub(crate) fn poll_succeeded(host: &str) {
-    HEALTH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(host);
+    crate::sync::lock_or_recover(&HEALTH, "remote computer health").remove(host);
 }
 pub(crate) fn poll_failed(host: &str, error: &str) -> PollFailure {
-    let mut health = HEALTH.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut health = crate::sync::lock_or_recover(&HEALTH, "remote computer health");
     let entry = health.entry(host.to_owned()).or_insert(Health { failures: 0, last_error: String::new(), at: Instant::now() });
     entry.failures += 1;
     entry.last_error = error.to_owned();
@@ -1099,7 +1103,7 @@ pub(crate) fn offline(host: &str) -> Option<String> {
     offline_at(host, Instant::now())
 }
 fn offline_at(host: &str, now: Instant) -> Option<String> {
-    let health = HEALTH.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let health = crate::sync::lock_or_recover(&HEALTH, "remote computer health");
     health
         .get(host)
         .filter(|entry| entry.failures >= CLOSE_AFTER_FAILURES && now.duration_since(entry.at) < OFFLINE_FOR)
@@ -1421,7 +1425,7 @@ fn listen(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 pub(crate) fn ensure_management_enabled() -> Result<(), String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     if !read_config()?.enabled { return Err("Remote management is disabled on this computer.".into()); }
     Ok(())
 }
@@ -1431,7 +1435,7 @@ fn authorize(request: &Value) -> Result<Config, String> {
 }
 fn authorize_in(dir: &Path, request: &Value) -> Result<Config, String> {
     let config = {
-        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let _guard = config_lock();
         read_config_in(dir)?
     };
     validate_authorization(&config, request)?;
@@ -1565,6 +1569,18 @@ fn connection_open(stream: &UnixStream) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn poisoned_settings_lock_is_recovered() {
+        let _ = std::thread::spawn(|| {
+            let _guard = CONFIG_LOCK.lock();
+            panic!("poison the remote settings lock for this test");
+        })
+        .join();
+        assert!(CONFIG_LOCK.is_poisoned());
+        // Taking the lock again succeeds; callers then reload config.json.
+        drop(config_lock());
+        CONFIG_LOCK.clear_poison();
+    }
     #[test]
     fn sandbox_name_is_read_from_a_remote_snapshot() {
         let state = json!({"workspaces":[{"machine":{"id":"a","name":"one"}},{"machine":{"id":"b","name":"two"}}]});
@@ -2385,7 +2401,9 @@ mod dispatch_tests {
     }
     /// Quoted `word.word` literals: the method names a dispatcher source matches on.
     fn method_literals(source: &str) -> std::collections::BTreeSet<String> {
-        source
+        // Only the dispatcher code, not test fixtures (guest labels such as `silo.managed`).
+        let code = source.split("#[cfg(test)]").next().unwrap_or(source);
+        code
             .split('"')
             .skip(1)
             .step_by(2)
@@ -2650,6 +2668,6 @@ mod ssh_authorization_tests {
 }
 
 pub(crate) fn log_identity() -> Result<(String, String), String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = config_lock();
     Ok((read_config()?.host_id, name()))
 }

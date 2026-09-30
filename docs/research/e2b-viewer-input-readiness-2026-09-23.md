@@ -8,7 +8,7 @@ later section records implementation and a fresh live run.
 
 The PoC creates a disposable AppKit `WKWebView` that loads a supplied URL. It
 does not register Tauri IPC or add an automation bridge
-([harness](/Users/polarzero/code/projects/microsandbox-workspaces/experiments/e2b-local/viewer-harness.swift:1)).
+([harness](https://github.com/0xpolarzero/silo/blob/3113be16e29e451724d31482471a51119337e4f2/experiments/e2b-local/viewer-harness.swift#L1)).
 The latest fresh desktop run showed the Xfce desktop, Firefox and Mousepad in
 WKWebView and reported native text entry, but it did not verify a native file
 save. Automated Control chords did not act as expected. The historical 2026-09-22
@@ -20,7 +20,7 @@ parameter while the desktop's global mode was `agent`; the gateway separately
 chose guest port 6081 in agent mode and 6080 in human mode.
 The guest launches two x11vnc servers: port 5900 allows input, while 5901 starts
 with `-viewonly`; websockify exposes them on 6080 and 6081 respectively
-([desktop startup](/Users/polarzero/code/projects/microsandbox-workspaces/experiments/e2b-local/start-desktop.sh:15)).
+([desktop startup](https://github.com/0xpolarzero/silo/blob/3113be16e29e451724d31482471a51119337e4f2/experiments/e2b-local/start-desktop.sh#L15)).
 The viewer proxy chose the port from the shared desktop record on the host,
 not from the browser query. A proposed observer URL parameter-change test was
 rejected by automatic browser review and was not attempted through another route.
@@ -29,12 +29,12 @@ Before the fix, tickets carried the logical desktop ID, epoch and expiry. They h
 per-viewer ID or owner role. `mode()` changes one workspace-wide value and
 increments its epoch; `viewer_session()` mints a ticket for any running
 workspace; and the route sends every viewer to the same port selected by that
-global mode ([ticket code](/Users/polarzero/code/projects/microsandbox-workspaces/experiments/e2b-local/server.py:77),
-[mode code](/Users/polarzero/code/projects/microsandbox-workspaces/experiments/e2b-local/runtime.py:409),
-[session endpoint](/Users/polarzero/code/projects/microsandbox-workspaces/experiments/e2b-local/server.py:296)).
+global mode ([ticket code](https://github.com/0xpolarzero/silo/blob/3113be16e29e451724d31482471a51119337e4f2/experiments/e2b-local/server.py#L77),
+[mode code](https://github.com/0xpolarzero/silo/blob/3113be16e29e451724d31482471a51119337e4f2/experiments/e2b-local/runtime.py#L409),
+[session endpoint](https://github.com/0xpolarzero/silo/blob/3113be16e29e451724d31482471a51119337e4f2/experiments/e2b-local/server.py#L296)).
 The control page refreshes state every four seconds and mints a new ticket
 whenever the selected workspace's ID, epoch or status changes
-([refresh loop](/Users/polarzero/code/projects/microsandbox-workspaces/experiments/e2b-local/index.html:19)).
+([refresh loop](https://github.com/0xpolarzero/silo/blob/3113be16e29e451724d31482471a51119337e4f2/experiments/e2b-local/index.html#L19)).
 
 This created a concrete falsifiable ownership risk: after viewer A took
 control, A and B's old epoch tickets should stop working. But after either page
@@ -112,7 +112,7 @@ IAB's click opens File; the same visible File target in WKWebView gets hover but
 does not open; native text does reach Mousepad; and direct Ctrl+S and Super+S
 each insert only `s`. The harness has no custom event translation or automation
 bridge, so there is no source evidence for a harness-side click rewrite
-([harness](/Users/polarzero/code/projects/microsandbox-workspaces/experiments/e2b-local/viewer-harness.swift:1)).
+([harness](https://github.com/0xpolarzero/silo/blob/3113be16e29e451724d31482471a51119337e4f2/experiments/e2b-local/viewer-harness.swift#L1)).
 noVNC v1.6.0 registers separate canvas `mousemove`, `mousedown`, and `mouseup`
 handlers and turns these events into VNC pointer messages
 ([noVNC RFB source](https://github.com/novnc/noVNC/blob/v1.6.0/core/rfb.js#L3101-L3125)).

@@ -1,4 +1,4 @@
-# Test dependencies and VM backups in the real app
+# Test dependencies, export and import in the real app
 
 The native app at `app/SiloUI` uses real VM state and operations. It has no fixture launch flags, fake operation
 results or settings-directory overrides.
@@ -11,7 +11,7 @@ From the repository root:
 npm --prefix app/SiloUI test
 npm --prefix app/SiloUI run typecheck
 npm --prefix app/SiloUI run lint
-cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml
+cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -- --test-threads=1
 RUSTUP_TOOLCHAIN=1.94.0 npm --prefix app/SiloUI run desktop:build:debug
 codesign --verify --deep --strict \
   app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app
@@ -72,39 +72,59 @@ GitHub authentication, repository cloning/pushing and other unimplemented
 workspace tools remain separate work. Their actions return explicit errors;
 empty lists do not pretend that discovery or synchronization succeeded.
 
-## Backup
+## Export a sandbox
 
-1. Open Backup, choose Create backup, select the disposable VM, then choose a
-   destination through the native folder picker.
-2. For a running VM, confirm Stop and back up. Watch the existing progress card:
-   stopping, capturing storage, restarting and verifying the archive.
-3. Success must name a real archive in the chosen folder. Previously running VMs
-   should run again. A restart failure must preserve the valid archive and show
-   Retry start; recovery succeeds only after the VM is confirmed Running.
-4. Quit and reopen Silo. The completed archive and chosen destination remain.
-5. Start another backup and cancel while it is copying. Confirm cancellation.
-   Incomplete output is removed; previous completed archives stay intact.
-6. An unavailable or full destination must show an error, not success. Unknown
-   required space is omitted rather than estimated from compressed archive size.
+The Backup page was removed. Each local sandbox is exported on its own, and
+progress and results appear as a background notification.
 
-## Restore and the new selector
+1. Open a disposable local sandbox's menu (in the sandbox list or on its page)
+   and choose **Export…**, then choose a destination folder through the native
+   folder picker. Remote sandboxes offer no Export.
+2. Export starts as soon as the folder is chosen. A running sandbox keeps
+   running. The notification shows the capture and verification phases.
+3. Success, **Exported**, must name a real `.silo-backup` export file in the
+   chosen folder, with its size. **Show in Finder** (**Show in folder** on Linux)
+   reveals it.
+4. Start another export and choose **Cancel** in the notification while it is
+   capturing, then confirm **Stop**. The incomplete file is removed; earlier
+   export files stay intact.
+5. An unavailable or full destination must show an error with **Retry**, not
+   success. Unknown required space is omitted rather than estimated.
 
-1. Choose Restore and select the actual backup file through the native picker.
-2. Review its contents. A multi-VM archive offers a compact VM selector. Changing
-   it updates the suggested `<source>-restored` name; a name you typed is retained.
-3. Enter a new name and restore. An existing name must be rejected without
-   changing that VM. An invalid archive must fail before creating a VM.
-4. The result is a new stopped VM. Start it and confirm both root and `/workspace`
-   files survived. Configured storage sizes and Git identity must also survive.
-   Running programs and unsaved memory are not restored.
-5. The source VM and prior archives remain intact. Cancelling a restore removes
-   only its newly owned partial VM and disk, never another same-name VM.
+## Export a checkpoint
+
+1. Open the sandbox's page, then its **Checkpoints** tab. Create a checkpoint if
+   none exists.
+2. Choose **Export…** from a checkpoint's menu and pick a folder. The
+   notification reads **Exporting checkpoint “name”**, then **Checkpoint
+   exported**. The export file contains that checkpoint's disks, not the current
+   state and not the rest of the checkpoint history.
+
+## Import an export file
+
+1. In the sandbox list choose **Add → Import sandbox…** (or **File → Import
+   Sandbox…**) and select the export file through the native picker.
+2. Silo checks the file before asking anything. An invalid or damaged file shows
+   **This export cannot be imported** with its reason and creates nothing.
+3. The review shows the file's size and sandbox. The suggested name is
+   `<source>-imported`; a name you type is retained. An existing name must be
+   rejected without changing that sandbox.
+4. Choose **Import**. The notification ends with **Imported name**, "Stopped and
+   verified.", and **Open**. The result is a new stopped sandbox. Start it and
+   confirm both root and `/workspace` files survived. Configured storage sizes
+   and Git identity must also survive. Running programs, memory and checkpoint
+   history are not imported.
+5. The source sandbox and earlier export files remain intact. A failed or
+   cancelled import removes only its newly created sandbox and disk, never
+   another sandbox with the same name.
 
 ## Automated live regression
 
 The ignored Rust test
 `real_backup_restore_preserves_root_and_workspace_without_original_cache` uses
-production create, identity, backup and restore functions with disposable paths.
+production create, identity, export and import functions with disposable paths.
+`real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk` covers
+checkpoint export the same way.
 It requires the built app and a working host hypervisor. Use the bundled runtime,
 which Tauri signs with the Hypervisor entitlement; the raw build-cache executable
 cannot boot a macOS VM:
@@ -118,10 +138,10 @@ cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml \
 ```
 
 These variables exist only in the compiled test harness, not the application.
-The test writes distinct root/workspace markers, backs up, and deletes the
-isolated original runtime/cache/volumes. It restores into different runtime
+The test writes distinct root/workspace markers, exports, and deletes the
+isolated original runtime/cache/volumes. It imports into different runtime
 homes, first empty and then already containing an independently created VM.
-It starts restored VMs, verifies files and identity, and checks that the existing
+It starts imported VMs, verifies files and identity, and checks that the existing
 VM and its cached disks remain intact. It cleans up its own VMs. It never uses existing user VM data.
 
 ## Coverage limits
@@ -130,10 +150,13 @@ macOS is the available live verification host. Unit tests cover failure mapping,
 archive traversal/integrity, cancellation, name collisions and resource handling.
 Linux code and packaging inputs are covered by source and focused tests, but
 neither Linux architecture is live-qualified on this Mac. Run the same real
-create/backup/restore flow on supported arm64 and x86_64 Linux before release.
+create/export/import flow on supported arm64 and x86_64 Linux before release.
 An ad-hoc debug signature is not notarization or release-signing verification.
 
 ## Recorded evidence, 2026-09-08
+
+This record predates the per-sandbox Export and Import flow: it describes the
+removed Backup page, whose backups and restores are now exports and imports.
 
 The production `Silo.app` built successfully and passed
 `codesign --verify --deep --strict`. In its native window, accessibility checks

@@ -47,7 +47,26 @@ export function createDesktopSettingsStore(initialSettings: SettingsPatch, main:
   return createSettingsStore(backend, initialSettings)
 }
 
-export async function connectSettingsLifecycle(store: SettingsStore, main: boolean, beforeFlush: () => Promise<void> = async () => {}) {
+/**
+ * How long Quit waits for setup work (onboarding sandbox creation, GitHub
+ * verification) before saving settings. Silo's native shutdown then waits for
+ * any sandbox operation that is still running, and the Quit overlay names it
+ * and offers to cancel it, instead of an unexplained "Stopping local sandboxes…".
+ */
+export const SETUP_DRAIN_LIMIT_MS = 5_000
+
+function withinLimit(work: () => Promise<void>, limitMs: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const limit = new Promise<void>((resolve) => {
+    timer = setTimeout(() => {
+      console.warn("Silo settings shutdown: setup work is still running; saving settings without waiting for it.")
+      resolve()
+    }, limitMs)
+  })
+  return Promise.race([work(), limit]).finally(() => clearTimeout(timer))
+}
+
+export async function connectSettingsLifecycle(store: SettingsStore, main: boolean, beforeFlush: () => Promise<void> = async () => {}, beforeFlushLimitMs = SETUP_DRAIN_LIMIT_MS) {
   let stop: (() => void) | undefined
   let connecting: Promise<void> | null = null
   let disposed = false
@@ -59,7 +78,7 @@ export async function connectSettingsLifecycle(store: SettingsStore, main: boole
           ? await listen("settings:flush-request", () => {
               void invoke("begin_settings_flush")
                 .catch((error: unknown) => console.error("Silo settings shutdown acknowledgment:", error))
-                .then(beforeFlush)
+                .then(() => withinLimit(beforeFlush, beforeFlushLimitMs))
                 .then(() => store.flush())
                 .then(() => {
                   // A write-protected settings file must not block Quit: the file is

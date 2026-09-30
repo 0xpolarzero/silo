@@ -45,6 +45,8 @@ export interface SandboxDetailEditing {
 }
 
 export interface SandboxDetailControls {
+  /** Whether the page holding this sandbox is visible; background refresh stops while it is not. Default true. */
+  pageActive?: boolean
   onBack: () => void
   activeTab: SandboxDetailTab
   onSelectTab: (tab: SandboxDetailTab) => void
@@ -219,10 +221,10 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
       {draft && !draft.editing && <div className="border-b border-border">{inlineForm}</div>}
       {useLive
         ? rows.length > 0
-          ? <div className="divide-y divide-border">{rows.map(({ workspace: portWorkspace, port }) => {
+          ? <div className="divide-y divide-border">{rows.map(({ workspace: portWorkspace, port, host }) => {
               const key = `${target}:${port.port}`
               if (draft?.editing && draft.port === String(port.port)) return <div key={key} className="last:*:border-b-0">{inlineForm}</div>
-              const address = networkAddress(port)
+              const address = networkAddress(port, host)
               const stateText = networkPortState(portWorkspace, port, controller.error, controller.errors)
               return <ListRow
                 key={key}
@@ -235,7 +237,7 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
                   {port.message && <span className={port.state === "unknown" ? "text-destructive" : "text-muted-foreground"}>· {port.message}</span>}
                 </span>}
                 actions={<div className="flex shrink-0 items-center gap-0.5 text-muted-foreground">
-                  <NetworkPortRowActions controller={controller} workspace={portWorkspace} port={port} state={stateText} browser={browser} />
+                  <NetworkPortRowActions controller={controller} workspace={portWorkspace} port={port} state={stateText} browser={browser} host={host} />
                 </div>}
               />
             })}</div>
@@ -442,7 +444,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="pt-4">
-            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview"} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
+            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview" && controls.pageActive !== false} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} /></TabsContent>
             {showCheckpoints && <TabsContent value="checkpoints">
               <CheckpointPanel workspace={workspace} target={target} actions={actions} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
             </TabsContent>}

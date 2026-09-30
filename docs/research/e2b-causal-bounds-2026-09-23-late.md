@@ -11,7 +11,7 @@ tree and the VM-private `/var/lib/e2b/verification/` directories.
 ## D1: exact-ID fault at the real `ResumeSandbox` call boundary
 
 The previously unexecuted
-[`d1-resume-allocation-exact-id.patch`](../../experiments/e2b-local/patches/d1-resume-allocation-exact-id.patch)
+[`d1-resume-allocation-exact-id.patch`](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/patches/d1-resume-allocation-exact-id.patch)
 was built and run in the owned VM for the first time.
 
 - Disposable copy of the captured public tree (manifest base: the pristine
@@ -54,7 +54,7 @@ distinct boundaries.
 ## D2: actual `fsync` EIO on the pinned release binary
 
 The prepared strace preflight
-([`run-sync-probe.sh`](../../experiments/e2b-local/d2-report/run-sync-probe.sh))
+([`run-sync-probe.sh`](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/d2-report/run-sync-probe.sh))
 passed in a disposable `golang:1.26.8-bookworm` container with strace 6.19:
 `PASS: actual File.Sync syscall returned injected EIO on exact target;
 unrelated sync succeeded`.

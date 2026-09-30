@@ -672,11 +672,21 @@ fn virtualization_check() -> DependencyCheck {
             Ok(file) => file,
             Err(error) => return kvm_open_failure(error),
         };
-        use std::os::fd::AsRawFd;
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
         // KVM_GET_API_VERSION is _IO(KVMIO, 0x00). It queries only and never creates a VM.
         let version = unsafe { libc::ioctl(device.as_raw_fd(), 0xAE00) };
         return if version == 12 {
-            DependencyCheck::pass(id, title, "KVM API 12 available")
+            // KVM_CREATE_VM is _IO(KVMIO, 0x01) with the default machine type. It
+            // fails when firmware disabled virtualization or another hypervisor
+            // (VirtualBox, VMware) holds it. The empty VM is closed immediately.
+            let vm = unsafe { libc::ioctl(device.as_raw_fd(), 0xAE01, 0) };
+            kvm_create_vm_result(if vm < 0 {
+                Err(io::Error::last_os_error())
+            } else {
+                // SAFETY: KVM_CREATE_VM returned a new descriptor this process owns.
+                drop(unsafe { OwnedFd::from_raw_fd(vm) });
+                Ok(())
+            })
         } else if version < 0 {
             DependencyCheck::failure(
                 id,
@@ -698,8 +708,50 @@ fn virtualization_check() -> DependencyCheck {
 }
 
 #[cfg(any(target_os = "linux", test))]
+const KVM_FIRMWARE_GUIDANCE: &str = "Turn on hardware virtualization (Intel VT-x or AMD-V/SVM) in your computer’s firmware (BIOS/UEFI) settings, then restart. Inside a VM, enable nested virtualization on its host. Then retry checks.";
+
+/// ENODEV/ENXIO: the KVM module is loaded but the CPU's virtualization support
+/// is disabled in firmware or unavailable.
+#[cfg(any(target_os = "linux", test))]
+fn kvm_hardware_disabled(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::ENODEV | libc::ENXIO))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn kvm_create_vm_result(result: io::Result<()>) -> DependencyCheck {
+    let (id, title) = ("system-virtualization", "Virtualization");
+    match result {
+        Ok(()) => DependencyCheck::pass(id, title, "KVM API 12 available"),
+        Err(error) if error.raw_os_error() == Some(libc::EBUSY) => DependencyCheck::failure(
+            id,
+            title,
+            CheckStatus::Failed,
+            "Another hypervisor is using hardware virtualization, so KVM cannot create VMs.",
+            "Quit other virtualization software such as VirtualBox or VMware, then retry checks.",
+        ),
+        Err(error) if kvm_hardware_disabled(&error) => DependencyCheck::failure(
+            id,
+            title,
+            CheckStatus::Failed,
+            "KVM is installed, but hardware virtualization is unavailable.",
+            KVM_FIRMWARE_GUIDANCE,
+        ),
+        Err(error) => DependencyCheck::failure(
+            id,
+            title,
+            CheckStatus::Unavailable,
+            format!("KVM could not create a test VM: {error}"),
+            "Retry checks. If this keeps happening, check that KVM works on this host, for example with kvm-ok.",
+        ),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn kvm_open_failure(error: io::Error) -> DependencyCheck {
     let (status, detail, recovery) = match error.kind() {
+        _ if kvm_hardware_disabled(&error) => (CheckStatus::Failed,
+            "/dev/kvm exists, but hardware virtualization is unavailable.".to_owned(),
+            KVM_FIRMWARE_GUIDANCE),
         io::ErrorKind::NotFound => (CheckStatus::Unavailable,
             "/dev/kvm is unavailable on this host.".to_owned(),
             "Enable hardware virtualization in your host settings and enable KVM using your Linux distribution’s instructions. Inside a VM, enable nested virtualization on its host. Then retry checks."),
@@ -1134,19 +1186,25 @@ mod tests {
 
     #[test]
     fn checked_in_runtime_patches_match_packaged_build_pins() {
-        let files = [
-            ("../../patches/microsandbox-silo-network-0.7.2.patch", include_bytes!("../../patches/microsandbox-silo-network-0.7.2.patch").as_slice()),
-            ("../../patches/microsandbox-restore-policy-0.7.2.patch", include_bytes!("../../patches/microsandbox-restore-policy-0.7.2.patch").as_slice()),
-            ("../../patches/microsandbox-create-stopped-0.7.2.patch", include_bytes!("../../patches/microsandbox-create-stopped-0.7.2.patch").as_slice()),
-            ("../../patches/microsandbox-adopt-owned-disk-0.7.2.patch", include_bytes!("../../patches/microsandbox-adopt-owned-disk-0.7.2.patch").as_slice()),
-            ("../../patches/microsandbox-log-retention-desktop-start-0.7.2.patch", include_bytes!("../../patches/microsandbox-log-retention-desktop-start-0.7.2.patch").as_slice()),
-            ("../../patches/microsandbox-restore-root-capacity-0.7.2.patch", include_bytes!("../../patches/microsandbox-restore-root-capacity-0.7.2.patch").as_slice()),
-        ];
-        assert_eq!(RUNTIME_INPUTS.patches.len(), files.len());
-        for (input, (path, bytes)) in RUNTIME_INPUTS.patches.iter().zip(files) {
-            assert_eq!(input.path, path.trim_start_matches("../../"));
-            assert_eq!(format!("{:x}", Sha256::digest(bytes)), input.sha256);
+        // runtime-inputs.json is the single list of pinned patches. Every listed
+        // patch must match its checked-in bytes, and every checked-in patch must
+        // be listed, so adding a patch cannot silently skip this check.
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+        let mut listed = std::collections::BTreeSet::new();
+        for input in &RUNTIME_INPUTS.patches {
+            assert!(input.path.starts_with("patches/") && !input.path.contains(".."), "{}", input.path);
+            let bytes = fs::read(root.join(&input.path))
+                .unwrap_or_else(|error| panic!("{}: {error}", input.path));
+            assert_eq!(format!("{:x}", Sha256::digest(&bytes)), input.sha256, "{}", input.path);
+            assert!(listed.insert(input.path.clone()), "{} is listed twice", input.path);
         }
+        let checked_in: std::collections::BTreeSet<_> = fs::read_dir(root.join("patches"))
+            .unwrap()
+            .map(|entry| format!("patches/{}", entry.unwrap().file_name().to_string_lossy()))
+            .filter(|path| path.ends_with(".patch"))
+            .collect();
+        assert_eq!(checked_in, listed);
+        assert!(!listed.is_empty());
     }
 
     #[test]
@@ -1215,6 +1273,30 @@ mod tests {
         for check in [missing, denied, transient] {
             assert!(!check.remediation.unwrap().contains("Reinstall"));
         }
+    }
+
+    #[test]
+    fn kvm_without_hardware_virtualization_points_to_firmware_settings_not_retry() {
+        for errno in [libc::ENODEV, libc::ENXIO] {
+            let check = kvm_open_failure(io::Error::from_raw_os_error(errno));
+            assert_eq!(check.status, CheckStatus::Failed, "{errno}");
+            let remediation = check.remediation.unwrap();
+            assert!(remediation.contains("firmware"), "{remediation}");
+            assert!(!remediation.starts_with("Retry checks"), "{remediation}");
+        }
+    }
+
+    #[test]
+    fn kvm_vm_creation_failure_names_another_hypervisor_or_the_error() {
+        assert!(kvm_create_vm_result(Ok(())).status == CheckStatus::Pass);
+        let busy = kvm_create_vm_result(Err(io::Error::from_raw_os_error(libc::EBUSY)));
+        assert_eq!(busy.status, CheckStatus::Failed);
+        assert!(busy.remediation.unwrap().contains("VirtualBox"));
+        let firmware = kvm_create_vm_result(Err(io::Error::from_raw_os_error(libc::ENODEV)));
+        assert!(firmware.remediation.unwrap().contains("firmware"));
+        let other = kvm_create_vm_result(Err(io::Error::from_raw_os_error(libc::ENOMEM)));
+        assert_eq!(other.status, CheckStatus::Unavailable);
+        assert!(other.detail.contains("could not create a test VM"));
     }
 
     #[test]

@@ -132,15 +132,20 @@ class HistoryStore {
     const expandedRows = update(this.snapshot.expandedRows)
     if (expandedRows !== this.snapshot.expandedRows) this.update({ expandedRows })
   }
-  refresh = (): Promise<void> => {
+  /** `follow`: continue each owner's previous snapshot, reading only appended records. */
+  refresh = (follow = false): Promise<void> => {
     if (this.inFlight) return this.inFlight
     this.update({ busy: true, loadingOlder: false })
-    this.inFlight = this.fetchFirst().finally(() => this.finish())
+    this.inFlight = this.fetchFirst(follow).finally(() => this.finish())
     return this.inFlight
   }
-  private async fetchFirst() {
-    const settled = await Promise.allSettled(this.requests.map(async ({ workspace, request }): Promise<CachedResult> => ({ workspace, request, page: await this.loader(request), cursors: new Set() })))
+  private async fetchFirst(follow: boolean) {
     const previous = new Map(this.snapshot.results.map(result => [ownerKey(result.workspace), result]))
+    const settled = await Promise.allSettled(this.requests.map(async ({ workspace, request }): Promise<CachedResult> => {
+      const snapshot = follow ? previous.get(ownerKey(workspace))?.page.snapshot : undefined
+      // The stored request stays a plain search: pagination and export never follow.
+      return { workspace, request, page: await this.loader(snapshot ? { ...request, follow: snapshot } : request), cursors: new Set() }
+    }))
     const results: CachedResult[] = []
     this.errors.clear()
     this.failedPaging.clear()
@@ -227,8 +232,9 @@ export function useLogHistory(options: Options) {
   }, [snapshot.results, workspaces])
   const rows = useMemo(() => chronologicalRows(results), [results])
   const refresh = useCallback(() => active && !invalidRange ? history.refresh() : Promise.resolve(), [history, active, invalidRange])
+  const follow = useCallback(() => active && !invalidRange ? history.refresh(true) : Promise.resolve(), [history, active, invalidRange])
   const loadOlder = useCallback(() => active && !invalidRange ? history.loadOlder() : Promise.resolve(), [history, active, invalidRange])
   const retry = useCallback(() => active && !invalidRange ? history.retry() : Promise.resolve(), [history, active, invalidRange])
   const unsupportedNotice = useMemo(() => unsupportedLogsNotice(results), [results])
-  return { ...snapshot, results, rows, unsupportedNotice, hasOlder: results.some(result => Boolean(result.page.nextCursor)), refresh, loadOlder, retry, setScrollTop: history.setScrollTop, setExpandedRows: history.setExpandedRows }
+  return { ...snapshot, results, rows, unsupportedNotice, hasOlder: results.some(result => Boolean(result.page.nextCursor)), refresh, follow, loadOlder, retry, setScrollTop: history.setScrollTop, setExpandedRows: history.setExpandedRows }
 }

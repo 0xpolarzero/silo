@@ -119,7 +119,7 @@ The health observer polls every 30 seconds in the real app; notification timing
 is compressed. Its title and body match the implementation. Successful backups
 do not produce native success notifications. The demo does not claim they do.
 
-Production components supply GitHub, configured secrets, backup progress/results,
+Production components supply GitHub, configured secrets, export progress/results,
 menu-bar sandbox rows, the app shell, inventory, remote settings, and networking.
 Private interactive forms use controlled, seekable adapters. macOS chrome,
 notifications, editor, browser, and terminal are illustrations. No backend,
@@ -128,7 +128,7 @@ Keychain, VM, SSH, or external service is called.
 Implementation references: [remote ownership](SiloUI-REMOTE-COMPUTERS.md),
 [GitHub page](../app/SiloUI/src/features/application/pages/github-page.tsx),
 [secrets](SiloUI-SECRETS.md),
-[backup page](../app/SiloUI/src/features/application/pages/backup-page.tsx),
+[sandbox export and import](../app/SiloUI/src/features/application/components/sandbox-transfer.tsx),
 [notification events](../app/SiloUI/src-tauri/src/notifications.rs), and
 [menu-bar controls](../app/SiloUI/src/features/status-bar/status-bar.tsx).
 
