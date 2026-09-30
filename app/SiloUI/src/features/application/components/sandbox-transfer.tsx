@@ -92,8 +92,6 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
   backupRef.current = backup
   const optionsRef = useRef(options)
   optionsRef.current = options
-  // The running export's checkpoint name (if any); used for toast titles across navigation.
-  const checkpointRef = useRef<string | undefined>(undefined)
   // Retry handler for the current operation, replayed from a failure toast's Retry action.
   const retryRef = useRef<(() => void) | undefined>(undefined)
   const reviewDraftRef = useRef<Extract<ImportReview, { kind: "review" }> | null>(null)
@@ -120,7 +118,8 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
     try { destination = await controller.actions.chooseDestination() }
     catch (error) { showOperationFailure(TRANSFER_TOAST_ID, "Could not choose a folder", { description: `${errorText(error)} No export was created.`, native: false }); return null }
     if (!destination) return null
-    checkpointRef.current = checkpoint?.name
+    // Another export or import is running: leave its toast and Retry untouched (E-52).
+    if (backupRef.current.state.operation?.kind === "running") return null
     retryRef.current = () => { void exportSandbox(sandboxName, checkpoint) }
     // The toast, driven by the backup state, reports every outcome; only a verified export resolves.
     return backupRef.current.actions.exportAndVerify(destination, [sandboxName], checkpoint?.id).catch(() => null)
@@ -166,7 +165,7 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
 
     if (operation.kind === "running") {
       const title = isExport
-        ? (checkpointRef.current ? `Exporting checkpoint “${checkpointRef.current}”` : `Exporting ${operation.archive.sandboxes.join(", ") || "sandbox"}`)
+        ? (operation.archive.checkpointName ? `Exporting checkpoint “${operation.archive.checkpointName}”` : `Exporting ${operation.archive.sandboxes.join(", ") || "sandbox"}`)
         : `Importing ${operation.targetName ?? "sandbox"}`
       const phase = operation.phases.find((entry) => entry.tone === "running") ?? operation.phases.at(-1)
       const onCancel = () => backupRef.current.actions.cancelOperation()
@@ -187,7 +186,7 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
 
     if (operation.outcome === "success") {
       const archive = operation.archive
-      const title = isExport ? (checkpointRef.current ? "Checkpoint exported" : "Exported") : `Imported ${operation.targetName ?? archive.sandboxes[0] ?? "sandbox"}`
+      const title = isExport ? (archive.checkpointName ? "Checkpoint exported" : "Exported") : `Imported ${operation.targetName ?? archive.sandboxes[0] ?? "sandbox"}`
       const action = isExport
         ? { label: revealLabel(), onClick: () => {
             backupRef.current.actions.revealArchive(archive).catch((error) => showActionFailure("Could not reveal the export", errorText(error), undefined, { native: false }))
@@ -223,7 +222,6 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
     onRetry={() => { closeReview(); void beginImport() }}
     onImport={(archive, newName, sourceName) => {
       reviewDraftRef.current = { kind: "review", archive, sourceName, newName }
-      checkpointRef.current = undefined
       retryRef.current = () => { if (reviewDraftRef.current) setReview(reviewDraftRef.current) }
       backupRef.current.actions.startRestore(archive, newName, sourceName)
       setReview(null)

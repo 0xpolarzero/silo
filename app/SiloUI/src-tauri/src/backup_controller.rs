@@ -28,6 +28,9 @@ struct Archive {
     size: String,
     destination: String,
     sandboxes: Vec<String>,
+    /// The checkpoint an export packages, so titles do not depend on UI memory (E-52).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    checkpoint_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -341,6 +344,7 @@ fn archive_from(path: &Path, inspected: &backup::ArchiveInspection) -> Archive {
             .to_string_lossy()
             .into_owned(),
         sandboxes: inspected.sandboxes.clone(),
+        checkpoint_name: None,
     }
 }
 
@@ -483,6 +487,7 @@ pub(crate) async fn inspect_backup_archive(
                         .to_string_lossy()
                         .into_owned(),
                     sandboxes: Vec::new(),
+                    checkpoint_name: None,
                 },
                 valid: false,
                 reason: Some(error.to_string()),
@@ -794,6 +799,7 @@ fn claim_export(
         size: "Unknown".into(),
         destination,
         sandboxes: sandboxes.to_vec(),
+        checkpoint_name: checkpoint_name.map(Into::into),
     };
     let journal = recovery::Journal::backup(archive.clone(), sandboxes.to_vec(), checkpoint_id);
     let operation_id = journal.identity().to_string();
@@ -903,7 +909,10 @@ fn run_backup(
     let operation = match result {
         Ok(archive) => Operation::Result {
             operation: "backup",
-            archive,
+            archive: Archive {
+                checkpoint_name: pending_archive.checkpoint_name,
+                ..archive
+            },
             running_names: Vec::new(),
             target_name: None,
             outcome: "success",
@@ -1013,11 +1022,63 @@ fn failed_transfer(
     }
 }
 
+/// Shown while an export or import waits behind other sandbox work (E-52).
+const QUEUED_PHASE: &str = "Waiting for other sandbox work";
+
+/// Marks a running export as queued: a waiting phase leads, its work waits.
+fn show_queued(controller: &Controller) {
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(Operation::Running { phases, .. }) = view.operation.as_mut() {
+        if phases.first().is_some_and(|phase| phase.title == QUEUED_PHASE) {
+            return;
+        }
+        for phase in phases.iter_mut() {
+            phase.tone = "waiting";
+        }
+        phases.insert(
+            0,
+            Phase {
+                title: QUEUED_PHASE.into(),
+                detail: "Starts when earlier sandbox changes finish.".into(),
+                tone: "running",
+            },
+        );
+    }
+}
+
+/// Ends a queued phase once the export's turn came. Returns whether it changed.
+fn show_admitted(controller: &Controller) -> bool {
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let Some(Operation::Running { phases, .. }) = view.operation.as_mut() else {
+        return false;
+    };
+    if !phases
+        .first()
+        .is_some_and(|phase| phase.title == QUEUED_PHASE && phase.tone == "running")
+    {
+        return false;
+    }
+    phases[0].tone = "succeeded";
+    if let Some(work) = phases.get_mut(1) {
+        work.tone = "running";
+    }
+    true
+}
+
+/// Waits for the computer-wide operation turn. `on_queued` runs once if the
+/// turn is not immediate; it runs under the gate's lock, so keep it short.
 fn mutation_guard(
     cancellation: &backup::Cancellation,
     kind: runtime::operation_gate::OperationKind,
     label: &str,
     cancellable: bool,
+    on_queued: &dyn Fn(),
 ) -> Result<runtime::operation_gate::OperationGuard<'static>, TransferError> {
     // Export and import change shared state and wait their turn (computer scope).
     // A queued export stays cancellable and gives up if the work ahead never ends.
@@ -1025,9 +1086,13 @@ fn mutation_guard(
         return Err(TransferError::cancelled());
     }
     let started = std::time::Instant::now();
+    let queued = std::cell::Cell::new(false);
     let mut guard = runtime::OPERATIONS
         .kind(kind)
         .acquire_while(runtime::operation_gate::Scope::Computer, None, label, &|| {
+            if !queued.replace(true) {
+                on_queued();
+            }
             !cancellation.cancelled() && started.elapsed() < RESTORE_TIMEOUT
         })
         .map_err(|error| match error {
@@ -1058,7 +1123,19 @@ fn backup_work(
     checkpoint_id: Option<&str>,
     cancellation: &backup::Cancellation,
 ) -> Result<Archive, TransferError> {
-    let _guard = mutation_guard(cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true)?;
+    let _guard = mutation_guard(
+        cancellation,
+        runtime::operation_gate::OperationKind::Export,
+        "Exporting sandbox",
+        true,
+        &|| {
+            show_queued(controller);
+            publish(app, controller);
+        },
+    )?;
+    if show_admitted(controller) {
+        publish(app, controller);
+    }
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if names.is_empty() {
@@ -1375,6 +1452,7 @@ fn begin_import(
             .to_string_lossy()
             .into_owned(),
         sandboxes: source_name.iter().cloned().collect(),
+        checkpoint_name: None,
     };
     if let Err(error) = recovery::begin(
         &controller,
@@ -1538,7 +1616,13 @@ fn restore_at_paths(
     progress: &dyn Fn(&str),
 ) -> Result<(), TransferError> {
     progress("Preparing import");
-    let _guard = mutation_guard(cancellation, runtime::operation_gate::OperationKind::Import, "Importing sandbox", false)?;
+    let _guard = mutation_guard(
+        cancellation,
+        runtime::operation_gate::OperationKind::Import,
+        "Importing sandbox",
+        false,
+        &|| progress(QUEUED_PHASE),
+    )?;
     let original = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if original
         .machines
@@ -1822,6 +1906,7 @@ mod tests {
             size: "1 GB".into(),
             destination: "/backups".into(),
             sandboxes: vec!["dev".into()],
+            checkpoint_name: None,
         }
     }
 
@@ -2286,14 +2371,14 @@ mod tests {
         let guard = runtime::OPERATIONS.computer("Contended work").unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = mutation_guard(&backup::Cancellation::default(), runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true).map(|_| ());
+            let result = mutation_guard(&backup::Cancellation::default(), runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {}).map(|_| ());
             sender.send(result).unwrap();
         });
         assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
         let cancellation = backup::Cancellation::default();
         cancellation.cancel();
         assert!(
-            mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true)
+            mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {})
                 .err()
                 .expect("a cancelled wait must not acquire the gate")
                 .cancelled
@@ -2592,6 +2677,91 @@ mod tests {
         finish_inspection(&controller, "third");
         assert!(!cancel_inspection(&controller, "third"));
         assert!(!third.cancelled());
+    }
+
+    #[test]
+    fn a_queued_export_shows_that_it_waits_and_then_its_own_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(directory.path().join("backup-history.json")));
+        let claimed = claim_export(
+            &controller,
+            directory.path(),
+            directory.path().to_string_lossy().into_owned(),
+            &["dev".into()],
+            Some("checkpoint-1".into()),
+            Some("Before upgrade"),
+        )
+        .unwrap();
+        let titles = |controller: &Controller| match &controller.view.lock().unwrap().operation {
+            Some(Operation::Running { phases, .. }) => phases
+                .iter()
+                .map(|phase| (phase.title.clone(), phase.tone))
+                .collect::<Vec<_>>(),
+            _ => panic!("expected a running export"),
+        };
+        let work = vec![("Using checkpoint \u{201c}Before upgrade\u{201d}".to_string(), "running")];
+        assert_eq!(titles(&controller), work);
+
+        let other = runtime::OPERATIONS.computer("Other sandbox work").unwrap();
+        let (queued, admitted) = (std::sync::mpsc::channel(), std::sync::mpsc::channel());
+        let (worker_controller, cancellation) = (controller.clone(), claimed.cancellation.clone());
+        let (queued_sender, admitted_sender) = (queued.0, admitted.0);
+        let worker = std::thread::spawn(move || {
+            let guard = mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {
+                show_queued(&worker_controller);
+                queued_sender.send(()).unwrap();
+            })
+            .unwrap();
+            show_admitted(&worker_controller);
+            admitted_sender.send(()).unwrap();
+            drop(guard);
+        });
+        queued.1.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            titles(&controller),
+            vec![
+                ("Waiting for other sandbox work".to_string(), "running"),
+                (work[0].0.clone(), "waiting"),
+            ]
+        );
+        drop(other);
+        admitted.1.recv_timeout(Duration::from_secs(5)).unwrap();
+        worker.join().unwrap();
+        assert_eq!(
+            titles(&controller),
+            vec![
+                ("Waiting for other sandbox work".to_string(), "succeeded"),
+                (work[0].0.clone(), "running"),
+            ]
+        );
+        // The checkpoint's name travels with the export, so titles survive a reload.
+        let archive = serde_json::to_value(&claimed.archive).unwrap();
+        assert_eq!(archive["checkpointName"], "Before upgrade");
+        let journal = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
+        assert!(journal.contains("Before upgrade"), "{journal}");
+    }
+
+    #[test]
+    fn an_export_admitted_at_once_keeps_only_its_work_phase() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let claimed = claim_export(
+            &controller,
+            directory.path(),
+            directory.path().to_string_lossy().into_owned(),
+            &["dev".into()],
+            None,
+            None,
+        )
+        .unwrap();
+        let guard = mutation_guard(&claimed.cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| panic!("not queued")).unwrap();
+        show_admitted(&controller);
+        drop(guard);
+        assert!(matches!(
+            &controller.view.lock().unwrap().operation,
+            Some(Operation::Running { phases, .. }) if phases.len() == 1 && phases[0].tone == "running"
+        ));
+        assert!(serde_json::to_value(&claimed.archive).unwrap().get("checkpointName").is_none());
     }
 
     #[test]

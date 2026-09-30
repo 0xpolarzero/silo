@@ -554,7 +554,10 @@ pub(super) fn recover_at_paths(
                 // check it again before reporting it as this export.
                 return Ok(match controller.service.inspect_archive(path, cancellation) {
                     Ok(checked) if checked.sandboxes == *names => {
-                        let archive = archive_from(path, &checked);
+                        let archive = Archive {
+                            checkpoint_name: journal.archive.checkpoint_name.clone(),
+                            ..archive_from(path, &checked)
+                        };
                         result(archive, "success", "Export complete", "Silo verified this export after relaunching.", None)
                     }
                     _ => result(

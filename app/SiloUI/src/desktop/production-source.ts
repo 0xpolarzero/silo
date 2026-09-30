@@ -122,6 +122,7 @@ const applicationSourceShape = z.object({
 
 const backupArchiveShape = z.object({
   name: z.string().min(1), archivePath: z.string().min(1), completedLabel: z.string(), size: z.string(), destination: z.string(), sandboxes: z.array(z.string()),
+  checkpointName: z.string().optional(),
 }).strict()
 const backupPhaseShape = z.object({ title: z.string(), detail: z.string(), tone: z.enum(["waiting", "running", "succeeded", "failed"]) }).strict()
 const backupOperationShape = z.discriminatedUnion("kind", [

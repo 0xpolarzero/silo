@@ -102,7 +102,8 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
   function startBackup(destination: string, sandboxes: string[], checkpointId?: string) {
     const base = sandboxes.length === 1 ? sandboxes[0] : "Silo-Export"
     const name = `${base}${checkpointId ? "-checkpoint" : ""}-${new Date().toISOString().slice(0, 10)}.silo-backup`
-    start("backup", { name, archivePath: `${destination}/${name}`, completedLabel: "Just now", size: source.backup.compressedSize, destination, sandboxes }, sandboxes)
+    const checkpointName = checkpointId ? source.workspaces.find(({ machine }) => machine.name === sandboxes[0])?.checkpoints?.find(({ id }) => id === checkpointId)?.name : undefined
+    start("backup", { name, archivePath: `${destination}/${name}`, completedLabel: "Just now", size: source.backup.compressedSize, destination, sandboxes, ...(checkpointName && { checkpointName }) }, sandboxes)
   }
 
   return {

@@ -65,6 +65,36 @@ describe("export notifications", () => {
     expect(exportAndVerify).toHaveBeenCalledTimes(2)
   })
 
+  it("titles a checkpoint export from the backend state, even after a reload", async () => {
+    const checkpointArchive = { ...archive, checkpointName: "Before upgrade" }
+    const running: BackupOperation = { kind: "running", operation: "backup", archive: checkpointArchive, runningNames: [], progress: 0, phases: [{ title: "Waiting for other sandbox work", detail: "", tone: "running" }] }
+    const { rerender } = render(<Harness backup={controller({ operation: running })} />)
+    expect(await screen.findByText("Exporting checkpoint “Before upgrade”")).toBeInTheDocument()
+    const done: BackupOperation = { kind: "result", operation: "backup", archive: checkpointArchive, runningNames: [], outcome: "success", title: "Export complete", message: "Sandbox exported." }
+    rerender(<Harness backup={controller({ operation: done })} />)
+    expect(await screen.findByText("Checkpoint exported")).toBeInTheDocument()
+  })
+
+  it("starting another export while one runs changes neither its title nor its Retry", async () => {
+    const running: BackupOperation = { kind: "running", operation: "backup", archive, runningNames: [], progress: 0, phases: [{ title: "Capture and verify", detail: "", tone: "running" }] }
+    const chooseDestination = vi.fn().mockResolvedValue("/Volumes/Backups")
+    const exportAndVerify = vi.fn()
+    let transfer: SandboxTransfer | undefined
+    const view = (operation: BackupOperation) => <SettingsProvider initialSettings={{ theme: "light" }}>
+      <Toaster />
+      <Capture backup={controller({ operation }, { chooseDestination, exportAndVerify })} onTransfer={(value) => { transfer = value }} />
+    </SettingsProvider>
+    const { rerender } = render(view(running))
+    expect(await screen.findByText("Exporting dev")).toBeInTheDocument()
+    await expect(transfer!.exportSandbox("dev", { id: "checkpoint-1", name: "Other" })).resolves.toBeNull()
+    expect(exportAndVerify).not.toHaveBeenCalled()
+    expect(screen.getByText("Exporting dev")).toBeInTheDocument()
+    // The export this hook never started fails: there is nothing of its own to retry.
+    rerender(view({ kind: "result", operation: "backup", archive, runningNames: [], outcome: "failed", title: "Export failed", message: "Disk full" }))
+    expect(await screen.findByText("Export failed")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+  })
+
   it("does nothing when the folder picker is cancelled", async () => {
     const backup = controller({}, { chooseDestination: vi.fn().mockResolvedValue(null) })
     render(<Harness backup={backup} />)

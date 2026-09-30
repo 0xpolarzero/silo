@@ -5,6 +5,8 @@ export interface BackupArchive {
   size: string
   destination: string
   sandboxes: string[]
+  /** The checkpoint an export packages; absent for an export of the current state. */
+  checkpointName?: string
 }
 
 export type BackupOperationKind = "backup" | "restore"
