@@ -1,14 +1,14 @@
 # Bundled MicroSandbox runtime
 
-Silo builds the MicroSandbox v0.7.2 source with Silo patches for networking, storage, restore, and desktop lifecycle policy. macOS packaging adds the app's code signature:
+Silo builds the MicroSandbox v0.7.4 source with Silo patches for networking, storage, restore, and desktop lifecycle policy. macOS packaging adds the app's code signature:
 
 - `msb`, licensed under Apache-2.0.
 - `libkrunfw` 5.6.1. The library code is LGPL-2.1-only. Its embedded Linux kernel and kernel patches are GPL-2.0-only or compatible licenses.
 
 Upstream provenance:
 
-- Release: https://github.com/superradcompany/microsandbox/releases/tag/v0.7.2
-- MicroSandbox source: https://github.com/superradcompany/microsandbox/tree/60d4dc8a436fb9365491567ec21d073e924e3c6d
+- Release: https://github.com/superradcompany/microsandbox/releases/tag/v0.7.4
+- MicroSandbox source: https://github.com/superradcompany/microsandbox/tree/e36ffc0a58b48d70e0e4d66d75f1596994e3865a
 - libkrunfw source: https://github.com/superradcompany/libkrunfw/tree/cf4c22b9f05c680928e6d96a9d198f5845573a87
 
 The license texts are bundled under `microsandbox/licenses/`. Redistribution requirements and the pinned artifact hashes are recorded in `docs/SiloUI-RUNTIME-PACKAGING.md` in Silo's source tree.

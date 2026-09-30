@@ -1407,7 +1407,7 @@ impl<R: MsbRunner> BackupService<R> {
     }
 }
 
-/// MicroSandbox 0.7.2 (`packages/microsandbox-types/rust/lib/snapshot`):
+/// MicroSandbox 0.7.4 (`packages/microsandbox-types/rust/lib/snapshot`):
 /// every installed member has one `snapshot.json` descriptor of at most 1 MiB.
 const SNAPSHOT_DESCRIPTOR: &str = "snapshot.json";
 const MAX_SNAPSHOT_DESCRIPTOR_BYTES: u64 = 1024 * 1024;
@@ -2430,7 +2430,7 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
         None | Some(Value::Null) => Ok(()),
         Some(root) if root.get("kind").and_then(Value::as_str) == Some("managed") => Ok(()),
         Some(_) => Err(BackupError::UnsupportedStorage(format!(
-            "{name} does not use the managed OCI root disk required by MicroSandbox 0.7.2 checkpoints."
+            "{name} does not use the managed OCI root disk required by MicroSandbox 0.7.4 checkpoints."
         ))),
     }
 }
@@ -2680,7 +2680,7 @@ fn network_uses_host_files(network: &Value) -> bool {
 }
 
 /// Caps for the MicroSandbox snapshot archive (`.tar.zst`) inside an export,
-/// checked before `msb snapshot load` sees it (E-20). MicroSandbox 0.7.2
+/// checked before `msb snapshot load` sees it (E-20). MicroSandbox 0.7.4
 /// rejects absolute and `..` paths and non-regular entry types itself, but
 /// has no aggregate size or entry-count limit.
 #[derive(Clone, Copy, Debug)]

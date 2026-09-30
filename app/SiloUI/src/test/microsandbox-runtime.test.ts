@@ -151,12 +151,12 @@ describe("bundled MicroSandbox release staging", () => {
     expect((await stat(staged.executablePath)).mode & 0o777).toBe(0o755)
     const manifest = JSON.parse(await readFile(staged.manifestPath, "utf8"))
     expect(manifest).toMatchObject({
-      microsandboxVersion: "0.7.2",
+      microsandboxVersion: "0.7.4",
       targetTriple,
       executable: {
         bundledName: "msb",
         sha256: sha256(executable),
-        sourceCommit: "60d4dc8a436fb9365491567ec21d073e924e3c6d",
+        sourceCommit: "e36ffc0a58b48d70e0e4d66d75f1596994e3865a",
         patchSha256s: MICROSANDBOX_PATCHES.map((_, index) => sha256(patches[index])),
         officialReleaseAsset: "msb-darwin-aarch64",
       },

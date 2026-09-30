@@ -1341,7 +1341,7 @@ fn normalize_backup_root_capacity(config: &mut Value, expected_mib: u64) -> bool
     if let Some(size) = root.get("size_mib") {
         return size.as_u64() == Some(expected_mib);
     }
-    // MicroSandbox 0.7.2 (60d4dc8, sdk/rust/lib/sandbox/config.rs) uses
+    // MicroSandbox 0.7.4 (e36ffc0, sdk/rust/lib/sandbox/config.rs) uses
     // 4096 MiB for an omitted managed OCI upper size. Materialize that
     // effective value in the archive; strict import validation stays intact.
     if root.get("kind").and_then(Value::as_str) != Some("managed") || expected_mib != 4096 {

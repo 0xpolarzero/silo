@@ -1378,11 +1378,11 @@ mod tests {
     #[test]
     fn maps_actual_version_results_to_specific_states_and_captions() {
         assert_eq!(
-            microsandbox_version_result(Ok("msb 0.7.2".into())),
+            microsandbox_version_result(Ok("msb 0.7.4".into())),
             DependencyCheck::pass(
                 "runtime-microsandbox",
                 "MicroSandbox runtime",
-                "Bundled msb 0.7.2 · libkrunfw 5.6.1"
+                "Bundled msb 0.7.4 · libkrunfw 5.6.1"
             )
         );
         assert_eq!(
