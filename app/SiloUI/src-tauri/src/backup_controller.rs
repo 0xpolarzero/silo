@@ -55,6 +55,9 @@ enum Operation {
         progress: u8,
         #[serde(skip_serializing_if = "Option::is_none")]
         indeterminate: Option<bool>,
+        /// `Some(false)` once Cancel would no longer be honoured (E-28).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        can_cancel: Option<bool>,
         phases: Vec<Phase>,
     },
     #[serde(rename = "result")]
@@ -767,6 +770,7 @@ fn claim_export(
         target_name: None,
         progress: 0,
         indeterminate: Some(true),
+        can_cancel: None,
         phases: vec![phase],
     });
     Ok(ClaimedExport {
@@ -1336,6 +1340,7 @@ fn begin_import(
             target_name: Some(new_name.clone()),
             progress: 0,
             indeterminate: Some(true),
+            can_cancel: None,
             phases: vec![Phase {
                 title: "Checking export file".into(),
                 detail: "Verifying the export before importing.".into(),
@@ -1543,6 +1548,7 @@ fn unpack_and_save(
     if !matches!(machine, runtime::MachineConfiguration::Vm { .. }) {
         return Err("The archive does not contain a local VM configuration.".into());
     }
+    enter_commit(controller, cancellation)?;
     progress("Saving stopped workspace");
     commit_import(
         paths,
@@ -1603,18 +1609,51 @@ pub(crate) async fn cancel_backup_operation(
 }
 
 fn cancel_operation(controller: &Controller) -> Result<(), String> {
-    let cancellation = controller
+    {
+        let view = controller
+            .view
+            .lock()
+            .map_err(|_| "Backup state is unavailable.".to_string())?;
+        if matches!(
+            view.operation,
+            Some(Operation::Running {
+                can_cancel: Some(false),
+                ..
+            })
+        ) {
+            return Err("This operation is finishing and can no longer be cancelled.".into());
+        }
+        // Cancel in process first, under the state lock so it is ordered
+        // against `enter_commit`: a journal write failure (full disk,
+        // permissions) must not leave the running operation uncancellable.
+        // The persisted flag only matters for a later relaunch.
+        view.cancellation
+            .as_ref()
+            .ok_or("No export or import is running.")?
+            .cancel();
+    }
+    let _ = recovery::cancel(controller);
+    Ok(())
+}
+
+/// Past this point an import saves its new sandbox and is no longer
+/// cancelled. Marking it under the state lock orders it against
+/// `cancel_operation`: a cancel either lands first and wins, or is refused
+/// and the UI stops offering it (E-28).
+fn enter_commit(
+    controller: &Controller,
+    cancellation: &backup::Cancellation,
+) -> Result<(), TransferError> {
+    let mut view = controller
         .view
         .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?
-        .cancellation
-        .clone()
-        .ok_or("No export or import is running.")?;
-    // Cancel in process first: a journal write failure (full disk, permissions)
-    // must not leave the running operation uncancellable. The persisted flag
-    // only matters for a later relaunch.
-    cancellation.cancel();
-    let _ = recovery::cancel(controller);
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cancellation.cancelled() {
+        return Err(TransferError::cancelled());
+    }
+    if let Some(Operation::Running { can_cancel, .. }) = view.operation.as_mut() {
+        *can_cancel = Some(false);
+    }
     Ok(())
 }
 
@@ -2104,6 +2143,7 @@ mod tests {
                 target_name: Some("restored".into()),
                 progress: 5,
                 indeterminate: None,
+                can_cancel: Some(false),
                 phases: vec![Phase {
                     title: "Restore".into(),
                     detail: "Creating sandbox".into(),
@@ -2140,6 +2180,7 @@ mod tests {
                 target_name: Some("restored".into()),
                 progress: 0,
                 indeterminate: Some(true),
+                can_cancel: None,
                 phases: vec![Phase {
                     title: "Checking export file".into(),
                     detail: String::new(),
@@ -2438,6 +2479,40 @@ mod tests {
             let detail = outcome_and_detail(&operation).1;
             assert!(!detail.contains("removed") && !detail.contains("replaced"), "{detail}");
         }
+    }
+
+    fn running_import(controller: &Controller) -> backup::Cancellation {
+        let cancellation = backup::Cancellation::default();
+        let mut view = controller.view.lock().unwrap();
+        view.cancellation = Some(cancellation.clone());
+        view.operation = Some(Operation::Running {
+            operation: "restore",
+            archive: completed_archive(),
+            running_names: Vec::new(),
+            target_name: Some("copy".into()),
+            progress: 0,
+            indeterminate: Some(true),
+            can_cancel: None,
+            phases: Vec::new(),
+        });
+        cancellation
+    }
+
+    #[test]
+    fn an_import_past_its_commit_point_reports_and_enforces_that_it_cannot_be_cancelled() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let cancellation = running_import(&controller);
+        enter_commit(&controller, &cancellation).unwrap();
+        let serialized = serde_json::to_value(&controller.view.lock().unwrap().operation).unwrap();
+        assert_eq!(serialized["canCancel"], false);
+        assert!(cancel_operation(&controller).is_err());
+        assert!(!cancellation.cancelled());
+
+        // A cancel that arrived before the commit point wins.
+        let cancellation = running_import(&controller);
+        cancel_operation(&controller).unwrap();
+        assert!(enter_commit(&controller, &cancellation).unwrap_err().cancelled);
     }
 
     #[test]

@@ -160,9 +160,10 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
         step: phase ? (phase.detail || phase.title) : undefined,
         steps: operation.phases.map((entry) => ({ label: entry.title, state: stepState[entry.tone] })),
         progress: operation.indeterminate ? null : operation.progress / 100,
+        // The backend sends canCancel: false once Cancel would no longer be honoured (an import saving its sandbox).
         cancel: operation.canCancel === false ? undefined : isExport
-          ? { onCancel, confirm: { prompt: "Stop exporting? The incomplete file is removed.", confirmLabel: "Stop", keepLabel: "Keep going" } }
-          : { onCancel, confirm: { prompt: "Remove the incomplete sandbox?", confirmLabel: "Remove", keepLabel: "Keep going" } },
+          ? { onCancel, confirm: { prompt: "Stop exporting? No export file is saved.", confirmLabel: "Stop", keepLabel: "Keep going" } }
+          : { onCancel, confirm: { prompt: "Stop importing? No sandbox is added.", confirmLabel: "Stop", keepLabel: "Keep going" } },
       })
       return
     }

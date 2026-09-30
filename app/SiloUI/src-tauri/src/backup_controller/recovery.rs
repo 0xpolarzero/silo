@@ -134,6 +134,9 @@ impl Journal {
                 target_name: self.target(),
                 progress: 0,
                 indeterminate: Some(true),
+                // Recovery removes this operation's own output; it is short and
+                // is not interrupted part-way.
+                can_cancel: Some(false),
                 phases: vec![Phase {
                     title: if self.cancelled {
                         "Finishing cancellation"

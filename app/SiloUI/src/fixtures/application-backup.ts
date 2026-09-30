@@ -138,7 +138,7 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
           awaitedExport.current.reject(new ExportIncompleteError("cancelled", "The operation was cancelled.", awaitedExport.current.operationId))
           awaitedExport.current = null
         }
-        setResult({ operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), kind: "result", outcome: "cancelled", title: running.operation === "backup" ? "Export cancelled" : "Import cancelled", message: running.operation === "backup" ? "The incomplete file was removed." : `The incomplete ${running.targetName} sandbox was removed.`, detail: running.operation === "backup" ? "Existing exports were not changed." : "The export file and existing sandboxes were not changed." })
+        setResult({ operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), kind: "result", outcome: "cancelled", title: running.operation === "backup" ? "Export cancelled" : "Import cancelled", message: running.operation === "backup" ? "The export was cancelled." : "The import was cancelled.", detail: running.operation === "backup" ? "No export file was saved." : "No sandbox was added. The export file was not changed." })
         setRunning(null)
       },
       dismissOperation: () => setResult(null),

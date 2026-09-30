@@ -179,8 +179,17 @@ describe("import notifications and popover", () => {
     render(<Harness backup={backup} />)
     expect(await screen.findByText("Importing dev-copy")).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
-    expect(await screen.findByText("Remove the incomplete sandbox?")).toBeInTheDocument()
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }))
+    // Cancelling before the import saves its sandbox adds nothing; nothing is removed.
+    expect(await screen.findByText("Stop importing? No sandbox is added.")).toBeInTheDocument()
+    expect(screen.queryByText(/Remove/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Stop" }))
     expect(backup.actions.cancelOperation).toHaveBeenCalledOnce()
+  })
+
+  it("stops offering Cancel once the import is saving its sandbox", async () => {
+    const running: BackupOperation = { kind: "running", operation: "restore", archive, runningNames: [], targetName: "dev-copy", progress: 90, canCancel: false, phases: [{ title: "Saving stopped workspace", detail: "", tone: "running" }] }
+    render(<Harness backup={controller({ operation: running })} />)
+    expect(await screen.findByText("Importing dev-copy")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
   })
 })
