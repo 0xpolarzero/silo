@@ -8,9 +8,10 @@ it("records unexpected console.error calls", () => {
   expect(collectUnexpectedConsoleErrors()).toEqual(["boom from test"])
 })
 
-it("ignores allow-listed sources", () => {
-  console.error("Warning: An update to Probe inside a test was not wrapped in act(...).")
-  expect(collectUnexpectedConsoleErrors()).toEqual([])
+it("records unsettled React updates as unexpected errors", () => {
+  const warning = "Warning: An update to Probe inside a test was not wrapped in act(...)."
+  console.error(warning)
+  expect(collectUnexpectedConsoleErrors()).toEqual([warning])
 })
 
 it("lets a test silence expected errors with a spy", () => {

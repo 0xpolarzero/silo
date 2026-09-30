@@ -25,7 +25,7 @@ beforeEach(() => {
 })
 afterEach(() => { clearMocks() })
 
-// Fail on console.error not allow-listed in console-error-guard.ts. The check
+// Fail on every unexpected console.error, including React act warnings. The check
 // runs in onTestFinished, after every afterEach hook, so throwing here cannot
 // skip DOM cleanup or timer and mock restoration.
 installConsoleErrorGuard()

@@ -1,6 +1,7 @@
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { setupFakeTimerUser } from "@/test/fake-timer-user"
 import { toast } from "sonner"
 import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -13,9 +14,9 @@ function setup(patch: Partial<SshAccessWorkspace> = {}, save = vi.fn().mockResol
   const access = { ...base, ...patch }
   const actions = { sshConnection: vi.fn().mockImplementation((_workspace: string, download: boolean) => Promise.resolve(download ? null : "ssh -i '/managed/client_key' -p 2222 root@127.0.0.1")), saveSshAccess: save, refreshSshAccess: vi.fn().mockResolvedValue(undefined) } as unknown as ApplicationActions
   const view = render(<><Toaster /><SshAccessPanel workspaces={[displayedWorkspace]} state={{ workspaces: [access] }} error={error} actions={actions} active /></>)
-  return { user: userEvent.setup(), access, save, actions, ...view }
+  return { user: vi.isFakeTimers() ? setupFakeTimerUser() : userEvent.setup(), access, save, actions, ...view }
 }
-afterEach(() => { toast.dismiss() })
+afterEach(() => { toast.dismiss(); vi.useRealTimers() })
 async function expand(user: ReturnType<typeof userEvent.setup>) { await user.click(screen.getByRole("button", { name: "SSH access controls for dev" })) }
 async function selectAction(user: ReturnType<typeof userEvent.setup>, name: string) {
   await user.click(screen.getByRole("button", { name: name.includes("network") ? "More network SSH actions" : "More local SSH actions" }))
@@ -23,12 +24,16 @@ async function selectAction(user: ReturnType<typeof userEvent.setup>, name: stri
 }
 describe("managed SSH access", () => {
   it("clears command copy feedback after a short delay", async () => {
+    vi.useFakeTimers()
     const { user } = setup()
     await expand(user)
     await selectAction(user, "Copy local SSH command")
     await user.click(screen.getByRole("button", { name: "More local SSH actions" }))
     expect(screen.getByRole("menuitem", { name: "Copy local SSH command" })).toHaveTextContent("Command copied")
-    await waitFor(() => expect(screen.getByRole("menuitem", { name: "Copy local SSH command" })).toHaveTextContent("Copy terminal command"), { timeout: 2500 })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_199) })
+    expect(screen.getByRole("menuitem", { name: "Copy local SSH command" })).toHaveTextContent("Command copied")
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(screen.getByRole("menuitem", { name: "Copy local SSH command" })).toHaveTextContent("Copy terminal command")
   })
   it("shows two toggles and a ready connection without key setup or advanced settings", async () => {
     const { user, actions } = setup({ keys: [] })

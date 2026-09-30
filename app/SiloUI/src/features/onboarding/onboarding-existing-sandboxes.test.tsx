@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { act, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -55,16 +55,16 @@ describe("Finish blocked by a sandbox after setup", () => {
 })
 
 describe("onboarding with sandboxes that already exist", () => {
-  it("replaces a placeholder seed with this computer's sandboxes once they load", () => {
+  it("replaces a placeholder seed with this computer's sandboxes once they load", async () => {
     const store = createMemorySettingsStore()
     const handlers = actions()
     const view = render(onboarding(store, handlers, { machineConfigurations: [placeholder], machinesAuthoritative: false }))
     // A placeholder is not saved as the user's draft.
     expect(store.getSnapshot().onboardingDraft).toBeNull()
-    view.rerender(onboarding(store, handlers, { machineConfigurations: [real, other], machinesAuthoritative: true, existingMachines: [real, other] }))
+    await act(async () => { view.rerender(onboarding(store, handlers, { machineConfigurations: [real, other], machinesAuthoritative: true, existingMachines: [real, other] })) })
     expect(store.getSnapshot().onboardingDraft?.machines).toEqual([real, other])
     // Once seeded from real state it is not replaced again.
-    view.rerender(onboarding(store, handlers, { machineConfigurations: [real], machinesAuthoritative: true, existingMachines: [real] }))
+    await act(async () => { view.rerender(onboarding(store, handlers, { machineConfigurations: [real], machinesAuthoritative: true, existingMachines: [real] })) })
     expect(store.getSnapshot().onboardingDraft?.machines).toEqual([real, other])
   })
 

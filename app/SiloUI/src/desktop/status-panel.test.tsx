@@ -58,6 +58,24 @@ it("uses the real quit command and keeps the existing status content", async () 
   expect(actions.quit).not.toHaveBeenCalled()
 })
 
+it("updates the native tray when sandbox health changes and skips unchanged health", async () => {
+  const actions: StatusBarActions = {
+    openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(), openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
+  }
+  const source = applicationSourceForScenario("running")
+  const { rerender } = render(<StatusPanel source={source} actions={actions} />)
+  expect(native.invoke).toHaveBeenCalledWith("update_tray", { tone: "success", label: "Ready" })
+  const trayCalls = () => native.invoke.mock.calls.filter(([command]) => command === "update_tray")
+  expect(trayCalls()).toHaveLength(1)
+  rerender(<StatusPanel source={structuredClone(source)} actions={actions} />)
+  expect(trayCalls()).toHaveLength(1)
+  const failed = structuredClone(source)
+  failed.workspaces[0].state = "failed"
+  rerender(<StatusPanel source={failed} actions={actions} />)
+  expect(native.invoke).toHaveBeenCalledWith("update_tray", { tone: "error", label: "Sandbox error" })
+  expect(trayCalls()).toHaveLength(2)
+})
+
 it("uses an OS popup and retains stop confirmation in the panel", async () => {
   const { user, actions } = setup()
   await user.click(screen.getByRole("button", { name: "Actions for dev" }))

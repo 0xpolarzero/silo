@@ -17,7 +17,7 @@ describe("onboarding source boundary", () => {
     await settings.updateOnboardingDraft({ currentStep: "workspaces", machines, unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} })
     const actions = { connectGitHub: vi.fn(), saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn(), submitStep: vi.fn() }
     const source = { ...onboardingScenarios.complete, machineConfigurations: [], bootstrapConfiguration: { ...onboardingScenarios.complete.bootstrapConfiguration, workspaces: [] }, progressEvents: [], bootstrapResult: null, setupQueue: [{ id: "workspaceRun" as const, status: "idle" as const }, { id: "workspaceVerify" as const, status: "idle" as const }] }
-    render(<SettingsProvider store={settings}><OnboardingApp source={source} actions={actions} githubConnectionState="disconnected" completed={false} /></SettingsProvider>)
+    await act(async () => { render(<SettingsProvider store={settings}><OnboardingApp source={source} actions={actions} githubConnectionState="disconnected" completed={false} /></SettingsProvider>) })
     expect(screen.getByText(`0 of ${machines.filter(({ kind }) => kind === "vm").length * 2} operations complete`)).toBeVisible()
     expect(screen.getByText("Continue to create sandboxes")).toBeVisible()
     expect(actions.submitStep).not.toHaveBeenCalled()
@@ -29,7 +29,7 @@ describe("onboarding source boundary", () => {
     const wrap = (source: typeof onboardingScenarios.complete) => <SettingsProvider store={settings}><OnboardingApp source={source} actions={actions} githubConnectionState="disconnected" completed={false} /></SettingsProvider>
     const view = render(wrap({ ...onboardingScenarios.complete, machineConfigurations: [] }))
     await userEvent.setup().click(screen.getByRole("tab", { name: /GitHub/ }))
-    view.rerender(wrap(onboardingScenarios.complete))
+    await act(async () => { view.rerender(wrap(onboardingScenarios.complete)) })
     expect(settings.getSnapshot().onboardingDraft?.machines).toEqual(onboardingScenarios.complete.machineConfigurations)
     expect(screen.getByRole("tab", { name: /GitHub/ })).toHaveAttribute("aria-selected", "true")
   })
@@ -80,7 +80,7 @@ describe("onboarding source boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: "Finish" }))
     expect(actions.finishSetup).toHaveBeenCalledOnce()
     expect(screen.queryByText("Setup complete")).not.toBeInTheDocument()
-    view.rerender(wrap(true))
+    await act(async () => { view.rerender(wrap(true)) })
     expect(screen.getByRole("status")).toHaveTextContent("Setup complete")
   })
 })

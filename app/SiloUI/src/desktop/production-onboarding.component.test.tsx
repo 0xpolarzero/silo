@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 import type { OnboardingAppProps } from "@/features/onboarding/onboarding-app"
 import { onboardingScenarios } from "@/fixtures/scenarios"
@@ -173,7 +173,7 @@ describe("remote computer onboarding", () => {
     act(() => captured.props!.onConnectComputer!())
     fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: "owner@office" } })
     fireEvent.click(screen.getByRole("button", { name: "Connect" }))
-    await vi.waitFor(() => expect(onOpenApp).toHaveBeenCalledOnce())
+    await waitFor(() => expect(onOpenApp).toHaveBeenCalledOnce())
     expect(connectComputer).toHaveBeenCalledWith("owner@office")
     expect(configureMachines).not.toHaveBeenCalled()
     expect(store.getSnapshot().settings.onboardingComplete).toBe(true)

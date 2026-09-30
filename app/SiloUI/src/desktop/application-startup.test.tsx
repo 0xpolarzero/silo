@@ -1,4 +1,4 @@
-import { act, fireEvent, screen } from "@testing-library/react"
+import { act, fireEvent, screen, waitFor } from "@testing-library/react"
 import { expect, it, vi } from "vitest"
 
 const native = vi.hoisted(() => ({ invoke: vi.fn() }))
@@ -52,12 +52,12 @@ it("boots the actual status entry with discovered apps and refreshes defaults wi
     throw new Error(`Unexpected command: ${command}`)
   })
   await act(async () => { await import("../main") })
-  await vi.waitFor(() => expect(screen.getByRole("status")).toHaveTextContent('"editor":"Zed"'))
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent('"editor":"Zed"'))
   expect(screen.getByRole("status")).toHaveTextContent('"browser":"Zen"')
   expect(screen.getByRole("status")).toHaveTextContent('"terminal":"Custom Terminal"')
   editor = { name: "Cursor", path: "/Applications/Cursor.app" }
   fireEvent.focus(window)
-  await vi.waitFor(() => expect(screen.getByRole("status")).toHaveTextContent('"editor":"Cursor"'))
+  await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent('"editor":"Cursor"'))
   expect(screen.getByRole("status")).toHaveTextContent('"editorPath":"/Applications/Cursor.app"')
   expect(screen.getByRole("status")).toHaveTextContent('"terminal":"Custom Terminal"')
   expect(native.invoke.mock.calls.map(([command]) => command)).not.toContain("update_settings")

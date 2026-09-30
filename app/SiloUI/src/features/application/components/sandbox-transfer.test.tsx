@@ -124,6 +124,17 @@ describe("export notifications", () => {
     expect(backup.actions.dismissOperation).toHaveBeenCalled()
   })
 
+  it("shows the archive reveal failure from Show in Finder", async () => {
+    const success: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "success", title: "Export ready", message: "done" }
+    const backup = controller({ operation: success }, { revealArchive: vi.fn().mockRejectedValue(new Error("Archive missing")) })
+    const { rerender } = render(<Harness backup={controller()} />)
+    rerender(<Harness backup={backup} />)
+    fireEvent.click(await screen.findByRole("button", { name: /Show in (Finder|folder)/ }))
+    expect(await screen.findByText("Could not reveal the export")).toBeVisible()
+    expect(screen.getByText("Archive missing")).toBeVisible()
+    expect(backup.actions.revealArchive).toHaveBeenCalledExactlyOnceWith(archive)
+  })
+
   it("offers Retry on a failed export", async () => {
     const backup = controller({}, { chooseDestination: vi.fn().mockResolvedValue("/vol") })
     const { rerender } = render(<Harness backup={backup} />)

@@ -6,9 +6,9 @@ import { fixtureLogPage, logPageSchema, type LogPage, type LogQuery } from "../m
 import { Toaster } from "@/components/ui/sonner"
 import { Logs } from "./logs-page"
 
-function fixture() {
+function fixture(recordCount = 1001) {
   const workspace = structuredClone(applicationSourceForScenario("running").workspaces[0])
-  workspace.logs = Array.from({ length: 100001 }, (_, index) => ({ line: index === 0 ? "old diagnostic needle" : `record ${index}`, occurredAt: new Date(1700000000000 + index * 1000).toISOString() }))
+  workspace.logs = Array.from({ length: recordCount }, (_, index) => ({ line: index === 0 ? "old diagnostic needle" : `record ${index}`, occurredAt: new Date(1700000000000 + index * 1000).toISOString() }))
   const queryLogs = vi.fn(async (request: LogQuery) => fixtureLogPage(workspace, request))
   const actions = { queryLogs } as unknown as ApplicationActions
   return { workspace, queryLogs, actions }
@@ -67,12 +67,12 @@ describe("retained logs", () => {
     const { workspace, actions, queryLogs } = fixture()
     const props = { workspaces: [workspace], actions, active: true, query: "", onQueryChange: vi.fn() }
     const view = render(<Logs {...props} />)
-    await screen.findByText(/Showing 200 of 100001/)
+    await screen.findByText(/Showing 200 of 1001/)
     scrollNearEnd()
-    await screen.findByText(/Showing 400 of 100001/)
+    await screen.findByText(/Showing 400 of 1001/)
     view.unmount()
     render(<Logs {...props} />)
-    expect(screen.getByText(/Showing 400 of 100001/)).toBeVisible()
+    expect(screen.getByText(/Showing 400 of 1001/)).toBeVisible()
     expect(screen.getByRole("table", { name: "Logs" }).querySelector('[data-table-scroll="logs"]')?.scrollTop).toBe(9912)
     expect(queryLogs).toHaveBeenCalledTimes(2)
     expect(screen.queryByRole("button", { name: "Load older" })).not.toBeInTheDocument()
@@ -115,9 +115,9 @@ describe("retained logs", () => {
     expect(alert).toHaveClass("text-xs", "text-destructive")
     expect(queryLogs).not.toHaveBeenCalled()
   })
-  it("uses the shared empty state when no sandbox matches", () => {
+  it("uses the shared empty state when no sandbox matches", async () => {
     const { actions } = fixture()
-    render(<Logs workspaces={[]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    await act(async () => { render(<Logs workspaces={[]} actions={actions} active query="" onQueryChange={vi.fn()} />) })
     expect(screen.getByText("No matching sandboxes").closest('[data-slot="empty-state"]')).not.toBeNull()
     expect(screen.queryByText(/No sandboxes selected/)).not.toBeInTheDocument()
   })
@@ -175,7 +175,7 @@ describe("retained logs", () => {
     expect(queryLogs).toHaveBeenCalledTimes(1)
   })
   it("loads older pages with bounded DOM rows, and exports the query rather than the page", async () => {
-    const { workspace, actions, queryLogs } = fixture()
+    const { workspace, actions, queryLogs } = fixture(100001)
     actions.exportLogs = vi.fn(async () => true)
     render(<><Toaster /><Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} /></>)
     await screen.findByText(/Showing 200 of 100001/)
@@ -192,7 +192,7 @@ describe("retained logs", () => {
     const { workspace, actions } = fixture()
     actions.exportLogs = vi.fn().mockRejectedValueOnce(new Error("Disk full")).mockResolvedValue(true)
     render(<><Toaster /><Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} /></>)
-    await screen.findByText(/Showing 200 of 100001/)
+    await screen.findByText(/Showing 200 of 1001/)
     fireEvent.click(screen.getByRole("button", { name: "Save logs…" }))
     expect(await within(document.body).findByText("Could not save logs")).toBeInTheDocument()
     expect(within(document.body).getByText("Disk full")).toBeInTheDocument()

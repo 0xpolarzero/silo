@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { act, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -381,7 +381,7 @@ describe("status bar", () => {
     const source = applicationSourceForScenario("complete")
     const { user, actions } = setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, ports: [{ port: 8080, listening: true, configured: true, hostPort: 18080, scheme: "http" }, { port: 3000, listening: true, configured: true, hostPort: 13000, scheme: "http" }, { port: 5173, listening: false }] })) })
     await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-    screen.getByRole("menuitem", { name: "Open in browser" }).focus()
+    act(() => screen.getByRole("menuitem", { name: "Open in browser" }).focus())
     await user.keyboard("{ArrowRight}")
     const ports = screen.getAllByRole("menuitem", { name: /^Port / })
     expect(ports.map((port) => port.textContent)).toEqual(["Port 3000", "Port 8080"])
@@ -394,7 +394,7 @@ describe("status bar", () => {
     const { user, actions } = setup()
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)
     await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-    screen.getByRole("menuitem", { name: "Open in browser" }).focus()
+    act(() => screen.getByRole("menuitem", { name: "Open in browser" }).focus())
     await user.keyboard("{ArrowRight}")
     expect(screen.queryByRole("menuitem", { name: "Choose port…" })).not.toBeInTheDocument()
     await user.click(screen.getByRole("menuitem", { name: "Copy port 3000 address" }))
@@ -409,7 +409,7 @@ describe("status bar", () => {
     const { user } = setup()
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(new Error("Clipboard unavailable")).mockResolvedValue(undefined)
     await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-    screen.getByRole("menuitem", { name: "Open in browser" }).focus()
+    act(() => screen.getByRole("menuitem", { name: "Open in browser" }).focus())
     await user.keyboard("{ArrowRight}{End}{Enter}")
     expect(screen.getByRole("menuitem", { name: "Could not copy port 3000 address" })).toHaveTextContent("Copy failed")
     await user.keyboard("{Enter}")

@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
 import { expect, it, vi } from "vitest"
@@ -19,7 +19,11 @@ function fakeConnection() {
   let ask: ((request: QuitRequest) => Promise<boolean>) | undefined
   const stop = vi.fn()
   const connect: ConnectQuitConfirmation = vi.fn(async (receive) => { ask = receive; return stop })
-  return { connect, stop, ask: (request: QuitRequest) => ask!(request) }
+  return { connect, stop, ask: (request: QuitRequest) => {
+    let reply!: Promise<boolean>
+    act(() => { reply = ask!(request) })
+    return reply
+  } }
 }
 
 it("asks before Quit stops running sandboxes, with the tray's wording, and answers each request", async () => {
