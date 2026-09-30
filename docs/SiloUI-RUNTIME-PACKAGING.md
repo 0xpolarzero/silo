@@ -30,7 +30,7 @@ Silo now pins the official [MicroSandbox v0.7.2 release](https://github.com/supe
 | `aarch64-unknown-linux-gnu` | `msb-linux-aarch64` `33e4f5274b9eefa3a088d0f0c8b80a5e440fd60940c0469f71a389c6998cb714` | `agentd-aarch64` `ca6dde7a3000d8e93d5dca87fcebf77ebb36ce83377385bae2be70dbead9a5e1` | `libkrunfw-linux-aarch64.so` `98d01137190de7022a3132c6f55c245ef43d02d67d5d7e697ee19c303fce8769` |
 | `x86_64-unknown-linux-gnu` | `msb-linux-x86_64` `bdaa6c6fc58fa3d8e85d52fc299106a013d979edd0a781b4bc6ddd21da0f8b16` | `agentd-x86_64` `4d2b2aac7c4f2c54362f81b083c19715032d4f15468332bc1fa86bea29afe249` | `libkrunfw-linux-x86_64.so` `ce9a749e8471e89aa5e2ad88de0c1581c3384c100bcb107a75bb12739a12d590` |
 
-The release listing publishes SHA-256 values for these assets. The `checksums.sha256` listing digest is `e748a853ee3dac5cf8e674feba8c6a9c606d66c8063f17bba729232b4c17fa23`; the shell could not fetch that file for an independent byte-for-byte comparison, so runtime input pins are the published asset values recorded in the local ignored verification checklist. Silo applies ten ordered patches, each pinned by SHA-256 in `app/SiloUI/runtime-inputs.json`. Preflight validates their exact names, order, path containment, and bytes. The build cache key includes all patch hashes. Earlier macOS and Linux qualification cited above used the eight-patch runtime; it does not qualify the ninth or tenth patch.
+The release listing publishes SHA-256 values for these assets. The `checksums.sha256` listing digest is `e748a853ee3dac5cf8e674feba8c6a9c606d66c8063f17bba729232b4c17fa23`; the shell could not fetch that file for an independent byte-for-byte comparison, so runtime input pins are the published asset values recorded in the local ignored verification checklist. Silo applies eleven ordered patches, each pinned by SHA-256 in `app/SiloUI/runtime-inputs.json`. Preflight validates their exact names, order, path containment, and bytes. The build cache key includes all patch hashes. Earlier macOS and Linux qualification cited above used the eight-patch runtime; it does not qualify the ninth or tenth patch.
 
 Ordered source patch pins:
 
@@ -46,6 +46,7 @@ Ordered source patch pins:
 | `microsandbox-live-public-ports-0.7.2.patch` | `ad1abf1973c7e542ec7015575ab4ad35b321ac434e2bb9049aef096fa6b2b012` |
 | `microsandbox-preserve-basic-auth-0.7.2.patch` | `e1957e2bc8adb2552140a9309d1d26d2721a38113f375328b9def408f5b1b5aa` |
 | `microsandbox-secret-values-stdin-0.7.2.patch` | `32ba747bae584847a39d7727aa2d7a2046574085554e558ead066ad01a266250` |
+| `microsandbox-import-stage-id-0.7.2.patch` | `4728800bc59f1cc3c9e07923c99d8ff18ce1f2aa3469d29e7f7715513dcd456f` |
 
 The ninth patch restores the independent Basic Auth substitution policy stored by MicroSandbox 0.6.x. Version 0.7.2 removed that field and made Basic Auth follow ordinary headers; its strict persisted-config decoder therefore rejected existing Silo sandbox records before owned-disk conversion. The patch preserves an explicit Basic Auth boolean, keeps the 0.7.2 headers behavior when the field is absent, and normalizes the observed historical `query_params` name to `query` at the persisted-config boundary. It never drops an unknown secret policy.
 
@@ -70,6 +71,35 @@ The app, sidecar, and library are signed together. The app and `msb` carry Apple
 The later launcher must use only these private paths and set `MSB_PATH`, `MSB_LIBKRUNFW_PATH`, and an app-controlled `MSB_HOME`. Upstream resolves both environment paths first in its [runtime configuration](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/sdk/rust/lib/config/mod.rs). It must not search `PATH` or a user's global MicroSandbox directory.
 
 MicroSandbox is Apache-2.0. libkrunfw is LGPL-2.1-only and embeds GPL-2.0-only or compatible Linux sources. Exact license texts and source commits are in the bundle. Before external distribution, choose and review a compliant corresponding-source conveyance method. The current preparation is not release legal approval.
+
+The eleventh patch adds `snapshot load --stage-id <32 lowercase hex digits>`.
+Its exclusive snapshot and cache stage roots identify every unpacking and
+publication directory before archive bytes are read, including external-base
+archives. Silo journals `silo-import-<id>` first, passes that suffix as the stage
+ID, and retries cleanup of precisely those paths and that group's indexed
+members at launch. Missing paths are idempotent; collisions and symlinks are
+refused. Random stages from older runtimes are preserved. Runtime preparation
+requires the `--stage-id` capability for both cached and newly built executables.
+The ordered patch SHA-256 above participates in the executable cache key and the
+packaged manifest; no published release asset hash is substituted for a patched
+build hash.
+
+On 2026-09-30, this change ran `npm --prefix app/SiloUI run runtime:prepare`
+in the isolated `fix/wd-e03` worktree. The release CLI at
+`/Users/polarzero/code/projects/silo-wt/e03/app/SiloUI/src-tauri/binaries/msb-aarch64-apple-darwin`
+has SHA-256 `a47001083c14e413614da1cc52ab577c6ff6002e659191567e63a08f3b562637`;
+its version, six Silo protocol probes, and `--stage-id` capability passed runtime
+preparation. The opt-in native test
+`rebuilt_cli_killed_load_is_removed_by_next_launch_recovery` fed it a partial
+1 GiB-declared tar disk entry through a FIFO, waited for actual extracted bytes,
+and sent SIGTERM to that directly spawned child. Both exact stage roots survived
+the killed load. Reloading Silo's durable journal and running production launch
+recovery removed both roots, preserved three unrelated stage markers, and
+cleared the import identity. No Silo app, VM, keychain, or user runtime was used.
+This is fixture-only macOS CLI/recovery evidence, not an installed-app or Linux
+qualification. Ordinary tests also cover a crash before spawning load,
+preexisting-stage refusal, symlink refusal with journal retention, and the
+inherited-worker lock. Logs are local in `/tmp/silo-codex/e03-*.log`.
 
 ## Pinned Git distribution
 

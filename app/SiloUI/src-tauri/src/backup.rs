@@ -1013,7 +1013,14 @@ impl<R: MsbRunner> BackupService<R> {
             // Never load into, or clean up, a group this attempt did not create.
             return Err(BackupError::ImportGroupConflict(import_group.into()));
         }
-        let import_stages_before = native_import_stages(&self.command.home)?;
+        let stage_paths = native_import_stage_paths(self.native_store_root(), import_group)?;
+        for path in &stage_paths {
+            match fs::symlink_metadata(path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error.into()),
+                Ok(_) => return Err(BackupError::ImportGroupConflict(import_group.into())),
+            }
+        }
         // Ownership is established only after refusing any existing group, and
         // is journaled before load creates native members (including partials).
         before_load()?;
@@ -1037,7 +1044,6 @@ impl<R: MsbRunner> BackupService<R> {
                 _stage: stage,
             }),
             Err(error) => {
-                cleanup_new_native_import_stages(&self.command.home, &import_stages_before);
                 if let Err(cleanup) = self.remove_import_group(import_group) {
                     eprintln!(
                         "Silo could not remove the incomplete import {import_group}: {cleanup}"
@@ -1066,6 +1072,8 @@ impl<R: MsbRunner> BackupService<R> {
                 payload_path.to_string_lossy().into_owned(),
                 "--group".into(),
                 import_group.into(),
+                "--stage-id".into(),
+                import_group["silo-import-".len()..].into(),
             ],
             data_timeout,
             cancellation,
@@ -1216,6 +1224,12 @@ impl<R: MsbRunner> BackupService<R> {
         }
         let cleanup = Cancellation::default();
         let timeout = self.command_timeout.min(CLEANUP_COMMAND_TIMEOUT);
+        // A snapshot child can outlive Silo. Use the existing inherited lock
+        // before direct filesystem cleanup, then release it for msb commands.
+        let worker =
+            wait_for_worker_lock(&self.command.home, worker_lock_timeout(timeout), &cleanup)?;
+        cleanup_owned_native_import_stages(self.native_store_root(), group)?;
+        drop(worker);
         let entries = self.snapshot_index_with("Checking incomplete import", timeout, &cleanup)?;
         let members: Vec<&Value> = entries
             .iter()
@@ -1597,44 +1611,59 @@ fn compare_loaded_descriptor(
     Ok(())
 }
 
-/// Stage names are known only after the child creates them. This before/after
-/// census is scoped to one running load; crash recovery must not infer ownership
-/// from the prefixes, because the runtime does not identify the operation there.
-fn native_import_stages(home: &Path) -> Result<HashSet<PathBuf>, BackupError> {
-    let mut stages = HashSet::new();
-    for (root, prefix) in [
-        (home.join("cache/tmp"), "snapshot-import-"),
-        (home.join("snapshots"), ".msb-snapshot-import-"),
-    ] {
-        let entries = match fs::read_dir(root) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(BackupError::Io(error)),
-        };
-        for entry in entries {
-            let entry = entry?;
-            if entry.file_name().to_string_lossy().starts_with(prefix) {
-                stages.insert(entry.path());
+/// The journaled import group contains the caller-supplied stage ID. Never
+/// discover cleanup candidates through a directory census, name prefix, or age.
+fn native_import_stage_paths(home: &Path, group: &str) -> Result<[PathBuf; 2], BackupError> {
+    if !valid_import_group(group) {
+        return Err(BackupError::InvalidRequest(
+            "The import stage identity is invalid.".into(),
+        ));
+    }
+    // `home` is the configured storage root (not the runtime's short-path alias).
+    // Refuse redirected stage parents before checking or removing any stage.
+    for relative in ["snapshots", "cache", "cache/tmp"] {
+        match fs::symlink_metadata(home.join(relative)) {
+            Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
+                return Err(BackupError::InvalidRequest(
+                    "Import staging has a redirected or invalid parent; data was preserved.".into(),
+                ));
             }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
         }
     }
-    Ok(stages)
+    let id = &group["silo-import-".len()..];
+    Ok([
+        home.join("snapshots")
+            .join(format!(".msb-snapshot-load-{id}")),
+        home.join("cache/tmp").join(format!("snapshot-load-{id}")),
+    ])
 }
 
-fn cleanup_new_native_import_stages(home: &Path, before: &HashSet<PathBuf>) {
-    let Ok(after) = native_import_stages(home) else {
-        return;
-    };
-    for path in after.difference(before) {
-        let Ok(metadata) = fs::symlink_metadata(path) else {
-            continue;
-        };
-        if metadata.file_type().is_symlink() || metadata.is_file() {
-            let _ = fs::remove_file(path);
-        } else if metadata.is_dir() {
-            let _ = fs::remove_dir_all(path);
+fn cleanup_owned_native_import_stages(home: &Path, group: &str) -> Result<(), BackupError> {
+    let paths = native_import_stage_paths(home, group)?;
+    // Validate both leaves before mutating either. A symlink is never followed.
+    for path in &paths {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if !metadata.is_dir() || metadata.file_type().is_symlink() => {
+                return Err(BackupError::InvalidRequest(
+                    "Import staging has been replaced; data was preserved.".into(),
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => {}
         }
     }
+    for path in paths {
+        match fs::remove_dir_all(&path) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+            Ok(()) => {}
+        }
+    }
+    Ok(())
 }
 
 struct VerifiedPackage {
@@ -3508,25 +3537,20 @@ mod tests {
                     fs::write(output, payload)?;
                     Ok(success())
                 }
-                ["snapshot", "load", _, "--group", group] => {
+                ["snapshot", "load", _, "--group", group, "--stage-id", id] => {
+                    assert_eq!(*id, &group["silo-import-".len()..]);
                     if self.cancel_during_load.load(Ordering::Acquire) {
                         // The runner killed msb after it had installed members.
-                        fs::create_dir_all(command.home.join("cache/tmp/snapshot-import-killed"))?;
-                        fs::create_dir_all(
-                            command.home.join("snapshots/.msb-snapshot-import-killed"),
-                        )?;
+                        for path in native_import_stage_paths(&command.home, group)? {
+                            fs::create_dir_all(path.join("partial"))?;
+                        }
                         cancellation.cancel();
                         return Err(BackupError::Cancelled);
                     }
                     if self.fail_load.load(Ordering::Acquire) {
-                        fs::create_dir_all(
-                            command.home.join("cache/tmp/snapshot-import-interrupted"),
-                        )?;
-                        fs::create_dir_all(
-                            command
-                                .home
-                                .join("snapshots/.msb-snapshot-import-interrupted"),
-                        )?;
+                        for path in native_import_stage_paths(&command.home, group)? {
+                            fs::create_dir_all(path.join("partial"))?;
+                        }
                         return Ok(CommandOutput {
                             status: ExitStatus::from_raw(1 << 8),
                             stderr: "unsafe archive member".into(),
@@ -3582,7 +3606,7 @@ mod tests {
                         .rev()
                         .find(|call| call.get(1).is_some_and(|part| part == "load"))
                     {
-                        let group = load.last().unwrap();
+                        let group = &load[4];
                         let artifact = |id: &str, descriptor: &Value| -> io::Result<PathBuf> {
                             let path = command.home.join("snapshots").join(group).join(id);
                             fs::create_dir_all(&path)?;
@@ -4925,14 +4949,10 @@ mod tests {
         assert!(fs::read_dir(scratch).unwrap().next().is_none());
         assert!(existing_cache_stage.is_dir());
         assert!(existing_snapshot_stage.is_dir());
-        assert!(!temp
-            .path()
-            .join("home/snapshots/.msb-snapshot-import-interrupted")
-            .exists());
-        assert!(!temp
-            .path()
-            .join("home/cache/tmp/snapshot-import-interrupted")
-            .exists());
+        let calls = import_group_calls(&service, "load");
+        for path in native_import_stage_paths(&temp.path().join("home"), &calls[0][4]).unwrap() {
+            assert!(!path.exists());
+        }
     }
 
     fn restore_request(archive: PathBuf) -> RestoreRequest {
@@ -4952,12 +4972,79 @@ mod tests {
             .iter()
             .filter(|args| {
                 args.get(1).is_some_and(|arg| arg == verb)
-                    && args
-                        .last()
-                        .is_some_and(|arg| arg.starts_with("silo-import-"))
+                    && (if verb == "load" {
+                        args.get(4)
+                    } else {
+                        args.last()
+                    })
+                    .is_some_and(|arg| arg.starts_with("silo-import-"))
             })
             .cloned()
             .collect()
+    }
+
+    #[test]
+    fn existing_operation_stages_are_refused_before_the_journal_claims_them() {
+        for relative in ["snapshots/.msb-snapshot-load-", "cache/tmp/snapshot-load-"] {
+            let temp = tempfile::tempdir().unwrap();
+            let destination = temp.path().join("dev.silo-backup");
+            let service = service(&temp, FakeRunner::default());
+            create_one(&service, destination.clone(), false).unwrap();
+            let group = new_import_group();
+            let stage = temp
+                .path()
+                .join("home")
+                .join(format!("{relative}{}", &group[12..]));
+            fs::create_dir_all(&stage).unwrap();
+            fs::write(stage.join("keep"), b"preexisting").unwrap();
+            let claimed = AtomicBool::new(false);
+            let result = service.prepare_restore_in_group(
+                restore_request(destination),
+                &group,
+                &Cancellation::default(),
+                &|| {
+                    claimed.store(true, Ordering::Release);
+                    Ok(())
+                },
+            );
+            assert!(matches!(result, Err(BackupError::ImportGroupConflict(_))));
+            assert!(!claimed.load(Ordering::Acquire));
+            assert!(import_group_calls(&service, "load").is_empty());
+            assert!(service.runner.removed.lock().unwrap().is_empty());
+            assert_eq!(fs::read(stage.join("keep")).unwrap(), b"preexisting");
+        }
+    }
+
+    #[test]
+    fn import_stage_cleanup_waits_for_the_existing_worker_lock() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut service = service(&temp, FakeRunner::default());
+        let group = new_import_group();
+        let stages = native_import_stage_paths(&service.command.home, &group).unwrap();
+        for stage in &stages {
+            fs::create_dir_all(stage).unwrap();
+            fs::write(stage.join("partial"), b"still writing").unwrap();
+        }
+        let worker = wait_for_worker_lock(
+            &service.command.home,
+            Duration::ZERO,
+            &Cancellation::default(),
+        )
+        .unwrap();
+        service.command_timeout = Duration::ZERO;
+        assert!(
+            matches!(service.discard_import_group(&group), Err(BackupError::Io(error)) if error.kind() == io::ErrorKind::TimedOut)
+        );
+        for stage in &stages {
+            assert_eq!(fs::read(stage.join("partial")).unwrap(), b"still writing");
+        }
+        assert!(service.runner.calls.lock().unwrap().is_empty());
+        drop(worker);
+        service.command_timeout = Duration::from_secs(1);
+        service.discard_import_group(&group).unwrap();
+        for stage in stages {
+            assert!(!stage.exists());
+        }
     }
 
     #[test]
@@ -5064,14 +5151,10 @@ mod tests {
             service.prepare_restore(restore_request(destination), &Cancellation::default());
         assert!(matches!(result, Err(BackupError::Cancelled)));
         assert_eq!(import_group_calls(&service, "remove").len(), 2);
-        assert!(!temp
-            .path()
-            .join("home/cache/tmp/snapshot-import-killed")
-            .exists());
-        assert!(!temp
-            .path()
-            .join("home/snapshots/.msb-snapshot-import-killed")
-            .exists());
+        let calls = import_group_calls(&service, "load");
+        for path in native_import_stage_paths(&temp.path().join("home"), &calls[0][4]).unwrap() {
+            assert!(!path.exists());
+        }
         assert!(fs::read_dir(temp.path().join("scratch"))
             .unwrap()
             .next()

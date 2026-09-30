@@ -430,7 +430,8 @@ fn cleanup_archive_partial(journal: &Journal) -> Result<(), String> {
     Ok(())
 }
 
-/// Own the new group before `snapshot load` writes any native data. The new
+/// Own the new group and its suffix as the deterministic `--stage-id` before
+/// `snapshot load` writes any native data. The new
 /// sandbox's identity is added later, before its checkpoint record is saved.
 pub(super) fn save_restore_group(
     controller: &Controller,
@@ -490,8 +491,8 @@ pub(super) fn discard_uncommitted_import(
     clear_restore_identity(controller)
 }
 /// Includes a load interrupted before Silo allocated the sandbox identity.
-/// Only the journaled group is removed; unindexed runtime staging has no group
-/// identity in the current runtime and must stay untouched at relaunch.
+/// Only the journaled group and its two deterministic stage roots are removed.
+/// Unrelated stages, including older random stages, stay untouched at relaunch.
 pub(super) fn discard_pending_import(
     paths: &runtime::RuntimePaths,
     controller: &Controller,
@@ -1285,6 +1286,314 @@ mod tests {
         assert!(!pending(&controller).unwrap());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn relaunch_keeps_stage_ownership_when_a_stage_or_parent_is_redirected() {
+        let _test_state = crate::test_support::global_state();
+        for redirect_parent in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            let paths = temp_paths(directory.path());
+            let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
+            fs::write(directory.path().join("snapshots.json"), b"[]").unwrap();
+            begin(
+                &controller,
+                Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+            )
+            .unwrap();
+            save_restore_group(&controller, IMPORT_GROUP).unwrap();
+            let snapshot = paths
+                .home
+                .join("snapshots/.msb-snapshot-load-0123456789abcdef0123456789abcdef");
+            fs::create_dir_all(&snapshot).unwrap();
+            fs::write(snapshot.join("keep"), b"owned").unwrap();
+            let redirected = if redirect_parent {
+                paths.home.join("cache")
+            } else {
+                paths
+                    .home
+                    .join("cache/tmp/snapshot-load-0123456789abcdef0123456789abcdef")
+            };
+            fs::create_dir_all(redirected.parent().unwrap()).unwrap();
+            fs::write(outside.path().join("keep"), b"outside").unwrap();
+            std::os::unix::fs::symlink(outside.path(), &redirected).unwrap();
+            let journal = load(&controller.history_path).unwrap().unwrap();
+            let error = recover_at_paths(
+                &paths,
+                &controller,
+                &journal,
+                &backup::Cancellation::default(),
+            )
+            .err()
+            .expect("redirected stage must fail closed");
+            assert!(error.contains("preserved"));
+            assert_eq!(fs::read(snapshot.join("keep")).unwrap(), b"owned");
+            assert_eq!(fs::read(outside.path().join("keep")).unwrap(), b"outside");
+            assert!(matches!(
+                load(&controller.history_path).unwrap().unwrap().request,
+                Request::Restore { group: Some(_), .. }
+            ));
+            fs::remove_file(redirected).unwrap();
+            recover_at_paths(
+                &paths,
+                &controller,
+                &journal,
+                &backup::Cancellation::default(),
+            )
+            .unwrap();
+            assert!(!snapshot.exists());
+            assert_eq!(fs::read(outside.path().join("keep")).unwrap(), b"outside");
+        }
+    }
+
+    /// Opt-in fixture proof with the rebuilt CLI; never starts a VM or launches Silo.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "requires SILO_E03_MSB pointing to this worktree's rebuilt CLI"]
+    fn rebuilt_cli_killed_load_is_removed_by_next_launch_recovery() {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let _test_state = crate::test_support::global_state();
+        let executable =
+            fs::canonicalize(std::env::var_os("SILO_E03_MSB").expect("SILO_E03_MSB is required"))
+                .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = Controller {
+            service: backup::BackupService::new(
+                backup::MsbCommand {
+                    executable: executable.clone(),
+                    home: paths.home.clone(),
+                    storage_home: None,
+                    library: paths.library.clone(),
+                },
+                directory.path().join("scratch"),
+            ),
+            ..history_controller(directory.path().join("backup-history.json"))
+        };
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+        )
+        .unwrap();
+        save_restore_group(&controller, IMPORT_GROUP).unwrap();
+        let owned = [
+            paths
+                .home
+                .join("snapshots/.msb-snapshot-load-0123456789abcdef0123456789abcdef"),
+            paths
+                .home
+                .join("cache/tmp/snapshot-load-0123456789abcdef0123456789abcdef"),
+        ];
+        let unrelated = [
+            paths
+                .home
+                .join("snapshots/.msb-snapshot-load-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            paths
+                .home
+                .join("cache/tmp/snapshot-load-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            paths.home.join("snapshots/.msb-snapshot-import-legacy"),
+        ];
+        for stage in &unrelated {
+            fs::create_dir_all(stage).unwrap();
+            fs::write(stage.join("keep"), b"unrelated").unwrap();
+        }
+        let fifo = directory.path().join("partial.tar");
+        assert!(Command::new("/usr/bin/mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        // Keep the writer open so msb must block in a large tar member. The partial
+        // fixture uses an accepted legacy disk entry; its full payload never arrives.
+        let mut stream = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NONBLOCK)
+            .open(&fifo)
+            .unwrap();
+        let mut child = Command::new(&executable)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", directory.path())
+            .env("MSB_HOME", &paths.home)
+            .env("XDG_CONFIG_HOME", directory.path().join("config"))
+            .args(["snapshot", "load"])
+            .arg(&fifo)
+            .args([
+                "--group",
+                IMPORT_GROUP,
+                "--stage-id",
+                "0123456789abcdef0123456789abcdef",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_path("fixture/upper.ext4").unwrap();
+        header.set_size(1024 * 1024 * 1024);
+        header.set_mode(0o600);
+        header.set_cksum();
+        let written = stream
+            .write_all(header.as_bytes())
+            .and_then(|()| stream.write_all(&[42; 4096]));
+        fn has_partial_file(root: &Path) -> bool {
+            fs::read_dir(root).is_ok_and(|entries| {
+                entries.flatten().any(|entry| {
+                    entry.file_type().is_ok_and(|kind| {
+                        if kind.is_dir() {
+                            has_partial_file(&entry.path())
+                        } else {
+                            entry
+                                .metadata()
+                                .is_ok_and(|metadata| metadata.len() >= 4096)
+                        }
+                    })
+                })
+            })
+        }
+        let started = Instant::now();
+        while written.is_ok()
+            && !has_partial_file(&owned[0])
+            && started.elapsed() < Duration::from_secs(20)
+        {
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let partial_written = has_partial_file(&owned[0]);
+        let alive = child.try_wait().unwrap().is_none();
+        // This PID comes directly from our spawned child, never from a process-name search.
+        if alive {
+            assert_eq!(
+                unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
+                0
+            );
+        }
+        let output = child.wait_with_output().unwrap();
+        drop(stream);
+        assert!(
+            written.is_ok() && partial_written && alive,
+            "fixture load did not block after writing data: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.status.signal(), Some(libc::SIGTERM));
+        for stage in &owned {
+            assert!(stage.is_dir(), "killed load lost stage {}", stage.display());
+        }
+        drop(controller);
+        let controller = Controller {
+            service: backup::BackupService::new(
+                backup::MsbCommand {
+                    executable: executable.clone(),
+                    home: paths.home.clone(),
+                    storage_home: None,
+                    library: paths.library.clone(),
+                },
+                directory.path().join("scratch"),
+            ),
+            ..history_controller(directory.path().join("backup-history.json"))
+        };
+        let journal = load(&controller.history_path).unwrap().unwrap();
+        *controller.journal.lock().unwrap() = Some(journal.clone());
+        let recovered = recover_at_paths(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(result_of(&recovered).1, "Import interrupted");
+        for stage in owned {
+            assert!(!stage.exists());
+        }
+        for stage in unrelated {
+            assert_eq!(fs::read(stage.join("keep")).unwrap(), b"unrelated");
+        }
+        assert!(matches!(
+            load(&controller.history_path).unwrap().unwrap().request,
+            Request::Restore { group: None, .. }
+        ));
+        println!("Fixture proof: {} wrote partial data; SIGTERM left both owned stages; launch recovery removed them and preserved three unrelated stages. No VM started.", executable.display());
+    }
+
+    #[test]
+    fn relaunch_removes_only_journaled_stages_before_or_after_load_starts() {
+        let _test_state = crate::test_support::global_state();
+        for load_started in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = temp_paths(directory.path());
+            let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
+            fs::write(directory.path().join("snapshots.json"), b"[]").unwrap();
+            begin(
+                &controller,
+                Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+            )
+            .unwrap();
+            save_restore_group(&controller, IMPORT_GROUP).unwrap();
+            let owned = [
+                paths
+                    .home
+                    .join("snapshots/.msb-snapshot-load-0123456789abcdef0123456789abcdef"),
+                paths
+                    .home
+                    .join("cache/tmp/snapshot-load-0123456789abcdef0123456789abcdef"),
+            ];
+            let unrelated = [
+                paths
+                    .home
+                    .join("snapshots/.msb-snapshot-load-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                paths
+                    .home
+                    .join("cache/tmp/snapshot-load-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+                paths.home.join("snapshots/.msb-snapshot-import-legacy"),
+            ];
+            for stage in &unrelated {
+                fs::create_dir_all(stage).unwrap();
+                fs::write(stage.join("keep"), b"unrelated").unwrap();
+            }
+            if load_started {
+                for stage in &owned {
+                    fs::create_dir_all(stage.join("partial/nested")).unwrap();
+                    fs::write(stage.join("partial/nested/payload"), b"incomplete").unwrap();
+                }
+            }
+            // Discard all in-process state: launch reloads only the durable journal.
+            drop(controller);
+            let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
+            fs::write(directory.path().join("snapshots.json"), b"[]").unwrap();
+            let journal = load(&controller.history_path).unwrap().unwrap();
+            *controller.journal.lock().unwrap() = Some(journal.clone());
+            let recovered = recover_at_paths(
+                &paths,
+                &controller,
+                &journal,
+                &backup::Cancellation::default(),
+            )
+            .unwrap();
+            assert_eq!(result_of(&recovered).1, "Import interrupted");
+            for stage in owned {
+                assert!(!stage.exists());
+            }
+            for stage in unrelated {
+                assert_eq!(fs::read(stage.join("keep")).unwrap(), b"unrelated");
+            }
+            assert!(scripted_calls(directory.path())
+                .iter()
+                .all(|call| !call.starts_with("snapshot load") && !call.starts_with("start")));
+            assert!(matches!(
+                load(&controller.history_path).unwrap().unwrap().request,
+                Request::Restore { group: None, .. }
+            ));
+        }
+    }
+
     #[test]
     fn relaunch_discards_a_load_group_before_a_sandbox_identity_was_allocated() {
         let _test_state = crate::test_support::global_state();
@@ -1297,8 +1606,8 @@ mod tests {
         )
         .unwrap();
         save_restore_group(&controller, IMPORT_GROUP).unwrap();
-        // The current runtime does not put a group identity on these random
-        // unpacking stages. Recovery must preserve them, never prefix-sweep.
+        // Older runtimes left random stages without operation identities.
+        // Recovery preserves these rather than inferring ownership.
         let stages = [
             paths.home.join("cache/tmp/snapshot-import-unattributed"),
             paths
