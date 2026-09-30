@@ -1,111 +1,156 @@
 # Migrate an older VM to the silo account
 
-Silo now requires the `silo` working account (UID/GID 1001). New VMs already have it. The migration script converts a standard older Silo VM with root-owned agent files and an optional `silo-desktop` account. Run it on the computer that owns the VM, with Silo closed and no other runtime commands running.
+Silo requires the `silo` working account (UID/GID 1001) inside each VM. New VMs
+already have it. Older VMs keep agent files under root, and some have a separate
+`silo-desktop` account. Silo refuses to start or open them until they are
+migrated or recreated.
 
-The script defaults to a dry run. Applying stops existing sessions, creates a root-disk snapshot and a separate workspace-disk backup, copies the existing home files into `/home/silo`, fixes their ownership, and installs passwordless sudo. It preserves agent credentials, relocates absolute home symlinks and launch scripts, and moves desktop configuration to the same account. The original home directories remain as backup copies. Missing Python, sudo, and SFTP packages are installed with apt, which requires guest network access in older images.
+## In the app
 
-Only after guest verification and a clean stop does it save `silo.working-account=1` through `msb modify`. It leaves the VM stopped. The `silo-desktop` service name and `/var/lib/silo-desktop` state directory keep their names; they are not separate login accounts.
+A VM on the old layout shows **Old account layout** in the sandbox list, and its
+Start, Terminal and Editor controls explain why they are unavailable. Choose
+**Migrate to the silo account…** from its ⋯ menu, or **Migrate…** on its page.
+Before anything changes, Silo runs a dry run and shows:
 
-## Run
+- the steps below, including whether the VM is stopped first;
+- the backup's maximum size and its folder;
+- the free space on that volume, and whether the backup fits;
+- a warning that files inside the sandbox are rewritten.
 
-Use Python 3.11 or later and the `msb` and libkrunfw shipped together in Silo. Do not use an unrelated system installation. Supply the same runtime home Silo uses; its short alias is under `~/.silo/` and points into the app's `runtime/microsandbox` directory. For a remote computer, run these commands there against that computer's runtime.
+Migrate is unavailable until the backup fits; **Check again** repeats the dry
+run after you free space.
 
-From the repository root, replace the example paths and `VM_NAME`:
+The migration waits its turn in the VM's lane of the operation queue, like
+Start or a checkpoint, and the queue shows its current step. It can be
+cancelled while Silo checks the sandbox and backs up its disks. A cancel then
+discards the partial backup and leaves the VM unchanged and stopped. Once the
+VM boots for migration, the attempt runs to the end, because an interruption
+would need Retry to finish.
 
-```sh
-python3 app/SiloUI/scripts/migrate-working-account.py VM_NAME \
-  --msb /Applications/Silo.app/Contents/MacOS/msb \
-  --library /Applications/Silo.app/Contents/Frameworks/libkrunfw.5.dylib \
-  --runtime-home "$HOME/.silo/RUNTIME_ALIAS"
-```
+On success the VM is stopped and ready to start, and a notice names the backup
+folder. On failure, the sandbox page shows the exact error with **Details**, the
+backup folder, and **Retry**. Retry continues with the same backup; if the
+backup itself failed, Retry backs up the disks again.
 
-After checking the selected name and plan, add `--apply --backup-dir /absolute/path/to/new-backup-directory`. The directory must not exist. Allow enough space for the root snapshot and a full copy of the workspace disk. Keep the backup private: it contains project files and credentials.
+A sandbox on another computer is migrated by that computer, in its own queue,
+with its backup on that computer. Both computers must run a Silo version with
+this feature.
 
-If an interrupted migration has already renamed the account, rerun with
-`--apply --resume --backup-dir` pointing to its original backup. Resume verifies
-backup identity, workspace size and snapshot integrity before continuing; it
-does not replace the backup. Stale Unix sockets and named pipes are omitted
-because their owning processes recreate them. Repeated home copies preserve
-saved files and replace their migrated symlinks.
+## What it does
 
-For a VM whose GitHub network profile requires `SILO_GITHUB` at boot, supply it
-in the command's environment. A one-off noncredential placeholder is sufficient
-for migration, which does not use GitHub; GitHub access is unavailable during
-that boot. Silo supplies its normal credential on the next app-managed boot.
+The host orchestration lives in
+`app/SiloUI/src-tauri/src/runtime/account_migration.rs`. The account rewrite is
+the guest payload `app/SiloUI/src-tauri/guest/migrate-working-account.py`, sent
+unchanged. In order:
 
-Start the VM in Silo afterward and check your agent authentication, project files, and desktop. This migration covers the standard Silo layout, not custom account arrangements or host-shared workspace mounts. Agent session histories and credentials are copied unchanged; a session history containing an old absolute working directory is not rewritten.
+1. Check that the bundled runtime supports the account protocol and that the VM
+   is a Silo-managed VM with no account label and the standard owned
+   `/workspace` disk. Running, stopped, created and crashed VMs are accepted.
+2. Stop the VM if it is running.
+3. Back up both disks with one MicroSandbox disk snapshot
+   (`snapshot create --from-sandbox VM --dest-dir … --integrity`). With the
+   owned workspace volume, the snapshot holds the root disk and `/workspace`.
+4. Start the VM through Silo's normal runtime path, so its secrets and GitHub
+   access profile are supplied as for any start. Install `python3`, `sudo` and
+   `openssh-sftp-server` with apt if any is missing; older images need guest
+   network access for this.
+5. Run the guest payload as root. It copies `/root` and `/home/silo-desktop`
+   into `/home/silo`, keeps credentials byte for byte, relocates absolute home
+   symlinks and launch scripts, gives `silo` ownership of the home and of
+   `/workspace` (without crossing mounts or following symlinks), installs
+   passwordless sudo, and verifies the account. The original home folders stay
+   in place. The `silo-desktop` service name and `/var/lib/silo-desktop` keep
+   their names; they are not separate login accounts.
+6. Stop the VM, and only then save `silo.working-account=1` with `msb modify`
+   and check that the runtime kept it.
+
+A saved Start from before, which the old layout refused, is retired when the
+migration begins, so it does not resume at the next launch.
+
+Agent session histories and credentials are copied unchanged; a session history
+that names an old absolute working directory is not rewritten. Custom account
+arrangements and host-shared workspace mounts are not migrated.
+
+## Backup
+
+Backups are kept in `account-migration-backups/<sandbox>-<first ID block>/`
+beside the runtime's `machines.json`, for example
+`~/Library/Application Support/org.silo.preview/<runtime>/account-migration-backups/dev-3f2a1b4c/`
+on macOS or `~/.local/share/org.silo.preview/<runtime>/…` on Linux. The folder
+is private (mode 0700) and contains:
+
+- `migration.json`: progress (`backing-up`, `backed-up`, `completed`), the
+  snapshot path relative to the folder, and the last failure;
+- `inspect.json`: the VM's runtime inspection before migration;
+- `snapshot/<sandbox>/snap_<id>/`: the MicroSandbox snapshot of both disks.
+
+The dry run sizes the backup as the host space allocated to the VM's root and
+workspace disks, and requires that plus 2 GiB, because the guest copies the home
+folders on the root disk. On APFS the snapshot is a copy-on-write clone and
+usually takes far less space; on ext4 it is a sparse copy of the allocated data.
+
+Silo keeps the backup after success. Delete the folder yourself once you have
+checked your agents and files. It contains project files and credentials.
+Silo never reuses a finished backup or a folder it did not create: migrating the
+same sandbox again later writes to the next free `-2`, `-3`… folder. Error
+messages do not name the folder, because Silo removes paths from them; the
+confirmation, the failure on the sandbox page and the result notice show it.
+
+Retry of an interrupted migration verifies the snapshot with
+`snapshot verify` before continuing, and runs the payload with `--resume`,
+which accepts a half-renamed account and repeated home copies. Stale Unix
+sockets and named pipes are not copied; their programs recreate them.
 
 ## Recover files from a backup
 
-A failed migration leaves the VM without the new host label. Do not set that label by hand. The backup contains a MicroSandbox root snapshot, `root-snapshot-path.txt` with its relative path, `workspace.raw`, the pre-migration `inspect.json`, and `workspace-source.txt`. With MicroSandbox 0.7.2, the snapshot is stored under `<backup>/<sandbox>/snap_<id>/`.
-
-The root snapshot does **not** contain the attached workspace disk. Keep
-`workspace.raw` with it. The snapshot depends on its base OCI image remaining
-in this runtime's image cache. This is a local recovery backup, not a portable
-VM export.
-
-Create a separate recovery VM using both backed-up disks:
+A failed migration leaves the VM without the account label. Do not set the
+label by hand. To read the old files, restore the snapshot as a separate VM with
+the bundled runtime of the same Silo installation, so its image cache holds the
+snapshot's base image. This is a local recovery backup, not a portable export.
 
 ```sh
 export MSB_HOME="$HOME/.silo/RUNTIME_ALIAS"
 export MSB_BACKEND=local
 export MSB_PATH=/Applications/Silo.app/Contents/MacOS/msb
 export MSB_LIBKRUNFW_PATH=/Applications/Silo.app/Contents/Frameworks/libkrunfw.5.dylib
-ROOT_SNAPSHOT=$(cat /absolute/path/to/backup/root-snapshot-path.txt)
-"$MSB_PATH" snapshot verify "/absolute/path/to/backup/$ROOT_SNAPSHOT"
-cp /absolute/path/to/backup/workspace.raw /absolute/path/to/recovery-workspace.raw
-"$MSB_PATH" create --from-snapshot "/absolute/path/to/backup/$ROOT_SNAPSHOT" \
-  --name account-recovery --no-start \
-  --mount-disk /absolute/path/to/recovery-workspace.raw:/workspace:format=raw,fstype=ext4
+BACKUP=/absolute/path/to/account-migration-backups/dev-3f2a1b4c
+SNAPSHOT="$BACKUP/$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["snapshot"])' "$BACKUP/migration.json")"
+"$MSB_PATH" snapshot verify "$SNAPSHOT"
+"$MSB_PATH" restore "$SNAPSHOT" --name account-recovery
 "$MSB_PATH" modify account-recovery --label-rm silo.managed --label-rm silo.machine-id
-"$MSB_PATH" start account-recovery
-"$MSB_PATH" exec account-recovery --no-start --user root -- /bin/bash
+"$MSB_PATH" exec account-recovery --user root -- /bin/bash
 "$MSB_PATH" stop account-recovery
 ```
 
-The recovery copy can require the workspace disk's full logical size; on Linux,
-use `cp --sparse=always` to preserve holes, or on macOS use `cp -c` when the copy
-stays on a filesystem that supports cloning.
-
-Choose a recovery name that does not already exist. The mount override isolates recovery from the original workspace; the label removal prevents duplicate Silo machine identities. Recover files into a newly created Silo VM rather than manually editing Silo's machine registry. The original VM and backup remain available.
+Choose a recovery name that does not exist. Removing the labels keeps Silo from
+seeing a second VM with the same identity. Copy what you need into a newly
+created Silo VM rather than editing Silo's machine registry.
 
 ## Verification
 
-Run `python3 -m unittest discover -s app/SiloUI/scripts -p test_migrate_working_account.py` for disposable file and orchestration tests. These verify dry-run behavior, failure ordering, credential preservation, and home-path relocation. They do not prove Linux account changes or a live desktop session.
+Host orchestration is covered by Rust tests in `account_migration.rs`: the dry
+run, a successful migration (backup before boot, label only after a clean
+stop), a guest failure that keeps the backup and never publishes the label,
+Retry with `snapshot verify` and `--resume`, a failed backup that is removed and
+redone, a cancelled backup, insufficient space, layout and identity checks, and
+the operation-queue labels and cancellability. The guest payload keeps its
+Python tests:
 
-Runtime commands were checked against Silo's bundled MicroSandbox 0.7.2 CLI (`modify --help`, `snapshot create --help`, `snapshot verify --help`, `create --help`). Snapshot creation selects its source with `--from-sandbox`; snapshots cover the managed root upper layer, so the migration copies the workspace disk separately. The standalone utility uses the same pinned command syntax.
+```sh
+python3 -m unittest discover -s app/SiloUI/scripts -p test_migrate_working_account.py
+```
 
-On 2026-09-25, the current host utility also completed a live account migration
-on a separate disposable Ubuntu 24.04 v3 x86-64 VM using the packaged 0.7.2
-CLI and libkrunfw. It verified UID 1001, the SFTP server, the pre-migration
-workspace marker and its ownership, and the final stopped VM label. The backup
-used MicroSandbox's actual `<backup>/<sandbox>/snap_<id>/` layout; the utility's
-recorded descriptor path resolved and `snapshot verify` passed. The live run
-completed without interruption, so `--resume` was covered by the 11 focused
-utility tests rather than a second live interrupted run. This validates the
-utility's 0.7.2 CLI/layout path, not Silo's packaged conversion of a predecessor
-VM. Compact command, digest, and result evidence is in
-`app/SiloUI/src-tauri/target/verification/linux-account-migration-072-20260925.txt`.
+They cover credential preservation, home-path relocation, pipes and sockets, and
+the reserved identity on resume. They do not prove Linux account changes or a
+live desktop session.
 
-A disposable Ubuntu 24.04 ARM64 VM verified the actual account rename, UID/GID 1001, private credentials, desktop-home files, relocated executable symlink, writable workspace, passwordless sudo, and persisted host label. A separate VM booted the root snapshot with the backed-up workspace and verified the original credentials and root-owned project contents. This proof used synthetic data and did not exercise a running KasmVNC session or package installation over the network. Evidence: `app/SiloUI/src-tauri/target/verification/migration/live-migration.log` and `recovery.log`.
+### History
 
-The exact inspected executable was `app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Account Verification.app/Contents/MacOS/msb`, with the bundled ARM64 libkrunfw and `ubuntu-24.04-v3` guest image. Test runtime `/tmp/silo-migration-proof-idyf00si` is retained for migration/backup evidence; its migrated and recovery VMs are stopped, and the unbooted snapshot clone remains Created. No user's existing VM was accessed.
-
-
-### Existing-VM migration follow-up
-
-A live existing ARM64 VM exposed stale editor/agent sockets and the host's short
-runtime-home alias. The copier now skips sockets and FIFOs, supports verified
-resume with the original backup, and preserves the alias instead of resolving
-it into a path exceeding the Unix socket limit. Private command diagnostics are
-saved in the backup directory on failure. Original agent shell initialization
-wins over desktop defaults, with the migrated `.local/bin` added to PATH.
-
-Eleven migration tests pass. A disposable interrupted-migration reproduction also
-passed with partial symlinks and stale sockets. The existing VM subsequently
-completed migration; Codex 0.155.1 launched as `silo`, its authentication bytes
-matched the original, sudo/workspace access passed, and the actual desktop
-reported running as `silo` on `:1`. It was stopped after verification with account
-policy `1`. Verification used the account-aware runtime in
-`app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Account Verification.app`;
-the older installed application was left closed pending update.
+The in-app action replaced `scripts/migrate-working-account.py`, which accepted
+only the external `DiskImage` workspace mount. After the runtime migration
+converted every VM to an owned workspace volume, that script could no longer
+migrate any VM. Its guest payload was verified live on 2026-09-25 on disposable
+Ubuntu 24.04 x86-64 and ARM64 VMs with the 0.7.2 runtime (UID/GID 1001,
+credentials, relocated symlinks, SFTP, sudo, workspace ownership, persisted
+label), and on an existing ARM64 VM after an interrupted run, where Codex
+launched as `silo` with unchanged authentication and the desktop ran as `silo`.

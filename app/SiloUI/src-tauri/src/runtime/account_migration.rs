@@ -216,36 +216,80 @@ pub(super) fn backups_root(paths: &RuntimePaths) -> PathBuf {
     paths.metadata.with_file_name("account-migration-backups")
 }
 
-/// This sandbox's backup folder: readable name, unique per VM identity.
-fn backup_directory(paths: &RuntimePaths, machine: &MachineConfiguration) -> PathBuf {
-    let short = machine.id().split('-').next().unwrap_or_default();
-    backups_root(paths).join(format!("{}-{short}", machine.name()))
+/// What a candidate backup folder holds for this sandbox.
+enum Slot {
+    /// Missing or empty: a new backup can go here.
+    Free,
+    /// This sandbox's unfinished migration: Retry continues with it.
+    Current(Record),
+    /// A finished backup, or anything else: kept, and never reused.
+    Taken,
 }
 
-fn load(directory: &Path, machine: &MachineConfiguration) -> Result<Option<Record>, RuntimeError> {
+fn slot(directory: &Path, machine: &MachineConfiguration) -> Result<Slot, RuntimeError> {
+    let unreadable = || unavailable("Silo could not read its migration backups.");
+    match fs::symlink_metadata(directory) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Slot::Free),
+        Err(_) => return Err(unreadable()),
+        Ok(metadata) if !metadata.is_dir() => return Ok(Slot::Taken),
+        Ok(_) => {}
+    }
     let file = directory.join(RECORD);
     match fs::symlink_metadata(&file) {
-        Ok(metadata) if metadata.is_file() => {}
-        Ok(_) => {
-            return Err(unavailable(
-                "The migration progress file is not a regular file.",
-            ))
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let empty = fs::read_dir(directory)
+                .map_err(|_| unreadable())?
+                .next()
+                .is_none();
+            return Ok(if empty { Slot::Free } else { Slot::Taken });
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(unavailable("The migration progress could not be read.")),
+        Err(_) => return Err(unreadable()),
+        Ok(metadata) if !metadata.is_file() => return Ok(Slot::Taken),
+        Ok(_) => {}
     }
-    let bytes =
-        fs::read(&file).map_err(|_| unavailable("The migration progress could not be read."))?;
-    let record: Record = serde_json::from_slice(&bytes)
-        .map_err(|_| unavailable("The migration progress is invalid; the backup was preserved."))?;
-    if record.version != 1 || record.machine_id != machine.id() || record.sandbox != machine.name()
-    {
-        return Err(unavailable(format!(
-            "The backup folder {} belongs to another sandbox. Move it aside, then retry.",
-            directory.display()
-        )));
+    let bytes = fs::read(&file).map_err(|_| unreadable())?;
+    // An unreadable record may be this sandbox's half-finished migration: never skip it.
+    let record: Record = serde_json::from_slice(&bytes).map_err(|_| {
+        unavailable("The migration progress saved with this sandbox's backup is unreadable. The backup was preserved.")
+    })?;
+    Ok(
+        if record.version == 1
+            && record.machine_id == machine.id()
+            && record.sandbox == machine.name()
+            && record.phase != Phase::Completed
+        {
+            Slot::Current(record)
+        } else {
+            Slot::Taken
+        },
+    )
+}
+
+/// This sandbox's backup folder, `<name>-<first ID block>`, and its unfinished
+/// migration if any. A finished backup is kept, so a later migration of the same
+/// sandbox uses the next free `-2`, `-3`… folder instead.
+fn locate(
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+) -> Result<(PathBuf, Option<Record>), RuntimeError> {
+    let short = machine.id().split('-').next().unwrap_or_default();
+    let base = format!("{}-{short}", machine.name());
+    for index in 1..=100 {
+        let name = if index == 1 {
+            base.clone()
+        } else {
+            format!("{base}-{index}")
+        };
+        let directory = backups_root(paths).join(name);
+        match slot(&directory, machine)? {
+            Slot::Free => return Ok((directory, None)),
+            Slot::Current(record) => return Ok((directory, Some(record))),
+            Slot::Taken => {}
+        }
     }
-    Ok(Some(record))
+    Err(unavailable(
+        "Too many migration backups of this sandbox are kept. Remove old ones, then retry.",
+    ))
 }
 
 /// Replace a private file atomically.
@@ -276,17 +320,15 @@ fn snapshot_path(directory: &Path, record: &Record) -> Result<PathBuf, RuntimeEr
             .components()
             .any(|part| !matches!(part, std::path::Component::Normal(_)))
     {
-        return Err(unavailable(format!(
-            "The backup in {} has no valid snapshot record. Keep the folder and do not relabel the sandbox by hand.",
-            directory.display()
-        )));
+        return Err(unavailable(
+            "The backup has no valid snapshot record. Keep its folder and do not relabel the sandbox by hand.",
+        ));
     }
     let path = directory.join(relative);
     if !path.join("snapshot.json").is_file() {
-        return Err(unavailable(format!(
-            "The backup snapshot in {} is missing. Keep the folder and do not relabel the sandbox by hand.",
-            directory.display()
-        )));
+        return Err(unavailable(
+            "The backup snapshot is missing. Keep its folder and do not relabel the sandbox by hand.",
+        ));
     }
     Ok(path)
 }
@@ -443,14 +485,7 @@ pub(super) fn plan_with(
     free_space: FreeSpace<'_>,
 ) -> Result<Plan, RuntimeError> {
     let inspected = check(runner, paths, machine)?;
-    let directory = backup_directory(paths, machine);
-    let record = load(&directory, machine)?;
-    if record
-        .as_ref()
-        .is_some_and(|record| record.phase == Phase::Completed)
-    {
-        return Err(completed_backup(&directory));
-    }
+    let (directory, record) = locate(paths, machine)?;
     let resume = record.is_some_and(|record| record.phase == Phase::BackedUp);
     let backup_bytes = if resume {
         0
@@ -473,50 +508,25 @@ pub(super) fn plan_with(
     })
 }
 
-fn completed_backup(directory: &Path) -> RuntimeError {
+// Failure summaries redact words containing `/`, so messages never embed paths;
+// the backup folder travels in its own field instead.
+fn not_enough_space(required: u64, available: u64) -> RuntimeError {
     invalid(format!(
-        "A finished migration backup is already in {}. Move it aside to migrate this sandbox again.",
-        directory.display()
-    ))
-}
-
-fn not_enough_space(required: u64, available: u64, directory: &Path) -> RuntimeError {
-    invalid(format!(
-        "Not enough free space for the backup: it needs about {} and {} is available for {}. Free up space, then retry. Nothing was changed.",
+        "Not enough free space for the backup: it needs about {} and {} is available on the disk that holds Silo's data. Free up space, then retry. Nothing was changed.",
         crate::backup::format_bytes(required),
         crate::backup::format_bytes(available),
-        directory.display()
     ))
 }
 
-/// Create the backup folder, private, or reuse the one an interrupted backup left.
-fn prepare_directory(directory: &Path, reuse: bool) -> Result<(), RuntimeError> {
-    let failed = || {
-        unavailable(format!(
-            "Silo could not create the backup folder {}.",
-            directory.display()
-        ))
-    };
+/// Create the backup folder, private, or reuse the one `locate` chose: empty, or left
+/// by an interrupted backup of this sandbox.
+fn prepare_directory(directory: &Path) -> Result<(), RuntimeError> {
+    let failed = || unavailable("Silo could not create the backup folder.");
     fs::create_dir_all(directory.parent().ok_or_else(failed)?).map_err(|_| failed())?;
     match fs::symlink_metadata(directory) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            let empty = fs::read_dir(directory)
-                .map_err(|_| failed())?
-                .next()
-                .is_none();
-            if !reuse && !empty {
-                return Err(unavailable(format!(
-                    "The backup folder {} already has other files. Move it aside, then retry.",
-                    directory.display()
-                )));
-            }
-            // An interrupted backup is incomplete: only its snapshot is replaced.
-            remove_snapshot(directory)
-        }
-        Ok(_) => Err(unavailable(format!(
-            "{} is not a folder Silo can use for the backup. Move it aside, then retry.",
-            directory.display()
-        ))),
+        // An interrupted backup is incomplete: only its snapshot is replaced.
+        Ok(metadata) if metadata.is_dir() => remove_snapshot(directory),
+        Ok(_) => Err(failed()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::DirBuilder::new()
             .mode(0o700)
             .create(directory)
@@ -530,10 +540,9 @@ fn remove_snapshot(directory: &Path) -> Result<(), RuntimeError> {
     match fs::remove_dir_all(directory.join(SNAPSHOT)) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_) => Err(unavailable(format!(
-            "Silo could not remove an incomplete backup in {}. Remove it, then retry.",
-            directory.display()
-        ))),
+        Err(_) => Err(unavailable(
+            "Silo could not remove an incomplete backup. Remove its snapshot folder, then retry.",
+        )),
     }
 }
 
@@ -760,14 +769,7 @@ fn attempt(
 ) -> Result<PathBuf, RuntimeError> {
     progress(Stage::Checking);
     let inspected = check(runner, paths, machine)?;
-    let directory = backup_directory(paths, machine);
-    let existing = load(&directory, machine)?;
-    if existing
-        .as_ref()
-        .is_some_and(|record| record.phase == Phase::Completed)
-    {
-        return Err(completed_backup(&directory));
-    }
+    let (directory, existing) = locate(paths, machine)?;
     let resume = existing
         .as_ref()
         .is_some_and(|record| record.phase == Phase::BackedUp);
@@ -780,7 +782,7 @@ fn attempt(
         .map_err(|_| unavailable("Silo could not check the free space for the backup."))?;
     let required = bytes.saturating_add(SPACE_RESERVE);
     if available < required {
-        return Err(not_enough_space(required, available, &directory));
+        return Err(not_enough_space(required, available));
     }
     let mut record = match existing {
         Some(record) if resume => {
@@ -792,15 +794,14 @@ fn attempt(
                     SNAPSHOT_TIMEOUT,
                 )
                 .map_err(|_| {
-                    unavailable(format!(
-                        "The backup in {} failed its integrity check. Keep the folder and do not relabel the sandbox by hand.",
-                        directory.display()
-                    ))
+                    unavailable(
+                        "The backup failed its integrity check. Keep its folder and do not relabel the sandbox by hand.",
+                    )
                 })?;
             record
         }
-        existing => {
-            prepare_directory(&directory, existing.is_some())?;
+        _ => {
+            prepare_directory(&directory)?;
             let mut record = Record {
                 version: 1,
                 machine_id: machine.id().into(),
@@ -915,7 +916,7 @@ pub(super) fn annotate(
     machine: &MachineConfiguration,
     view: &mut Option<View>,
 ) {
-    let directory = backup_directory(paths, machine);
+    let located = locate(paths, machine);
     if let Some(stage) = running()
         .get(&(paths.metadata.clone(), machine.id().to_owned()))
         .copied()
@@ -925,15 +926,17 @@ pub(super) fn annotate(
             stage: Some(stage.label().into()),
             error: None,
             diagnostic: None,
-            backup_directory: Some(directory.display().to_string()),
+            backup_directory: located
+                .ok()
+                .map(|(directory, _)| directory.display().to_string()),
         });
         return;
     }
     let Some(view) = view.as_mut() else {
         return;
     };
-    match load(&directory, machine) {
-        Ok(Some(record)) if record.phase != Phase::Completed => {
+    match located {
+        Ok((directory, Some(record))) => {
             let interrupted = if record.phase == Phase::BackingUp {
                 INTERRUPTED_BACKUP
             } else {
@@ -1022,18 +1025,10 @@ fn run_local(
     );
     drop(marker);
     drop(guard);
-    let backup = |phase: Phase| {
-        let directory = backup_directory(paths, &machine);
-        load(&directory, &machine)
-            .ok()
-            .flatten()
-            .filter(|record| record.phase == phase)
-            .map(|_| directory.display().to_string())
-    };
     match result {
-        Ok(_) => Ok(Outcome {
+        Ok(directory) => Ok(Outcome {
             succeeded: true,
-            backup_directory: backup(Phase::Completed),
+            backup_directory: Some(directory.display().to_string()),
             error: None,
             diagnostic: None,
         }),
@@ -1043,7 +1038,15 @@ fn run_local(
         }) => Err(error),
         Err(Failed { failure, .. }) => Ok(Outcome {
             succeeded: false,
-            backup_directory: backup(Phase::BackedUp),
+            // A failure after the backup was complete keeps it for Retry.
+            backup_directory: locate(paths, &machine)
+                .ok()
+                .filter(|(_, record)| {
+                    record
+                        .as_ref()
+                        .is_some_and(|record| record.phase == Phase::BackedUp)
+                })
+                .map(|(directory, _)| directory.display().to_string()),
             error: Some(failure.message),
             diagnostic: failure.diagnostic,
         }),
@@ -1293,13 +1296,13 @@ mod tests {
         }
     }
 
+    /// The first backup folder of the fixture sandbox.
+    fn folder(fixture: &Fixture) -> PathBuf {
+        backups_root(&fixture.paths).join("dev-3f2a1b4c")
+    }
+
     fn record(fixture: &Fixture) -> Record {
-        load(
-            &backup_directory(&fixture.paths, &fixture.machine),
-            &fixture.machine,
-        )
-        .unwrap()
-        .unwrap()
+        serde_json::from_slice(&fs::read(folder(fixture).join(RECORD)).unwrap()).unwrap()
     }
 
     #[test]
@@ -1426,9 +1429,7 @@ mod tests {
         assert!(view.error.unwrap().contains("UID/GID 1001"));
         assert_eq!(
             view.backup_directory.unwrap(),
-            backup_directory(&fixture.paths, &fixture.machine)
-                .display()
-                .to_string()
+            folder(&fixture).display().to_string()
         );
     }
 
@@ -1508,7 +1509,7 @@ mod tests {
             },
         );
         migrate(&fake, &fixture, &RefCell::new(Vec::new())).unwrap_err();
-        let directory = backup_directory(&fixture.paths, &fixture.machine);
+        let directory = folder(&fixture);
         assert!(!directory.join(SNAPSHOT).exists());
         let saved = record(&fixture);
         assert_eq!(saved.phase, Phase::BackingUp);
@@ -1554,7 +1555,7 @@ mod tests {
             .unwrap_err()
             .error;
         assert!(matches!(error, RuntimeError::Cancelled { .. }));
-        assert!(!backup_directory(&fixture.paths, &fixture.machine).exists());
+        assert!(!folder(&fixture).exists());
         assert_eq!(*fake.status.borrow(), "Stopped");
         let mut view = required(&json!({}));
         annotate(&fixture.paths, &fixture.machine, &mut view);
@@ -1604,29 +1605,63 @@ mod tests {
     }
 
     #[test]
-    fn a_backup_folder_of_another_sandbox_is_never_reused() {
+    fn folders_that_are_not_this_migration_are_kept_and_skipped() {
+        let _state = crate::test_support::global_state();
         let fixture = fixture();
-        let directory = backup_directory(&fixture.paths, &fixture.machine);
-        fs::create_dir_all(&directory).unwrap();
-        fs::write(directory.join("notes.txt"), "mine").unwrap();
+        // Someone else's files, and another sandbox's unfinished migration.
+        let taken = folder(&fixture);
+        fs::create_dir_all(&taken).unwrap();
+        fs::write(taken.join("notes.txt"), "mine").unwrap();
+        let foreign = backups_root(&fixture.paths).join("dev-3f2a1b4c-2");
+        fs::create_dir_all(&foreign).unwrap();
+        fs::write(foreign.join(RECORD), json!({"version":1,"machineId":"other","sandbox":"dev","phase":"backed-up","updatedAt":0}).to_string()).unwrap();
         let fake = Fake::new("Stopped");
-        let error = migrate(&fake, &fixture, &RefCell::new(Vec::new()))
-            .unwrap_err()
-            .error;
-        assert!(
-            error.to_string().contains("already has other files"),
-            "{error}"
-        );
+        let plan = plan_with(&fake, &fixture.paths, &fixture.machine, &plenty).unwrap();
+        let third = backups_root(&fixture.paths).join("dev-3f2a1b4c-3");
+        assert_eq!(plan.backup_directory, third.display().to_string());
+        assert!(!plan.resume);
         assert_eq!(
-            fs::read_to_string(directory.join("notes.txt")).unwrap(),
-            "mine"
+            migrate(&fake, &fixture, &RefCell::new(Vec::new())).unwrap(),
+            third
+        );
+        assert_eq!(fs::read_to_string(taken.join("notes.txt")).unwrap(), "mine");
+        assert!(fs::read_to_string(foreign.join(RECORD))
+            .unwrap()
+            .contains("other"));
+
+        // A finished backup is kept: migrating the same sandbox again uses a new folder.
+        fake.labels.borrow_mut().remove("silo.working-account");
+        let plan = plan_with(&fake, &fixture.paths, &fixture.machine, &plenty).unwrap();
+        assert_eq!(
+            plan.backup_directory,
+            backups_root(&fixture.paths)
+                .join("dev-3f2a1b4c-4")
+                .display()
+                .to_string()
         );
 
-        fs::write(directory.join(RECORD), json!({"version":1,"machineId":"other","sandbox":"dev","phase":"backed-up","updatedAt":0}).to_string()).unwrap();
-        assert!(plan_with(&fake, &fixture.paths, &fixture.machine, &plenty)
-            .unwrap_err()
-            .to_string()
-            .contains("belongs to another sandbox"));
+        // An unreadable progress file may be this sandbox's: it stops the migration.
+        fs::write(third.join(RECORD), "{").unwrap();
+        let error = plan_with(&fake, &fixture.paths, &fixture.machine, &plenty).unwrap_err();
+        assert!(error.to_string().contains("unreadable"), "{error}");
+    }
+
+    #[test]
+    fn failure_messages_never_embed_paths() {
+        for error in [not_enough_space(3, 1), invalid("x")] {
+            let summary = failure_report(&error).summary;
+            assert!(!summary.contains("[redacted]"), "{summary}");
+        }
+        let _state = crate::test_support::global_state();
+        let fixture = fixture();
+        let fake = Fake::new("Stopped");
+        let failed =
+            migrate_with(&fake, &fixture.paths, &fixture.machine, &scarce, &|_| {}).unwrap_err();
+        assert!(
+            !failed.failure.message.contains("[redacted]"),
+            "{}",
+            failed.failure.message
+        );
     }
 
     #[test]
@@ -1685,9 +1720,7 @@ mod tests {
         };
         let outcome = run_local(&fake, &fixture.paths, ID, &observe).unwrap();
         assert!(outcome.succeeded);
-        let directory = backup_directory(&fixture.paths, &fixture.machine)
-            .display()
-            .to_string();
+        let directory = folder(&fixture).display().to_string();
         assert_eq!(
             outcome.backup_directory.as_deref(),
             Some(directory.as_str())
@@ -1727,11 +1760,7 @@ mod tests {
         assert!(!outcome.succeeded);
         assert_eq!(
             outcome.backup_directory,
-            Some(
-                backup_directory(&fixture.paths, &fixture.machine)
-                    .display()
-                    .to_string()
-            )
+            Some(folder(&fixture).display().to_string())
         );
         assert!(outcome
             .error
