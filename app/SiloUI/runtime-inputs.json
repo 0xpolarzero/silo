@@ -103,6 +103,10 @@
     {
       "path": "patches/microsandbox-import-stage-id-0.7.2.patch",
       "sha256": "4728800bc59f1cc3c9e07923c99d8ff18ce1f2aa3469d29e7f7715513dcd456f"
+    },
+    {
+      "path": "patches/microsandbox-sftp-user-0.7.2.patch",
+      "sha256": "f2d4d947939f6444b959188f2c96c0ed976284fec34d25d2387ee54897e8d343"
     }
   ]
 }

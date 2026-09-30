@@ -30,7 +30,7 @@ Silo now pins the official [MicroSandbox v0.7.2 release](https://github.com/supe
 | `aarch64-unknown-linux-gnu` | `msb-linux-aarch64` `33e4f5274b9eefa3a088d0f0c8b80a5e440fd60940c0469f71a389c6998cb714` | `agentd-aarch64` `ca6dde7a3000d8e93d5dca87fcebf77ebb36ce83377385bae2be70dbead9a5e1` | `libkrunfw-linux-aarch64.so` `98d01137190de7022a3132c6f55c245ef43d02d67d5d7e697ee19c303fce8769` |
 | `x86_64-unknown-linux-gnu` | `msb-linux-x86_64` `bdaa6c6fc58fa3d8e85d52fc299106a013d979edd0a781b4bc6ddd21da0f8b16` | `agentd-x86_64` `4d2b2aac7c4f2c54362f81b083c19715032d4f15468332bc1fa86bea29afe249` | `libkrunfw-linux-x86_64.so` `ce9a749e8471e89aa5e2ad88de0c1581c3384c100bcb107a75bb12739a12d590` |
 
-The release listing publishes SHA-256 values for these assets. The `checksums.sha256` listing digest is `e748a853ee3dac5cf8e674feba8c6a9c606d66c8063f17bba729232b4c17fa23`; the shell could not fetch that file for an independent byte-for-byte comparison, so runtime input pins are the published asset values recorded in the local ignored verification checklist. Silo applies eleven ordered patches, each pinned by SHA-256 in `app/SiloUI/runtime-inputs.json`. Preflight validates their exact names, order, path containment, and bytes. The build cache key includes all patch hashes. Earlier macOS and Linux qualification cited above used the eight-patch runtime; it does not qualify the ninth or tenth patch.
+The release listing publishes SHA-256 values for these assets. The `checksums.sha256` listing digest is `e748a853ee3dac5cf8e674feba8c6a9c606d66c8063f17bba729232b4c17fa23`; the shell could not fetch that file for an independent byte-for-byte comparison, so runtime input pins are the published asset values recorded in the local ignored verification checklist. Silo applies twelve ordered patches, each pinned by SHA-256 in `app/SiloUI/runtime-inputs.json`. Preflight validates their exact names, order, path containment, and bytes. The build cache key includes all patch hashes. Earlier macOS and Linux qualification cited above used the eight-patch runtime; it does not qualify the ninth or tenth patch.
 
 Ordered source patch pins:
 
@@ -47,6 +47,7 @@ Ordered source patch pins:
 | `microsandbox-preserve-basic-auth-0.7.2.patch` | `e1957e2bc8adb2552140a9309d1d26d2721a38113f375328b9def408f5b1b5aa` |
 | `microsandbox-secret-values-stdin-0.7.2.patch` | `32ba747bae584847a39d7727aa2d7a2046574085554e558ead066ad01a266250` |
 | `microsandbox-import-stage-id-0.7.2.patch` | `4728800bc59f1cc3c9e07923c99d8ff18ce1f2aa3469d29e7f7715513dcd456f` |
+| `microsandbox-sftp-user-0.7.2.patch` | `f2d4d947939f6444b959188f2c96c0ed976284fec34d25d2387ee54897e8d343` |
 
 The ninth patch restores the independent Basic Auth substitution policy stored by MicroSandbox 0.6.x. Version 0.7.2 removed that field and made Basic Auth follow ordinary headers; its strict persisted-config decoder therefore rejected existing Silo sandbox records before owned-disk conversion. The patch preserves an explicit Basic Auth boolean, keeps the 0.7.2 headers behavior when the field is absent, and normalizes the observed historical `query_params` name to `query` at the persisted-config boundary. It never drops an unknown secret policy.
 
@@ -321,3 +322,18 @@ failed with the old shared budget, then passed with independent 125 MiB
 execution and console budgets. Silo's migration regression likewise failed
 before admitting Crashed, then its 16-test migration suite passed. These are
 fixture, build and CLI results, not live migration or packaged-app qualification.
+
+### SFTP working-account identity
+
+The twelfth patch runs nonroot SFTP sessions through the guest's bundled OpenSSH
+`/usr/lib/openssh/sftp-server` and the existing identity-aware exec stream.
+The pinned upstream's filesystem RPC handler runs as root even when the SSH
+session authenticates as `silo`; a real Linux Zed extension upload exposed
+root-owned upload directories and a subsequent rename permission failure.
+Root sessions retain the original handler. A missing guest helper fails without
+falling back to root. The guest image already requires this executable.
+
+[OpenSSH's subsystem manual](https://man.openbsd.org/sftp-server) documents its
+stdin/stdout protocol. The [pinned SDK SSH handler](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/sandbox/ssh.rs)
+shows the original root-agent SFTP path. Live evidence and qualification limits
+are recorded in [the Linux verification session](research/linux-verification-2026-09-30.md).

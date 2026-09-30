@@ -33,7 +33,7 @@ def main():
     env = {k: v for k, v in os.environ.items() if not k.startswith('MSB_')}
     env.update(MSB_HOME=str(root / 'home'), MSB_BACKEND='local',
                MSB_PATH=str(args.msb.resolve()), MSB_LIBKRUNFW_PATH=str(args.library.resolve()))
-    name, machine_id = 'working-account-proof', str(uuid.uuid4())
+    name, machine_id = 'e2e-working-account-proof', str(uuid.uuid4())
     created, passed, endpoint = False, False, None
     log = (args.output / 'live.log').open('x')
 
@@ -149,10 +149,11 @@ SENTINEL
         record('PASS interactive SSH identity and home directory')
         (root / 'upload').write_text('sftp')
         sftp = ['sftp', *common, '-P', str(port), '-b', '-', 'silo@127.0.0.1']
-        run(sftp, input=f'put {root / "upload"} /workspace/upload\nget /workspace/project {root / "download"}\n')
+        run(sftp, input=f'put {root / "upload"} /workspace/upload\nget /workspace/project {root / "download"}\nmkdir /workspace/sftp-upload\nchmod 755 /workspace/sftp-upload\nput {root / "upload"} /workspace/sftp-upload/payload\n')
         assert (root / 'download').read_text() == 'projectssh'
         ownership = guest('stat -c "%U:%G" /workspace/upload').stdout.strip()
         assert ownership == 'silo:silo', ownership
+        guest('test "$(stat -c %U:%G /workspace/sftp-upload)" = silo:silo; mv /workspace/sftp-upload/payload /workspace/sftp-upload/renamed', user='silo')
         denied = run(sftp, check=False, input=f'put {root / "upload"} /root/forbidden\n')
         assert denied.returncode != 0, 'SFTP unexpectedly wrote root home'
         record('PASS SFTP shares normal identity and refuses root-owned private path')

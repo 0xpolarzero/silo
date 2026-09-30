@@ -1,0 +1,28 @@
+diff --git a/sdk/rust/lib/sandbox/ssh.rs b/sdk/rust/lib/sandbox/ssh.rs
+--- a/sdk/rust/lib/sandbox/ssh.rs
++++ b/sdk/rust/lib/sandbox/ssh.rs
+@@ -1660,6 +1660,24 @@ impl russh::server::Handler for SshSession {
+             return Ok(());
+         }
+ 
++        // Agent filesystem RPCs run as root. Nonroot SSH sessions must use
++        // the guest's OpenSSH subsystem through the same identity-aware exec
++        // stream as shell commands. A missing helper fails without root fallback.
++        let user = self
++            .settings
++            .guest_user
++            .as_deref()
++            .or(self.user.as_deref());
++        if user.is_some_and(|user| user != "root") {
++            return self
++                .start_exec(
++                    channel,
++                    ExecCommand::Command("exec /usr/lib/openssh/sftp-server".to_string()),
++                    session,
++                )
++                .await;
++        }
++
+         let Some(ChannelState::Pending {
+             channel: Some(channel_stream),
+             ..
