@@ -233,6 +233,7 @@ fn main() {
             secrets::install(app.handle())?;
             github::install(app.handle());
             backup_controller::install(app.handle())?;
+            runtime_migration::start_if_pending(app.handle())?;
             status_panel::install(app.handle())?;
             tray::install(app.handle())?;
             app_menu::install(app.handle())?;

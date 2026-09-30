@@ -475,6 +475,7 @@ fn apply_step(state: &mut MigrationState, step: &Step) {
 fn convert(app: &AppHandle) -> Result<(), String> {
     let controller = app.state::<Arc<Controller>>();
     let paths = staged_paths(app, &controller.app_data)?;
+    crate::backup_controller::wait_for_migration_recovery(app)?;
     convert_with(&runtime::ProcessRunner, &controller.app_data, &paths, &|step| {
         update(app, |state| { apply_step(state, &step); Ok(()) }).map(drop)
     })?;
@@ -572,8 +573,16 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
             (state, false)
         }
     };
-    let needs_conversion = state.status == "scanning";
     app.manage(Arc::new(Controller { app_data, path, state: Mutex::new(state), writable }));
+    Ok(())
+}
+
+/// Automatic conversion starts only after the export/import controller is installed,
+/// so its worker can settle any journal left by the previous process first.
+pub(crate) fn start_if_pending(app: &AppHandle) -> Result<(), String> {
+    let controller = app.state::<Arc<Controller>>();
+    let needs_conversion = controller.state.lock()
+        .map_err(|_| "Migration state is unavailable.")?.status == "scanning";
     if needs_conversion { let _ = retry_runtime_migration_blocking(app.clone())?; }
     Ok(())
 }

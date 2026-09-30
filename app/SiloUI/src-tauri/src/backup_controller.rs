@@ -251,10 +251,8 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         revision: AtomicU64::new(1),
     });
     app.manage(controller.clone());
-    // Settle an interrupted operation even while the runtime migration blocks
-    // sandbox operations: recovery runs no runtime command and only removes
-    // this operation's own output, and the migration refuses to start while
-    // the journal is pending (E-50).
+    // Settle an interrupted operation before automatic runtime migration starts.
+    // Recovery removes only the output journaled for this export or import.
     if let Some(journal) = journal {
         recovery::resume(app.clone(), controller, journal)?;
     }
@@ -267,20 +265,38 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
 /// import. An interrupted export's recovery only checks its own files, so
 /// startup does not wait for it (E-31).
 pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
+    wait_for_recovery_with(app, false)
+}
+
+/// Migration must wait for exports too: selecting a new generation quarantines
+/// the previous generation's journal, including an interrupted export's result.
+pub(crate) fn wait_for_migration_recovery(app: &AppHandle) -> Result<(), String> {
+    wait_for_recovery_with(app, true)
+}
+
+fn wait_for_recovery_with(app: &AppHandle, migration: bool) -> Result<(), String> {
     let controller = app.state::<Arc<Controller>>();
+    wait_for_controller_recovery(&controller, migration, &|| crate::startup::is_cancelled(app))
+}
+
+fn wait_for_controller_recovery(
+    controller: &Controller,
+    migration: bool,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
     let pending = controller
         .journal
         .lock()
         .map_err(|_| "Saved backup progress is unavailable.")?
         .as_ref()
-        .filter(|journal| journal.is_pending() && journal.blocks_startup())
+        .filter(|journal| journal.is_pending() && (migration || journal.blocks_startup()))
         .map(|journal| journal.identity().to_string());
     let Some(identity) = pending else {
         return Ok(());
     };
     let started = std::time::Instant::now();
     loop {
-        if crate::startup::is_cancelled(app) {
+        if cancelled() {
             return Ok(());
         }
         let pending = controller
@@ -293,6 +309,9 @@ pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
             return Ok(());
         }
         if !controller.busy.load(Ordering::Acquire) {
+            if migration {
+                return Err("An interrupted export or import could not be recovered. Dismiss its result before retrying migration. No sandbox data was changed.".into());
+            }
             // Recovery failed and published its error in the export/import
             // view, where the user can retry by relaunching or abandon it.
             // Exports no longer stop sandboxes and imports stay pending until
@@ -2836,6 +2855,50 @@ mod tests {
             Some(Operation::Running { phases, .. }) if phases.len() == 1 && phases[0].tone == "running"
         ));
         assert!(serde_json::to_value(&claimed.archive).unwrap().get("checkpointName").is_none());
+    }
+
+    #[test]
+    fn migration_waits_for_a_pending_export_to_settle_before_conversion() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(directory.path().join("backup-history.json")));
+        recovery::begin(&controller, recovery::Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
+        controller.busy.store(true, Ordering::Release);
+        let (entered, observed) = std::sync::mpsc::channel();
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let waiter_controller = controller.clone();
+        let waiter_release = release.clone();
+        let waiter = std::thread::spawn(move || {
+            let announced = AtomicBool::new(false);
+            wait_for_controller_recovery(&waiter_controller, true, &|| {
+                if !announced.swap(true, Ordering::Relaxed) {
+                    entered.send(()).unwrap();
+                    waiter_release.wait();
+                }
+                false
+            })
+        });
+        observed.recv_timeout(Duration::from_secs(5)).expect("migration reached the pending recovery");
+        assert!(recovery::pending(&controller).unwrap());
+        recovery::complete(&controller, Operation::Result {
+            operation: "backup", archive: completed_archive(), running_names: vec![],
+            target_name: None, outcome: "failed", title: "Export interrupted".into(),
+            message: "No export file was saved.".into(), detail: None,
+        });
+        controller.busy.store(false, Ordering::Release);
+        release.wait();
+        waiter.join().unwrap().unwrap();
+        assert!(!recovery::pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn migration_refuses_failed_recovery_but_startup_can_continue() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), None)).unwrap();
+        assert!(wait_for_controller_recovery(&controller, true, &|| false).unwrap_err()
+            .contains("Dismiss its result"));
+        wait_for_controller_recovery(&controller, false, &|| false).unwrap();
+        assert!(recovery::pending(&controller).unwrap());
     }
 
     #[test]
