@@ -314,12 +314,18 @@ fn publish(app: &AppHandle, controller: &Controller) {
     let _ = app.emit("silo://application-state-changed", ());
 }
 
+/// Binary sizes, labelled GiB/MiB like the storage panel (E-41).
 fn display_size(bytes: u64) -> String {
     if bytes >= GIB {
-        format!("{:.1} GB", bytes as f64 / GIB as f64)
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
     } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     }
+}
+
+/// The bridge field is named `...GB`, so report decimal gigabytes (E-41).
+fn decimal_gb(bytes: u64) -> f64 {
+    bytes as f64 / 1_000_000_000.0
 }
 
 fn archive_from(path: &Path, inspected: &backup::ArchiveInspection) -> Archive {
@@ -392,7 +398,7 @@ pub(crate) fn read_backup_state(
         },
         availability_message,
         required_space_gb: None,
-        available_space_gb: available.map(|bytes| bytes as f64 / GIB as f64),
+        available_space_gb: available.map(decimal_gb),
         archives: view.archives.clone(),
         destination: view
             .destination
@@ -1754,6 +1760,13 @@ mod tests {
             destination: "/backups".into(),
             sandboxes: vec!["dev".into()],
         }
+    }
+
+    #[test]
+    fn sizes_label_binary_units_and_report_decimal_gb() {
+        assert_eq!(display_size(3 * GIB), "3.0 GiB");
+        assert_eq!(display_size(5 * 1024 * 1024), "5.0 MiB");
+        assert_eq!(decimal_gb(20_000_000_000), 20.0);
     }
 
     #[test]
