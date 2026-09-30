@@ -179,7 +179,8 @@ included ignored third-party `node_modules` documents; the clean archive matches
 CI's checkout boundary.
 
 [CI run 36744180995](https://github.com/0xpolarzero/silo/actions/runs/36744180995)
-was triggered by the fast-forward push of `d8887d00`; result pending.
+was triggered by the fast-forward push of `d8887d00` and passed: Rust tests,
+frontend and scripts, and documentation links all succeeded.
 
 ## Verification boundaries
 
