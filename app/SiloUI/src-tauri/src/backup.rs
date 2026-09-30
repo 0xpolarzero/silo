@@ -324,6 +324,9 @@ pub(crate) enum BackupError {
     InvalidArchive(String),
     /// A volume lacks the space an export or import needs; names both sizes.
     InsufficientSpace(String),
+    /// A well-formed export from another Silo or runtime version; the
+    /// message says which version can import it.
+    UnsupportedArchive(String),
     UnsupportedStorage(String),
     InvalidRequest(String),
     Io(io::Error),
@@ -346,7 +349,9 @@ impl std::fmt::Display for BackupError {
                 "An earlier import is still stored as {group}. Try the import again."
             ),
             Self::InvalidArchive(detail) => write!(formatter, "Invalid Silo export: {detail}"),
-            Self::InsufficientSpace(detail) => write!(formatter, "{detail}"),
+            Self::InsufficientSpace(detail) | Self::UnsupportedArchive(detail) => {
+                write!(formatter, "{detail}")
+            }
             Self::UnsupportedStorage(detail) => write!(formatter, "{detail}"),
             Self::InvalidRequest(detail) => write!(formatter, "{detail}"),
             Self::Io(error) => write!(formatter, "{error}"),
@@ -697,8 +702,8 @@ impl<R: MsbRunner> BackupService<R> {
             created_at_ms: now_ms(),
             runtime: RuntimeManifest {
                 name: "microsandbox".into(),
-                version: "0.7.2".into(),
-                snapshot_format: "msb-snapshot-tar-zstd-v0.7".into(),
+                version: bundled_runtime_version().into(),
+                snapshot_format: snapshot_format_for(bundled_runtime_version()),
                 guest_architecture: std::env::consts::ARCH.into(),
             },
             sandboxes: payloads
@@ -1506,11 +1511,7 @@ fn read_and_verify_package(
         ));
     }
     let version = read_u32(&mut file)?;
-    if version != FORMAT_VERSION {
-        return Err(BackupError::InvalidArchive(format!(
-            "format version {version} is not supported"
-        )));
-    }
+    check_format_version(version)?;
     let manifest_len = read_u64(&mut file)?;
     if manifest_len == 0 || manifest_len > MAX_MANIFEST_BYTES {
         return Err(BackupError::InvalidArchive(
@@ -1638,6 +1639,84 @@ fn largest_declared_disk(machine_config: &Value) -> u64 {
         .saturating_mul(1024 * 1024 * 1024)
 }
 
+/// The bundled MicroSandbox version, read from the checked-in runtime inputs
+/// that also pin the runtime build, so an upgrade cannot leave exports
+/// claiming the old version.
+fn bundled_runtime_version() -> &'static str {
+    static VERSION: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+        let inputs: Value = serde_json::from_str(include_str!("../../runtime-inputs.json"))
+            .expect("checked-in runtime inputs must be valid");
+        inputs["microsandboxVersion"]
+            .as_str()
+            .expect("runtime inputs name the MicroSandbox version")
+            .to_owned()
+    });
+    &VERSION
+}
+
+/// Earlier MicroSandbox versions whose snapshot archives the bundled runtime
+/// still loads. Add a version here only after loading one of its exports
+/// with the new runtime; archives from versions not listed are refused.
+const EARLIER_IMPORTABLE_RUNTIME_VERSIONS: &[&str] = &[];
+
+/// MicroSandbox names its archive format per minor release.
+fn snapshot_format_for(version: &str) -> String {
+    let minor = version.splitn(3, '.').take(2).collect::<Vec<_>>().join(".");
+    format!("msb-snapshot-tar-zstd-v{minor}")
+}
+
+fn parse_version(version: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = version.split('.').map(|part| part.parse::<u64>().ok());
+    let parsed = (parts.next()??, parts.next()??, parts.next()??);
+    parts.next().is_none().then_some(parsed)
+}
+
+fn check_format_version(version: u32) -> Result<(), BackupError> {
+    match version.cmp(&FORMAT_VERSION) {
+        std::cmp::Ordering::Equal => Ok(()),
+        std::cmp::Ordering::Less => Err(BackupError::UnsupportedArchive(format!(
+            "This export uses an earlier Silo export format (version {version}) that this Silo cannot import. Import it with the Silo version that created it, then export it again."
+        ))),
+        std::cmp::Ordering::Greater => Err(BackupError::UnsupportedArchive(format!(
+            "This export was created by a newer version of Silo (export format {version}). Update Silo to import it."
+        ))),
+    }
+}
+
+fn check_runtime_compatibility(runtime: &RuntimeManifest) -> Result<(), BackupError> {
+    let current = bundled_runtime_version();
+    if runtime.name != "microsandbox" {
+        return Err(BackupError::InvalidArchive(
+            "it was not created with MicroSandbox".into(),
+        ));
+    }
+    let importable = runtime.version == current
+        || EARLIER_IMPORTABLE_RUNTIME_VERSIONS.contains(&runtime.version.as_str());
+    if importable {
+        if runtime.snapshot_format != snapshot_format_for(&runtime.version) {
+            return Err(BackupError::InvalidArchive(
+                "its snapshot format does not match its runtime version".into(),
+            ));
+        }
+        return Ok(());
+    }
+    let newer = matches!(
+        (parse_version(&runtime.version), parse_version(current)),
+        (Some(archive), Some(bundled)) if archive > bundled
+    );
+    Err(BackupError::UnsupportedArchive(if newer {
+        format!(
+            "This export was created with MicroSandbox {}, newer than the {current} bundled with this Silo. Update Silo to import it.",
+            runtime.version
+        )
+    } else {
+        format!(
+            "This export was created with MicroSandbox {}, which the {current} bundled with this Silo cannot import. Import it with the Silo version that created it, then export it again.",
+            runtime.version
+        )
+    }))
+}
+
 fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
     let architecture = manifest.runtime.guest_architecture.as_str();
     if !matches!(architecture, "aarch64" | "x86_64") || architecture != std::env::consts::ARCH {
@@ -1646,15 +1725,8 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
             std::env::consts::ARCH
         )));
     }
-    if manifest.schema_version != FORMAT_VERSION
-        || manifest.runtime.name != "microsandbox"
-        || manifest.runtime.version != "0.7.2"
-        || manifest.runtime.snapshot_format != "msb-snapshot-tar-zstd-v0.7"
-    {
-        return Err(BackupError::InvalidArchive(
-            "the runtime or package format is not supported".into(),
-        ));
-    }
+    check_format_version(manifest.schema_version)?;
+    check_runtime_compatibility(&manifest.runtime)?;
     if manifest.sandboxes.is_empty() || manifest.sandboxes.len() > 64 {
         return Err(BackupError::InvalidArchive(
             "the sandbox count is outside supported limits".into(),
@@ -4156,18 +4228,58 @@ mod tests {
         let destination = temp.path().join("dev.silo-backup");
         let service = service(&temp, FakeRunner::default());
         create_one(&service, destination.clone(), false).unwrap();
-        let mut bytes = fs::read(&destination).unwrap();
-        bytes[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&2_u32.to_be_bytes());
-        let old = temp.path().join("old.silo-backup");
-        fs::write(&old, bytes).unwrap();
-        let error = service
-            .inspect_archive(&old, &Cancellation::default())
-            .unwrap_err();
-        assert!(
-            error
+        let bytes = fs::read(&destination).unwrap();
+        let with_format = |format: u32| {
+            let mut bytes = bytes.clone();
+            bytes[MAGIC.len()..MAGIC.len() + 4].copy_from_slice(&format.to_be_bytes());
+            let path = temp.path().join(format!("format-{format}.silo-backup"));
+            fs::write(&path, bytes).unwrap();
+            service
+                .inspect_archive(&path, &Cancellation::default())
+                .unwrap_err()
                 .to_string()
-                .contains("format version 2 is not supported")
-        );
+        };
+        for old in [1, 2] {
+            let message = with_format(old);
+            assert!(
+                message.contains(&format!("earlier Silo export format (version {old})"))
+                    && message.contains("Import it with the Silo version that created it"),
+                "{message}"
+            );
+        }
+        let message = with_format(4);
+        assert!(message.contains("newer version of Silo") && message.contains("Update Silo"), "{message}");
+    }
+
+    #[test]
+    fn exports_record_the_bundled_runtime_and_explain_other_versions() {
+        let inputs: Value =
+            serde_json::from_str(include_str!("../../runtime-inputs.json")).unwrap();
+        assert_eq!(bundled_runtime_version(), inputs["microsandboxVersion"]);
+        assert_eq!(snapshot_format_for("0.7.2"), "msb-snapshot-tar-zstd-v0.7");
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        create_one(&service(&temp, FakeRunner::default()), destination.clone(), false).unwrap();
+        let mut manifest = read_and_verify_package(
+            &destination,
+            DEFAULT_MAX_ARCHIVE_BYTES,
+            &Cancellation::default(),
+            PayloadMode::VerifyAll,
+        )
+        .unwrap()
+        .manifest;
+        assert_eq!(manifest.runtime.version, bundled_runtime_version());
+        let (major, minor, patch) = parse_version(bundled_runtime_version()).unwrap();
+        manifest.runtime.version = format!("{major}.{}.0", minor + 1);
+        manifest.runtime.snapshot_format = snapshot_format_for(&manifest.runtime.version);
+        let message = validate_manifest(&manifest).err().unwrap().to_string();
+        assert!(message.contains("newer than the") && message.contains("Update Silo"), "{message}");
+        manifest.runtime.version = format!("{major}.{minor}.{}", patch.saturating_sub(1).min(patch));
+        if manifest.runtime.version == bundled_runtime_version() {
+            manifest.runtime.version = format!("{major}.0.0");
+        }
+        let message = validate_manifest(&manifest).err().unwrap().to_string();
+        assert!(message.contains("cannot import") && message.contains("export it again"), "{message}");
     }
 
     #[cfg(unix)]
@@ -4507,8 +4619,8 @@ mod tests {
             created_at_ms: 1,
             runtime: RuntimeManifest {
                 name: "microsandbox".into(),
-                version: "0.7.2".into(),
-                snapshot_format: "msb-snapshot-tar-zstd-v0.7".into(),
+                version: bundled_runtime_version().into(),
+                snapshot_format: snapshot_format_for(bundled_runtime_version()),
                 guest_architecture: std::env::consts::ARCH.into(),
             },
             sandboxes: vec![sandbox(size)],
