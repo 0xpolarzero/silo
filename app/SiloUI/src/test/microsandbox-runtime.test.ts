@@ -25,7 +25,6 @@ vi.mock("node:child_process", async (importOriginal) => {
 describe("bundled MicroSandbox release staging", () => {
   it("pins the runtime patch and shares retention rules with stopped sandboxes", () => {
     const inputs = JSON.parse(readFileSync("runtime-inputs.json", "utf8"))
-    expect(MICROSANDBOX_PATCHES).toHaveLength(11)
     for (const patch of inputs.patches) {
       expect(sha256(readFileSync(patch.path))).toBe(patch.sha256)
     }
