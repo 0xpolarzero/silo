@@ -75,6 +75,7 @@ pub enum OperationKind {
     CheckpointCapture,
     CheckpointRestore,
     CheckpointFork,
+    CheckpointDelete,
     Export,
     Import,
     StorageReclaim,
@@ -1501,6 +1502,7 @@ mod tests {
         for (kind, name) in [
             (OperationKind::CheckpointRestore, "checkpointRestore"),
             (OperationKind::CheckpointFork, "checkpointFork"),
+            (OperationKind::CheckpointDelete, "checkpointDelete"),
             (OperationKind::StorageReclaim, "storageReclaim"),
             (OperationKind::GithubApply, "githubApply"),
             (OperationKind::PortPublish, "portPublish"),

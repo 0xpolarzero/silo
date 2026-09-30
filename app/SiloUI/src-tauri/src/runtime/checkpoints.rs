@@ -1,7 +1,9 @@
 //! Silo's durable names and lifecycle intent for upstream MicroSandbox snapshots.
 //! Snapshot data and its reference graph remain owned by MicroSandbox.
 use super::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+
+mod native;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -64,6 +66,10 @@ pub(super) struct Record {
     restore_attempted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     restore_attempt_id: Option<String>,
+    /// The attempt's VM ran, so it may hold writes to `/workspace`: a retry keeps and
+    /// starts it rather than recreating it from the checkpoint (E-06).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    restore_attempt_ran: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) desired_network_policy: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -596,9 +602,16 @@ fn capture_with(
     let result = runner.run(paths, &args, Duration::from_secs(900));
     match result {
         Ok(_) => {
-            if let Err(failure) =
+            // The capture exists once `create` returns: a cancel arriving now must not kill
+            // its verification and report a checkpoint that exists as failed (E-11).
+            let verified = super::operation_gate::uncancellable(|| {
                 snapshot_ready(runner, paths, &snapshot_group, &checkpoint_id, scope)
-            {
+            });
+            if let Err(failure) = verified {
+                // An unverified member is not kept as a checkpoint (E-03).
+                if discard_failed_capture(runner, paths, id, (snapshot_group.clone(), checkpoint_id.clone())) {
+                    record.inflight_checkpoint = None;
+                }
                 record.checkpoint_operation = Some(Operation {
                     kind: "capture".into(),
                     status: "failed".into(),
@@ -613,6 +626,21 @@ fn capture_with(
             save(paths, id, &record)
         }
         Err(failure) => {
+            // A cancelled full capture is killed while MicroSandbox holds the VM paused for
+            // its memory copy. The VM was running when capture began, so resume it (E-11).
+            if scope == "full" && matches!(failure, RuntimeError::Cancelled { .. }) {
+                super::operation_gate::uncancellable(|| {
+                    if inspect_workspace(runner, paths, machine.name()).is_ok_and(|vm| vm.status == "Paused") {
+                        let _ = runner.run(paths, &["resume".into(), machine.name().into()], MUTATION_TIMEOUT);
+                    }
+                });
+            }
+            // A failed or cancelled capture may still have published its member. Remove it
+            // unless something builds on it; otherwise the in-flight entry keeps it
+            // reachable and the next capture reconciles it (E-03, E-10).
+            if discard_failed_capture(runner, paths, id, (snapshot_group.clone(), checkpoint_id.clone())) {
+                record.inflight_checkpoint = None;
+            }
             record.checkpoint_operation = Some(Operation {
                 kind: "capture".into(),
                 status: "failed".into(),
@@ -749,6 +777,7 @@ pub(super) fn pending_workspace(
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
+        unfinished_restore: None,
     })
 }
 
@@ -928,9 +957,7 @@ pub(super) fn start_pending(
         let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
             .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
         if listed.iter().any(|entry| entry.name == machine.name()) {
-            return Err(error(
-                "The original VM is still present. Retry Restore before starting its replacement.",
-            ));
+            return Err(error(&unfinished_restore_message(&record, machine.name())));
         }
         let journal = record.restore_journal.clone().unwrap();
         let target = record
@@ -948,7 +975,11 @@ pub(super) fn start_pending(
         save(paths, machine.id(), &record)?;
     }
     let pending = record.pending_checkpoint_restore.clone().ok_or_else(|| {
-        RuntimeError::Invalid("This workspace has no pending checkpoint restore.".into())
+        if record.restore_journal.is_some() {
+            RuntimeError::Invalid(unfinished_restore_message(&record, machine.name()))
+        } else {
+            RuntimeError::Invalid(format!("{} has no checkpoint to start from.", machine.name()))
+        }
     })?;
     if !matches!(pending.state.as_str(), "full" | "disk") {
         return Err(error(
@@ -995,6 +1026,7 @@ pub(super) fn start_pending(
             record.pending_checkpoint_restore = None;
             record.checkpoint_operation = None;
             record.restore_attempted = false;
+            record.restore_attempt_ran = false;
             record.restore_attempt_id = None;
             save(paths, machine.id(), &record)?;
             return Ok(());
@@ -1019,6 +1051,18 @@ pub(super) fn start_pending(
             return Err(error(
                 "A previous restore attempt has unverified runtime state. It was preserved for inspection.",
             ));
+        }
+        if record.restore_attempt_ran {
+            // The attempt already ran and may hold changes; recreating it from the
+            // checkpoint would silently discard them. Keep it as the sandbox and start it
+            // like any other; only an explicit, confirmed action (such as Delete) discards it.
+            record.pending_checkpoint_restore = None;
+            record.restore_attempted = false;
+            record.restore_attempt_id = None;
+            record.restore_attempt_ran = false;
+            record.checkpoint_operation = None;
+            save(paths, machine.id(), &record)?;
+            return super::lifecycle_recovery::perform(runner, paths, &host_resources()?, "start", machine.name());
         }
         runner.run(
             paths,
@@ -1079,7 +1123,13 @@ pub(super) fn start_pending(
         ]);
     }
     args.extend(network_args);
-    let result = runner.run(paths, &args, Duration::from_secs(900))
+    let restored = runner.run(paths, &args, Duration::from_secs(900));
+    // A completed restore resumed the VM; after a failure, a running, paused or crashed VM
+    // shows it ran as well. Checked even after a cancel.
+    let ran = restored.is_ok()
+        || super::operation_gate::uncancellable(|| inspect_workspace(runner, paths, machine.name()))
+            .is_ok_and(|vm| matches!(vm.status.as_str(), "Running" | "Paused" | "Crashed"));
+    let result = restored
         .and_then(|_| inspect_workspace(runner, paths, machine.name()))
         .and_then(|observed| if running_child_matches(&observed, machine.id(), &attempt_id, &material, &policy) {
             Ok(observed)
@@ -1089,6 +1139,7 @@ pub(super) fn start_pending(
             record.pending_checkpoint_restore = None;
             record.restore_attempted = false;
             record.restore_attempt_id = None;
+            record.restore_attempt_ran = false;
             record.checkpoint_operation = None;
             save(paths, machine.id(), &record)?;
             let revision = crate::secrets::workspace_revision(machine.name())
@@ -1103,6 +1154,7 @@ pub(super) fn start_pending(
             Ok(())
         }
         Err(failure) => {
+            record.restore_attempt_ran = ran;
             record.checkpoint_operation = Some(Operation {
                 kind: "fork".into(),
                 status: "failed".into(),
@@ -1186,22 +1238,75 @@ fn pending_current_fork_point(
     Ok(Some(pending))
 }
 
-fn fork_with(
-    app: &AppHandle,
+/// Host-side settings a fork copies from its source sandbox. Production uses the GitHub and
+/// secret stores; tests inject failures to prove the rollback (E-17).
+pub(super) trait ForkAssignments {
+    fn copy_github(&self, source: &str, target: &str) -> Result<(), String>;
+    fn forget_github(&self, target: &str) -> Result<(), String>;
+    fn copy_secrets(&self, source: &str, target: &str) -> Result<(), String>;
+    fn forget_secrets(&self, target: &str) -> Result<(), String>;
+}
+
+struct AppForkAssignments<'a>(&'a AppHandle);
+
+impl ForkAssignments for AppForkAssignments<'_> {
+    fn copy_github(&self, source: &str, target: &str) -> Result<(), String> {
+        crate::github::fork_assignment(self.0, source, target)
+    }
+    fn forget_github(&self, target: &str) -> Result<(), String> {
+        crate::github::forget_fork_assignment(self.0, target)
+    }
+    fn copy_secrets(&self, source: &str, target: &str) -> Result<(), String> {
+        crate::secrets::fork_assignments(source, target)
+    }
+    fn forget_secrets(&self, target: &str) -> Result<(), String> {
+        crate::secrets::workspace_removed(target)
+    }
+}
+
+/// The native member a fork starts from, resolved while the source's own lane is held.
+pub(super) struct ForkSource {
+    source_id: String,
+    snapshot_group: String,
+    member: String,
+    scope: String,
+    desired_policy: Value,
+}
+
+fn ensure_fork_name_available(
+    metadata: &MachineConfigurationRequest,
+    new_name: &str,
+) -> Result<(), RuntimeError> {
+    if metadata.machines.len() >= MAX_MACHINE_COUNT
+        || metadata.machines.iter().any(|m| m.name() == new_name)
+    {
+        return Err(RuntimeError::Invalid(
+            "The fork name is already in use or the workspace limit was reached.".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Phase one of a fork, under the source VM's lane: resolve the checkpoint, capturing a
+/// "Fork point" of the current state when none was chosen. It touches only the source's
+/// own snapshot store and checkpoint record, so other VMs keep working meanwhile (E-09).
+pub(super) fn fork_source(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     workspace_id: &str,
     checkpoint_id: Option<&str>,
     new_name: &str,
-) -> Result<(), RuntimeError> {
+) -> Result<ForkSource, RuntimeError> {
     validate_name(new_name)?;
-    let mut metadata = read_metadata(&paths.metadata)?;
+    let metadata = read_metadata(&paths.metadata)?;
     let source = metadata
         .machines
         .iter()
         .find(|machine| machine.is_vm() && machine.id() == workspace_id)
         .ok_or_else(|| RuntimeError::Invalid("The source workspace is not a local VM.".into()))?
         .clone();
+    // Fail before an expensive capture; the inventory write checks again.
+    ensure_fork_name_available(&metadata, new_name)?;
     let source_record = load(paths, workspace_id)?;
     let snapshot_group = ensure_snapshot_group(paths, workspace_id, source.name())?;
     let pending_current = if checkpoint_id.is_none() {
@@ -1219,14 +1324,7 @@ fn fork_with(
         ensure_no_unfinished_restore(&source_record, "forking its current state")?;
     }
     let desired_policy = fork_source_policy(runner, paths, &source, &source_record)?;
-    if metadata.machines.len() >= MAX_MACHINE_COUNT
-        || metadata.machines.iter().any(|m| m.name() == new_name)
-    {
-        return Err(RuntimeError::Invalid(
-            "The fork name is already in use or the workspace limit was reached.".into(),
-        ));
-    }
-    let (selected_id, selected_scope) = if let Some(pending) = pending_current {
+    let (member, scope) = if let Some(pending) = pending_current {
         (pending.checkpoint_id, pending.state)
     } else {
         let selected_id = match checkpoint_id {
@@ -1256,6 +1354,48 @@ fn fork_with(
         )?;
         (checkpoint.native_id().to_owned(), checkpoint.scope.clone())
     };
+    Ok(ForkSource {
+        source_id: workspace_id.into(),
+        snapshot_group,
+        member,
+        scope,
+        desired_policy,
+    })
+}
+
+/// Append cleanup failures to an error without replacing its message.
+fn with_context(failure: RuntimeError, context: &str) -> RuntimeError {
+    match failure {
+        RuntimeError::Invalid(message) => RuntimeError::Invalid(format!("{message}{context}")),
+        RuntimeError::Unavailable(message) => RuntimeError::Unavailable(format!("{message}{context}")),
+        RuntimeError::Malformed(message) => RuntimeError::Malformed(format!("{message}{context}")),
+        other => other,
+    }
+}
+
+/// Phase two of a fork, under the computer-wide lane: add the stopped fork to the shared
+/// inventory. Every failure removes what this phase added and returns the original error;
+/// a failing cleanup is appended as context instead of replacing it (E-17).
+pub(super) fn fork_commit(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    assignments: &dyn ForkAssignments,
+    fork: &ForkSource,
+    new_name: &str,
+) -> Result<(), RuntimeError> {
+    validate_name(new_name)?;
+    let mut metadata = read_metadata(&paths.metadata)?;
+    // Resolve the source again: it may have been renamed or deleted between the phases.
+    let source = metadata
+        .machines
+        .iter()
+        .find(|machine| machine.is_vm() && machine.id() == fork.source_id)
+        .ok_or_else(|| {
+            RuntimeError::Invalid("The source sandbox no longer exists. No fork was created.".into())
+        })?
+        .clone();
+    ensure_fork_name_available(&metadata, new_name)?;
+    snapshot_ready(runner, paths, &fork.snapshot_group, &fork.member, &fork.scope)?;
     let child_id = uuid::Uuid::new_v4().to_string();
     let mut child = source.clone();
     if let MachineConfiguration::Vm { id, name, .. } = &mut child {
@@ -1263,27 +1403,77 @@ fn fork_with(
         *name = new_name.into();
     }
     let mut child_record = Record::default();
-    child_record.snapshot_group = Some(snapshot_group.clone());
+    child_record.snapshot_group = Some(fork.snapshot_group.clone());
     child_record.pending_checkpoint_restore = Some(PendingRestore {
-        checkpoint_id: selected_id,
-        source_workspace: snapshot_group,
-        state: selected_scope,
+        checkpoint_id: fork.member.clone(),
+        source_workspace: fork.snapshot_group.clone(),
+        state: fork.scope.clone(),
     });
-    child_record.desired_network_policy = Some(desired_policy);
+    child_record.desired_network_policy = Some(fork.desired_policy.clone());
     save(paths, &child_id, &child_record)?;
-    crate::github::fork_assignment(app, source.name(), new_name)
-        .map_err(RuntimeError::Unavailable)?;
-    if let Err(failure) = crate::secrets::fork_assignments(source.name(), new_name) {
-        crate::github::forget_fork_assignment(app, new_name).map_err(RuntimeError::Unavailable)?;
-        return Err(RuntimeError::Unavailable(failure));
+    let mut copied_github = false;
+    let mut copied_secrets = false;
+    let result = (|| {
+        assignments
+            .copy_github(source.name(), new_name)
+            .map_err(RuntimeError::Unavailable)?;
+        copied_github = true;
+        assignments
+            .copy_secrets(source.name(), new_name)
+            .map_err(RuntimeError::Unavailable)?;
+        copied_secrets = true;
+        metadata.machines.push(child);
+        write_metadata(&paths.metadata, &metadata)
+    })();
+    let Err(failure) = result else {
+        return Ok(());
+    };
+    // Undo in reverse order; every step runs even if an earlier one fails.
+    let mut failed = Vec::new();
+    if copied_secrets {
+        failed.extend(assignments.forget_secrets(new_name).err());
     }
-    metadata.machines.push(child);
-    if let Err(failure) = write_metadata(&paths.metadata, &metadata) {
-        crate::secrets::workspace_removed(new_name).map_err(RuntimeError::Unavailable)?;
-        crate::github::forget_fork_assignment(app, new_name).map_err(RuntimeError::Unavailable)?;
+    if copied_github {
+        failed.extend(assignments.forget_github(new_name).err());
+    }
+    failed.extend(forget_removed(paths, &child_id).err().map(|error| error.to_string()));
+    if failed.is_empty() {
         return Err(failure);
     }
-    Ok(())
+    Err(with_context(
+        failure,
+        &format!(" Cleanup was incomplete: {}", failed.join(" ")),
+    ))
+}
+
+/// Both fork phases with their lanes: the source's own lane while its checkpoint is
+/// resolved or captured, then the computer-wide lane only for the inventory write.
+fn fork_in_lanes(
+    gate: &super::operation_gate::OperationGate,
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    assignments: &dyn ForkAssignments,
+    workspace_id: &str,
+    checkpoint_id: Option<&str>,
+    new_name: &str,
+) -> Result<(), RuntimeError> {
+    use super::operation_gate::OperationKind;
+    let vm_name = machine(paths, workspace_id)?.name().to_owned();
+    let fork = {
+        let guard = gate
+            .kind(OperationKind::CheckpointFork)
+            .vm(workspace_id, &vm_name, "Forking checkpoint")?;
+        // Fork is not cancellable; flag it slow after the capture window.
+        guard.expect_within(Duration::from_secs(10 * 60));
+        shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
+        fork_source(runner, paths, workspace_id, checkpoint_id, new_name)?
+    };
+    let guard = gate
+        .kind(OperationKind::CheckpointFork)
+        .computer("Forking checkpoint")?;
+    guard.expect_within(Duration::from_secs(60));
+    shutdown::ensure_accepting_operations().map_err(RuntimeError::Unavailable)?;
+    fork_commit(runner, paths, assignments, &fork, new_name)
 }
 
 #[tauri::command]
@@ -1297,19 +1487,11 @@ pub async fn fork_checkpoint(
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
-        // Fork creates a new VM and edits the shared inventory; computer scope.
-        let guard = OPERATIONS
-            .kind(super::operation_gate::OperationKind::CheckpointFork)
-            .computer("Forking checkpoint")
-            .map_err(|error| error.to_string())?;
-        // Fork is not cancellable; flag it slow after the default window.
-        guard.expect_within(std::time::Duration::from_secs(10 * 60));
-        let _guard = guard;
-        shutdown::ensure_accepting_operations()?;
-        let result = fork_with(
-            &worker_app,
+        let result = fork_in_lanes(
+            &OPERATIONS,
             &ProcessRunner,
             &paths,
+            &AppForkAssignments(&worker_app),
             &workspace_id,
             checkpoint_id.as_deref(),
             &new_name,
@@ -1358,12 +1540,17 @@ fn abandon_capture(
     let paused = inspect_workspace(runner, paths, vm_name)
         .map(|inspected| inspected.status == "Paused")
         .unwrap_or(assume_paused);
-    if !paused
-        || runner
-            .run(paths, &["resume".into(), vm_name.into()], MUTATION_TIMEOUT)
-            .is_ok()
-    {
-        record.restore_journal = None;
+    if !paused || release_paused(runner, paths, vm_name) {
+        // The recovery point was never recorded; remove it if the capture published it.
+        if let Some(journal) = record.restore_journal.take() {
+            let group = record.snapshot_group.clone().unwrap_or_else(|| vm_name.to_owned());
+            discard_failed_capture(
+                runner,
+                paths,
+                workspace_id,
+                (group, journal.recovery_checkpoint.native_id().to_owned()),
+            );
+        }
     }
     record.checkpoint_operation = Some(Operation {
         kind: "restore".into(),
@@ -1461,6 +1648,7 @@ fn restore_steps(
             state: target.scope,
         });
         record.restore_attempted = false;
+        record.restore_attempt_ran = false;
         record.restore_attempt_id = None;
         record.checkpoint_operation = None;
         return save(paths, workspace_id, &record);
@@ -1485,6 +1673,7 @@ fn restore_steps(
             });
             record.restore_journal = None;
             record.restore_attempted = false;
+            record.restore_attempt_ran = false;
             record.restore_attempt_id = None;
             record.checkpoint_operation = None;
             save(paths, workspace_id, &record)?;
@@ -1522,9 +1711,7 @@ fn restore_steps(
     }
     if let Some(existing) = &record.restore_journal {
         if existing.target_checkpoint_id != checkpoint_id {
-            return Err(RuntimeError::Invalid(
-                "A previous Restore is unfinished. Retry the same checkpoint first.".into(),
-            ));
+            return Err(RuntimeError::Invalid(unfinished_restore_message(&record, machine.name())));
         }
     } else {
         let recovery = Checkpoint {
@@ -1678,6 +1865,7 @@ fn restore_steps(
     });
     record.restore_journal = None;
     record.restore_attempted = false;
+    record.restore_attempt_ran = false;
     record.restore_attempt_id = None;
     record.checkpoint_operation = None;
     save(paths, workspace_id, &record)
@@ -1714,6 +1902,555 @@ pub async fn restore_checkpoint(
     })
     .await
     .map_err(|_| "Checkpoint Restore worker failed.".to_string())?
+}
+
+/// Resume a VM an unfinished Restore left paused; if it cannot resume, stop it so it is
+/// not stuck paused (Quit, Start and Stop all need a running or stopped VM). Its disks are
+/// untouched either way. Runs even after a cancel. True once it is no longer paused.
+fn release_paused(runner: &dyn RuntimeRunner, paths: &RuntimePaths, vm_name: &str) -> bool {
+    super::operation_gate::uncancellable(|| {
+        if runner.run(paths, &["resume".into(), vm_name.into()], MUTATION_TIMEOUT).is_ok() {
+            return true;
+        }
+        runner
+            .run(paths, &["stop".into(), "--force".into(), vm_name.into()], STOP_TIMEOUT)
+            .is_ok()
+            && inspect_workspace(runner, paths, vm_name).is_ok_and(|vm| vm.status != "Paused")
+    })
+}
+
+fn restore_target_name(record: &Record, journal: &RestoreJournal) -> String {
+    record
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.id == journal.target_checkpoint_id)
+        .map_or_else(|| "the selected checkpoint".into(), |checkpoint| format!("“{}”", checkpoint.name))
+}
+
+/// Why a sandbox with an unfinished Restore cannot take another action, naming the checkpoint.
+fn unfinished_restore_message(record: &Record, name: &str) -> String {
+    match &record.restore_journal {
+        Some(journal) => {
+            let target = restore_target_name(record, journal);
+            format!("The Restore of {name} to {target} is unfinished. Retry it, or abandon it in Checkpoints, first.")
+        }
+        None => format!("The Restore of {name} is unfinished. Retry it from Checkpoints first."),
+    }
+}
+
+/// The message for Start, Stop or another action refused while a sandbox waits for an
+/// explicit Start from a checkpoint or has an unfinished Restore (E-08).
+pub(super) fn explicit_start_message(paths: &RuntimePaths, id: &str, name: &str) -> String {
+    match load(paths, id) {
+        Ok(record) if record.restore_journal.is_some() => unfinished_restore_message(&record, name),
+        _ => format!("{name} starts from a checkpoint first. Use Start on its page."),
+    }
+}
+
+/// An unfinished Restore, exposed in the sandbox view so it can be retried or abandoned.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct UnfinishedRestore {
+    /// Silo id of the checkpoint being restored.
+    checkpoint_id: String,
+    checkpoint_name: Option<String>,
+    /// "capturing" before the recovery checkpoint was saved, then "secured".
+    phase: String,
+}
+
+pub(super) fn view_unfinished_restore(record: &Record) -> Option<UnfinishedRestore> {
+    let journal = record.restore_journal.as_ref()?;
+    Some(UnfinishedRestore {
+        checkpoint_id: journal.target_checkpoint_id.clone(),
+        checkpoint_name: record
+            .checkpoints
+            .iter()
+            .find(|checkpoint| checkpoint.id == journal.target_checkpoint_id)
+            .map(|checkpoint| checkpoint.name.clone()),
+        phase: journal.phase.clone(),
+    })
+}
+
+/// Give up an unfinished Restore while the original VM still exists: it keeps its current
+/// state and is resumed (or stopped) if the Restore left it paused. A recovery checkpoint
+/// already saved stays in the history; one only partly captured is removed (E-05).
+fn abandon_restore_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+) -> Result<(), RuntimeError> {
+    let machine = machine(paths, workspace_id)?;
+    let mut record = load(paths, workspace_id)?;
+    let Some(journal) = record.restore_journal.clone() else {
+        return Err(RuntimeError::Invalid(format!("{} has no unfinished Restore.", machine.name())));
+    };
+    let listed = runner.run(paths, &["list".into(), "--format".into(), "json".into()], READ_TIMEOUT)?;
+    let listed: Vec<ListedSandbox> = serde_json::from_str(&listed.stdout)
+        .map_err(|_| error("The runtime returned an invalid sandbox list."))?;
+    if !listed.iter().any(|entry| entry.name == machine.name()) {
+        return Err(RuntimeError::Invalid(format!(
+            "{name} was already replaced by this Restore. Start {name} to finish it, or Restore another checkpoint.",
+            name = machine.name()
+        )));
+    }
+    let inspected = inspect_workspace(runner, paths, machine.name())?;
+    ensure_managed(&inspected)?;
+    if inspected.config.pointer("/labels/silo.machine-id").and_then(Value::as_str) != Some(workspace_id) {
+        return Err(error("The workspace runtime identity changed. The Restore was not abandoned."));
+    }
+    if inspected.status == "Paused" && !release_paused(runner, paths, machine.name()) {
+        return Err(error(&format!(
+            "{} could not be resumed or stopped. The unfinished Restore was kept.",
+            machine.name()
+        )));
+    }
+    if journal.phase == "capturing" {
+        let group = record.snapshot_group.clone().unwrap_or_else(|| machine.name().to_owned());
+        discard_failed_capture(runner, paths, workspace_id, (group, journal.recovery_checkpoint.native_id().to_owned()));
+    }
+    record.restore_journal = None;
+    record.checkpoint_operation = None;
+    save(paths, workspace_id, &record)
+}
+
+#[tauri::command]
+pub async fn abandon_restore(app: AppHandle, workspace_id: String) -> Result<ApplicationSource, String> {
+    crate::runtime_migration::ensure_ready(&app)?;
+    let worker_app = app.clone();
+    super::operation_gate::spawn_blocking(move || {
+        let paths = runtime_paths(&worker_app)?;
+        let vm_name = machine(&paths, &workspace_id)
+            .map_err(|error| error.to_string())?
+            .name()
+            .to_owned();
+        let guard = OPERATIONS
+            .kind(super::operation_gate::OperationKind::CheckpointRestore)
+            .vm(&workspace_id, &vm_name, "Abandoning Restore")
+            .map_err(|error| error.to_string())?;
+        guard.expect_within(std::time::Duration::from_secs(5 * 60));
+        let _guard = guard;
+        shutdown::ensure_accepting_operations()?;
+        let result = abandon_restore_with(&ProcessRunner, &paths, &workspace_id)
+            .and_then(|_| application_state_response(&worker_app, &paths));
+        let _ = worker_app.emit("silo://application-state-changed", ());
+        result.map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Abandon Restore worker failed.".to_string())?
+}
+
+/// Quit stops VMs gracefully, which a paused VM cannot take. Release a VM an unfinished
+/// Restore left paused; the Restore itself stays unfinished and can be retried (E-05).
+pub(crate) fn release_paused_restore(runner: &dyn RuntimeRunner, paths: &RuntimePaths, machine: &MachineConfiguration) {
+    if load(paths, machine.id()).is_ok_and(|record| record.restore_journal.is_some())
+        && inspect_workspace(runner, paths, machine.name()).is_ok_and(|vm| vm.status == "Paused")
+    {
+        release_paused(runner, paths, machine.name());
+    }
+}
+
+/// Everything a deletion decision reads, gathered once.
+struct Survey {
+    uses: HashMap<native::Key, Vec<native::Use>>,
+    inventory: Vec<native::Member>,
+    positions: HashMap<String, String>,
+}
+
+fn survey(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Survey, RuntimeError> {
+    let metadata = read_metadata(&paths.metadata)?;
+    let uses = native::uses(paths, &metadata)?;
+    let inventory = native::inventory(runner, paths)?;
+    let positions = native::lineage_positions(runner, paths)?;
+    Ok(Survey { uses, inventory, positions })
+}
+
+/// What deleting one checkpoint entry does to native data.
+enum Deletion {
+    /// Only the entry goes: another entry of the same sandbox shares its member, or the
+    /// member is already gone.
+    EntryOnly,
+    /// The entry goes and this member is removed.
+    Remove(native::Member),
+}
+
+fn quoted_list(items: &[String]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => one.clone(),
+        [first, second] => format!("{first} and {second}"),
+        [first, rest @ ..] => format!("{first}, {}", quoted_list(rest)),
+    }
+}
+
+fn use_description(sandbox: &str, purpose: &native::Purpose) -> String {
+    match purpose {
+        native::Purpose::Checkpoint(_, label) => format!("{sandbox}’s checkpoint “{label}” shares the same saved state."),
+        native::Purpose::PendingStart => format!("{sandbox} starts from it the next time it starts."),
+        native::Purpose::Capturing | native::Purpose::RestoreRecovery => {
+            format!("{sandbox} is using it for an unfinished operation.")
+        }
+    }
+}
+
+/// The reason a checkpoint cannot be deleted, in Silo's words.
+fn blocker_message(survey: &Survey, workspace_id: &str, sandbox: &str, blocker: &native::Blocker) -> String {
+    match blocker {
+        native::Blocker::Used(uses) => {
+            let mut names: Vec<String> = uses.iter().map(|used| used.sandbox.clone()).collect();
+            names.sort();
+            names.dedup();
+            format!("Used by {}. {}", quoted_list(&names), use_description(&uses[0].sandbox, &uses[0].purpose))
+        }
+        native::Blocker::Lineage(owner) if owner == sandbox => format!(
+            "{sandbox}’s next checkpoint and export build on this one, so it can’t be deleted while it is the latest state {sandbox} builds on."
+        ),
+        native::Blocker::Lineage(owner) => format!(
+            "Used by {owner}. {owner} was started from this checkpoint and still builds on it."
+        ),
+        native::Blocker::Children(children) => {
+            let mut own = Vec::new();
+            let mut others = Vec::new();
+            for child in children {
+                let Some(key) = child.key() else { continue };
+                for used in survey.uses.get(&key).into_iter().flatten() {
+                    if let native::Purpose::Checkpoint(_, label) = &used.purpose {
+                        if used.workspace_id == workspace_id {
+                            own.push(format!("“{label}”"));
+                        } else {
+                            others.push(format!("{}’s checkpoint “{label}”", used.sandbox));
+                        }
+                    }
+                }
+            }
+            own.sort();
+            own.dedup();
+            others.sort();
+            others.dedup();
+            if !own.is_empty() {
+                format!("{} was saved after this checkpoint and builds on it. Delete {} first.", quoted_list(&own), if own.len() == 1 { "it" } else { "them" })
+            } else if !others.is_empty() {
+                format!("{} builds on this checkpoint. Delete {} first.", quoted_list(&others), if others.len() == 1 { "it" } else { "them" })
+            } else {
+                "A later saved state, such as an export, builds on this checkpoint, so it can’t be deleted yet.".into()
+            }
+        }
+    }
+}
+
+/// Decide what deleting `checkpoint` from `record` would do, or why it is not allowed.
+fn deletion(
+    survey: &Survey,
+    workspace_id: &str,
+    sandbox: &str,
+    record: &Record,
+    checkpoint: &Checkpoint,
+) -> Result<Deletion, String> {
+    if record.restore_journal.is_some() {
+        return Err("Finish or abandon the unfinished Restore before deleting a checkpoint.".into());
+    }
+    let group = record.snapshot_group.clone().unwrap_or_else(|| sandbox.to_owned());
+    let key: native::Key = (group, checkpoint.native_id().to_owned());
+    if record
+        .pending_checkpoint_restore
+        .as_ref()
+        .is_some_and(|pending| pending.source_workspace == key.0 && pending.checkpoint_id == key.1)
+    {
+        return Err(format!("{sandbox} starts from this checkpoint the next time it starts. Start {sandbox} first."));
+    }
+    let this_entry = native::Purpose::Checkpoint(checkpoint.id.clone(), checkpoint.name.clone());
+    let others: Vec<native::Use> = survey
+        .uses
+        .get(&key)
+        .into_iter()
+        .flatten()
+        .filter(|used| !(used.workspace_id == workspace_id && used.purpose == this_entry))
+        .cloned()
+        .collect();
+    let elsewhere: Vec<native::Use> = others.iter().filter(|used| used.workspace_id != workspace_id).cloned().collect();
+    if !elsewhere.is_empty() {
+        return Err(blocker_message(survey, workspace_id, sandbox, &native::Blocker::Used(elsewhere)));
+    }
+    if !others.is_empty() {
+        return Ok(Deletion::EntryOnly);
+    }
+    let Some(member) = survey.inventory.iter().find(|member| member.key().as_ref() == Some(&key)) else {
+        return Ok(Deletion::EntryOnly);
+    };
+    let mut uses = survey.uses.clone();
+    uses.remove(&key);
+    let plan = native::plan(&survey.inventory, &HashSet::from([key]), &uses, &survey.positions);
+    if let Some((_, blocker)) = plan.kept.first() {
+        return Err(blocker_message(survey, workspace_id, sandbox, blocker));
+    }
+    Ok(Deletion::Remove(member.clone()))
+}
+
+/// Delete one checkpoint: remove its native member unless something still needs it,
+/// then drop the entry. Never passes `--force`; MicroSandbox's own guards stay in force.
+fn delete_checkpoint_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    checkpoint_id: &str,
+) -> Result<(), RuntimeError> {
+    let machine = machine(paths, workspace_id)?;
+    let _ = ensure_snapshot_group(paths, workspace_id, machine.name())?;
+    let mut record = load(paths, workspace_id)?;
+    let checkpoint = record
+        .checkpoints
+        .iter()
+        .find(|checkpoint| checkpoint.id == checkpoint_id)
+        .ok_or_else(|| RuntimeError::Invalid("The selected checkpoint no longer exists.".into()))?
+        .clone();
+    let survey = survey(runner, paths)?;
+    match deletion(&survey, workspace_id, machine.name(), &record, &checkpoint).map_err(RuntimeError::Invalid)? {
+        Deletion::EntryOnly => {}
+        Deletion::Remove(member) => {
+            if let Some((_, failure)) = native::execute(runner, paths, &survey.inventory, &[member]).into_iter().next() {
+                return Err(error(&format!(
+                    "The checkpoint could not be deleted; it was kept. {}",
+                    safe_activity_error(&failure)
+                )));
+            }
+        }
+    }
+    record.checkpoints.retain(|entry| entry.id != checkpoint_id);
+    if record.checkpoint_operation.as_ref().is_some_and(|operation| operation.status == "failed") {
+        record.checkpoint_operation = None;
+    }
+    save(paths, workspace_id, &record)
+}
+
+#[tauri::command]
+pub async fn delete_checkpoint(
+    app: AppHandle,
+    workspace_id: String,
+    checkpoint_id: String,
+) -> Result<ApplicationSource, String> {
+    crate::runtime_migration::ensure_ready(&app)?;
+    let worker_app = app.clone();
+    super::operation_gate::spawn_blocking(move || {
+        let paths = runtime_paths(&worker_app)?;
+        // Deletion changes only this VM's checkpoint record and snapshot members; exports and
+        // forks that could read them hold a conflicting lane.
+        let vm_name = machine(&paths, &workspace_id)
+            .map_err(|error| error.to_string())?
+            .name()
+            .to_owned();
+        let guard = OPERATIONS
+            .kind(super::operation_gate::OperationKind::CheckpointDelete)
+            .vm(&workspace_id, &vm_name, "Deleting checkpoint")
+            .map_err(|error| error.to_string())?;
+        guard.expect_within(std::time::Duration::from_secs(5 * 60));
+        let _guard = guard;
+        shutdown::ensure_accepting_operations()?;
+        let result = delete_checkpoint_with(&ProcessRunner, &paths, &workspace_id, &checkpoint_id)
+            .and_then(|_| application_state_response(&worker_app, &paths));
+        let _ = worker_app.emit("silo://application-state-changed", ());
+        result.map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|_| "Checkpoint delete worker failed.".to_string())?
+}
+
+/// Per-checkpoint storage and whether Delete is possible, for the Checkpoints panel.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointUsage {
+    /// Host allocation of this sandbox's checkpoints, each member counted once; `None`
+    /// when any of them could not be measured.
+    total_bytes: Option<u64>,
+    checkpoints: Vec<CheckpointUsageEntry>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointUsageEntry {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size_bytes: Option<u64>,
+    /// Other sandboxes that depend on this checkpoint.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    used_by: Vec<String>,
+    /// Why Delete is unavailable; absent when the checkpoint can be deleted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    delete_blocker: Option<String>,
+}
+
+fn usage_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+) -> Result<CheckpointUsage, RuntimeError> {
+    let machine = machine(paths, workspace_id)?;
+    let record = load(paths, workspace_id)?;
+    let survey = survey(runner, paths)?;
+    let group = record.snapshot_group.clone().unwrap_or_else(|| machine.name().to_owned());
+    let mut counted = HashSet::new();
+    let mut total = Some(0u64);
+    let mut checkpoints = Vec::with_capacity(record.checkpoints.len());
+    for checkpoint in &record.checkpoints {
+        let key: native::Key = (group.clone(), checkpoint.native_id().to_owned());
+        let member = survey.inventory.iter().find(|member| member.key().as_ref() == Some(&key));
+        let size_bytes = member.and_then(|member| native::artifact_bytes(paths, member));
+        if counted.insert(key.clone()) {
+            total = match (total, member, size_bytes) {
+                (Some(sum), Some(_), Some(size)) => Some(sum.saturating_add(size)),
+                (sum, None, _) => sum,
+                _ => None,
+            };
+        }
+        let mut used_by: Vec<String> = survey
+            .uses
+            .get(&key)
+            .into_iter()
+            .flatten()
+            .filter(|used| used.workspace_id != workspace_id)
+            .map(|used| used.sandbox.clone())
+            .chain(
+                member
+                    .and_then(|member| survey.positions.get(&member.snapshot_id))
+                    .filter(|owner| owner.as_str() != machine.name())
+                    .cloned(),
+            )
+            .collect();
+        used_by.sort();
+        used_by.dedup();
+        checkpoints.push(CheckpointUsageEntry {
+            id: checkpoint.id.clone(),
+            size_bytes,
+            used_by,
+            delete_blocker: deletion(&survey, workspace_id, machine.name(), &record, checkpoint).err(),
+        });
+    }
+    Ok(CheckpointUsage { total_bytes: total, checkpoints })
+}
+
+#[tauri::command]
+pub async fn read_checkpoint_usage(app: AppHandle, workspace_id: String) -> Result<CheckpointUsage, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let paths = runtime_paths(&app)?;
+        usage_with(&ProcessRunner, &paths, &workspace_id).map_err(|error| safe_activity_error(&error))
+    })
+    .await
+    .map_err(|_| "Checkpoint usage worker failed.".to_string())?
+}
+
+/// Host allocation of one sandbox's checkpoints and how many it has, for the Storage tab.
+/// Only lists snapshots: no sandbox is inspected. `None` bytes when not measurable.
+pub(super) fn storage_totals(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    sandbox: &str,
+) -> (Option<u64>, usize) {
+    let Ok(record) = load(paths, workspace_id) else { return (None, 0) };
+    let count = record.checkpoints.len();
+    if count == 0 {
+        return (Some(0), 0);
+    }
+    let Ok(inventory) = native::inventory(runner, paths) else { return (None, count) };
+    let keys: HashSet<native::Key> = native::record_uses(&record, sandbox)
+        .into_iter()
+        .filter(|(_, purpose)| matches!(purpose, native::Purpose::Checkpoint(..)))
+        .map(|(key, _)| key)
+        .collect();
+    let mut total = 0u64;
+    for member in inventory.iter().filter(|member| member.key().is_some_and(|key| keys.contains(&key))) {
+        let Some(size) = native::artifact_bytes(paths, member) else { return (None, count) };
+        total = total.saturating_add(size);
+    }
+    (Some(total), count)
+}
+
+/// After a sandbox is deleted, remove the native members only it used, plus unreferenced
+/// Silo members of its snapshot groups. Members a fork or another sandbox still needs are
+/// kept (a later sweep removes them once nothing needs them). Best effort: the sandbox is
+/// already gone, so a failure here must not fail the deletion.
+pub(crate) fn remove_deleted_snapshots(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    sandbox: &str,
+) {
+    let result = (|| -> Result<usize, RuntimeError> {
+        let record = load(paths, workspace_id)?;
+        let referenced: Vec<native::Key> = native::record_uses(&record, sandbox).into_iter().map(|(key, _)| key).collect();
+        if referenced.is_empty() {
+            return Ok(0);
+        }
+        let survey = survey(runner, paths)?;
+        let groups: HashSet<&str> = referenced.iter().map(|(group, _)| group.as_str()).collect();
+        let mut candidates: HashSet<native::Key> = referenced.iter().cloned().collect();
+        for member in &survey.inventory {
+            if let Some(key) = member.key() {
+                if groups.contains(key.0.as_str()) && native::silo_member(&key) && !survey.uses.contains_key(&key) {
+                    candidates.insert(key);
+                }
+            }
+        }
+        let plan = native::plan(&survey.inventory, &candidates, &survey.uses, &survey.positions);
+        let failures = native::execute(runner, paths, &survey.inventory, &plan.remove);
+        for (member, failure) in &failures {
+            eprintln!("Kept checkpoint data {:?} of deleted sandbox {sandbox}: {failure}", member.key());
+        }
+        Ok(plan.remove.len() - failures.len())
+    })();
+    if let Err(failure) = result {
+        eprintln!("Kept checkpoint data of deleted sandbox {sandbox}: {failure}");
+    }
+}
+
+/// Remove the member a failed capture may have published, unless something already
+/// builds on it. Returns true when it is gone. Runs even after a cancel.
+fn discard_failed_capture(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    key: native::Key,
+) -> bool {
+    super::operation_gate::uncancellable(|| {
+        let Ok(inventory) = native::inventory(runner, paths) else { return false };
+        if !inventory.iter().any(|member| member.key().as_ref() == Some(&key)) {
+            return true;
+        }
+        let Ok(mut survey) = survey(runner, paths) else { return false };
+        // This capture's own in-progress reference is the one being discarded.
+        if let Some(uses) = survey.uses.get_mut(&key) {
+            uses.retain(|used| {
+                !(used.workspace_id == workspace_id
+                    && matches!(used.purpose, native::Purpose::Capturing | native::Purpose::RestoreRecovery))
+            });
+        }
+        let plan = native::plan(&survey.inventory, &HashSet::from([key]), &survey.uses, &survey.positions);
+        !plan.remove.is_empty()
+            && plan.kept.is_empty()
+            && native::execute(runner, paths, &survey.inventory, &plan.remove).is_empty()
+    })
+}
+
+const ORPHAN_AGE: u64 = 24 * 60 * 60;
+
+/// Remove Silo-created members no sandbox references any longer: data of deleted
+/// sandboxes, failed captures and failed imports. Only members older than a day, so an
+/// operation interrupted at the last launch is never raced; never a checkpoint a
+/// sandbox still lists. Returns how many were removed.
+pub(crate) fn sweep_orphans(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<usize, RuntimeError> {
+    let survey = survey(runner, paths)?;
+    let now = SystemTime::now();
+    let candidates: HashSet<native::Key> = survey
+        .inventory
+        .iter()
+        .filter(|member| native::age_seconds(member, now).is_some_and(|age| age >= ORPHAN_AGE))
+        .filter_map(native::Member::key)
+        .filter(|key| native::silo_member(key) && !survey.uses.contains_key(key))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    let plan = native::plan(&survey.inventory, &candidates, &survey.uses, &survey.positions);
+    let failures = native::execute(runner, paths, &survey.inventory, &plan.remove);
+    Ok(plan.remove.len() - failures.len())
 }
 
 #[cfg(test)]
@@ -1855,6 +2592,8 @@ mod tests {
                     .to_string(),
                     Some("list") => "[]".into(),
                     Some("restore") => return Err(error("synthetic restore failure")),
+                    // After a failed restore Silo checks whether the attempt ran.
+                    Some("inspect") => return Err(error("sandbox not found: dev")),
                     _ => panic!("unexpected command: {args:?}"),
                 };
                 Ok(CommandOutput {
@@ -2213,6 +2952,7 @@ mod tests {
                     ]).to_string(),
                     "snapshot" if args.get(1).is_some_and(|value| value == "verify") => "{}".into(),
                     "restore" => return Err(error("synthetic restore failure after request capture")),
+                    "inspect" => return Err(error("sandbox not found: dev")),
                     _ => panic!("unexpected runtime command: {args:?}"),
                 };
                 Ok(CommandOutput { stdout, stderr: String::new() })
@@ -2442,7 +3182,7 @@ mod tests {
         )
         .unwrap_err()
         .to_string()
-        .contains("explicit Start"));
+        .contains("starts from a checkpoint first"));
         let view = pending_workspace(machine()).unwrap();
         assert!(matches!(view.state, WorkspaceState::Stopped));
     }
@@ -2575,6 +3315,8 @@ mod tests {
                     serde_json::json!([{"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"}]).to_string()
                 } else if args[0] == "restore" {
                     return Err(error("synthetic restore failure"));
+                } else if args[0] == "inspect" && !self.present {
+                    return Err(error("sandbox not found: dev"));
                 } else {
                     panic!("unexpected runtime command")
                 };
@@ -2630,7 +3372,7 @@ mod tests {
         assert!(start_pending(&original, &paths, &machine())
             .unwrap_err()
             .to_string()
-            .contains("original VM"));
+            .contains("is unfinished"));
         assert_eq!(original.calls.lock().unwrap().len(), 1);
         assert!(load(&paths, ID)
             .unwrap()
@@ -2858,8 +3600,8 @@ mod tests {
         ) -> Result<CommandOutput, RuntimeError> {
             self.calls.lock().unwrap().push(args.to_vec());
             let command = if args[0] == "snapshot" { args[1].as_str() } else { args[0].as_str() };
-            if command == self.fail {
-                return Err(RuntimeError::Unavailable(format!("{} failed on this host.", self.fail)));
+            if self.fail.split('|').any(|failing| failing == command) {
+                return Err(RuntimeError::Unavailable(format!("{command} failed on this host.")));
             }
             let stdout = match command {
                 "inspect" => serde_json::json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{
@@ -3103,5 +3845,772 @@ mod tests {
         .to_string();
         assert!(failure.starts_with("No space left on device."), "{failure}");
         assert!(failure.contains("could not be updated"));
+    }
+
+    struct FakeAssignments {
+        fail: &'static [&'static str],
+        github: Mutex<Vec<String>>,
+        secrets: Mutex<Vec<String>>,
+    }
+    impl FakeAssignments {
+        fn new(fail: &'static [&'static str]) -> Self {
+            Self { fail, github: Mutex::new(Vec::new()), secrets: Mutex::new(Vec::new()) }
+        }
+        fn check(&self, step: &str) -> Result<(), String> {
+            if self.fail.contains(&step) { Err(format!("{step} failed.")) } else { Ok(()) }
+        }
+    }
+    impl ForkAssignments for FakeAssignments {
+        fn copy_github(&self, _: &str, target: &str) -> Result<(), String> {
+            self.check("copy_github")?;
+            self.github.lock().unwrap().push(target.into());
+            Ok(())
+        }
+        fn forget_github(&self, target: &str) -> Result<(), String> {
+            self.check("forget_github")?;
+            self.github.lock().unwrap().retain(|name| name != target);
+            Ok(())
+        }
+        fn copy_secrets(&self, _: &str, target: &str) -> Result<(), String> {
+            self.check("copy_secrets")?;
+            self.secrets.lock().unwrap().push(target.into());
+            Ok(())
+        }
+        fn forget_secrets(&self, target: &str) -> Result<(), String> {
+            self.check("forget_secrets")?;
+            self.secrets.lock().unwrap().retain(|name| name != target);
+            Ok(())
+        }
+    }
+
+    fn fork_fixture(directory: &tempfile::TempDir) -> (RuntimePaths, ForkSource) {
+        let paths = restore_fixture(directory, None);
+        let mut record = load(&paths, ID).unwrap();
+        record.snapshot_group = Some("dev".into());
+        save(&paths, ID, &record).unwrap();
+        let fork = ForkSource {
+            source_id: ID.into(),
+            snapshot_group: "dev".into(),
+            member: "c000000000000000000000000000000".into(),
+            scope: "full".into(),
+            desired_policy: serde_json::json!({"default_egress":"deny","default_ingress":"allow","rules":[]}),
+        };
+        (paths, fork)
+    }
+
+    fn record_ids(paths: &RuntimePaths) -> Vec<String> {
+        let mut ids: Vec<String> = fs::read_dir(directory(paths))
+            .unwrap()
+            .filter_map(|entry| entry.unwrap().file_name().to_str()?.strip_suffix(".json").map(str::to_owned))
+            .collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn fork_commit_adds_the_stopped_fork_and_its_assignments() {
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let assignments = FakeAssignments::new(&[]);
+        fork_commit(&journal_runner("Running", ""), &paths, &assignments, &fork, "branch").unwrap();
+        let metadata = read_metadata(&paths.metadata).unwrap();
+        let child = metadata.machines.iter().find(|machine| machine.name() == "branch").unwrap();
+        let pending = load(&paths, child.id()).unwrap().pending_checkpoint_restore.unwrap();
+        assert_eq!(pending.checkpoint_id, fork.member);
+        assert_eq!(pending.source_workspace, "dev");
+        assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
+        assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
+    }
+
+    #[test]
+    fn failed_fork_steps_leave_no_record_inventory_or_assignments_and_keep_the_original_error() {
+        for (fail, expected) in [
+            (&["copy_github"][..], "copy_github failed."),
+            (&["copy_secrets"][..], "copy_secrets failed."),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (paths, fork) = fork_fixture(&directory);
+            let assignments = FakeAssignments::new(fail);
+            let failure = fork_commit(&journal_runner("Running", ""), &paths, &assignments, &fork, "branch")
+                .unwrap_err()
+                .to_string();
+            assert_eq!(failure, expected);
+            assert_eq!(record_ids(&paths), [ID]);
+            assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+            assert!(assignments.github.lock().unwrap().is_empty());
+            assert!(assignments.secrets.lock().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn a_failing_fork_cleanup_is_reported_after_the_original_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let assignments = FakeAssignments::new(&["copy_secrets", "forget_github"]);
+        let failure = fork_commit(&journal_runner("Running", ""), &paths, &assignments, &fork, "branch")
+            .unwrap_err()
+            .to_string();
+        assert!(failure.starts_with("copy_secrets failed."), "{failure}");
+        assert!(failure.contains("Cleanup was incomplete: forget_github failed."), "{failure}");
+        // The record is still removed although the GitHub cleanup failed.
+        assert_eq!(record_ids(&paths), [ID]);
+    }
+
+    #[test]
+    fn a_failed_inventory_write_removes_the_fork_record_and_assignments() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let parent = paths.metadata.parent().unwrap().to_path_buf();
+        // The checkpoint directory already exists, so only the inventory write fails.
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+        let assignments = FakeAssignments::new(&[]);
+        let result = fork_commit(&journal_runner("Running", ""), &paths, &assignments, &fork, "branch");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(result.unwrap_err().to_string().contains("sandbox settings"));
+        assert_eq!(record_ids(&paths), [ID]);
+        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+        assert!(assignments.github.lock().unwrap().is_empty());
+        assert!(assignments.secrets.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fork_commit_rechecks_the_name_and_the_checkpoint_after_the_capture() {
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let assignments = FakeAssignments::new(&[]);
+        assert!(fork_commit(&journal_runner("Running", ""), &paths, &assignments, &fork, "dev").is_err());
+        let missing = ForkSource { member: "c999999999999999999999999999999".into(), ..fork };
+        assert!(fork_commit(&journal_runner("Running", ""), &paths, &assignments, &missing, "branch").is_err());
+        assert_eq!(record_ids(&paths), [ID]);
+        assert!(assignments.github.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn current_state_fork_captures_under_the_source_lane_and_writes_under_the_computer_lane() {
+        struct LaneRunner {
+            gate: &'static super::super::operation_gate::OperationGate,
+            created: Mutex<Option<String>>,
+            lanes: Mutex<Vec<(String, Option<String>, bool)>>,
+        }
+        impl RuntimeRunner for LaneRunner {
+            fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+                let running = self.gate.snapshot().running;
+                let lane = running.first().and_then(|entry| entry.vm_id.clone());
+                // Another VM can start while this lane is held only if it is not computer-wide.
+                let other_vm_free = std::thread::scope(|scope| {
+                    scope.spawn(|| self.gate.try_vm("other-vm", "other", "Starting").is_ok()).join().unwrap()
+                });
+                let command = if args[0] == "snapshot" { format!("snapshot {}", args[1]) } else { args[0].clone() };
+                self.lanes.lock().unwrap().push((command.clone(), lane, other_vm_free));
+                let stdout = match command.as_str() {
+                    "inspect" => serde_json::json!({"name":"dev","status":"Running","config":{
+                        "labels":{"silo.managed":"true","silo.machine-id":ID},
+                        "mounts":[{"guest":"/workspace","type":"Owned","storage":{"kind":"disk","capacity_mib":1024}}],
+                        "network":{"policy":{"default_egress":"deny","default_ingress":"allow","rules":[]}}
+                    }}).to_string(),
+                    "snapshot create" => {
+                        *self.created.lock().unwrap() = Some(args[2].clone());
+                        String::new()
+                    }
+                    "snapshot list" => {
+                        let name = self.created.lock().unwrap().clone().unwrap_or_default();
+                        serde_json::json!([{"group":"dev","name":name,"scope":"full","availability":"ready"}]).to_string()
+                    }
+                    _ => String::new(),
+                };
+                Ok(CommandOutput { stdout, stderr: String::new() })
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, _) = fork_fixture(&directory);
+        let gate: &'static super::super::operation_gate::OperationGate =
+            Box::leak(Box::new(super::super::operation_gate::OperationGate::new()));
+        let runner = LaneRunner { gate, created: Mutex::new(None), lanes: Mutex::new(Vec::new()) };
+        let assignments = FakeAssignments::new(&[]);
+        fork_in_lanes(gate, &runner, &paths, &assignments, ID, None, "branch").unwrap();
+        let lanes = runner.lanes.lock().unwrap();
+        let create = lanes.iter().find(|(command, ..)| command == "snapshot create").unwrap();
+        assert_eq!(create.1.as_deref(), Some(ID), "the capture holds only the source's lane");
+        assert!(create.2, "other sandboxes are not queued behind the capture");
+        let last = lanes.last().unwrap();
+        assert_eq!(last.0, "snapshot list");
+        assert_eq!(last.1, None, "the inventory write holds the computer-wide lane");
+        assert!(!last.2);
+        assert!(read_metadata(&paths.metadata).unwrap().machines.iter().any(|machine| machine.name() == "branch"));
+    }
+
+    /// A fake native store that enforces MicroSandbox's children and head guards.
+    struct Store {
+        members: Mutex<Vec<(String, String, String, Option<String>)>>,
+        heads: Mutex<HashMap<String, String>>,
+        sandboxes: Vec<(&'static str, Option<&'static str>)>,
+        fail_create_after_publish: bool,
+        fail_remove: bool,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+    impl Store {
+        fn new(sandboxes: Vec<(&'static str, Option<&'static str>)>) -> Self {
+            Self {
+                members: Mutex::new(Vec::new()),
+                heads: Mutex::new(HashMap::new()),
+                sandboxes,
+                fail_create_after_publish: false,
+                fail_remove: false,
+                calls: Mutex::new(Vec::new()),
+            }
+        }
+        fn with(self, group: &str, name: &str, id: &str, parent: Option<&str>) -> Self {
+            self.members.lock().unwrap().push((group.into(), name.into(), id.into(), parent.map(str::to_owned)));
+            self.heads.lock().unwrap().insert(group.into(), id.into());
+            self
+        }
+        fn names(&self) -> Vec<String> {
+            self.members.lock().unwrap().iter().map(|member| member.1.clone()).collect()
+        }
+        fn removals(&self) -> Vec<String> {
+            self.calls.lock().unwrap().iter().filter(|call| call[0] == "snapshot" && call[1] == "remove").map(|call| call[2].clone()).collect()
+        }
+    }
+    impl RuntimeRunner for Store {
+        fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            let ok = |stdout: String| Ok(CommandOutput { stdout, stderr: String::new() });
+            match (args[0].as_str(), args.get(1).map(String::as_str)) {
+                ("list", _) => ok(serde_json::Value::Array(self.sandboxes.iter().map(|(name, _)| serde_json::json!({"name": name})).collect()).to_string()),
+                ("inspect", Some(name)) => {
+                    let parent = self.sandboxes.iter().find(|(listed, _)| listed == &name).and_then(|(_, parent)| *parent);
+                    ok(serde_json::json!({"name": name, "status": "Running", "config": {
+                        "labels": {"silo.managed": "true", "silo.machine-id": ID},
+                        "mounts": [{"guest": "/workspace", "type": "Owned", "storage": {"kind": "disk", "capacity_mib": 1024}}],
+                        "network": {"policy": {"default_egress": "deny", "default_ingress": "allow", "rules": []}},
+                        "snapshot_parent": parent,
+                    }}).to_string())
+                }
+                ("snapshot", Some("list")) => ok(serde_json::Value::Array(self.members.lock().unwrap().iter().map(|(group, name, id, parent)| serde_json::json!({
+                    "snapshot_id": id, "name": name, "group": group, "parent_digest": parent,
+                    "scope": "full", "availability": "ready", "created_at": "2026-01-01T00:00:00+00:00",
+                })).collect()).to_string()),
+                ("snapshot", Some("head")) => {
+                    let selector = &args[2];
+                    if let Some((group, id)) = selector.split_once(':') {
+                        self.heads.lock().unwrap().insert(group.into(), id.into());
+                    }
+                    let group = selector.split(':').next().unwrap();
+                    ok(serde_json::json!({"group": group, "head": self.heads.lock().unwrap().get(group)}).to_string())
+                }
+                ("snapshot", Some("remove")) => {
+                    let (group, name) = args[2].split_once(':').unwrap();
+                    let mut members = self.members.lock().unwrap();
+                    let index = members.iter().position(|member| member.0 == group && member.1 == name)
+                        .ok_or_else(|| RuntimeError::Unavailable("snapshot not found".into()))?;
+                    let id = members[index].2.clone();
+                    if self.fail_remove {
+                        return Err(RuntimeError::Unavailable("permission denied".into()));
+                    }
+                    if members.iter().any(|member| member.3.as_deref() == Some(id.as_str())) {
+                        return Err(RuntimeError::Unavailable("snapshot has indexed children; pass --force".into()));
+                    }
+                    let mut heads = self.heads.lock().unwrap();
+                    if heads.get(group) == Some(&id) {
+                        if members.iter().filter(|member| member.0 == group).count() > 1 {
+                            return Err(RuntimeError::Unavailable("cannot remove current head".into()));
+                        }
+                        heads.remove(group);
+                    }
+                    members.remove(index);
+                    ok(String::new())
+                }
+                ("snapshot", Some("create")) => {
+                    let group = args[args.iter().position(|arg| arg == "--group").unwrap() + 1].clone();
+                    let id = format!("snap_{:032x}", self.members.lock().unwrap().len() + 100);
+                    self.members.lock().unwrap().push((group.clone(), args[2].clone(), id.clone(), None));
+                    self.heads.lock().unwrap().entry(group).or_insert(id);
+                    if self.fail_create_after_publish {
+                        return Err(RuntimeError::Cancelled { operation: "snapshot create".into() });
+                    }
+                    ok(String::new())
+                }
+                _ => ok(String::new()),
+            }
+        }
+    }
+
+    const A: &str = "c000000000000000000000000000000";
+    const B: &str = "c111111111111111111111111111111";
+    const C: &str = "c222222222222222222222222222222";
+    const FORK_ID: &str = "00000000-0000-4000-8000-000000000009";
+
+    fn entry(id: &str, name: &str, reason: &str) -> Checkpoint {
+        Checkpoint { id: id.into(), native_id: None, name: name.into(), created_at: 1, scope: "full".into(), reason: reason.into() }
+    }
+
+    /// `dev` with checkpoints; `fork` adds a second configured sandbox and its record.
+    fn delete_fixture(directory: &tempfile::TempDir, entries: Vec<Checkpoint>, fork: Option<Record>) -> RuntimePaths {
+        let paths = paths(directory);
+        let mut machines = vec![machine()];
+        if let Some(record) = &fork {
+            let MachineConfiguration::Vm { cpus, max_cpus, memory_gib, max_memory_gib, workspace_storage_gib, runtime_storage_gib, desktop, .. } = machine() else { unreachable!() };
+            machines.push(MachineConfiguration::Vm { id: FORK_ID.into(), name: "branch".into(), cpus, max_cpus, memory_gib, max_memory_gib, workspace_storage_gib, runtime_storage_gib, desktop });
+            save(&paths, FORK_ID, record).unwrap();
+        }
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines }).unwrap();
+        let mut record = Record::default();
+        record.snapshot_group = Some("dev".into());
+        record.checkpoints = entries;
+        save(&paths, ID, &record).unwrap();
+        paths
+    }
+
+    fn cursor(paths: &RuntimePaths, sandbox: &str, snapshot: &str) {
+        let directory = paths.home.join("sandboxes").join(sandbox);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("snapshot-lineage.json"), serde_json::json!({"sandbox_id": 7, "snapshot_id": snapshot}).to_string()).unwrap();
+    }
+
+    #[test]
+    fn removal_plan_goes_leaves_first_and_keeps_used_positioned_and_parent_members() {
+        let member = |name: &str, id: &str, parent: Option<&str>| native::Member {
+            snapshot_id: id.into(), name: Some(name.into()), group: Some("dev".into()),
+            parent_digest: parent.map(str::to_owned), ..Default::default()
+        };
+        let inventory = vec![member(A, "snap_a", None), member(B, "snap_b", Some("snap_a")), member(C, "snap_c", Some("snap_b"))];
+        let all: HashSet<native::Key> = inventory.iter().filter_map(native::Member::key).collect();
+        let order = |plan: native::Plan| plan.remove.into_iter().map(|member| member.snapshot_id).collect::<Vec<_>>();
+        assert_eq!(order(native::plan(&inventory, &all, &HashMap::new(), &HashMap::new())), ["snap_c", "snap_b", "snap_a"]);
+
+        let positioned = native::plan(&inventory, &all, &HashMap::new(), &HashMap::from([("snap_c".to_owned(), "dev".to_owned())]));
+        assert!(positioned.remove.is_empty());
+        assert_eq!(positioned.kept.len(), 3);
+
+        let used = HashMap::from([(("dev".to_owned(), B.to_owned()), vec![native::Use { workspace_id: FORK_ID.into(), sandbox: "branch".into(), purpose: native::Purpose::PendingStart }])]);
+        let plan = native::plan(&inventory, &all, &used, &HashMap::new());
+        assert_eq!(order(plan), ["snap_c"]);
+    }
+
+    #[test]
+    fn deleting_a_recovery_checkpoint_moves_the_head_removes_its_member_and_drops_the_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(B, "Before restore", "before-restore"), entry(A, "Selected", "manual")], None);
+        // dev was restored from A; B was its previous instance's last capture and the group head.
+        let store = Store::new(vec![("dev", Some("snap_a"))]).with("dev", A, "snap_a", None).with("dev", B, "snap_b", Some("snap_a"));
+        delete_checkpoint_with(&store, &paths, ID, B).unwrap();
+        assert_eq!(store.names(), [A]);
+        let calls = store.calls.lock().unwrap().clone();
+        let moved = calls.iter().position(|call| call[1] == "head" && call[2] == "dev:snap_a").expect("the head moved first");
+        let removed = calls.iter().position(|call| call[1] == "remove").unwrap();
+        assert!(moved < removed);
+        assert!(!calls.iter().any(|call| call.iter().any(|arg| arg == "--force")));
+        let record = load(&paths, ID).unwrap();
+        assert_eq!(record.checkpoints.iter().map(|checkpoint| checkpoint.id.as_str()).collect::<Vec<_>>(), [A]);
+
+        // The checkpoint dev was restored from is what its next capture builds on.
+        let failure = delete_checkpoint_with(&store, &paths, ID, A).unwrap_err().to_string();
+        assert!(failure.contains("dev’s next checkpoint and export build on this one"), "{failure}");
+        assert_eq!(store.names(), [A]);
+        assert_eq!(load(&paths, ID).unwrap().checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn checkpoints_that_forks_later_checkpoints_or_pending_starts_depend_on_are_refused() {
+        // A later checkpoint builds on this one.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(B, "After deploy", "manual"), entry(A, "Before deploy", "manual")], None);
+        let store = Store::new(vec![("dev", None)]).with("dev", A, "snap_a", None).with("dev", B, "snap_b", Some("snap_a"));
+        cursor(&paths, "dev", "snap_b");
+        let failure = delete_checkpoint_with(&store, &paths, ID, A).unwrap_err().to_string();
+        assert!(failure.contains("“After deploy” was saved after this checkpoint and builds on it. Delete it first."), "{failure}");
+        // The latest capture is what dev's next capture names as its parent.
+        let failure = delete_checkpoint_with(&store, &paths, ID, B).unwrap_err().to_string();
+        assert!(failure.contains("next checkpoint and export build on this one"), "{failure}");
+        assert!(store.removals().is_empty());
+
+        // A fork that has not started yet starts from it.
+        let directory = tempfile::tempdir().unwrap();
+        let mut fork = Record::default();
+        fork.snapshot_group = Some("dev".into());
+        fork.pending_checkpoint_restore = Some(PendingRestore { checkpoint_id: A.into(), source_workspace: "dev".into(), state: "full".into() });
+        let paths = delete_fixture(&directory, vec![entry(A, "Before deploy", "manual")], Some(fork));
+        let store = Store::new(vec![]).with("dev", A, "snap_a", None);
+        let failure = delete_checkpoint_with(&store, &paths, ID, A).unwrap_err().to_string();
+        assert_eq!(failure, "Used by branch. branch starts from it the next time it starts.");
+
+        // A started fork still builds on the checkpoint it was restored from.
+        let directory = tempfile::tempdir().unwrap();
+        let mut started = Record::default();
+        started.snapshot_group = Some("dev".into());
+        let paths = delete_fixture(&directory, vec![entry(A, "Before deploy", "manual")], Some(started));
+        let store = Store::new(vec![("branch", Some("snap_a"))]).with("dev", A, "snap_a", None);
+        let failure = delete_checkpoint_with(&store, &paths, ID, A).unwrap_err().to_string();
+        assert!(failure.starts_with("Used by branch. branch was started from this checkpoint"), "{failure}");
+
+        // This sandbox restarts from it, or a Restore is unfinished.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(A, "Before deploy", "manual")], None);
+        let mut record = load(&paths, ID).unwrap();
+        record.pending_checkpoint_restore = Some(PendingRestore { checkpoint_id: A.into(), source_workspace: "dev".into(), state: "full".into() });
+        save(&paths, ID, &record).unwrap();
+        let store = Store::new(vec![]).with("dev", A, "snap_a", None);
+        assert!(delete_checkpoint_with(&store, &paths, ID, A).unwrap_err().to_string().contains("dev starts from this checkpoint the next time it starts"));
+        assert!(store.removals().is_empty());
+        assert_eq!(load(&paths, ID).unwrap().checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn a_refused_native_removal_keeps_the_checkpoint_and_says_why() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(B, "Before restore", "before-restore"), entry(A, "Selected", "manual")], None);
+        let mut store = Store::new(vec![("dev", Some("snap_a"))]).with("dev", A, "snap_a", None).with("dev", B, "snap_b", None);
+        store.fail_remove = true;
+        let failure = delete_checkpoint_with(&store, &paths, ID, B).unwrap_err().to_string();
+        assert!(failure.starts_with("The checkpoint could not be deleted; it was kept."), "{failure}");
+        assert_eq!(load(&paths, ID).unwrap().checkpoints.len(), 2);
+    }
+
+    #[test]
+    fn a_shared_or_missing_member_drops_only_the_entry() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut alias = entry(C, "Alias", "manual");
+        alias.native_id = Some(A.into());
+        let paths = delete_fixture(&directory, vec![alias, entry(A, "Before deploy", "manual"), entry(B, "Gone", "manual")], None);
+        let store = Store::new(vec![("dev", None)]).with("dev", A, "snap_a", None);
+        delete_checkpoint_with(&store, &paths, ID, C).unwrap();
+        delete_checkpoint_with(&store, &paths, ID, B).unwrap();
+        assert!(store.removals().is_empty());
+        assert_eq!(store.names(), [A]);
+        assert_eq!(load(&paths, ID).unwrap().checkpoints.iter().map(|checkpoint| checkpoint.id.as_str()).collect::<Vec<_>>(), [A]);
+    }
+
+    #[test]
+    fn checkpoint_usage_reports_sizes_users_and_blockers() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut started = Record::default();
+        started.snapshot_group = Some("dev".into());
+        let paths = delete_fixture(&directory, vec![entry(B, "Before restore", "before-restore"), entry(A, "Selected", "manual")], Some(started));
+        let store = Store::new(vec![("dev", Some("snap_a")), ("branch", Some("snap_a"))]).with("dev", A, "snap_a", None).with("dev", B, "snap_b", None);
+        let usage = usage_with(&store, &paths, ID).unwrap();
+        let json = serde_json::to_value(&usage).unwrap();
+        let find = |id: &str| json["checkpoints"].as_array().unwrap().iter().find(|item| item["id"] == id).unwrap().clone();
+        assert!(find(B).get("deleteBlocker").is_none());
+        assert_eq!(find(A)["usedBy"], serde_json::json!(["branch"]));
+        assert!(find(A)["deleteBlocker"].as_str().unwrap().starts_with("Used by branch."));
+    }
+
+    #[test]
+    fn deleting_a_sandbox_removes_members_only_it_used_and_keeps_what_a_fork_builds_on() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut started = Record::default();
+        started.snapshot_group = Some("dev".into());
+        let paths = delete_fixture(&directory, vec![entry(B, "Later", "manual"), entry(A, "Base", "manual")], Some(started));
+        // dev is deleted: the inventory no longer lists it; its record is removed afterwards.
+        let metadata = read_metadata(&paths.metadata).unwrap();
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: metadata.machines.into_iter().filter(|machine| machine.id() != ID).collect() }).unwrap();
+        let store = Store::new(vec![("branch", Some("snap_a"))])
+            .with("dev", A, "snap_a", None)
+            .with("dev", B, "snap_b", Some("snap_a"))
+            .with("dev", "silo-backup-0-1-2", "snap_x", Some("snap_b"))
+            .with("elsewhere", C, "snap_c", None);
+        remove_deleted_snapshots(&store, &paths, ID, "dev");
+        assert_eq!(store.removals(), ["dev:silo-backup-0-1-2", "dev:c111111111111111111111111111111"]);
+        assert_eq!(store.names(), [A, C]);
+    }
+
+    #[test]
+    fn a_failed_capture_removes_its_published_member_unless_the_sandbox_builds_on_it() {
+        for builds_on_it in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = delete_fixture(&directory, Vec::new(), None);
+            let mut store = Store::new(vec![("dev", None)]);
+            store.fail_create_after_publish = true;
+            if builds_on_it {
+                cursor(&paths, "dev", "snap_00000000000000000000000000000064");
+            }
+            capture_with(&store, &paths, ID, "Interrupted", "manual").unwrap_err();
+            let record = load(&paths, ID).unwrap();
+            if builds_on_it {
+                assert_eq!(store.names().len(), 1, "a member dev builds on is kept");
+                assert!(record.inflight_checkpoint.is_some(), "and stays reachable for reconciliation");
+            } else {
+                assert!(store.names().is_empty());
+                assert!(record.inflight_checkpoint.is_none());
+            }
+            assert_eq!(record.checkpoint_operation.unwrap().status, "failed");
+        }
+    }
+
+    #[test]
+    fn the_sweep_removes_only_old_unreferenced_silo_members() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(A, "Kept", "manual")], None);
+        let store = Store::new(vec![("dev", None)])
+            .with("dev", A, "snap_a", None)
+            // Silo names captures `c` + 31 hex digits.
+            .with("gone", "c1111111111111111111111111111111", "snap_b", None)
+            .with("dev", "user-made", "snap_u", None)
+            .with("silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9", "silo-backup-0-1-2", "snap_i", None);
+        assert_eq!(sweep_orphans(&store, &paths).unwrap(), 2);
+        assert_eq!(store.names(), [A, "user-made"]);
+    }
+
+    /// Models the process runner's cancel: any command started while the running operation
+    /// was asked to cancel (and not masked) is killed.
+    struct CancelRunner {
+        gate: &'static super::super::operation_gate::OperationGate,
+        kill_create: bool,
+        state: Mutex<&'static str>,
+        created: Mutex<Option<String>>,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+    impl RuntimeRunner for CancelRunner {
+        fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            if super::super::operation_gate::cancel_requested() {
+                return Err(RuntimeError::Cancelled { operation: args[0].clone() });
+            }
+            let ok = |stdout: String| Ok(CommandOutput { stdout, stderr: String::new() });
+            match (args[0].as_str(), args.get(1).map(String::as_str)) {
+                ("inspect", _) => ok(serde_json::json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{
+                    "labels":{"silo.managed":"true","silo.machine-id":ID},
+                    "mounts":[{"guest":"/workspace","type":"Owned","storage":{"kind":"disk","capacity_mib":1024}}]
+                }}).to_string()),
+                ("snapshot", Some("create")) => {
+                    let entry = self.gate.snapshot().running[0].id;
+                    self.gate.cancel(entry).unwrap();
+                    if self.kill_create {
+                        *self.state.lock().unwrap() = "Paused";
+                        return Err(RuntimeError::Cancelled { operation: "snapshot create".into() });
+                    }
+                    *self.created.lock().unwrap() = Some(args[2].clone());
+                    ok(String::new())
+                }
+                ("snapshot", Some("list")) => {
+                    let name = self.created.lock().unwrap().clone();
+                    ok(serde_json::Value::Array(name.into_iter().map(|name| serde_json::json!({
+                        "snapshot_id": "snap_1", "group": "dev", "name": name, "scope": "full", "availability": "ready"
+                    })).collect()).to_string())
+                }
+                ("resume", _) => {
+                    *self.state.lock().unwrap() = "Running";
+                    ok(String::new())
+                }
+                ("list", _) => ok(r#"[{"name":"dev"}]"#.into()),
+                _ => ok(String::new()),
+            }
+        }
+    }
+
+    fn cancel_runner(kill_create: bool) -> CancelRunner {
+        let gate: &'static super::super::operation_gate::OperationGate =
+            Box::leak(Box::new(super::super::operation_gate::OperationGate::new()));
+        CancelRunner { gate, kill_create, state: Mutex::new("Running"), created: Mutex::new(None), calls: Mutex::new(Vec::new()) }
+    }
+
+    #[test]
+    fn a_cancel_after_the_capture_returned_still_records_the_checkpoint() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let runner = cancel_runner(false);
+        let guard = runner.gate.kind(super::super::operation_gate::OperationKind::CheckpointCapture).vm(ID, "dev", "Creating checkpoint").unwrap();
+        guard.allow_cancel();
+        capture_with(&runner, &paths, ID, "Late cancel", "manual").unwrap();
+        drop(guard);
+        let record = load(&paths, ID).unwrap();
+        assert_eq!(record.checkpoints[0].name, "Late cancel");
+        assert!(record.checkpoint_operation.is_none());
+        assert!(record.inflight_checkpoint.is_none());
+    }
+
+    #[test]
+    fn a_cancelled_full_capture_resumes_the_vm_it_left_paused() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let runner = cancel_runner(true);
+        let guard = runner.gate.kind(super::super::operation_gate::OperationKind::CheckpointCapture).vm(ID, "dev", "Creating checkpoint").unwrap();
+        guard.allow_cancel();
+        let failure = capture_with(&runner, &paths, ID, "Cancelled", "manual").unwrap_err();
+        drop(guard);
+        assert!(matches!(failure, RuntimeError::Cancelled { .. }));
+        assert_eq!(*runner.state.lock().unwrap(), "Running");
+        assert!(runner.calls.lock().unwrap().iter().any(|call| call[0] == "resume"));
+        let record = load(&paths, ID).unwrap();
+        assert_eq!(record.checkpoint_operation.unwrap().status, "failed");
+        assert!(record.inflight_checkpoint.is_none(), "nothing was published, so nothing is left to reconcile");
+    }
+
+    #[test]
+    fn a_vm_that_cannot_resume_after_a_failed_recovery_capture_is_stopped_instead_of_left_paused() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let runner = journal_runner("Running", "create|resume");
+        let failure = restore_with(&runner, &paths, ID, "c000000000000000000000000000000").unwrap_err().to_string();
+        assert_eq!(failure, "create failed on this host.");
+        assert_eq!(*runner.state.lock().unwrap(), "Stopped");
+        let stored = load(&paths, ID).unwrap();
+        assert!(stored.restore_journal.is_none());
+        assert!(!needs_explicit_start(&paths, ID).unwrap(), "Start, Stop and Quit work again");
+    }
+
+    #[test]
+    fn abandoning_an_unfinished_restore_resumes_the_paused_vm_and_keeps_its_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("capturing", true)));
+        let mut runner = journal_runner("Paused", "");
+        runner.listed = true;
+        abandon_restore_with(&runner, &paths, ID).unwrap();
+        assert_eq!(*runner.state.lock().unwrap(), "Running");
+        let stored = load(&paths, ID).unwrap();
+        assert!(stored.restore_journal.is_none());
+        assert!(stored.checkpoint_operation.is_none());
+        assert!(stored.pending_checkpoint_restore.is_none());
+        assert!(!runner.calls.lock().unwrap().iter().any(|call| call[0] == "remove"));
+
+        // A secured Restore whose original VM was already removed cannot be abandoned.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("secured", true)));
+        let runner = journal_runner("Stopped", "");
+        let failure = abandon_restore_with(&runner, &paths, ID).unwrap_err().to_string();
+        assert!(failure.contains("already replaced"), "{failure}");
+        assert!(load(&paths, ID).unwrap().restore_journal.is_some());
+        assert!(abandon_restore_with(&journal_runner("Running", ""), &restore_fixture(&tempfile::tempdir().unwrap(), None), ID).is_err());
+    }
+
+    #[test]
+    fn unfinished_restore_messages_and_view_name_the_checkpoint() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("capturing", true)));
+        assert_eq!(
+            explicit_start_message(&paths, ID, "dev"),
+            "The Restore of dev to “Selected” is unfinished. Retry it, or abandon it in Checkpoints, first."
+        );
+        let view = serde_json::to_value(view_unfinished_restore(&load(&paths, ID).unwrap()).unwrap()).unwrap();
+        assert_eq!(view, serde_json::json!({"checkpointId": "c000000000000000000000000000000", "checkpointName": "Selected", "phase": "capturing"}));
+        let failure = start_pending(&journal_runner("Running", ""), &paths, &machine()).unwrap_err().to_string();
+        assert!(failure.contains("to “Selected” is unfinished"), "{failure}");
+
+        // Restoring a different checkpoint names the unfinished one.
+        let mut record = load(&paths, ID).unwrap();
+        record.checkpoints.push(Checkpoint { id: "c333333333333333333333333333333".into(), native_id: Some("c000000000000000000000000000000".into()), name: "Other".into(), created_at: 3, scope: "full".into(), reason: "manual".into() });
+        save(&paths, ID, &record).unwrap();
+        let mut runner = journal_runner("Running", "");
+        runner.listed = true;
+        let failure = restore_with(&runner, &paths, ID, "c333333333333333333333333333333").unwrap_err().to_string();
+        assert!(failure.contains("to “Selected” is unfinished"), "{failure}");
+
+        // A fork waiting for its first Start is not described as a Restore.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let mut record = load(&paths, ID).unwrap();
+        record.pending_checkpoint_restore = Some(PendingRestore { checkpoint_id: "c000000000000000000000000000000".into(), source_workspace: "dev".into(), state: "full".into() });
+        save(&paths, ID, &record).unwrap();
+        assert_eq!(explicit_start_message(&paths, ID, "dev"), "dev starts from a checkpoint first. Use Start on its page.");
+        assert!(view_unfinished_restore(&record).is_none());
+    }
+
+    #[test]
+    fn quit_releases_a_vm_an_unfinished_restore_left_paused() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, Some(("capturing", true)));
+        let runner = journal_runner("Paused", "");
+        release_paused_restore(&runner, &paths, &machine());
+        assert_eq!(*runner.state.lock().unwrap(), "Running");
+        // Without an unfinished Restore, Quit's own handling applies.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let runner = journal_runner("Paused", "");
+        release_paused_restore(&runner, &paths, &machine());
+        assert_eq!(*runner.state.lock().unwrap(), "Paused");
+    }
+
+    /// A restore attempt whose VM runs but never verifies, then is stopped (as Quit does).
+    struct AttemptRunner {
+        state: Mutex<&'static str>,
+        exists: Mutex<bool>,
+        restore_ok: bool,
+        attempt: Mutex<Option<String>>,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+    impl RuntimeRunner for AttemptRunner {
+        fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            let ok = |stdout: String| Ok(CommandOutput { stdout, stderr: String::new() });
+            match args[0].as_str() {
+                "snapshot" => ok(serde_json::json!([{"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"}]).to_string()),
+                "list" => ok(if *self.exists.lock().unwrap() { r#"[{"name":"dev"}]"#.into() } else { "[]".into() }),
+                "restore" => {
+                    let label = args.iter().find_map(|arg| arg.strip_prefix("silo.restore-attempt=")).unwrap().to_owned();
+                    *self.attempt.lock().unwrap() = Some(label);
+                    *self.exists.lock().unwrap() = true;
+                    *self.state.lock().unwrap() = "Running";
+                    if self.restore_ok { ok(String::new()) } else { Err(RuntimeError::TimedOut { operation: "restore".into() }) }
+                }
+                "inspect" if *self.exists.lock().unwrap() => ok(serde_json::json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{
+                    // No SILO_GITHUB secret: this VM never passes restore verification.
+                    "labels":{"silo.managed":"true","silo.machine-id":ID,"silo.restore-attempt":self.attempt.lock().unwrap().clone(),"silo.working-account":"1"},
+                    "resources":{"max_cpus":1,"max_memory_mib":1024},
+                    "network":{"policy":{"default_egress":"deny","default_ingress":"allow","rules":[]}}
+                }}).to_string()),
+                "inspect" => Err(RuntimeError::Unavailable("sandbox not found: dev".into())),
+                "start" => {
+                    *self.state.lock().unwrap() = "Running";
+                    ok(String::new())
+                }
+                _ => ok(String::new()),
+            }
+        }
+    }
+
+    fn pending_fixture(directory: &tempfile::TempDir) -> RuntimePaths {
+        let paths = paths(directory);
+        write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![machine()] }).unwrap();
+        let mut record = Record::default();
+        record.snapshot_group = Some("dev".into());
+        record.pending_checkpoint_restore = Some(PendingRestore { checkpoint_id: "c000000000000000000000000000000".into(), source_workspace: "dev".into(), state: "full".into() });
+        record.desired_network_policy = Some(serde_json::json!({"default_egress":"deny","default_ingress":"allow","rules":[]}));
+        save(&paths, ID, &record).unwrap();
+        paths
+    }
+
+    #[test]
+    fn a_retried_start_keeps_and_starts_an_attempt_that_already_ran() {
+        for restore_ok in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = pending_fixture(&directory);
+            let runner = AttemptRunner { state: Mutex::new("Stopped"), exists: Mutex::new(false), restore_ok, attempt: Mutex::new(None), calls: Mutex::new(Vec::new()) };
+            start_pending(&runner, &paths, &machine()).unwrap_err();
+            let stored = load(&paths, ID).unwrap();
+            assert!(stored.restore_attempt_ran, "restore_ok={restore_ok}");
+            // Quit stopped the unverified VM; the user then retries Start.
+            *runner.state.lock().unwrap() = "Stopped";
+            runner.calls.lock().unwrap().clear();
+            start_pending(&runner, &paths, &machine()).unwrap();
+            let calls = runner.calls.lock().unwrap();
+            assert!(!calls.iter().any(|call| call[0] == "remove" || call[0] == "restore"), "{calls:?}");
+            assert!(calls.iter().any(|call| call[0] == "start"));
+            assert_eq!(*runner.state.lock().unwrap(), "Running");
+            let stored = load(&paths, ID).unwrap();
+            assert!(stored.pending_checkpoint_restore.is_none());
+            assert!(!stored.restore_attempted && !stored.restore_attempt_ran);
+            assert!(!needs_explicit_start(&paths, ID).unwrap());
+        }
+    }
+
+    #[test]
+    fn an_attempt_that_never_ran_is_recreated_from_the_checkpoint() {
+        struct NeverRan(Mutex<Vec<String>>);
+        impl RuntimeRunner for NeverRan {
+            fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+                self.0.lock().unwrap().push(args[0].clone());
+                match args[0].as_str() {
+                    "snapshot" => Ok(CommandOutput { stdout: serde_json::json!([{"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"}]).to_string(), stderr: String::new() }),
+                    "list" => Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() }),
+                    "restore" => Err(RuntimeError::Failed { operation: "restore".into(), detail: "incomplete".into() }),
+                    _ => Err(RuntimeError::Unavailable("sandbox not found: dev".into())),
+                }
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = pending_fixture(&directory);
+        start_pending(&NeverRan(Mutex::new(Vec::new())), &paths, &machine()).unwrap_err();
+        assert!(!load(&paths, ID).unwrap().restore_attempt_ran);
     }
 }

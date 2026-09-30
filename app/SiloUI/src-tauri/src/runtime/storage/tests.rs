@@ -99,7 +99,7 @@ fn stopped_usage_reports_allocated_blocks_without_starting_guest() {
     observed.status = "Stopped".into();
     let runner = Runner::new();
     let value = state(&runner, &paths, &machine, &observed).unwrap();
-    assert_eq!(value.workspace_host_bytes, allocated(&owned_disk(&paths,"dev")).unwrap());
+    assert_eq!(value.workspace_host_bytes, Some(allocated(&owned_disk(&paths,"dev")).unwrap()));
     assert_eq!(value.workspace_used_bytes, None);
     assert!(runner.calls.lock().unwrap().is_empty());
 }
@@ -289,6 +289,81 @@ fn live_reclaim_preserves_capacity_contents_and_reboots() {
         stopped.unwrap();
         assert_eq!(fs::metadata(&disk).unwrap().len(), length);
         assert!(inspect_workspace(&runner, &paths, machine.name()).unwrap().status.eq_ignore_ascii_case("stopped"));
+    }
+}
+
+fn workspace_dir(paths: &RuntimePaths, name: &str) -> PathBuf {
+    owned_disk(paths, name).parent().unwrap().to_path_buf()
+}
+
+#[test]
+fn restored_layered_workspace_is_measured_and_a_missing_disk_is_unknown() {
+    // A VM restored from a checkpoint keeps its workspace as sealed layers plus a
+    // writable qcow2 head; there is no disk.raw.
+    let (_dir, paths, machine, mut observed) = fixture();
+    let directory = workspace_dir(&paths, "dev");
+    fs::remove_file(owned_disk(&paths, "dev")).unwrap();
+    fs::write(directory.join("sealed-000.raw"), vec![1u8; 16384]).unwrap();
+    fs::write(directory.join("writable.qcow2"), vec![2u8; 8192]).unwrap();
+    observed.status = "Stopped".into();
+    let runner = Runner::new();
+    let expected = allocated(&directory.join("sealed-000.raw")).unwrap() + allocated(&directory.join("writable.qcow2")).unwrap();
+    let value = state(&runner, &paths, &machine, &observed).unwrap();
+    assert_eq!(value.workspace_host_bytes, Some(expected));
+    assert!(expected > 0);
+    assert!(workspace_mount(&paths, &machine, &observed));
+
+    fs::remove_dir_all(&directory).unwrap();
+    let value = state(&runner, &paths, &machine, &observed).unwrap();
+    assert_eq!(value.workspace_host_bytes, None, "a missing workspace disk is unknown, not 0 B");
+    assert!(!workspace_mount(&paths, &machine, &observed));
+}
+
+#[test]
+fn runtime_usage_counts_flat_roots_and_is_unknown_without_a_sandbox_directory() {
+    let (_dir, paths, machine, mut observed) = fixture();
+    observed.status = "Stopped".into();
+    let sandbox = paths.home.join("sandboxes/dev");
+    fs::write(sandbox.join("rootfs.raw"), vec![3u8; 8192]).unwrap();
+    fs::write(sandbox.join("upper.ext4"), vec![4u8; 8192]).unwrap();
+    let expected = allocated(&sandbox.join("rootfs.raw")).unwrap() + allocated(&sandbox.join("upper.ext4")).unwrap();
+    let runner = Runner::new();
+    assert_eq!(state(&runner, &paths, &machine, &observed).unwrap().runtime_host_bytes, Some(expected));
+    fs::remove_dir_all(&sandbox).unwrap();
+    assert_eq!(state(&runner, &paths, &machine, &observed).unwrap().runtime_host_bytes, None);
+}
+
+#[test]
+fn layered_workspace_reclaim_measures_the_whole_chain_and_guards_every_layer_length() {
+    struct LayerRunner { shrink: bool }
+    impl RuntimeRunner for LayerRunner {
+        fn run(&self, paths: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            if args[0] == "--silo-storage-protocol" {
+                return Ok(CommandOutput { stdout: "1\n".into(), stderr: String::new() });
+            }
+            let head = workspace_dir(paths, "dev").join("writable.qcow2");
+            let file = fs::OpenOptions::new().write(true).open(&head).unwrap();
+            // Discard releases the head's blocks but keeps its logical length (hole punch),
+            // unless this runner simulates the old truncating runtime.
+            file.set_len(0).unwrap();
+            if !self.shrink { file.set_len(1024 * 1024).unwrap(); }
+            Ok(CommandOutput { stdout: String::new(), stderr: String::new() })
+        }
+    }
+    for shrink in [false, true] {
+        let (_dir, paths, machine, observed) = fixture();
+        let head = workspace_dir(&paths, "dev").join("writable.qcow2");
+        fs::write(&head, vec![5u8; 1024 * 1024]).unwrap();
+        let result = trim(&LayerRunner { shrink }, &paths, &machine, &observed, TRIM_BUDGET, now());
+        let record = load(&paths, machine.id()).unwrap();
+        assert_eq!(fs::metadata(&head).unwrap().len(), 1024 * 1024, "every layer keeps its logical length");
+        if shrink {
+            assert!(result.unwrap_err().to_string().contains("original length was restored"));
+            assert!(record.last_trim_at.is_none());
+        } else {
+            result.unwrap();
+            assert!(record.last_reclaimed_bytes.unwrap() >= 1024 * 1024, "{:?}", record.last_reclaimed_bytes);
+        }
     }
 }
 

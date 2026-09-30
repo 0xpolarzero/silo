@@ -14,7 +14,7 @@ afterEach(() => { toast.dismiss() })
 function Panel(props: React.ComponentProps<typeof WorkspaceStoragePanel>) { return <SettingsProvider initialSettings={{ theme: "light" }}><Toaster /><WorkspaceStoragePanel {...props} /></SettingsProvider> }
 
 const gib = 1024 ** 3
-const storage: WorkspaceStorageState = { history: [], workspaceHostBytes: 36 * gib, runtimeHostBytes: 5 * gib, workspaceUsedBytes: gib, workspaceCapacityBytes: 64 * gib, lastReclaimedBytes: null, lastTrimAt: null, lastError: null }
+const storage: WorkspaceStorageState = { history: [], workspaceHostBytes: 36 * gib, runtimeHostBytes: 5 * gib, checkpointHostBytes: 3 * gib, checkpointCount: 2, workspaceUsedBytes: gib, workspaceCapacityBytes: 64 * gib, lastReclaimedBytes: null, lastTrimAt: null, lastError: null }
 
 it("distinguishes host allocation from guest usage and reports measured recovery", async () => {
   const read = vi.fn().mockResolvedValue(storage)
@@ -144,4 +144,48 @@ it("keeps real history collapsed, reveals results and refreshes failures from th
   expect(await screen.findByText("Reclaim did not complete")).toBeVisible()
   expect(read).toHaveBeenCalledTimes(2)
   expect(screen.getByRole("button", { name: /Reclaim history, 19/ })).toHaveAttribute("aria-expanded", "true")
+})
+
+it("shows a disk Silo could not find as unknown instead of 0 B", async () => {
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, workspaceHostBytes: null, runtimeHostBytes: null })} />)
+  expect(await screen.findAllByText("Unknown")).toHaveLength(2)
+  expect(screen.queryByText("0 B")).not.toBeInTheDocument()
+})
+
+it("shows how much space the sandbox's checkpoints use and where to delete them", async () => {
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue(storage)} />)
+  expect(await screen.findByText("3.00 GiB")).toBeVisible()
+  expect(screen.getByText("Checkpoints")).toBeVisible()
+  expect(screen.getByText(/2 checkpoints saved on this computer/)).toBeVisible()
+  expect(screen.getByText(/Delete ones you no longer need in Checkpoints/)).toBeVisible()
+})
+
+it("explains each measurement and the automatic reclaim policy in visible text", async () => {
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue(storage)} reclaim={vi.fn()} />)
+  expect(await screen.findByText("36.00 GiB")).toBeVisible()
+  expect(screen.getByText(/Deleted files keep using this space until it is reclaimed/)).toBeVisible()
+  expect(screen.getByText(/Reclaiming space does not shrink it/)).toBeVisible()
+  expect(screen.getByText(/Used inside the sandbox/)).toBeVisible()
+  expect(screen.getByText(/The most the workspace can hold/)).toBeVisible()
+  expect(screen.getByText(/Silo reclaims automatically after 7 days of running/)).toBeVisible()
+})
+
+it("expands a failed reclaim's error inline from its Details button", async () => {
+  const history = [
+    { at: 2000, trigger: "manual", reclaimedBytes: null, error: "The runtime shortened the workspace disk; its original length was restored." },
+    { at: 1000, trigger: "scheduled", reclaimedBytes: gib, error: null },
+  ]
+  const user = userEvent.setup()
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, history })} reclaim={vi.fn()} />)
+  await user.click(await screen.findByRole("button", { name: /Reclaim history, 2/ }))
+  const details = screen.getByRole("button", { name: "Details for reclaim 1" })
+  expect(details).toHaveAttribute("aria-expanded", "false")
+  expect(screen.queryByText(/its original length was restored/)).not.toBeInTheDocument()
+  await user.click(details)
+  expect(details).toHaveAttribute("aria-expanded", "true")
+  expect(screen.getByText(/its original length was restored/)).toBeVisible()
+  await user.click(screen.getByRole("button", { name: "Details for reclaim 2" }))
+  expect(screen.getByText(/Unused blocks were released; workspace files and capacity were preserved/)).toBeVisible()
+  await user.click(details)
+  expect(screen.queryByText(/its original length was restored/)).not.toBeInTheDocument()
 })
