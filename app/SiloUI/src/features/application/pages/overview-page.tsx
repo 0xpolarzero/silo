@@ -500,7 +500,7 @@ export function OverviewPage({ active = true, readOnly = false,
       if (action === "dismiss-error") continue
       const verb = action === "restart" ? "restart" : action === "stop" ? "stop" : "start"
       dismissOperationToast(id)
-      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ? <ErrorDetails message={workspace.lifecycleFailure} /> : undefined, retry: lifecycleRetry(workspace), sandbox: name, native: false })
+      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ? <ErrorDetails message={workspace.lifecycleFailure} diagnostic={workspace.lifecycleFailureDiagnostic} /> : undefined, retry: lifecycleRetry(workspace), sandbox: name, native: false })
     }
   })
   useEffect(() => { lifecycleToasts(source.workspaces) }, [source.workspaces])

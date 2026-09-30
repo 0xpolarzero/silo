@@ -276,8 +276,8 @@ function ActivityLog({ workspaces, sourceActivities, filtered, onShowLogs }: { w
                 detail={
                   <div className="min-w-0 space-y-1" data-activity-content>
                     {/* A failure's detail can carry raw runtime output: keep it behind Details. */}
-                    {item.tone === "danger" && item.detail
-                      ? <ErrorDetails message={item.detail} />
+                    {item.tone === "danger" && (item.detail || item.diagnostic)
+                      ? <ErrorDetails message={item.detail} diagnostic={item.diagnostic} />
                       : <p className="whitespace-pre-wrap break-words">{item.detail}</p>}
                     {workspace && item.tone === "danger" && <Button size="xs" variant="outline" onClick={() => onShowLogs(item)}>Show logs</Button>}
                     {item.status === "running" && item.progress !== undefined && (

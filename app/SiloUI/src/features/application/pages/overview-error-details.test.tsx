@@ -38,3 +38,18 @@ it("summarizes a long sandbox setup failure in the configuration alert", async (
   expect(within(alert).queryByText(/exit code/)).not.toBeInTheDocument()
   expect(within(alert).getByRole("button", { name: "Show details" })).toBeVisible()
 })
+
+it("keeps the runtime's separate lifecycle diagnostic available behind Details", async () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const workspace = source.workspaces.find(item => item.machine.name === "dev")!
+  workspace.state = "stopped"
+  const view = render(page(source))
+  workspace.lifecycleFailure = "The sandbox did not start. Review the details and retry."
+  workspace.lifecycleFailureDiagnostic = output
+  workspace.lifecycleFailureAction = "start"
+  view.rerender(page(source))
+  expect(await screen.findByText(workspace.lifecycleFailure)).toBeVisible()
+  expect(screen.queryByText(/stage 29/)).not.toBeInTheDocument()
+  await userEvent.setup().click(screen.getByRole("button", { name: "Show details" }))
+  expect(screen.getByLabelText("Error details")).toHaveTextContent("msb: stage 29: exec failed")
+})
