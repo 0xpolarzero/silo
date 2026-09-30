@@ -893,12 +893,13 @@ impl<R: MsbRunner> BackupService<R> {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_restore(
         &self,
         request: RestoreRequest,
         cancellation: &Cancellation,
     ) -> Result<PreparedRestore, BackupError> {
-        self.prepare_restore_in_group(request, &new_import_group(), cancellation)
+        self.prepare_restore_in_group(request, &new_import_group(), cancellation, &|| Ok(()))
     }
 
     /// Like `prepare_restore`, but loads into a group the caller named first,
@@ -909,6 +910,7 @@ impl<R: MsbRunner> BackupService<R> {
         request: RestoreRequest,
         import_group: &str,
         cancellation: &Cancellation,
+        before_load: &dyn Fn() -> Result<(), BackupError>,
     ) -> Result<PreparedRestore, BackupError> {
         let _guard = self.begin()?;
         if !valid_import_group(import_group) {
@@ -963,7 +965,10 @@ impl<R: MsbRunner> BackupService<R> {
             // Never load into, or clean up, a group this attempt did not create.
             return Err(BackupError::ImportGroupConflict(import_group.into()));
         }
-        let import_stages_before = cache_import_stages(&self.command.home)?;
+        let import_stages_before = native_import_stages(&self.command.home)?;
+        // Ownership is established only after refusing any existing group, and
+        // is journaled before load creates native members (including partials).
+        before_load()?;
         // From here on the runtime may hold native data for this group. Every
         // failure, including Cancel and a timed-out or killed load, removes the
         // group and the runtime's leftover import staging before returning.
@@ -984,7 +989,7 @@ impl<R: MsbRunner> BackupService<R> {
                 _stage: stage,
             }),
             Err(error) => {
-                cleanup_new_cache_import_stages(&self.command.home, &import_stages_before);
+                cleanup_new_native_import_stages(&self.command.home, &import_stages_before);
                 if let Err(cleanup) = self.remove_import_group(import_group) {
                     eprintln!(
                         "Silo could not remove the incomplete import {import_group}: {cleanup}"
@@ -1497,34 +1502,34 @@ fn compare_loaded_descriptor(
 }
 
 
-fn cache_import_stages(home: &Path) -> Result<HashSet<std::ffi::OsString>, BackupError> {
-    let root = home.join("cache/tmp");
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashSet::new()),
-        Err(error) => return Err(BackupError::Io(error)),
-    };
-    Ok(entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.file_name())
-        .filter(|name| name.to_string_lossy().starts_with("snapshot-import-"))
-        .collect())
+/// Stage names are known only after the child creates them. This before/after
+/// census is scoped to one running load; crash recovery must not infer ownership
+/// from the prefixes, because the runtime does not identify the operation there.
+fn native_import_stages(home: &Path) -> Result<HashSet<PathBuf>, BackupError> {
+    let mut stages = HashSet::new();
+    for (root, prefix) in [
+        (home.join("cache/tmp"), "snapshot-import-"),
+        (home.join("snapshots"), ".msb-snapshot-import-"),
+    ] {
+        let entries = match fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(BackupError::Io(error)),
+        };
+        for entry in entries {
+            let entry = entry?;
+            if entry.file_name().to_string_lossy().starts_with(prefix) {
+                stages.insert(entry.path());
+            }
+        }
+    }
+    Ok(stages)
 }
 
-fn cleanup_new_cache_import_stages(home: &Path, before: &HashSet<std::ffi::OsString>) {
-    let root = home.join("cache/tmp");
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.filter_map(Result::ok) {
-        let name = entry.file_name();
-        if before.contains(&name) || !name.to_string_lossy().starts_with("snapshot-import-") {
-            continue;
-        }
-        let path = entry.path();
-        let Ok(metadata) = fs::symlink_metadata(&path) else {
-            continue;
-        };
+fn cleanup_new_native_import_stages(home: &Path, before: &HashSet<PathBuf>) {
+    let Ok(after) = native_import_stages(home) else { return };
+    for path in after.difference(before) {
+        let Ok(metadata) = fs::symlink_metadata(path) else { continue };
         if metadata.file_type().is_symlink() || metadata.is_file() {
             let _ = fs::remove_file(path);
         } else if metadata.is_dir() {
@@ -3373,16 +3378,14 @@ mod tests {
                 ["snapshot", "load", _, "--group", group] => {
                     if self.cancel_during_load.load(Ordering::Acquire) {
                         // The runner killed msb after it had installed members.
-                        fs::create_dir_all(
-                            command.home.join("cache/tmp/snapshot-import-killed"),
-                        )?;
+                        fs::create_dir_all(command.home.join("cache/tmp/snapshot-import-killed"))?;
+                        fs::create_dir_all(command.home.join("snapshots/.msb-snapshot-import-killed"))?;
                         cancellation.cancel();
                         return Err(BackupError::Cancelled);
                     }
                     if self.fail_load.load(Ordering::Acquire) {
-                        fs::create_dir_all(
-                            command.home.join("cache/tmp/snapshot-import-interrupted"),
-                        )?;
+                        fs::create_dir_all(command.home.join("cache/tmp/snapshot-import-interrupted"))?;
+                        fs::create_dir_all(command.home.join("snapshots/.msb-snapshot-import-interrupted"))?;
                         return Ok(CommandOutput {
                             status: ExitStatus::from_raw(1 << 8),
                             stderr: "unsafe archive member".into(),
@@ -4648,6 +4651,8 @@ mod tests {
             .path()
             .join("home/cache/tmp/snapshot-import-preexisting");
         fs::create_dir_all(&existing_cache_stage).unwrap();
+        let existing_snapshot_stage = temp.path().join("home/snapshots/.msb-snapshot-import-preexisting");
+        fs::create_dir_all(&existing_snapshot_stage).unwrap();
         service.runner.fail_load.store(true, Ordering::Release);
         let result = service.prepare_restore(
             RestoreRequest {
@@ -4661,6 +4666,8 @@ mod tests {
         let scratch = temp.path().join("scratch");
         assert!(fs::read_dir(scratch).unwrap().next().is_none());
         assert!(existing_cache_stage.is_dir());
+        assert!(existing_snapshot_stage.is_dir());
+        assert!(!temp.path().join("home/snapshots/.msb-snapshot-import-interrupted").exists());
         assert!(
             !temp
                 .path()
@@ -4704,6 +4711,7 @@ mod tests {
             restore_request(destination),
             &group,
             &Cancellation::default(),
+            &|| Ok(()),
         );
         assert!(matches!(result, Err(BackupError::CommandFailed { .. })));
         // The root becomes head, the child goes first, then the root: no --force.
@@ -4730,6 +4738,36 @@ mod tests {
     }
 
     #[test]
+    fn import_persists_owned_group_before_load_and_does_not_load_if_the_journal_fails() {
+        for journal_fails in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let destination = temp.path().join("dev.silo-backup");
+            let service = service(&temp, FakeRunner::default());
+            create_one(&service, destination.clone(), false).unwrap();
+            let group = new_import_group();
+            let recorded = AtomicBool::new(false);
+            let result = service.prepare_restore_in_group(
+                restore_request(destination), &group, &Cancellation::default(),
+                &|| {
+                    assert!(import_group_calls(&service, "load").is_empty());
+                    recorded.store(true, Ordering::Release);
+                    if journal_fails { Err(BackupError::InvalidRequest("test journal write failed".into())) }
+                    else { Ok(()) }
+                },
+            );
+            assert!(recorded.load(Ordering::Acquire));
+            if journal_fails {
+                assert!(result.is_err());
+                assert!(import_group_calls(&service, "load").is_empty());
+                assert!(service.runner.removed.lock().unwrap().is_empty());
+            } else {
+                assert_eq!(result.unwrap().snapshot_group, group);
+                assert_eq!(import_group_calls(&service, "load").len(), 1);
+            }
+        }
+    }
+
+    #[test]
     fn cancelled_load_removes_the_partial_import_and_runtime_staging() {
         let temp = tempfile::tempdir().unwrap();
         let destination = temp.path().join("dev.silo-backup");
@@ -4740,6 +4778,7 @@ mod tests {
         assert!(matches!(result, Err(BackupError::Cancelled)));
         assert_eq!(import_group_calls(&service, "remove").len(), 2);
         assert!(!temp.path().join("home/cache/tmp/snapshot-import-killed").exists());
+        assert!(!temp.path().join("home/snapshots/.msb-snapshot-import-killed").exists());
         assert!(fs::read_dir(temp.path().join("scratch")).unwrap().next().is_none());
     }
 
@@ -4760,6 +4799,7 @@ mod tests {
             restore_request(destination),
             &group,
             &Cancellation::default(),
+            &|| panic!("an existing group is never journaled as owned"),
         );
         assert!(matches!(result, Err(BackupError::ImportGroupConflict(_))));
         assert!(import_group_calls(&service, "load").is_empty());

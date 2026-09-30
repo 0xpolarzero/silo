@@ -1679,8 +1679,14 @@ fn restore_at_paths(
         return Err(format!("A runtime sandbox named {new_name} already exists.").into());
     }
     progress("Unpacking export");
-    unpack_and_save(paths, controller, archive, source_name, new_name, cancellation, progress, original)
-        .map_err(TransferError::after_unpacking)
+    let result = unpack_and_save(paths, controller, archive, source_name, new_name, cancellation, progress, original);
+    result.map_err(|error| {
+        let mut error = error.after_unpacking();
+        if let Err(cleanup) = recovery::discard_pending_import(paths, controller) {
+            error.message = format!("{} {cleanup}", error.message);
+        }
+        error
+    })
 }
 
 fn unpack_and_save(
@@ -1693,15 +1699,18 @@ fn unpack_and_save(
     progress: &dyn Fn(&str),
     original: runtime::MachineConfigurationRequest,
 ) -> Result<(), TransferError> {
+    let group = backup::new_import_group();
     let prepared = controller
         .service
-        .prepare_restore(
+        .prepare_restore_in_group(
             backup::RestoreRequest {
                 archive: archive.to_path_buf(),
                 source_name: Some(source_name.into()),
                 new_name: new_name.into(),
             },
+            &group,
             cancellation,
+            &|| recovery::save_restore_group(controller, &group).map_err(backup::BackupError::InvalidRequest),
         )?;
     // Until the new sandbox is saved, a failure removes the loaded import
     // group instead of stranding it in the native store (E-23).

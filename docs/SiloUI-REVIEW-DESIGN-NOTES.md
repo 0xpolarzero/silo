@@ -176,15 +176,30 @@ MicroSandbox source (`crates/cli/lib/commands/snapshot.rs`,
   measures artifact directories instead.
 
 Implemented: Delete checkpoint refuses pinned checkpoints with the reason
-(another record, a pending start, a later capture, a lineage position);
-sandbox deletion removes the members only it used; a failed capture removes a
-published member it no longer needs; a sweep five minutes after launch removes
-Silo-named members no record references that are older than 24 hours. Answer to
-the first open question: a started fork keeps the checkpoint it was restored
-from (it is the fork's lineage position); the sweep removes it after the fork no
-longer builds on it. Import-failure cleanup of `silo-import-*` groups is left to
-E-23; the sweep collects them after 24 hours. Deleting checkpoints of a sandbox
-on another computer is done in Silo on that computer.
+(another record, a pending start, a later capture, a lineage position).
+Sandbox deletion journals exact members and removes the ones no dependent needs;
+deleting the last fork retries its pinned base. Launch retries only those deletion
+journals and checkpoint captures still recorded as in flight. Export records its
+capture before creation, removes an incomplete member on failure or relaunch, and
+keeps a verified capture while a sandbox uses it as its lineage parent. Import
+records its new group before load, removes indexed unfinished members even before
+allocating a sandbox identity, and keeps ownership journaled when removal fails.
+A normal failed or cancelled load also removes its new snapshot and cache stages
+from the before/after census of that running operation, preserving older stages.
+There is no age-based startup sweep. Deleting checkpoints of a sandbox on another
+computer is done in Silo on that computer.
+
+**Remaining runtime gap.** The
+[pinned archive loader](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/snapshot/archive/batch.rs#L263)
+creates random `.msb-snapshot-import-*` folders under the native snapshot store
+and `snapshot-import-*` folders in `cache/tmp`. Neither name identifies the
+chosen group or Silo operation, and the CLI does not expose the exact paths.
+A crash during unpacking before member publication therefore leaves unindexed
+stages that Silo cannot attribute to its journal. Startup preserves those stages;
+it never prefix-sweeps or uses age to infer ownership. Full E-03 crash cleanup
+requires an upstream runtime journal or a supported API that lets Silo choose
+and journal those paths before the runtime writes them. The indexed import-group
+cleanup required by E-24 is implemented.
 
 ---
 

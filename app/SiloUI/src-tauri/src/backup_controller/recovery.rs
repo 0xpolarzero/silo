@@ -391,6 +391,17 @@ fn cleanup_archive_partial(journal: &Journal) -> Result<(), String> {
     Ok(())
 }
 
+/// Own the new group before `snapshot load` writes any native data. The new
+/// sandbox's identity is added later, before its checkpoint record is saved.
+pub(super) fn save_restore_group(controller: &Controller, import_group: &str) -> Result<(), String> {
+    validate_import_group(import_group)?;
+    update(controller, |journal| {
+        if let Request::Restore { group, .. } = &mut journal.request {
+            *group = Some(import_group.into());
+        }
+    })
+}
+
 /// Journal the new sandbox's id and the loaded snapshot group before the
 /// import writes its checkpoint record and settings (E-24).
 pub(super) fn save_restore_identity(
@@ -434,6 +445,30 @@ pub(super) fn discard_uncommitted_import(
     }
     clear_restore_identity(controller)
 }
+/// Includes a load interrupted before Silo allocated the sandbox identity.
+/// Only the journaled group is removed; unindexed runtime staging has no group
+/// identity in the current runtime and must stay untouched at relaunch.
+pub(super) fn discard_pending_import(
+    paths: &runtime::RuntimePaths,
+    controller: &Controller,
+) -> Result<(), String> {
+    let saved = controller.journal.lock().map_err(|_| "Saved operation unavailable.")?
+        .as_ref().and_then(|journal| match &journal.request {
+            Request::Restore { id, group, .. } => Some((id.clone(), group.clone())),
+            _ => None,
+        });
+    let Some((id, group)) = saved else { return Ok(()) };
+    if let Some(id) = id {
+        return discard_uncommitted_import(paths, controller, &id, group.as_deref());
+    }
+    if let Some(group) = group {
+        controller.service.discard_import_group(&group)
+            .map_err(|error| format!("Silo could not remove the unfinished import {group}: {error}"))?;
+        clear_restore_identity(controller)?;
+    }
+    Ok(())
+}
+
 pub(super) fn cancel(controller: &Controller) -> Result<(), String> {
     update(controller, |j| j.cancelled = true)
 }
@@ -481,7 +516,8 @@ pub(super) fn complete(controller: &Controller, mut operation: Operation) -> Ope
             journal
                 .as_ref()
                 .map(|j| matches!(&j.request,
-                    Request::Restore { id: Some(_), .. } | Request::Backup { pending_capture: Some(_), .. }
+                    Request::Restore { id: Some(_), .. } | Request::Restore { group: Some(_), .. }
+                        | Request::Backup { pending_capture: Some(_), .. }
                 ))
         })
         .unwrap_or(false);
@@ -671,6 +707,8 @@ pub(super) fn recover_at_paths(
                     return Ok(result(journal.archive.clone(), "success", "Import complete", "Silo verified this import after relaunching.", None));
                 }
                 discard_uncommitted_import(paths, controller, id, group.as_deref())?;
+            } else if group.is_some() {
+                discard_pending_import(paths, controller)?;
             }
             Ok(if journal.cancelled {
                 result(journal.archive.clone(), "cancelled", "Import cancelled", "The import was cancelled.", Some("No sandbox was added."))
@@ -978,6 +1016,60 @@ mod tests {
         );
         complete(&controller, recovered);
         assert!(!pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn relaunch_discards_a_load_group_before_a_sandbox_identity_was_allocated() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
+        begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        save_restore_group(&controller, IMPORT_GROUP).unwrap();
+        // The current runtime does not put a group identity on these random
+        // unpacking stages. Recovery must preserve them, never prefix-sweep.
+        let stages = [
+            paths.home.join("cache/tmp/snapshot-import-unattributed"),
+            paths.home.join("snapshots/.msb-snapshot-import-unattributed"),
+        ];
+        for stage in &stages {
+            fs::create_dir_all(stage).unwrap();
+            fs::write(stage.join("payload"), b"unattributed").unwrap();
+        }
+        let journal = load(&controller.history_path).unwrap().unwrap();
+        assert!(matches!(&journal.request, Request::Restore { id: None, group: Some(group), .. } if group == IMPORT_GROUP));
+        let recovered = recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap();
+        assert_eq!(result_of(&recovered).1, "Import interrupted");
+        assert_eq!(scripted_calls(directory.path()).into_iter().filter(|call| call.starts_with("snapshot remove"))
+            .collect::<Vec<_>>(), [
+                format!("snapshot remove --quiet {IMPORT_GROUP}:imported-member"),
+                format!("snapshot remove --quiet {IMPORT_GROUP}:imported-parent"),
+            ]);
+        for stage in stages {
+            assert_eq!(fs::read(stage.join("payload")).unwrap(), b"unattributed");
+        }
+        complete(&controller, recovered);
+        assert!(!pending(&controller).unwrap());
+        assert!(matches!(load(&controller.history_path).unwrap().unwrap().request,
+            Request::Restore { id: None, group: None, .. }));
+    }
+
+    #[test]
+    fn failed_load_group_cleanup_keeps_ownership_without_a_sandbox_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
+        begin(&controller, Journal::restore(completed_archive(), "copy".into(), None)).unwrap();
+        save_restore_group(&controller, IMPORT_GROUP).unwrap();
+        fs::write(directory.path().join("refuse-remove"), b"").unwrap();
+        let journal = load(&controller.history_path).unwrap().unwrap();
+        assert!(recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).is_err());
+        complete(&controller, Operation::Result {
+            operation: "restore", archive: completed_archive(), running_names: vec![], target_name: Some("copy".into()),
+            outcome: "failed", title: "Import failed".into(), message: "Cleanup failed".into(), detail: None,
+        });
+        let saved = load(&controller.history_path).unwrap().unwrap();
+        assert!(saved.terminal.is_none());
+        assert!(matches!(saved.request, Request::Restore { id: None, group: Some(ref group), .. } if group == IMPORT_GROUP));
     }
 
     #[test]
