@@ -148,12 +148,9 @@ Silo's patch does not change any of this.
 
 Also a `mac` live run for storage reclamation.
 
-**Open questions.**
-
-- Should deleting a sandbox also delete its forks' pinned base? The guide
-  suggests forks own their files, so yes, but this needs a live check.
-- Should "Before restore" and "Fork point" members be auto-collected after N
-  days?
+**Owner policy.** A fork's pinned base stays until its last dependent is
+removed. "Before restore" and "Fork point" checkpoints have no age-based
+collection policy; explicit checkpoint or sandbox deletion removes them.
 
 **Implementation findings (2026-09-30).** Verified by reading the pinned
 MicroSandbox source (`crates/cli/lib/commands/snapshot.rs`,
