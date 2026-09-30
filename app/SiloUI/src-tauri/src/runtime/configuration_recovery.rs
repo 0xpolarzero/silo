@@ -251,6 +251,7 @@ fn verify_committed_edits(runner: &dyn RuntimeRunner, paths: &RuntimePaths, jour
 }
 
 pub(super) fn recover_at_paths(runner: &dyn RuntimeRunner, paths: &RuntimePaths, resources: &HostResources, progress: &dyn Fn(&str, &str, u8)) -> Result<(), RuntimeError> {
+    debug_assert!(operation_gate::held(), "configuration recovery requires the computer operation gate");
     let Some(journal) = load(paths)? else { return Ok(()); };
     // Drain a surviving child before inspecting state. The caller holds the
     // operation gate (computer scope), which serializes the application-level

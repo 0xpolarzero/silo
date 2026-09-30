@@ -6360,6 +6360,8 @@ esac
 
     #[test]
     fn configuration_recovery_adopts_only_the_created_vm_with_the_saved_id() {
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let candidate = request(vec![vm()]);
@@ -6377,6 +6379,8 @@ esac
 
     #[test]
     fn interrupted_desktop_creation_is_retried_before_metadata_adoption() {
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut machine = vm();
@@ -6407,6 +6411,8 @@ esac
 
     #[test]
     fn configuration_recovery_verifies_an_edit_committed_before_interruption() {
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         for (valid, retry) in [(false, false), (true, false), (false, true), (true, true)] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
@@ -6459,6 +6465,8 @@ esac
 
     #[test]
     fn configuration_adoption_releases_worker_lock_before_guest_verification() {
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         struct LockAwareRunner(StubRunner);
         impl RuntimeRunner for LockAwareRunner {
             fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -6533,6 +6541,8 @@ esac
 
     #[test]
     fn configuration_recovery_preserves_a_replacement_vm() {
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         configuration_recovery::begin(&paths, &request(vec![vm()])).unwrap();
@@ -6578,6 +6588,8 @@ esac
 
     #[test]
     fn configuration_recovery_finishes_interrupted_deletion() {
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };

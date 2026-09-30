@@ -639,6 +639,7 @@ fn reconcile_forwarding(
     paths: &RuntimePaths,
     workspace: &str,
 ) -> Result<BTreeMap<u16, String>, String> {
+    debug_assert!(runtime::operation_gate::held(), "port reconciliation requires the VM operation gate");
     let mut failures = BTreeMap::new();
     let forwarding = forwarding_lock(workspace);
     let _forwarding = hold(&forwarding);
@@ -1175,6 +1176,8 @@ mod tests {
 
     #[test]
     fn poisoned_network_lock_is_recovered_and_reconcile_failures_are_reported() {
+        let gate = runtime::operation_gate::OperationGate::new();
+        let _guard = gate.vm("test-id", "dev", "Reconciling test ports").unwrap();
         let temp = tempfile::tempdir_in("/tmp").unwrap();
         let paths = temp_paths(&temp);
         write_config(&paths, &one_port("dev", 3000, true)).unwrap();
@@ -1242,7 +1245,11 @@ mod tests {
         let runtime = slow_runtime(socket_path(&paths, "dev"), 3, Duration::from_millis(800), added_tx);
         let repair = {
             let paths = paths.clone();
-            std::thread::spawn(move || reconcile_forwarding(&paths, "dev"))
+            std::thread::spawn(move || {
+                let gate = runtime::operation_gate::OperationGate::new();
+                let _guard = gate.vm("test-id", "dev", "Reconciling test ports").unwrap();
+                reconcile_forwarding(&paths, "dev")
+            })
         };
         assert_eq!(added.recv_timeout(Duration::from_secs(5)).unwrap(), 3000);
         // Another VM's read or save needs only the short data lock.
@@ -1268,7 +1275,11 @@ mod tests {
         let runtime = slow_runtime(socket_path(&paths, "dev"), 2, Duration::from_millis(300), added_tx);
         let repair = {
             let paths = paths.clone();
-            std::thread::spawn(move || reconcile_forwarding(&paths, "dev"))
+            std::thread::spawn(move || {
+                let gate = runtime::operation_gate::OperationGate::new();
+                let _guard = gate.vm("test-id", "dev", "Reconciling test ports").unwrap();
+                reconcile_forwarding(&paths, "dev")
+            })
         };
         assert_eq!(added.recv_timeout(Duration::from_secs(5)).unwrap(), 3000);
         // Another VM saves a port while this VM's repair waits on its runtime.
