@@ -1211,6 +1211,12 @@ fn begin_import(
     source_name: Option<String>,
 ) -> Result<(), String> {
     runtime::validate_name(&new_name).map_err(|error| error.to_string())?;
+    if let Some(source_name) = &source_name {
+        runtime::validate_name(source_name).map_err(|error| error.to_string())?;
+    }
+    if !Path::new(&archive_path).is_absolute() {
+        return Err("Choose the export file again.".into());
+    }
     controller
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)

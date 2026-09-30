@@ -174,6 +174,12 @@ pub(super) fn load(history: &Path) -> Result<Option<Journal>, String> {
     let journal: Journal = serde_json::from_slice(&bytes).map_err(|e| {
         format!("Silo could not read the interrupted export or import. The saved file was preserved: {e}")
     })?;
+    validate(&journal)?;
+    Ok(Some(journal))
+}
+/// The rules a saved journal must meet to be loaded. `begin` applies them too,
+/// so Silo never saves a journal the next launch would refuse (E-51).
+fn validate(journal: &Journal) -> Result<(), String> {
     uuid::Uuid::parse_str(&journal.id).map_err(|_| "Invalid saved backup operation identity.")?;
     if journal.version != 1 || !Path::new(&journal.archive.archive_path).is_absolute() {
         return Err("Unsupported saved export or import. The file was preserved.".into());
@@ -211,7 +217,7 @@ pub(super) fn load(history: &Path) -> Result<Option<Journal>, String> {
             }
         }
     }
-    Ok(Some(journal))
+    Ok(())
 }
 /// The exact `silo-import-<32 hex>` form `BackupService::prepare_restore` creates.
 fn validate_import_group(group: &str) -> Result<(), String> {
@@ -244,6 +250,7 @@ pub(super) fn begin(controller: &Controller, journal: Journal) -> Result<(), Str
             "An interrupted operation still needs to finish. Relaunch Silo to resume it.".into(),
         );
     }
+    validate(&journal)?;
     write(&controller.history_path, &journal)?;
     *saved = Some(journal);
     Ok(())
@@ -774,6 +781,29 @@ mod tests {
         }
         write(&path, &journal).unwrap();
         assert!(load(&path).is_err());
+    }
+
+    #[test]
+    fn a_journal_that_relaunch_could_not_read_is_never_saved() {
+        // Whatever begin saves, load must accept; otherwise a crash would leave
+        // a journal that blocks exports and imports on every launch (E-51).
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let controller = history_controller(path.clone());
+        let mut relative = completed_archive();
+        relative.archive_path = "Downloads/dev.silo-backup".into();
+        for journal in [
+            Journal::restore(relative, "copy".into(), None),
+            Journal::restore(completed_archive(), "copy".into(), Some("../dev".into())),
+            Journal::restore(completed_archive(), "Bad Name".into(), None),
+            Journal::backup(completed_archive(), vec!["../dev".into()], None),
+        ] {
+            assert!(begin(&controller, journal).is_err());
+            assert!(!journal_path(&path).exists());
+            assert!(token(&controller).unwrap().is_none());
+        }
+        begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        assert!(load(&path).unwrap().is_some());
     }
 
     #[test]
