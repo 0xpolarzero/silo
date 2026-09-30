@@ -344,7 +344,7 @@ impl std::fmt::Display for BackupError {
             Self::CommandFailed { operation, detail } => {
                 write!(formatter, "{operation} failed: {detail}")
             }
-            Self::Conflict(name) => write!(formatter, "A VM named {name} already exists."),
+            Self::Conflict(name) => write!(formatter, "A sandbox named {name} already exists."),
             Self::FileConflict(path) => write!(formatter, "A file already exists at {path}."),
             Self::ImportGroupConflict(group) => write!(
                 formatter,
@@ -583,7 +583,7 @@ impl<R: MsbRunner> BackupService<R> {
     ) -> Result<BackupResult, BackupError> {
         if let Some(token) = token {
             uuid::Uuid::parse_str(token).map_err(|_| {
-                BackupError::InvalidRequest("Invalid backup operation identity.".into())
+                BackupError::InvalidRequest("Invalid export operation identity.".into())
             })?;
         }
         let _guard = self.begin()?;
@@ -641,7 +641,7 @@ impl<R: MsbRunner> BackupService<R> {
                     }
                     let snapshot_name = format!("silo-backup-{index}-{}", unique_suffix());
                     self.require_success_with(
-                        "Capturing VM disk",
+                        "Capturing sandbox disk",
                         &[
                             "snapshot".into(),
                             "create".into(),
@@ -663,7 +663,7 @@ impl<R: MsbRunner> BackupService<R> {
                     self.captured_snapshot_path(&snapshot_group, &snapshot_name, cancellation)?
                 };
                 self.require_success_with(
-                    "Verifying captured VM disk",
+                    "Verifying captured sandbox disk",
                     &[
                         "snapshot".into(),
                         "verify".into(),
@@ -674,7 +674,7 @@ impl<R: MsbRunner> BackupService<R> {
                 )?;
                 let payload_path = stage.path().join(format!("{index}.msb"));
                 self.require_success_with(
-                    "Writing self-contained VM snapshot",
+                    "Writing sandbox disks to the export file",
                     &[
                         "snapshot".into(),
                         "save".into(),
@@ -695,7 +695,7 @@ impl<R: MsbRunner> BackupService<R> {
                 .filter(|size| *size <= self.max_archive_bytes)
                 .ok_or_else(|| {
                     BackupError::InvalidRequest(
-                        "The selected VM snapshots exceed the export size safety limit.".into(),
+                        "The selected sandbox checkpoints exceed the export size safety limit.".into(),
                     )
                 })?;
             payloads.push((source, runtime_config, machine_config, payload, payload_size));
@@ -775,12 +775,12 @@ impl<R: MsbRunner> BackupService<R> {
             .saturating_add(MAX_MANIFEST_BYTES);
         let estimate = estimate.saturating_add(estimate / 100); // tar/zstd overhead
         let destination = request.destination.parent().ok_or_else(|| {
-            BackupError::InvalidRequest("The backup destination has no parent directory.".into())
+            BackupError::InvalidRequest("The export destination has no parent directory.".into())
         })?;
         let writes = [
             (self.scratch_root.as_path(), estimate, "Silo's export working copy"),
             (destination, estimate, "the export destination"),
-            (store, capture_bytes, "Silo's native snapshot storage"),
+            (store, capture_bytes, "Silo's checkpoint storage"),
         ];
         for (index, (path, _, label)) in writes.iter().enumerate() {
             let needed = writes.iter().enumerate().filter(|(other, (other_path, _, _))| {
@@ -803,13 +803,13 @@ impl<R: MsbRunner> BackupService<R> {
         name: &str,
         cancellation: &Cancellation,
     ) -> Result<PathBuf, BackupError> {
-        let entries = self.snapshot_index("Locating captured VM disk", cancellation)?;
+        let entries = self.snapshot_index("Locating captured sandbox disk", cancellation)?;
         let mut matches = entries.iter().filter(|entry| {
             entry["group"] == group && entry["name"] == name && entry["availability"] == "ready"
         });
         let entry = matches.next().filter(|_| matches.next().is_none()).ok_or_else(|| {
             BackupError::InvalidRequest(
-                "The runtime did not publish exactly one ready captured snapshot.".into(),
+                "The runtime did not publish exactly one ready captured checkpoint.".into(),
             )
         })?;
         self.member_artifact(entry, group)
@@ -822,10 +822,10 @@ impl<R: MsbRunner> BackupService<R> {
             .as_str()
             .filter(|id| valid_snapshot_id(id))
             .ok_or_else(|| {
-                BackupError::InvalidRequest("The runtime returned an invalid snapshot identity.".into())
+                BackupError::InvalidRequest("The runtime returned an invalid checkpoint identity.".into())
             })?;
         let path = Path::new(entry["artifact_path"].as_str().ok_or_else(|| {
-            BackupError::InvalidRequest("The runtime omitted the captured snapshot path.".into())
+            BackupError::InvalidRequest("The runtime omitted the captured checkpoint path.".into())
         })?);
         let native_store = self
             .command
@@ -841,7 +841,7 @@ impl<R: MsbRunner> BackupService<R> {
             || path.parent().and_then(Path::parent) != Some(native_store.as_path())
         {
             return Err(BackupError::InvalidRequest(
-                "The captured snapshot is outside the native snapshot store.".into(),
+                "The captured checkpoint is outside the checkpoint storage.".into(),
             ));
         }
         Ok(path)
@@ -935,7 +935,7 @@ impl<R: MsbRunner> BackupService<R> {
             },
         )?;
         let extracted = package.extracted.as_ref().ok_or_else(|| {
-            BackupError::InvalidArchive("snapshot payload was not extracted".into())
+            BackupError::InvalidArchive("checkpoint payload was not extracted".into())
         })?;
         let source = &package.manifest.sandboxes[extracted.index];
         let payload_path = &extracted.path;
@@ -999,7 +999,7 @@ impl<R: MsbRunner> BackupService<R> {
     ) -> Result<String, BackupError> {
         let data_timeout = self.data_timeout(unpacked_bytes);
         self.require_success_with(
-            "Loading VM snapshot",
+            "Loading sandbox disks from the export file",
             &[
                 "snapshot".into(),
                 "load".into(),
@@ -1072,7 +1072,7 @@ impl<R: MsbRunner> BackupService<R> {
             })?
             .to_owned();
         self.require_success_with(
-            "Verifying restored VM disk",
+            "Verifying imported sandbox disk",
             &[
                 "snapshot".into(),
                 "verify".into(),
@@ -1086,7 +1086,7 @@ impl<R: MsbRunner> BackupService<R> {
         let descriptor = read_snapshot_descriptor(&self.member_artifact(head_member, import_group)?)?;
         compare_loaded_descriptor(&descriptor, head_id, runtime_config).map_err(|detail| {
             BackupError::InvalidArchive(format!(
-                "the loaded snapshot does not match the export's settings: {detail}"
+                "the loaded checkpoint does not match the export's settings: {detail}"
             ))
         })?;
         Ok(snapshot_member)
@@ -1216,7 +1216,7 @@ impl<R: MsbRunner> BackupService<R> {
             cancellation,
         )?;
         serde_json::from_str(&output.stdout).map_err(|_| {
-            BackupError::InvalidRequest("The runtime returned an invalid snapshot index.".into())
+            BackupError::InvalidRequest("The runtime returned an invalid checkpoint index.".into())
         })
     }
 
@@ -1225,18 +1225,18 @@ impl<R: MsbRunner> BackupService<R> {
         cancellation: &Cancellation,
     ) -> Result<HashSet<String>, BackupError> {
         let output = self.require_success(
-            "Checking VM name",
+            "Checking sandbox name",
             &["list".into(), "--format".into(), "json".into()],
             cancellation,
         )?;
         let value: Value =
             serde_json::from_str(&output.stdout).map_err(|_| BackupError::CommandFailed {
-                operation: "Checking VM name".into(),
-                detail: "the bundled runtime returned malformed VM data".into(),
+                operation: "Checking sandbox name".into(),
+                detail: "the bundled runtime returned malformed sandbox data".into(),
             })?;
         let rows = value.as_array().ok_or_else(|| BackupError::CommandFailed {
-            operation: "Checking VM name".into(),
-            detail: "the bundled runtime returned an unexpected VM list".into(),
+            operation: "Checking sandbox name".into(),
+            detail: "the bundled runtime returned an unexpected sandbox list".into(),
         })?;
         rows.iter()
             .map(|row| {
@@ -1244,8 +1244,8 @@ impl<R: MsbRunner> BackupService<R> {
                     .and_then(Value::as_str)
                     .map(str::to_owned)
                     .ok_or_else(|| BackupError::CommandFailed {
-                        operation: "Checking VM name".into(),
-                        detail: "the bundled runtime omitted a VM name".into(),
+                        operation: "Checking sandbox name".into(),
+                        detail: "the bundled runtime omitted a sandbox name".into(),
                     })
             })
             .collect()
@@ -1297,7 +1297,7 @@ const OWNED_VOLUMES_EXTENSION: &str = "microsandbox.owned-volumes";
 const RESTORE_DEFAULTS_EXTENSION: &str = "microsandbox.restore-defaults";
 
 fn read_snapshot_descriptor(artifact: &Path) -> Result<Value, BackupError> {
-    let invalid = || BackupError::InvalidArchive("the loaded snapshot descriptor is unreadable".into());
+    let invalid = || BackupError::InvalidArchive("the loaded checkpoint descriptor is unreadable".into());
     let (file, metadata) = open_regular_file(&artifact.join(SNAPSHOT_DESCRIPTOR)).map_err(|error| match error {
         OpenRegularError::NotRegular => invalid(),
         OpenRegularError::Io(error) => BackupError::Io(error),
@@ -1345,7 +1345,7 @@ fn compare_loaded_descriptor(
         return Err("its descriptor schema is not supported".into());
     }
     if object.get("snapshot_id").and_then(Value::as_str) != Some(head_id) {
-        return Err("its descriptor names another snapshot".into());
+        return Err("its descriptor names another checkpoint".into());
     }
     let state_kind = descriptor.pointer("/state/kind").and_then(Value::as_str);
     match (object.get("scope").and_then(Value::as_str), state_kind) {
@@ -1557,7 +1557,7 @@ fn read_and_verify_package(
     })?;
     if metadata.len() > max_archive_bytes {
         return Err(BackupError::InvalidArchive(format!(
-            "the archive exceeds the {} byte safety limit",
+            "the export file exceeds the {} byte safety limit",
             max_archive_bytes
         )));
     }
@@ -1594,10 +1594,10 @@ fn read_and_verify_package(
         .ok_or_else(|| BackupError::InvalidArchive("payload sizes overflow".into()))?;
     let expected_len = header_len
         .checked_add(payload_total)
-        .ok_or_else(|| BackupError::InvalidArchive("archive size overflows".into()))?;
+        .ok_or_else(|| BackupError::InvalidArchive("export file size overflows".into()))?;
     if expected_len != metadata.len() {
         return Err(BackupError::InvalidArchive(
-            "the archive length does not match its manifest".into(),
+            "the export file length does not match its manifest".into(),
         ));
     }
 
@@ -1616,7 +1616,7 @@ fn read_and_verify_package(
     };
     let mut extracted = None;
     for (index, sandbox) in manifest.sandboxes.iter().enumerate() {
-        let label = format!("snapshot payload for {}", sandbox.name);
+        let label = format!("checkpoint payload for {}", sandbox.name);
         match extract {
             None => {
                 extract_verified_payload(
@@ -1761,7 +1761,7 @@ fn check_runtime_compatibility(runtime: &RuntimeManifest) -> Result<(), BackupEr
     if importable {
         if runtime.snapshot_format != snapshot_format_for(&runtime.version) {
             return Err(BackupError::InvalidArchive(
-                "its snapshot format does not match its runtime version".into(),
+                "its checkpoint format does not match its runtime version".into(),
             ));
         }
         return Ok(());
@@ -1787,7 +1787,7 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
     let architecture = manifest.runtime.guest_architecture.as_str();
     if !matches!(architecture, "aarch64" | "x86_64") || architecture != std::env::consts::ARCH {
         return Err(BackupError::InvalidArchive(format!(
-            "this backup requires {architecture} VM support; this Silo build runs {} VMs",
+            "This export file requires {architecture}; Silo on this computer supports {}. Import it on a computer with the required architecture.",
             std::env::consts::ARCH
         )));
     }
@@ -1811,14 +1811,14 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
             "runtimeConfig": sandbox.runtime_config,
             "machineConfig": sandbox.machine_config,
         }))
-        .map_err(|_| BackupError::InvalidArchive("snapshot metadata is malformed".into()))?
+        .map_err(|_| BackupError::InvalidArchive("checkpoint metadata is malformed".into()))?
         .len() as u64;
         if sandbox.payload_size == 0
             || !is_sha256(&sandbox.payload_sha256)
             || config_size > MAX_MANIFEST_BYTES
         {
             return Err(BackupError::InvalidArchive(
-                "snapshot metadata is invalid".into(),
+                "checkpoint metadata is invalid".into(),
             ));
         }
         validate_snapshottable_config(&sandbox.name, &sandbox.runtime_config)
@@ -1920,7 +1920,7 @@ fn apply_captured_layout(
 fn validate_package_volumes(volumes: &[Value]) -> Result<(), BackupError> {
     if !volumes.is_empty() {
         return Err(BackupError::InvalidArchive(
-            "workspace disks must be carried by the MicroSandbox snapshot".into(),
+            "workspace disks must be carried by the MicroSandbox checkpoint".into(),
         ));
     }
     Ok(())
@@ -1933,7 +1933,7 @@ fn validate_volume_sources(
 ) -> Result<(), BackupError> {
     validate_volume_contract(runtime_config, machine_config).map_err(|_| {
         BackupError::UnsupportedStorage(format!(
-            "{name} disk metadata does not match its Silo VM configuration."
+            "{name} disk metadata does not match its Silo sandbox configuration."
         ))
     })
 }
@@ -1955,7 +1955,7 @@ fn validate_volume_contract(runtime_config: &Value, machine_config: &Value) -> R
             .and_then(|value| value.checked_mul(multiplier));
         if actual != expected || actual.is_none() {
             return Err(BackupError::InvalidArchive(
-                "VM resources do not match the saved machine settings".into(),
+                "sandbox resources do not match the saved sandbox settings".into(),
             ));
         }
     }
@@ -1992,19 +1992,19 @@ fn validate_volume_contract(runtime_config: &Value, machine_config: &Value) -> R
                 .and_then(|size| size.checked_mul(1024))
     {
         return Err(BackupError::InvalidArchive(
-            "VM disk capacities do not match the machine settings".into(),
+            "sandbox disk capacities do not match the sandbox settings".into(),
         ));
     }
     let workspace_mounts = runtime_config
         .get("mounts")
         .and_then(Value::as_array)
-        .ok_or_else(|| BackupError::InvalidArchive("VM mounts are missing".into()))?
+        .ok_or_else(|| BackupError::InvalidArchive("sandbox mounts are missing".into()))?
         .iter()
         .filter(|mount| mount.get("guest").and_then(Value::as_str) == Some("/workspace"))
         .collect::<Vec<_>>();
     if workspace_mounts.len() != 1 {
         return Err(BackupError::InvalidArchive(
-            "VM disk mounts do not match the machine settings".into(),
+            "sandbox disk mounts do not match the sandbox settings".into(),
         ));
     }
     Ok(())
@@ -2019,10 +2019,10 @@ fn select_restore_source(
             .sandboxes
             .iter()
             .position(|sandbox| sandbox.name == name)
-            .ok_or_else(|| BackupError::InvalidRequest(format!("{name} is not in this backup."))),
+            .ok_or_else(|| BackupError::InvalidRequest(format!("{name} is not in this export file."))),
         None if manifest.sandboxes.len() == 1 => Ok(0),
         None => Err(BackupError::InvalidRequest(
-            "Choose which VM to restore from this multi-VM backup.".into(),
+            "Choose which sandbox to import from this export file.".into(),
         )),
     }
 }
@@ -2030,7 +2030,7 @@ fn select_restore_source(
 fn validate_backup_request(request: &BackupRequest) -> Result<(), BackupError> {
     if request.sources.is_empty() || request.sources.len() > 64 {
         return Err(BackupError::InvalidRequest(
-            "Choose between 1 and 64 VMs to back up.".into(),
+            "Choose between 1 and 64 sandboxes to export.".into(),
         ));
     }
     if request
@@ -2040,7 +2040,7 @@ fn validate_backup_request(request: &BackupRequest) -> Result<(), BackupError> {
         != Some("silo-backup")
     {
         return Err(BackupError::InvalidRequest(
-            "The backup filename must end in .silo-backup.".into(),
+            "The export filename must end in .silo-backup. Choose a filename with that extension.".into(),
         ));
     }
     if request.destination.exists() {
@@ -2055,7 +2055,7 @@ fn validate_backup_request(request: &BackupRequest) -> Result<(), BackupError> {
         .any(|source| !names.insert(&source.name))
     {
         return Err(BackupError::InvalidRequest(
-            "Each VM may appear only once in a backup.".into(),
+            "Each sandbox may appear only once in an export file.".into(),
         ));
     }
     Ok(())
@@ -2070,7 +2070,7 @@ fn validate_sandbox_name(name: &str) -> Result<(), BackupError> {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
     if !valid {
         return Err(BackupError::InvalidRequest(
-            "VM names must start with a letter and contain only lowercase letters, numbers, and hyphens.".into(),
+            "Sandbox names must start with a letter and contain only lowercase letters, numbers, and hyphens.".into(),
         ));
     }
     Ok(())
@@ -2078,7 +2078,7 @@ fn validate_sandbox_name(name: &str) -> Result<(), BackupError> {
 
 fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError> {
     let object = config.as_object().ok_or_else(|| {
-        BackupError::InvalidRequest(format!("{name} has invalid Silo VM metadata."))
+        BackupError::InvalidRequest(format!("{name} has invalid Silo sandbox metadata."))
     })?;
     const FIELDS: &[&str] = &[
         "kind",
@@ -2106,7 +2106,7 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
             .is_none_or(|id| uuid::Uuid::try_parse(id).is_err())
     {
         return Err(BackupError::InvalidRequest(format!(
-            "{name} has invalid Silo VM metadata."
+            "{name} has invalid Silo sandbox metadata."
         )));
     }
     let number = |field: &str| object.get(field).and_then(Value::as_u64);
@@ -2127,7 +2127,7 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
     )
     else {
         return Err(BackupError::InvalidRequest(format!(
-            "{name} has invalid Silo VM metadata."
+            "{name} has invalid Silo sandbox metadata."
         )));
     };
     if cpus == 0
@@ -2144,7 +2144,7 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
             .is_none_or(|mib| mib > u32::MAX as u64)
     {
         return Err(BackupError::InvalidRequest(format!(
-            "{name} has invalid Silo VM metadata."
+            "{name} has invalid Silo sandbox metadata."
         )));
     }
     Ok(())
@@ -2153,7 +2153,7 @@ fn validate_machine_config(name: &str, config: &Value) -> Result<(), BackupError
 pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Result<(), BackupError> {
     let object = config.as_object().ok_or_else(|| {
         BackupError::UnsupportedStorage(format!(
-            "{name} has no verified MicroSandbox configuration, so a complete backup cannot be created."
+            "{name} has no verified MicroSandbox configuration, so a complete export cannot be created."
         ))
     })?;
     const ALLOWED_CONFIG_FIELDS: &[&str] = &[
@@ -2181,7 +2181,7 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
         || object.get("name").and_then(Value::as_str) != Some(name)
     {
         return Err(BackupError::UnsupportedStorage(format!(
-            "{name} has a configuration this Silo build cannot restore safely."
+            "{name} has a configuration this Silo build cannot import safely."
         )));
     }
     if object.get("labels").is_some_and(|labels| {
@@ -2194,7 +2194,7 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
         })
     }) {
         return Err(BackupError::UnsupportedStorage(format!(
-            "{name} has labels this Silo build cannot restore."
+            "{name} has labels this Silo build cannot import."
         )));
     }
     if object.get("env").is_some_and(|env| {
@@ -2222,12 +2222,12 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
         .and_then(Value::as_array)
         .ok_or_else(|| {
             BackupError::UnsupportedStorage(format!(
-            "{name} does not report its mounted storage, so a complete backup cannot be created."
+            "{name} does not report its mounted storage, so a complete export cannot be created."
         ))
         })?;
     if !silo_disk_mounts_with_optional_tmpfs(object, mounts) {
         return Err(BackupError::UnsupportedStorage(format!(
-            "{name} does not use the Silo-owned workspace disk-image mount required for a complete backup."
+            "{name} does not use the Silo-owned workspace disk-image mount required for a complete export."
         )));
     }
     if object
@@ -2239,7 +2239,7 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
         || object.get("network").is_some_and(network_uses_host_files)
     {
         return Err(BackupError::UnsupportedStorage(format!(
-            "{name} uses host-linked configuration that this Silo build cannot restore safely."
+            "{name} uses host-linked configuration that this Silo build cannot import safely."
         )));
     }
     let image = object
@@ -2247,19 +2247,19 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
         .and_then(Value::as_object)
         .ok_or_else(|| {
             BackupError::UnsupportedStorage(format!(
-                "{name} is not an OCI-rooted VM with a managed disk."
+                "{name} is not an OCI-rooted sandbox with a managed disk."
             ))
         })?;
     let oci = image.get("Oci").and_then(Value::as_object).ok_or_else(|| {
         BackupError::UnsupportedStorage(format!(
-            "{name} is not an OCI-rooted VM with a managed disk."
+            "{name} is not an OCI-rooted sandbox with a managed disk."
         ))
     })?;
     match oci.get("root_disk") {
         None | Some(Value::Null) => Ok(()),
         Some(root) if root.get("kind").and_then(Value::as_str) == Some("managed") => Ok(()),
         Some(_) => Err(BackupError::UnsupportedStorage(format!(
-            "{name} does not use the managed OCI root disk required by MicroSandbox 0.7.2 snapshots."
+            "{name} does not use the managed OCI root disk required by MicroSandbox 0.7.2 checkpoints."
         ))),
     }
 }
@@ -2707,7 +2707,7 @@ fn extract_scanned_payload(
         }
         Err(ScanFailure::Unsafe(detail)) => {
             return Err(BackupError::InvalidArchive(format!(
-                "the {label} is not a safe snapshot archive: {detail}"
+                "the {label} is not safe checkpoint data: {detail}"
             )));
         }
     };
@@ -2961,7 +2961,7 @@ fn write_immutable_package(
     free_space: fn(&Path) -> io::Result<u64>,
 ) -> Result<u64, BackupError> {
     let parent = destination.parent().ok_or_else(|| {
-        BackupError::InvalidRequest("The backup destination has no parent directory.".into())
+        BackupError::InvalidRequest("The export destination has no parent directory.".into())
     })?;
     if payloads.len() != manifest.sandboxes.len() {
         return Err(BackupError::InvalidRequest(
@@ -2975,7 +2975,7 @@ fn write_immutable_package(
     let manifest_bytes = serde_json::to_vec(manifest)?;
     if manifest_bytes.is_empty() || manifest_bytes.len() as u64 > MAX_MANIFEST_BYTES {
         return Err(BackupError::InvalidRequest(
-            "Backup metadata exceeds the supported size.".into(),
+            "Export metadata exceeds the supported size.".into(),
         ));
     }
     // Check the destination before copying possibly hundreds of gigabytes;
@@ -3026,7 +3026,7 @@ fn write_immutable_package(
         }
         if copied != sandbox.payload_size {
             return Err(BackupError::InvalidRequest(format!(
-                "The snapshot archive for {} changed while it was being exported.",
+                "The checkpoint export file for {} changed while it was being exported.",
                 sandbox.name
             )));
         }
@@ -3035,7 +3035,7 @@ fn write_immutable_package(
     let final_manifest = serde_json::to_vec(manifest)?;
     if final_manifest.len() != manifest_bytes.len() {
         return Err(BackupError::InvalidRequest(
-            "Backup metadata changed size while it was being written.".into(),
+            "Export metadata changed size while it was being written.".into(),
         ));
     }
     temporary.as_file_mut().seek(SeekFrom::Start(manifest_offset))?;
@@ -3098,7 +3098,7 @@ fn open_regular_file(path: &Path) -> Result<(File, fs::Metadata), OpenRegularErr
 /// hashed later while being copied into the archive.
 fn open_payload(path: &Path, max_bytes: u64) -> Result<(File, u64), BackupError> {
     let not_regular =
-        || BackupError::InvalidArchive("the runtime did not create a regular snapshot archive".into());
+        || BackupError::InvalidArchive("the runtime did not create a regular checkpoint export file".into());
     let (file, metadata) = open_regular_file(path).map_err(|error| match error {
         OpenRegularError::NotRegular => not_regular(),
         OpenRegularError::Io(error) => BackupError::Io(error),
@@ -3108,7 +3108,7 @@ fn open_payload(path: &Path, max_bytes: u64) -> Result<(File, u64), BackupError>
     }
     if metadata.len() > max_bytes {
         return Err(BackupError::InvalidArchive(
-            "the snapshot archive exceeds the configured safety limit".into(),
+            "the checkpoint export file exceeds the configured safety limit".into(),
         ));
     }
     Ok((file, metadata.len()))
@@ -3812,7 +3812,7 @@ mod tests {
         }
         .into();
         let error = validate_manifest(&package.manifest).unwrap_err();
-        assert!(error.to_string().contains("this backup requires"));
+        assert!(error.to_string().contains("This export file requires"));
     }
 
     #[test]
@@ -5026,7 +5026,7 @@ mod tests {
         assert_eq!(scan.entries, 2);
         assert!(scan.unpacked_bytes >= 3 * 512);
         let (result, calls) = import_crafted(b"\x28\xb5\x2f\xfdnot really zstd".to_vec(), None);
-        assert!(scan_error(result).contains("not a safe snapshot archive"));
+        assert!(scan_error(result).contains("not safe checkpoint data"));
         assert!(!loaded(&calls));
     }
 
@@ -5050,7 +5050,7 @@ mod tests {
     fn refused_because(result: Result<PreparedRestore, BackupError>) -> String {
         match result {
             Err(BackupError::InvalidArchive(detail)) => {
-                assert!(detail.starts_with("the loaded snapshot does not match"), "{detail}");
+                assert!(detail.starts_with("the loaded checkpoint does not match"), "{detail}");
                 detail
             }
             Err(other) => panic!("expected a descriptor mismatch, got {other}"),
@@ -5096,7 +5096,7 @@ mod tests {
             ("different root disk layout", Box::new(|descriptor: &mut Value| {
                 descriptor["root_disk"] = serde_json::json!({"layout": "flat"});
             })),
-            ("names another snapshot", Box::new(|descriptor: &mut Value| {
+            ("names another checkpoint", Box::new(|descriptor: &mut Value| {
                 descriptor["snapshot_id"] = "snap_22222222222222222222222222222222".into();
             })),
         ];

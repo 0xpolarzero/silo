@@ -13,6 +13,20 @@ timestamps, and progress percentages can use smaller metadata text.
 When changing this pattern, inspect every consumer and its running, failure,
 and expanded states. Avoid adding page-specific title or caption sizes.
 
+## Sandbox help
+
+Bundled help in `docs/silo-help.html` follows the sandbox page: Overview,
+Checkpoints, Storage, and SSH access, with unsupported tabs hidden. Explain
+settings, secrets, and ports where users find them. Describe Duplicate settings
+as a new empty sandbox with the same settings, and Fork as a new sandbox with
+a copy of its files. Use Export and Import for export files and Restore only
+for checkpoints. Check every emphasized control name against its visible label
+or accessible name when updating help. Document available controls; logs load
+more records by scrolling, and Details appears only where diagnostics exist.
+
+Keep development examples aligned with the `/preview.html` fixture entry
+and its `view` and `scenario` parameters (A-27/K-22).
+
 ## App surface audit
 
 | Surface | Shared rows |
@@ -95,7 +109,7 @@ surface and its fixtures; there is no on-page selector, so edit the URL.
 
 For example, `/preview.html?view=status-bar&status-bar=long-list` or
 `/preview.html?view=app&scenario=complete&system-issue=needed`. Opening Silo
-from finished onboarding or choosing **Open Silo…** in the status bar switches
+from finished onboarding or choosing **Open Silo** in the status bar switches
 the URL to `view=app`. `glass.html` is a separate material study
 (`docs/SiloUI-GLASS-STUDY.md`) that always shows the complete app scenario.
 

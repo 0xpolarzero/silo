@@ -967,7 +967,7 @@ pub async fn remote_checkpoint_action(
         call_remote(&app, &host_id, method, params).map(|_| ())
     })
     .await
-    .map_err(|_| "Remote checkpoint worker failed.".to_string())?
+    .map_err(|_| "Silo could not finish the checkpoint action on the remote computer. Reconnect to it and refresh the sandbox before retrying.".to_string())?
 }
 
 #[tauri::command]

@@ -24,31 +24,31 @@ fn generation(app_data: &Path) -> Result<Option<String>, String> {
     let bytes = match fs::read(app_data.join(GENERATION)) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err("Runtime generation could not be read. Existing data was preserved.".into()),
+        Err(_) => return Err("Silo could not read which sandbox storage to use. Existing data was preserved. Relaunch Silo and retry migration.".into()),
     };
     let selected: Generation = serde_json::from_slice(&bytes)
-        .map_err(|_| "Runtime generation is invalid. Existing data was preserved.".to_string())?;
+        .map_err(|_| "The saved sandbox storage selection is damaged. Existing data was preserved. Relaunch Silo; if the problem continues, report it before retrying migration.".to_string())?;
     if selected.version != VERSION || !matches!(selected.directory.as_str(), CLEAN | CONVERTED) {
-        return Err("Runtime generation is unsupported. Existing data was preserved.".into());
+        return Err("This sandbox storage selection needs another Silo version. Existing data was preserved. Update Silo and retry migration.".into());
     }
     Ok(Some(selected.directory))
 }
 
 fn select_generation(app_data: &Path, directory: &str) -> Result<(), String> {
-    if !matches!(directory, CLEAN | CONVERTED) { return Err("Invalid runtime generation.".into()); }
+    if !matches!(directory, CLEAN | CONVERTED) { return Err("Silo could not select the sandbox storage for migration. Relaunch Silo and retry migration.".into()); }
     if let Some(current) = generation(app_data)? {
-        return if current == directory { Ok(()) } else { Err("A different runtime generation is already selected.".into()) };
+        return if current == directory { Ok(()) } else { Err("Silo is already using a different sandbox storage folder. Relaunch Silo to refresh migration status before retrying.".into()) };
     }
     let mut temporary = tempfile::NamedTempFile::new_in(app_data)
-        .map_err(|_| "Runtime generation could not be staged.")?;
+        .map_err(|_| "Silo could not prepare the sandbox storage selection. Check free space and access to Silo storage, then retry migration.")?;
     serde_json::to_writer(&mut temporary, &Generation { version: VERSION, directory: directory.into() })
-        .map_err(|_| "Runtime generation could not be encoded.")?;
+        .map_err(|_| "Silo could not save the sandbox storage selection. Relaunch Silo and retry migration.")?;
     temporary.write_all(b"\n").and_then(|_| temporary.as_file().sync_all())
-        .map_err(|_| "Runtime generation could not be synced.")?;
+        .map_err(|_| "Silo could not finish saving the sandbox storage selection. Check free space and access to Silo storage, then retry migration.")?;
     temporary.persist_noclobber(app_data.join(GENERATION))
-        .map_err(|_| "Runtime generation could not be committed.")?;
+        .map_err(|_| "Silo could not apply the sandbox storage selection. Relaunch Silo to refresh migration status before retrying.")?;
     fs::File::open(app_data).and_then(|file| file.sync_all())
-        .map_err(|_| "Runtime generation could not be synced.")?;
+        .map_err(|_| "Silo could not finish saving the sandbox storage selection. Check free space and access to Silo storage, then retry migration.")?;
     Ok(())
 }
 
@@ -123,12 +123,12 @@ fn initial(path: &Path, app_data: &Path) -> Result<MigrationState, String> {
     if let Some(selected) = generation(app_data)? {
         let metadata = app_data.join(&selected).join("machines.json");
         let machines = runtime::read_metadata(&metadata)
-            .map_err(|_| "The selected runtime generation could not be verified.")?;
+            .map_err(|_| "Silo could not verify the selected sandbox storage. Relaunch Silo and retry migration.")?;
         let mut state = read(path)?.ok_or("The selected runtime has no migration record. Existing data was preserved.")?;
         let vm_count = machines.machines.iter().filter(|machine| machine.is_vm()).count();
         if state.status != "complete" {
             if selected == CLEAN && vm_count != 0 {
-                return Err("The clean runtime generation contains unexpected sandboxes. Existing data was preserved.".into());
+                return Err("The new sandbox storage folder already contains sandboxes. Existing data was preserved. Report this problem before retrying migration.".into());
             }
             if selected == CONVERTED && (state.migrated_count != state.total_count || vm_count != state.total_count) {
                 return Err("The selected converted runtime does not match verified migration progress.".into());
@@ -279,13 +279,13 @@ fn inspection_failure(stage: &str, name: &str, error: &runtime::RuntimeError) ->
     } else {
         "sandbox".into()
     };
-    let (reason, exit_code) = match error {
-        runtime::RuntimeError::Failed { detail, exit_code, .. } => {
+    let reason = match error {
+        runtime::RuntimeError::Failed { detail, .. } => {
             let lower = detail.to_ascii_lowercase();
             let reason = if lower.contains("permission denied") {
                 "staged runtime files could not be accessed"
             } else if lower.contains("no space left") {
-                "the host is out of storage space"
+                "this computer is out of storage space"
             } else if lower.contains("no such file") || lower.contains("not found") {
                 "a staged runtime file is missing"
             } else if lower.contains("unsupported") || lower.contains("unknown option")
@@ -297,7 +297,7 @@ fn inspection_failure(stage: &str, name: &str, error: &runtime::RuntimeError) ->
             } else {
                 "the runtime inspection command failed"
             };
-            (reason, exit_code.and_then(|code| u8::try_from(code).ok()))
+            reason
         }
         runtime::RuntimeError::Unavailable(message) => {
             let reason = if message.contains("bundled MicroSandbox executable") {
@@ -309,18 +309,17 @@ fn inspection_failure(stage: &str, name: &str, error: &runtime::RuntimeError) ->
             } else {
                 "the runtime inspection was unavailable"
             };
-            (reason, None)
+            reason
         }
-        runtime::RuntimeError::Launch(_) => ("the bundled runtime could not start", None),
-        runtime::RuntimeError::Partial(_) => ("the runtime inspection command failed", None),
-        runtime::RuntimeError::TimedOut { .. } => ("the runtime inspection timed out", None),
-        runtime::RuntimeError::Cancelled { .. } => ("the runtime inspection was cancelled", None),
-        runtime::RuntimeError::Busy => ("another sandbox operation is still running", None),
-        runtime::RuntimeError::Malformed(_) => ("the runtime returned invalid inspection output", None),
-        runtime::RuntimeError::Invalid(_) => ("the runtime rejected the inspection request", None),
+        runtime::RuntimeError::Launch(_) => "the bundled runtime could not start",
+        runtime::RuntimeError::Partial(_) => "the runtime inspection command failed",
+        runtime::RuntimeError::TimedOut { .. } => "the runtime inspection timed out",
+        runtime::RuntimeError::Cancelled { .. } => "the runtime inspection was cancelled",
+        runtime::RuntimeError::Busy => "another sandbox operation is still running",
+        runtime::RuntimeError::Malformed(_) => "the runtime returned invalid inspection output",
+        runtime::RuntimeError::Invalid(_) => "the runtime rejected the inspection request",
     };
-    let code = exit_code.map_or_else(String::new, |code| format!(" (exit code {code})"));
-    format!("{stage} {sandbox} inspection failed: {reason}{code}.")
+    format!("{stage} {sandbox} inspection failed: {reason}. Relaunch Silo and retry migration.")
 }
 
 fn conversion_failure(name: &str, error: &runtime::RuntimeError) -> String {
@@ -332,8 +331,8 @@ fn conversion_failure(name: &str, error: &runtime::RuntimeError) -> String {
     } else {
         "sandbox".into()
     };
-    let (reason, exit_code) = match error {
-        runtime::RuntimeError::Failed { detail, exit_code, .. } => {
+    let reason = match error {
+        runtime::RuntimeError::Failed { detail, .. } => {
             let lower = detail.to_ascii_lowercase();
             let reason = if lower.contains("unsupported persisted sandbox configuration")
                 && lower.contains("config.network.secrets.secrets[0].substitution.basic_auth")
@@ -342,7 +341,7 @@ fn conversion_failure(name: &str, error: &runtime::RuntimeError) -> String {
             } else if lower.contains("permission denied") {
                 "the staged runtime files could not be accessed"
             } else if lower.contains("no space left") {
-                "the host is out of storage space"
+                "this computer is out of storage space"
             } else if lower.contains("no such file") || lower.contains("not found") {
                 "a staged runtime file is missing"
             } else if lower.contains("process could not be observed") {
@@ -362,7 +361,7 @@ fn conversion_failure(name: &str, error: &runtime::RuntimeError) -> String {
             } else {
                 "the runtime conversion command failed"
             };
-            (reason, exit_code.and_then(|code| u8::try_from(code).ok()))
+            reason
         }
         runtime::RuntimeError::Unavailable(message) => {
             let reason = if message.contains("bundled MicroSandbox executable") {
@@ -374,22 +373,18 @@ fn conversion_failure(name: &str, error: &runtime::RuntimeError) -> String {
             } else {
                 "the runtime conversion was unavailable"
             };
-            (reason, None)
+            reason
         }
-        runtime::RuntimeError::Launch(_) => ("the bundled runtime could not start", None),
-        runtime::RuntimeError::Partial(_) => ("the runtime conversion command failed", None),
-        runtime::RuntimeError::TimedOut { .. } => (
-            "the disk conversion exceeded its 30-minute limit before the runtime reported a cause",
-            None,
-        ),
-        runtime::RuntimeError::Cancelled { .. } => ("the disk conversion was cancelled", None),
-        runtime::RuntimeError::Busy => ("another sandbox operation is still running", None),
-        runtime::RuntimeError::Malformed(_) => ("the runtime returned invalid output", None),
-        runtime::RuntimeError::Invalid(_) => ("the runtime rejected the workspace disk", None),
+        runtime::RuntimeError::Launch(_) => "the bundled runtime could not start",
+        runtime::RuntimeError::Partial(_) => "the runtime conversion command failed",
+        runtime::RuntimeError::TimedOut { .. } => "the disk conversion exceeded its 30-minute limit before the runtime reported a cause",
+        runtime::RuntimeError::Cancelled { .. } => "the disk conversion was cancelled",
+        runtime::RuntimeError::Busy => "another sandbox operation is still running",
+        runtime::RuntimeError::Malformed(_) => "the runtime returned invalid output",
+        runtime::RuntimeError::Invalid(_) => "the runtime rejected the workspace disk",
     };
-    let code = exit_code.map_or_else(String::new, |code| format!(" (exit code {code})"));
     format!(
-        "Owned workspace disk conversion failed for {sandbox}. Original data was preserved. Cause: {reason}{code}."
+        "Workspace disk migration failed for {sandbox}: {reason}. Original data was preserved. Resolve the cause, then retry migration."
     )
 }
 
@@ -442,7 +437,7 @@ fn verify_staged_vm(runner: &dyn runtime::RuntimeRunner, paths: &runtime::Runtim
         mount.get("type").and_then(serde_json::Value::as_str) == Some("DiskImage")
             && mount.get("guest").and_then(serde_json::Value::as_str) != Some("/workspace")
     }) {
-        return Err("A staged sandbox has another external disk that checkpoints cannot own.".into());
+        return Err("This sandbox has a linked disk outside /workspace that Silo cannot include in checkpoints. Its files were preserved. Report this problem before retrying migration.".into());
     }
     let host = workspace[0].get("host").and_then(serde_json::Value::as_str)
         .ok_or("A staged sandbox's external disk path is missing.")?;
@@ -736,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn inspection_diagnostic_keeps_exit_code_but_not_runtime_output() {
+    fn inspection_failure_explains_recovery_without_runtime_output() {
         let error = runtime::RuntimeError::Failed {
             operation: "Reading sandbox state".into(),
             exit_code: Some(73),
@@ -745,7 +740,8 @@ mod tests {
         let message = inspection_failure("Staged", "dev", &error);
         assert!(message.contains("dev"));
         assert!(message.contains("runtime rejected the inspection request"));
-        assert!(message.contains("exit code 73"));
+        assert!(!message.contains("exit code"));
+        assert!(message.contains("Relaunch Silo"));
         assert!(!message.contains("private"));
         assert!(!message.contains("/Users"));
         assert!(message.len() < 200);
@@ -788,7 +784,8 @@ mod tests {
         let visible = state.error.as_deref().unwrap();
         assert!(visible.contains("sandbox dev"));
         assert!(visible.contains("permission denied") || visible.contains("could not be accessed"));
-        assert!(visible.contains("exit code 23"));
+        assert!(!visible.contains("exit code"));
+        assert!(visible.contains("retry migration"));
         assert!(!visible.contains("TOPSECRET"));
         assert!(!visible.contains("/private/tmp"));
         assert_eq!(state.logs.first().map(String::as_str), Some(visible));
@@ -827,7 +824,8 @@ mod tests {
 
         let visible = state.error.as_deref().unwrap();
         assert!(visible.contains("sandbox dev"));
-        assert!(visible.contains("exit code 1"));
+        assert!(!visible.contains("exit code"));
+        assert!(visible.contains("retry migration"));
         assert!(visible.contains("config.network.secrets.secrets[0].substitution.basic_auth"));
         assert!(visible.contains("cannot be preserved by the upgraded runtime"));
         assert_eq!(state.logs.first().map(String::as_str), Some(visible));

@@ -273,7 +273,7 @@ mod native {
             "Window",
             true,
             &[
-                &item("show-window", "Show Silo", None)?,
+                &item("show-window", "Open Silo", None)?,
                 &Standard::separator(app)?,
                 &Standard::minimize(app, None)?,
                 &Standard::maximize(app, Some("Zoom"))?,
@@ -287,7 +287,7 @@ mod native {
             "Window",
             true,
             &[
-                &item("show-window", "Show Silo", None)?,
+                &item("show-window", "Open Silo", None)?,
                 &item("minimize", "Minimize", None)?,
                 &item("maximize", "Maximize or Restore", None)?,
             ],

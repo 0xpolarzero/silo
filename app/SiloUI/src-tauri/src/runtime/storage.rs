@@ -434,7 +434,7 @@ async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageSta
             state(&ProcessRunner, &paths, &machine, &observed)
         })();
         result.map_err(|e| safe_activity_error(&e))
-    }).await.map_err(|_| "Storage maintenance worker failed.".to_string())?
+    }).await.map_err(|_| "Silo could not finish the workspace storage action. Refresh the Storage tab and retry.".to_string())?
 }
 
 #[cfg(test)]
