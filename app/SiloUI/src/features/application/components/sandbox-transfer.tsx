@@ -192,10 +192,16 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
             backupRef.current.actions.revealArchive(archive).catch((error) => showActionFailure("Could not reveal the export", errorText(error), undefined, { native: false }))
           } }
         : (() => {
+            // Resolve the sandbox when Open is clicked: the application snapshot can
+            // list the imported sandbox only after this toast appears (E-57).
             const name = operation.targetName
-            const match = name ? optionsRef.current.source.workspaces.find(({ machine, computer }) => !computer && machine.name === name) : undefined
-            const open = optionsRef.current.openSandbox
-            return match && open ? { label: "Open", onClick: () => open(match.machine.id) } : undefined
+            if (!name || !optionsRef.current.openSandbox) return undefined
+            return { label: "Open", onClick: () => {
+              const { source, openSandbox } = optionsRef.current
+              const match = source.workspaces.find(({ machine, computer }) => !computer && machine.name === name)
+              if (match && openSandbox) openSandbox(match.machine.id)
+              else showActionFailure(`Could not open ${name}`, "Silo does not list this sandbox yet. Refresh, then open it from the sandbox list.", undefined, { native: false })
+            } }
           })()
       showOperationSuccess(TRANSFER_TOAST_ID, title, { description: isExport ? `${archive.name} · ${archive.size}` : "Stopped and verified.", action, persist: true, native: false, sandbox: isExport ? undefined : operation.targetName ?? archive.sandboxes[0], onDismiss: dismiss })
       return

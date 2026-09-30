@@ -222,6 +222,25 @@ describe("import notifications and popover", () => {
     expect(openSandbox).toHaveBeenCalledWith(localVm.machine.id)
   })
 
+  it("finds the imported sandbox when Open is clicked, even if it appeared after the toast", async () => {
+    const openSandbox = vi.fn()
+    const imported = { ...localVm, machine: { ...localVm.machine, id: "imported-id", name: "dev-copy" } }
+    const withoutCopy = { ...source, workspaces: source.workspaces.filter(({ machine }) => machine.name !== "dev-copy") }
+    const withCopy = { ...source, workspaces: [...withoutCopy.workspaces, imported] }
+    const View = ({ backup, current }: { backup: BackupController; current: typeof source }) => {
+      const transfer = useSandboxTransfer(backup, { source: current, openSandbox })
+      return <SettingsProvider initialSettings={{ theme: "light" }}><Toaster />{transfer.importPopover(<button type="button">Add</button>)}</SettingsProvider>
+    }
+    const success: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: "dev-copy", outcome: "success", title: "Import complete", message: "Sandbox imported." }
+    const { rerender } = render(<View backup={controller()} current={withoutCopy} />)
+    rerender(<View backup={controller({ operation: success })} current={withoutCopy} />)
+    expect(await screen.findByText("Imported dev-copy")).toBeInTheDocument()
+    // The application snapshot catches up after the toast was shown.
+    rerender(<View backup={controller({ operation: success })} current={withCopy} />)
+    fireEvent.click(screen.getByRole("button", { name: "Open" }))
+    expect(openSandbox).toHaveBeenCalledWith("imported-id")
+  })
+
   it("confirms before cancelling a running import", async () => {
     const running: BackupOperation = { kind: "running", operation: "restore", archive, runningNames: [], targetName: "dev-copy", progress: 30, phases: [{ title: "Create new sandbox", detail: "Writing managed disk data.", tone: "running" }] }
     const backup = controller({ operation: running })
