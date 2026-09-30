@@ -438,6 +438,51 @@ describe("derived view", () => {
   })
 })
 
+describe("mutation responses", () => {
+  it("keeps GitHub, repositories and pushes that a mutation response omits (H-36)", async () => {
+    const full = structuredClone(source)
+    full.github = { ...full.github, state: "connected", account: "octo", policyRevision: 5, repositoryCatalog: ["acme/silo"], repositoryCatalogStatus: { status: "available" } }
+    full.repositoryPushOperations = [{ workspace: "dev", repositoryPath: "acme/silo", commitCount: 1, status: "failed", message: "rejected" }]
+    // The shape `read_application_state_with` returns for a mutation today.
+    const placeholder = { ...structuredClone(full), github: { state: "disconnected" }, repositoryPushOperations: [], workspaces: full.workspaces.map(workspace => ({ ...workspace, repositories: [] })) }
+    let reads = 0
+    const mock = bridge(command => {
+      if (command === "read_application_state") return ++reads === 1 ? structuredClone(full) : new Promise(() => {})
+      if (command === "workspace_action") return structuredClone(placeholder)
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      store.applicationActions.stopWorkspace("dev")
+      await vi.waitFor(() => expect(count(mock.invoke, "read_application_state")).toBe(2))
+      const view = store.getSnapshot().source!
+      expect(view.github).toMatchObject({ state: "connected", account: "octo", policyRevision: 5 })
+      expect(view.workspaces.find(workspace => workspace.machine.name === "dev")?.repositories).toEqual(full.workspaces[0].repositories)
+      expect(view.repositoryPushOperations).toEqual(full.repositoryPushOperations)
+    } finally { store.dispose() }
+  })
+
+  it("keeps a remote computer's enrichment across a remote edit response (H-36)", async () => {
+    const remote = remoteSource()
+    remote.github = { ...remote.github, state: "connected", account: "octo", policyRevision: 2 }
+    const edited = { ...structuredClone(remote), github: { state: "disconnected" }, workspaces: remote.workspaces.map(workspace => ({ ...workspace, purpose: "Edited", repositories: [] })) }
+    let reads = 0
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") return ++reads === 1 ? structuredClone(remote) : new Promise(() => {})
+      if (command === "remote_upsert_machine") return structuredClone(edited)
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const machine = { ...source.workspaces[0].machine, id: remoteTarget("office") }
+      await store.applicationActions.saveRemoteMachine!("office", machine, machine)
+      const row = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))
+      expect(row).toMatchObject({ purpose: "Edited", repositories: remote.workspaces[0].repositories })
+    } finally { store.dispose() }
+  })
+})
+
 describe("GitHub state from full reads", () => {
   it("shows the unavailable state a failed GitHub read reports without a policy revision (H-20)", async () => {
     let failed = false

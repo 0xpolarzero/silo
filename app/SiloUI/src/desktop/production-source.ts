@@ -485,17 +485,29 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     } }
   }
 
+  // Mutation responses carry the configuration and VM state but not the enrichment of
+  // a full read (D-08): no log output, no repositories, no push operations, and a
+  // placeholder GitHub state. Keep those from the state they replace until the full
+  // refresh that follows every mutation; the merge stays as a guard once D-08 lands.
   function parseMutationSource(value: unknown, previousSource = snapshot.source): ApplicationSource {
     const parsed = parseApplicationSource(value)
-    // Mutation responses contain configuration/state but do not load log output.
-    // Keep captured lines until the full refresh replaces them with current logs.
-    const result = { ...parsed, workspaces: parsed.workspaces.map(workspace => ({
+    const previous = new Map((previousSource?.workspaces ?? []).map(workspace => [workspace.machine.id, workspace]))
+    const workspaces = parsed.workspaces.map(workspace => ({
       ...workspace,
-      logs: workspace.logs.length ? workspace.logs : previousSource?.workspaces.find(previous => previous.machine.id === workspace.machine.id)?.logs ?? [],
-    })) }
-    return result.github.hostIdentity === undefined
-      ? { ...result, github: { ...result.github, hostIdentity: previousSource?.github.hostIdentity } }
-      : result
+      logs: workspace.logs.length ? workspace.logs : previous.get(workspace.machine.id)?.logs ?? [],
+      repositories: workspace.repositories.length ? workspace.repositories : previous.get(workspace.machine.id)?.repositories ?? [],
+    }))
+    const repositoryPushOperations = parsed.repositoryPushOperations.length ? parsed.repositoryPushOperations : previousSource?.repositoryPushOperations ?? []
+    return { ...parsed, workspaces, repositoryPushOperations, github: mutationGitHub(parsed.github, previousSource?.github) }
+  }
+
+  function mutationGitHub(github: ApplicationSource["github"], previous: ApplicationSource["github"] | undefined): ApplicationSource["github"] {
+    if (!previous) return github
+    // A placeholder has neither a policy revision nor a catalog status (the runtime's
+    // unavailable fallback has the latter); an older revision is stale.
+    const placeholder = github.policyRevision === undefined && github.repositoryCatalogStatus === undefined
+    if (placeholder || (github.policyRevision !== undefined && github.policyRevision < (previous.policyRevision ?? 0))) return previous
+    return github.hostIdentity === undefined ? { ...github, hostIdentity: previous.hostIdentity } : github
   }
 
   function unreadableBackup(message: string): BackupState {
@@ -1219,10 +1231,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     },
     saveRemoteMachine: async (hostId, machine, expected) => {
       const target = parseRemoteWorkspaceTarget(machine.id)
-      const source = parseApplicationSource(await native.invoke("remote_upsert_machine", {
+      const source = parseMutationSource(await native.invoke("remote_upsert_machine", {
         hostId, machine: { ...machine, id: target?.vmId ?? machine.id },
         expected: expected ? { ...expected, id: parseRemoteWorkspaceTarget(expected.id)?.vmId ?? expected.id } : null,
-      }))
+      }), remoteSnapshots.get(hostId) ?? null)
       bumpRemote(hostId)
       remoteSnapshots.set(hostId, source)
       publish({ ...snapshot })
@@ -1231,7 +1243,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     deleteRemoteMachine: async (hostId, machine) => {
       const vmId = parseRemoteWorkspaceTarget(machine.id)?.vmId
       if (!vmId) throw new Error("The remote VM identity is missing.")
-      const source = parseApplicationSource(await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } }))
+      const source = parseMutationSource(await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } }), remoteSnapshots.get(hostId) ?? null)
       bumpRemote(hostId)
       remoteSnapshots.set(hostId, source)
       publish({ ...snapshot })
