@@ -21,6 +21,8 @@ use std::{
 use tauri::{Emitter, Manager};
 
 static OPERATION: Mutex<()> = Mutex::new(());
+// Serializes whole OAuth connection flows, including their waits for the browser.
+static CONNECTION_FLOW: Mutex<()> = Mutex::new(());
 // Never hold this lock during a GitHub request. It orders desired saves
 // and local profile attachment so an older network result cannot restore access.
 static STATE: Mutex<()> = Mutex::new(());
@@ -1724,6 +1726,13 @@ fn read_callback_request(reader: &mut impl Read) -> Option<String> {
 }
 /// Open GitHub pages with the browser chosen in Settings. The platform launcher returns
 /// once the browser was asked to open, so the callback wait is never blocked by it.
+/// One bounded network or store step of a connection: it holds the GitHub network lock
+/// and the update guard only while it runs, never across a wait for the user.
+fn network_step<T>(step: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    let _update = crate::updates::operation_guard()?;
+    let _network = serialize(&OPERATION);
+    step()
+}
 fn open_browser(app: &tauri::AppHandle, url: &str) -> Result<(), String> {
     crate::applications::open_browser(app, url)
 }
@@ -1811,18 +1820,24 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     };
     AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?.clear(generation);
     if CANCELLATION.load(Ordering::SeqCst) != generation { return Err("GitHub connection cancelled.".into()); }
-    let c = from_response(token_operation(
-        Operation::Exchange,
-        json!({"code":code,"codeVerifier":verifier,"redirectUri":redirect}),
-    )?)?;
-    let user = github(&c.access_token, "/user")?;
-    let account = Some(
-        user["login"]
-            .as_str()
-            .ok_or("GitHub account name is missing.")?
-            .into(),
-    );
-    let (mut repos, installed) = catalog_installations(&c)?;
+    // Only the exchange and the store steps hold the GitHub network lock and the update
+    // guard. The browser and App-installation waits (up to 5 minutes each) must not block
+    // token renewal, repository refresh, host push or app updates.
+    let (c, account, mut repos, installed) = network_step(|| {
+        let c = from_response(token_operation(
+            Operation::Exchange,
+            json!({"code":code,"codeVerifier":verifier,"redirectUri":redirect}),
+        )?)?;
+        let user = github(&c.access_token, "/user")?;
+        let account = Some(
+            user["login"]
+                .as_str()
+                .ok_or("GitHub account name is missing.")?
+                .into(),
+        );
+        let (repos, installed) = catalog_installations(&c)?;
+        Ok((c, account, repos, installed))
+    })?;
     if !installed {
         let slug = APP_SLUG.ok_or("GitHub App is not configured in this build.")?;
         if !slug.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
@@ -1848,7 +1863,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     if CANCELLATION.load(Ordering::SeqCst) != generation {
         return Err("GitHub connection cancelled.".into());
     }
-    {
+    network_step(|| {
         let _state = serialize(&STATE);
         if CANCELLATION.load(Ordering::SeqCst) != generation {
             return Err("GitHub connection cancelled.".into());
@@ -1889,8 +1904,8 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         for (name, error) in detach_errors.workspaces {
             d.access_errors.insert(name, error);
         }
-        save(app, &d)?;
-    }
+        save(app, &d)
+    })?;
     schedule(Duration::from_millis(500));
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -2108,8 +2123,8 @@ pub async fn connect_github(
     retry_credential_access();
     let generation = CANCELLATION.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        let _update = crate::updates::operation_guard()?;
-        let _guard = serialize(&OPERATION);
+        // One connection flow at a time; it takes OPERATION only for its network steps.
+        let _flow = serialize(&CONNECTION_FLOW);
         connect(&app, generation)
     }).await.map_err(|_| "GitHub operation failed.")?
 }
@@ -2632,6 +2647,16 @@ mod tests {
                 "second applied"
             );
         });
+    }
+    #[test]
+    fn a_connection_holds_the_network_lock_only_for_its_steps() {
+        // Waiting for the browser or App installation holds nothing.
+        drop(update_guard().expect("the network lock is held outside a step"));
+        let during = network_step(|| Ok(update_guard().is_err())).unwrap();
+        assert!(during, "a network step must block updates and other GitHub operations");
+        drop(update_guard().expect("a network step kept the lock after it finished"));
+        assert!(network_step(|| Err::<(), _>("exchange failed".into())).is_err());
+        drop(update_guard().expect("a failed step kept the lock"));
     }
     #[test]
     fn runtime_work_runs_without_the_state_lock_after_a_checked_revision() {
