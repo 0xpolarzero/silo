@@ -183,7 +183,7 @@ pub(super) fn load(history: &Path) -> Result<Option<Journal>, String> {
 /// The rules a saved journal must meet to be loaded. `begin` applies them too,
 /// so Silo never saves a journal the next launch would refuse (E-51).
 fn validate(journal: &Journal) -> Result<(), String> {
-    uuid::Uuid::parse_str(&journal.id).map_err(|_| "Invalid saved backup operation identity.")?;
+    uuid::Uuid::parse_str(&journal.id).map_err(|_| "Invalid saved export operation identity.")?;
     if journal.version != 1 || !Path::new(&journal.archive.archive_path).is_absolute() {
         return Err("Unsupported saved export or import. The file was preserved.".into());
     }
@@ -232,14 +232,14 @@ fn validate_import_group(group: &str) -> Result<(), String> {
     {
         Ok(())
     } else {
-        Err("Invalid saved import snapshot group.".into())
+        Err("Invalid saved import checkpoint group.".into())
     }
 }
 pub(super) fn begin(controller: &Controller, journal: Journal) -> Result<(), String> {
     if let Some(error) = &controller
         .view
         .lock()
-        .map_err(|_| "Backup state unavailable.")?
+        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.")?
         .journal_error
     {
         return Err(error.clone());
@@ -298,7 +298,7 @@ fn cleanup_archive_partial(journal: &Journal) -> Result<(), String> {
     }
     let parent = Path::new(&journal.archive.archive_path)
         .parent()
-        .ok_or("Missing backup destination.")?;
+        .ok_or("Missing export destination.")?;
     let prefix = format!(".silo-backup-{}-", journal.id);
     let entries = match fs::read_dir(parent) {
         Ok(entries) => entries,
@@ -525,7 +525,7 @@ pub(super) fn recover_at_paths(
     cancellation: &backup::Cancellation,
 ) -> Result<Operation, String> {
     let _guard = runtime::OPERATIONS
-        .computer("Recovering backup")
+        .computer("Recovering export or import")
         .map_err(|_| "Sandbox operations unavailable.")?;
     runtime::prepare_runtime_home(&paths.home, paths.storage_home.as_deref())
         .map_err(|e| e.to_string())?;

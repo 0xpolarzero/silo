@@ -138,7 +138,7 @@ fn load_destination(path: &Path) -> Option<PathBuf> {
 
 fn write_history(path: &Path, history: &BackupHistory) -> Result<(), String> {
     let write = || -> Result<(), Box<dyn std::error::Error>> {
-        let parent = path.parent().ok_or("Missing backup history directory")?;
+        let parent = path.parent().ok_or("Missing export history directory")?;
         fs::create_dir_all(parent)?;
         let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
         serde_json::to_writer_pretty(&mut temporary, history)?;
@@ -148,7 +148,7 @@ fn write_history(path: &Path, history: &BackupHistory) -> Result<(), String> {
         fs::File::open(parent)?.sync_all()?;
         Ok(())
     };
-    write().map_err(|error| format!("Silo could not save backup history: {error}"))
+    write().map_err(|error| format!("Silo could not save export history: {error}"))
 }
 
 /// Use `destination` as the export folder. Saving it for the next launch is
@@ -216,7 +216,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     let scratch = app
         .path()
         .app_cache_dir()
-        .map_err(|error| format!("Silo could not locate private backup working storage: {error}"))?
+        .map_err(|error| format!("Silo could not locate private export working storage: {error}"))?
         .join("backup-work");
     let history_path = app
         .path()
@@ -271,7 +271,7 @@ pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
     let pending = controller
         .journal
         .lock()
-        .map_err(|_| "Saved backup progress is unavailable.")?
+        .map_err(|_| "Export and import recovery status could not be read. Relaunch Silo and retry.")?
         .as_ref()
         .filter(|journal| journal.is_pending() && journal.blocks_startup())
         .map(|journal| journal.identity().to_string());
@@ -286,7 +286,7 @@ pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
         let pending = controller
             .journal
             .lock()
-            .map_err(|_| "Saved backup progress is unavailable.")?
+            .map_err(|_| "Export and import recovery status could not be read. Relaunch Silo and retry.")?
             .as_ref()
             .is_some_and(|journal| journal.identity() == identity && journal.is_pending());
         if !pending {
@@ -336,7 +336,7 @@ fn archive_from(path: &Path, inspected: &backup::ArchiveInspection) -> Archive {
             .unwrap_or("Silo export")
             .to_string(),
         archive_path: path.to_string_lossy().into_owned(),
-        completed_label: "Intact archive".into(),
+        completed_label: "Verified export file".into(),
         size: display_size(inspected.size_bytes),
         destination: path
             .parent()
@@ -366,7 +366,7 @@ fn backup_state(controller: &Controller) -> Result<BackupState, String> {
         let view = controller
             .view
             .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
+            .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?;
         (view.journal_error.clone(), view.operation.clone())
     };
     let availability_message = journal_error.or_else(|| {
@@ -397,7 +397,7 @@ pub(crate) async fn choose_backup_destination(
     let starting_directory = controller
         .view
         .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?
+        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?
         .destination
         .clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -582,7 +582,7 @@ pub(crate) async fn reveal_backup_archive(
     let operation = controller
         .view
         .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?
+        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?
         .operation
         .clone();
     // The file check and the platform file manager can block; neither runs
@@ -626,7 +626,7 @@ fn set_operation(controller: &Controller, operation: Operation) -> Result<(), St
     controller
         .view
         .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?
+        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?
         .operation = Some(operation);
     Ok(())
 }
@@ -693,7 +693,7 @@ fn begin_export(
     let selected_destination = controller
         .view
         .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?
+        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?
         .destination
         .clone();
     let canonical = PathBuf::from(&destination)
@@ -720,7 +720,7 @@ fn begin_export(
             .machines
             .iter()
             .find(|machine| machine.is_vm() && machine.name() == sandbox)
-            .ok_or_else(|| format!("Sandbox '{sandbox}' is not a Silo-managed VM."))?;
+            .ok_or_else(|| format!("Sandbox '{sandbox}' is not managed by Silo. Choose a Silo sandbox to export."))?;
         let (_group, _member, _scope, name) =
             runtime::checkpoints::export_source(&paths, machine.id(), checkpoint_id)
                 .map_err(|error| error.to_string())?;
@@ -823,7 +823,7 @@ fn claim_export(
         },
         None => Phase {
             title: "Capture and verify".into(),
-            detail: "Silo is creating verified self-contained snapshots.".into(),
+            detail: "Silo is capturing and verifying the sandbox disks for this export file.".into(),
             tone: "running",
         },
     };
@@ -1151,7 +1151,7 @@ fn backup_work(
             .machines
             .iter()
             .find(|machine| machine.is_vm() && machine.name() == name)
-            .ok_or_else(|| format!("Sandbox '{name}' is not a Silo-managed VM."))?;
+            .ok_or_else(|| format!("Sandbox '{name}' is not managed by Silo. Choose a Silo sandbox to export."))?;
         let mut inspected = inspect(&paths, name)?;
         runtime::ensure_managed(&inspected).map_err(|error| error.to_string())?;
         canonicalize_backup_runtime(&mut inspected.config)?;
@@ -1208,7 +1208,7 @@ fn backup_volumes(
         ..
     } = machine
     else {
-        return Err("Only local VMs have exportable disk storage.".into());
+        return Err("Only local sandboxes have exportable disk storage.".into());
     };
     if !normalize_backup_root_capacity(&mut inspected.config, u64::from(*runtime_storage_gib) * 1024) {
         return Err(format!(
@@ -1288,7 +1288,7 @@ fn canonicalize_backup_runtime(config: &mut Value) -> Result<(), String> {
             })
         });
         if !valid {
-            return Err("The sandbox has invalid snapshot ancestry.".into());
+            return Err("The sandbox has invalid checkpoint ancestry.".into());
         }
     }
     if let Some(interface) = object.get_mut("network").and_then(|network| network.get_mut("interface")).and_then(Value::as_object_mut) {
@@ -1564,9 +1564,9 @@ fn run_restore(
 fn select_archive_source(names: &[String], selected: Option<&str>) -> Result<String, String> {
     match selected {
         Some(name) if names.iter().any(|candidate| candidate == name) => Ok(name.into()),
-        Some(_) => Err("The selected VM is not in this export.".into()),
+        Some(_) => Err("The selected sandbox is not in this export.".into()),
         None if names.len() == 1 => Ok(names[0].clone()),
-        None => Err("Choose which VM to import from this export.".into()),
+        None => Err("Choose which sandbox to import from this export.".into()),
     }
 }
 
@@ -1680,25 +1680,25 @@ fn unpack_and_save(
         .service
         .discard_import_on_failure(&prepared.snapshot_group);
     if prepared.source_name != source_name || prepared.new_name != new_name {
-        return Err("The verified backup restore identity changed unexpectedly.".into());
+        return Err("The imported sandbox identity does not match the verified export file. Choose the export file again and retry the import.".into());
     }
     if prepared.runtime_config.get("name").and_then(Value::as_str) != Some(source_name) {
-        return Err("The verified backup runtime configuration has the wrong source name.".into());
+        return Err("The sandbox name in the export file does not match its settings. Choose another export file.".into());
     }
     let mut machine_value = prepared.machine_config.clone();
     let object = machine_value
         .as_object_mut()
-        .ok_or("The backup has invalid Silo VM settings.")?;
+        .ok_or("The export file has invalid sandbox settings. Choose another export file or export the original sandbox again.")?;
     let id = uuid::Uuid::new_v4().to_string();
     object.insert("id".into(), Value::String(id.clone()));
     object.insert("name".into(), Value::String(new_name.into()));
     let machine: runtime::MachineConfiguration = serde_json::from_value(machine_value)
-        .map_err(|_| "The backup has invalid Silo VM settings.".to_string())?;
+        .map_err(|_| "The export file has invalid sandbox settings. Choose another export file or export the original sandbox again.".to_string())?;
     if !matches!(machine, runtime::MachineConfiguration::Vm { .. }) {
-        return Err("The archive does not contain a local VM configuration.".into());
+        return Err("The export file does not contain settings for a local sandbox. Choose another export file.".into());
     }
     enter_commit(controller, cancellation)?;
-    progress("Saving stopped workspace");
+    progress("Saving stopped sandbox");
     commit_import(
         paths,
         controller,
@@ -1763,7 +1763,7 @@ fn cancel_operation(controller: &Controller) -> Result<(), String> {
         let view = controller
             .view
             .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
+            .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?;
         if matches!(
             view.operation,
             Some(Operation::Running {
@@ -1842,7 +1842,7 @@ fn dismiss_finished_operation(
     let mut view = controller
         .view
         .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?;
+        .map_err(|_| "Export and import status could not be read. Relaunch Silo and retry.".to_string())?;
     if matches!(view.operation, Some(Operation::Running { .. })) {
         return Ok(false);
     }
@@ -3112,7 +3112,7 @@ mod tests {
             [
                 "Preparing import",
                 "Unpacking export",
-                "Saving stopped workspace",
+                "Saving stopped sandbox",
             ]
         );
         let restored = inspect(&paths, restored_name).unwrap();
