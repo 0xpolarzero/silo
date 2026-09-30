@@ -4,7 +4,40 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { LFS_TRANSFER_COMMIT, LFS_TRANSFER_SOURCE_SHA256, lfsTransferGuestArchitecture, stageLfsTransferRuntime } from './lfs-transfer-runtime.mjs'
+import { LFS_TRANSFER_COMMIT, LFS_TRANSFER_SOURCE_SHA256, lfsTransferGuestArchitecture, readGoCompilerLicense, stageLfsTransferRuntime } from './lfs-transfer-runtime.mjs'
+
+test('Debian Go uses the copyright notice of the package owning its compiler', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'silo-go-debian-license-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const compilerRoot = join(root, 'usr/lib/go-1.26')
+  const docsRoot = join(root, 'usr/share/doc')
+  await mkdir(join(docsRoot, 'golang-1.26-go'), { recursive: true })
+  await writeFile(join(docsRoot, 'golang-1.26-go/copyright'), 'The Go Authors license notice')
+  const run = async (program, args) => {
+    assert.equal(program, 'dpkg-query')
+    assert.deepEqual(args, ['--search', join(compilerRoot, 'bin/go')])
+    return { stdout: `golang-1.26-go:amd64: ${join(compilerRoot, 'bin/go')}\n` }
+  }
+  assert.equal((await readGoCompilerLicense(compilerRoot, { run, docsRoot })).toString(), 'The Go Authors license notice')
+})
+
+test('official and Homebrew Go license layouts do not need a package manager', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'silo-go-license-layouts-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const compilerRoot = join(root, 'go/libexec')
+  await mkdir(compilerRoot, { recursive: true })
+  const run = async () => { throw new Error('Must not query a package manager') }
+  await writeFile(join(root, 'go/LICENSE'), 'Homebrew Go license')
+  assert.equal((await readGoCompilerLicense(compilerRoot, { run })).toString(), 'Homebrew Go license')
+  await writeFile(join(compilerRoot, 'LICENSE'), 'Official Go license')
+  assert.equal((await readGoCompilerLicense(compilerRoot, { run })).toString(), 'Official Go license')
+})
+
+test('Go license discovery refuses package output that does not own the compiler', async () => {
+  await assert.rejects(readGoCompilerLicense('/nonexistent/silo-go-license', {
+    run: async () => ({ stdout: '../other: /nonexistent/silo-go-license/bin/go\nother: /usr/bin/go\n' }),
+  }), /No package copyright notice/)
+})
 
 test('host target selects Linux guest architecture and rejects unsupported hosts', () => {
   assert.equal(lfsTransferGuestArchitecture('aarch64-apple-darwin'), 'arm64')

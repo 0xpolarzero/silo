@@ -11,6 +11,24 @@ export const LFS_TRANSFER_SOURCE_SHA256 = '92d6720202aa5a059c6683df78f1fa47722c0
 export const LFS_TRANSFER_SOURCE_URL = `https://codeload.github.com/charmbracelet/git-lfs-transfer/tar.gz/${LFS_TRANSFER_COMMIT}`
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
 
+export async function readGoCompilerLicense(compilerRoot, { run = execute, docsRoot = '/usr/share/doc' } = {}) {
+  // Official Go puts LICENSE in GOROOT; Homebrew puts it beside libexec.
+  for (const path of [join(compilerRoot, 'LICENSE'), join(dirname(compilerRoot), 'LICENSE')]) {
+    try { return await readFile(path) } catch (error) {
+      if (error.code !== 'ENOENT') throw error
+    }
+  }
+  // Debian/Ubuntu relocate notices to the owning package's copyright file.
+  // https://www.debian.org/doc/debian-policy/ch-docs.html#copyright-information
+  const compiler = join(compilerRoot, 'bin/go')
+  const owner = await run('dpkg-query', ['--search', compiler])
+  for (const line of owner.stdout.trim().split('\n')) {
+    const match = /^([a-z0-9][a-z0-9+.-]*)(?::[a-z0-9-]+)?: (.+)$/.exec(line)
+    if (match?.[2] === compiler) return readFile(join(docsRoot, match[1], 'copyright'))
+  }
+  throw new Error('No package copyright notice found for the Go compiler')
+}
+
 export function lfsTransferGuestArchitecture(targetTriple) {
   if (targetTriple === 'aarch64-apple-darwin' || targetTriple === 'aarch64-unknown-linux-gnu') return 'arm64'
   if (targetTriple === 'x86_64-unknown-linux-gnu') return 'amd64'
@@ -99,11 +117,7 @@ export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchByte
       }
       const goRoot = await execute('go', ['env', 'GOROOT'])
       const compilerRoot = goRoot.stdout.trim()
-      const compilerLicense = await readFile(join(compilerRoot, 'LICENSE')).catch(error => {
-        if (error.code !== 'ENOENT') throw error
-        // Homebrew keeps the license alongside libexec instead of inside GOROOT.
-        return readFile(join(dirname(compilerRoot), 'LICENSE'))
-      })
+      const compilerLicense = await readGoCompilerLicense(compilerRoot)
       await writeFile(join(licenses, 'Go-LICENSE'), compilerLicense)
     } finally {
       await rm(source, { recursive: true, force: true })
