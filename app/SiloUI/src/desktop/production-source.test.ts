@@ -101,7 +101,7 @@ describe("production application bridge", () => {
       complete!(updated)
       await retry
       expect(store.getSnapshot().source?.workspaces[0].checkpoints?.[0].id).toBe("point-1")
-      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toBeNull()
+      expect(store.getSnapshot().source?.workspaces[0].checkpointOperation ?? null).toBeNull()
       await store.refresh()
       expect(store.getSnapshot().source?.workspaces[0].checkpointOperation).toMatchObject({ status: "running", stage: "Capturing VM state" })
       runningSource.workspaces[0].checkpointOperation = { kind: "capture", status: "failed", stage: "Verification failed", error: "Checkpoint could not be verified." }
@@ -1214,7 +1214,7 @@ describe("production application bridge", () => {
     store.dispose()
   })
 
-  it("keeps a visible failed restore result when native operation state is malformed", async () => {
+  it("keeps the requested restore running and reports malformed native operation state (H-35)", async () => {
     let broken = false
     const mock = native()
     mock.invoke.mockImplementation(async (command: string) => {
@@ -1226,8 +1226,9 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.backupActions.startRestore(backup.archives[0], "restored", "dev")
-    await vi.waitFor(() => expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result", operation: "restore", outcome: "failed", targetName: "restored" }))
-    expect(store.getSnapshot().backup.operation).toMatchObject({ message: expect.stringContaining("invalid backup state") })
+    await vi.waitFor(() => expect(store.getSnapshot().backup.availabilityMessage).toContain("invalid backup state"))
+    // A malformed read is not evidence that the restore failed.
+    expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running", operation: "restore", targetName: "restored" })
     store.dispose()
   })
 
@@ -1239,6 +1240,11 @@ describe("production application bridge", () => {
       if (command === "read_application_state") return structuredClone(source)
       if (command === "read_backup_state") return structuredClone(current)
       if (command === "start_restore") await new Promise<void>(resolve => { release = resolve })
+      if (command === "dismiss_backup_operation") {
+        if (current.operation?.kind !== "result") return false
+        current = { ...current, operation: null }
+        return true
+      }
     }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     await store.initialize()

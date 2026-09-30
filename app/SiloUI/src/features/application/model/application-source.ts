@@ -65,6 +65,8 @@ export interface ApplicationRepository {
 }
 
 export type RepositoryPushOperation = {
+  /** The host-owned push this result belongs to; older hosts may omit it. */
+  operationId?: string
   workspace: string
   repositoryPath: string
   commitCount: number
@@ -132,6 +134,8 @@ export interface ApplicationActivity {
   workspace?: string
   progress?: number
   progressLabel?: string
+  /** A start, stop or restart the user cancelled: neither a failure nor a success. */
+  cancelled?: boolean
 }
 
 export interface ApplicationWorkspace {
@@ -236,6 +240,8 @@ export interface ApplicationSource {
   remoteComputers?: RemoteComputer[]
   remoteManagement?: RemoteManagement
   remoteManagementError?: string
+  /** Silo could not read its list of connected computers; the listed ones are the last known. */
+  remoteComputersError?: string
   sshAccess?: SshAccessState
   sshAccessError?: string | null
   network?: NetworkState
