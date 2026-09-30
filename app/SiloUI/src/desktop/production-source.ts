@@ -765,7 +765,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
             const previous = new Map((remoteSnapshots.get(hostId)?.workspaces ?? []).map(row => [row.machine.id, row]))
             remoteSnapshots.set(hostId, { ...outcome.source, workspaces: outcome.source.workspaces.map(row => {
               const known = previous.get(row.machine.id)
-              return row.settling && known ? { ...known, settling: true } : row
+              return row.settling && known ? { ...known, accountMigration: row.accountMigration, settling: true } : row
             }) })
             setComputer({ ...host, connected: true, lastSeen: Date.now() })
           } else if (isUpdateInProgress(outcome.cause)) setComputer({ ...host, connected: true, busy: true, lastSeen })
@@ -943,7 +943,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const previous = previousRows.get(row.machine.id)
         if (!incoming) return row
         if (incoming.settling && !applicationCurrent) return row
-        if (incoming.settling) return previous ? { ...previous, settling: true } : incoming
+        // Silo's own migration record is current even while the runtime reading settles.
+        if (incoming.settling) return previous ? { ...previous, accountMigration: incoming.accountMigration, settling: true } : incoming
         if (sequence <= (appliedWorkspaceReads.get(row.machine.id) ?? 0)) return previous ?? row
         appliedWorkspaceReads.set(row.machine.id, sequence)
         return incoming
