@@ -233,7 +233,6 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         history_path,
         service: backup::BackupService::new(
             backup::MsbCommand {
-                metadata: paths.metadata,
                 executable: paths.executable,
                 home: paths.home,
                 storage_home: paths.storage_home,
@@ -1887,7 +1886,6 @@ mod tests {
             journal: Mutex::new(None),
             service: backup::BackupService::new(
                 backup::MsbCommand {
-                    metadata: PathBuf::from("/unused/machines.json"),
                     executable: PathBuf::from("/unused/msb"),
                     home: PathBuf::from("/unused/home"),
                     storage_home: None,
@@ -1943,7 +1941,6 @@ mod tests {
         Controller {
             service: backup::BackupService::new(
                 backup::MsbCommand {
-                    metadata: paths.metadata.clone(),
                     executable: script,
                     home: paths.home.clone(),
                     storage_home: None,
@@ -2938,7 +2935,6 @@ mod tests {
             journal: Mutex::new(None),
             service: backup::BackupService::new(
                 backup::MsbCommand {
-                    metadata: paths.metadata.clone(),
                     executable: paths.executable.clone(),
                     home: paths.home.clone(),
                     storage_home: paths.storage_home.clone(),
@@ -3398,7 +3394,6 @@ mod tests {
             journal: Mutex::new(None),
             service: backup::BackupService::new(
                 backup::MsbCommand {
-                    metadata: paths.metadata.clone(),
                     executable: paths.executable.clone(),
                     home: paths.home.clone(),
                     storage_home: paths.storage_home.clone(),

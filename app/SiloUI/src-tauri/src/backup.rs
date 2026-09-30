@@ -60,7 +60,6 @@ impl Cancellation {
 
 #[derive(Clone, Debug)]
 pub(crate) struct MsbCommand {
-    pub(crate) metadata: PathBuf,
     pub(crate) executable: PathBuf,
     pub(crate) home: PathBuf,
     pub(crate) storage_home: Option<PathBuf>,
@@ -3557,7 +3556,6 @@ mod tests {
     fn service(temp: &tempfile::TempDir, runner: FakeRunner) -> BackupService<FakeRunner> {
         BackupService::with_runner(
             MsbCommand {
-                metadata: temp.path().join("machines.json"),
                 executable: temp.path().join("msb"),
                 home: temp.path().join("home"),
                 storage_home: None,
@@ -3607,7 +3605,6 @@ mod tests {
         fs::write(&executable, script).unwrap();
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
         MsbCommand {
-            metadata: directory.join("machines.json"),
             executable,
             home,
             storage_home: None,
