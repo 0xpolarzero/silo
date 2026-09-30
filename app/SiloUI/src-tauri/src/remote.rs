@@ -16,7 +16,10 @@ use std::{
 };
 use tauri::AppHandle;
 mod operations;
-const INSTALL_PUBLIC_KEY: &str = r#"umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && key=$(cat) && { grep -qxF -- "$key" ~/.ssh/authorized_keys || printf '\n%s\n' "$key" >> ~/.ssh/authorized_keys; }"#;
+/// Appends the key read from input to `authorized_keys` once. sshd runs this with the
+/// account's login shell, so the POSIX script is handed to `sh` in single quotes, which
+/// fish, csh and nushell also pass through unchanged; the script itself has no single quote.
+const INSTALL_PUBLIC_KEY: &str = r#"sh -c 'umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && key=$(cat) && { grep -qxF -- "$key" ~/.ssh/authorized_keys || printf "\n%s\n" "$key" >> ~/.ssh/authorized_keys; }'"#;
 /// Silo's key may only run the bridge and open `-N` tunnels to loopback ports on the owner.
 const AUTHORIZED_KEY_OPTIONS: &str = r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge""#;
 const SILO_KEY_COMMENT: &str = "Silo remote management";
@@ -1571,8 +1574,8 @@ impl Drop for ConnectionPermit {
 #[cfg(test)]
 mod setup_tests {
     use super::*;
-    #[test]
-    fn public_key_install_preserves_existing_unterminated_line_and_is_idempotent() {
+    /// sshd runs the remote command with the account's login shell: `$SHELL -c COMMAND`.
+    fn install_with(shell: &Path) {
         let home = tempfile::tempdir().unwrap();
         let ssh = home.path().join(".ssh");
         fs::create_dir(&ssh).unwrap();
@@ -1580,7 +1583,7 @@ mod setup_tests {
         fs::write(&authorized, b"existing-key-without-final-newline").unwrap();
         let public = "ssh-ed25519 AAAA public-comment-$(never-execute)";
         for _ in 0..2 {
-            let mut child = Command::new("/bin/sh")
+            let mut child = Command::new(shell)
                 .args(["-c", INSTALL_PUBLIC_KEY])
                 .env("HOME", home.path())
                 .stdin(Stdio::piped())
@@ -1594,12 +1597,40 @@ mod setup_tests {
                 .unwrap()
                 .write_all(public.as_bytes())
                 .unwrap();
-            assert!(child.wait().unwrap().success());
+            let output = child.wait_with_output().unwrap();
+            assert!(output.status.success(), "{}: {}", shell.display(), String::from_utf8_lossy(&output.stderr));
         }
         assert_eq!(
             fs::read_to_string(authorized).unwrap(),
-            format!("existing-key-without-final-newline\n{public}\n")
+            format!("existing-key-without-final-newline\n{public}\n"),
+            "{}",
+            shell.display()
         );
+    }
+    #[test]
+    fn public_key_install_preserves_existing_unterminated_line_and_is_idempotent() {
+        install_with(Path::new("/bin/sh"));
+    }
+    #[test]
+    fn public_key_install_works_from_any_login_shell() {
+        let mut shells: Vec<PathBuf> = ["/bin/bash", "/bin/zsh", "/bin/dash", "/bin/ksh", "/bin/csh", "/bin/tcsh"]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        // fish and nushell are not POSIX shells; test them where installed.
+        for name in ["fish", "nu"] {
+            if let Some(found) = std::env::var_os("PATH")
+                .map(|path| std::env::split_paths(&path).map(|dir| dir.join(name)).collect::<Vec<_>>())
+                .and_then(|candidates| candidates.into_iter().find(|candidate| candidate.is_file()))
+            {
+                shells.push(found);
+            }
+        }
+        let available: Vec<_> = shells.into_iter().filter(|shell| shell.is_file()).collect();
+        assert!(available.iter().any(|shell| shell.ends_with("csh") || shell.ends_with("tcsh") || shell.ends_with("fish")), "no non-POSIX shell to test");
+        for shell in available {
+            install_with(&shell);
+        }
     }
 }
 
