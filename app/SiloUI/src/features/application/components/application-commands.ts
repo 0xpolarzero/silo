@@ -4,6 +4,15 @@ import type { ApplicationActions, ApplicationSource } from "@/features/applicati
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
+import { lifecycleGuard, type LifecycleAction } from "@/features/application/model/lifecycle-guard"
+
+/** A question the palette asks, in place, before running a command. */
+export interface CommandConfirmation {
+  title: string
+  description: string
+  confirmLabel: string
+  tone: "default" | "destructive"
+}
 
 export interface ApplicationCommand {
   id: string
@@ -11,6 +20,8 @@ export interface ApplicationCommand {
   group: "Go to" | "Sandboxes" | "Actions"
   icon: LucideIcon
   keywords?: string[]
+  /** Asked inside the palette first; `run` then proceeds as confirmed. */
+  confirm?: CommandConfirmation
   run: () => void
 }
 
@@ -22,6 +33,9 @@ const workspaceSections = [
 ] as const
 
 export function applicationCommands(source: ApplicationSource, actions: ApplicationActions, navigate: (route: ApplicationInitialRoute) => void, onImportSandbox?: () => void): ApplicationCommand[] {
+  // Lifecycle commands use the same guard as the pages: unavailable operations are reported,
+  // and a request that needs a prompt asks it inside the palette.
+  const guard = lifecycleGuard(source, actions)
   const destinations: { label: string; icon: LucideIcon; route: ApplicationInitialRoute; keywords?: string[] }[] = [
     { label: "Sandboxes", icon: Boxes, route: { workspaceSection: "overview" }, keywords: ["overview", "workspaces", "machines"] },
     ...workspaceSections.map(({ section, label, icon, keywords }) => ({ label, icon, route: { workspaceSection: section }, keywords: [...keywords] })),
@@ -62,15 +76,22 @@ export function applicationCommands(source: ApplicationSource, actions: Applicat
         { id: `${id}:editor`, label: `Open ${name} in ${source.preferences.editor}`, icon: Code, group: "Actions", keywords: [...sandboxKeywords, "editor", "code"], run: () => actions.openEditor(target) },
       )
     }
-    const lifecycle = [
-      { label: "Start", icon: Play, available: availability.canStart, run: actions.startWorkspace },
-      { label: "Stop", icon: Square, available: availability.canStop, run: actions.stopWorkspace },
-      { label: "Restart", icon: RotateCw, available: availability.canRestart, run: actions.restartWorkspace },
+    const lifecycle: { action: LifecycleAction; label: string; icon: LucideIcon; available: boolean }[] = [
+      { action: "start", label: "Start", icon: Play, available: availability.canStart },
+      { action: "stop", label: "Stop", icon: Square, available: availability.canStop },
+      { action: "restart", label: "Restart", icon: RotateCw, available: availability.canRestart },
     ]
-    for (const { label, icon, available, run } of lifecycle) {
-      if (available) commands.push({
-        id: `${id}:${label}`, label: `${label} ${name}`, icon, group: "Actions", keywords: ["sandbox", ...sandboxKeywords],
-        run: () => { navigate({ workspaceSection: "overview" }); run(target) },
+    for (const { action, label, icon, available } of lifecycle) {
+      if (!available) continue
+      const check = guard.check(workspace, action)
+      const confirm = check.kind === "confirm" ? check.prompt : undefined
+      commands.push({
+        id: `${id}:${label}`, label: `${label} ${name}${confirm ? "…" : ""}`, icon, group: "Actions", keywords: ["sandbox", ...sandboxKeywords], confirm,
+        run: () => {
+          navigate({ workspaceSection: "overview" })
+          if (confirm) guard.confirm(workspace, action)
+          else guard.request(workspace, action)
+        },
       })
     }
   }

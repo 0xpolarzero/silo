@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import { Toaster } from "@/components/ui/sonner"
@@ -13,16 +13,18 @@ describe("operation-owned resource notices", () => {
     expect(screen.queryByText(/available.*GB/i)).not.toBeInTheDocument()
   })
 
-  it("advises for the selected VM and keeps Start anyway", () => {
+  it("advises for the selected VM and keeps Start anyway", async () => {
     const startWorkspace = vi.fn()
     render(<ApplicationPreview source={withResourceFixture(applicationSourceForScenario("running", undefined, "stopped"), "start-memory")} actions={{ startWorkspace }} />)
     fireEvent.click(screen.getByRole("button", { name: "Start playgrounds" }))
     expect(screen.queryByText(/memory pressure/i)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Start dev" }))
-    expect(screen.getByRole("status")).toHaveTextContent("dev")
-    expect(screen.getByRole("status")).toHaveTextContent("32 GB")
-    fireEvent.click(screen.getByRole("button", { name: "Start anyway" }))
-    expect(startWorkspace).toHaveBeenCalledWith("dev")
+    // The question opens next to the Start button that asked it.
+    const prompt = screen.getByText("Starting dev may slow this computer").closest<HTMLElement>("[data-slot=popover-content]")!
+    expect(prompt).toHaveTextContent("32 GB")
+    expect(startWorkspace).not.toHaveBeenCalledWith("dev")
+    fireEvent.click(within(prompt).getByRole("button", { name: "Start anyway" }))
+    await waitFor(() => expect(startWorkspace).toHaveBeenCalledWith("dev"))
   })
 
   it("blocks Create only after the user saves the affected VM", async () => {

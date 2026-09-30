@@ -5,6 +5,7 @@ import { Dialog } from "radix-ui"
 
 import { ShortcutBadge } from "@/components/shortcut-badge"
 import { shortcutFor } from "@/lib/shortcuts"
+import { Button } from "@/components/ui/button"
 import type { ApplicationCommand } from "./application-commands"
 
 const groups = ["Go to", "Sandboxes", "Actions"] as const
@@ -18,7 +19,13 @@ function filterCommand(label: string, search: string, keywords: string[] = []) {
 }
 
 export function ApplicationCommandMenu({ commands, disabled = false, openRequest, nativeShortcuts = false }: { commands: readonly ApplicationCommand[]; disabled?: boolean; openRequest?: number; nativeShortcuts?: boolean }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpenState] = useState(false)
+  // A command with a question asks it here, in place of the list, before it runs.
+  const [confirming, setConfirming] = useState<ApplicationCommand | null>(null)
+  const setOpen = (next: boolean | ((current: boolean) => boolean)) => {
+    setOpenState(next)
+    setConfirming(null)
+  }
   const consumedOpenRequest = useRef(0)
   const openRequested = useEffectEvent(() => {
     if (disabled) return
@@ -62,9 +69,14 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
     </Dialog.Trigger>
     <Dialog.Portal>
       <Dialog.Overlay className="fixed inset-0 z-50 bg-black/20" />
-      <Dialog.Content ref={contentRef} aria-describedby={undefined} className="fixed top-[min(18dvh,8rem)] left-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl outline-none">
+      <Dialog.Content ref={contentRef} aria-describedby={undefined} onEscapeKeyDown={(event) => {
+        // Escape leaves the question for the list first, then closes the palette.
+        if (!confirming) return
+        event.preventDefault()
+        setConfirming(null)
+      }} className="fixed top-[min(18dvh,8rem)] left-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl outline-none">
         <Dialog.Title className="sr-only">Commands</Dialog.Title>
-        <Command label="Search commands" filter={filterCommand} loop vimBindings={false}>
+        {confirming?.confirm ? <CommandConfirmationPanel command={confirming} onCancel={() => setConfirming(null)} onConfirm={() => { if (disabled) return; setOpen(false); confirming.run() }} /> : <Command label="Search commands" filter={filterCommand} loop vimBindings={false}>
           <div className="flex items-center gap-3 border-b border-border px-4">
             <Search aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
             <Command.Input aria-label="Search commands" placeholder="Search pages, sandboxes, and actions…" autoComplete="off" spellCheck={false} className="h-12 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground" />
@@ -73,7 +85,12 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
           <Command.List className="max-h-[min(22rem,50dvh)] overflow-y-auto overscroll-contain scroll-py-2 p-1.5" label="Commands">
             <Command.Empty className="px-4 py-10 text-center text-xs text-muted-foreground">No commands found.</Command.Empty>
             {groups.map((group) => <Command.Group key={group} value={group.replaceAll(" ", "-")} heading={group} className="[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:pb-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground">
-              {commands.filter((command) => command.group === group).map((command) => <Command.Item key={command.id} value={command.label} keywords={command.keywords} onSelect={() => { if (disabled) return; setOpen(false); command.run() }} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-xs outline-none select-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground">
+              {commands.filter((command) => command.group === group).map((command) => <Command.Item key={command.id} value={command.label} keywords={command.keywords} onSelect={() => {
+                if (disabled) return
+                if (command.confirm) { setConfirming(command); return }
+                setOpen(false)
+                command.run()
+              }} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-xs outline-none select-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground">
                 <command.icon aria-hidden="true" className="size-3.5 shrink-0 text-muted-foreground" />
                 <span className="truncate">{command.label}</span>
               </Command.Item>)}
@@ -83,8 +100,21 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
             <span className="flex items-center gap-1"><ArrowUp className="size-3" /><ArrowDown className="size-3" /> Navigate</span>
             <span className="flex items-center gap-1"><CornerDownLeft className="size-3" /> Run command</span>
           </div>
-        </Command>
+        </Command>}
       </Dialog.Content>
     </Dialog.Portal>
   </Dialog.Root>
+}
+
+/** The palette's in-place question: the same words as the control's own confirmation. */
+function CommandConfirmationPanel({ command, onCancel, onConfirm }: { command: ApplicationCommand; onCancel: () => void; onConfirm: () => void }) {
+  const confirm = command.confirm!
+  return <div role="group" aria-label={confirm.title} className="grid gap-2 p-4 text-xs">
+    <p className="text-[13px] font-medium">{confirm.title}</p>
+    <p className="text-muted-foreground">{confirm.description}</p>
+    <div className="mt-1 flex justify-end gap-2">
+      <Button type="button" variant="ghost" size="sm" onClick={onCancel}>Cancel</Button>
+      <Button type="button" size="sm" variant={confirm.tone === "destructive" ? "destructive" : "default"} autoFocus onClick={onConfirm}>{confirm.confirmLabel}</Button>
+    </div>
+  </div>
 }

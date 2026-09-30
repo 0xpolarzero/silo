@@ -18,6 +18,8 @@ import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
 import { CheckpointPanel } from "@/features/application/components/checkpoint-panel"
 import { StatusSeparator, WorkspaceStatus } from "@/features/application/components/workspace-status"
 import { DisabledReason } from "@/features/application/components/disabled-reason"
+import { LifecycleControl } from "@/features/application/components/lifecycle-control"
+import type { LifecycleGuard } from "@/features/application/model/lifecycle-guard"
 import type { ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
 import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
@@ -65,8 +67,8 @@ export interface SandboxDetailControls {
   popovers?: MenuPopovers
   onTerminal: () => void
   onEditor: () => void
-  onStart: () => void
-  onStop: () => void
+  /** Start and Stop go through the shared lifecycle guard; its prompts open next to the button. */
+  lifecycleGuard: LifecycleGuard
   /** In-place Edit/Delete of this sandbox. Absent in read-only or standalone renders. */
   editing?: SandboxDetailEditing
   /** Duplicate opens the list editor for the new sandbox (it leaves the detail page). */
@@ -398,8 +400,12 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           <DisabledReason reason={controls.canOpen ? undefined : reasons.open}><Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={!controls.canOpen} onClick={controls.onTerminal}><Terminal aria-hidden="true" data-icon="inline-start" />Terminal</Button></DisabledReason>
           <DisabledReason reason={controls.canOpen ? undefined : reasons.open}><Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={!controls.canOpen} onClick={controls.onEditor}><Code aria-hidden="true" data-icon="inline-start" />Editor</Button></DisabledReason>
           {canStop
-            ? <DisabledReason reason={controls.canStop ? undefined : reasons.stop}><Button type="button" variant="outline" size="xs" aria-label={`Stop ${machine.name}`} disabled={!controls.canStop} onClick={controls.onStop}><Square aria-hidden="true" data-icon="inline-start" />Stop</Button></DisabledReason>
-            : <DisabledReason reason={controls.canStart ? undefined : reasons.start}><Button type="button" variant="outline" size="xs" aria-label={`Start ${machine.name}`} disabled={!controls.canStart} onClick={controls.onStart}><Play aria-hidden="true" data-icon="inline-start" />Start</Button></DisabledReason>}
+            ? <LifecycleControl guard={controls.lifecycleGuard} workspace={workspace} action="stop" disabled={!controls.canStop} reason={reasons.stop}>
+              {({ onClick, disabled }) => <Button type="button" variant="outline" size="xs" aria-label={`Stop ${machine.name}`} disabled={disabled} onClick={onClick}><Square aria-hidden="true" data-icon="inline-start" />Stop</Button>}
+            </LifecycleControl>
+            : <LifecycleControl guard={controls.lifecycleGuard} workspace={workspace} action="start" disabled={!controls.canStart} reason={reasons.start}>
+              {({ onClick, disabled }) => <Button type="button" variant="outline" size="xs" aria-label={`Start ${machine.name}`} disabled={disabled} onClick={onClick}><Play aria-hidden="true" data-icon="inline-start" />Start</Button>}
+            </LifecycleControl>}
           {menuActions.length > 0 && menu}
         </div>}
       />

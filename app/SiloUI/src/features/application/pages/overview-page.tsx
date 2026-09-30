@@ -5,12 +5,14 @@ import { SshAccessBadges } from "./ssh-access-panel"
 import { StatusFolderPicker } from "@/features/status-bar/status-folder-picker"
 import { workspaceAvailability, type WorkspaceAvailability } from "../model/workspace-availability"
 import { DisabledReason } from "../components/disabled-reason"
+import { LifecycleControl } from "../components/lifecycle-control"
+import { lifecycleGuard, type LifecycleAction, type LifecycleGuard } from "../model/lifecycle-guard"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
 import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditing } from "./sandbox-detail-page"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
-import { CircleAlert, Code, Download, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
+import { CircleAlert, Code, Download, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
 import { dismissOperationToast, dismissSandboxToasts, showActionFailure, showOperationFailure, showOperationNotice, showOperationProgress } from "@/lib/operation-toast"
 
@@ -32,7 +34,6 @@ import type {
   ApplicationWorkspace,
   SandboxConfigurationOperation,
   SandboxDetailTab,
-  WorkspaceState,
 } from "@/features/application/model/application-source"
 import { MachineList } from "@/features/sandboxes/components/machine-list"
 import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/components/sandbox-list"
@@ -204,17 +205,16 @@ function ConfigurationDetail({ view }: { view: ConfigurationRowView }) {
   )
 }
 
-function WorkspaceActions({ machine, state, availability, readOnly, onStart, onStop }: { machine: SetupMachineConfiguration; state: WorkspaceState; availability?: WorkspaceAvailability; readOnly: boolean; onStart: () => void; onStop: () => void }) {
-  const showStop = state === "running" || state === "starting"
-  const enabled = !readOnly && Boolean(showStop ? availability?.canStop : availability?.canStart)
-  const reason = readOnly ? undefined : showStop ? availability?.reasons.stop : availability?.reasons.start
-  return (
-    <DisabledReason reason={enabled ? undefined : reason}>
-      {showStop
-        ? <SandboxAction label={`Stop ${machine.name}`} disabled={!enabled} onClick={onStop}><Square /></SandboxAction>
-        : <SandboxAction label={`Start ${machine.name}`} disabled={!enabled} onClick={onStart}><Play /></SandboxAction>}
-    </DisabledReason>
-  )
+/** The row's Start or Stop control, through the shared lifecycle guard. */
+function WorkspaceActions({ workspace, availability, readOnly, guard }: { workspace: ApplicationWorkspace; availability: WorkspaceAvailability; readOnly: boolean; guard: LifecycleGuard }) {
+  const { machine } = workspace
+  const action = workspace.state === "running" || workspace.state === "starting" ? "stop" : "start"
+  const enabled = !readOnly && (action === "stop" ? availability.canStop : availability.canStart)
+  return <LifecycleControl guard={guard} workspace={workspace} action={action} disabled={!enabled} reason={readOnly ? undefined : availability.reasons[action]}>
+    {({ onClick, disabled }) => action === "stop"
+      ? <SandboxAction label={`Stop ${machine.name}`} disabled={disabled} onClick={onClick}><Square /></SandboxAction>
+      : <SandboxAction label={`Start ${machine.name}`} disabled={disabled} onClick={onClick}><Play /></SandboxAction>}
+  </LifecycleControl>
 }
 
 export function OverviewPage({ active = true, readOnly = false,
@@ -264,7 +264,6 @@ export function OverviewPage({ active = true, readOnly = false,
   // or when its sandbox can no longer be opened, so it never takes the screen over later.
   const [folderPicker, setFolderPicker] = useState<{ workspaceId: string; route: string } | null>(null)
   const [connecting, setConnecting] = useState(false)
-  const [pendingStart, setPendingStart] = useState<string | null>(null)
   // Sandbox detail selection: controlled by the app's navigation when the callbacks are
   // supplied, otherwise kept locally so the page still opens details on its own.
   const controlledNav = onOpenSandbox !== undefined
@@ -364,18 +363,19 @@ export function OverviewPage({ active = true, readOnly = false,
     showActionFailure("VM operation unavailable", source.vmOperationsUnavailable ?? "VM operations are unavailable.", undefined, { native: false })
   }
 
-  // A single set of lifecycle handlers, guarded for capacity and unavailable-operation
-  // notices, shared by the row controls and the detail page so both behave identically.
-  function guardedLifecycle(workspace?: ApplicationWorkspace): Pick<ApplicationActions, "startWorkspace" | "stopWorkspace" | "restartWorkspace"> {
-    const isLocal = !workspace?.computer
-    return {
-      startWorkspace: (name) => {
-        if (isLocal && source.vmOperationsUnavailable) notifyOperationUnavailable()
-        else if (source.resourceNotice?.kind === "start-memory" && source.resourceNotice.sandbox === name) setPendingStart(name)
-        else actions.startWorkspace(name)
-      },
-      stopWorkspace: (name) => isLocal && source.vmOperationsUnavailable ? notifyOperationUnavailable() : actions.stopWorkspace(name),
-      restartWorkspace: (name) => isLocal && source.vmOperationsUnavailable ? notifyOperationUnavailable() : actions.restartWorkspace(name),
+  // Every lifecycle request from this page (row, sandbox page, menus, toasts) goes through the
+  // shared guard: unavailable VM operations are reported and memory pressure asks first.
+  const guard = lifecycleGuard(source, actions)
+  // Notification actions run later: resolve the sandbox and its guard when clicked, so a toast
+  // shown before the snapshot refreshed never acts on outdated state.
+  const latestLifecycle = useRef({ guard, workspaces })
+  useEffect(() => { latestLifecycle.current = { guard, workspaces } })
+  function lifecycleLater(workspace: ApplicationWorkspace, action: LifecycleAction, confirmed: boolean) {
+    return () => {
+      const { guard: current, workspaces: now } = latestLifecycle.current
+      const fresh = now.get(workspace.machine.id) ?? workspace
+      if (confirmed) current.confirm(fresh, action)
+      else current.request(fresh, action)
     }
   }
 
@@ -388,9 +388,8 @@ export function OverviewPage({ active = true, readOnly = false,
   function lifecycleRetry(workspace: ApplicationWorkspace): (() => void) | undefined {
     const action = workspace.lifecycleFailureAction ?? "start"
     if (readOnly || !workspace.lifecycleFailure || action === "dismiss-error") return undefined
-    const target = workspaceTarget(workspace)
-    const guarded = guardedLifecycle(workspace)
-    return () => { if (action === "start") guarded.startWorkspace(target); else if (action === "stop") guarded.stopWorkspace(target); else guarded.restartWorkspace(target) }
+    // The failed request was already confirmed, so Retry asks nothing again.
+    return lifecycleLater(workspace, action, true)
   }
 
   /** A sandbox's ⋯ menu actions and popovers, built once for its list row and its page. The
@@ -400,12 +399,11 @@ export function OverviewPage({ active = true, readOnly = false,
     const target = workspaceTarget(workspace)
     const availability = workspaceAvailability(workspace, source)
     const stale = workspace.freshness === "stale"
-    const guarded = guardedLifecycle(workspace)
     const vm = machine.kind === "vm"
     const local = !workspace.computer
     const items: MenuAction[] = [
       ...(vm && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || availability.busy || Boolean(workspace.computer && stale), onSelect: () => { void actions.openDesktop!(target) } }] : []),
-      { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guarded.restartWorkspace(target) },
+      { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guard.request(workspace, "restart") },
       // Checkpoints and Storage open the page's tabs, which disable their own actions as needed.
       ...(vm ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, onSelect: () => openSandbox(machine.id, "checkpoints") }] : []),
       ...(vm && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: forkDisabled(workspace), popover: "fork" }] : []),
@@ -548,7 +546,6 @@ export function OverviewPage({ active = true, readOnly = false,
     const machine = workspace.machine
     const target = workspaceTarget(workspace)
     const availability = workspaceAvailability(workspace, source)
-    const guarded = guardedLifecycle(workspace)
     const menu = sandboxMenu(workspace)
     // Edit and Delete are appended and handled in place by the detail page; Duplicate hands
     // off to the list editor for the new sandbox. Editing is offered only when not read-only.
@@ -583,12 +580,11 @@ export function OverviewPage({ active = true, readOnly = false,
       popovers: menu.popovers,
       onTerminal: () => actions.openTerminal(target),
       onEditor: () => openFolderPicker(machine.id),
-      onStart: () => guarded.startWorkspace(target),
-      onStop: () => guarded.stopWorkspace(target),
+      lifecycleGuard: guard,
       onCheckpointExport: exportSandbox ? (checkpoint: WorkspaceCheckpoint) => exportSandbox(machine.name, { id: checkpoint.id, name: checkpoint.name }) : undefined,
       checkpointExportDisabled: transferBusy || backup?.state.availability === "unavailable",
       onCheckpointForkedAction: (name: string) => forkOpenAction(name, workspace.computer?.id),
-      onCheckpointRestoredAction: () => ({ label: "Start", onClick: () => guarded.startWorkspace(target) }),
+      onCheckpointRestoredAction: () => ({ label: "Start", onClick: lifecycleLater(workspace, "start", false) }),
     }
   }
 
@@ -668,7 +664,6 @@ export function OverviewPage({ active = true, readOnly = false,
                 const lifecycle = workspace?.lifecycleAction
                 const checkpointOperation = workspace?.checkpointOperation?.status === "running" ? workspace.checkpointOperation : undefined
                 const workspaceOperationBusy = Boolean(lifecycle) || Boolean(checkpointOperation)
-                const guarded = guardedLifecycle(workspace)
                 const menu = workspace ? sandboxMenu(workspace) : { items: [] }
                 const availability = workspace ? workspaceAvailability(workspace, source) : undefined
                 const openReason = readOnly || availability?.canOpen ? undefined : availability?.reasons.open
@@ -697,9 +692,7 @@ export function OverviewPage({ active = true, readOnly = false,
                   actions: <>
                     <DisabledReason reason={openReason}><SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={readOnly || !availability?.canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction></DisabledReason>
                     <DisabledReason reason={openReason}><SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={readOnly || !availability?.canOpen} onClick={() => openFolderPicker(machine.id)}><Code /></SandboxAction></DisabledReason>
-                    <WorkspaceActions machine={machine} state={state} availability={availability} readOnly={readOnly}
-                      onStart={() => guarded.startWorkspace(workspace ? workspaceTarget(workspace) : machine.name)}
-                      onStop={() => guarded.stopWorkspace(workspace ? workspaceTarget(workspace) : machine.name)} />
+                    {workspace && availability && <WorkspaceActions workspace={workspace} availability={availability} readOnly={readOnly} guard={guard} />}
                   </>,
                 }
               }}
@@ -707,10 +700,6 @@ export function OverviewPage({ active = true, readOnly = false,
           </>
         )}
       </div>
-      {pendingStart && source.resourceNotice?.kind === "start-memory" && <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[.07] p-3" role="status">
-        <div className="flex gap-2"><TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600" aria-hidden="true" /><div><p className="text-xs font-medium">Starting {pendingStart} may slow this computer</p><p className="mt-1 text-[11px] text-muted-foreground">Silo found high memory pressure now. This VM can use up to {source.resourceNotice.memoryGiB} GB. Close memory-heavy apps, or start anyway.</p></div></div>
-        <div className="mt-2 flex justify-end gap-1"><Button type="button" variant="ghost" size="xs" onClick={() => setPendingStart(null)}>Cancel</Button><Button type="button" variant="outline" size="xs" onClick={() => { actions.startWorkspace(pendingStart); setPendingStart(null) }}>Start anyway</Button></div>
-      </div>}
     </div>
   )
 }
