@@ -14,7 +14,7 @@ export type ImportReview =
   | { kind: "invalid"; reason: string }
   | { kind: "review"; archive: BackupArchive; sourceName: string; newName: string }
 
-/** Import review popover anchored to the sandbox list's Add button: shows the archive summary,
+/** Import review popover anchored to the sandbox list's Add button: shows the export file summary,
  * picks a source sandbox when several are present, and names the new sandbox. */
 export function ImportPopover({ source, review, anchor, onReview, onImport, onClose, onRetry }: {
   source: ApplicationSource
@@ -33,7 +33,7 @@ export function ImportPopover({ source, review, anchor, onReview, onImport, onCl
     : false
   const title = isReview ? `Import ${isReview.archive.name}` : review?.kind === "invalid" ? "This export cannot be imported" : "Checking export"
   const fields = !review ? null : review.kind === "checking"
-    ? <Progress value={null} aria-label="Export validation progress" />
+    ? <Progress value={null} aria-label="Import validation progress" />
     : review.kind === "invalid"
     ? <p className="text-destructive">{review.reason} No sandbox data changed.</p>
     : <div className="grid gap-2">

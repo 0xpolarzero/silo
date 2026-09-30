@@ -159,7 +159,7 @@ function workspacesForScenario(scenario: ScenarioName): ApplicationWorkspace[] {
       checkpoints: workspace.machine.name === "dev"
         ? [
             { id: "checkpoint-dev-1", name: "Before dependency upgrade", createdAt: "2026-09-04T18:00:00Z", scope: "full", reason: "manual" },
-            { id: "checkpoint-dev-2", name: "Nightly disk snapshot", createdAt: "2026-09-05T02:00:00Z", scope: "disk", reason: "manual" },
+            { id: "checkpoint-dev-2", name: "Nightly disk checkpoint", createdAt: "2026-09-05T02:00:00Z", scope: "disk", reason: "manual" },
             { id: "checkpoint-dev-3", name: "Before restore", createdAt: "2026-09-05T09:30:00Z", scope: "full", reason: "before-restore" },
           ]
         : workspace.checkpoints,
@@ -443,7 +443,7 @@ export function applicationSourceForScenario(
       lastArchive: "silo-2026-09-02.silo-backup",
       completedLabel: "Yesterday at 22:14",
       compressedSize: "38.4 GB",
-      destination: "External SSD / Silo Backups",
+      destination: "External SSD / Silo Exports",
     },
     preferences: {
       launchAtLogin: true,

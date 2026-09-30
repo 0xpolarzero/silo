@@ -35,7 +35,7 @@ function bridge(start: (args?: Record<string, unknown>) => Promise<unknown>) {
   return {
     bridge: { invoke, listen } as unknown as ProductionBridge,
     invoke,
-    /** Replace the backend's backup state and announce it like the Rust side does. */
+    /** Replace the backend's export and import state and announce it like the Rust side does. */
     publish(next: BackupState) { backup = next; handlers.get("silo://application-state-changed")?.() },
   }
 }

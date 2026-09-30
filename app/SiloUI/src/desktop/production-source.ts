@@ -333,7 +333,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     setupQueue: ["workspaceRun", "workspaceVerify", "identityRun", "identityVerify", "githubRun", "githubVerify", "completion"].map((id) => ({ id: id as SetupQueueItemID, status: "idle" })),
     setupEvents: [],
     source: null,
-    backup: unavailableBackup("Backup state has not loaded. No sandbox data changed."),
+    backup: unavailableBackup("Export and import state has not loaded. No sandbox data changed."),
     loading: true,
     error: null,
   }
@@ -894,8 +894,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       try {
         backup = backendBackup = parseBackupState(backupResult.value)
       }
-      catch (cause) { backup = unreadableBackup(`Silo returned invalid backup state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
-    } else backup = unreadableBackup(`Silo could not read backup state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
+      catch (cause) { backup = unreadableBackup(`Silo returned invalid export and import state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
+    } else backup = unreadableBackup(`Silo could not read export and import state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
     if (disposed || epoch !== refreshSequence) return
     if (backendBackup) { const state = backendBackup; exportWaiters.forEach(waiter => waiter(state, sequence)) }
     const applicationCurrent = sequence > appliedApplicationRead
@@ -1683,7 +1683,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   function backupFailure(operation: "backup" | "restore", archive: BackupArchive, message: string, targetName?: string): BackupOperation {
-    return { operation, archive, runningNames: [], targetName, kind: "result", outcome: "failed", title: `${operation === "backup" ? "Backup" : "Restore"} failed`, message, detail: "No successful result was recorded." }
+    return { operation, archive, runningNames: [], targetName, kind: "result", outcome: "failed", title: `${operation === "backup" ? "Export" : "Import"} failed`, message, detail: "No successful result was recorded." }
   }
 
   function showPendingBackup(operation: "backup" | "restore", archive: BackupArchive, targetName?: string) {
@@ -1696,7 +1696,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       void native.invoke("dismiss_backup_operation", { expectedOperation: previous, expectedOperationId: view.backup.operationId ?? null }).catch(() => {})
     }
     localBackupOperation = { operation, archive, targetName, runningNames: [], kind: "running", progress: 0, indeterminate: true, canCancel: false,
-      phases: [{ title: operation === "backup" ? "Preparing backup" : "Checking backup", detail: operation === "backup" ? "Preparing the selected sandboxes." : "Verifying the archive before restoring it.", tone: "running" }],
+      phases: [{ title: operation === "backup" ? "Preparing export" : "Checking export file", detail: operation === "backup" ? "Preparing the selected sandboxes." : "Verifying the export file before importing it.", tone: "running" }],
     }
     publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
   }
@@ -1755,7 +1755,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     async exportAndVerify(destination, sandboxes, checkpointId) {
       if (pendingBackupOperation || view.backup.operation?.kind === "running") throw new ExportIncompleteError("busy", "Another export or import is running.")
       pendingBackupOperation = true
-      const archive: BackupArchive = { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes }
+      const archive: BackupArchive = { name: "Export file", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes }
       showPendingBackup("backup", archive)
       let operationId: string
       try { operationId = z.string().min(1).parse(await native.invoke("start_backup", { destination, sandboxes, ...(checkpointId && { checkpointId }) })) }
@@ -1779,7 +1779,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
       }).finally(() => { pendingBackupOperation = false })
     },
-    cancelOperation() { void native.invoke("cancel_backup_operation").then(() => refresh()).catch((cause) => reportUnavailable(`Backup cancellation failed: ${errorMessage(cause)} The operation may still be running.`)) },
+    cancelOperation() { void native.invoke("cancel_backup_operation").then(() => refresh()).catch((cause) => reportUnavailable(`Export or import cancellation failed: ${errorMessage(cause)} The operation may still be running.`)) },
     async revealArchive(archive) {
       await native.invoke("reveal_backup_archive", { archivePath: archive.archivePath })
     },

@@ -707,7 +707,7 @@ describe("application", () => {
     expect(panel.queryByRole("heading", { name: "Activity" })).not.toBeInTheDocument()
     expect(within(activity).queryByText("dev")).not.toBeInTheDocument()
     expect(within(activity).getByText("playgrounds")).toBeVisible()
-    expect(within(activity).getByText("Backup completed")).toBeVisible()
+    expect(within(activity).getByText("Export completed")).toBeVisible()
     const activityRows = within(activity).getAllByRole("listitem")
     expect(activityRows).toHaveLength(2)
     expect(within(activityRows[0]).getByText("Stop verified")).toBeVisible()
@@ -735,7 +735,7 @@ describe("application", () => {
     await user.click(screen.getByRole("option", { name: "Export & import" }))
     expect(categoryFilters.getByRole("button", { name: "Remove Export & import" })).toBeVisible()
     expect(within(activity).getAllByRole("listitem")).toHaveLength(1)
-    expect(within(activity).getByText("Backup completed")).toBeVisible()
+    expect(within(activity).getByText("Export completed")).toBeVisible()
 
     await user.click(categoryCombobox)
     await user.click(screen.getByRole("option", { name: "Sandbox" }))
@@ -755,7 +755,7 @@ describe("application", () => {
       expect.stringContaining("Start verified"),
       expect.stringContaining("Stop verified"),
       expect.stringContaining("Push completed"),
-      expect.stringContaining("Backup completed"),
+      expect.stringContaining("Export completed"),
     ])
     expect(filters.queryByRole("button", { name: "All" })).not.toBeInTheDocument()
   })
@@ -867,7 +867,7 @@ describe("application", () => {
     }
     expect(within(activity).getByText("Restart outcome unknown")).toBeVisible()
     expect(within(activity).getByText("Push failed")).toBeVisible()
-    expect(within(activity).getByText("Backup completed · restart required")).toBeVisible()
+    expect(within(activity).getByText("Export completed · restart required")).toBeVisible()
     expect(within(activity).getByText("Secret verification failed")).toBeVisible()
     expect(within(activity).getByText("GitHub disconnect incomplete")).toBeVisible()
     expect(within(activity).getByText("Deep check failed")).toBeVisible()
@@ -899,18 +899,18 @@ describe("application", () => {
     application.rerender(<ApplicationPreview source={sourceAt(2)} actions={application.actions} />)
     const progressingRow = panel.getByRole("list", { name: "Recent activity" }).querySelector<HTMLElement>('[data-activity-id="live-backup"]')
     expect(progressingRow).toBe(firstRow)
-    expect(progressingRow).toHaveTextContent("Checksumming archive")
+    expect(progressingRow).toHaveTextContent("Checksumming export file")
     expect(within(progressingRow!).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "75")
 
     application.rerender(<ApplicationPreview source={sourceAt(4)} actions={application.actions} />)
     const completedRow = panel.getByRole("list", { name: "Recent activity" }).querySelector<HTMLElement>('[data-activity-id="live-backup"]')
     expect(completedRow).toBe(firstRow)
     expect(completedRow).not.toHaveAttribute("aria-busy")
-    expect(completedRow).toHaveTextContent("Backup completed")
+    expect(completedRow).toHaveTextContent("Export completed")
     expect(completedRow?.querySelector("svg")).toHaveClass("lucide-check")
     expect(within(completedRow!).queryByRole("progressbar")).not.toBeInTheDocument()
     expect(panel.getByRole("list", { name: "Recent activity" }).querySelectorAll('[data-activity-id="live-backup"]')).toHaveLength(1)
-    expect(within(panel.getByRole("list", { name: "Recent activity" })).getAllByText("Backup completed")).toHaveLength(1)
+    expect(within(panel.getByRole("list", { name: "Recent activity" })).getAllByText("Export completed")).toHaveLength(1)
   })
 
   it("shows repository push progress inside its row", async () => {

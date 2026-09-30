@@ -103,7 +103,7 @@ describe("export notifications", () => {
     expect(backup.actions.exportAndVerify).not.toHaveBeenCalled()
   })
 
-  it("keeps a success toast with Show in Finder that reveals the archive", async () => {
+  it("keeps a success toast with Show in Finder that reveals the export file", async () => {
     const success: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "success", title: "Export ready", message: "done" }
     const backup = controller({ operation: success })
     const { rerender } = render(<Harness backup={controller()} />)

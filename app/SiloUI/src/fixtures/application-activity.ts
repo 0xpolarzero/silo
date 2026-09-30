@@ -55,7 +55,7 @@ export const defaultApplicationActivities: ApplicationActivity[] = [
   completed(1, { id: "dev-start", category: "sandbox", title: "Start verified", detail: "A fresh observation confirmed that the sandbox is running.", workspace: "dev", tone: "success" }),
   completed(2, { id: "playgrounds-stop", category: "sandbox", title: "Stop verified", detail: "A fresh observation confirmed that the sandbox is stopped.", workspace: "playgrounds", tone: "success" }),
   completed(3, { id: "dev-push", category: "git", title: "Push completed", detail: "Pushed 3 commits from acme/silo on main.", workspace: "dev", tone: "success" }),
-  completed(4, { id: "personal-backup", category: "backup", title: "Backup completed", detail: "Archive verification passed.", tone: "success" }),
+  completed(4, { id: "personal-backup", category: "backup", title: "Export completed", detail: "Export file verification passed.", tone: "success" }),
 ]
 
 export const activityCatalog: ApplicationActivity[] = [
@@ -69,7 +69,7 @@ export const activityCatalog: ApplicationActivity[] = [
   completed(8, { id: "catalog-restart-unknown", category: "sandbox", title: "Restart outcome unknown", detail: "The command completed, but a fresh observation was unavailable.", workspace: "dev", tone: "warning" }),
   completed(9, { id: "catalog-lifecycle-loss", category: "sandbox", title: "Sandbox stopped unexpectedly", detail: "A fresh observation shows that the sandbox is no longer running.", workspace: "personal", tone: "warning" }),
   completed(10, { id: "catalog-quarantined", category: "sandbox", title: "Sandbox quarantined", detail: "Credential safety could not be verified. Actions remain blocked.", workspace: "playgrounds", tone: "danger" }),
-  completed(11, { id: "catalog-unavailable", category: "sandbox", title: "Sandbox unavailable", detail: "The latest state observation failed. The previous snapshot is shown.", workspace: "dev", tone: "warning" }),
+  completed(11, { id: "catalog-unavailable", category: "sandbox", title: "Sandbox unavailable", detail: "The latest state observation failed. The last known status is shown.", workspace: "dev", tone: "warning" }),
   completed(12, { id: "catalog-recovered", category: "sandbox", title: "Sandbox recovered", detail: "Fresh state is available again.", workspace: "dev", tone: "success" }),
   completed(13, { id: "catalog-added", category: "sandbox", title: "Sandbox added", detail: "The new sandbox passed configuration and verification.", workspace: "personal", tone: "success" }),
   completed(14, { id: "catalog-config-updated", category: "sandbox", title: "Sandbox configuration updated", detail: "CPU, memory, and storage settings were applied.", workspace: "dev", tone: "success" }),
@@ -91,12 +91,12 @@ export const activityCatalog: ApplicationActivity[] = [
   completed(29, { id: "catalog-pull-complete", category: "git", title: "Pull completed", detail: "Updated acme/platform-tools on main.", workspace: "playgrounds", tone: "success" }),
   completed(30, { id: "catalog-pull-failed", category: "git", title: "Pull failed", detail: "Local changes prevented a safe update.", workspace: "dev", tone: "danger" }),
 
-  completed(31, { id: "catalog-backup-complete", category: "backup", title: "Backup completed", detail: "The archive and checksum were written successfully.", tone: "success" }),
-  completed(32, { id: "catalog-backup-restart", category: "backup", title: "Backup completed · restart required", detail: "The archive is valid. Restart dev to restore its previous running state.", tone: "warning" }),
-  completed(33, { id: "catalog-backup-failed", category: "backup", title: "Backup failed", detail: "The destination became unavailable while writing the archive.", tone: "danger" }),
-  completed(34, { id: "catalog-restore-complete", category: "backup", title: "Restore completed", detail: "Every sandbox was observed fresh and stopped.", tone: "success" }),
-  completed(35, { id: "catalog-restore-unknown", category: "backup", title: "Restore outcome unknown", detail: "The archive was applied, but restored state could not be verified.", tone: "warning" }),
-  completed(36, { id: "catalog-restore-failed", category: "backup", title: "Restore failed", detail: "The archive checksum did not match.", tone: "danger" }),
+  completed(31, { id: "catalog-backup-complete", category: "backup", title: "Export completed", detail: "The export file and checksum were written successfully.", tone: "success" }),
+  completed(32, { id: "catalog-backup-restart", category: "backup", title: "Export completed · restart required", detail: "The export file is valid. Start dev to resume work.", tone: "warning" }),
+  completed(33, { id: "catalog-backup-failed", category: "backup", title: "Export failed", detail: "The destination became unavailable while writing the export file.", tone: "danger" }),
+  completed(34, { id: "catalog-restore-complete", category: "backup", title: "Import completed", detail: "Every sandbox was observed fresh and stopped.", tone: "success" }),
+  completed(35, { id: "catalog-restore-unknown", category: "backup", title: "Restore outcome unknown", detail: "The export file was applied, but imported state could not be verified.", tone: "warning" }),
+  completed(36, { id: "catalog-restore-failed", category: "backup", title: "Import failed", detail: "The export file checksum did not match.", tone: "danger" }),
 
   completed(37, { id: "catalog-secret-added", category: "secrets", title: "Secret added", detail: "PACKAGE_TOKEN was assigned to 2 sandboxes.", tone: "success" }),
   completed(38, { id: "catalog-secret-edited", category: "secrets", title: "Secret updated", detail: "DATABASE_URL metadata and value were replaced.", workspace: "dev", tone: "success" }),
@@ -160,11 +160,11 @@ const liveSequences: Record<Exclude<ActivityFixtureMode, "catalog">, readonly Ap
     live("live-git", "git", "Push completed", "Pushed 2 commits from acme/silo on main.", "dev", 1, "Push complete", "success", "completed"),
   ],
   "backup-live": [
-    live("live-backup", "backup", "Preparing export", "Taking a live snapshot with a guest filesystem flush.", undefined, 0.1, "Export 10% complete"),
-    live("live-backup", "backup", "Writing archive", "Scanning, compressing, and writing the destination.", undefined, 0.45, "Export 45% complete"),
-    live("live-backup", "backup", "Checksumming archive", "Verifying the completed archive.", undefined, 0.75, "Export 75% complete"),
+    live("live-backup", "backup", "Preparing export", "Saving a checkpoint after flushing sandbox files.", undefined, 0.1, "Export 10% complete"),
+    live("live-backup", "backup", "Writing export file", "Scanning, compressing, and writing the destination.", undefined, 0.45, "Export 45% complete"),
+    live("live-backup", "backup", "Checksumming export file", "Verifying the completed export file.", undefined, 0.75, "Export 75% complete"),
     live("live-backup", "backup", "Finalizing export", "Saving the durable result.", undefined, 0.92, "Export 92% complete"),
-    live("live-backup", "backup", "Backup completed", "The archive and checksum were written successfully.", undefined, 1, "Backup complete", "success", "completed"),
+    live("live-backup", "backup", "Export completed", "The export file and checksum were written successfully.", undefined, 1, "Export complete", "success", "completed"),
   ],
   "secrets-live": [
     live("live-secrets", "secrets", "Applying secret change", "Updating DATABASE_URL for dev.", "dev"),

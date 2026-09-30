@@ -969,7 +969,7 @@ describe("production application bridge", () => {
     const events = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../test/contracts/setup-activity.json"), "utf8")) as unknown[]
     expect(events.map((event) => siloProgressEventSchema.parse(event))).toEqual(events)
   })
-  it("accepts the exact backup state serialized by the Rust bridge", () => {
+  it("accepts the exact export and import state serialized by the Rust bridge", () => {
     const state = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../test/contracts/backup-state.json"), "utf8"))
     expect(parseBackupState(state)).toEqual(state)
   })
@@ -1276,14 +1276,14 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.backupActions.startRestore(backup.archives[0], "restored", "dev")
-    await vi.waitFor(() => expect(store.getSnapshot().backup.availabilityMessage).toContain("invalid backup state"))
+    await vi.waitFor(() => expect(store.getSnapshot().backup.availabilityMessage).toContain("invalid export and import state"))
     // A malformed read is not evidence that the restore failed.
     expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running", operation: "restore", targetName: "restored" })
     store.dispose()
   })
 
   it("shows restore immediately, ignores stale results and dismisses results locally", async () => {
-    const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Backup complete", message: "Backup completed successfully." }
+    const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Export complete", message: "Export completed successfully." }
     let release: (() => void) | undefined
     let current = { ...structuredClone(backup), operation: completed, operationId: "first-operation" } as BackupState
     const mock = native({ invoke: vi.fn(async (command: string) => {
@@ -1322,7 +1322,7 @@ describe("production application bridge", () => {
   })
 
   it("keeps a submission failure visible across refreshes until dismissed", async () => {
-    const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Backup complete", message: "Backup completed successfully." }
+    const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Export complete", message: "Export completed successfully." }
     const mock = native({ invoke: vi.fn(async (command: string) => {
       if (command === "read_application_state") return structuredClone(source)
       if (command === "read_backup_state") return { ...backup, operation: completed }
