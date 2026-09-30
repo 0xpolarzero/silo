@@ -195,6 +195,8 @@ struct ViewState {
     destination: Option<PathBuf>,
     operation: Option<Operation>,
     cancellation: Option<backup::Cancellation>,
+    /// The export file check behind the import review, by request id (E-27).
+    inspection: Option<(String, backup::Cancellation)>,
 }
 
 pub(crate) struct Controller {
@@ -241,6 +243,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
             destination,
             operation: None,
             cancellation: None,
+            inspection: None,
         }),
         busy: AtomicBool::new(false),
         revision: AtomicU64::new(1),
@@ -439,27 +442,31 @@ pub(crate) async fn choose_backup_archive(
     .map_err(|error| error.to_string())?
 }
 
+/// Checks an export file before the import review. The check can take minutes
+/// for a large file, so it is registered under the caller's request id and
+/// `cancel_backup_inspection` stops it when the review closes. It changes no
+/// state and publishes nothing (E-27).
 #[tauri::command]
 pub(crate) async fn inspect_backup_archive(
-    app: AppHandle,
     window: WebviewWindow,
     controller: State<'_, Arc<Controller>>,
     archive_path: String,
+    request_id: Option<String>,
 ) -> Result<ArchiveInspectionResult, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(archive_path);
-        let cancellation = backup::Cancellation::default();
-        match controller.service.inspect_archive(&path, &cancellation) {
-            Ok(inspection) => {
-                publish(&app, &controller);
-                Ok(ArchiveInspectionResult {
-                    archive: archive_from(&path, &inspection),
-                    valid: true,
-                    reason: None,
-                })
-            }
+        let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let cancellation = register_inspection(&controller, request_id.clone());
+        let inspected = controller.service.inspect_archive(&path, &cancellation);
+        finish_inspection(&controller, &request_id);
+        match inspected {
+            Ok(inspection) => Ok(ArchiveInspectionResult {
+                archive: archive_from(&path, &inspection),
+                valid: true,
+                reason: None,
+            }),
             Err(error) => Ok(ArchiveInspectionResult {
                 archive: Archive {
                     name: path
@@ -484,6 +491,57 @@ pub(crate) async fn inspect_backup_archive(
     })
     .await
     .map_err(|error| error.to_string())?
+}
+
+/// Stops the export file check started under `request_id`, if it is still running.
+#[tauri::command]
+pub(crate) fn cancel_backup_inspection(
+    window: WebviewWindow,
+    controller: State<'_, Arc<Controller>>,
+    request_id: String,
+) -> Result<bool, String> {
+    require_main(&window)?;
+    Ok(cancel_inspection(&controller, &request_id))
+}
+
+/// Registers a check; only one runs at a time, so a newer one cancels the older.
+fn register_inspection(controller: &Controller, request_id: String) -> backup::Cancellation {
+    let cancellation = backup::Cancellation::default();
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((_, previous)) = view.inspection.replace((request_id, cancellation.clone())) {
+        previous.cancel();
+    }
+    cancellation
+}
+
+fn finish_inspection(controller: &Controller, request_id: &str) {
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if view.inspection.as_ref().is_some_and(|(id, _)| id == request_id) {
+        view.inspection = None;
+    }
+}
+
+fn cancel_inspection(controller: &Controller, request_id: &str) -> bool {
+    let mut view = controller
+        .view
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match view.inspection.take() {
+        Some((id, cancellation)) if id == request_id => {
+            cancellation.cancel();
+            true
+        }
+        other => {
+            view.inspection = other;
+            false
+        }
+    }
 }
 
 /// Authorizes a reveal request. A path may be revealed only when it matches,
@@ -1749,6 +1807,7 @@ mod tests {
                 destination: Some(PathBuf::from("/backups")),
                 operation: None,
                 cancellation: None,
+                inspection: None,
             }),
             busy: AtomicBool::new(false),
             revision: AtomicU64::new(0),
@@ -2516,6 +2575,26 @@ mod tests {
     }
 
     #[test]
+    fn an_export_check_is_cancelled_only_by_its_own_request_or_a_newer_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let first = register_inspection(&controller, "first".into());
+        assert!(!cancel_inspection(&controller, "other"));
+        assert!(!first.cancelled());
+        assert!(cancel_inspection(&controller, "first"));
+        assert!(first.cancelled());
+
+        let second = register_inspection(&controller, "second".into());
+        let third = register_inspection(&controller, "third".into());
+        assert!(second.cancelled(), "a newer check replaces the older one");
+        finish_inspection(&controller, "second");
+        assert!(!third.cancelled());
+        finish_inspection(&controller, "third");
+        assert!(!cancel_inspection(&controller, "third"));
+        assert!(!third.cancelled());
+    }
+
+    #[test]
     fn multi_vm_restore_requires_an_explicit_source() {
         let names = vec!["first".into(), "second".into()];
         assert!(select_archive_source(&names, None).is_err());
@@ -2625,6 +2704,7 @@ mod tests {
                 destination: None,
                 operation: None,
                 cancellation: None,
+                inspection: None,
             }),
             busy: AtomicBool::new(false),
             revision: AtomicU64::new(0),
@@ -3084,6 +3164,7 @@ mod tests {
                 destination: None,
                 operation: None,
                 cancellation: None,
+                inspection: None,
             }),
             busy: AtomicBool::new(false),
             revision: AtomicU64::new(0),

@@ -1272,6 +1272,16 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
   }
 
+  /** Checks an export file under a request id so aborting `signal` stops the check (E-27).
+   * The check changes no state, so no refresh follows it. */
+  async function inspectBackupArchive(archivePath: string, signal?: AbortSignal) {
+    const requestId = crypto.randomUUID()
+    const cancel = () => { void native.invoke("cancel_backup_inspection", { requestId }).catch(() => undefined) }
+    signal?.addEventListener("abort", cancel, { once: true })
+    try { return archiveInspectionShape.parse(await native.invoke("inspect_backup_archive", { archivePath, requestId })) }
+    finally { signal?.removeEventListener("abort", cancel) }
+  }
+
   /** Settles with the result the backend reports under `operationId`. A state read
    * that began after the export started and shows another id means the result is gone. */
   function waitForExport(operationId: string): Promise<VerifiedExport> {
@@ -1301,19 +1311,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (selected) await refresh()
       return selected
     },
-    async chooseArchive(onSelected) {
+    async chooseArchive(onSelected, signal) {
       const archivePath = await native.invoke<string | null>("choose_backup_archive")
-      if (!archivePath) return null
+      if (!archivePath || signal?.aborted) return null
       onSelected?.(archivePath)
-      const inspected = archiveInspectionShape.parse(await native.invoke("inspect_backup_archive", { archivePath }))
-      await refresh()
-      return inspected
+      return inspectBackupArchive(archivePath, signal)
     },
-    async inspectArchive(archive) {
-      const inspected = archiveInspectionShape.parse(await native.invoke("inspect_backup_archive", { archivePath: archive.archivePath }))
-      await refresh()
-      return inspected
-    },
+    inspectArchive: (archive, signal) => inspectBackupArchive(archive.archivePath, signal),
     startBackup(destination, sandboxes, checkpointId) {
       if (pendingBackupOperation || snapshot.backup.operation?.kind === "running") return
       backupActions.exportAndVerify(destination, sandboxes, checkpointId).catch(() => undefined)

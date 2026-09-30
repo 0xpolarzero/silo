@@ -152,6 +152,25 @@ describe("import notifications and popover", () => {
     expect(backup.actions.startRestore).toHaveBeenCalledExactlyOnceWith(multi, "dev-copy", "dev")
   })
 
+  it("closing the check stops it and never reopens the review with its late result", async () => {
+    let signal: AbortSignal | undefined
+    let finish: ((value: { archive: typeof archive; valid: boolean }) => void) | undefined
+    const chooseArchive = vi.fn().mockImplementation((onSelected?: (path: string) => void, abort?: AbortSignal) => {
+      onSelected?.("/p")
+      signal = abort
+      return new Promise(resolve => { finish = resolve })
+    })
+    render(<Harness backup={controller({}, { chooseArchive })} />)
+    fireEvent.click(screen.getByRole("button", { name: "Start import" }))
+    expect(await screen.findByText("Checking export")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+    await vi.waitFor(() => expect(screen.queryByText("Checking export")).not.toBeInTheDocument())
+    expect(signal?.aborted).toBe(true)
+    await act(async () => { finish?.({ archive, valid: true }) })
+    expect(screen.queryByRole("textbox", { name: "New sandbox name" })).not.toBeInTheDocument()
+    expect(screen.queryByText(`Import ${archive.name}`)).not.toBeInTheDocument()
+  })
+
   it("reports an invalid export file in the popover and lets the user choose another", async () => {
     const backup = controller({}, { chooseArchive: vi.fn().mockImplementation(async (onSelected?: (path: string) => void) => { onSelected?.("/p"); return { archive, valid: false, reason: "The checksum does not match." } }) })
     render(<Harness backup={backup} />)

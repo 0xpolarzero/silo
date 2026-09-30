@@ -182,6 +182,7 @@ fn main() {
             backup_controller::choose_backup_destination,
             backup_controller::choose_backup_archive,
             backup_controller::inspect_backup_archive,
+            backup_controller::cancel_backup_inspection,
             backup_controller::reveal_backup_archive,
             backup_controller::start_backup,
             backup_controller::start_restore,

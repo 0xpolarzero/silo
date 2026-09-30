@@ -1335,7 +1335,7 @@ describe("production application bridge", () => {
     await store.initialize()
     expect(await store.backupActions.chooseDestination()).toBe("/Volumes/Backups")
     await store.backupActions.chooseArchive()
-    expect(mock.invoke).toHaveBeenCalledWith("inspect_backup_archive", { archivePath: "/Volumes/Backups/dev.silo-backup" })
+    expect(mock.invoke).toHaveBeenCalledWith("inspect_backup_archive", { archivePath: "/Volumes/Backups/dev.silo-backup", requestId: expect.any(String) })
     store.backupActions.startRestore(backup.archives[0], "dev-restored")
     await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_restore", { archivePath: "/tmp/dev.silo-backup", newName: "dev-restored" }))
     store.dispose()

@@ -100,6 +100,15 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
   const [review, setReview] = useState<ImportReview | null>(null)
   // A result already present when the app loads is from a previous session: never toast it.
   const seenOperation = useRef(false)
+  // The export file check behind the open review; closing the review aborts it (E-27).
+  const inspectionRef = useRef<AbortController | null>(null)
+  useEffect(() => () => inspectionRef.current?.abort(), [])
+
+  function closeReview() {
+    inspectionRef.current?.abort()
+    inspectionRef.current = null
+    setReview(null)
+  }
 
   async function exportSandbox(sandboxName: string, checkpoint?: { id: string; name: string }): Promise<VerifiedExport | null> {
     const controller = backupRef.current
@@ -124,9 +133,15 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
       return
     }
     controller.actions.dismissOperation()
+    inspectionRef.current?.abort()
+    const inspection = new AbortController()
+    inspectionRef.current = inspection
     let result
-    try { result = await controller.actions.chooseArchive(() => setReview({ kind: "checking" })) }
-    catch (error) { setReview({ kind: "invalid", reason: errorText(error) }); return }
+    try { result = await controller.actions.chooseArchive(() => { if (!inspection.signal.aborted) setReview({ kind: "checking" }) }, inspection.signal) }
+    catch (error) { if (!inspection.signal.aborted) setReview({ kind: "invalid", reason: errorText(error) }); return }
+    // A review closed (or replaced) while the file was checked ignores the late result.
+    if (inspection.signal.aborted) return
+    inspectionRef.current = null
     if (!result) { setReview(null); return }
     if (!result.valid) { setReview({ kind: "invalid", reason: result.reason ?? "This export file could not be validated." }); return }
     const base = result.archive.sandboxes[0] || "sandbox"
@@ -204,8 +219,8 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
     source={optionsRef.current.source}
     review={review}
     onReview={setReview}
-    onClose={() => setReview(null)}
-    onRetry={() => { setReview(null); void beginImport() }}
+    onClose={closeReview}
+    onRetry={() => { closeReview(); void beginImport() }}
     onImport={(archive, newName, sourceName) => {
       reviewDraftRef.current = { kind: "review", archive, sourceName, newName }
       checkpointRef.current = undefined

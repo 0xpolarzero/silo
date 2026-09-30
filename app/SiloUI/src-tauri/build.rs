@@ -80,6 +80,7 @@ fn main() {
             "choose_backup_destination",
             "choose_backup_archive",
             "inspect_backup_archive",
+            "cancel_backup_inspection",
             "start_backup",
             "start_restore",
             "cancel_backup_operation",

@@ -118,3 +118,32 @@ describe("export and verify", () => {
     await expect(completion).rejects.toMatchObject({ reason: "unavailable", operationId: "op-7" })
   })
 })
+
+// E-27: closing the import review stops the export file check it started.
+describe("export file check", () => {
+  it("tags the check with a request id, cancels it on abort, and changes no state", async () => {
+    let finish: ((value: unknown) => void) | undefined
+    const { production, invoke } = await store(async () => "unused")
+    invoke.mockImplementation(async (command: string): Promise<unknown> => {
+      if (command === "read_application_state") return structuredClone(source)
+      if (command === "read_backup_state") return structuredClone(idle)
+      if (command === "choose_backup_archive") return "/Volumes/Backups/dev.silo-backup"
+      if (command === "inspect_backup_archive") return new Promise(resolve => { finish = resolve })
+      return undefined
+    })
+    const reads = () => invoke.mock.calls.filter(([command]) => command === "read_backup_state").length
+    const before = reads()
+    const abort = new AbortController()
+    const checked = production.backupActions.chooseArchive(undefined, abort.signal)
+    await vi.waitFor(() => expect(finish).toBeDefined())
+    const call = invoke.mock.calls.find(([command]) => command === "inspect_backup_archive")
+    const requestId = (call?.[1] as { requestId?: string } | undefined)?.requestId
+    expect(requestId).toEqual(expect.any(String))
+    abort.abort()
+    expect(invoke).toHaveBeenCalledWith("cancel_backup_inspection", { requestId })
+    finish?.({ archive: exported, valid: false, reason: "The operation was cancelled." })
+    await checked
+    expect(reads()).toBe(before)
+    production.dispose()
+  })
+})

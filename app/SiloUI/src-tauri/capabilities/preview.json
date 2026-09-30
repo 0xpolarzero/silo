@@ -45,6 +45,7 @@
     "allow-choose-backup-destination",
     "allow-choose-backup-archive",
     "allow-inspect-backup-archive",
+    "allow-cancel-backup-inspection",
     "allow-reveal-backup-archive",
     "allow-start-backup",
     "allow-start-restore",
