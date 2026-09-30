@@ -1,37 +1,16 @@
+import { createApplicationActionsMock } from "@/test/application-actions"
 import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 
 import { ApplicationPreview } from "@/fixtures/application-preview"
-import type { ApplicationActions, ApplicationSource } from "@/features/application/model/application-source"
+import type { ApplicationSource } from "@/features/application/model/application-source"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { WorkspaceFixtureMode } from "@/fixtures/application-scenarios"
 
 
 function renderApplication(scenario: Parameters<typeof applicationSourceForScenario>[0] = "running", source?: ApplicationSource) {
-  const actions: ApplicationActions = {
-    saveSecret: vi.fn(),
-    removeSecret: vi.fn(),
-    retryRuntimeChecks: vi.fn(),
-    saveMachineConfiguration: vi.fn(),
-    dismissMachineConfigurationError: vi.fn(),
-    retryMachineConfiguration: vi.fn(),
-    pushRepository: vi.fn(),
-    startWorkspace: vi.fn(),
-    stopWorkspace: vi.fn(),
-    restartWorkspace: vi.fn(),
-    dismissWorkspaceError: vi.fn(),
-    openTerminal: vi.fn(),
-    openEditor: vi.fn(),
-    connectGitHub: vi.fn(),
-    cancelGitHubConnection: vi.fn(),
-    reopenGitHubAuthorization: vi.fn(),
-    disconnectGitHub: vi.fn(),
-    setGitHubAccessEnabled: vi.fn(),
-    saveGitHubConfiguration: vi.fn(),
-    retryGitHubConfiguration: vi.fn(),
-    retryGitHubRepositoryCatalog: vi.fn(),
-  }
+  const actions = createApplicationActionsMock()
 
   return {
     actions,
