@@ -360,6 +360,26 @@ mod native {
                     return;
                 }
             }
+            #[cfg(target_os = "linux")]
+            if command == "help" {
+                // A snap browser (Ubuntu's default Firefox) cannot read files under
+                // /usr/lib or an AppImage mount, so show Help in a Silo window (F-21).
+                let result = app
+                    .path()
+                    .resource_dir()
+                    .map_err(|_| "Silo Help could not be located.".to_string())
+                    .and_then(|resources| {
+                        super::open_help_window(app, &resources.join("docs/silo-help.html"))
+                    });
+                if let (Err(message), Some(window)) = (result, app.get_webview_window("main")) {
+                    crate::status_panel::report(crate::system_integrations::show_integration_error(
+                        app.clone(),
+                        window,
+                        message,
+                    ));
+                }
+                return;
+            }
             if command == "help" || link(command).is_some() {
                 // Help ships with this build; external destinations are fixed project URLs.
                 let destination = if command == "help" {
@@ -413,6 +433,64 @@ mod native {
         });
         Ok(())
     }
+}
+
+/// Where a navigation inside the Linux Help window goes.
+#[cfg(any(test, target_os = "linux"))]
+#[derive(Debug, PartialEq, Eq)]
+enum HelpNavigation {
+    /// The bundled Help page itself (including its anchors).
+    Stay,
+    /// A web link: open it in the user's browser.
+    Browser,
+    Block,
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn help_navigation(url: &tauri::Url, help: &tauri::Url) -> HelpNavigation {
+    match url.scheme() {
+        "http" | "https" if url.host_str().is_some() => HelpNavigation::Browser,
+        "file" if url.path() == help.path() => HelpNavigation::Stay,
+        _ => HelpNavigation::Block,
+    }
+}
+
+/// Show the bundled Help page in its own window. It gets no IPC capabilities.
+#[cfg(target_os = "linux")]
+fn open_help_window(app: &AppHandle, path: &std::path::Path) -> Result<(), String> {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("help") {
+        return window
+            .show()
+            .and_then(|_| window.unminimize())
+            .and_then(|_| window.set_focus())
+            .map_err(|error| error.to_string());
+    }
+    if !path.is_file() {
+        return Err("Silo Help could not be located.".into());
+    }
+    let help = tauri::Url::from_file_path(path).map_err(|_| "Silo Help could not be located.")?;
+    let page = help.clone();
+    let browser = app.clone();
+    tauri::WebviewWindowBuilder::new(app, "help", tauri::WebviewUrl::External(help))
+        .title("Silo Help")
+        .inner_size(880.0, 720.0)
+        .on_navigation(move |url| match help_navigation(url, &page) {
+            HelpNavigation::Stay => true,
+            HelpNavigation::Browser => {
+                let (app, url) = (browser.clone(), url.to_string());
+                std::thread::spawn(move || {
+                    if let Err(error) = crate::applications::open_browser(&app, &url) {
+                        eprintln!("Silo Help: {error}");
+                    }
+                });
+                false
+            }
+            HelpNavigation::Block => false,
+        })
+        .build()
+        .map(|_| ())
+        .map_err(|error| format!("Silo Help could not be opened: {error}"))
 }
 
 // Keep gesture policy platform-independent so AltGr and shortcut regressions run on every host.
@@ -507,6 +585,19 @@ mod tests {
         keys.cancel();
         assert_eq!(keys.release(MenuKey::LeftAlt, false, 10), None);
     }
+    #[test]
+    fn help_window_keeps_its_page_and_sends_web_links_to_the_browser() {
+        let help: tauri::Url = "file:///usr/lib/Silo/docs/silo-help.html".parse().unwrap();
+        let at = |url: &str| help_navigation(&url.parse().unwrap(), &help);
+        assert_eq!(at("file:///usr/lib/Silo/docs/silo-help.html"), HelpNavigation::Stay);
+        assert_eq!(at("file:///usr/lib/Silo/docs/silo-help.html#checkpoints"), HelpNavigation::Stay);
+        assert_eq!(at("https://github.com/0xpolarzero/silo/issues"), HelpNavigation::Browser);
+        assert_eq!(at("file:///etc/passwd"), HelpNavigation::Block);
+        assert_eq!(at("javascript:alert(1)"), HelpNavigation::Block);
+        assert_eq!(at("mailto:someone@example.com"), HelpNavigation::Block);
+        assert_eq!(at("about:blank"), HelpNavigation::Block);
+    }
+
     #[test]
     fn held_alt_from_a_window_manager_drag_does_not_toggle_the_menu() {
         let mut keys = MenuKeys::default();
