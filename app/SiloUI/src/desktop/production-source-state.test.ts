@@ -750,6 +750,15 @@ describe("native state validation", () => {
     expect(parsed.backup).toEqual({ lastArchive: "", completedLabel: "", compressedSize: "", destination: "" })
   })
 
+  it("retains separate setup and lifecycle diagnostics (D-39)", () => {
+    const local = structuredClone(source)
+    const row = { ...local.workspaces[0], lifecycleFailure: "Start failed. Retry.", lifecycleFailureDiagnostic: "Exit code 13" }
+    const activity = { ...local.activities[0], diagnostic: "Exit code 13", partial: true }
+    const parsed = parseApplicationSource({ ...local, workspaces: [row], activities: [activity] })
+    expect(parsed.workspaces[0]).toMatchObject({ lifecycleFailureDiagnostic: "Exit code 13" })
+    expect(parsed.activities[0]).toMatchObject({ diagnostic: "Exit code 13", partial: true })
+  })
+
   it("rejects local state whose shown fields are malformed (H-17)", () => {
     expect(() => parseApplicationSource({ ...structuredClone(source), runtimeRepair: { status: "needed" } })).toThrow()
     expect(() => parseApplicationSource({ ...structuredClone(source), workspaces: [{ ...structuredClone(source.workspaces[0]), machine: { id: "x", kind: "vm", name: "dev" } }] })).toThrow()

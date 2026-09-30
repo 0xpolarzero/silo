@@ -45,6 +45,8 @@ above for current behavior and build commands.
 
 ### Runtime, checkpoints and network
 
+- [Runtime failure contract](SiloUI-RUNTIME-ERRORS.md): summary, diagnostic and partial-change fields for setup, lifecycle and Activity failures.
+
 - [Checkpoint and desktop direction](research/checkpoints-desktop-direction-2026-09-24.md): newer MicroSandbox snapshot/fork support, the upstream-upgrade alternative, Btrfs limits, desktop candidate fit, LCU boundaries and qualification requirements.
 - [MicroSandbox live public ports](research/microsandbox-live-public-ports-0.7.2.md): pinned control and publisher source, Silo's loopback TCP contract, ingress and multi-tenant boundaries, and regression limits.
 

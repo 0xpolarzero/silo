@@ -168,7 +168,8 @@ fn failure_parts(event: &Event) -> Option<(String, Option<String>)> {
     Some(match (failure.split_once('\n'), &event.diagnostic) {
         (Some((summary, legacy)), None) => (summary.to_string(), Some(legacy.trim().to_string()).filter(|text| !text.is_empty())),
         _ => (failure.to_string(), event.diagnostic.clone()),
-    })}
+    })
+}
 
 /// A VM's latest undismissed lifecycle failure, as shown on its row.
 #[derive(Clone, Debug, Serialize)]
@@ -226,7 +227,14 @@ fn history_warning(kind: &str) -> Value {
 pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
     let mut warnings = Vec::new();
     let mut result: Vec<Value> = read_activity(paths, false).unwrap_or_else(|_| { warnings.push(history_warning("setup")); Vec::new() }).into_iter().enumerate().map(|(index, event)| {
-        serde_json::json!({"id": format!("setup-{}-{}-{}-{index}", event.request_id, event.timestamp, event.step), "category": "sandbox", "title": event.message, "detail": "Sandbox setup", "occurredAt": timestamp(event.timestamp), "time": timestamp(event.timestamp), "tone": if event.level == "error" { "danger" } else if event.level == "warning" { "warning" } else { "neutral" }, "status": "completed", "workspace": event.workspace})
+        let mut entry = serde_json::json!({"id": format!("setup-{}-{}-{}-{index}", event.request_id, event.timestamp, event.step), "category": "sandbox", "title": event.message, "detail": "Sandbox setup", "occurredAt": timestamp(event.timestamp), "time": timestamp(event.timestamp), "tone": if event.level == "error" { "danger" } else if event.level == "warning" { "warning" } else { "neutral" }, "status": "completed", "workspace": event.workspace});
+        if let Some(diagnostic) = event.diagnostic {
+            entry["diagnostic"] = diagnostic.into();
+        }
+        if event.partial {
+            entry["partial"] = true.into();
+        }
+        entry
     }).collect();
     result.extend(events(paths).unwrap_or_else(|_| { warnings.push(history_warning("sandbox")); Vec::new() }).into_iter().map(|event| {
         let interrupted = !event.completed && event.process != std::process::id();

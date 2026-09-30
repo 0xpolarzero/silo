@@ -2803,6 +2803,9 @@ pub struct MachineConfigurationProgress {
     /// bounded, for a Details disclosure. Never part of `message`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     diagnostic: Option<String>,
+    /// Some changes in this setup completed before the failure.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    partial: bool,
 }
 
 fn machine_progress(
@@ -2856,6 +2859,7 @@ fn machine_progress(
         failure_code: None,
         exit_code: None,
         diagnostic: None,
+        partial: false,
     }
 }
 
@@ -2976,6 +2980,7 @@ pub(crate) struct FailureReport {
     pub(crate) summary: String,
     pub(crate) exit_code: Option<i32>,
     pub(crate) diagnostic: Option<String>,
+    pub(crate) partial: bool,
 }
 
 pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
@@ -2993,11 +2998,12 @@ pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
                 summary: error.to_string(),
                 exit_code: *exit_code,
                 diagnostic: (!diagnostic.is_empty()).then_some(diagnostic),
+                partial: false,
             }
         }
         RuntimeError::Partial(inner) => {
             let inner = failure_report(inner);
-            FailureReport { summary: format!("{} {PARTIAL_CHANGES_KEPT}", inner.summary), ..inner }
+            FailureReport { summary: format!("{} {PARTIAL_CHANGES_KEPT}", inner.summary), partial: true, ..inner }
         }
         RuntimeError::Busy | RuntimeError::TimedOut { .. } | RuntimeError::Cancelled { .. } => {
             let summary = error.to_string();
@@ -3005,7 +3011,7 @@ pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
                 (_, RuntimeError::Busy) => "configuration",
                 (code, _) => code,
             };
-            FailureReport { code, summary, exit_code: None, diagnostic: None }
+            FailureReport { code, summary, exit_code: None, diagnostic: None, partial: false }
         }
         RuntimeError::Invalid(message)
         | RuntimeError::Malformed(message)
@@ -3035,7 +3041,7 @@ pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
                 .chars()
                 .take(800)
                 .collect();
-            FailureReport { code, summary, exit_code: None, diagnostic: None }
+            FailureReport { code, summary, exit_code: None, diagnostic: None, partial: false }
         }
     }
 }
@@ -3234,6 +3240,11 @@ fn read_activity(
             "setup-failed" => setup_failure_message(event.failure_code.as_deref().unwrap_or("runtime")).ok_or("Silo's setup activity history contains an unknown failure.")?,
             _ => return Err("Silo's setup activity history contains an unknown operation.".into()),
         };
+        event.partial &= event.step == "setup-failed";
+        if event.partial {
+            event.message.push(' ');
+            event.message.push_str(PARTIAL_CHANGES_KEPT);
+        }
         // A stored diagnostic is filtered again, like the message is re-derived above.
         event.diagnostic = event
             .diagnostic
@@ -3381,6 +3392,7 @@ fn apply_configuration_with_progress(
         outcome.failure_code = Some(report.code.into());
         outcome.exit_code = report.exit_code;
         outcome.diagnostic = report.diagnostic;
+        outcome.partial = report.partial;
         let last = journal
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -6141,6 +6153,27 @@ esac
     }
 
     #[test]
+    fn setup_activity_keeps_diagnostics_and_partial_guidance_in_application_state() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut event = machine_progress("attempt", "setup-failed", "dev", 0);
+        event.failure_code = Some("permission".into());
+        event.diagnostic = Some("Exit code 13\nPermission denied".into());
+        event.level = "error".into();
+        let mut encoded = serde_json::to_value(&event).unwrap();
+        encoded["partial"] = json!(true);
+        let event = serde_json::from_value(encoded).unwrap();
+        let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
+        journal.append(event);
+        let history = read_activity(&paths, false).unwrap();
+        assert!(history[0].message.ends_with(PARTIAL_CHANGES_KEPT));
+        let activities = runtime_activity::read(&paths).unwrap();
+        assert_eq!(activities[0]["diagnostic"], "Exit code 13\nPermission denied");
+        assert_eq!(activities[0]["partial"], true);
+        assert!(!activities[0]["title"].as_str().unwrap().contains("Exit code"));
+    }
+
+    #[test]
     fn partial_configuration_failure_keeps_the_precise_error_and_guidance() {
         let precise = RuntimeError::Invalid("Sandbox 'second' is not owned by Silo. No sandbox operation was performed.".into());
         let report = failure_report(&RuntimeError::Partial(Box::new(precise)));
@@ -7181,7 +7214,8 @@ esac
         holding.recv().unwrap();
         assert!(!vm_holds_no_secret_material(&StubRunner::successful_json(vec![inspect(&paths, "Stopped")]), &paths, "dev"));
         release.send(()).unwrap();
-        holder.join().unwrap();    }
+        holder.join().unwrap();
+    }
 
     #[test]
     fn native_state_omits_legacy_placeholders_and_does_not_guess_ssh_state() {
