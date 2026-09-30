@@ -593,6 +593,7 @@ impl<R: MsbRunner> BackupService<R> {
             validate_sandbox_name(&source.name)?;
             let mut runtime_config = source.runtime_config.clone();
             let mut machine_config = source.machine_config.clone();
+            portable_export_network(&source.name, &mut runtime_config)?;
             validate_export_configs(&source.name, &runtime_config, &machine_config)?;
             let snapshot_group = source.snapshot_group.clone();
             let flush = if source.was_running {
@@ -2033,10 +2034,14 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
                     && value.is_some_and(|value| !value.contains('\0'))
             })
         })
-    }) || !supported_runtime_settings(object)
-    {
+    }) {
         return Err(BackupError::UnsupportedStorage(format!(
-            "{name} has runtime settings this Silo build cannot restore."
+            "{name} has environment variables that Silo cannot carry in an export."
+        )));
+    }
+    if let Some(setting) = unsupported_runtime_setting(object) {
+        return Err(BackupError::UnsupportedStorage(format!(
+            "{name} has custom {setting} settings that Silo cannot carry in an export."
         )));
     }
     let mounts = object
@@ -2091,35 +2096,79 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
 // Only the exact credential-free profile installed during Silo VM creation is
 // restorable here. Custom policies, host secret references and values stay blocked.
 pub(crate) fn default_github_network(network: &Value) -> bool {
-    let expected: Value =
-        serde_json::from_str(include_str!("../guest/github-network-default.json"))
-            .expect("checked-in GitHub network defaults");
-    network == &expected
+    network == &github_network_defaults()
 }
 
-fn imported_deny_network(network: &Value) -> bool {
-    let mut expected: Value =
-        serde_json::from_str(include_str!("../guest/github-network-default.json"))
-            .expect("checked-in GitHub network defaults");
+fn github_network_defaults() -> Value {
+    serde_json::from_str(include_str!("../guest/github-network-default.json"))
+        .expect("checked-in GitHub network defaults")
+}
+
+/// The network an import starts from: Silo's profile with a deny-all policy.
+/// An import applies its own policy and current secret assignments anyway.
+fn imported_deny_network_value() -> Value {
+    let mut expected = github_network_defaults();
     expected["policy"] = serde_json::json!({
         "default_egress": "deny",
         "default_ingress": "deny",
         "rules": []
     });
-    network == &expected
+    expected
 }
 
-fn supported_runtime_settings(config: &serde_json::Map<String, Value>) -> bool {
+fn imported_deny_network(network: &Value) -> bool {
+    network == &imported_deny_network_value()
+}
+
+/// An export carries no network authority: the importing Silo applies a
+/// deny-all policy and its own secret assignments (see
+/// `checkpoints::import_pending_restore`). So a Silo network profile with a
+/// custom policy, assigned secret references or published ports is exported
+/// with those parts reset (E-30). Anything else that differs from the
+/// profile is a real blocker and is named.
+fn portable_export_network(name: &str, runtime_config: &mut Value) -> Result<(), BackupError> {
+    let Some(network) = runtime_config.get_mut("network") else {
+        return Ok(());
+    };
+    if default_github_network(network) || imported_deny_network(network) || network.get("policy").is_some_and(Value::is_null) {
+        return Ok(());
+    }
+    let expected = imported_deny_network_value();
+    let mut candidate = network.clone();
+    for field in ["policy", "secrets", "ports"] {
+        candidate[field] = expected[field].clone();
+    }
+    if let (Some(candidate), Some(expected)) = (candidate.as_object(), expected.as_object()) {
+        let differing = expected
+            .keys()
+            .chain(candidate.keys())
+            .find(|key| candidate.get(*key) != expected.get(*key));
+        if let Some(field) = differing {
+            return Err(BackupError::UnsupportedStorage(format!(
+                "{name} has custom network {field} settings that Silo cannot carry in an export."
+            )));
+        }
+    } else {
+        return Err(BackupError::UnsupportedStorage(format!(
+            "{name} has network settings that Silo cannot carry in an export."
+        )));
+    }
+    *network = candidate;
+    Ok(())
+}
+
+/// Names the first runtime setting an export cannot carry, if any.
+fn unsupported_runtime_setting(config: &serde_json::Map<String, Value>) -> Option<String> {
     // Preserve old VM backups so users can recover before migrating their account.
     if let Some(labels) = config.get("labels") {
         let Some(labels) = labels.as_object() else {
-            return false;
+            return Some("label".into());
         };
         if labels
             .get(crate::working_account::LABEL)
             .is_some_and(|version| version.as_str() != Some("1"))
         {
-            return false;
+            return Some("working account".into());
         }
     }
     let expected = [
@@ -2142,15 +2191,15 @@ fn supported_runtime_settings(config: &serde_json::Map<String, Value>) -> bool {
                 continue;
             }
             let Some(fields) = value.as_object() else {
-                return false;
+                return Some(field.into());
             };
-            if fields.iter().any(|(key, value)| {
-                if field == "runtime" && (key == "cmd" || key == "shell") && value.is_null() {
+            if let Some((key, _)) = fields.iter().find(|(key, value)| {
+                if field == "runtime" && (*key == "cmd" || *key == "shell") && value.is_null() {
                     return false;
                 }
-                defaults.get(key) != Some(value)
+                defaults.get(*key) != Some(*value)
             }) {
-                return false;
+                return Some(format!("{field} {key}"));
             }
         }
     }
@@ -2163,24 +2212,30 @@ fn supported_runtime_settings(config: &serde_json::Map<String, Value>) -> bool {
             value.as_str() != Some(default)
                 && !(field == "pull_policy" && value.as_str() == Some("Never"))
         }) {
-            return false;
+            return Some(field.replace('_', " "));
         }
     }
-    config.get("init").is_none_or(Value::is_null)
-        && config
-            .get("rlimits")
-            .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
-        && config
-            .get("resources")
-            .and_then(Value::as_object)
-            .is_some_and(|resources| {
-                resources.keys().all(|key| {
-                    matches!(
-                        key.as_str(),
-                        "cpus" | "max_cpus" | "memory_mib" | "max_memory_mib"
-                    )
-                })
+    if !config.get("init").is_none_or(Value::is_null) {
+        return Some("init".into());
+    }
+    if !config
+        .get("rlimits")
+        .is_none_or(|value| value.as_array().is_some_and(Vec::is_empty))
+    {
+        return Some("resource limit".into());
+    }
+    let plain_resources = config
+        .get("resources")
+        .and_then(Value::as_object)
+        .is_some_and(|resources| {
+            resources.keys().all(|key| {
+                matches!(
+                    key.as_str(),
+                    "cpus" | "max_cpus" | "memory_mib" | "max_memory_mib"
+                )
             })
+        });
+    (!plain_resources).then(|| "CPU and memory".into())
 }
 
 fn silo_disk_mounts_with_optional_tmpfs(
@@ -3381,7 +3436,7 @@ mod tests {
         let result = run_msb_process(
             &command,
             &["snapshot".into(), "save".into(), "x".into(), "y".into()],
-            Duration::from_millis(300),
+            Duration::from_secs(3),
             &Cancellation::default(),
             Duration::from_secs(10),
         );
@@ -3764,6 +3819,88 @@ mod tests {
             "rules": []
         });
         assert!(validate_snapshottable_config("dev", &config).is_err());
+    }
+
+    fn export_with_runtime(runtime_config: Value) -> Result<PackageManifest, BackupError> {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let service = service(&temp, FakeRunner::default());
+        service
+            .create_backup(
+                BackupRequest {
+                    destination: destination.clone(),
+                    sources: vec![BackupSource {
+                        name: "dev".into(),
+                        snapshot_group: "dev".into(),
+                        was_running: false,
+                        runtime_config,
+                        machine_config: machine_config("dev"),
+                        existing_member: None,
+                    }],
+                },
+                &Cancellation::default(),
+            )
+            .map(|_| {
+                read_and_verify_package(
+                    &destination,
+                    DEFAULT_MAX_ARCHIVE_BYTES,
+                    &Cancellation::default(),
+                    PayloadMode::VerifyAll,
+                )
+                .unwrap()
+                .manifest
+            })
+    }
+
+    #[test]
+    fn export_strips_network_policy_and_secret_references() {
+        let mut config = managed_config("dev");
+        config["network"] =
+            serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
+        let mut assigned = config["network"]["secrets"]["secrets"][0].clone();
+        assigned["env_var"] = "OPENAI_API_KEY".into();
+        assigned["placeholder"] = "$MSB_OPENAI_API_KEY".into();
+        assigned["source"] = serde_json::json!({"kind": "env", "var": "OPENAI_API_KEY"});
+        config["network"]["secrets"]["secrets"]
+            .as_array_mut()
+            .unwrap()
+            .push(assigned);
+        config["network"]["policy"]["rules"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "action": "allow",
+                "destination": {"cidr": "10.0.0.0/8"},
+                "direction": "egress",
+                "ports": [],
+                "protocols": []
+            }));
+        config["network"]["ports"] = serde_json::json!([{"host": 8080, "guest": 80}]);
+        assert!(validate_snapshottable_config("dev", &config).is_err());
+        let manifest = export_with_runtime(config).unwrap();
+        let network = &manifest.sandboxes[0].runtime_config["network"];
+        assert!(imported_deny_network(network), "{network}");
+        assert!(!network.to_string().contains("OPENAI_API_KEY"));
+    }
+
+    #[test]
+    fn export_names_the_setting_it_cannot_carry() {
+        let mut config = managed_config("dev");
+        config["network"] =
+            serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
+        config["network"]["tls"]["verify_upstream"] = false.into();
+        let error = export_with_runtime(config).err().unwrap().to_string();
+        assert!(error.contains("custom network tls settings"), "{error}");
+
+        let mut config = managed_config("dev");
+        config["runtime"] = serde_json::json!({"workdir": "/custom"});
+        let error = export_with_runtime(config).err().unwrap().to_string();
+        assert!(error.contains("custom runtime workdir settings"), "{error}");
+
+        let mut config = managed_config("dev");
+        config["init"] = serde_json::json!({"cmd": ["/sbin/init"]});
+        let error = export_with_runtime(config).err().unwrap().to_string();
+        assert!(error.contains("custom init settings"), "{error}");
     }
 
     #[test]
