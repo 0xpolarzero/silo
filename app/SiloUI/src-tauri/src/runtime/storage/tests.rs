@@ -40,6 +40,7 @@ impl RuntimeRunner for Runner {
 
 #[test]
 fn exact_intervals_and_clock_rollback() {
+    let _test_state = crate::test_support::global_state();
     assert!(due(&Record::default(), 0, WEEK));
     let record = Record { last_trim_at: Some(100), last_attempt_at: Some(100), ..Record::default() };
     assert!(!due(&record, 100 + DAY - 1, DAY));
@@ -53,6 +54,7 @@ fn exact_intervals_and_clock_rollback() {
 }
 #[test]
 fn manual_reclaim_bypasses_schedule_and_persists_actual_host_result() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
     let runner = Runner::new();
     trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).unwrap();
@@ -66,6 +68,7 @@ fn manual_reclaim_bypasses_schedule_and_persists_actual_host_result() {
 }
 #[test]
 fn failure_is_durable_and_does_not_count_as_success_or_block_stop() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
     let runner = Runner { fail: true, ..Runner::new() };
     before_stop(&runner, &paths, &observed);
@@ -78,6 +81,7 @@ fn failure_is_durable_and_does_not_count_as_success_or_block_stop() {
 }
 #[test]
 fn rejects_stopped_replaced_and_wrong_mount_without_guest_execution() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, mut observed) = fixture();
     let runner = Runner::new();
     observed.status = "Stopped".into();
@@ -95,6 +99,7 @@ fn rejects_stopped_replaced_and_wrong_mount_without_guest_execution() {
 }
 #[test]
 fn stopped_usage_reports_allocated_blocks_without_starting_guest() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, mut observed) = fixture();
     observed.status = "Stopped".into();
     let runner = Runner::new();
@@ -105,6 +110,7 @@ fn stopped_usage_reports_allocated_blocks_without_starting_guest() {
 }
 #[test]
 fn runtime_tail_truncation_is_repaired_and_reported_even_on_timeout() {
+    let _test_state = crate::test_support::global_state();
     for fail in [false, true] {
         let (_dir, paths, machine, observed) = fixture();
         let runner = Runner { fail, truncate: true, ..Runner::new() };
@@ -118,6 +124,7 @@ fn runtime_tail_truncation_is_repaired_and_reported_even_on_timeout() {
 }
 #[test]
 fn expired_budget_does_not_enter_guest_or_record_attempt() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
     let runner = Runner::new();
     assert!(trim(&runner, &paths, &machine, &observed, Duration::from_secs(3), now()).is_err());
@@ -126,6 +133,7 @@ fn expired_budget_does_not_enter_guest_or_record_attempt() {
 }
 #[test]
 fn malformed_measurements_and_history_are_not_silent_success() {
+    let _test_state = crate::test_support::global_state();
     assert!(stats("999 100").is_err());
     assert!(stats("1 2 3").is_err());
     assert!(stats("-1 2").is_err());
@@ -141,6 +149,7 @@ fn malformed_measurements_and_history_are_not_silent_success() {
 
 #[test]
 fn normal_stop_completes_after_a_failed_trim_and_does_not_retry_it() {
+    let _test_state = crate::test_support::global_state();
     struct LifecycleRunner { running: Mutex<bool>, calls: Mutex<Vec<String>>, config: Value }
     impl RuntimeRunner for LifecycleRunner {
         fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -165,6 +174,7 @@ fn normal_stop_completes_after_a_failed_trim_and_does_not_retry_it() {
 
 #[test]
 fn next_start_trims_once_and_recent_success_skips_automatic_work() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
     let runner = Runner::new();
     verified_starts().lock().unwrap().remove(&(paths.home.clone(), machine.id().into()));
@@ -177,6 +187,7 @@ fn next_start_trims_once_and_recent_success_skips_automatic_work() {
 
 #[test]
 fn old_or_replaced_worker_requires_restart_before_any_trim() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, mut observed) = fixture();
     let runner = Runner::new();
     observed.runtime_instance_id = Some("different-run".into());
@@ -188,6 +199,7 @@ fn old_or_replaced_worker_requires_restart_before_any_trim() {
 
 #[test]
 fn periodic_reclaims_due_running_vm_once_without_starting_any_vm() {
+    let _test_state = crate::test_support::global_state();
     struct PeriodicRunner { guest: Runner, config: Value, inspections: Mutex<usize> }
     impl RuntimeRunner for PeriodicRunner {
         fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -209,6 +221,7 @@ fn periodic_reclaims_due_running_vm_once_without_starting_any_vm() {
 
 #[test]
 fn unavailable_guest_stats_do_not_hide_a_maintenance_failure() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
     let runner = Runner { fail: true, ..Runner::new() };
     save(&paths, machine.id(), &Record { last_error: Some("Preserved maintenance failure".into()), ..Record::default() }).unwrap();
@@ -219,15 +232,7 @@ fn unavailable_guest_stats_do_not_hide_a_maintenance_failure() {
 
 #[test]
 fn starting_vm_does_not_begin_maintenance_during_quit() {
-    const CHILD: &str = "SILO_STORAGE_QUIT_TEST_CHILD";
-    if std::env::var_os(CHILD).is_none() {
-        let output = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "runtime::storage::tests::starting_vm_does_not_begin_maintenance_during_quit"])
-            .env(CHILD, "1").output().unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-        return;
-    }
-    // Isolated process: do not change the global Quit state of parallel tests.
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
     let runner = Runner::new();
     shutdown::begin();
@@ -241,6 +246,7 @@ fn starting_vm_does_not_begin_maintenance_during_quit() {
 #[test]
 #[ignore = "requires explicit live VM runtime, home, identity and baseline checksum"]
 fn live_reclaim_preserves_capacity_contents_and_reboots() {
+    let _test_state = crate::test_support::global_state();
     let executable = PathBuf::from(std::env::var("SILO_STORAGE_LIVE_RUNTIME").expect("explicit runtime path required"));
     let home = PathBuf::from(std::env::var("SILO_STORAGE_LIVE_HOME").expect("explicit runtime home required"));
     let id = std::env::var("SILO_STORAGE_LIVE_ID").expect("explicit VM ID required");
@@ -298,6 +304,7 @@ fn workspace_dir(paths: &RuntimePaths, name: &str) -> PathBuf {
 
 #[test]
 fn restored_layered_workspace_is_measured_and_a_missing_disk_is_unknown() {
+    let _test_state = crate::test_support::global_state();
     // A VM restored from a checkpoint keeps its workspace as sealed layers plus a
     // writable qcow2 head; there is no disk.raw.
     let (_dir, paths, machine, mut observed) = fixture();
@@ -321,6 +328,7 @@ fn restored_layered_workspace_is_measured_and_a_missing_disk_is_unknown() {
 
 #[test]
 fn runtime_usage_counts_flat_roots_and_is_unknown_without_a_sandbox_directory() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, mut observed) = fixture();
     observed.status = "Stopped".into();
     let sandbox = paths.home.join("sandboxes/dev");
@@ -335,6 +343,7 @@ fn runtime_usage_counts_flat_roots_and_is_unknown_without_a_sandbox_directory() 
 
 #[test]
 fn layered_workspace_reclaim_measures_the_whole_chain_and_guards_every_layer_length() {
+    let _test_state = crate::test_support::global_state();
     struct LayerRunner { shrink: bool }
     impl RuntimeRunner for LayerRunner {
         fn run(&self, paths: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -369,6 +378,7 @@ fn layered_workspace_reclaim_measures_the_whole_chain_and_guards_every_layer_len
 
 #[test]
 fn history_retains_latest_fifty_attempts_including_failures() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
     for at in 0..51 {
         trim_triggered(&Runner::new(), &paths, &machine, &observed, TRIM_BUDGET, at, "scheduled").unwrap();
@@ -389,6 +399,7 @@ fn history_retains_latest_fifty_attempts_including_failures() {
 
 #[test]
 fn legacy_record_keeps_last_success_when_history_is_introduced() {
+    let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, _) = fixture();
     let path = record_path(&paths, machine.id());
     fs::create_dir_all(path.parent().unwrap()).unwrap();

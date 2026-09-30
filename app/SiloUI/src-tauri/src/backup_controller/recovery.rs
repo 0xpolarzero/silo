@@ -667,6 +667,7 @@ mod tests {
 
     #[test]
     fn relaunch_reports_an_interrupted_export_without_rerunning_it_or_starting_sandboxes() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = history_controller(directory.path().join("backup-history.json"));
@@ -694,6 +695,7 @@ mod tests {
 
     #[test]
     fn relaunch_reports_a_cancelled_export_and_keeps_an_unverifiable_file() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = history_controller(directory.path().join("backup-history.json"));
@@ -714,6 +716,7 @@ mod tests {
 
     #[test]
     fn recovery_settles_a_journal_from_before_a_runtime_migration_without_the_runtime() {
+        let _test_state = crate::test_support::global_state();
         // While the runtime migration blocks sandbox operations, the saved
         // settings may be unreadable and msb unusable. Recovery must still
         // settle the journal, since migration refuses to run while one is
@@ -735,12 +738,14 @@ mod tests {
 
     #[test]
     fn only_an_interrupted_import_holds_back_startup() {
+        let _test_state = crate::test_support::global_state();
         assert!(!Journal::backup(completed_archive(), vec!["dev".into()], None).blocks_startup());
         assert!(Journal::restore(completed_archive(), "copy".into(), None).blocks_startup());
     }
 
     #[test]
     fn relaunch_adopts_an_import_whose_sandbox_was_saved() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = history_controller(directory.path().join("backup-history.json"));
@@ -761,6 +766,7 @@ mod tests {
 
     #[test]
     fn relaunch_forgets_an_import_that_was_never_saved() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
@@ -798,6 +804,7 @@ mod tests {
 
     #[test]
     fn relaunch_keeps_the_import_identity_when_its_group_cannot_be_removed() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
@@ -818,6 +825,7 @@ mod tests {
 
     #[test]
     fn relaunch_reports_an_import_interrupted_before_it_saved_anything() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
         let controller = history_controller(directory.path().join("backup-history.json"));
@@ -834,6 +842,7 @@ mod tests {
 
     #[test]
     fn a_saved_import_identity_and_group_survive_reload_and_are_validated() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
@@ -855,6 +864,7 @@ mod tests {
 
     #[test]
     fn a_journal_that_relaunch_could_not_read_is_never_saved() {
+        let _test_state = crate::test_support::global_state();
         // Whatever begin saves, load must accept; otherwise a crash would leave
         // a journal that blocks exports and imports on every launch (E-51).
         let directory = tempfile::tempdir().unwrap();
@@ -878,6 +888,7 @@ mod tests {
 
     #[test]
     fn an_old_dismissal_cannot_clear_an_identical_later_restore_result() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let controller = history_controller(directory.path().join("backup-history.json"));
         let result = || Operation::Result {
@@ -926,6 +937,7 @@ mod tests {
 
     #[test]
     fn failed_restore_with_unfinished_cleanup_keeps_ownership_until_recovery() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
@@ -966,6 +978,7 @@ mod tests {
 
     #[test]
     fn abandoned_archive_cleanup_only_removes_this_operations_files() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let mut archive = completed_archive();
         archive.archive_path = directory
@@ -994,6 +1007,7 @@ mod tests {
 
     #[test]
     fn archive_cleanup_treats_a_missing_destination_as_nothing_to_clean() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let mut archive = completed_archive();
         archive.archive_path = directory
@@ -1008,6 +1022,7 @@ mod tests {
 
     #[test]
     fn dismissing_a_terminal_result_survives_reload_but_pending_work_is_retained() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
@@ -1037,6 +1052,7 @@ mod tests {
 
     #[test]
     fn durable_intent_and_cancellation_survive_relaunch() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
@@ -1066,6 +1082,7 @@ mod tests {
 
     #[test]
     fn result_is_durable_but_never_inferred_from_pending_progress() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
@@ -1104,6 +1121,7 @@ mod tests {
 
     #[test]
     fn a_saved_restart_required_result_from_an_older_silo_reads_as_a_completed_export() {
+        let _test_state = crate::test_support::global_state();
         // Older builds could end an export as "restart-required" (the export was
         // complete; a sandbox did not restart). That outcome no longer exists.
         let directory = tempfile::tempdir().unwrap();
@@ -1125,6 +1143,7 @@ mod tests {
 
     #[test]
     fn failed_checkpoint_write_preserves_previous_intent() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
@@ -1149,6 +1168,7 @@ mod tests {
 
     #[test]
     fn malformed_and_future_checkpoints_are_preserved() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         let saved = journal_path(&path);

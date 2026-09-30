@@ -603,6 +603,7 @@ mod tests {
     }
     #[test]
     fn restart_recovers_each_checkpoint_without_repeating_a_finished_stop_or_restart() {
+    let _test_state = crate::test_support::global_state();
         for (phase, state, commands) in [
             (Phase::StopPending, "Running", vec!["stop", "start"]),
             (Phase::StopPending, "Stopped", vec!["start"]),
@@ -630,6 +631,7 @@ mod tests {
     }
     #[test]
     fn stop_is_resumed_and_crashed_is_already_stopped() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "stop", Phase::StopPending);
         let runner = Fake::new("Running");
@@ -645,6 +647,7 @@ mod tests {
     }
     #[test]
     fn dismissal_cancels_failed_start_recovery_and_preserves_activity() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, machine) = setup();
         pending(&paths, "start", Phase::StartPending);
         let history = runtime_activity::read(&paths).unwrap();
@@ -657,6 +660,7 @@ mod tests {
 
     #[test]
     fn restart_of_crashed_vm_starts_without_attempting_a_stop() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         let runner = Fake::new("Crashed");
         perform(&runner, &paths, &host(), "restart", "dev").unwrap();
@@ -665,6 +669,7 @@ mod tests {
 
     #[test]
     fn failed_start_keeps_intent_and_same_session_retry_reuses_activity() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         let mut runner = Fake::new("Stopped");
         runner.fail_start = true;
@@ -679,6 +684,7 @@ mod tests {
     }
     #[test]
     fn cancelled_start_retires_its_intent_so_launch_does_not_resume_it() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         let mut runner = Fake::new("Stopped");
         runner.cancel_start = true;
@@ -693,6 +699,7 @@ mod tests {
     }
     #[test]
     fn one_invalid_intent_does_not_block_recovery_of_the_others() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "stop", Phase::StopPending);
         fs::write(directory(&paths).join("broken.json"), "{not json").unwrap();
@@ -707,6 +714,7 @@ mod tests {
     }
     #[test]
     fn an_unreadable_action_keeps_its_vm_out_of_launch_start_without_failing_recovery() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         // A future-version file, for example written by a newer Silo before a downgrade.
         fs::create_dir_all(directory(&paths)).unwrap();
@@ -720,6 +728,7 @@ mod tests {
     }
     #[test]
     fn an_explicit_stop_that_cannot_be_resumed_still_wins_over_launch_start() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "stop", Phase::StopPending);
         let mut runner = Fake::new("Running");
@@ -730,6 +739,7 @@ mod tests {
     }
     #[test]
     fn an_explicit_action_replaces_a_saved_action_it_cannot_continue() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         fs::create_dir_all(directory(&paths)).unwrap();
         fs::write(path(&paths, ID), br#"{"version":2}"#).unwrap();
@@ -758,6 +768,7 @@ mod tests {
     }
     #[test]
     fn update_preparation_retires_actions_for_vms_it_will_not_resume() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         // A failed start kept for Retry: its activity already records the failure.
         let mut runner = Fake::new("Stopped");
@@ -785,6 +796,7 @@ mod tests {
     }
     #[test]
     fn timed_out_stop_that_never_settles_is_not_retried_as_transient() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         let mut runner = Fake::new("Running");
         runner.stop_times_out = true;
@@ -794,6 +806,7 @@ mod tests {
     }
     #[test]
     fn surviving_detached_start_can_win_without_being_restarted() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "start", Phase::StartPending);
         let mut runner = Fake::new("Stopped");
@@ -805,6 +818,7 @@ mod tests {
     }
     #[test]
     fn replacement_runtime_is_preserved_and_confirmed_deletion_retires_only_its_intent() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, machine) = setup();
         pending(&paths, "restart", Phase::StopPending);
         let mut runner = Fake::new("Running");
@@ -818,6 +832,7 @@ mod tests {
     }
     #[test]
     fn rejected_new_action_leaves_the_superseded_intent_and_activity_unchanged() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "restart", Phase::StartPending);
         let mut runner = Fake::new("Running");
@@ -831,6 +846,7 @@ mod tests {
     }
     #[test]
     fn explicit_new_action_settles_the_superseded_activity() {
+    let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "restart", Phase::StartPending);
         perform(&Fake::new("Running"), &paths, &host(), "stop", "dev").unwrap();
@@ -857,6 +873,7 @@ mod tests {
     #[test]
     #[ignore = "child of the explicitly requested disposable lifecycle recovery test"]
     fn lifecycle_recovery_crash_child() {
+    let _test_state = crate::test_support::global_state();
         let root = std::env::var("SILO_TEST_LIFECYCLE_ROOT").expect("missing isolated test root");
         let action =
             std::env::var("SILO_TEST_LIFECYCLE_ACTION").expect("missing isolated test action");
@@ -889,6 +906,7 @@ mod tests {
     #[test]
     #[ignore = "requires signed bundled runtime, guest image and hardware virtualization; uses only a disposable VM"]
     fn lifecycle_recovery_survives_real_worker_exit_without_repeating_restart() {
+    let _test_state = crate::test_support::global_state();
         let directory = tempfile::Builder::new()
             .prefix("silo-lifecycle-live-")
             .tempdir_in("/tmp")

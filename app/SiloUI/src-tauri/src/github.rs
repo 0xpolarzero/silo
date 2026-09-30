@@ -1969,6 +1969,7 @@ mod host_push_authorization_tests {
 
     #[test]
     fn host_push_requests_a_contents_only_token_for_one_repository() {
+        let _test_state = crate::test_support::global_state();
         let request = super::host_push_scope("parent", 7, 11);
         assert_eq!(request["purpose"], "hostPush");
         assert_eq!(request["repositoryIds"], json!([11]));
@@ -1977,6 +1978,7 @@ mod host_push_authorization_tests {
 
     #[test]
     fn host_push_tokens_are_revoked_or_kept_for_later_revocation() {
+        let _test_state = crate::test_support::global_state();
         let remembered = std::cell::RefCell::new(Vec::<String>::new());
         super::retire_host_push_token(
             "revoked",
@@ -2003,6 +2005,7 @@ mod host_push_authorization_tests {
 
     #[test]
     fn host_push_requires_a_write_grant_and_ignores_name_case() {
+        let _test_state = crate::test_support::global_state();
         let read_only = json!({"repositoryMode":"selected","repositories":[{"repository":"owner/repo","allowPushes":false}]});
         assert!(super::push_authorized(&read_only, "owner/repo").is_err());
         let write = json!({"repositoryMode":"selected","repositories":[{"repository":"owner/repo","allowPushes":true}]});
@@ -2852,6 +2855,7 @@ pub async fn retry_github_configuration(
 mod tests {
     #[test]
     fn a_panic_under_the_github_locks_does_not_block_updates_or_settings() {
+        let _test_state = crate::test_support::global_state();
         for lock in [&super::OPERATION, &super::STATE] {
             let _ = std::thread::spawn(move || {
                 let _guard = lock.lock().unwrap();
@@ -2868,6 +2872,7 @@ mod tests {
 
     #[test]
     fn one_failing_detach_does_not_stop_the_others() {
+        let _test_state = crate::test_support::global_state();
         let mut errors = super::NarrowErrors::default();
         let mut detached = Vec::new();
         super::each_workspace([("a", 1), ("b", 2), ("c", 3)], &mut errors, |name, _| {
@@ -2882,12 +2887,14 @@ mod tests {
     }
     #[test]
     fn a_general_narrowing_failure_applies_to_every_workspace() {
+        let _test_state = crate::test_support::global_state();
         let mut errors = super::NarrowErrors::default();
         errors.record_all("storage".into());
         assert_eq!(errors.for_workspace("any").map(String::as_str), Some("storage"));
     }
     #[test]
     fn session_secret_reads_once_and_writes_only_changes() {
+        let _test_state = crate::test_support::global_state();
         let cache = super::SessionSecret::new();
         assert_eq!(cache.read(|| Ok(Some(1))).unwrap(), Some(1));
         assert_eq!(cache.read(|| panic!("Repeated Keychain read")).unwrap(), Some(1));
@@ -2899,6 +2906,7 @@ mod tests {
     }
     #[test]
     fn denied_keychain_access_waits_for_explicit_retry() {
+        let _test_state = crate::test_support::global_state();
         let cache = super::SessionSecret::<Option<u64>>::new();
         assert!(cache.read(|| Err("Denied".into())).is_err());
         assert!(cache.read(|| panic!("Automatic permission retry")).is_err());
@@ -2913,6 +2921,7 @@ mod tests {
     }
     #[test]
     fn expired_credential_with_refresh_token_stays_connected() {
+        let _test_state = crate::test_support::global_state();
         let mut c = super::Credential { access_token: "a".into(), refresh_token: Some("r".into()), expires_at: 1 };
         assert!(super::observed_expiry(&c) > super::now());
         c.refresh_token = None;
@@ -2920,6 +2929,7 @@ mod tests {
     }
     #[test]
     fn failed_store_keeps_the_new_value_usable_and_retries_on_flush() {
+        let _test_state = crate::test_support::global_state();
         let cache = super::SessionSecret::new();
         assert_eq!(cache.read(|| Ok(Some(1))).unwrap(), Some(1));
         assert!(cache.write(Some(2), || Err("store locked".into())).is_err());
@@ -2932,6 +2942,7 @@ mod tests {
     }
     #[test]
     fn peeking_a_secret_never_waits_for_the_credential_store() {
+        let _test_state = crate::test_support::global_state();
         let cache = super::SessionSecret::<Option<u64>>::new();
         assert_eq!(cache.peek(), None);
         let (started, reading) = std::sync::mpsc::channel();
@@ -2956,6 +2967,7 @@ mod tests {
     }
     #[test]
     fn concurrent_secret_reads_share_one_keychain_request() {
+        let _test_state = crate::test_support::global_state();
         let cache = super::SessionSecret::new();
         let reads = std::sync::atomic::AtomicUsize::new(0);
         std::thread::scope(|scope| {
@@ -2995,6 +3007,7 @@ mod tests {
     }
     #[test]
     fn rapid_edits_delay_network_until_latest_half_second_deadline() {
+        let _test_state = crate::test_support::global_state();
         let d = Document {
             session: session().into(),
             refresh_at: 0,
@@ -3021,6 +3034,7 @@ mod tests {
     }
     #[test]
     fn a_save_patches_only_its_sandboxes_and_never_changes_access() {
+        let _test_state = crate::test_support::global_state();
         let mut d = Document { revision: 5, access_enabled: false, workspaces: vec![saved_policy("dev", false)], ..Default::default() };
         // A fork copied its source's assignment after the page last read the settings.
         d.workspaces.push(saved_policy("fork", true));
@@ -3037,6 +3051,7 @@ mod tests {
     }
     #[test]
     fn a_save_from_a_view_older_than_a_change_it_would_overwrite_is_refused() {
+        let _test_state = crate::test_support::global_state();
         let mut d = Document { revision: 5, workspaces: vec![saved_policy("fork", true)], ..Default::default() };
         stamp(&mut d, "fork", None);
         // The page still showed the fork without its copied assignment.
@@ -3064,6 +3079,7 @@ mod tests {
     }
     #[test]
     fn a_deleted_sandbox_leaves_no_assignment_or_attachment_for_a_new_one_with_its_name() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let document = directory.path().join("github.json");
         let policy = |name: &str| json!({"workspace":name,"repositoryMode":"all","allRepositoriesAllowChanges":true,"repositories":[],
@@ -3103,6 +3119,7 @@ mod tests {
     }
     #[test]
     fn idle_worker_sleeps_until_its_next_deadline_instead_of_polling() {
+        let _test_state = crate::test_support::global_state();
         let instant = Instant::now();
         let mut d = Document { session: session().into(), refresh_at: 1_000 + 3_600, ..Default::default() };
         // Nothing due for an hour: sleep the longest bounded interval, not 100 ms.
@@ -3123,6 +3140,7 @@ mod tests {
     }
     #[test]
     fn scheduling_wakes_a_sleeping_worker() {
+        let _test_state = crate::test_support::global_state();
         // Other tests schedule work without a worker; start from a consumed wake-up.
         *WORKER_WOKEN.lock().unwrap() = false;
         let (done, finished) = std::sync::mpsc::channel();
@@ -3143,6 +3161,7 @@ mod tests {
     }
     #[test]
     fn identity_only_edit_does_not_request_access_or_postpone_renewal() {
+        let _test_state = crate::test_support::global_state();
         let d = Document {
             session: session().into(),
             refresh_at: 160,
@@ -3155,6 +3174,7 @@ mod tests {
     }
     #[test]
     fn verified_sandbox_is_not_reapplied_at_another_sandboxs_retry_deadline() {
+        let _test_state = crate::test_support::global_state();
         let mut d = Document {
             session: session().into(),
             refresh_at: 160,
@@ -3179,12 +3199,14 @@ mod tests {
     }
     #[test]
     fn restored_sandbox_is_taken_once() {
+        let _test_state = crate::test_support::global_state();
         workspace_restored("restored-once");
         assert!(take_restored("restored-once"));
         assert!(!take_restored("restored-once"));
     }
     #[test]
     fn repository_catalog_has_independent_refresh_deadline() {
+        let _test_state = crate::test_support::global_state();
         let d = Document {
             session: session().into(),
             access_enabled: true,
@@ -3199,6 +3221,7 @@ mod tests {
     }
     #[test]
     fn local_edits_preserve_submission_order_without_holding_network_lock() {
+        let _test_state = crate::test_support::global_state();
         let queue = IntentQueue::new();
         let first = queue.ticket();
         let second = queue.ticket();
@@ -3228,6 +3251,7 @@ mod tests {
     }
     #[test]
     fn a_new_credential_is_revoked_unless_it_was_kept() {
+        let _test_state = crate::test_support::global_state();
         DISCARDED.with(|d| d.borrow_mut().clear());
         // A failure after the exchange (catalog, App-install timeout, cancellation, store).
         drop(Unstored { credential: Some(fixture_credential("new", 0)), shares_grant: false, revoke: record_discard });
@@ -3245,6 +3269,7 @@ mod tests {
     }
     #[test]
     fn revocation_renews_an_expired_token_and_skips_a_gone_authorization() {
+        let _test_state = crate::test_support::global_state();
         let at = 1_000;
         let live = fixture_credential("live", at + 600);
         assert_eq!(live_access_token(&live, at, |_| panic!("renewed a live token")).unwrap(), Some("live".into()));
@@ -3268,6 +3293,7 @@ mod tests {
     }
     #[test]
     fn disconnect_revokes_with_a_renewed_token_when_the_stored_one_expired() {
+        let _test_state = crate::test_support::global_state();
         let at = 1_000;
         assert_eq!(disconnect_token(None, at, || panic!("renewed without a credential")).unwrap(), None);
         let live = fixture_credential("live", at + 600);
@@ -3285,6 +3311,7 @@ mod tests {
     }
     #[test]
     fn a_connection_holds_the_network_lock_only_for_its_steps() {
+        let _test_state = crate::test_support::global_state();
         // Waiting for the browser or App installation holds nothing.
         drop(update_guard().expect("the network lock is held outside a step"));
         let during = network_step(|| Ok(update_guard().is_err())).unwrap();
@@ -3295,6 +3322,7 @@ mod tests {
     }
     #[test]
     fn runtime_work_runs_without_the_state_lock_after_a_checked_revision() {
+        let _test_state = crate::test_support::global_state();
         let result = outside_state(
             || {
                 assert!(STATE.try_lock().is_err(), "the revision check must hold STATE");
@@ -3310,6 +3338,7 @@ mod tests {
     }
     #[test]
     fn identity_written_during_a_newer_edit_is_not_recorded_as_applied() {
+        let _test_state = crate::test_support::global_state();
         let old = json!({"name":"Old","email":"old@example.test","apply":true});
         let new = json!({"name":"New","email":"new@example.test","apply":true});
         let mut d = Document { workspaces: vec![json!({"workspace":"dev","identity":old.clone()})], ..Default::default() };
@@ -3321,6 +3350,7 @@ mod tests {
     }
     #[test]
     fn a_panic_under_a_github_lock_does_not_disable_github_or_block_updates() {
+        let _test_state = crate::test_support::global_state();
         for lock in [&OPERATION, &STATE] {
             let _ = std::thread::spawn(move || {
                 let _guard = lock.lock().unwrap();
@@ -3350,6 +3380,7 @@ mod tests {
     }
     #[test]
     fn an_abandoned_intent_never_blocks_later_intents() {
+        let _test_state = crate::test_support::global_state();
         let queue = IntentQueue::new();
         let first = queue.ticket();
         let second = queue.ticket();
@@ -3382,6 +3413,7 @@ mod tests {
     }
     #[test]
     fn invalid_remaining_selection_never_preserves_removed_repository_access() {
+        let _test_state = crate::test_support::global_state();
         let previous = test_grant();
         let document = Document {
             access_enabled: true,
@@ -3399,6 +3431,7 @@ mod tests {
 
     #[test]
     fn unchanged_scopes_do_not_issue_or_refresh_credentials() {
+        let _test_state = crate::test_support::global_state();
         let grants = reconcile_grants(
             &[test_scope()],
             &[test_grant()],
@@ -3411,6 +3444,7 @@ mod tests {
     }
     #[test]
     fn adding_read_repository_only_replaces_read_group() {
+        let _test_state = crate::test_support::global_state();
         let mut scope = test_scope();
         scope.ids.push(4);
         let mut calls = Vec::new();
@@ -3429,6 +3463,7 @@ mod tests {
     }
     #[test]
     fn removing_read_repository_detaches_old_read_but_reuses_safe_write() {
+        let _test_state = crate::test_support::global_state();
         let mut scope = test_scope();
         scope.ids = vec![1, 2];
         let old = test_grant();
@@ -3451,6 +3486,7 @@ mod tests {
     }
     #[test]
     fn disabling_writes_detaches_write_without_reminting_read() {
+        let _test_state = crate::test_support::global_state();
         let mut scope = test_scope();
         scope.writes.clear();
         let retained = narrow(&[test_grant()], &[scope.clone()]);
@@ -3467,6 +3503,7 @@ mod tests {
     }
     #[test]
     fn obsolete_read_result_never_causes_write_issuance() {
+        let _test_state = crate::test_support::global_state();
         let current = std::cell::Cell::new(true);
         let mut calls = 0;
         let result = reconcile_grants(
@@ -3485,6 +3522,7 @@ mod tests {
     }
     #[test]
     fn all_to_selected_never_reuses_all_repository_tokens() {
+        let _test_state = crate::test_support::global_state();
         let mut old = test_grant();
         old.all_repositories = true;
         let retained = narrow(&[old], &[test_scope()]);
@@ -3505,6 +3543,7 @@ mod tests {
     }
     #[test]
     fn unrelated_owner_and_vm_status_stays_unchanged() {
+        let _test_state = crate::test_support::global_state();
         let mut d = Document {
             operations: vec![
                 json!({"workspace":"dev","status":"succeeded"}),
@@ -3523,6 +3562,7 @@ mod tests {
     }
     #[test]
     fn identity_and_inactive_selection_changes_do_not_change_access_choice() {
+        let _test_state = crate::test_support::global_state();
         let mut first = json!({"repositoryMode":"all","allRepositoriesAllowChanges":false,"repositories":[],"identity":{"name":"Old"}});
         let choice = access_choice(&first);
         first["identity"] = json!({"name":"New"});
@@ -3531,6 +3571,7 @@ mod tests {
     }
     #[test]
     fn partially_issued_read_is_reusable_only_for_its_exact_scope() {
+        let _test_state = crate::test_support::global_state();
         let token = IssuedToken {
             owner: 1,
             all: false,
@@ -3547,6 +3588,7 @@ mod tests {
     }
     #[test]
     fn background_grant_refresh_never_writes_git_identity() {
+        let _test_state = crate::test_support::global_state();
         let (result, _) = finish_application(Ok(()), false, None, || {
             panic!("background renewal must not run guest identity commands")
         });
@@ -3559,6 +3601,7 @@ mod tests {
     }
     #[test]
     fn explicit_identity_application_is_independent_of_github_access() {
+        let _test_state = crate::test_support::global_state();
         let mut applied = false;
         let (result, identity_result) =
             finish_application(Err("GitHub is unavailable".into()), true, None, || {
@@ -3571,6 +3614,7 @@ mod tests {
     }
     #[test]
     fn optional_github_keeps_verified_setup_when_secure_store_is_unavailable() {
+        let _test_state = crate::test_support::global_state();
         let d = Document {
             session: session().into(),
             operations: vec![json!({"workspace":"dev","status":"succeeded"})],
@@ -3587,6 +3631,7 @@ mod tests {
     }
     #[test]
     fn runtime_token_ledger_survives_reload_only_in_secure_store() {
+        let _test_state = crate::test_support::global_state();
         let entry =
             keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
         assert!(read_ledger(&entry).unwrap().is_empty());
@@ -3607,6 +3652,7 @@ mod tests {
     }
     #[test]
     fn connection_enables_access_without_selecting_repositories() {
+        let _test_state = crate::test_support::global_state();
         let mut document = Document::default();
         record_connection(&mut document, Some("account".into()), vec![]);
         assert!(document.access_enabled);
@@ -3625,6 +3671,7 @@ mod tests {
 
     #[test]
     fn connected_catalog_refreshes_before_token_expiry_for_every_selection_mode() {
+        let _test_state = crate::test_support::global_state();
         let mut d = Document {
             session: session().into(),
             access_enabled: true,
@@ -3651,6 +3698,7 @@ mod tests {
     }
     #[test]
     fn secure_store_failure_does_not_become_disconnected_or_save_plaintext() {
+        let _test_state = crate::test_support::global_state();
         let entry =
             keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
         let mock = entry
@@ -3681,6 +3729,7 @@ mod tests {
     }
     #[test]
     fn durable_document_contains_no_credentials() {
+        let _test_state = crate::test_support::global_state();
         let d = Document::default();
         let encoded = serde_json::to_string(&d).unwrap();
         assert!(!encoded.contains("accessToken"));
@@ -3688,12 +3737,14 @@ mod tests {
     }
     #[test]
     fn rejects_missing_or_expired_lifetimes() {
+        let _test_state = crate::test_support::global_state();
         assert!(from_response(json!({"accessToken":"test-only"})).is_err());
         assert!(token_expiry(&json!({"expiresAt":"2020-01-01T00:00:00Z"})).is_err());
         assert!(token_expiry(&json!({"expiresAt":"not-a-date"})).is_err());
     }
     #[test]
     fn refresh_storage_retry_never_reuses_a_consumed_refresh_token() {
+        let _test_state = crate::test_support::global_state();
         let old = Credential {
             access_token: "old".into(),
             refresh_token: Some("old-refresh".into()),
@@ -3731,6 +3782,7 @@ mod tests {
     }
     #[test]
     fn new_login_does_not_restore_another_accounts_pending_refresh() {
+        let _test_state = crate::test_support::global_state();
         let mut pending = Some(PendingRefresh {
             previous_access: "old-account".into(),
             renewed: Credential {
@@ -3757,6 +3809,7 @@ mod tests {
     }
     #[test]
     fn only_main_window_can_manage_github() {
+        let _test_state = crate::test_support::global_state();
         assert!(require_main("main").is_ok());
         for label in ["status", "other", ""] {
             assert!(require_main(label).is_err());
@@ -3764,6 +3817,7 @@ mod tests {
     }
     #[test]
     fn authorization_reopens_same_attempt_and_tracks_installation_page() {
+        let _test_state = crate::test_support::global_state();
         let mut pending = PendingAuthorization(Some((7, "https://github.com/login/oauth/authorize?state=example".into())));
         assert_eq!(pending.url(7).unwrap(), "https://github.com/login/oauth/authorize?state=example");
         assert!(pending.url(8).is_err());
@@ -3775,6 +3829,7 @@ mod tests {
 
     #[test]
     fn finished_old_authorization_cannot_clear_a_new_attempt() {
+        let _test_state = crate::test_support::global_state();
         let mut pending = PendingAuthorization(Some((8, "https://github.com/new-attempt".into())));
         pending.clear(7);
         assert_eq!(pending.url(8).unwrap(), "https://github.com/new-attempt");
@@ -3785,6 +3840,7 @@ mod tests {
 
     #[test]
     fn callback_ignores_unrelated_traffic_and_rejects_empty_authenticated_code() {
+        let _test_state = crate::test_support::global_state();
         for request in [
             "",
             "garbage",
@@ -3803,6 +3859,7 @@ mod tests {
     }
     #[test]
     fn callback_requires_complete_bounded_headers_across_fragments() {
+        let _test_state = crate::test_support::global_state();
         struct Fragmented<'a>(&'a [u8]);
         impl Read for Fragmented<'_> {
             fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
@@ -3821,6 +3878,7 @@ mod tests {
     }
     #[test]
     fn callback_waits_for_a_browser_that_sends_its_request_late() {
+        let _test_state = crate::test_support::global_state();
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
@@ -3850,6 +3908,7 @@ mod tests {
     }
     #[test]
     fn callback_rejects_wrong_state_and_duplicate_code() {
+        let _test_state = crate::test_support::global_state();
         assert!(callback(
             "GET /github/callback?state=wrong&code=x HTTP/1.1\r\n",
             "right"
@@ -3872,11 +3931,13 @@ mod tests {
     }
     #[test]
     fn reject_ambiguous_policy() {
+        let _test_state = crate::test_support::global_state();
         assert!(validate(&[json!({"workspace":"a","repositoryMode":"all","allRepositoriesAllowChanges":false,"repositories":[],"identity":{"name":"","email":"","apply":false}})]).is_ok());
         assert!(validate(&[json!({"workspace":"a","repositoryMode":"anything","allRepositoriesAllowChanges":false,"repositories":[]})]).is_err());
     }
     #[test]
     fn rejects_unknown_nested_policy_data_and_invalid_identity() {
+        let _test_state = crate::test_support::global_state();
         let good = json!({"workspace":"dev","repositoryMode":"selected","allRepositoriesAllowChanges":false,
             "repositories":[{"repository":"owner/repo","allowPushes":false}],
             "identity":{"name":"Name","email":"name@example.invalid","apply":true}});
@@ -3894,6 +3955,7 @@ mod tests {
 
     #[test]
     fn blocked_credential_read_never_blocks_public_snapshot() {
+        let _test_state = crate::test_support::global_state();
         for previous in [None, Some(Ok(Some(now() + 600)))] {
             let observation = std::sync::Arc::new(Mutex::new(previous.clone()));
             let observed = observation.clone();
@@ -3948,6 +4010,7 @@ mod tests {
     }
     #[test]
     fn credential_observation_exposes_only_lifetime_and_absence() {
+        let _test_state = crate::test_support::global_state();
         let expiry = now() + 600;
         let mut observed = None;
         let result = observe_credential_read(
@@ -3968,10 +4031,12 @@ mod tests {
     }
     #[test]
     fn missing_token_response_is_error() {
+        let _test_state = crate::test_support::global_state();
         assert!(from_response(json!({})).is_err());
     }
     #[test]
     fn public_github_state_matches_frontend_contract() {
+        let _test_state = crate::test_support::global_state();
         let states: Vec<Value> =
             serde_json::from_str(include_str!("../../src/test/contracts/github-state.json"))
                 .unwrap();

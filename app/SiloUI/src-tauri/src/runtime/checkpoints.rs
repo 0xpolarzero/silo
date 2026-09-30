@@ -2462,6 +2462,7 @@ mod tests {
 
     #[test]
     fn full_snapshot_satisfies_a_disk_only_restore_but_not_the_reverse() {
+        let _test_state = crate::test_support::global_state();
         struct Listing(&'static str);
         impl RuntimeRunner for Listing {
             fn run(&self, _: &RuntimePaths, _: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -2482,6 +2483,7 @@ mod tests {
     }
     #[test]
     fn imported_snapshot_intent_accepts_native_selectors_but_rejects_paths() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let group = "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9";
@@ -2510,6 +2512,7 @@ mod tests {
 
     #[test]
     fn imported_snapshot_intent_accepts_a_checkpoint_native_member() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let group = "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9";
@@ -2530,6 +2533,7 @@ mod tests {
 
     #[test]
     fn export_source_resolves_checkpoint_member_and_rejects_unknown_or_inflight() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(
@@ -2575,6 +2579,7 @@ mod tests {
 
     #[test]
     fn imported_disk_snapshot_uses_native_cold_boot_without_full_checkpoint_flag() {
+        let _test_state = crate::test_support::global_state();
         struct DiskRunner(Mutex<Vec<Vec<String>>>);
         impl RuntimeRunner for DiskRunner {
             fn run(
@@ -2639,6 +2644,7 @@ mod tests {
 
     #[test]
     fn snapshot_group_is_persisted_and_import_provenance_is_not_replaced() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         assert_eq!(ensure_snapshot_group(&paths, ID, "dev").unwrap(), "dev");
@@ -2661,6 +2667,7 @@ mod tests {
 
     #[test]
     fn original_v1_checkpoints_migrate_to_default_group_but_lost_import_group_fails_closed() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut original = Record::default();
@@ -2751,6 +2758,7 @@ mod tests {
     }
     #[test]
     fn fork_from_recovery_uses_saved_policy_only_while_source_is_pending_and_absent() {
+        let _test_state = crate::test_support::global_state();
         struct SourceRunner {
             present: bool,
             calls: Mutex<Vec<Vec<String>>>,
@@ -2827,6 +2835,7 @@ mod tests {
     }
     #[test]
     fn captures_full_state_only_with_an_owned_workspace_disk() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(
@@ -2861,6 +2870,7 @@ mod tests {
 
     #[test]
     fn pending_restore_checkpoint_creation_aliases_immutable_full_snapshot() {
+        let _test_state = crate::test_support::global_state();
         struct SnapshotInventory {
             present: bool,
             calls: Mutex<Vec<Vec<String>>>,
@@ -2934,6 +2944,7 @@ mod tests {
 
     #[test]
     fn pending_full_checkpoint_can_be_aliased_switched_recovered_and_started_explicitly() {
+        let _test_state = crate::test_support::global_state();
         struct Inventory {
             calls: Mutex<Vec<Vec<String>>>,
         }
@@ -3036,6 +3047,7 @@ mod tests {
 
     #[test]
     fn current_state_fork_from_pending_full_snapshot_reuses_reference_without_starting() {
+        let _test_state = crate::test_support::global_state();
         struct ForkInventory {
             present: bool,
             calls: Mutex<Vec<Vec<String>>>,
@@ -3104,6 +3116,7 @@ mod tests {
     }
     #[test]
     fn pending_and_stopped_vms_read_as_stopped_and_ask_to_be_started() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![machine()] }).unwrap();
@@ -3146,6 +3159,7 @@ mod tests {
     }
     #[test]
     fn pending_fork_survives_reload_and_cannot_auto_start_or_use_lifecycle_start() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         write_metadata(
@@ -3189,6 +3203,7 @@ mod tests {
     }
     #[test]
     fn first_start_network_flags_preserve_current_asymmetric_policy() {
+        let _test_state = crate::test_support::global_state();
         let config = serde_json::json!({"network":{"policy":{
             "default_egress":"deny", "default_ingress":"allow", "rules":[
                 {"action":"allow","direction":"egress","destination":{"group":"host"},
@@ -3214,6 +3229,7 @@ mod tests {
     }
     #[test]
     fn failed_first_start_preserves_pending_checkpoint_and_source() {
+        let _test_state = crate::test_support::global_state();
         struct FailedRestore {
             calls: Mutex<Vec<Vec<String>>>,
         }
@@ -3294,6 +3310,7 @@ mod tests {
     }
     #[test]
     fn restore_journal_distinguishes_original_before_and_after_runtime_removal() {
+        let _test_state = crate::test_support::global_state();
         struct Listing {
             present: bool,
             calls: Mutex<Vec<Vec<String>>>,
@@ -3420,6 +3437,7 @@ mod tests {
     }
     #[test]
     fn failed_child_cleanup_requires_the_saved_attempt_label() {
+        let _test_state = crate::test_support::global_state();
         struct WrongChild {
             calls: Mutex<Vec<Vec<String>>>,
         }
@@ -3489,6 +3507,7 @@ mod tests {
     }
     #[test]
     fn restore_secures_recovery_before_retiring_original_and_keeps_stable_identity() {
+        let _test_state = crate::test_support::global_state();
         struct RestoreRunner {
             state: Mutex<&'static str>,
             recovery: Mutex<Option<String>>,
@@ -3706,6 +3725,7 @@ mod tests {
 
     #[test]
     fn capturing_journal_for_a_stopped_vm_secures_a_disk_recovery_and_finishes() {
+        let _test_state = crate::test_support::global_state();
         for status in ["Stopped", "Created", "Crashed"] {
             let directory = tempfile::tempdir().unwrap();
             let paths = restore_fixture(&directory, Some(("capturing", true)));
@@ -3732,6 +3752,7 @@ mod tests {
 
     #[test]
     fn failed_pause_clears_the_capturing_journal_and_records_the_real_error() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
         let runner = journal_runner("Running", "pause");
@@ -3749,6 +3770,7 @@ mod tests {
 
     #[test]
     fn failed_capture_of_a_stopped_vm_leaves_no_journal() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("capturing", true)));
         let runner = journal_runner("Stopped", "create");
@@ -3760,6 +3782,7 @@ mod tests {
 
     #[test]
     fn secured_restore_errors_persist_a_failed_status_with_the_real_error() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("secured", true)));
         let mut runner = journal_runner("Running", "");
@@ -3775,6 +3798,7 @@ mod tests {
 
     #[test]
     fn crashed_vm_can_retry_a_secured_restore() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("secured", true)));
         let mut runner = journal_runner("Crashed", "");
@@ -3787,6 +3811,7 @@ mod tests {
 
     #[test]
     fn interrupted_checkpoint_is_kept_when_the_snapshot_list_fails() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
         let mut record = load(&paths, ID).unwrap();
@@ -3811,6 +3836,7 @@ mod tests {
 
     #[test]
     fn attempted_restore_with_a_listed_runtime_reads_as_a_present_workspace() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
         let mut record = load(&paths, ID).unwrap();
@@ -3834,6 +3860,7 @@ mod tests {
 
     #[test]
     fn failure_record_save_errors_keep_the_original_error() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fs::write(directory.path().join("checkpoints"), b"not a directory").unwrap();
@@ -3910,6 +3937,7 @@ mod tests {
 
     #[test]
     fn fork_commit_adds_the_stopped_fork_and_its_assignments() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let (paths, fork) = fork_fixture(&directory);
         let assignments = FakeAssignments::new(&[]);
@@ -3925,6 +3953,7 @@ mod tests {
 
     #[test]
     fn failed_fork_steps_leave_no_record_inventory_or_assignments_and_keep_the_original_error() {
+        let _test_state = crate::test_support::global_state();
         for (fail, expected) in [
             (&["copy_github"][..], "copy_github failed."),
             (&["copy_secrets"][..], "copy_secrets failed."),
@@ -3945,6 +3974,7 @@ mod tests {
 
     #[test]
     fn a_failing_fork_cleanup_is_reported_after_the_original_error() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let (paths, fork) = fork_fixture(&directory);
         let assignments = FakeAssignments::new(&["copy_secrets", "forget_github"]);
@@ -3959,6 +3989,7 @@ mod tests {
 
     #[test]
     fn a_failed_inventory_write_removes_the_fork_record_and_assignments() {
+        let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let (paths, fork) = fork_fixture(&directory);
@@ -3977,6 +4008,7 @@ mod tests {
 
     #[test]
     fn fork_commit_rechecks_the_name_and_the_checkpoint_after_the_capture() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let (paths, fork) = fork_fixture(&directory);
         let assignments = FakeAssignments::new(&[]);
@@ -3989,6 +4021,7 @@ mod tests {
 
     #[test]
     fn current_state_fork_captures_under_the_source_lane_and_writes_under_the_computer_lane() {
+        let _test_state = crate::test_support::global_state();
         struct LaneRunner {
             gate: &'static super::super::operation_gate::OperationGate,
             created: Mutex<Option<String>>,
@@ -4171,6 +4204,7 @@ mod tests {
 
     #[test]
     fn removal_plan_goes_leaves_first_and_keeps_used_positioned_and_parent_members() {
+        let _test_state = crate::test_support::global_state();
         let member = |name: &str, id: &str, parent: Option<&str>| native::Member {
             snapshot_id: id.into(), name: Some(name.into()), group: Some("dev".into()),
             parent_digest: parent.map(str::to_owned), ..Default::default()
@@ -4191,6 +4225,7 @@ mod tests {
 
     #[test]
     fn deleting_a_recovery_checkpoint_moves_the_head_removes_its_member_and_drops_the_entry() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = delete_fixture(&directory, vec![entry(B, "Before restore", "before-restore"), entry(A, "Selected", "manual")], None);
         // dev was restored from A; B was its previous instance's last capture and the group head.
@@ -4214,6 +4249,7 @@ mod tests {
 
     #[test]
     fn checkpoints_that_forks_later_checkpoints_or_pending_starts_depend_on_are_refused() {
+        let _test_state = crate::test_support::global_state();
         // A later checkpoint builds on this one.
         let directory = tempfile::tempdir().unwrap();
         let paths = delete_fixture(&directory, vec![entry(B, "After deploy", "manual"), entry(A, "Before deploy", "manual")], None);
@@ -4259,6 +4295,7 @@ mod tests {
 
     #[test]
     fn a_refused_native_removal_keeps_the_checkpoint_and_says_why() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = delete_fixture(&directory, vec![entry(B, "Before restore", "before-restore"), entry(A, "Selected", "manual")], None);
         let mut store = Store::new(vec![("dev", Some("snap_a"))]).with("dev", A, "snap_a", None).with("dev", B, "snap_b", None);
@@ -4270,6 +4307,7 @@ mod tests {
 
     #[test]
     fn a_shared_or_missing_member_drops_only_the_entry() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let mut alias = entry(C, "Alias", "manual");
         alias.native_id = Some(A.into());
@@ -4284,6 +4322,7 @@ mod tests {
 
     #[test]
     fn checkpoint_usage_reports_sizes_users_and_blockers() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let mut started = Record::default();
         started.snapshot_group = Some("dev".into());
@@ -4299,6 +4338,7 @@ mod tests {
 
     #[test]
     fn deleting_a_sandbox_removes_members_only_it_used_and_keeps_what_a_fork_builds_on() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let mut started = Record::default();
         started.snapshot_group = Some("dev".into());
@@ -4318,6 +4358,7 @@ mod tests {
 
     #[test]
     fn a_failed_capture_removes_its_published_member_unless_the_sandbox_builds_on_it() {
+        let _test_state = crate::test_support::global_state();
         for builds_on_it in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let paths = delete_fixture(&directory, Vec::new(), None);
@@ -4341,6 +4382,7 @@ mod tests {
 
     #[test]
     fn the_sweep_removes_only_old_unreferenced_silo_members() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = delete_fixture(&directory, vec![entry(A, "Kept", "manual")], None);
         let store = Store::new(vec![("dev", None)])
@@ -4408,6 +4450,7 @@ mod tests {
 
     #[test]
     fn a_cancel_after_the_capture_returned_still_records_the_checkpoint() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
         let runner = cancel_runner(false);
@@ -4423,6 +4466,7 @@ mod tests {
 
     #[test]
     fn a_cancelled_full_capture_resumes_the_vm_it_left_paused() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
         let runner = cancel_runner(true);
@@ -4440,6 +4484,7 @@ mod tests {
 
     #[test]
     fn a_vm_that_cannot_resume_after_a_failed_recovery_capture_is_stopped_instead_of_left_paused() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, None);
         let runner = journal_runner("Running", "create|resume");
@@ -4453,6 +4498,7 @@ mod tests {
 
     #[test]
     fn abandoning_an_unfinished_restore_resumes_the_paused_vm_and_keeps_its_state() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("capturing", true)));
         let mut runner = journal_runner("Paused", "");
@@ -4477,6 +4523,7 @@ mod tests {
 
     #[test]
     fn unfinished_restore_messages_and_view_name_the_checkpoint() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("capturing", true)));
         assert_eq!(
@@ -4509,6 +4556,7 @@ mod tests {
 
     #[test]
     fn quit_releases_a_vm_an_unfinished_restore_left_paused() {
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = restore_fixture(&directory, Some(("capturing", true)));
         let runner = journal_runner("Paused", "");
@@ -4573,6 +4621,7 @@ mod tests {
 
     #[test]
     fn a_retried_start_keeps_and_starts_an_attempt_that_already_ran() {
+        let _test_state = crate::test_support::global_state();
         for restore_ok in [true, false] {
             let directory = tempfile::tempdir().unwrap();
             let paths = pending_fixture(&directory);
@@ -4597,6 +4646,7 @@ mod tests {
 
     #[test]
     fn an_attempt_that_never_ran_is_recreated_from_the_checkpoint() {
+        let _test_state = crate::test_support::global_state();
         struct NeverRan(Mutex<Vec<String>>);
         impl RuntimeRunner for NeverRan {
             fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {

@@ -980,6 +980,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn runtime_errors_are_short_and_do_not_expose_raw_details() {
+        let _test_state = crate::test_support::global_state();
         let conflict = control_reply("{\"ok\":false,\"error\":\"Address already in use: private runtime diagnostics\"}\n").unwrap_err();
         assert_eq!(conflict, "This local port is already in use. Choose another or use Automatic.");
         let unknown = control_reply("{\"ok\":false,\"error\":\"private runtime diagnostics\"}\n").unwrap_err();
@@ -990,6 +991,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn invalid_or_externally_bound_runtime_ports_never_succeed() {
+        let _test_state = crate::test_support::global_state();
         assert!(control_reply("{\"ok\":true,\"ports\":[{\"guest_port\":3000,\"host_port\":43000,\"host_bind\":\"0.0.0.0\"}]}\n").is_err());
         assert!(control_reply("{\"ok\":true}\n").is_err());
         assert!(control_reply("{\"ok\":true,\"ports\":[]}").is_err());
@@ -1000,6 +1002,7 @@ mod tests {
 
     #[test]
     fn discovers_tcp_listeners_without_guessing_from_connections() {
+        let _test_state = crate::test_support::global_state();
         let input="sl local_address rem_address st\n0: 00000000:0BB8 00000000:0000 0A\n1: 0100007F:1538 00000000:0000 0A\n2: 00000000:0050 00000000:0000 01\n";
         let ports = parse_listeners(input).unwrap();
         assert_eq!(ports.get(&3000), Some(&true));
@@ -1008,6 +1011,7 @@ mod tests {
     }
     #[test]
     fn invalid_socket_output_is_not_empty_success() {
+        let _test_state = crate::test_support::global_state();
         assert!(parse_listeners("broken").is_err());
         assert!(parse_listeners("").is_err());
         assert!(parse_listeners("0: ZZZZZZZZ:1234 x 0A").is_err());
@@ -1017,6 +1021,7 @@ mod tests {
     }
     #[test]
     fn rejects_invalid_ports_and_schemes() {
+        let _test_state = crate::test_support::global_state();
         let mut m = Mapping {
             workspace: "dev".into(),
             port: 3000,
@@ -1033,6 +1038,7 @@ mod tests {
     }
     #[test]
     fn pending_removal_survives_relaunch_and_corrupt_settings_are_rejected() {
+        let _test_state = crate::test_support::global_state();
         let temp = tempfile::tempdir().unwrap();
         let paths = RuntimePaths {
             guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image"),
@@ -1059,6 +1065,7 @@ mod tests {
     }
     #[test]
     fn read_state_returns_without_waiting_for_the_operation_gate() {
+        let _test_state = crate::test_support::global_state();
         use std::time::Instant;
         let temp = tempfile::tempdir().unwrap();
         let paths = RuntimePaths {
@@ -1112,6 +1119,7 @@ mod tests {
 
     #[test]
     fn each_sandbox_gets_its_own_valid_localhost_name() {
+        let _test_state = crate::test_support::global_state();
         let id = "1A2B3C4D-0000-4000-8000-000000000001";
         assert_eq!(sandbox_host("dev", id), "dev-1a2b3c4d.localhost");
         // Same name, different sandbox: a different host, so no shared cookies.
@@ -1133,6 +1141,7 @@ mod tests {
 
     #[test]
     fn safari_and_unknown_browsers_keep_the_loopback_address() {
+        let _test_state = crate::test_support::global_state();
         for browser in [
             "com.google.Chrome", "com.microsoft.edgemac", "com.brave.Browser", "company.thebrowser.Browser",
             "org.mozilla.firefox", "org.mozilla.firefoxdeveloperedition", "firefox_firefox.desktop",
@@ -1175,6 +1184,7 @@ mod tests {
 
     #[test]
     fn poisoned_network_lock_is_recovered_and_reconcile_failures_are_reported() {
+        let _test_state = crate::test_support::global_state();
         let temp = tempfile::tempdir_in("/tmp").unwrap();
         let paths = temp_paths(&temp);
         write_config(&paths, &one_port("dev", 3000, true)).unwrap();
@@ -1232,6 +1242,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn repairing_one_vm_never_holds_the_network_lock_across_runtime_calls() {
+        let _test_state = crate::test_support::global_state();
         let temp = tempfile::tempdir_in("/tmp").unwrap();
         let paths = temp_paths(&temp);
         let mut config = one_port("dev", 3000, true);
@@ -1258,6 +1269,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn tombstone_cleanup_keeps_settings_saved_during_a_repair() {
+        let _test_state = crate::test_support::global_state();
         let temp = tempfile::tempdir_in("/tmp").unwrap();
         let paths = temp_paths(&temp);
         let mut config = one_port("dev", 3000, true);
@@ -1291,6 +1303,7 @@ mod tests {
 
     #[test]
     fn loopback_ipv6_is_not_reported_as_ipv4_reachable() {
+        let _test_state = crate::test_support::global_state();
         let input="sl local_address rem_address st\n0: 00000000000000000000000001000000:0BB8 00000000:0000 0A\n";
         assert_eq!(parse_listeners(input).unwrap().get(&3000), Some(&false));
     }

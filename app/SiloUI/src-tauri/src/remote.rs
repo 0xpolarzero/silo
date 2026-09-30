@@ -1571,6 +1571,7 @@ mod tests {
     use super::*;
     #[test]
     fn poisoned_settings_lock_is_recovered() {
+        let _test_state = crate::test_support::global_state();
         let _ = std::thread::spawn(|| {
             let _guard = CONFIG_LOCK.lock();
             panic!("poison the remote settings lock for this test");
@@ -1583,6 +1584,7 @@ mod tests {
     }
     #[test]
     fn sandbox_name_is_read_from_a_remote_snapshot() {
+        let _test_state = crate::test_support::global_state();
         let state = json!({"workspaces":[{"machine":{"id":"a","name":"one"}},{"machine":{"id":"b","name":"two"}}]});
         assert_eq!(sandbox_name(&state, "b").as_deref(), Some("two"));
         assert_eq!(sandbox_name(&state, "c"), None);
@@ -1590,6 +1592,7 @@ mod tests {
     }
     #[test]
     fn checkpoint_actions_build_owner_routed_requests_with_vm_identity() {
+        let _test_state = crate::test_support::global_state();
         let vm = "11111111-1111-4111-8111-111111111111";
         assert_eq!(checkpoint_remote_request(vm, "create", Some("Point"), None, None).unwrap(),
             ("checkpoint.create", json!({"vmId":vm,"name":"Point"})));
@@ -1602,6 +1605,7 @@ mod tests {
 
     #[test]
     fn desktop_tools_setup_has_time_to_install_over_remote_connection() {
+        let _test_state = crate::test_support::global_state();
         assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-tools"}})), Duration::from_secs(2100));
         assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"update-streamer"}})), Duration::from_secs(2100));
         assert_eq!(request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-lcu"}})), Duration::from_secs(2100));
@@ -1611,6 +1615,7 @@ mod tests {
 
     #[test]
     fn rejects_shell_and_option_addresses() {
+        let _test_state = crate::test_support::global_state();
         for address in [
             "-oProxyCommand=evil",
             "host;touch /tmp/x",
@@ -1636,6 +1641,7 @@ mod tests {
     }
     #[test]
     fn frames_are_bounded_and_round_trip() {
+        let _test_state = crate::test_support::global_state();
         let value = json!({"method":"handshake"});
         let mut bytes = vec![];
         write_frame(&mut bytes, &value).unwrap();
@@ -1714,6 +1720,7 @@ mod stream_tests {
     use super::*;
     #[test]
     fn raw_binary_stream_reaches_output_without_newline_or_input_eof() {
+        let _test_state = crate::test_support::global_state();
         let (mut source_writer, source_reader) = UnixStream::pair().unwrap();
         let (output_writer, mut output_reader) = UnixStream::pair().unwrap();
         output_reader
@@ -1733,6 +1740,7 @@ mod stream_tests {
     }
     #[test]
     fn stream_reply_arrives_before_client_sends_ssh_bytes() {
+        let _test_state = crate::test_support::global_state();
         let (mut client, server) = UnixStream::pair().unwrap();
         client.set_read_timeout(Some(Duration::from_millis(500))).unwrap();
         let worker = thread::spawn(move || {
@@ -1762,6 +1770,7 @@ mod stream_tests {
     }
     #[test]
     fn input_eof_drains_response_and_reaps_child() {
+        let _test_state = crate::test_support::global_state();
         let (mut client, server) = UnixStream::pair().unwrap();
         client
             .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1780,6 +1789,7 @@ mod stream_tests {
     }
     #[test]
     fn revocation_interrupts_full_child_and_client_pipes() {
+        let _test_state = crate::test_support::global_state();
         let (mut client, server) = UnixStream::pair().unwrap();
         let writer = thread::spawn(move || {
             let _ = client.write_all(&vec![b'x'; 2 * 1024 * 1024]);
@@ -1798,6 +1808,7 @@ mod stream_tests {
     }
     #[test]
     fn stdout_eof_releases_blocked_input_and_revocation_closes_live_child() {
+        let _test_state = crate::test_support::global_state();
         let (_client, server) = UnixStream::pair().unwrap();
         let mut exited = child("/usr/bin/true", &[]);
         let start = Instant::now();
@@ -1930,6 +1941,7 @@ mod setup_tests {
     }
     #[test]
     fn key_setup_creates_silos_key_once_and_installs_its_restricted_line() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         assert!(key_setup_command(dir.path(), "-oProxyCommand=evil").is_err());
         assert!(!dir.path().join("id_ed25519").exists());
@@ -1950,6 +1962,7 @@ mod setup_tests {
     }
     #[test]
     fn commands_that_launch_processes_stay_off_the_main_thread() {
+        let _test_state = crate::test_support::global_state();
         // Tauri runs a synchronous command on the main thread; only quick settings reads
         // and writes may be synchronous here.
         let quick = ["remote_management_status", "set_remote_management", "remote_host_list"];
@@ -1968,10 +1981,12 @@ mod setup_tests {
     }
     #[test]
     fn public_key_install_preserves_existing_unterminated_line_and_is_idempotent() {
+        let _test_state = crate::test_support::global_state();
         install_with(Path::new("/bin/sh"));
     }
     #[test]
     fn public_key_install_works_from_any_login_shell() {
+        let _test_state = crate::test_support::global_state();
         let mut shells: Vec<PathBuf> = ["/bin/bash", "/bin/zsh", "/bin/dash", "/bin/ksh", "/bin/csh", "/bin/tcsh"]
             .into_iter()
             .map(PathBuf::from)
@@ -1998,6 +2013,7 @@ mod connection_failure_tests {
     use super::*;
     #[test]
     fn distinguishes_ssh_failures_from_bridge_failures() {
+        let _test_state = crate::test_support::global_state();
         let changed = "@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.\n";
         assert!(connection_failure(Some(255), changed).contains("host key changed"));
         assert!(connection_failure(Some(255), "Host key verification failed.\n").starts_with("Host key verification failed."));
@@ -2019,6 +2035,7 @@ mod accept_tests {
     use super::*;
     #[test]
     fn accept_errors_do_not_stop_the_owner_listener() {
+        let _test_state = crate::test_support::global_state();
         let incoming = vec![
             Err(std::io::Error::from_raw_os_error(libc::EMFILE)),
             Ok(1),
@@ -2045,6 +2062,7 @@ mod authorized_key_tests {
 
     #[test]
     fn installed_line_only_allows_the_bridge_and_loopback_tunnels() {
+        let _test_state = crate::test_support::global_state();
         let line = authorized_key_line(&format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}\n")).unwrap();
         assert_eq!(
             line,
@@ -2064,6 +2082,7 @@ mod authorized_key_tests {
 
     #[test]
     fn rewrites_only_silos_own_unrestricted_line() {
+        let _test_state = crate::test_support::global_state();
         let own = format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}");
         let contents = format!(
             "ssh-ed25519 AAAAother user@laptop\n{own}\nfrom=\"10.0.0.1\" {own}\nssh-ed25519 {BLOB} personal\n{own}"
@@ -2082,6 +2101,7 @@ mod authorized_key_tests {
 
     #[test]
     fn rewrite_preserves_file_mode_and_skips_symlinks() {
+        let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
         let path = home.path().join("authorized_keys");
         let public = format!("ssh-ed25519 {BLOB} {SILO_KEY_COMMENT}");
@@ -2112,6 +2132,7 @@ mod health_tests {
 
     #[test]
     fn one_failed_poll_closes_nothing_and_repeated_failures_disconnect() {
+        let _test_state = crate::test_support::global_state();
         let host = uuid::Uuid::new_v4().to_string();
         let blip = "The SSH connection timed out. Check that the other computer is awake and reachable.";
         assert_eq!(poll_failed(&host, blip), PollFailure::Transient);
@@ -2129,6 +2150,7 @@ mod health_tests {
 
     #[test]
     fn identity_or_access_changes_close_everything_at_once() {
+        let _test_state = crate::test_support::global_state();
         for error in [
             "This address now belongs to a different Silo computer. Reconnect it explicitly.",
             "Remote management is disabled on this computer.",
@@ -2156,6 +2178,7 @@ mod connect_tests {
 
     #[test]
     fn a_reported_identity_never_silently_takes_over_a_saved_computer() {
+        let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
         let dir = directory_in(home.path()).unwrap();
         let office = uuid::Uuid::new_v4().to_string();
@@ -2173,6 +2196,7 @@ mod connect_tests {
 
     #[test]
     fn this_computers_identity_is_named_as_itself_or_as_a_copy() {
+        let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
         let dir = directory_in(home.path()).unwrap();
         let own = read_config_in(&dir).unwrap().host_id;
@@ -2194,6 +2218,7 @@ mod bridge_link_tests {
 
     #[test]
     fn the_link_names_the_appimage_file_not_its_temporary_mount() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let image = dir.path().join("Silo.AppImage");
         executable(&image);
@@ -2210,6 +2235,7 @@ mod bridge_link_tests {
 
     #[test]
     fn the_link_is_repointed_but_never_replaces_someone_elses_file() {
+        let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
         let apps = tempfile::tempdir().unwrap();
         let link = home.path().join(".local/bin/silo-remote");
@@ -2242,6 +2268,7 @@ mod bridge_link_tests {
 
     #[test]
     fn copyable_addresses_prefer_names_then_tailscale_then_interfaces() {
+        let _test_state = crate::test_support::global_state();
         let interfaces = ["192.168.1.4", "100.101.102.103", "169.254.3.4", "10.0.0.2", "100.128.0.1", "not-an-ip"].map(String::from);
         let list = |name| {
             management_addresses("ana", name, &interfaces)
@@ -2263,6 +2290,7 @@ mod bridge_link_tests {
 
     #[test]
     fn a_start_failure_is_reported_in_the_status() {
+        let _test_state = crate::test_support::global_state();
         let config = Config { host_id: uuid::Uuid::new_v4().to_string(), enabled: true, hosts: vec![] };
         record_start_error(Some("Another Silo instance owns remote management.".into()));
         assert_eq!(status(&config).error.as_deref(), Some("Another Silo instance owns remote management."));
@@ -2280,6 +2308,7 @@ mod identity_tests {
 
     #[test]
     fn silos_key_is_offered_alone_unless_only_other_keys_work() {
+        let _test_state = crate::test_support::global_state();
         let key = Path::new("/private/key");
         let only = arguments(&ssh_with_identity("office", Some(key), Identity::SiloOnly).unwrap());
         assert!(only.windows(2).any(|pair| pair == ["-i", "/private/key"]));
@@ -2293,6 +2322,7 @@ mod identity_tests {
 
     #[test]
     fn a_refused_key_choice_falls_back_once_and_is_remembered() {
+        let _test_state = crate::test_support::global_state();
         let address = format!("fallback-{}", uuid::Uuid::new_v4());
         let refused = || Err(Failure::Failed(AUTHENTICATION_FAILED.into()));
         // Silo's key is not installed there yet: the user's agent keys authenticate.
@@ -2338,6 +2368,7 @@ mod reply_tests {
 
     #[test]
     fn replies_are_found_after_shell_startup_output() {
+        let _test_state = crate::test_support::global_state();
         let value = json!({"result":{"hostId":"office"}});
         for noise in [
             &b""[..],
@@ -2359,6 +2390,7 @@ mod reply_tests {
 
     #[test]
     fn an_exchange_skips_what_the_remote_shell_prints() {
+        let _test_state = crate::test_support::global_state();
         let file = tempfile::NamedTempFile::new().unwrap();
         fs::write(file.path(), reply(&json!({"result":{"ok":true}}))).unwrap();
         let mut command = Command::new("/bin/sh");
@@ -2417,6 +2449,7 @@ mod dispatch_tests {
 
     #[test]
     fn every_served_method_is_classified_and_every_change_is_recorded() {
+        let _test_state = crate::test_support::global_state();
         assert_eq!(
             methods(Access::Change),
             [
@@ -2445,6 +2478,7 @@ mod dispatch_tests {
 
     #[test]
     fn changes_are_recorded_once_and_reads_run_every_time() {
+        let _test_state = crate::test_support::global_state();
         let (_home, dir, config) = owner();
         let runs = AtomicUsize::new(0);
         for method in methods(Access::Change) {
@@ -2478,6 +2512,7 @@ mod dispatch_tests {
 
     #[test]
     fn refused_requests_never_run() {
+        let _test_state = crate::test_support::global_state();
         let (_home, dir, config) = owner();
         let refuse = |request: &Value| {
             run(&dir, request, |method, _| panic!("{method} must not run")).unwrap_err()
@@ -2510,6 +2545,7 @@ mod dispatch_tests {
 
     #[test]
     fn handshake_reports_identity_and_capabilities_without_a_pinned_owner() {
+        let _test_state = crate::test_support::global_state();
         let (_home, dir, config) = owner();
         let request = json!({"version":VERSION,"method":"handshake","params":{}});
         let result = run(&dir, &request, |method, _| {
@@ -2524,6 +2560,7 @@ mod dispatch_tests {
 
     #[test]
     fn a_queued_change_rechecks_access_when_its_turn_comes() {
+        let _test_state = crate::test_support::global_state();
         let (_home, dir, config) = owner();
         let vm = uuid::Uuid::new_v4().to_string();
         let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
@@ -2571,6 +2608,7 @@ mod dispatch_tests {
 
     #[test]
     fn the_owner_sees_the_connection_close_when_the_controller_leaves() {
+        let _test_state = crate::test_support::global_state();
         let (owner_side, bridge_side) = UnixStream::pair().unwrap();
         let (mut controller, bridge_input) = UnixStream::pair().unwrap();
         watch_controller(bridge_input, bridge_side);
@@ -2588,6 +2626,7 @@ mod dispatch_tests {
 
     #[test]
     fn a_lost_change_is_sent_again_with_the_same_identity() {
+        let _test_state = crate::test_support::global_state();
         let mut request = json!({"method":"runtime.action","operationId":"fixed"});
         let deadline = || Instant::now() + Duration::from_secs(60);
         let mut sent = Vec::new();
@@ -2628,6 +2667,7 @@ mod dispatch_tests {
 
     #[test]
     fn owner_directory_lock_and_socket_are_private_to_this_account() {
+        let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
         let dir = directory_in(home.path()).unwrap();
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
@@ -2652,6 +2692,7 @@ mod ssh_authorization_tests {
     use super::*;
     #[test]
     fn ssh_settings_require_management_protocol_and_pinned_owner() {
+        let _test_state = crate::test_support::global_state();
         let mut config = Config { host_id: uuid::Uuid::new_v4().to_string(), enabled: true, hosts: vec![] };
         for method in ["ssh.access.state", "ssh.access.save", "ssh.access.connection"] {
             let request = json!({"version":VERSION,"hostId":config.host_id,"method":method});

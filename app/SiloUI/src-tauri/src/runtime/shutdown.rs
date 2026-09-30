@@ -314,6 +314,7 @@ mod tests {
     }
     #[test]
     fn work_queued_behind_a_failed_quit_does_not_run_when_it_releases_the_gate() {
+        let _test_state = crate::test_support::global_state();
         let gate: &'static operation_gate::OperationGate =
             Box::leak(Box::new(operation_gate::OperationGate::new()));
         let mut waiter = None;
@@ -336,6 +337,7 @@ mod tests {
 
     #[test]
     fn quit_accepts_crashed_vm_and_still_stops_running_vm() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
@@ -351,6 +353,7 @@ mod tests {
 
     #[test]
     fn quit_reports_each_vm_it_stops_with_its_position() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
@@ -367,6 +370,7 @@ mod tests {
 
     #[test]
     fn quit_skips_already_stopped_vms_without_recording_a_stop() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
@@ -382,6 +386,7 @@ mod tests {
 
     #[test]
     fn quit_stops_and_verifies_each_local_vm_without_removing_it() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
@@ -406,6 +411,7 @@ mod tests {
     }
     #[test]
     fn one_failed_stop_preserves_failure_and_still_stops_other_vms() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(Some("first"));
@@ -418,6 +424,7 @@ mod tests {
     }
     #[test]
     fn saved_ssh_connections_are_never_contacted_or_stopped() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
@@ -442,6 +449,7 @@ mod tests {
     }
     #[test]
     fn replaced_vm_is_not_stopped_and_prevents_successful_quit() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
@@ -457,6 +465,7 @@ mod tests {
 
     #[test]
     fn quit_stops_created_vms_when_guest_verification_failed_before_metadata_commit() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let candidate = read_metadata(&paths.metadata).unwrap();
@@ -485,6 +494,7 @@ mod tests {
 
     #[test]
     fn quit_does_not_silently_leave_an_unidentified_managed_vm_running() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let mut metadata = read_metadata(&paths.metadata).unwrap();
@@ -501,6 +511,7 @@ mod tests {
 
     #[test]
     fn missing_metadata_does_not_hide_managed_vms_in_an_existing_runtime() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         fs::create_dir_all(&paths.home).unwrap();
@@ -519,6 +530,7 @@ mod tests {
 
     #[test]
     fn quit_after_failed_first_setup_does_not_require_a_working_alias() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let mut paths = setup(&dir);
         let pending = read_metadata(&paths.metadata).unwrap();
@@ -535,6 +547,7 @@ mod tests {
 
     #[test]
     fn bootstrap_shortcut_rejects_runtime_state_in_either_location() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let mut paths = super::super::tests::paths(&dir);
         let storage = dir.path().join("storage");
@@ -551,6 +564,7 @@ mod tests {
 
     #[test]
     fn bootstrap_shortcut_rejects_active_workers_and_symlinks() {
+        let _test_state = crate::test_support::global_state();
         use std::os::fd::AsRawFd;
         let dir = tempfile::tempdir().unwrap();
         let mut paths = super::super::tests::paths(&dir);
@@ -573,6 +587,7 @@ mod tests {
 
     #[test]
     fn empty_configuration_quits_without_needing_runtime() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let runner = runner(None);

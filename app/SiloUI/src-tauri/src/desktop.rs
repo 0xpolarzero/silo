@@ -580,6 +580,7 @@ mod tests {
     }
     #[test]
     fn install_rejects_runtime_without_boot_hook_before_mutating_guest() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let runner = Runner {
             calls: Mutex::new(Vec::new()),
@@ -604,6 +605,7 @@ mod tests {
 
     #[test]
     fn working_account_desktop_rejects_old_vm_before_running_guest() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let runner = Runner {
             calls: Mutex::new(Vec::new()),
@@ -616,6 +618,7 @@ mod tests {
 
     #[test]
     fn changing_startup_policy_does_not_reinstall_or_stop_session() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let runner = Runner {
             calls: Mutex::new(Vec::new()),
@@ -642,6 +645,7 @@ mod tests {
     }
     #[test]
     fn fresh_install_stages_agent_tools_before_persisting_startup_policy() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let runner = Runner { calls: Mutex::new(Vec::new()), output: "1".into() };
         configure_with(&runner, &paths(&dir), "dev", None, &DesktopConfiguration { start_with_sandbox: false }).unwrap();
@@ -659,6 +663,7 @@ mod tests {
 
     #[test]
     fn streamer_actions_route_to_scoped_guest_commands() {
+        let _test_state = crate::test_support::global_state();
         let restart = action_script("restart-streamer");
         assert_eq!(restart, "/usr/local/bin/silo-desktop restart-streamer");
         assert_eq!(action_timeout("restart-streamer"), Duration::from_secs(120));
@@ -673,6 +678,7 @@ mod tests {
 
     #[test]
     fn lcu_setup_is_explicit_staged_and_never_starts_vm() {
+        let _test_state = crate::test_support::global_state();
         let setup = action_script("setup-lcu");
         assert!(setup.contains("lcu-lock.json"));
         assert!(setup.contains("/usr/local/share/silo/lcu-lock.json"));
@@ -691,6 +697,7 @@ mod tests {
 
     #[test]
     fn long_desktop_actions_are_not_flagged_before_their_guest_timeout() {
+        let _test_state = crate::test_support::global_state();
         for action in ["start", "stop", "restart", "setup-tools", "restart-streamer", "update-streamer", "setup-lcu"] {
             assert!(action_expected_duration(action) > action_timeout(action), "{action}");
             assert!(action_expected_duration(action) >= Duration::from_secs(10 * 60));
@@ -699,6 +706,7 @@ mod tests {
 
     #[test]
     fn status_bounds_guest_supplied_identity_fields() {
+        let _test_state = crate::test_support::global_state();
         let long = "9".repeat(65);
         let status = public_status(json!({
             "installed":true,"autoStart":false,"state":"running",
@@ -721,6 +729,7 @@ mod tests {
 
     #[test]
     fn status_projects_only_valid_agent_tool_fields() {
+        let _test_state = crate::test_support::global_state();
         let status = public_status(json!({"installed":true,"autoStart":false,"state":"stopped","ludaState":"ready","ludaVersion":"0.3.0","ludaError":"private"})).unwrap();
         assert_eq!(status["ludaState"], "ready");
         assert_eq!(status["ludaVersion"], "0.3.0");
@@ -781,6 +790,7 @@ mod tests {
 
     #[test]
     fn stopped_status_never_boots_vm() {
+        let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let runner = Runner {
             calls: Mutex::new(Vec::new()),
@@ -802,6 +812,7 @@ mod tests {
     }
     #[test]
     fn status_projection_does_not_leak_guest_credentials() {
+        let _test_state = crate::test_support::global_state();
         let public = public_status(json!({"installed":true,"autoStart":true,"state":"running","password":"private","connection":{"token":"private"}})).unwrap();
         assert!(!public.to_string().contains("private"));
         assert!(
