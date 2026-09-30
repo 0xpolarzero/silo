@@ -15,6 +15,13 @@ use std::{
 
 const MAX_RETRIES: u32 = 5;
 const MAX_RESPONSE: u64 = 8 * 1024 * 1024;
+/// GitHub refused an OAuth grant (for example a used or expired refresh token).
+const AUTHORIZATION_REJECTED: &str = "GitHub rejected the authorization.";
+/// Whether an error means GitHub itself rejected the OAuth grant, as opposed to a
+/// network failure or rate limit after which the same request may still succeed.
+pub(crate) fn authorization_rejected(error: &str) -> bool {
+    error.starts_with(AUTHORIZATION_REJECTED)
+}
 static CLIENT: OnceLock<Client> = OnceLock::new();
 static GATES: OnceLock<Mutex<Gates>> = OnceLock::new();
 /// GitHub limits each credential separately, so a limit reached with one credential
@@ -312,7 +319,7 @@ fn response(
                 false,
                 0,
                 false,
-                "GitHub rejected the authorization. Connect GitHub again.",
+                &format!("{AUTHORIZATION_REJECTED} Connect GitHub again."),
                 safe,
             ));
         }
@@ -458,6 +465,8 @@ mod tests {
         .unwrap_err();
         assert!(!error.contains("fixture-secret"));
         assert!(error.contains("rejected"));
+        assert!(authorization_rejected(&error));
+        assert!(!authorization_rejected("Cannot reach GitHub."));
         assert_eq!(wire_response(204, "", true).unwrap()["revoked"], true);
         assert_eq!(wire_response(404, "", true).unwrap()["revoked"], true);
         assert!(wire_response(204, "", false).is_err());

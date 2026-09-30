@@ -579,6 +579,89 @@ fn revocation_credential() -> Result<Option<Credential>, String> {
     }))
 }
 
+/// Whether two GitHub logins name the same account. One account has one authorization
+/// (grant) for the App, shared by every credential issued to it.
+fn same_account(previous: Option<&str>, login: &str) -> bool {
+    previous.is_some_and(|previous| previous.eq_ignore_ascii_case(login))
+}
+/// Revoking a whole authorization also revokes the stored credential of the same
+/// account, so a credential that shares it is revoked alone.
+fn discard_operation(shares_grant: bool) -> Operation {
+    if shares_grant {
+        Operation::RevokeToken
+    } else {
+        Operation::RevokeAuthorization
+    }
+}
+fn discard_credential(c: &Credential, shares_grant: bool) {
+    let _ = token_operation(discard_operation(shares_grant), json!({"accessToken":c.access_token}));
+}
+/// A credential from a completed code exchange that Silo has not kept. Dropping it (any
+/// failure or cancellation after the exchange) revokes it, so a new authorization is
+/// never left live without Silo knowing it.
+struct Unstored {
+    credential: Option<Credential>,
+    /// Whether the stored credential may belong to the same account (and grant).
+    shares_grant: bool,
+    revoke: fn(&Credential, bool),
+}
+impl Unstored {
+    fn new(credential: Credential, shares_grant: bool) -> Self {
+        Self { credential: Some(credential), shares_grant, revoke: discard_credential }
+    }
+    fn kept(&mut self) {
+        self.credential = None;
+    }
+}
+impl Drop for Unstored {
+    fn drop(&mut self) {
+        if let Some(credential) = self.credential.take() {
+            (self.revoke)(&credential, self.shares_grant);
+        }
+    }
+}
+/// An access token that can still act for `c`'s authorization: the current one, or a
+/// renewed one when it expired (GitHub answers 404 for an expired token, which revocation
+/// would take for success). `None` when nothing can act for it any more: no refresh token,
+/// or GitHub rejected the renewal because the authorization is already gone.
+fn live_access_token(
+    c: &Credential,
+    at: u64,
+    renew: impl FnOnce(&str) -> Result<Credential, String>,
+) -> Result<Option<String>, String> {
+    if c.expires_at > at + 120 {
+        return Ok(Some(c.access_token.clone()));
+    }
+    let Some(refresh) = c.refresh_token.as_deref() else {
+        return Ok(None);
+    };
+    match renew(refresh) {
+        Ok(renewed) => Ok(Some(renewed.access_token)),
+        Err(error) if crate::github_http::authorization_rejected(&error) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+/// Revoke the credential a reconnect replaced (best effort). The same account's new
+/// credential shares its authorization, so only the old token is revoked then; another
+/// account's authorization is revoked entirely, renewing an expired token first.
+fn revoke_replaced(old: &Credential, same_account: bool) {
+    let _ = if same_account {
+        if old.expires_at <= now() {
+            return;
+        }
+        token_operation(Operation::RevokeToken, json!({"accessToken":old.access_token})).map(|_| ())
+    } else {
+        live_access_token(old, now(), |refresh| {
+            from_response(token_operation(Operation::Refresh, json!({"refreshToken":refresh}))?)
+        })
+        .and_then(|token| {
+            token.map_or(Ok(()), |token| {
+                token_operation(Operation::RevokeAuthorization, json!({"accessToken":token})).map(|_| ())
+            })
+        })
+    };
+}
+
 fn active_credential() -> Result<Credential, String> {
     let current = credential()?.ok_or("Connect GitHub first.")?;
     let mut pending = PENDING_REFRESH
@@ -1823,20 +1906,23 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     // Only the exchange and the store steps hold the GitHub network lock and the update
     // guard. The browser and App-installation waits (up to 5 minutes each) must not block
     // token renewal, repository refresh, host push or app updates.
-    let (c, account, mut repos, installed) = network_step(|| {
+    let previous_account = load(app).ok().and_then(|d| d.account);
+    let (c, mut unstored, account, mut repos, installed) = network_step(|| {
         let c = from_response(token_operation(
             Operation::Exchange,
             json!({"code":code,"codeVerifier":verifier,"redirectUri":redirect}),
         )?)?;
+        // From here every failure or cancellation revokes the new credential. Until its
+        // account is known, assume it may share the stored connection's authorization.
+        let mut unstored = Unstored::new(c.clone(), previous_account.is_some());
         let user = github(&c.access_token, "/user")?;
-        let account = Some(
-            user["login"]
-                .as_str()
-                .ok_or("GitHub account name is missing.")?
-                .into(),
-        );
+        let login: String = user["login"]
+            .as_str()
+            .ok_or("GitHub account name is missing.")?
+            .into();
+        unstored.shares_grant = same_account(previous_account.as_deref(), &login);
         let (repos, installed) = catalog_installations(&c)?;
-        Ok((c, account, repos, installed))
+        Ok((c, unstored, Some(login), repos, installed))
     })?;
     if !installed {
         let slug = APP_SLUG.ok_or("GitHub App is not configured in this build.")?;
@@ -1863,7 +1949,9 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     if CANCELLATION.load(Ordering::SeqCst) != generation {
         return Err("GitHub connection cancelled.".into());
     }
-    network_step(|| {
+    let replaced = network_step(|| {
+        // The credential this connection replaces, read before taking STATE.
+        let replaced = revocation_credential().ok().flatten();
         let _state = serialize(&STATE);
         if CANCELLATION.load(Ordering::SeqCst) != generation {
             return Err("GitHub connection cancelled.".into());
@@ -1899,13 +1987,26 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             .lock()
             .map_err(|_| "GitHub state is unavailable.")?
             .retain(|key, _| !key.starts_with(&prefix));
-        store(&c)?;
+        let stored = store(&c);
+        // A failed store write keeps the new credential in use in memory and stores it
+        // later, so it is kept; only a credential that Silo holds nowhere is revoked.
+        if stored.is_ok() || ACCOUNT_SECRET.peek() == Some(Ok(Some(c.clone()))) {
+            unstored.kept();
+        }
+        stored?;
+        let same = account.as_deref().is_some_and(|login| same_account(d.account.as_deref(), login));
         record_connection(&mut d, account, repos);
         for (name, error) in detach_errors.workspaces {
             d.access_errors.insert(name, error);
         }
-        save(app, &d)
+        save(app, &d)?;
+        Ok(replaced.filter(|old| old.access_token != c.access_token).map(|old| (old, same)))
     })?;
+    // The replaced credential is no longer stored anywhere; revoke it rather than leave
+    // its authorization (and a refresh token valid for months) live.
+    if let Some((old, same)) = replaced {
+        revoke_replaced(&old, same);
+    }
     schedule(Duration::from_millis(500));
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -2647,6 +2748,55 @@ mod tests {
                 "second applied"
             );
         });
+    }
+    thread_local! {
+        static DISCARDED: std::cell::RefCell<Vec<(String, bool)>> = const { std::cell::RefCell::new(Vec::new()) };
+    }
+    fn record_discard(c: &Credential, shares_grant: bool) {
+        DISCARDED.with(|d| d.borrow_mut().push((c.access_token.clone(), shares_grant)));
+    }
+    fn fixture_credential(token: &str, expires_at: u64) -> Credential {
+        Credential { access_token: token.into(), refresh_token: Some(format!("{token}-refresh")), expires_at }
+    }
+    #[test]
+    fn a_new_credential_is_revoked_unless_it_was_kept() {
+        DISCARDED.with(|d| d.borrow_mut().clear());
+        // A failure after the exchange (catalog, App-install timeout, cancellation, store).
+        drop(Unstored { credential: Some(fixture_credential("new", 0)), shares_grant: false, revoke: record_discard });
+        let mut kept = Unstored { credential: Some(fixture_credential("stored", 0)), shares_grant: true, revoke: record_discard };
+        kept.kept();
+        drop(kept);
+        assert_eq!(DISCARDED.with(|d| d.borrow().clone()), vec![("new".to_string(), false)]);
+        // The same account shares one authorization with the stored credential: revoking
+        // the whole authorization would disconnect it too.
+        assert!(matches!(discard_operation(true), Operation::RevokeToken));
+        assert!(matches!(discard_operation(false), Operation::RevokeAuthorization));
+        assert!(same_account(Some("Octo-Cat"), "octo-cat"));
+        assert!(!same_account(Some("octo-cat"), "other"));
+        assert!(!same_account(None, "octo-cat"));
+    }
+    #[test]
+    fn revocation_renews_an_expired_token_and_skips_a_gone_authorization() {
+        let at = 1_000;
+        let live = fixture_credential("live", at + 600);
+        assert_eq!(live_access_token(&live, at, |_| panic!("renewed a live token")).unwrap(), Some("live".into()));
+        // An expired token would get a 404 that looks like success; renew it first.
+        let expired = fixture_credential("expired", at);
+        let renewed = live_access_token(&expired, at, |refresh| {
+            assert_eq!(refresh, "expired-refresh");
+            Ok(fixture_credential("renewed", at + 600))
+        });
+        assert_eq!(renewed.unwrap(), Some("renewed".into()));
+        // GitHub rejected the refresh token: the authorization is already gone.
+        let gone = live_access_token(&expired, at, |_| {
+            Err("GitHub rejected the authorization. Connect GitHub again. Automatic retries stopped.".into())
+        });
+        assert_eq!(gone.unwrap(), None);
+        // A network failure is retried later instead of skipping the revocation.
+        assert!(live_access_token(&expired, at, |_| Err("Cannot reach GitHub.".into())).is_err());
+        let mut no_refresh = expired.clone();
+        no_refresh.refresh_token = None;
+        assert_eq!(live_access_token(&no_refresh, at, |_| panic!("renewed without a refresh token")).unwrap(), None);
     }
     #[test]
     fn a_connection_holds_the_network_lock_only_for_its_steps() {
