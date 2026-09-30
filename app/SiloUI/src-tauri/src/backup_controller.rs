@@ -233,7 +233,6 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         history_path,
         service: backup::BackupService::new(
             backup::MsbCommand {
-                metadata: paths.metadata,
                 executable: paths.executable,
                 home: paths.home,
                 storage_home: paths.storage_home,
@@ -320,11 +319,12 @@ fn publish(app: &AppHandle, controller: &Controller) {
     let _ = app.emit("silo://application-state-changed", ());
 }
 
+/// Binary sizes, labelled GiB/MiB like the storage panel (E-41).
 fn display_size(bytes: u64) -> String {
     if bytes >= GIB {
-        format!("{:.1} GB", bytes as f64 / GIB as f64)
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
     } else {
-        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
     }
 }
 
@@ -1518,7 +1518,9 @@ fn run_restore(
     let started = std::time::Instant::now();
     let mut archive = archive;
     let result = (|| {
-        let inspection = controller.service.inspect_archive(&path, &cancellation)?;
+        // The review already hashed the whole file and the import verifies
+        // the selected payload as it unpacks, so read only the manifest (E-26).
+        let inspection = controller.service.describe_archive(&path, &cancellation)?;
         let selected = select_archive_source(&inspection.sandboxes, source_name.as_deref())?;
         archive = archive_from(&path, &inspection);
         if let Ok(mut view) = controller.view.lock() {
@@ -1672,6 +1674,11 @@ fn unpack_and_save(
             },
             cancellation,
         )?;
+    // Until the new sandbox is saved, a failure removes the loaded import
+    // group instead of stranding it in the native store (E-23).
+    let import_group = controller
+        .service
+        .discard_import_on_failure(&prepared.snapshot_group);
     if prepared.source_name != source_name || prepared.new_name != new_name {
         return Err("The verified backup restore identity changed unexpectedly.".into());
     }
@@ -1701,6 +1708,7 @@ fn unpack_and_save(
         &prepared.snapshot_group,
         &prepared.snapshot_member,
     )?;
+    import_group.keep();
     Ok(())
 }
 
@@ -1878,7 +1886,6 @@ mod tests {
             journal: Mutex::new(None),
             service: backup::BackupService::new(
                 backup::MsbCommand {
-                    metadata: PathBuf::from("/unused/machines.json"),
                     executable: PathBuf::from("/unused/msb"),
                     home: PathBuf::from("/unused/home"),
                     storage_home: None,
@@ -1898,6 +1905,61 @@ mod tests {
         }
     }
 
+    /// A controller whose backup runner uses a scripted `msb` in the runtime
+    /// home of `paths` with a two-member import `group`: `snapshot list` prints `snapshots.json` from the temp
+    /// dir, every call is appended to `calls`, and `snapshot remove` fails
+    /// while a `refuse-remove` file exists.
+    pub(super) fn controller_with_scripted_msb(
+        directory: &Path,
+        paths: &runtime::RuntimePaths,
+        group: &str,
+    ) -> Controller {
+        use std::os::unix::fs::PermissionsExt;
+        let script = directory.join("scripted-msb");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\ncase \"$1 $2\" in\n  'snapshot list') cat '{list}' ;;\n  'snapshot remove') [ -e '{refuse}' ] && exit 1 ;;\nesac\nexit 0\n",
+                calls = directory.join("calls").display(),
+                list = directory.join("snapshots.json").display(),
+                refuse = directory.join("refuse-remove").display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let parent = format!("sha256:{}", "a".repeat(64));
+        fs::write(
+            directory.join("snapshots.json"),
+            serde_json::json!([
+                {"group": group, "name": "imported-parent", "snapshot_id": format!("snap_{}", "0".repeat(32)), "digest": parent, "parent_digest": null, "availability": "ready"},
+                {"group": group, "name": "imported-member", "snapshot_id": format!("snap_{}", "1".repeat(32)), "digest": format!("sha256:{}", "b".repeat(64)), "parent_digest": format!("snap_{}", "0".repeat(32)), "availability": "ready"},
+                {"group": "dev", "name": "kept", "snapshot_id": format!("snap_{}", "2".repeat(32)), "availability": "ready"}
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        Controller {
+            service: backup::BackupService::new(
+                backup::MsbCommand {
+                    executable: script,
+                    home: paths.home.clone(),
+                    storage_home: None,
+                    library: paths.library.clone(),
+                },
+                directory.join("scratch"),
+            ),
+            ..history_controller(directory.join("backup-history.json"))
+        }
+    }
+
+    pub(super) fn scripted_calls(directory: &Path) -> Vec<String> {
+        fs::read_to_string(directory.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
     pub(super) fn completed_archive() -> Archive {
         Archive {
             name: "saved.silo-backup".into(),
@@ -1908,6 +1970,12 @@ mod tests {
             sandboxes: vec!["dev".into()],
             checkpoint_name: None,
         }
+    }
+
+    #[test]
+    fn export_sizes_label_binary_units() {
+        assert_eq!(display_size(3 * GIB), "3.0 GiB");
+        assert_eq!(display_size(5 * 1024 * 1024), "5.0 MiB");
     }
 
     #[test]
@@ -2574,7 +2642,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = import_paths(directory.path());
         fs::create_dir_all(paths.metadata.parent().unwrap()).unwrap();
-        let controller = history_controller(directory.path().join("backup-history.json"));
+        let controller = controller_with_scripted_msb(directory.path(), &paths, GROUP);
         recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let original = runtime::read_metadata(&paths.metadata).unwrap();
@@ -2584,6 +2652,12 @@ mod tests {
         assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
         let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
         assert!(!saved.contains(&id), "{saved}");
+        // The loaded snapshot group went with it (E-23).
+        let removed = scripted_calls(directory.path())
+            .into_iter()
+            .filter(|call| call.starts_with("snapshot remove"))
+            .count();
+        assert_eq!(removed, 2);
     }
 
     fn outcome_and_detail(operation: &Operation) -> (&'static str, String) {
@@ -2861,7 +2935,6 @@ mod tests {
             journal: Mutex::new(None),
             service: backup::BackupService::new(
                 backup::MsbCommand {
-                    metadata: paths.metadata.clone(),
                     executable: paths.executable.clone(),
                     home: paths.home.clone(),
                     storage_home: paths.storage_home.clone(),
@@ -3321,7 +3394,6 @@ mod tests {
             journal: Mutex::new(None),
             service: backup::BackupService::new(
                 backup::MsbCommand {
-                    metadata: paths.metadata.clone(),
                     executable: paths.executable.clone(),
                     home: paths.home.clone(),
                     storage_home: paths.storage_home.clone(),

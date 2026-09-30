@@ -166,8 +166,6 @@ export interface ApplicationWorkspace {
    * failing. Rendered as a neutral, retryable state instead of an error. */
   lifecycleFailureCancelled?: boolean
   lifecycleAction?: "start" | "stop" | "restart" | "dismiss-error"
-  /** Native snapshot reads are settling after an operation. */
-  settling?: boolean
   attention?: {
     level: "warning" | "error"
     message: string

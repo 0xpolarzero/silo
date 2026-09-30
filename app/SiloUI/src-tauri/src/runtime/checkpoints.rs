@@ -4,6 +4,7 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 
 mod native;
+pub(crate) use native::{Member as NativeMember, plan as native_removal_plan};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
