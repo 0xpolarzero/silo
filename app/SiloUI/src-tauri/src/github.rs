@@ -421,12 +421,54 @@ pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str
 pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Result<(), String> {
     let _state = serialize(&STATE);
     let mut document = load(app)?;
-    document.workspaces.retain(|value| value["workspace"].as_str() != Some(target));
-    document.access_pending.retain(|name| name != target);
-    document.identity_pending.retain(|name| name != target);
-    document.operations.retain(|value| value["workspace"].as_str() != Some(target));
+    forget_workspace(&mut document, target);
     document.revision = document.revision.saturating_add(1);
     save(app, &document)
+}
+
+/// Remove every saved choice and pending result for a sandbox. Returns whether any existed.
+fn forget_workspace(d: &mut Document, workspace: &str) -> bool {
+    let named = |value: &Value| value["workspace"].as_str() == Some(workspace);
+    let existed = d.workspaces.iter().any(named)
+        || d.operations.iter().any(named)
+        || d.access_pending.iter().chain(&d.identity_pending).any(|name| name == workspace)
+        || d.access_errors.contains_key(workspace)
+        || d.identity_errors.contains_key(workspace);
+    d.workspaces.retain(|value| !named(value));
+    d.operations.retain(|value| !named(value));
+    d.access_pending.retain(|name| name != workspace);
+    d.identity_pending.retain(|name| name != workspace);
+    d.access_errors.remove(workspace);
+    d.identity_errors.remove(workspace);
+    existed
+}
+
+/// A sandbox was deleted. GitHub choices are keyed by sandbox name, so a new sandbox
+/// reusing the name must not inherit its repository or write access: remove its policy
+/// and pending work, drop its cached attachments, and let the worker revoke the tokens
+/// issued to it (they stay in the retirement ledger until GitHub confirms).
+pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
+    let Some(document) = document_path() else {
+        return Ok(());
+    };
+    {
+        let _state = serialize(&STATE);
+        let mut d = load_at(&document)?;
+        if forget_workspace(&mut d, workspace) {
+            d.revision = d.revision.saturating_add(1);
+            save_at(&document, &d)?;
+        }
+    }
+    let key = format!("{}:{workspace}", document.display());
+    active().lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+    issued().lock().unwrap_or_else(PoisonError::into_inner).remove(&key);
+    personal_token::forget(&key);
+    RESTORED.lock().unwrap_or_else(PoisonError::into_inner).retain(|name| name != workspace);
+    if let Some(app) = OBSERVATION_APP.get() {
+        let _ = app.emit("silo://application-state-changed", ());
+    }
+    schedule(Duration::ZERO);
+    Ok(())
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -509,8 +551,29 @@ fn path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|_| "Cannot locate application data.")?
         .join("github.json"))
 }
+#[cfg(test)]
+thread_local! {
+    static TEST_DOCUMENT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+}
+/// Tests on this thread use `path` as the GitHub document for app-less entry points.
+#[cfg(test)]
+pub(crate) fn use_test_document(path: Option<PathBuf>) {
+    TEST_DOCUMENT.with(|test| *test.borrow_mut() = path);
+}
+/// The GitHub document for entry points without an app handle (the runtime's delete path).
+/// `None` before `install`, when there is no GitHub state to change.
+fn document_path() -> Option<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = TEST_DOCUMENT.with(|test| test.borrow().clone()) {
+        return Some(path);
+    }
+    OBSERVATION_APP.get().and_then(|app| path(app).ok())
+}
 fn load(app: &tauri::AppHandle) -> Result<Document, String> {
-    match fs::read(path(app)?) {
+    load_at(&path(app)?)
+}
+fn load_at(path: &std::path::Path) -> Result<Document, String> {
+    match fs::read(path) {
         Ok(b) if b.len() <= 16 * 1024 * 1024 => {
             serde_json::from_slice(&b).map_err(|_| "GitHub configuration is invalid.".into())
         }
@@ -520,6 +583,11 @@ fn load(app: &tauri::AppHandle) -> Result<Document, String> {
     }
 }
 fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
+    save_at(&path(app)?, d)?;
+    let _ = app.emit("silo://application-state-changed", ());
+    Ok(())
+}
+fn save_at(p: &std::path::Path, d: &Document) -> Result<(), String> {
     let mut saved = d.clone();
     for (class, until) in crate::github_http::retry_floors() {
         let floor = saved.rate_retry.entry(class).or_default();
@@ -528,7 +596,6 @@ fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
     let at = now();
     saved.rate_retry.retain(|_, until| *until > at);
     let d = &saved;
-    let p = path(app)?;
     let parent = p.parent().ok_or("Missing configuration directory.")?;
     fs::create_dir_all(parent).map_err(|_| "Cannot create configuration directory.")?;
     let mut f = tempfile::NamedTempFile::new_in(parent)
@@ -538,12 +605,11 @@ fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
     f.as_file()
         .sync_all()
         .map_err(|_| "Cannot sync GitHub configuration.")?;
-    f.persist(&p)
+    f.persist(p)
         .map_err(|_| "Cannot save GitHub configuration.")?;
     fs::File::open(parent)
         .and_then(|f| f.sync_all())
         .map_err(|_| "Cannot sync GitHub configuration directory.".to_string())?;
-    let _ = app.emit("silo://application-state-changed", ());
     Ok(())
 }
 fn token_configuration() -> Result<Configuration, String> {
@@ -2732,6 +2798,45 @@ mod tests {
             100,
             first + Duration::from_millis(900)
         ));
+    }
+    #[test]
+    fn a_deleted_sandbox_leaves_no_assignment_or_attachment_for_a_new_one_with_its_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let document = directory.path().join("github.json");
+        let policy = |name: &str| json!({"workspace":name,"repositoryMode":"all","allRepositoriesAllowChanges":true,"repositories":[],
+            "identity":{"name":"","email":"","apply":false}});
+        let d = Document {
+            revision: 4,
+            access_enabled: true,
+            workspaces: vec![policy("dev"), policy("other")],
+            access_pending: vec!["dev".into()],
+            identity_pending: vec!["dev".into()],
+            operations: vec![json!({"workspace":"dev","status":"failed","message":"old","canRetry":true})],
+            access_errors: [("dev".to_string(), "old".to_string())].into(),
+            identity_errors: [("dev".to_string(), "old".to_string())].into(),
+            ..Default::default()
+        };
+        save_at(&document, &d).unwrap();
+        let key = format!("{}:dev", document.display());
+        active().lock().unwrap().insert(key.clone(), vec![test_grant()]);
+        issued().lock().unwrap().insert(key.clone(), vec![IssuedToken { owner: 1, all: true, write: true, ids: vec![], token: "old-write".into(), expires_at: now() + 1000 }]);
+        use_test_document(Some(document.clone()));
+        let result = workspace_removed("dev");
+        use_test_document(None);
+        result.unwrap();
+        let after = load_at(&document).unwrap();
+        assert_eq!(after.workspaces, vec![policy("other")]);
+        assert!(after.access_pending.is_empty() && after.identity_pending.is_empty());
+        assert!(after.operations.is_empty() && after.access_errors.is_empty() && after.identity_errors.is_empty());
+        assert!(after.revision > 4);
+        // No grant or issued token of the deleted sandbox is reused or kept live; the
+        // retirement ledger revokes them because no policy names "dev" any more.
+        assert!(!active().lock().unwrap().contains_key(&key));
+        assert!(!issued().lock().unwrap().contains_key(&key));
+        assert!(after.workspaces.iter().all(|w| w["workspace"] != "dev"));
+        *PENDING.get_or_init(|| Mutex::new(None)).lock().unwrap() = None;
+        // Without an installed document there is nothing to forget.
+        assert!(workspace_removed("dev").is_ok());
     }
     #[test]
     fn idle_worker_sleeps_until_its_next_deadline_instead_of_polling() {

@@ -3451,6 +3451,7 @@ fn apply_whole_configuration_with_progress(
             lifecycle_recovery::forget_removed(paths, machine)?;
             crate::secrets::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             forget_github_state(&paths.home, machine.name());
+            crate::github::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             remove_machine_volumes(paths, machine)?;
             checkpoints::forget_removed(paths, machine.id())?;
             progress("workspace-removal", machine.name(), 1);
@@ -5323,6 +5324,26 @@ esac
         assert_ne!(github_environment(&paths, &args), DISABLED_GITHUB_PROFILE);
         forget_github_state(&paths.home, "dev");
         assert_eq!(github_environment(&paths, &args), DISABLED_GITHUB_PROFILE);
+    }
+
+    #[test]
+    fn deleting_a_sandbox_removes_its_github_assignment() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let document = directory.path().join("github.json");
+        std::fs::write(&document, serde_json::to_vec(&json!({"revision":3,"accessEnabled":true,"account":null,
+            "workspaces":[{"workspace":"dev","repositoryMode":"all","allRepositoriesAllowChanges":true,"repositories":[],
+                "identity":{"name":"","email":"","apply":false}}],"accessPending":["dev"]})).unwrap()).unwrap();
+        crate::github::use_test_document(Some(document.clone()));
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        let result = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]));
+        crate::github::use_test_document(None);
+        result.unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(&document).unwrap()).unwrap();
+        assert_eq!(saved["workspaces"], json!([]), "a new sandbox named dev would inherit write access");
+        assert_eq!(saved["accessPending"], json!([]));
     }
 
     #[test]

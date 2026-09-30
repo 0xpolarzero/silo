@@ -232,6 +232,10 @@ fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String>
     result
 }
 
+/// A deleted sandbox no longer holds the token; forget its attachment.
+pub(super) fn forget(key: &str) {
+    applied().lock().unwrap_or_else(PoisonError::into_inner).remove(key);
+}
 /// Time until `check` validates the token again, so the worker can sleep until then.
 pub(super) fn next_check() -> Duration {
     Duration::from_secs(CHECK_AT.load(Ordering::SeqCst).saturating_sub(now()))
