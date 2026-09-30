@@ -1,4 +1,4 @@
-import { ChevronRight, Code, CopyPlus, Cpu, GitBranch, Globe, KeyRound, Pencil, Play, Plus, Server, Square, Terminal, Trash2 } from "lucide-react"
+import { ChevronRight, Code, Cpu, GitBranch, Globe, KeyRound, Play, Plus, Server, Square, Terminal } from "lucide-react"
 import { useId, type MouseEvent, type ReactNode } from "react"
 
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
@@ -13,12 +13,11 @@ import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
-import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import { deleteSandboxDescription } from "@/features/sandboxes/model/delete-sandbox-copy"
+import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
 import { CheckpointPanel } from "@/features/application/components/checkpoint-panel"
-import { WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
+import { StatusSeparator, WorkspaceStatus } from "@/features/application/components/workspace-status"
 import { DisabledReason } from "@/features/application/components/disabled-reason"
-import { emptyOperationQueue, waitingOperationForVm } from "@/features/application/model/operation-queue"
 import type { ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
 import type { WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
@@ -54,6 +53,8 @@ export interface SandboxDetailControls {
   readOnly: boolean
   configurationLocked: boolean
   workspaceOperationBusy: boolean
+  /** Edit, Duplicate, Add Linux desktop and Delete wait while work runs or the computer is offline. */
+  changesBlocked?: boolean
   canOpen: boolean
   canStart: boolean
   canStop: boolean
@@ -72,7 +73,6 @@ export interface SandboxDetailControls {
   onDuplicate?: () => void
   /** Jump to another section (Files/Network filtered to this sandbox, or the Secrets tab). */
   onNavigate?: (route: ApplicationInitialRoute) => void
-  onRetryLifecycle?: () => void
   // Export a checkpoint's disks; progress is shown as a background toast.
   onCheckpointExport?: (checkpoint: WorkspaceCheckpoint) => void
   checkpointExportDisabled: boolean
@@ -81,28 +81,7 @@ export interface SandboxDetailControls {
   onCheckpointRestoredAction?: (checkpoint: WorkspaceCheckpoint) => { label: string; onClick: () => void }
 }
 
-const Sep = () => <span aria-hidden="true" className="mx-1">·</span>
-
-/** The lifecycle-aware state segment that leads the detail subtitle: a state
- * label, or a lifecycle/queue status while an operation is in flight. */
-function StateSegment({ workspace, source, readOnly, onCancel }: { workspace: ApplicationWorkspace; source: ApplicationSource; readOnly: boolean; onCancel?: ApplicationActions["cancelOperation"] }) {
-  const state = workspace.state
-  const lifecycle = workspace.lifecycleAction
-  const lifecycleLabel = lifecycle === "dismiss-error" ? "Dismissing…" : lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
-  const queueVmId = workspace.computer ? null : workspace.machine.id
-  const waitingForVm = queueVmId !== null ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, queueVmId) : undefined
-  if (lifecycle) {
-    return waitingForVm && queueVmId !== null
-      ? <WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} onCancel={readOnly ? undefined : onCancel} />
-      : <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span>
-  }
-  if (workspace.computer?.busy) return <span role="status">Refreshing status…</span>
-  if (workspace.computer && !workspace.computer.connected) return <span>Unavailable</span>
-  return <span className="inline-flex items-center gap-1.5 align-middle">
-    <WorkspaceStateLabel state={state} />
-    {queueVmId !== null && waitingForVm && <><Sep /><WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} onCancel={readOnly ? undefined : onCancel} /></>}
-  </span>
-}
+const Sep = StatusSeparator
 
 function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess, sshStale, onCancel }: {
   workspace: ApplicationWorkspace
@@ -116,7 +95,7 @@ function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess
   const { machine } = workspace
   const location = workspace.computer ? workspace.computer.name : machine.kind === "vm" ? "VM" : "SSH"
   return <span>
-    <StateSegment workspace={workspace} source={source} readOnly={readOnly} onCancel={onCancel} />
+    <WorkspaceStatus workspace={workspace} source={source} readOnly={readOnly} onCancel={onCancel} />
     <Sep />{location}
     {pendingSecrets.length > 0 && <><Sep /><SecretChangesLabel inline workspace={machine.name} state={workspace.state} secrets={pendingSecrets} /></>}
     {sshAccess?.enabled && <><Sep /><SshAccessBadges access={sshAccess} stale={sshStale} /></>}
@@ -352,11 +331,22 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     ? (editingContext.machines).filter(item => (editingContext.getComputerId!(item) ?? "") === editing.computerId)
     : (editingContext?.machines ?? [machine])
 
-  const editMenuActions: MenuAction[] = editingContext ? [
-    { label: "Edit", separatorBefore: controls.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: controls.configurationLocked, onSelect: () => editing.startEdit(machine) },
-    { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: controls.configurationLocked || !controls.onDuplicate, onSelect: () => controls.onDuplicate?.() },
-    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), tooltip: machine.kind === "vm" && state === "running" ? "Stop the sandbox before deleting it." : undefined, popover: "delete" },
-  ] : []
+  const displayName = workspace.computer ? `${machine.name} on ${workspace.computer.name}` : machine.name
+  const editMenuActions: MenuAction[] = editingContext ? sandboxEditMenu({
+    machine,
+    displayName,
+    disabled: controls.configurationLocked || editing.interactionDisabled || Boolean(controls.changesBlocked),
+    created: Boolean(editingContext.isMachineCreated?.(machine)),
+    running: state === "running",
+    separatorBefore: controls.menuActions.length > 0,
+    onEdit: () => editing.startEdit(machine),
+    onDuplicate: controls.onDuplicate,
+    onAddDesktop: (vm) => {
+      editing.beginOperation()
+      editing.captureBaseline()
+      void editing.save({ ...vm, desktop: { startWithSandbox: true } }, machine.id, editingContext.getComputerId?.(machine) ?? "")
+    },
+  }) : []
   const menuActions = [...controls.menuActions, ...editMenuActions]
 
   const access = source.sshAccess?.workspaces.find(row => row.workspace === target)
@@ -376,7 +366,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     { value: "access", label: "SSH", visible: showAccess },
   ]
   const visibleTabs = tabs.filter(tab => tab.visible)
-  const deleteTitle = `Delete ${workspace.computer ? `${machine.name} on ${workspace.computer.name}` : machine.name}?`
+  const deleteTitle = `Delete ${displayName}?`
   const menuPopovers: MenuPopovers = {
     ...controls.popovers,
     delete: close => <ConfirmBody

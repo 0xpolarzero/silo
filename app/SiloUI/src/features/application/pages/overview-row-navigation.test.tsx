@@ -23,7 +23,9 @@ it.each([
   render(<OverviewPage source={sourceWith(change)} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
   const row = within(screen.getByText("dev").closest("li")!)
   expect(row.getByRole("button", { name: "Reorder dev" })).toHaveAttribute("aria-disabled", "true")
-  expect(row.getByRole("button", { name: "More actions for dev" })).toBeDisabled()
+  await user.click(row.getByRole("button", { name: "More actions for dev" }))
+  expect(screen.getByRole("menuitem", { name: "Edit dev" })).toHaveAttribute("data-disabled")
+  await user.keyboard("{Escape}")
 
   await user.click(row.getByRole("button", { name: "Open dev" }))
   expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent("Sandboxesdev")

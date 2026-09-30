@@ -1,6 +1,6 @@
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
-import { CopyPlus, GripVertical, Monitor, Pencil, Plus, Trash2 } from "lucide-react"
+import { CopyPlus, GripVertical, Pencil, Plus, Trash2 } from "lucide-react"
 
 import { ConfirmBody, ConfirmPopover } from "@/components/confirm-popover"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
@@ -13,6 +13,7 @@ import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editin
 import { SandboxAction, SandboxList, SandboxListItem, SandboxListRow, type SandboxIconState, type SandboxRowTone } from "@/features/sandboxes/components/sandbox-list"
 import { machineSummary } from "@/features/sandboxes/model/machine-summary"
 import { deleteSandboxDescription } from "@/features/sandboxes/model/delete-sandbox-copy"
+import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 export interface MachineRowPresentation {
@@ -267,7 +268,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       >
                         <GripVertical className="size-4" aria-hidden="true" />
                       </span>}
-                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu label={`More actions for ${machine.name}`} disabled={rowInteractionsDisabled} popovers={{
+                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu label={`More actions for ${machine.name}`} popovers={{
                         ...presentation.popovers,
                         delete: close => <ConfirmBody
                           tone="destructive"
@@ -279,14 +280,23 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                         />,
                       }} items={[
                         ...presentation.menuActions,
-                        { label: "Edit", separatorBefore: presentation.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: interactionDisabled, onSelect: () => startEdit(machine) },
-                        { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: interactionDisabled, onSelect: () => startDuplicate(machine) },
-                        ...(machine.kind === "vm" && !machine.desktop && isMachineCreated?.(machine) ? [{ label: "Add Linux desktop", icon: Monitor, disabled: interactionDisabled, onSelect: () => {
-                          beginOperation()
-                          captureBaseline()
-                          void save({ ...machine, desktop: { startWithSandbox: true } }, machine.id, getComputerId?.(machine) ?? "")
-                        } }] : []),
-                        { icon: Trash2, label: "Delete", accessibleLabel: `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled || runningVM, tooltip: deleteTooltip, popover: "delete" },
+                        // The menu stays open to navigation while work runs; its items that
+                        // change the sandbox follow the row's interaction lock.
+                        ...sandboxEditMenu({
+                          machine,
+                          displayName: deletionName,
+                          disabled: rowInteractionsDisabled,
+                          created: Boolean(isMachineCreated?.(machine)),
+                          running: runningVM,
+                          separatorBefore: presentation.menuActions.length > 0,
+                          onEdit: () => startEdit(machine),
+                          onDuplicate: () => startDuplicate(machine),
+                          onAddDesktop: (vm) => {
+                            beginOperation()
+                            captureBaseline()
+                            void save({ ...vm, desktop: { startWithSandbox: true } }, machine.id, getComputerId?.(machine) ?? "")
+                          },
+                        }),
                       ]} />}</> : undefined}
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>

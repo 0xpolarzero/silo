@@ -1027,8 +1027,10 @@ describe("application", () => {
     const app = renderApplication("running", source)
     const panel = within(appPanel("Sandboxes"))
     expect(panel.getByText("Restarting…")).toBeVisible()
-    expect(panel.getByRole("button", { name: "More actions for dev" })).toBeDisabled()
     expect(panel.getByRole("button", { name: "Stop dev" })).toBeDisabled()
+    // The ⋯ menu stays open to navigation; its items that change the sandbox are locked.
+    await app.user.click(panel.getByRole("button", { name: "More actions for dev" }))
+    for (const name of ["Restart dev", "Edit dev", "Delete dev"]) expect(screen.getByRole("menuitem", { name })).toHaveAttribute("data-disabled")
     app.unmount()
   })
 
