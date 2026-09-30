@@ -394,6 +394,46 @@ struct Document {
     /// Server-imposed waiting deadlines per GitHub rate class, kept across relaunch.
     #[serde(default)]
     rate_retry: std::collections::BTreeMap<String, u64>,
+    /// Per sandbox name: which revision last changed its saved choices, and from which
+    /// view. Kept after a policy is removed so a stale save cannot bring it back.
+    #[serde(default)]
+    policy_stamps: std::collections::BTreeMap<String, PolicyStamp>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PolicyStamp {
+    revision: u64,
+    /// The `policyRevision` the writer's view was based on; `None` for changes Silo made
+    /// itself (a fork copying an assignment, a sandbox deletion).
+    #[serde(default)]
+    base: Option<u64>,
+}
+/// Record that `workspace`'s choices changed in the document's current revision.
+fn stamp(d: &mut Document, workspace: &str, base: Option<u64>) {
+    d.policy_stamps.insert(workspace.into(), PolicyStamp { revision: d.revision, base });
+    // Bound stamps of removed sandboxes; the oldest are the least likely to be raced.
+    while d.policy_stamps.len() > 256 {
+        let oldest = d
+            .policy_stamps
+            .iter()
+            .filter(|(name, _)| !d.workspaces.iter().any(|w| w["workspace"].as_str() == Some(name.as_str())))
+            .min_by_key(|(_, stamp)| stamp.revision)
+            .map(|(name, _)| name.clone());
+        match oldest {
+            Some(name) => d.policy_stamps.remove(&name),
+            None => break,
+        };
+    }
+}
+/// Whether a save based on `base` would overwrite choices it never saw: a change Silo
+/// made after that view (a fork's copied assignment, a deletion), or a save from a newer
+/// view. Saves from the same or an older view (such as rapid edits sent before the page
+/// saw the previous result) are the user's own ordered intent and apply in order.
+fn stale_save(d: &Document, workspace: &str, base: Option<u64>) -> bool {
+    let Some(base) = base else { return false };
+    d.policy_stamps.get(workspace).is_some_and(|stamp| {
+        stamp.revision > base && stamp.base.is_none_or(|writer| writer > base)
+    })
 }
 
 /// Copy the source's current GitHub assignment for a stopped checkpoint fork.
@@ -407,6 +447,7 @@ pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str
         document.workspaces.retain(|value| value["workspace"].as_str() != Some(target));
         document.workspaces.push(assignment);
         document.revision = document.revision.saturating_add(1);
+        stamp(&mut document, target, None);
         if !document.access_pending.iter().any(|name| name == target) {
             document.access_pending.push(target.into());
         }
@@ -423,6 +464,7 @@ pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Re
     let mut document = load(app)?;
     forget_workspace(&mut document, target);
     document.revision = document.revision.saturating_add(1);
+    stamp(&mut document, target, None);
     save(app, &document)
 }
 
@@ -456,6 +498,7 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
         let mut d = load_at(&document)?;
         if forget_workspace(&mut d, workspace) {
             d.revision = d.revision.saturating_add(1);
+            stamp(&mut d, workspace, None);
             save_at(&document, &d)?;
         }
     }
@@ -2525,6 +2568,77 @@ fn mark_pending(d: &mut Document) {
         .collect();
     mark_pending_for(d, &d.access_pending.clone());
 }
+/// Apply saved sandbox choices as per-sandbox patches: sandboxes not listed keep their
+/// choices (for example an assignment a fork just copied), and a patch built from a view
+/// older than a change it would overwrite is refused (see `stale_save`). Returns the
+/// sandboxes now pending, or `None` when nothing changed.
+fn apply_patches(
+    d: &mut Document,
+    patches: &[Value],
+    base: Option<u64>,
+    oauth_connected: bool,
+    token_connected: bool,
+) -> Result<Option<Vec<String>>, String> {
+    let mut changed_policies = Vec::new();
+    let mut access_changed = d.access_pending.clone();
+    let mut identity_changed = Vec::new();
+    for w in patches {
+        let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
+        let previous = d.workspaces.iter().find(|old| old["workspace"] == w["workspace"]);
+        if previous == Some(w) {
+            continue;
+        }
+        if stale_save(d, name, base) {
+            return Err(format!(
+                "GitHub settings for {name} changed while you were editing them. Review them and try again."
+            ));
+        }
+        validate_method_change(previous, w, oauth_connected, token_connected)?;
+        if previous.is_none_or(|old| access_choice(old) != access_choice(w))
+            && !access_changed.iter().any(|n| n == name)
+        {
+            access_changed.push(name.to_owned());
+        }
+        if previous.is_none_or(|old| old["identity"] != w["identity"]) {
+            identity_changed.push(name.to_owned());
+        }
+        changed_policies.push(w);
+    }
+    if changed_policies.is_empty() {
+        return Ok(None);
+    }
+    let mut workspaces = d.workspaces.clone();
+    for w in &changed_policies {
+        match workspaces.iter_mut().find(|old| old["workspace"] == w["workspace"]) {
+            Some(slot) => *slot = (*w).clone(),
+            None => workspaces.push((*w).clone()),
+        }
+    }
+    validate(&workspaces)?;
+    d.workspaces = workspaces;
+    d.revision += 1;
+    for w in &changed_policies {
+        if let Some(name) = w["workspace"].as_str() {
+            stamp(d, name, base);
+        }
+    }
+    for name in identity_changed {
+        if !d.identity_pending.contains(&name) {
+            d.identity_pending.push(name);
+        }
+    }
+    let mut changed = access_changed.clone();
+    changed.extend(d.identity_pending.iter().cloned());
+    changed.sort();
+    changed.dedup();
+    mark_pending_for(d, &changed);
+    d.access_pending = access_changed;
+    Ok(Some(changed))
+}
+/// Save sandbox choices: `workspaces` holds only the sandboxes the caller changed, and
+/// `baseRevision` the `policyRevision` its view was based on. Access on/off is never
+/// changed here (a stale save must not undo Disable access); use
+/// `set_github_access_enabled`. An `accessEnabled` field is ignored.
 #[tauri::command]
 pub async fn save_github_configuration(
     app: tauri::AppHandle,
@@ -2536,60 +2650,24 @@ pub async fn save_github_configuration(
         .as_array()
         .ok_or("Missing sandbox policies.")?;
     validate(ws)?;
-    configuration["accessEnabled"]
-        .as_bool()
-        .ok_or("Missing GitHub access choice.")?;
+    let base = match &configuration["baseRevision"] {
+        Value::Null => None,
+        value => Some(value.as_u64().ok_or("Invalid GitHub settings revision.")?),
+    };
     let ticket = INTENTS.ticket();
     tauri::async_runtime::spawn_blocking(move || {
         let ws = configuration["workspaces"]
             .as_array()
             .ok_or("Missing sandbox policies.")?;
-        validate(ws)?;
-        let enabled = configuration["accessEnabled"]
-            .as_bool()
-            .ok_or("Missing GitHub access choice.")?;
         let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
         let _state = serialize(&STATE);
         let mut d = load(&app)?;
-        if d.workspaces == *ws && d.access_enabled == enabled {
+        let oauth_connected = observed_credential().is_some_and(|v| v.is_ok_and(|expiry| expiry.is_some_and(|at| at > now())));
+        let Some(changed) = apply_patches(&mut d, ws, base, oauth_connected, personal_token::connected())? else {
             return snapshot(&app);
-        }
+        };
         CANCELLATION.fetch_add(1, Ordering::SeqCst);
-        let mut access_changed = d.access_pending.clone();
-        for w in ws {
-            let previous = d
-                .workspaces
-                .iter()
-                .find(|old| old["workspace"] == w["workspace"]);
-            validate_method_change(previous, w,
-                observed_credential().is_some_and(|v| v.is_ok_and(|expiry| expiry.is_some_and(|at| at > now()))),
-                personal_token::connected())?;
-            if d.access_enabled != enabled
-                || previous.is_none_or(|old| access_choice(old) != access_choice(w))
-            {
-                if let Some(name) = w["workspace"].as_str() {
-                    if !access_changed.iter().any(|n| n == name) {
-                        access_changed.push(name.into());
-                    }
-                }
-            }
-            if previous.is_none_or(|old| old["identity"] != w["identity"]) {
-                let name = w["workspace"].as_str().ok_or("Invalid sandbox policy.")?;
-                if !d.identity_pending.iter().any(|n| n == name) {
-                    d.identity_pending.push(name.into());
-                }
-            }
-        }
-        d.workspaces = ws.clone();
-        d.access_enabled = enabled;
-        d.revision += 1;
-        let mut changed = access_changed.clone();
-        changed.extend(d.identity_pending.iter().cloned());
-        changed.sort();
-        changed.dedup();
-        mark_pending_for(&mut d, &changed);
-        d.access_pending = access_changed;
         // Persist first so a worker completing concurrently cannot publish old choices.
         save(&app, &d)?;
         let result = narrow_now(&app, &mut d);
@@ -2798,6 +2876,53 @@ mod tests {
             100,
             first + Duration::from_millis(900)
         ));
+    }
+    fn saved_policy(name: &str, all: bool) -> Value {
+        json!({"workspace":name,"repositoryMode":if all {"all"} else {"selected"},"allRepositoriesAllowChanges":all,
+            "repositories":[],"identity":{"name":"","email":"","apply":false}})
+    }
+    #[test]
+    fn a_save_patches_only_its_sandboxes_and_never_changes_access() {
+        let mut d = Document { revision: 5, access_enabled: false, workspaces: vec![saved_policy("dev", false)], ..Default::default() };
+        // A fork copied its source's assignment after the page last read the settings.
+        d.workspaces.push(saved_policy("fork", true));
+        stamp(&mut d, "fork", None);
+        let changed = apply_patches(&mut d, &[saved_policy("dev", true)], Some(4), true, false).unwrap().unwrap();
+        assert_eq!(changed, vec!["dev".to_string()]);
+        assert_eq!(d.workspaces, vec![saved_policy("dev", true), saved_policy("fork", true)], "the fork's copied assignment was dropped");
+        assert!(!d.access_enabled, "a save re-enabled access after Disable access");
+        assert_eq!(d.revision, 6);
+        assert_eq!(d.policy_stamps["dev"], PolicyStamp { revision: 6, base: Some(4) });
+        // Saving what is already stored changes nothing.
+        assert_eq!(apply_patches(&mut d, &[saved_policy("dev", true)], Some(4), true, false).unwrap(), None);
+        assert_eq!(d.revision, 6);
+    }
+    #[test]
+    fn a_save_from_a_view_older_than_a_change_it_would_overwrite_is_refused() {
+        let mut d = Document { revision: 5, workspaces: vec![saved_policy("fork", true)], ..Default::default() };
+        stamp(&mut d, "fork", None);
+        // The page still showed the fork without its copied assignment.
+        assert!(apply_patches(&mut d, &[saved_policy("fork", false)], Some(4), true, false).is_err());
+        assert_eq!(d.workspaces, vec![saved_policy("fork", true)]);
+        assert_eq!(d.revision, 5);
+        // After seeing it, the same edit applies.
+        assert!(apply_patches(&mut d, &[saved_policy("fork", false)], Some(5), true, false).unwrap().is_some());
+        // Rapid edits sent from one view before its first result arrived apply in order.
+        let mut edit = saved_policy("fork", false);
+        edit["identity"] = json!({"name":"Name","email":"name@example.test","apply":true});
+        assert!(apply_patches(&mut d, &[edit.clone()], Some(5), true, false).unwrap().is_some());
+        assert_eq!(d.workspaces, vec![edit.clone()]);
+        // A save from a newer view wins over a later-arriving one from an older view.
+        assert!(apply_patches(&mut d, &[saved_policy("fork", true)], Some(7), true, false).unwrap().is_some());
+        assert!(apply_patches(&mut d, &[edit], Some(5), true, false).is_err());
+        // A deleted sandbox's stale choices are not brought back for a new one with its name.
+        forget_workspace(&mut d, "fork");
+        d.revision += 1;
+        stamp(&mut d, "fork", None);
+        assert!(apply_patches(&mut d, &[saved_policy("fork", true)], Some(8), true, false).is_err());
+        assert!(d.workspaces.is_empty());
+        // A caller without a base revision is not checked.
+        assert!(apply_patches(&mut d, &[saved_policy("fork", true)], None, true, false).unwrap().is_some());
     }
     #[test]
     fn a_deleted_sandbox_leaves_no_assignment_or_attachment_for_a_new_one_with_its_name() {

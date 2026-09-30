@@ -1529,17 +1529,39 @@ describe("application", () => {
 
   it("does not submit an incomplete author edit with repository changes", async () => {
     const source = applicationSourceForScenario("running")
-    const originalIdentity = source.github.workspaces![0].identity
     const { actions, user } = renderApplication("running", source)
     await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
     const github = within(appPanel("GitHub"))
     await user.clear(github.getByLabelText("Git name for dev"))
     await user.click(github.getByRole("checkbox", { name: "All repositories for playgrounds" }))
     expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce()
-    expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-      workspaces: expect.arrayContaining([expect.objectContaining({ workspace: "dev", identity: originalIdentity })]),
-    }))
+    // Only the changed sandbox is saved, so dev's unfinished author is not submitted.
+    const [saved] = vi.mocked(actions.saveGitHubConfiguration!).mock.calls[0]
+    expect(saved.workspaces.map(({ workspace }) => workspace)).toEqual(["playgrounds"])
     expect(github.getByLabelText("Git name for dev")).toHaveValue("")
+  })
+
+  it("saves only the edited sandbox against the shown revision and never turns access on", async () => {
+    const source = applicationSourceForScenario("running", "connected")
+    source.github.policyRevision = 10
+    source.github.accessEnabled = false
+    const { actions, user } = renderApplication("running", source)
+    await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
+    const github = within(appPanel("GitHub"))
+    const name = github.getByLabelText("Git name for playgrounds")
+    await user.clear(name)
+    await user.type(name, "Morgan Example")
+    await user.tab()
+    expect(actions.saveGitHubConfiguration).toHaveBeenCalledOnce()
+    const [saved] = vi.mocked(actions.saveGitHubConfiguration!).mock.calls[0]
+    // Other sandboxes (such as a fork's copied assignment) keep their saved choices, and a
+    // save right after Disable access cannot re-enable it.
+    expect(saved).toEqual({
+      baseRevision: 10,
+      hostIdentity: source.github.hostIdentity ?? null,
+      workspaces: [expect.objectContaining({ workspace: "playgrounds", identity: expect.objectContaining({ name: "Morgan Example" }) })],
+    })
+    expect(saved).not.toHaveProperty("accessEnabled")
   })
 
   it("settles a newer GitHub revision even when its completion matches the previous save", async () => {
@@ -1640,7 +1662,6 @@ describe("application", () => {
     expect(within(selected).queryByText("acme/design-system")).not.toBeInTheDocument()
     expect(actions.saveGitHubConfiguration).toHaveBeenCalledTimes(4)
     expect(actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
-      accessEnabled: true,
       workspaces: expect.arrayContaining([
         expect.objectContaining({
           workspace: "playgrounds",

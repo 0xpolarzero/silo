@@ -207,8 +207,14 @@ export interface ApplicationGitHubWorkspacePolicy {
   repositories: readonly ApplicationGitHubRepositoryPolicy[]
 }
 
+/**
+ * A save of sandbox GitHub choices. `workspaces` lists only the sandboxes being changed;
+ * other sandboxes keep their saved choices. `baseRevision` is the `policyRevision` the
+ * edit was based on, so a change made meanwhile (such as a fork's copied assignment) is
+ * not overwritten. Access on/off is changed only through `setGitHubAccessEnabled`.
+ */
 export interface ApplicationGitHubConfiguration {
-  accessEnabled: boolean
+  baseRevision?: number
   hostIdentity: ApplicationGitIdentity | null
   workspaces: readonly ApplicationGitHubWorkspacePolicy[]
 }

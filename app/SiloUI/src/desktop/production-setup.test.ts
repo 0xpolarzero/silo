@@ -283,7 +283,8 @@ describe("production setup queue", () => {
     github.mockResolvedValue({ ...application.github, workspaceOperations: [{ workspace: selected.github.workspaces[0].workspace, status: "succeeded", message: "Verified" }] })
     const markComplete = vi.fn(async () => {})
     await store.finishSetup(selected, markComplete)
-    expect(invoke).toHaveBeenCalledWith("save_github_configuration", { configuration: { accessEnabled: true, hostIdentity: application.github.hostIdentity ?? null, workspaces: selected.github.workspaces } })
+    // Setup saves only its sandboxes against the revision it saw and never turns access on or off (H-39).
+    expect(invoke).toHaveBeenCalledWith("save_github_configuration", { configuration: { baseRevision: application.github.policyRevision, hostIdentity: application.github.hostIdentity ?? null, workspaces: selected.github.workspaces } })
     expect(markComplete).toHaveBeenCalledOnce()
     store.dispose()
   })

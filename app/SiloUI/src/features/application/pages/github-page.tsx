@@ -70,11 +70,17 @@ function copyDraft(draft: GitHubDraft): GitHubDraft {
   }
 }
 
-function configurationFromDraft(source: ApplicationSource, draft: GitHubDraft, accessEnabled: boolean): ApplicationGitHubConfiguration {
+/**
+ * A save of the sandboxes in `changed` only, based on the settings revision this page
+ * shows. Other sandboxes keep their saved choices (for example an assignment a fork just
+ * copied), and access on/off is never part of a save: a save sent right after Disable
+ * access must not turn access back on.
+ */
+function configurationFromDraft(source: ApplicationSource, draft: GitHubDraft, changed: ReadonlySet<string>): ApplicationGitHubConfiguration {
   return {
-    accessEnabled,
+    baseRevision: source.github.policyRevision,
     hostIdentity: source.github.hostIdentity ?? null,
-    workspaces: source.workspaces.filter(w => !w.computer).map(({ machine }) => ({
+    workspaces: source.workspaces.filter((w) => !w.computer && changed.has(w.machine.name)).map(({ machine }) => ({
       workspace: machine.name,
       ...(draft.access[machine.name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }),
       identity: draft.identities[machine.name] ?? { name: "", email: "", apply: false },
@@ -229,9 +235,12 @@ export function GitHubPage({
       [workspace]: { workspace, status: "applying", message },
     }))
     const sequence = ++saveSequence.current
-    rejectedSaves.current.delete(workspace)
+    // A save carries every edit not yet confirmed: this one, earlier pending ones and
+    // rejected ones, so one failure settles them together and a retry resends them.
+    for (const name of rejectedSaves.current) pendingSaves.current.set(name, sequence)
+    rejectedSaves.current.clear()
     pendingSaves.current.set(workspace, sequence)
-    const configuration = configurationFromDraft(source, { ...nextDraft, identities: identityIntent.current }, accessEnabled)
+    const configuration = configurationFromDraft(source, { ...nextDraft, identities: identityIntent.current }, new Set(pendingSaves.current.keys()))
     void Promise.resolve().then(() => actions.saveGitHubConfiguration?.(configuration)).then(() => {
       for (const [name, pendingSequence] of pendingSaves.current) {
         if (pendingSequence <= sequence) pendingSaves.current.delete(name)
