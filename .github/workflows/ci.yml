@@ -117,6 +117,8 @@ jobs:
           runtime_toolchain=$(node -p "require(process.env.GITHUB_WORKSPACE + '/app/SiloUI/runtime-inputs.json').toolchain")
           rustup toolchain install "$runtime_toolchain" --profile minimal --component rustfmt
           rustup default "$runtime_toolchain"
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: app/SiloUI/src-tauri
@@ -128,7 +130,3 @@ jobs:
       - run: npm run runtime:prepare
       # The suite shares process-wide state and only passes serially.
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
-      # Report-only until the formatting sweep lands (K-19).
-      - name: Report cargo fmt differences
-        continue-on-error: true
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
