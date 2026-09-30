@@ -334,13 +334,7 @@ fn observe(
     // Hold the short data lock only to read a consistent snapshot of the desired
     // settings and the live forwards. It is dropped before the slow guest probes,
     // and this read never mutates the forwarding table or the settings file.
-    let guard = match NETWORK_LOCK.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            result.error = Some(FAILED.into());
-            return result;
-        }
-    };
+    let guard = crate::sync::lock_or_recover(&NETWORK_LOCK, "network settings");
     // Read the current desired revision only after obtaining the data lock.
     // An older refresh must never observe against access removed by another window.
     let config = match read_config(paths) {
@@ -488,9 +482,7 @@ fn observe(
     result.ports = rows.into_values().collect();
     // Guest probes run without blocking mutations. Never publish their result
     // against settings or endpoints that changed while those probes were running.
-    let latest = NETWORK_LOCK
-        .lock()
-        .map_err(|_| FAILED.to_string())
+    let latest = Ok::<_, String>(crate::sync::lock_or_recover(&NETWORK_LOCK, "network settings"))
         .and_then(|_guard| {
             let current = read_config(paths)?;
             let current: Vec<_> = current
@@ -536,9 +528,7 @@ fn observe(
 /// or on the next start.
 fn reconcile_forwarding(paths: &RuntimePaths, workspace: &str) -> BTreeMap<u16, String> {
     let mut failures = BTreeMap::new();
-    let Ok(guard) = NETWORK_LOCK.lock() else {
-        return failures;
-    };
+    let guard = crate::sync::lock_or_recover(&NETWORK_LOCK, "network settings");
     let Ok(config) = read_config(paths) else {
         return failures;
     };
@@ -715,7 +705,7 @@ pub(crate) async fn save_network_port(
         };
         validate(&mapping)?;
         {
-            let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+            let _guard = crate::sync::lock_or_recover(&NETWORK_LOCK, "network settings");
             let mut config = read_config(&paths)?;
             if config
                 .mappings
@@ -771,7 +761,7 @@ pub(crate) async fn remove_network_port(
         runtime::shutdown::ensure_accepting_operations()?;
         configured_vm(&paths, &workspace)?;
         {
-            let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+            let _guard = crate::sync::lock_or_recover(&NETWORK_LOCK, "network settings");
             let mut config = read_config(&paths)?;
             // Persist removal intent before touching the live listener. Failed removals
             // remain visible and reconcile on retry/relaunch, never silently reopen.
@@ -1030,7 +1020,7 @@ mod tests {
 /// not revoke a mapping used by another viewer or an explicit user configuration.
 pub(crate) fn desktop_endpoint(paths: &RuntimePaths, workspace: &str, guest_port: u16) -> Result<u16, String> {
     if guest_port == 0 { return Err("Invalid desktop port.".into()); }
-    let _guard = NETWORK_LOCK.lock().map_err(|_| FAILED)?;
+    let _guard = crate::sync::lock_or_recover(&NETWORK_LOCK, "network settings");
     let running = configured_vm(paths, workspace)?.is_some_and(|inspected| inspected.status == "Running");
     if !running { return Err(format!("Start {workspace} first.")); }
     desktop_port(&socket_path(paths, workspace), guest_port)

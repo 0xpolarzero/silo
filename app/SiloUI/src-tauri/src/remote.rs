@@ -102,12 +102,12 @@ fn status(config: &Config) -> ManagementStatus {
 }
 #[tauri::command]
 pub fn remote_management_status() -> Result<ManagementStatus, String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings");
     Ok(status(&read_config()?))
 }
 #[tauri::command]
 pub fn set_remote_management(enabled: bool) -> Result<ManagementStatus, String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings");
     if enabled {
         let path = PathBuf::from(std::env::var_os("HOME").ok_or("Home unavailable.")?)
             .join(".local/bin/silo-remote");
@@ -138,12 +138,12 @@ pub fn set_remote_management(enabled: bool) -> Result<ManagementStatus, String> 
 }
 #[tauri::command]
 pub fn remote_host_list() -> Result<Vec<RemoteHost>, String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings");
     Ok(read_config()?.hosts)
 }
 #[tauri::command]
 pub fn remove_remote_host(host_id: String) -> Result<(), String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings");
     let mut config = read_config()?;
     config.hosts.retain(|h| h.id != host_id);
     save_config(&config)?;
@@ -552,7 +552,7 @@ pub(crate) fn call_remote(
 ) -> Result<Value, String> {
     crate::runtime::shutdown::ensure_accepting_operations()?;
     let host = {
-        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let _guard = crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings");
         read_config()?
             .hosts
             .into_iter()
@@ -635,7 +635,7 @@ pub async fn connect_remote_host(address: String) -> Result<RemoteHost, String> 
             name: name.into(),
             address,
         };
-        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let _guard = crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings");
         let mut config = read_config()?;
         if config.host_id == host.id {
             return Err(
@@ -930,14 +930,14 @@ pub(crate) fn start(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 pub(crate) fn ensure_management_enabled() -> Result<(), String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings");
     if !read_config()?.enabled { return Err("Remote management is disabled on this computer.".into()); }
     Ok(())
 }
 
 fn authorize(request: &Value) -> Result<Config, String> {
     let config = {
-        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let _guard = crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings");
         read_config()?
     };
     validate_authorization(&config, request)?;
@@ -998,9 +998,7 @@ fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
         return execute();
     }
     // Record acceptance before touching a VM. Lost replies and restarts never replay a change.
-    let _guard = REQUEST_LOCK
-        .lock()
-        .map_err(|_| "Remote operation state unavailable.")?;
+    let _guard = crate::sync::lock_or_recover(&REQUEST_LOCK, "remote request");
     // A queued request must recheck access after the preceding operation finishes.
     authorize(&request)?;
     let operations = directory()?.join("operations");
@@ -1575,6 +1573,6 @@ mod ssh_authorization_tests {
 }
 
 pub(crate) fn log_identity() -> Result<(String, String), String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+    let _guard = crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings");
     Ok((read_config()?.host_id, name()))
 }

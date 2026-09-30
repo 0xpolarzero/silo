@@ -46,6 +46,7 @@ mod ssh_connection;
 mod settings;
 mod startup;
 mod status_panel;
+mod sync;
 mod system_integrations;
 mod tray;
 mod terminal;
