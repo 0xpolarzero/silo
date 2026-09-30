@@ -514,6 +514,49 @@ describe("overlapping state reads", () => {
     } finally { store.dispose() }
   })
 
+  it("lets an earlier fresh row finish after a later settling row without rolling back siblings (H-37)", async () => {
+    const earlier = deferred<unknown>()
+    let reads = 0
+    const mock = bridge(command => {
+      if (command !== "read_application_state") return undefined
+      if (++reads === 2) return earlier.promise
+      const result = withState("running", reads === 3 ? "Old runtime reading" : "Initial")
+      if (reads === 3) {
+        result.workspaces[0].settling = true
+        result.workspaces[1].stateDetail = "Newest sibling"
+      }
+      return result
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const first = store.refresh()
+      await vi.waitFor(() => expect(reads).toBe(2))
+      await store.refresh()
+      expect(store.getSnapshot().source!.workspaces[0]).toMatchObject({ stateDetail: "Initial", settling: true })
+      earlier.resolve(withState("stopped", "Fresh completed read"))
+      await first
+      expect(store.getSnapshot().source!.workspaces[0]).toMatchObject({ state: "stopped", stateDetail: "Fresh completed read" })
+      expect(store.getSnapshot().source!.workspaces[1].stateDetail).toBe("Newest sibling")
+    } finally { store.dispose() }
+  })
+
+  it("propagates local stale status, host capacity, and the published website host", async () => {
+    const local = withState("running", "Last known status")
+    local.workspaces[0].freshness = "stale"
+    const capacity = { logicalCpus: 8, physicalMemoryBytes: 16 * 1024 ** 3, maxMemoryGib: 16 }
+    const mock = bridge(command => {
+      if (command === "read_application_state") return { ...local, hostCapacity: capacity }
+      if (command === "read_network_state") return { workspaces: [{ workspace: local.workspaces[0].machine.name, host: "dev.localhost", error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", state: "reachable", configured: true }] }] }
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      expect(store.getSnapshot().source!.hostCapacity).toEqual(capacity)
+      expect(store.getSnapshot().source!.workspaces[0]).toMatchObject({ freshness: "stale", ports: [{ host: "dev.localhost", hostPort: 43000 }] })
+    } finally { store.dispose() }
+  })
+
   it("never lets an older read replace a newer read's result (H-37)", async () => {
     const earlier = deferred<unknown>()
     let reads = 0
