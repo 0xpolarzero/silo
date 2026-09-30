@@ -91,7 +91,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
             _ => return Err("Unsupported remote request.".into()),
         }
         serde_json::to_value(
-            read_application_state_with(&ProcessRunner, &paths).map_err(|e| e.to_string())?,
+            application_state_response(app, &paths).map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())
     })();
@@ -176,7 +176,7 @@ fn remote_action(app: &AppHandle, paths: &RuntimePaths, params: &Value) -> Resul
         .map_err(|e| safe_activity_error(&e))
         .and_then(|_| {
             serde_json::to_value(
-                read_application_state_with(&ProcessRunner, paths).map_err(|e| e.to_string())?,
+                application_state_response(app, paths).map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())
         })

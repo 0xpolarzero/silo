@@ -1897,12 +1897,21 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
                 }
             }
         }
-        enrich_application_state(&app, &paths, &mut source, refresh_repositories.unwrap_or(false))?;
+        enrich_application_state(&app, &paths, &mut source, Repositories::Discover { refresh: refresh_repositories.unwrap_or(false) });
         remember_settled(&paths, &source.workspaces);
         Ok(source)
     })
     .await
     .map_err(|error| format!("Sandbox state worker failed: {error}"))?
+}
+
+/// How enrichment fills running VMs' repositories.
+#[derive(Clone, Copy)]
+enum Repositories {
+    /// Scan each fresh running guest (cached briefly unless `refresh`).
+    Discover { refresh: bool },
+    /// Keep each VM's last settled list; used by change responses.
+    LastKnown,
 }
 
 /// Add what the runtime read does not carry: push operations, each fresh running VM's
@@ -1912,18 +1921,24 @@ fn enrich_application_state(
     app: &AppHandle,
     paths: &RuntimePaths,
     source: &mut ApplicationSource,
-    refresh_repositories: bool,
-) -> Result<(), String> {
-    source.repository_push_operations = crate::host_push_operations::merge(app, crate::host_push::operations())?;
-    for workspace in &mut source.workspaces {
-        if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running)
-            && !workspace.settling && workspace.freshness == Freshness::Fresh
-        {
-            match crate::host_push::discover(paths, workspace.machine.name(), refresh_repositories) {
-                Ok(repositories) => workspace.repositories = repositories,
-                Err(message) => {
-                    if workspace.attention.is_none() {
-                        workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message });
+    repositories: Repositories,
+) {
+    source.repository_push_operations = crate::host_push_operations::merge(app, crate::host_push::operations())
+        .unwrap_or_else(|_| crate::host_push::operations());
+    match repositories {
+        Repositories::LastKnown => keep_last_known_repositories(paths, &mut source.workspaces),
+        Repositories::Discover { refresh } => {
+            for workspace in &mut source.workspaces {
+                if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running)
+                    && !workspace.settling && workspace.freshness == Freshness::Fresh
+                {
+                    match crate::host_push::discover(paths, workspace.machine.name(), refresh) {
+                        Ok(repositories) => workspace.repositories = repositories,
+                        Err(message) => {
+                            if workspace.attention.is_none() {
+                                workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message });
+                            }
+                        }
                     }
                 }
             }
@@ -1934,7 +1949,6 @@ fn enrich_application_state(
         "repositoryCatalogStatus": {"status": "unavailable", "message": message, "canRetry": true},
         "workspaceOperations": [], "hostIdentity": crate::host_identity::read(),
     }));
-    Ok(())
 }
 
 /// The controller UI can remain usable when local VM inspection fails. This is
@@ -2272,7 +2286,7 @@ pub async fn workspace_action(
             if action == "open-terminal" { crate::terminal::open(&app, &name)?; }
             else { crate::editor::open(&app, &name, path.as_deref())?; }
             let paths = runtime_paths(&app)?;
-            read_application_state_with(&ProcessRunner, &paths).map_err(|error| error.to_string())
+            application_state_response(&app, &paths).map_err(|error| error.to_string())
         })
         .await
         .map_err(|_| "The application launcher failed.".to_string())?;
@@ -2350,7 +2364,7 @@ pub async fn workspace_action(
         };
         let _ = app.emit("silo://application-state-changed", ());
         let (result, handed_off) = hand_off_duplicate(result);
-        let result = result.and_then(|_| read_application_state_with(&ProcessRunner, &paths));
+        let result = result.and_then(|_| application_state_response(&app, &paths));
         // Classify before the typed error is flattened to a message: a cancellation or a
         // deduplicated request is an expected outcome, not a failure to notify about.
         match result {
@@ -2971,8 +2985,7 @@ fn apply_configuration_with_progress(
                 retry_workspace.as_deref(),
                 &progress,
             ).and_then(|_| configuration_recovery::finish(paths))
-        })
-        .and_then(|_| read_application_state_with(&ProcessRunner, paths));
+        });
     let mut outcome = machine_progress(
         request_id,
         if result.is_ok() {
@@ -3002,7 +3015,9 @@ fn apply_configuration_with_progress(
         );
     }
     publish(outcome);
-    result.map_err(|error| safe_activity_error(&error))
+    result.map_err(|error| safe_activity_error(&error))?;
+    // The setup's outcome is decided above; refreshing the list is separate (D-11).
+    application_state_response(app, paths).map_err(|error| safe_activity_error(&error))
 }
 
 /// Resume a failed sandbox setup or verification without the UI resending a whole list.
@@ -3259,6 +3274,73 @@ fn remember_settled(paths: &RuntimePaths, workspaces: &[ApplicationWorkspace]) {
     for workspace in workspaces {
         if workspace.machine.is_vm() && !workspace.settling && workspace.freshness == Freshness::Fresh {
             readings.insert((paths.metadata.clone(), workspace.machine.id().to_owned()), workspace.clone());
+        }
+    }
+}
+
+/// The state a change returns once it has succeeded. It is enriched like a normal read
+/// (GitHub state, push operations, repositories) so publishing it does not blank those
+/// panels (D-08), and a failed refresh never turns the finished change into an error
+/// (D-11): see `state_after_change`.
+pub(crate) fn application_state_response(
+    app: &AppHandle,
+    paths: &RuntimePaths,
+) -> Result<ApplicationSource, RuntimeError> {
+    let mut source = state_after_change(&ProcessRunner, paths, &OPERATIONS)?;
+    enrich_application_state(app, paths, &mut source, Repositories::LastKnown);
+    remember_settled(paths, &source.workspaces);
+    Ok(source)
+}
+
+/// State returned by a change that already succeeded. Its outcome and the refresh are
+/// separate: when the follow-up read fails, every VM keeps its last known state, marked
+/// stale with the reason, instead of the finished change being reported as failed.
+/// Work on other VMs settles their rows as in a normal read; the caller's own operation
+/// (if it still holds the gate) does not.
+fn state_after_change(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    gate: &operation_gate::OperationGate,
+) -> Result<ApplicationSource, RuntimeError> {
+    let started = gate.generations();
+    let settled = |id: &str| gate.is_vm_quiet(id) && gate.generation(id) == started.of(id);
+    let workspaces = match read_rows(runner, paths).and_then(|rows| settle_rows(paths, rows, &settled)) {
+        Ok(workspaces) => workspaces,
+        Err(error) => last_known_workspaces(paths, &error)?,
+    };
+    application_source_for_workspaces(paths, workspaces)
+}
+
+fn last_known_workspaces(paths: &RuntimePaths, error: &RuntimeError) -> Result<Vec<ApplicationWorkspace>, RuntimeError> {
+    let last = last_settled(paths);
+    let message = format!("The change finished, but Silo could not refresh sandbox states. {}", safe_activity_error(error));
+    Ok(read_metadata(&paths.metadata)?
+        .machines
+        .into_iter()
+        .map(|machine| {
+            if !machine.is_vm() {
+                return ssh_workspace(machine);
+            }
+            let mut workspace = unread_workspace(machine);
+            if let Some(previous) = last.get(workspace.machine.id()) {
+                keep_runtime_fields(&mut workspace, previous);
+            }
+            workspace.freshness = Freshness::Stale;
+            workspace.attention = Some(WorkspaceAttention { level: AttentionLevel::Warning, message: message.clone() });
+            workspace
+        })
+        .collect())
+}
+
+/// A change's response does not scan guests: each fresh running VM shows the
+/// repositories of its last settled reading until the next full read refreshes them.
+fn keep_last_known_repositories(paths: &RuntimePaths, workspaces: &mut [ApplicationWorkspace]) {
+    let last = last_settled(paths);
+    for workspace in workspaces {
+        if workspace.machine.is_vm() && matches!(workspace.state, WorkspaceState::Running) && workspace.repositories.is_empty() {
+            if let Some(previous) = last.get(workspace.machine.id()) {
+                workspace.repositories = previous.repositories.clone();
+            }
         }
     }
 }
@@ -6049,6 +6131,67 @@ esac
             assert!(matches!(last_settled(&paths)[vm().id()].freshness, Freshness::Fresh));
         }
     }
+    #[test]
+    fn a_finished_change_is_not_reported_failed_when_the_refresh_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let gate = leaked_gate();
+        remember_settled(&paths, &read_application_snapshot(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate).unwrap().workspaces);
+        // One VM's inspection times out after the change: only its row is stale.
+        let unreadable = StubRunner::new(vec![
+            identity_output(&json!([{"name": "dev"}, {"name": "work"}]).to_string()),
+            Err(RuntimeError::TimedOut { operation: "inspect dev".into() }),
+            identity_output(&inspect_named(&paths, &second_vm(), "Running").to_string()),
+        ]);
+        let encoded = published(&state_after_change(&unreadable, &paths, gate).unwrap());
+        assert_eq!((row(&encoded, "dev")["state"].as_str(), row(&encoded, "dev")["freshness"].as_str()), (Some("running"), Some("stale")));
+        assert_eq!((row(&encoded, "work")["state"].as_str(), row(&encoded, "work")["freshness"].as_str()), (Some("running"), Some("fresh")));
+        // The whole read fails: every VM keeps its last known state with the reason.
+        let failed = StubRunner::new(vec![Err(RuntimeError::Unavailable("synthetic runtime read failure".into()))]);
+        let encoded = published(&state_after_change(&failed, &paths, gate).unwrap());
+        for (name, state) in [("dev", "running"), ("work", "stopped")] {
+            let stale = row(&encoded, name);
+            assert_eq!((stale["state"].as_str(), stale["freshness"].as_str()), (Some(state), Some("stale")), "{name}");
+            assert!(stale["attention"]["message"].as_str().unwrap().contains("The change finished"));
+        }
+    }
+
+    #[test]
+    fn a_change_response_settles_other_busy_vms_but_not_the_callers_own_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let gate = leaked_gate();
+        remember_settled(&paths, &read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate).unwrap().workspaces);
+        let (release, holder) = hold_elsewhere(gate, |gate| gate.vm(second_vm().id(), "work", "Creating checkpoint").unwrap());
+        // The caller still holds dev's lane while it reads its own result.
+        let own = gate.vm(vm().id(), "dev", "Stopping dev").unwrap();
+        let encoded = published(&state_after_change(&two_vm_reading(&paths, "Stopped", "Paused"), &paths, gate).unwrap());
+        drop(own);
+        assert_eq!(row(&encoded, "dev")["state"], "stopped");
+        assert!(row(&encoded, "dev").get("settling").is_none());
+        assert_eq!((row(&encoded, "work")["state"].as_str(), row(&encoded, "work")["settling"].as_bool()), (Some("running"), Some(true)));
+        drop(release);
+        holder.join().unwrap();
+    }
+
+    #[test]
+    fn a_change_response_keeps_running_vms_repositories_until_the_next_read() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm(), second_vm()])).unwrap();
+        let gate = leaked_gate();
+        let mut first = read_application_snapshot(&two_vm_reading(&paths, "Running", "Running"), &paths, gate).unwrap();
+        let repositories = vec![json!({"path": "/workspace/app", "branch": "main", "ahead": 0, "behind": 0, "dirty": false})];
+        first.workspaces[0].repositories = repositories.clone();
+        remember_settled(&paths, &first.workspaces);
+        let mut response = state_after_change(&two_vm_reading(&paths, "Running", "Stopped"), &paths, gate).unwrap();
+        keep_last_known_repositories(&paths, &mut response.workspaces);
+        assert_eq!(response.workspaces[0].repositories, repositories);
+        assert!(response.workspaces[1].repositories.is_empty(), "a stopped VM lists no repositories");
+    }
+
     #[test]
     fn application_snapshot_discards_read_when_metadata_changes_and_retries_fresh() {
         struct ChangeMetadataOnce {
