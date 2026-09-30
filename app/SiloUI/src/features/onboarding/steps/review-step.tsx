@@ -1,4 +1,4 @@
-import { GitBranch, LoaderCircle, Pencil, RotateCw, UserRound } from "lucide-react"
+import { Clock3, GitBranch, LoaderCircle, Pencil, Play, RotateCw, UserRound } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
@@ -6,7 +6,7 @@ import { SetupNotice } from "@/features/onboarding/components/setup-notice"
 import { SandboxList, SandboxListItem, SandboxListRow } from "@/features/sandboxes/components/sandbox-list"
 import { machineSummary } from "@/features/sandboxes/model/machine-summary"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
-import type { ReviewQueueItemView, WorkspaceView } from "@/features/onboarding/model/onboarding-state"
+import type { OnboardingViewModel, ReviewQueueItemView, WorkspaceView } from "@/features/onboarding/model/onboarding-state"
 import { cn } from "@/lib/utils"
 
 interface ReviewStepProps {
@@ -21,6 +21,29 @@ interface ReviewStepProps {
   errorRecovery?: string
   onRetryWorkspaceSetup: () => void
   onEditStep?: (step: "workspaces" | "github") => void
+  /** Why Finish is unavailable once sandbox setup settled. */
+  finishBlocker?: OnboardingViewModel["finishBlocker"]
+  onStartWorkspace?: (workspace: string) => void
+  onRefresh?: () => void
+}
+
+function FinishBlockerNotice({ blocker, onStartWorkspace, onRefresh }: { blocker: NonNullable<OnboardingViewModel["finishBlocker"]>; onStartWorkspace?: (workspace: string) => void; onRefresh?: () => void }) {
+  const action = blocker.action === "start" && onStartWorkspace
+    ? <Button type="button" variant="outline" size="xs" onClick={() => onStartWorkspace(blocker.workspace)}><Play aria-hidden="true" />Start {blocker.workspace}</Button>
+    : blocker.action === "refresh" && onRefresh
+      ? <Button type="button" variant="outline" size="xs" onClick={onRefresh}><RotateCw aria-hidden="true" />Check again</Button>
+      : null
+  if (blocker.action === "start") return <SetupNotice title="Finish is unavailable" detail={blocker.message} action={action} />
+  return <ListCard role="status" aria-live="polite">
+    <ListRow
+      className="grid grid-cols-[auto_minmax(0,1fr)] gap-y-2 sm:flex"
+      icon={<ListRowIcon aria-hidden="true">{blocker.action === null ? <LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" /> : <Clock3 className="size-3.5" />}</ListRowIcon>}
+      title={<h3>Finish is unavailable</h3>}
+      detail={blocker.message}
+      detailClassName="whitespace-normal break-words"
+      actions={action && <div className="col-start-2 shrink-0">{action}</div>}
+    />
+  </ListCard>
 }
 
 const statusLabel: Record<ReviewQueueItemView["status"], string> = {
@@ -38,7 +61,7 @@ function ValidationBadge({ status }: { status: ReviewQueueItemView["status"] }) 
   )}>{status === "running" && <LoaderCircle className="size-2.5 animate-spin motion-reduce:animate-none" aria-hidden="true" />}{statusLabel[status]}</span>
 }
 
-export function ReviewStep({ workspaceRetryable, queueItems, machines, workspaces, identitySummary, githubSummary, githubConnected = true, errorMessage, errorRecovery, onRetryWorkspaceSetup, onEditStep }: ReviewStepProps) {
+export function ReviewStep({ workspaceRetryable, queueItems, machines, workspaces, identitySummary, githubSummary, githubConnected = true, errorMessage, errorRecovery, onRetryWorkspaceSetup, onEditStep, finishBlocker, onStartWorkspace, onRefresh }: ReviewStepProps) {
   const identityItems = queueItems.filter(({ id }) => id === "identityRun" || id === "identityVerify")
   const githubItems = queueItems.filter(({ id }) => id === "githubRun" || id === "githubVerify")
   const githubStatus = githubItems.some(({ status }) => status === "failed") ? "failed" : githubItems.some(({ status }) => status === "running") ? "running" : githubItems.length === 2 && githubItems.every(({ status }) => status === "succeeded") ? "succeeded" : githubItems.some(({ status }) => status === "queued") ? "queued" : "idle"
@@ -59,6 +82,7 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, workspace
         recovery={errorRecovery}
         action={workspaceRetryable && <Button type="button" variant="outline" size="xs" onClick={onRetryWorkspaceSetup}><RotateCw aria-hidden="true" />Retry</Button>}
       />}
+      {!errorMessage && finishBlocker && <FinishBlockerNotice blocker={finishBlocker} onStartWorkspace={onStartWorkspace} onRefresh={onRefresh} />}
 
       <section aria-labelledby="review-machines-heading" className="min-w-0">
         <div className="mb-2 flex items-center justify-between gap-2">

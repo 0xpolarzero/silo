@@ -20,6 +20,15 @@ import { applicationPreferenceSelectionSchema, type ApplicationPreferenceSelecti
 export const onboardingSourceSchema = z.object({
   readyToFinish: z.boolean().optional(),
   /**
+   * Why Finish is unavailable after sandboxes were set up (one failed, is starting, or
+   * its status is unconfirmed), with the action that resolves it, if any.
+   */
+  finishBlocker: z.object({
+    message: z.string(),
+    workspace: z.string(),
+    action: z.enum(["start", "refresh"]).nullable(),
+  }).strict().nullable().optional(),
+  /**
    * False while `machineConfigurations` is a fallback (saved list or defaults) because
    * this computer's sandboxes have not loaded; the draft is seeded again once they do.
    */
@@ -101,6 +110,10 @@ export interface OnboardingActions {
   /** Retry the last submission, rebuilt from `request` (the current draft) when given. */
   retryWorkspaceSetup: (request?: OnboardingCompletionRequest, options?: OnboardingSubmissionOptions) => void
   finishSetup: (request: OnboardingCompletionRequest, options?: OnboardingSubmissionOptions) => void
+  /** Resolves a `finishBlocker` whose action is "start". */
+  startWorkspace?: (workspace: string) => void
+  /** Resolves a `finishBlocker` whose action is "refresh". */
+  refreshSetupState?: () => void
 }
 
 export function parseOnboardingSource(input: unknown): OnboardingSource {

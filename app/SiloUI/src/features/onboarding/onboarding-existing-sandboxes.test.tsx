@@ -28,6 +28,32 @@ function onboarding(store: SettingsStore, handlers: OnboardingActions, source: P
   /></SystemIntegrationProvider></ApplicationCatalogProvider></SettingsProvider>
 }
 
+describe("Finish blocked by a sandbox after setup", () => {
+  const review = { currentStep: "review" as const, machines: [real], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} }
+  const settledQueue = (["workspaceRun", "workspaceVerify"] as const).map((id) => ({ id, status: "succeeded" as const }))
+
+  it("names a failed sandbox and offers to start it", async () => {
+    const user = userEvent.setup()
+    const handlers = { ...actions(), startWorkspace: vi.fn() }
+    const message = `${real.name} is not running: Start failed. Start it to finish setup.`
+    render(onboarding(createMemorySettingsStore({}, review), handlers, { ...onboardingScenarios.complete, readyToFinish: false, setupQueue: settledQueue, finishBlocker: { workspace: real.name, action: "start", message } }))
+    expect(screen.getByRole("button", { name: "Finish" })).toBeDisabled()
+    expect(screen.getByRole("contentinfo", { name: "Onboarding actions" })).toHaveTextContent(`Needs attention · ${message}`)
+    expect(screen.queryByText("Not started · Continue to start this step")).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: `Start ${real.name}` }))
+    expect(handlers.startWorkspace).toHaveBeenCalledWith(real.name)
+  })
+
+  it("offers to check an unconfirmed sandbox again", async () => {
+    const user = userEvent.setup()
+    const handlers = { ...actions(), refreshSetupState: vi.fn() }
+    render(onboarding(createMemorySettingsStore({}, review), handlers, { ...onboardingScenarios.complete, readyToFinish: false, setupQueue: settledQueue, finishBlocker: { workspace: real.name, action: "refresh", message: `${real.name}'s status could not be confirmed. Check again to finish setup.` } }))
+    expect(screen.getByRole("contentinfo", { name: "Onboarding actions" })).toHaveTextContent("Waiting · ")
+    await user.click(screen.getByRole("button", { name: "Check again" }))
+    expect(handlers.refreshSetupState).toHaveBeenCalledOnce()
+  })
+})
+
 describe("onboarding with sandboxes that already exist", () => {
   it("replaces a placeholder seed with this computer's sandboxes once they load", () => {
     const store = createMemorySettingsStore()

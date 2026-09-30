@@ -70,9 +70,24 @@ export function productionOnboardingSource(application: ApplicationSource | null
     && ["workspaceRun", "workspaceVerify"].every((id) => setup.setupQueue.some((item) => item.id === id && item.status === "succeeded"))
   const configured = !!application && (application.workspaces.length > 0 || emptyConfigurationVerified) && application.workspaces.every(({ freshness, state }) => freshness === "fresh" && state !== "failed" && state !== "starting") && operation?.status !== "applying" && operation?.status !== "failed"
   const completedPhases = configured ? ["preflight", "toolchain", "hostIntegration", "workspaces"] as const : []
+  const workspaceSetupPending = setup?.setupQueue.some(({ id, status }) => ["workspaceRun", "workspaceVerify"].includes(id) && (status === "running" || status === "queued" || status === "failed")) ?? false
+  // Sandbox setup itself explains running, queued and failed work; otherwise say which
+  // sandbox keeps Finish unavailable and how to resolve it.
+  const settled = !!application && !configured && !workspaceSetupPending && operation?.status !== "applying" && operation?.status !== "failed"
+  const failedWorkspace = settled ? application?.workspaces.find(({ state }) => state === "failed") : undefined
+  const staleWorkspace = settled ? application?.workspaces.find(({ freshness }) => freshness === "stale") : undefined
+  const startingWorkspace = settled ? application?.workspaces.find(({ state }) => state === "starting") : undefined
+  const finishBlocker: OnboardingSource["finishBlocker"] = failedWorkspace
+    ? { workspace: failedWorkspace.machine.name, action: "start", message: `${failedWorkspace.machine.name} is not running: ${failedWorkspace.lifecycleFailure ?? failedWorkspace.stateDetail}. Start it to finish setup.` }
+    : staleWorkspace
+      ? { workspace: staleWorkspace.machine.name, action: "refresh", message: `${staleWorkspace.machine.name}'s status could not be confirmed. Check again to finish setup.` }
+      : startingWorkspace
+        ? { workspace: startingWorkspace.machine.name, action: null, message: `Waiting for ${startingWorkspace.machine.name} to start…` }
+        : null
   return {
     ...(setup && { setupQueue: setup.setupQueue.map((item) => configured && item.status === "idle" && ["workspaceRun", "workspaceVerify"].includes(item.id) ? { ...item, status: "succeeded" as const } : item) }),
-    readyToFinish: configured && !setup?.setupQueue.some(({ id, status }) => ["workspaceRun", "workspaceVerify"].includes(id) && (status === "running" || status === "queued" || status === "failed")),
+    readyToFinish: configured && !workspaceSetupPending,
+    finishBlocker,
     machinesAuthoritative: machinesAuthoritative || Boolean(setup?.setupCandidate ?? operation),
     existingMachines,
     machineConfigurations: [...machines],
@@ -207,6 +222,8 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
           return source.submitSetupStep(step, current)
         } })
       },
+      startWorkspace: (workspace) => source.applicationActions.startWorkspace(workspace),
+      refreshSetupState: () => { void source.refresh() },
       connectGitHub: () => source.applicationActions.connectGitHub?.(),
       cancelGitHubConnection: () => source.applicationActions.cancelGitHubConnection?.(),
       reopenGitHubAuthorization: () => source.applicationActions.reopenGitHubAuthorization?.(),

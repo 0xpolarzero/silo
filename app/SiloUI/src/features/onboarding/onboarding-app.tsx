@@ -470,6 +470,9 @@ export function OnboardingApp({
           errorMessage={viewModel.error?.message}
           errorRecovery={viewModel.error?.recovery ?? undefined}
           onRetryWorkspaceSetup={retrySetup}
+          finishBlocker={viewModel.finishBlocker}
+          onStartWorkspace={actions.startWorkspace}
+          onRefresh={actions.refreshSetupState}
         />}
       </OnboardingPanel>
     </OnboardingShell>

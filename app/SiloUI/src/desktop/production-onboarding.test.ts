@@ -70,6 +70,24 @@ describe("production onboarding", () => {
     expect(source.bootstrapResult).toBeNull()
   })
 
+  it("names why Finish is unavailable when a created sandbox failed, is unconfirmed or is starting", () => {
+    const dependencies = { checks: onboardingScenarios.complete.preflightChecks, retry: vi.fn() }
+    const [dev, other] = application.workspaces
+    const withDev = (changes: Partial<typeof dev>) => ({ ...application, workspaces: [{ ...dev, ...changes }, other] })
+    const failed = productionOnboardingSource(withDev({ state: "failed", stateDetail: "Failed", lifecycleFailure: "Start failed: not enough memory" }), dependencies, application.preferences)
+    expect(failed.readyToFinish).toBe(false)
+    expect(failed.finishBlocker).toEqual({ workspace: dev.machine.name, action: "start", message: `${dev.machine.name} is not running: Start failed: not enough memory. Start it to finish setup.` })
+    const stale = productionOnboardingSource(withDev({ freshness: "stale" }), dependencies, application.preferences)
+    expect(stale.finishBlocker).toMatchObject({ workspace: dev.machine.name, action: "refresh" })
+    const starting = productionOnboardingSource(withDev({ state: "starting" }), dependencies, application.preferences)
+    expect(starting.finishBlocker).toMatchObject({ workspace: dev.machine.name, action: null, message: `Waiting for ${dev.machine.name} to start…` })
+    expect(projectOnboarding(failed, "disconnected").finishBlocker).toEqual(failed.finishBlocker)
+    // Nothing blocks a configured computer, and a running setup explains itself.
+    expect(productionOnboardingSource(application, dependencies, application.preferences).finishBlocker).toBeNull()
+    const applying = { ...withDev({ state: "starting" }), sandboxConfigurationOperation: { id: "a", status: "applying", candidate: { schemaVersion: 1, machines: [] }, progressEvents: [], result: null, error: null } } as typeof application
+    expect(productionOnboardingSource(applying, dependencies, application.preferences).finishBlocker).toBeNull()
+  })
+
   it("seeds from real local state, and marks the saved list or defaults as a placeholder before it", () => {
     const dependencies = { checks: [], retry: vi.fn() }
     const machines = application.workspaces.map(({ machine }) => machine)
