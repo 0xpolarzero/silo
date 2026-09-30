@@ -327,13 +327,13 @@ pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(),
         .unwrap_or(0);
     // The standard has no permission prompt. The desktop controls suppression/DND.
     let hints = std::collections::HashMap::from([
-        ("desktop-entry", "org.silo.preview".to_variant()),
+        ("desktop-entry", super::NOTIFICATION_DESKTOP_ENTRY.to_variant()),
         ("urgency", 1u8.to_variant()),
     ]);
     let parameters = (
         "Silo",
         replaces,
-        "org.silo.preview",
+        super::NOTIFICATION_ICON,
         notice.title.as_str(),
         notice.body.as_str(),
         Vec::<String>::new(),

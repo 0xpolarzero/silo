@@ -138,6 +138,14 @@ fn notification_authorized(state: &str) -> bool {
     matches!(state, "authorized" | "provisional")
 }
 
+/// The Linux packages install `{productName}.desktop` and an icon named after the
+/// main binary (tauri-bundler). Notification servers use the desktop entry to
+/// attribute notices and list Silo in per-app settings (F-24).
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+pub(crate) const NOTIFICATION_DESKTOP_ENTRY: &str = "Silo";
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+pub(crate) const NOTIFICATION_ICON: &str = env!("CARGO_PKG_NAME");
+
 /// Created by the Debian preinst and removed by postinst.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) const PACKAGE_UPDATE_MARKER: &str = "/var/lib/silo/package-update-in-progress";
@@ -203,6 +211,15 @@ mod tests {
             assert!(notice.contains("sudo dpkg --configure -a"), "{age:?} {dpkg}");
             assert!(!notice.contains('%'), "GTK dialogs must not see format directives");
         }
+    }
+
+    #[test]
+    fn notifications_name_the_installed_desktop_entry_and_icon() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(config["productName"], NOTIFICATION_DESKTOP_ENTRY);
+        assert!(config["mainBinaryName"].is_null(), "the icon is named after the Cargo binary");
+        assert_eq!(NOTIFICATION_ICON, "silo-ui");
     }
 
     #[test]
