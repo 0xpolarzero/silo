@@ -50,10 +50,10 @@ class BenchmarkSourceTests(unittest.TestCase):
                 self.assertEqual(output, '')
 
     def test_all_checkout_jobs_use_validated_source(self):
-        refs = re.findall(r'uses: actions/checkout@v4\n        with:\n          ref: (.+)', WORKFLOW)
+        refs = re.findall(r'uses: actions/checkout@[0-9a-f]{40} # v4[.\d]*\n        with:\n          ref: (.+)', WORKFLOW)
         self.assertEqual(len(refs), WORKFLOW.count('uses: actions/checkout@'))
         self.assertEqual(refs, ['${{ steps.source.outputs.ref }}'] + ['${{ needs.validate.outputs.source-ref }}'] * 3)
-        refs = re.findall(r'uses: actions/checkout@v4\n        with:\n          ref: (.+)', PLATFORM)
+        refs = re.findall(r'uses: actions/checkout@[0-9a-f]{40} # v4[.\d]*\n        with:\n          ref: (.+)', PLATFORM)
         self.assertEqual(refs, ['${{ inputs.source-ref }}'] * 3)
         self.assertEqual(len(refs), PLATFORM.count('uses: actions/checkout@'))
         self.assertIn('source-ref: ${{ needs.validate.outputs.source-ref }}', WORKFLOW)

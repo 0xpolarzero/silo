@@ -281,6 +281,10 @@ like a release (without signing), adds the maintainer scripts, installs and
 removes the package on the runner, and checks the AppImage layout. It runs only
 when packaging inputs change, and nightly; its packages are never uploaded.
 
+Every workflow pins third-party actions to a full commit SHA with the release
+version as a comment (`scripts/test_workflow_pins.py` enforces it).
+`.github/dependabot.yml` proposes updated SHAs in one weekly pull request.
+
 Native tests require the configuration described above. Frontend fixtures and
 unit tests do not prove installed-app behavior, live VM health, or two-computer
 operation. Keep opt-in live tests separate from ordinary tests.
