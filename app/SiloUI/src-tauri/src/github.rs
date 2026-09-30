@@ -308,7 +308,7 @@ struct Document {
 /// Copy the source's current GitHub assignment for a stopped checkpoint fork.
 /// The child obtains its own runtime identity and resolves credentials at Start.
 pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str) -> Result<(), String> {
-    let _state = STATE.try_lock().map_err(|_| "GitHub settings are busy. Retry the fork.".to_string())?;
+    let _state = crate::sync::try_lock_or_recover(&STATE, "GitHub state").ok_or_else(|| "GitHub settings are busy. Retry the fork.".to_string())?;
     let mut document = load(app)?;
     if let Some(mut assignment) = document.workspaces.iter()
         .find(|value| value["workspace"].as_str() == Some(source)).cloned() {
@@ -328,7 +328,7 @@ pub(crate) fn fork_assignment(app: &tauri::AppHandle, source: &str, target: &str
 }
 
 pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Result<(), String> {
-    let _state = STATE.try_lock().map_err(|_| "GitHub settings are busy.".to_string())?;
+    let _state = crate::sync::try_lock_or_recover(&STATE, "GitHub state").ok_or_else(|| "GitHub settings are busy.".to_string())?;
     let mut document = load(app)?;
     document.workspaces.retain(|value| value["workspace"].as_str() != Some(target));
     document.access_pending.retain(|name| name != target);
@@ -695,7 +695,7 @@ fn remember_token(app: &tauri::AppHandle, workspace: &str, token: &str) -> Resul
         tokens.push(token.into());
     }
     LEDGER_SECRET.write(ledger.clone(), || save_ledger(&entry, &ledger))?;
-    let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+    let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
     let mut document = load(app)?;
     document.grants_issued = true;
     save(app, &document)
@@ -810,11 +810,11 @@ fn apply(
     apply_identity: bool,
 ) -> Result<(), String> {
     let d = {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         load(app)?
     };
     let narrowing_error = {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         if load(app)?.revision != d.revision { schedule(Duration::ZERO); return Ok(()); }
         narrow_each(app, &d)
     };
@@ -831,7 +831,7 @@ fn apply(
         // A sandbox pending checkpoint restore has no runtime yet. Its saved choices stay
         // pending and apply when it starts (`workspace_restored`); this is not a failure.
         if is_pending_restore(app, name) {
-            let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+            let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
             let mut current = load(app)?;
             if current.revision == d.revision && current.operations.iter().any(|op| op["workspace"].as_str() == Some(name)) {
                 current.operations.retain(|op| op["workspace"].as_str() != Some(name));
@@ -842,7 +842,7 @@ fn apply(
         // Identity changes are independent of token issuance, including offline edits.
         let identity_requested = apply_identity || d.identity_pending.iter().any(|n| n == name);
         if identity_requested {
-            let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+            let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
             if load(app)?.revision != d.revision {
                 schedule(Duration::from_millis(500));
                 return Ok(());
@@ -877,7 +877,7 @@ fn apply(
             let result = if let Some(error) = narrowing_error.for_workspace(name) { Err(error.clone()) } else if personal_token::selected(w) {
                 personal_token::apply(app, name, d.revision)
             } else { runtime_grants_for(app, &d, w, &previous).and_then(|grants| {
-                let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+                let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
                 if load(app)?.revision != d.revision {
                     return Err("GitHub access changed. Applying your latest choices.".into());
                 }
@@ -906,7 +906,7 @@ fn apply(
                 .get(name)
                 .map_or(Ok(()), |message| Err(message.clone()))
         };
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         let mut current = load(app)?;
         if current.revision != d.revision {
             schedule(Duration::from_millis(500));
@@ -1467,7 +1467,7 @@ pub(crate) fn host_push_credential(
     workspace: &str,
     repository: &str,
 ) -> Result<String, String> {
-    let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+    let _guard = crate::sync::lock_or_recover(&OPERATION, "GitHub operation");
     let d = load(app)?;
     let policy = d
         .workspaces
@@ -1638,7 +1638,7 @@ fn open_authorization_browser(generation: u64, url: &str) -> Result<(), String> 
 
 fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         if CANCELLATION.load(Ordering::SeqCst) != generation { return Err("GitHub connection cancelled.".into()); }
         CONNECTING.store(true, Ordering::SeqCst);
     }
@@ -1749,7 +1749,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         return Err("GitHub connection cancelled.".into());
     }
     {
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         if CANCELLATION.load(Ordering::SeqCst) != generation {
             return Err("GitHub connection cancelled.".into());
         }
@@ -1831,9 +1831,9 @@ pub fn install(app: &tauri::AppHandle) {
         let pending_due = pending_deadline.is_some_and(|time| Instant::now() >= time);
         personal_token::check(&app);
         flush_account_credential();
-        if let Ok(_network) = OPERATION.try_lock() {
+        if let Some(_network) = crate::sync::try_lock_or_recover(&OPERATION, "GitHub operation") {
             let observed = {
-                let _state = STATE.lock().ok();
+                let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
                 load(&app)
             };
             if let Ok(mut d) = observed {
@@ -1851,7 +1851,7 @@ pub fn install(app: &tauri::AppHandle) {
                             .is_ok_and(|c| c.is_some_and(|c| c.expires_at <= now() + 120))
                     {
                         if let Err(message) = active_credential() {
-                            if let Ok(_state) = STATE.lock() {
+                            { let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
                                 if let Ok(mut current) = load(&app) {
                                     current.catalog_error = Some(message);
                                     let _ = save(&app, &current);
@@ -1861,7 +1861,7 @@ pub fn install(app: &tauri::AppHandle) {
                     }
                     if catalog_refresh_due(&d, now()) && credential().is_ok_and(|c| c.is_some()) {
                         let result = active_credential().and_then(|c| catalog(&c));
-                        if let Ok(_state) = STATE.lock() {
+                        { let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
                             if let Ok(mut current) = load(&app) {
                                 match result {
                                     Ok(repos) => {
@@ -1903,7 +1903,7 @@ pub fn install(app: &tauri::AppHandle) {
                                 .map(|_| ())
                             })
                         });
-                        if let Ok(_state) = STATE.lock() {
+                        { let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
                             if let Ok(mut current) = load(&app) {
                                 match result {
                                     Ok(()) => match delete_account_credential() {
@@ -1940,7 +1940,7 @@ pub fn install(app: &tauri::AppHandle) {
                         }
                     }
                     let account_credential = credential();
-                    if let Ok(_state) = STATE.lock() {
+                    { let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
                         if let Ok(mut current) = load(&app) {
                             current.session = session().into();
                             if current.workspaces.is_empty() {
@@ -1986,7 +1986,7 @@ async fn run(
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+        let _guard = crate::sync::lock_or_recover(&OPERATION, "GitHub operation");
         f(&app)
     })
     .await
@@ -2008,7 +2008,7 @@ pub async fn connect_github(
     let generation = CANCELLATION.load(Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
         let _update = crate::updates::operation_guard()?;
-        let _guard = OPERATION.lock().map_err(|_| "GitHub operation failed.")?;
+        let _guard = crate::sync::lock_or_recover(&OPERATION, "GitHub operation");
         connect(&app, generation)
     }).await.map_err(|_| "GitHub operation failed.")?
 }
@@ -2017,7 +2017,7 @@ pub async fn cancel_github_connection(app: tauri::AppHandle, window: tauri::Webv
     require_main(window.label())?;
     tauri::async_runtime::spawn_blocking(move || {
         // Serialize with credential publication, not with the browser/network wait.
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         let mut pending = AUTHORIZATION.lock().map_err(|_| "GitHub connection is unavailable.")?;
         CANCELLATION.fetch_add(1, Ordering::SeqCst);
         pending.0 = None;
@@ -2060,7 +2060,7 @@ pub async fn refresh_github_repositories(
     crate::github_http::reset_retries();
     run(app, |app| {
         let result = active_credential().and_then(|c| catalog(&c));
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         let mut d = load(app)?;
         match result {
             Ok(repos) => {
@@ -2096,7 +2096,7 @@ pub async fn disconnect_github(
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = INTENTS.wait(ticket)?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         let mut d = load(&app)?;
         d.access_enabled = false;
         d.disconnect_pending = true;
@@ -2125,7 +2125,7 @@ pub async fn set_github_access_enabled(
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = INTENTS.wait(ticket)?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         let mut d = load(&app)?;
         if d.access_enabled == enabled {
             return snapshot(&app);
@@ -2207,7 +2207,7 @@ pub async fn save_github_configuration(
             .ok_or("Missing GitHub access choice.")?;
         let _turn = INTENTS.wait(ticket)?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         let mut d = load(&app)?;
         if d.workspaces == *ws && d.access_enabled == enabled {
             return snapshot(&app);
@@ -2281,7 +2281,7 @@ pub async fn retry_github_configuration(
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = INTENTS.wait(ticket)?;
         let _update = crate::updates::operation_guard()?;
-        let _state = STATE.lock().map_err(|_| "GitHub state is unavailable.")?;
+        let _state = crate::sync::lock_or_recover(&STATE, "GitHub state");
         let mut d = load(&app)?;
         for w in &d.workspaces {
             if let Some(name) = w["workspace"].as_str() {
@@ -2307,6 +2307,22 @@ pub async fn retry_github_configuration(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_panic_under_the_github_locks_does_not_block_updates_or_settings() {
+        for lock in [&super::OPERATION, &super::STATE] {
+            let _ = std::thread::spawn(move || {
+                let _guard = lock.lock().unwrap();
+                panic!("simulated panic while holding a GitHub lock");
+            })
+            .join();
+            assert!(lock.is_poisoned());
+        }
+        // K-24: a poisoned lock is not "busy" forever.
+        drop(super::update_guard().unwrap());
+        assert!(crate::sync::try_lock_or_recover(&super::STATE, "GitHub state").is_some());
+        assert!(!super::OPERATION.is_poisoned() && !super::STATE.is_poisoned());
+    }
+
     #[test]
     fn one_failing_detach_does_not_stop_the_others() {
         let mut errors = super::NarrowErrors::default();
@@ -3098,5 +3114,5 @@ mod tests {
 }
 
 pub(crate) fn update_guard() -> Result<std::sync::MutexGuard<'static, ()>, String> {
-    OPERATION.try_lock().map_err(|_| "Wait for the GitHub operation to finish before updating.".into())
+    crate::sync::try_lock_or_recover(&OPERATION, "GitHub operation").ok_or_else(|| "Wait for the GitHub operation to finish before updating.".into())
 }

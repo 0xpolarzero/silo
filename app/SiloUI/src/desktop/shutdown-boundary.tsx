@@ -54,6 +54,8 @@ export function ShutdownBoundary({ children, compact = false }: { children: Reac
     return () => { disposed = true; unsubscribe?.(); setQueue(emptyOperationQueue) }
   }, [quitting])
   const waitingLabel = shutdownWaitingLabel(queue)
+  // The native shutdown entry names the VM it is stopping ("Stopping dev (1 of 2)").
+  const stopping = queue.running.find(entry => entry.kind === "shutdown")?.label
   const cancellable = cancellableRunning(queue)
   const cancelAndQuit = () => { for (const entry of cancellable) void invoke("cancel_operation", { id: entry.id }).catch(error => console.error("Silo cancel operation:", error)) }
   // The status window measures this wrapper before resizing. Preserve its
@@ -72,7 +74,7 @@ export function ShutdownBoundary({ children, compact = false }: { children: Reac
           <Dialog.Title className="sr-only">Quitting Silo</Dialog.Title>
           <div role="status" className="flex max-w-sm flex-col items-center gap-3 px-6 text-center">
             <LoaderCircle aria-hidden="true" strokeWidth={1.5} className={cn("size-6 text-muted-foreground", !settings.reduceMotion && "animate-spin motion-reduce:animate-none")} />
-            <Dialog.Description className="text-[13px] font-medium text-foreground">{waitingLabel ?? "Stopping local sandboxes…"}</Dialog.Description>
+            <Dialog.Description className="text-[13px] font-medium text-foreground">{waitingLabel ?? (stopping ? `${stopping}…` : "Stopping local sandboxes…")}</Dialog.Description>
             {waitingLabel && (cancellable.length > 0
               ? <Button type="button" size="sm" variant="outline" onClick={cancelAndQuit}>Cancel and quit</Button>
               : <p className="text-xs text-muted-foreground">Quit will finish once this work completes.</p>)}

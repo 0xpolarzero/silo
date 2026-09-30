@@ -27,9 +27,7 @@ static REQUEST_LOCK: Mutex<()> = Mutex::new(());
 /// atomically) after locking, so a panic under the lock leaves no in-memory state to
 /// distrust: recover instead of reporting "Settings unavailable" until restart (C-25).
 fn config_lock() -> std::sync::MutexGuard<'static, ()> {
-    CONFIG_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    crate::sync::lock_or_recover(&CONFIG_LOCK, "remote settings")
 }
 static REMOTE_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 #[derive(Clone, Serialize, Deserialize)]
@@ -1010,9 +1008,7 @@ fn dispatch(app: &AppHandle, request: Value) -> Result<Value, String> {
         return execute();
     }
     // Record acceptance before touching a VM. Lost replies and restarts never replay a change.
-    let _guard = REQUEST_LOCK
-        .lock()
-        .map_err(|_| "Remote operation state unavailable.")?;
+    let _guard = crate::sync::lock_or_recover(&REQUEST_LOCK, "remote request");
     // A queued request must recheck access after the preceding operation finishes.
     authorize(&request)?;
     let operations = directory()?.join("operations");

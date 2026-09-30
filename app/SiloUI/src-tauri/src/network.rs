@@ -20,9 +20,7 @@ const FAILED: &str = "Could not read network services. Try again.";
 /// forwards, so a panic while holding it leaves nothing to repair. Recover instead
 /// of failing every network read and save until restart (C-25, K-24 policy).
 fn network_lock() -> std::sync::MutexGuard<'static, ()> {
-    NETWORK_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    crate::sync::lock_or_recover(&NETWORK_LOCK, "network settings")
 }
 
 /// Serializes one VM's runtime forwarding calls: a repair's add/remove sequence and
@@ -34,16 +32,13 @@ fn network_lock() -> std::sync::MutexGuard<'static, ()> {
 fn forwarding_lock(workspace: &str) -> std::sync::Arc<Mutex<()>> {
     static LOCKS: std::sync::OnceLock<Mutex<BTreeMap<String, std::sync::Arc<Mutex<()>>>>> =
         std::sync::OnceLock::new();
-    LOCKS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    crate::sync::lock_or_recover(LOCKS.get_or_init(Default::default), "port forwarding")
         .entry(workspace.to_owned())
         .or_default()
         .clone()
 }
 fn hold(lock: &Mutex<()>) -> std::sync::MutexGuard<'_, ()> {
-    lock.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    crate::sync::lock_or_recover(lock, "port forwarding")
 }
 const LIMIT: usize = 128;
 
