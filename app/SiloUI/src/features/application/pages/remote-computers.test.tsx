@@ -66,7 +66,8 @@ it("edits a remote VM with the same name as a local VM using its original config
   await user.click(row.getByRole("button", { name: `More actions for ${remote.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Edit ${remote.machine.name}` }))
   expect(screen.getByRole("combobox", { name: "Run on" })).toBeDisabled()
-  await user.click(screen.getByRole("button", { name: "Stop VM and save" }))
+  await user.click(screen.getByRole("button", { name: "Stop and save…" }))
+  await user.click(screen.getByRole("button", { name: "Stop and save" }))
   expect(actions.saveRemoteMachine).toHaveBeenCalledWith("office", remote.machine, remote.machine)
 })
 

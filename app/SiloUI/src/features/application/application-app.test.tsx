@@ -1173,7 +1173,8 @@ describe("application", () => {
     await user.hover(overview.getByLabelText(/Workspace storage: .*read-only/))
     expect(await screen.findByRole("tooltip")).toHaveTextContent("To use a different disk size, create a new VM and transfer your data.")
     await user.selectOptions(overview.getByRole("combobox", { name: "CPU limit" }), "4")
-    await user.click(overview.getByRole("button", { name: "Stop VM and save" }))
+    await user.click(overview.getByRole("button", { name: "Stop and save…" }))
+    await user.click(overview.getByRole("button", { name: "Stop and save" }))
 
     const developmentRow = overview.getByText("dev").closest("li") as HTMLElement
     expect(developmentRow).toHaveAttribute("aria-busy", "true")
