@@ -860,7 +860,7 @@ impl<R: MsbRunner> BackupService<R> {
         // From here on the runtime may hold native data for this group. Every
         // failure, including Cancel and a timed-out or killed load, removes the
         // group and the runtime's leftover import staging before returning.
-        match self.load_import_group(payload_path, import_group, cancellation) {
+        match self.load_import_group(payload_path, import_group, &source.runtime_config, cancellation) {
             Ok(snapshot_member) => Ok(PreparedRestore {
                 source_name: source.name.clone(),
                 new_name: request.new_name,
@@ -887,6 +887,7 @@ impl<R: MsbRunner> BackupService<R> {
         &self,
         payload_path: &Path,
         import_group: &str,
+        runtime_config: &Value,
         cancellation: &Cancellation,
     ) -> Result<String, BackupError> {
         self.require_success(
@@ -970,6 +971,14 @@ impl<R: MsbRunner> BackupService<R> {
             ],
             cancellation,
         )?;
+        // `msb restore` rebuilds the VM from this descriptor, not from the
+        // export manifest Silo validated, so the two must agree (E-19).
+        let descriptor = read_snapshot_descriptor(&self.member_artifact(head_member, import_group)?)?;
+        compare_loaded_descriptor(&descriptor, head_id, runtime_config).map_err(|detail| {
+            BackupError::InvalidArchive(format!(
+                "the loaded snapshot does not match the export's settings: {detail}"
+            ))
+        })?;
         Ok(snapshot_member)
     }
 
@@ -1187,6 +1196,179 @@ impl<R: MsbRunner> BackupService<R> {
         })
     }
 }
+
+/// MicroSandbox 0.7.2 (`packages/microsandbox-types/rust/lib/snapshot`):
+/// every installed member has one `snapshot.json` descriptor of at most 1 MiB.
+const SNAPSHOT_DESCRIPTOR: &str = "snapshot.json";
+const MAX_SNAPSHOT_DESCRIPTOR_BYTES: u64 = 1024 * 1024;
+const OWNED_VOLUMES_EXTENSION: &str = "microsandbox.owned-volumes";
+const RESTORE_DEFAULTS_EXTENSION: &str = "microsandbox.restore-defaults";
+
+fn read_snapshot_descriptor(artifact: &Path) -> Result<Value, BackupError> {
+    let invalid = || BackupError::InvalidArchive("the loaded snapshot descriptor is unreadable".into());
+    let (file, metadata) = open_regular_file(&artifact.join(SNAPSHOT_DESCRIPTOR)).map_err(|error| match error {
+        OpenRegularError::NotRegular => invalid(),
+        OpenRegularError::Io(error) => BackupError::Io(error),
+    })?;
+    if metadata.len() > MAX_SNAPSHOT_DESCRIPTOR_BYTES {
+        return Err(invalid());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SNAPSHOT_DESCRIPTOR_BYTES).read_to_end(&mut bytes)?;
+    serde_json::from_slice(&bytes).map_err(|_| invalid())
+}
+
+/// The restorable configuration a MicroSandbox snapshot carries is its
+/// descriptor: image, root layout, owned volumes, the default user and, for
+/// a full checkpoint, the VM geometry. Env, patches, init, rlimits and
+/// host-bound mounts have no descriptor field (it is closed with
+/// `deny_unknown_fields`), and host resources need explicit `msb restore`
+/// flags, which Silo never passes. So the descriptor must match the export
+/// manifest's validated configuration exactly, and anything else in it is
+/// refused.
+fn compare_loaded_descriptor(
+    descriptor: &Value,
+    head_id: &str,
+    runtime_config: &Value,
+) -> Result<(), String> {
+    let object = descriptor
+        .as_object()
+        .ok_or("its descriptor is not an object")?;
+    const FIELDS: &[&str] = &[
+        "schema",
+        "snapshot_id",
+        "scope",
+        "state",
+        "capture",
+        "image",
+        "root_disk",
+        "parent",
+        "requires",
+        "extensions",
+    ];
+    if let Some(extra) = object.keys().find(|key| !FIELDS.contains(&key.as_str())) {
+        return Err(format!("it adds an undeclared setting ({extra})"));
+    }
+    if object.get("schema").and_then(Value::as_str) != Some("microsandbox.snapshot/1") {
+        return Err("its descriptor schema is not supported".into());
+    }
+    if object.get("snapshot_id").and_then(Value::as_str) != Some(head_id) {
+        return Err("its descriptor names another snapshot".into());
+    }
+    let state_kind = descriptor.pointer("/state/kind").and_then(Value::as_str);
+    match (object.get("scope").and_then(Value::as_str), state_kind) {
+        (Some("disk"), Some("file")) | (Some("full"), Some("checkpoint")) => {}
+        _ => return Err("its capture scope is not supported".into()),
+    }
+
+    // Image: same reference and, when the export recorded it, the same digest.
+    let image = object
+        .get("image")
+        .and_then(Value::as_object)
+        .ok_or("it has no image")?;
+    if image
+        .keys()
+        .any(|key| key != "reference" && key != "manifest_digest")
+        || image.get("reference").and_then(Value::as_str).is_none()
+        || image.get("reference") != runtime_config.pointer("/image/Oci/reference")
+    {
+        return Err("it uses a different image".into());
+    }
+    if let Some(expected) = runtime_config.get("manifest_digest").filter(|value| !value.is_null()) {
+        if image.get("manifest_digest") != Some(expected) {
+            return Err("it uses a different image digest".into());
+        }
+    }
+    // Root layout: the export requires a managed OCI root (absent means managed).
+    if object
+        .get("root_disk")
+        .is_some_and(|root| root != &serde_json::json!({"layout": "managed"}))
+    {
+        return Err("it uses a different root disk layout".into());
+    }
+
+    let requires = object
+        .get("requires")
+        .and_then(Value::as_array)
+        .ok_or("its required extensions are malformed")?;
+    let extensions = object
+        .get("extensions")
+        .and_then(Value::as_object)
+        .ok_or("its extensions are malformed")?;
+    let known = [OWNED_VOLUMES_EXTENSION, RESTORE_DEFAULTS_EXTENSION];
+    if requires
+        .iter()
+        .any(|key| !key.as_str().is_some_and(|key| known.contains(&key)))
+    {
+        return Err("it requires an unsupported runtime extension".into());
+    }
+    if let Some(extra) = extensions.keys().find(|key| !known.contains(&key.as_str())) {
+        return Err(format!("it adds an undeclared extension ({extra})"));
+    }
+
+    // Default user for new commands: the validated export has none.
+    let user = extensions
+        .get(RESTORE_DEFAULTS_EXTENSION)
+        .map(|defaults| defaults.get("user").cloned().unwrap_or(Value::Null))
+        .unwrap_or(Value::Null);
+    if &user != runtime_config.pointer("/runtime/user").unwrap_or(&Value::Null) {
+        return Err("it sets a different default user".into());
+    }
+
+    // Owned volumes: exactly the owned mounts the export declares.
+    let expected: Vec<&Value> = runtime_config
+        .get("mounts")
+        .and_then(Value::as_array)
+        .map(|mounts| mounts.iter().filter(|mount| mount["type"] == "Owned").collect())
+        .unwrap_or_default();
+    let captured: Vec<&Value> = match extensions.get(OWNED_VOLUMES_EXTENSION) {
+        None => Vec::new(),
+        Some(volumes) => volumes
+            .as_array()
+            .ok_or("its owned volumes are malformed")?
+            .iter()
+            .collect(),
+    };
+    if captured.len() != expected.len() {
+        return Err("it adds or omits a mounted volume".into());
+    }
+    for declared in &expected {
+        let found = captured.iter().find(|volume| {
+            volume.pointer("/mount/guest").is_some() && volume.pointer("/mount/guest") == declared.get("guest")
+        });
+        let Some(volume) = found else {
+            return Err("it mounts a volume at an undeclared path".into());
+        };
+        for field in ["storage", "options", "stat_virtualization", "host_permissions"] {
+            if let Some(expected) = declared.get(field) {
+                if volume.pointer(&format!("/mount/{field}")) != Some(expected) {
+                    return Err(format!("its {} volume has different {field}", declared["guest"].as_str().unwrap_or("owned")));
+                }
+            }
+        }
+    }
+
+    // A full checkpoint restores with its captured geometry.
+    if state_kind == Some("checkpoint") {
+        for (captured, declared) in [
+            ("vcpus", "cpus"),
+            ("max_vcpus", "max_cpus"),
+            ("memory_mib", "memory_mib"),
+            ("max_memory_mib", "max_memory_mib"),
+        ] {
+            let captured = descriptor
+                .pointer(&format!("/state/requirements_summary/{captured}"))
+                .and_then(Value::as_u64);
+            if captured.is_none()
+                || captured != runtime_config.pointer(&format!("/resources/{declared}")).and_then(Value::as_u64)
+            {
+                return Err("its CPU or memory layout differs from the export's settings".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 
 fn cache_import_stages(home: &Path) -> Result<HashSet<std::ffi::OsString>, BackupError> {
     let root = home.join("cache/tmp");
@@ -2634,6 +2816,41 @@ mod tests {
         })
     }
 
+    /// What `msb snapshot save` of a disk capture of `config` describes.
+    fn loaded_descriptor_for(config: &Value) -> Value {
+        let volumes = config["mounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|mount| mount["type"] == "Owned")
+            .map(|mount| {
+                serde_json::json!({
+                    "mount_id": "workspace",
+                    "mount": {
+                        "guest": mount["guest"],
+                        "storage": mount["storage"],
+                        "options": mount["options"],
+                        "stat_virtualization": "none",
+                        "host_permissions": "preserve"
+                    },
+                    "data": {"kind": "disk", "generation": {}}
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "schema": "microsandbox.snapshot/1",
+            "snapshot_id": "snap_11111111111111111111111111111111",
+            "scope": "disk",
+            "state": {"kind": "file", "disk_format": "qcow2", "filesystem": "ext4", "virtual_size": 1, "head": "layer_1", "layers": []},
+            "capture": {"created_at": "2026-09-30T00:00:00Z", "source_lineage": "dev", "source_checkpoint": null, "consistency": "crash_consistent"},
+            "image": {"reference": config["image"]["Oci"]["reference"], "manifest_digest": format!("sha256:{}", "c".repeat(64))},
+            "root_disk": {"layout": "managed"},
+            "parent": "snap_00000000000000000000000000000000",
+            "requires": [OWNED_VOLUMES_EXTENSION],
+            "extensions": {OWNED_VOLUMES_EXTENSION: volumes}
+        })
+    }
+
     #[derive(Default)]
     struct FakeRunner {
         calls: Mutex<Vec<Vec<String>>>,
@@ -2645,6 +2862,8 @@ mod tests {
         removed: Mutex<Vec<String>>,
         /// Crafted `.tar.zst` written by `snapshot save` instead of a valid one.
         saved_payload: Mutex<Option<Vec<u8>>>,
+        /// Descriptor of the loaded head instead of one matching `managed_config("dev")`.
+        loaded_descriptor: Mutex<Option<Value>>,
         fail_load: AtomicBool,
         fail_save: AtomicBool,
         fail_import_verify: AtomicBool,
@@ -2771,9 +2990,24 @@ mod tests {
                         }));
                     }
                     if let Some(load) = calls.iter().rev().find(|call| call.get(1).is_some_and(|part| part == "load")) {
+                        let group = load.last().unwrap();
+                        let artifact = |id: &str, descriptor: &Value| -> io::Result<PathBuf> {
+                            let path = command.home.join("snapshots").join(group).join(id);
+                            fs::create_dir_all(&path)?;
+                            fs::write(path.join("snapshot.json"), descriptor.to_string())?;
+                            Ok(path)
+                        };
+                        let head = self
+                            .loaded_descriptor
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .unwrap_or_else(|| loaded_descriptor_for(&managed_config("dev")));
                         let parent = format!("sha256:{}", "a".repeat(64));
-                        entries.push(serde_json::json!({"group":load.last().unwrap(),"name":"imported-parent","availability":"ready","snapshot_id":"snap_00000000000000000000000000000000","digest":parent,"parent_digest":null}));
-                        entries.push(serde_json::json!({"group":load.last().unwrap(),"name":"imported-member","availability":"ready","snapshot_id":"snap_11111111111111111111111111111111","digest":format!("sha256:{}", "b".repeat(64)),"parent_digest":parent}));
+                        entries.push(serde_json::json!({"group":group,"name":"imported-parent","availability":"ready","snapshot_id":"snap_00000000000000000000000000000000","digest":parent,"parent_digest":null,
+                            "artifact_path": artifact("snap_00000000000000000000000000000000", &serde_json::json!({}))?}));
+                        entries.push(serde_json::json!({"group":group,"name":"imported-member","availability":"ready","snapshot_id":"snap_11111111111111111111111111111111","digest":format!("sha256:{}", "b".repeat(64)),"parent_digest":parent,
+                            "artifact_path": artifact("snap_11111111111111111111111111111111", &head)?}));
                     }
                     let removed = self.removed.lock().unwrap();
                     entries.retain(|entry| {
@@ -4116,6 +4350,108 @@ mod tests {
         let (result, calls) = import_crafted(b"\x28\xb5\x2f\xfdnot really zstd".to_vec(), None);
         assert!(scan_error(result).contains("not a safe snapshot archive"));
         assert!(!loaded(&calls));
+    }
+
+    /// Import an honest export whose loaded snapshot descriptor was altered.
+    fn import_with_descriptor(
+        alter: impl FnOnce(&mut Value),
+    ) -> (Result<PreparedRestore, BackupError>, Vec<String>) {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("dev.silo-backup");
+        let runner = FakeRunner::default();
+        let mut descriptor = loaded_descriptor_for(&managed_config("dev"));
+        alter(&mut descriptor);
+        *runner.loaded_descriptor.lock().unwrap() = Some(descriptor);
+        let service = service(&temp, runner);
+        create_one(&service, destination.clone(), false).unwrap();
+        let result = service.prepare_restore(restore_request(destination), &Cancellation::default());
+        let removed = service.runner.removed.lock().unwrap().clone();
+        (result, removed)
+    }
+
+    fn refused_because(result: Result<PreparedRestore, BackupError>) -> String {
+        match result {
+            Err(BackupError::InvalidArchive(detail)) => {
+                assert!(detail.starts_with("the loaded snapshot does not match"), "{detail}");
+                detail
+            }
+            Err(other) => panic!("expected a descriptor mismatch, got {other}"),
+            Ok(_) => panic!("the altered snapshot was accepted"),
+        }
+    }
+
+    #[test]
+    fn loaded_snapshot_may_not_add_mounts_env_image_or_init() {
+        let extra_mount = |descriptor: &mut Value| {
+            let mut volume = descriptor["extensions"][OWNED_VOLUMES_EXTENSION][0].clone();
+            volume["mount_id"] = "host".into();
+            volume["mount"]["guest"] = "/host".into();
+            descriptor["extensions"][OWNED_VOLUMES_EXTENSION]
+                .as_array_mut()
+                .unwrap()
+                .push(volume);
+        };
+        let cases: Vec<(&str, Box<dyn FnOnce(&mut Value)>)> = vec![
+            ("adds or omits a mounted volume", Box::new(extra_mount)),
+            ("undeclared setting (env)", Box::new(|descriptor: &mut Value| {
+                descriptor["env"] = serde_json::json!([{"key": "LD_PRELOAD", "value": "/tmp/x.so"}]);
+            })),
+            ("undeclared setting (patches)", Box::new(|descriptor: &mut Value| {
+                descriptor["patches"] = serde_json::json!([{"path": "/etc/profile"}]);
+            })),
+            ("undeclared setting (init)", Box::new(|descriptor: &mut Value| {
+                descriptor["init"] = serde_json::json!({"cmd": ["/bin/evil"]});
+            })),
+            ("different image", Box::new(|descriptor: &mut Value| {
+                descriptor["image"]["reference"] = "attacker.example/evil:latest".into();
+            })),
+            ("different default user", Box::new(|descriptor: &mut Value| {
+                descriptor["requires"] = serde_json::json!([OWNED_VOLUMES_EXTENSION, RESTORE_DEFAULTS_EXTENSION]);
+                descriptor["extensions"][RESTORE_DEFAULTS_EXTENSION] = serde_json::json!({"user": "root"});
+            })),
+            ("unsupported runtime extension", Box::new(|descriptor: &mut Value| {
+                descriptor["requires"] = serde_json::json!([OWNED_VOLUMES_EXTENSION, "vendor.host-mounts"]);
+            })),
+            ("different storage", Box::new(|descriptor: &mut Value| {
+                descriptor["extensions"][OWNED_VOLUMES_EXTENSION][0]["mount"]["storage"]["capacity_mib"] = 4_194_304.into();
+            })),
+            ("different root disk layout", Box::new(|descriptor: &mut Value| {
+                descriptor["root_disk"] = serde_json::json!({"layout": "flat"});
+            })),
+            ("names another snapshot", Box::new(|descriptor: &mut Value| {
+                descriptor["snapshot_id"] = "snap_22222222222222222222222222222222".into();
+            })),
+        ];
+        for (expected, alter) in cases {
+            let (result, removed) = import_with_descriptor(alter);
+            let detail = refused_because(result);
+            assert!(detail.contains(expected), "{expected}: {detail}");
+            assert_eq!(removed.len(), 2, "{expected}: the loaded group must be removed");
+        }
+    }
+
+    #[test]
+    fn full_checkpoint_import_requires_its_captured_geometry() {
+        let full = |vcpus: u64| {
+            move |descriptor: &mut Value| {
+                descriptor["scope"] = "full".into();
+                descriptor["state"] = serde_json::json!({
+                    "kind": "checkpoint",
+                    "checkpoint_id": "ckpt",
+                    "checkpoint_root": format!("sha256:{}", "d".repeat(64)),
+                    "restore_intents": ["clone", "resume"],
+                    "requirements_summary": {
+                        "architecture": std::env::consts::ARCH,
+                        "vcpus": vcpus, "max_vcpus": 6, "memory_mib": 16384, "max_memory_mib": 32768
+                    }
+                });
+            }
+        };
+        let (result, _) = import_with_descriptor(full(2));
+        assert!(refused_because(result).contains("CPU or memory layout"));
+        let (result, removed) = import_with_descriptor(full(4));
+        assert!(result.is_ok());
+        assert!(removed.is_empty());
     }
 
     #[test]
