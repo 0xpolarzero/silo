@@ -6,7 +6,7 @@ import type { ApplicationSource } from "@/features/application/model/application
 import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { fixtureDirectoryLoader } from "@/fixtures/directory-loader"
-import { StatusBar } from "./status-bar"
+import { StatusBar } from "./status-bar-popover"
 import type { StatusBarActions } from "./status-bar-types"
 
 function setup(overrides: Partial<ApplicationSource> = {}) {

@@ -98,6 +98,9 @@ selection, Open Silo, and Quit. TypeScript components and tokens own the design.
 Freshness, busy state, and repair state gate quick actions. Repair appears once
 above the list. The editor picker browses sandbox folders, not host folders.
 
-Browser fixtures simulate lifecycle progress and host handoffs. In the desktop
+Each sandbox's "…" menu is built once as data
+(`features/status-bar/workspace-menu-items.ts`): the desktop panel renders it as a
+native menu and the preview (`status-bar-popover.tsx`) with Radix, so both offer the
+same items. Browser fixtures simulate lifecycle progress and host handoffs. In the desktop
 app, Rust commands perform terminal, editor, site, and Quit actions. Open Silo
 opens the main window and carries the selected sandbox.

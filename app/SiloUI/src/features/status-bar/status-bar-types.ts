@@ -1,4 +1,13 @@
-import type { ApplicationActions, ApplicationTab, SandboxDetailTab, WorkspaceSection } from "@/features/application/model/application-source"
+import type { ApplicationActions, ApplicationSource, ApplicationTab, ApplicationWorkspace, SandboxDetailTab, WorkspaceSection } from "@/features/application/model/application-source"
+
+/** A renderer of one sandbox's "…" menu (see `workspace-menu-items.ts`). */
+export interface WorkspaceMenuProps {
+  workspace: ApplicationWorkspace
+  source: ApplicationSource
+  actions: StatusBarActions
+  onFolders: () => void
+  onConfirm: (action: "stop" | "restart") => void
+}
 
 export interface StatusBarRoute {
   tab?: ApplicationTab

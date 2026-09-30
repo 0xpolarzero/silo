@@ -1,15 +1,11 @@
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react"
-import { ChevronRight, CircleAlert, Code, ExternalLink, GitBranch, Globe, Loader2, LoaderCircle, Monitor, MoreHorizontal, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
-import { DropdownMenu } from "radix-ui"
+import { CircleAlert, Code, GitBranch, Loader2, Monitor, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 
-import { CopyButton } from "@/components/copy-button"
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { SiloMark } from "@/components/silo-mark"
 import { Button } from "@/components/ui/button"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { TooltipProvider } from "@/components/ui/tooltip"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import { RepositoryPushFeedback } from "@/features/application/components/repository-push-feedback"
 import type { ApplicationSource, ApplicationWorkspace } from "@/features/application/model/application-source"
@@ -18,72 +14,13 @@ import { SandboxAction, SandboxListItem, SandboxListRow } from "@/features/sandb
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
 import { cn } from "@/lib/utils"
-import { lifecycleOutcome, sandboxTargetLabel, statusBarHealth } from "./status-bar-model"
+import { lifecycleOutcome, sandboxTargetLabel } from "./status-bar-model"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
-import type { StatusBarActions } from "./status-bar-types"
+import type { StatusBarActions, WorkspaceMenuProps } from "./status-bar-types"
+import { WorkspaceMenu } from "./workspace-menu"
 import { StatusFolderPicker } from "./status-folder-picker"
 import { QuitConfirmation } from "./quit-confirmation"
 import { sandboxesStoppedByQuit } from "./quit-confirmation-model"
-
-const menuClass = "silo-window z-50 min-w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
-const menuItemClass = "flex min-h-8 select-none items-center gap-2 rounded-sm px-2 text-xs outline-none data-[highlighted]:bg-accent data-[disabled]:pointer-events-none data-[disabled]:opacity-40 [&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
-
-function MenuItem({ children, icon, onSelect, disabled }: { children: ReactNode; icon: ReactNode; onSelect: () => void; disabled?: boolean }) {
-  return <DropdownMenu.Item className={menuItemClass} disabled={disabled} onSelect={onSelect}>{icon}{children}</DropdownMenu.Item>
-}
-
-export interface WorkspaceMenuProps {
-  workspace: ApplicationWorkspace
-  source: ApplicationSource
-  actions: StatusBarActions
-  onFolders: () => void
-  onConfirm: (action: "stop" | "restart") => void
-}
-
-function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: WorkspaceMenuProps) {
-  const { machine } = workspace
-  const target = workspaceTarget(workspace)
-  const { canOpen, canStart, canStop, canRestart } = workspaceAvailability(workspace, source)
-  const sites = workspace.ports.filter(({ listening, configured, scheme, hostPort }) => listening === true && configured === true && scheme != null && hostPort != null).sort((a, b) => a.port - b.port)
-  return (
-    <DropdownMenu.Root modal={false}>
-      <DropdownMenu.Trigger asChild>
-        <Button variant="ghost" size="icon-xs" aria-label={`Actions for ${machine.name}`}><MoreHorizontal /></Button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content className={menuClass} data-reduce-motion={source.preferences.reduceMotion} align="end" sideOffset={4} collisionPadding={10} aria-label={`Actions for ${machine.name}`}>
-          {workspace.state === "stopped" && <MenuItem icon={<Play />} disabled={!canStart} onSelect={() => actions.startWorkspace(target)}>Start</MenuItem>}
-          {workspace.state !== "stopped" && <>
-            <MenuItem icon={<Square />} disabled={!canStop} onSelect={() => onConfirm("stop")}>Stop…</MenuItem>
-            <MenuItem icon={<RotateCw />} disabled={!canRestart} onSelect={() => onConfirm("restart")}>Restart…</MenuItem>
-          </>}
-          <DropdownMenu.Separator className="my-1 border-t" />
-          <MenuItem icon={<Terminal />} disabled={!canOpen} onSelect={() => actions.openTerminal(target)}>Open in {source.preferences.terminal}</MenuItem>
-          <MenuItem icon={<Code />} disabled={!canOpen} onSelect={onFolders}>Open in {source.preferences.editor}…</MenuItem>
-          <DropdownMenu.Sub>
-            <DropdownMenu.SubTrigger className={menuItemClass} disabled={!canOpen}><Globe /> Open site <ChevronRight className="ml-auto" /></DropdownMenu.SubTrigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.SubContent className={menuClass} data-reduce-motion={source.preferences.reduceMotion} sideOffset={4} collisionPadding={10}>
-                {sites.length ? sites.map(({ port }) => <MenuItem key={port} icon={<ExternalLink />} onSelect={() => actions.openSite(target, port)}>Port {port}</MenuItem>) : <DropdownMenu.Item disabled className={menuItemClass}>No active sites</DropdownMenu.Item>}
-                {sites.length > 0 && <DropdownMenu.Separator className="my-1 border-t" />}
-                {sites.map(site => <DropdownMenu.Item key={`copy:${site.port}`} asChild onSelect={(event) => event.preventDefault()}>
-                  <CopyButton
-                    value={`${site.scheme}://127.0.0.1:${site.hostPort}`}
-                    labels={{ idle: `Copy port ${site.port} address`, copied: `Port ${site.port} address copied`, failed: `Couldn't copy port ${site.port} address` }}
-                    text={{ idle: `Copy port ${site.port} address`, copied: "Copied", failed: "Copy failed" }}
-                    variant="ghost"
-                    size="sm"
-                    className={cn(menuItemClass, "w-full justify-start font-normal")}
-                  />
-                </DropdownMenu.Item>)}
-              </DropdownMenu.SubContent>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Sub>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  )
-}
 
 function OperationIssue({ title, detail, actionLabel, actionText = "Details", tone = "error", onReview, retry }: { title: string; detail: string; actionLabel: string; actionText?: string; tone?: "error" | "warning"; onReview: () => void; retry?: ReactNode }) {
   return (
@@ -286,58 +223,5 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
           </>}
       </footer>
     </div>
-  )
-}
-
-function StatusBarIcon({ tone, reduceMotion }: { tone: ReturnType<typeof statusBarHealth>["tone"]; reduceMotion: boolean }) {
-  const color = tone === "error" ? "text-destructive"
-    : tone === "warning" || tone === "busy" ? "text-amber-700 dark:text-amber-400"
-      : tone === "neutral" ? "text-muted-foreground" : "text-foreground"
-  const Indicator = tone === "busy" ? LoaderCircle : tone === "error" ? CircleAlert : tone === "warning" ? TriangleAlert : null
-  return (
-    <span className={cn("relative size-4", color)} aria-hidden="true">
-      <SiloMark className={cn("size-4", color, tone !== "success" && "[&_path]:stroke-current")} />
-      {Indicator && <span className="absolute -top-1 -right-1 grid size-3 place-items-center rounded-full bg-background ring-1 ring-background">
-        <Indicator strokeWidth={2.5} className={cn("size-2.5", tone === "busy" && !reduceMotion && "animate-spin motion-reduce:animate-none")} />
-      </span>}
-    </span>
-  )
-}
-
-export function StatusBar({ source, actions, defaultOpen = false }: { source: ApplicationSource; actions: StatusBarActions; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen)
-  const content = useRef<HTMLDivElement>(null)
-  const health = statusBarHealth(source)
-  function dismissThen(action: () => void) { setOpen(false); action() }
-  const dismissingActions: StatusBarActions = {
-    ...actions,
-    openSilo: (route) => dismissThen(() => actions.openSilo(route)),
-    quit: () => dismissThen(actions.quit),
-    openTerminal: (name) => dismissThen(() => actions.openTerminal(name)),
-    openEditor: (name, path) => dismissThen(() => actions.openEditor(name, path)),
-    openSite: (name, port) => dismissThen(() => actions.openSite(name, port)),
-  }
-  return (
-    <TooltipProvider delayDuration={150} reduceMotion={source.preferences.reduceMotion}>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon-sm" className="relative rounded-md" aria-label="Silo status bar" aria-description={health.label} title={`Silo · ${health.label}`}>
-            <StatusBarIcon tone={health.tone} reduceMotion={source.preferences.reduceMotion} />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent
-          ref={content}
-          aria-label="Silo"
-          align="end"
-          sideOffset={8}
-          collisionPadding={10}
-          className="silo-window flex max-h-[min(520px,var(--radix-popover-content-available-height))] w-[380px] max-w-[calc(100vw-20px)] flex-col overflow-hidden rounded-xl p-0 shadow-lg"
-          data-reduce-motion={source.preferences.reduceMotion}
-          onOpenAutoFocus={(event) => { event.preventDefault(); content.current?.focus() }}
-        >
-          <StatusBarContent source={source} actions={dismissingActions} focusContent={() => content.current?.focus()} />
-        </PopoverContent>
-      </Popover>
-    </TooltipProvider>
   )
 }
