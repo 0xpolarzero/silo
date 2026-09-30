@@ -1,11 +1,11 @@
 # Optional Linux desktop implementation plan
 
 Status: implemented and locally verified, 2026-09-18.
-See [desktop behavior and verification](SiloUI-DESKTOP.md) for measured results
+See [desktop behavior and verification](../SiloUI-DESKTOP.md) for measured results
 and remaining platform acceptance limits. The sequence below records the design
 and acceptance targets, not a claim that every platform has passed.
 This plan supersedes conflicting lifecycle and agent-integration suggestions
-in [the research](SiloUI-LINUX-DESKTOP-RESEARCH.md).
+in [the research](../SiloUI-LINUX-DESKTOP-RESEARCH.md).
 
 ## Product contract
 

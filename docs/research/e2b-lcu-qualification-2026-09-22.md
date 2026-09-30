@@ -2,7 +2,7 @@
 
 **2026-09-23 correction:** this is a historical observation report, not proof of
 three independently reproduced upstream bugs. The
-[investigation and completion handoff](../SiloUI-E2B-QUALIFICATION-HANDOFF.md)
+[investigation and completion handoff](../archive/SiloUI-E2B-QUALIFICATION-HANDOFF.md)
 supersedes its investigation sequence. The Compose commit inspected below does
 not establish the exact source of its selected API/orchestrator binaries; the
 durability JSON was manually assembled, feature passes span resumed runs, and
@@ -17,7 +17,7 @@ recovered after a host reboot; the latest pause did not. Passing feature tests
 are not a rollback guarantee.
 
 This extends the [initial desktop experiment](e2b-local-poc-2026-09-22.md) and
-updates the [replacement plan](../SiloUI-E2B-REPLACEMENT-PLAN.md). No production
+updates the [replacement plan](../archive/SiloUI-E2B-REPLACEMENT-PLAN.md). No production
 Silo UI or backend changed. Proposed UI changes still need user approval.
 
 ## The execution model
@@ -243,7 +243,7 @@ according to the failed run, rather than silently recreated.
 
 ## Next implementation sequence
 
-1. Follow the [corrected handoff](../SiloUI-E2B-QUALIFICATION-HANDOFF.md): establish
+1. Follow the [corrected handoff](../archive/SiloUI-E2B-QUALIFICATION-HANDOFF.md): establish
    binary provenance, reproduce checkpoint/pause/restore outside our adapter,
    attribute each cause, then fix our implementation or report/fix upstream
    defects according to the evidence. Use disposable workspaces and bounded faults.
