@@ -267,6 +267,25 @@ pub fn set_login_item(enabled: bool) -> Result<IntegrationStatus, String> {
     }
 }
 
+/// Show a message before Tauri starts (F-11); the process exits afterwards.
+pub fn show_startup_notice(message: &str) {
+    use gtk::prelude::*;
+    eprintln!("{message}");
+    if gtk::init().is_err() {
+        return;
+    }
+    let dialog = gtk::MessageDialog::new(
+        None::<&gtk::Window>,
+        gtk::DialogFlags::MODAL,
+        gtk::MessageType::Info,
+        gtk::ButtonsType::Ok,
+        message,
+    );
+    dialog.set_title("Silo");
+    dialog.run();
+    dialog.close();
+}
+
 pub fn request_notifications() -> Result<IntegrationStatus, String> {
     Ok(notifications())
 }

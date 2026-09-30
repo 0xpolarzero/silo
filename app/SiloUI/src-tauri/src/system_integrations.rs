@@ -138,6 +138,47 @@ fn notification_authorized(state: &str) -> bool {
     matches!(state, "authorized" | "provisional")
 }
 
+/// Created by the Debian preinst and removed by postinst.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) const PACKAGE_UPDATE_MARKER: &str = "/var/lib/silo/package-update-in-progress";
+/// A marker older than this is left over from an interrupted update.
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+const PACKAGE_UPDATE_STALE_AFTER: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Why Silo did not open while its package update marker exists (F-11).
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+fn package_update_notice(age: Option<std::time::Duration>, dpkg_running: bool) -> &'static str {
+    if dpkg_running && age.is_some_and(|age| age < PACKAGE_UPDATE_STALE_AFTER) {
+        "Silo is being updated. Wait for the package update to finish, then open Silo again."
+    } else {
+        "A Silo package update did not finish. When no other software update is running, open a terminal and run:\n\nsudo dpkg --configure -a\n\nThen open Silo again."
+    }
+}
+
+/// Whether a dpkg process is running (package maintainer scripts run under it).
+#[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
+fn dpkg_running(proc: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(proc) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        entry.file_name().to_str().is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
+            && std::fs::read_to_string(entry.path().join("comm"))
+                .is_ok_and(|comm| comm.trim_end() == "dpkg")
+    })
+}
+
+/// Show why Silo will not open during an unfinished package update, then return.
+#[cfg(target_os = "linux")]
+pub(crate) fn explain_unfinished_package_update() {
+    let age = std::fs::metadata(PACKAGE_UPDATE_MARKER)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok());
+    let running = dpkg_running(std::path::Path::new("/proc"));
+    platform::show_startup_notice(package_update_notice(age, running));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,6 +191,32 @@ mod tests {
         for state in ["notDetermined", "denied", "unavailable", "error", "unknown"] {
             assert!(!notification_authorized(state));
         }
+    }
+
+    #[test]
+    fn package_update_notice_tells_how_to_finish_an_interrupted_update() {
+        let recent = Some(std::time::Duration::from_secs(60));
+        let stale = Some(std::time::Duration::from_secs(2 * 60 * 60));
+        assert!(package_update_notice(recent, true).contains("being updated"));
+        for (age, dpkg) in [(recent, false), (stale, true), (stale, false), (None, true), (None, false)] {
+            let notice = package_update_notice(age, dpkg);
+            assert!(notice.contains("sudo dpkg --configure -a"), "{age:?} {dpkg}");
+            assert!(!notice.contains('%'), "GTK dialogs must not see format directives");
+        }
+    }
+
+    #[test]
+    fn dpkg_is_found_only_among_numeric_process_entries() {
+        let root = tempfile::tempdir().unwrap();
+        for (entry, comm) in [("1", "systemd\n"), ("self", "dpkg\n"), ("42", "apt\n")] {
+            std::fs::create_dir(root.path().join(entry)).unwrap();
+            std::fs::write(root.path().join(entry).join("comm"), comm).unwrap();
+        }
+        assert!(!dpkg_running(root.path()));
+        std::fs::create_dir(root.path().join("77")).unwrap();
+        std::fs::write(root.path().join("77/comm"), "dpkg\n").unwrap();
+        assert!(dpkg_running(root.path()));
+        assert!(!dpkg_running(&root.path().join("missing")));
     }
 
     #[test]

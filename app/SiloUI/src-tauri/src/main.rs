@@ -59,9 +59,9 @@ use tauri::{Emitter, Manager, WindowEvent};
 fn main() {
     #[cfg(target_os = "linux")]
     if std::env::current_exe().is_ok_and(|path| path == std::path::Path::new("/usr/bin/silo-ui"))
-        && std::path::Path::new("/var/lib/silo/package-update-in-progress").exists()
+        && std::path::Path::new(system_integrations::PACKAGE_UPDATE_MARKER).exists()
     {
-        eprintln!("Silo is being updated. Finish the package update, then open Silo again.");
+        system_integrations::explain_unfinished_package_update();
         return;
     }
 
