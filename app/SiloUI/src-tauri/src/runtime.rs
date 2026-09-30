@@ -504,8 +504,6 @@ pub struct ApplicationSource {
     repository_push_operations: Vec<Value>,
     github: Value,
     secrets: Vec<Value>,
-    backup: BackupSummary,
-    preferences: Preferences,
     /// This computer's limits for VM resource ceilings. Absent when the host could not
     /// be measured (every VM change is then rejected by `validate_host_ceiling`).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -600,33 +598,6 @@ enum Freshness {
     /// This VM's own reading failed while nothing was changing it; the runtime fields
     /// are its last known values and `attention` says why.
     Stale,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BackupSummary {
-    last_archive: String,
-    completed_label: String,
-    compressed_size: String,
-    destination: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct Preferences {
-    terminal: &'static str,
-    editor: &'static str,
-    browser: &'static str,
-    terminal_path: Option<String>,
-    editor_path: Option<String>,
-    browser_path: Option<String>,
-    terminal_use_system_default: bool,
-    editor_use_system_default: bool,
-    browser_use_system_default: bool,
-    launch_at_login: bool,
-    start_workspaces_at_launch: bool,
-    startup_workspace_ids: Vec<String>,
-    reduce_motion: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3777,35 +3748,21 @@ fn unread_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
     }
 }
 
+/// Keep legacy SSH settings visible without inventing a remote runtime state.
 fn ssh_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
     let host = match &machine {
         MachineConfiguration::Ssh { host, .. } => host.clone(),
         MachineConfiguration::Vm { .. } => String::new(),
     };
-    ApplicationWorkspace {
-        can_dismiss_error: false,
-        lifecycle_failure: None,
-        machine,
-        purpose: "SSH sandbox".into(),
-        state: WorkspaceState::Stopped,
-        state_detail: "Remote status is not connected.".into(),
-        attention: Some(WorkspaceAttention {
-            level: AttentionLevel::Warning,
-            message: "Silo has not connected to this SSH sandbox.".into(),
-        }),
-        freshness: Freshness::Fresh,
-        settling: false,
-        host,
-        repositories: Vec::new(),
-        files: Vec::new(),
-        ports: Vec::new(),
-        logs: Vec::new(),
-        github_repositories: Vec::new(),
-        secret_names: Vec::new(),
-        checkpoints: Vec::new(),
-        pending_checkpoint_restore: None,
-        checkpoint_operation: None,
-    }
+    let mut workspace = unread_workspace(machine);
+    workspace.host = host;
+    workspace.purpose = "SSH sandbox".into();
+    workspace.freshness = Freshness::Stale;
+    workspace.attention = Some(WorkspaceAttention {
+        level: AttentionLevel::Warning,
+        message: "Legacy SSH sandbox connections are unavailable. Add this computer in Computers to manage its Silo sandboxes.".into(),
+    });
+    workspace
 }
 
 /// A persisted running checkpoint operation is interrupted only when no operation
@@ -3852,12 +3809,6 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
     activities.extend(crate::secrets::activities().map_err(RuntimeError::Unavailable)?);
     activities.sort_by(|a,b| b["occurredAt"].as_str().cmp(&a["occurredAt"].as_str()));
     activities.truncate(200);
-    // Only a local VM can start at launch (`start_at_launch_with` rejects SSH entries).
-    let startup_workspace_ids = workspaces
-        .iter()
-        .find(|workspace| workspace.machine.is_vm())
-        .map(|workspace| vec![workspace.machine.id().to_string()])
-        .unwrap_or_default();
     Ok(ApplicationSource {
         runtime_repair: None,
         workspaces,
@@ -3866,27 +3817,6 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
         repository_push_operations: Vec::new(),
         github: serde_json::json!({"state": "disconnected"}),
         secrets,
-        backup: BackupSummary {
-            last_archive: "No backups yet".into(),
-            completed_label: String::new(),
-            compressed_size: String::new(),
-            destination: String::new(),
-        },
-        preferences: Preferences {
-            terminal: "Terminal",
-            editor: "Visual Studio Code",
-            browser: "Safari",
-            terminal_path: None,
-            editor_path: None,
-            browser_path: None,
-            terminal_use_system_default: true,
-            editor_use_system_default: true,
-            browser_use_system_default: true,
-            launch_at_login: true,
-            start_workspaces_at_launch: false,
-            startup_workspace_ids,
-            reduce_motion: false,
-        },
         host_capacity: host_resources().ok().as_ref().and_then(HostCapacity::of),
     })
 }
@@ -7254,7 +7184,7 @@ esac
         holder.join().unwrap();    }
 
     #[test]
-    fn default_startup_selection_never_picks_an_ssh_entry() {
+    fn native_state_omits_legacy_placeholders_and_does_not_guess_ssh_state() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let ssh = MachineConfiguration::Ssh { id: "00000000-0000-4000-8000-000000000009".into(), name: "remote".into(), host: "example.test".into(), user: "me".into(), port: 22 };
@@ -7264,7 +7194,12 @@ esac
             inspect(&paths, "Running"),
         ]);
         let encoded = serde_json::to_value(read_application_state_with(&runner, &paths).unwrap()).unwrap();
-        assert_eq!(encoded["preferences"]["startupWorkspaceIds"], json!([vm().id()]));    }
+        assert!(encoded.get("preferences").is_none());
+        assert!(encoded.get("backup").is_none());
+        assert_eq!(encoded["workspaces"][0]["state"], "failed");
+        assert_eq!(encoded["workspaces"][0]["freshness"], "stale");
+        assert!(encoded["workspaces"][0]["attention"]["message"].as_str().unwrap().contains("Computers"));
+    }
 
     #[test]
     fn read_refuses_missing_runtime_rows_instead_of_publishing_false_success() {

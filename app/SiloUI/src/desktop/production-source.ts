@@ -1,3 +1,4 @@
+import { defaultSettings } from "@/features/preferences/model/settings"
 import { workspaceStorageStateSchema } from "@/features/application/model/workspace-storage"
 import { isUnsupportedRemote, logPageSchema } from "@/features/application/model/logs"
 import { invoke } from "@tauri-apps/api/core"
@@ -205,8 +206,10 @@ const applicationSourceShape = z.object({
   repositoryPushOperations: tolerantArray(pushOperationShape),
   github: githubStateShape,
   secrets: z.array(secretShape),
-  backup: backupSummaryShape,
-  preferences: preferencesShape,
+  // Native runtime state no longer duplicates preference or backup stores (D-20).
+  // Older owners and fixtures may still supply these legacy presentation fields.
+  backup: backupSummaryShape.default({ lastArchive: "", completedLabel: "", compressedSize: "", destination: "" }),
+  preferences: preferencesShape.default(() => ({ ...defaultSettings, startupWorkspaceIds: undefined })),
 }).passthrough()
 
 // Another computer's GitHub, secrets, export and preference state is never shown
