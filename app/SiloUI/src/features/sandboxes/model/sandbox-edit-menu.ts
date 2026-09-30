@@ -28,7 +28,7 @@ export function sandboxEditMenu({ machine, displayName, disabled, busyReason, cr
   const runningVM = machine.kind === "vm" && running
   return [
     { label: "Edit", separatorBefore, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: disabled || Boolean(busyReason), tooltip: busyReason, onSelect: onEdit },
-    { label: "Duplicate settings", description: machine.kind === "vm" ? "Create a new empty sandbox with the same settings." : "Create a new SSH host connection with the same settings.", icon: CopyPlus, accessibleLabel: `Duplicate settings for ${machine.name}`, disabled: disabled || !onDuplicate, onSelect: () => onDuplicate?.() },
+    { label: "Duplicate settings", icon: CopyPlus, accessibleLabel: `Duplicate settings for ${machine.name}`, disabled: disabled || !onDuplicate, onSelect: () => onDuplicate?.() },
     ...(machine.kind === "vm" && !machine.desktop && created ? [{ label: "Add Linux desktop", icon: Monitor, disabled: disabled || Boolean(busyReason), tooltip: busyReason, onSelect: () => onAddDesktop(machine) }] : []),
     // Delete always confirms (decision 6), so its label ends with an ellipsis (decision 8).
     { label: "Delete…", icon: Trash2, accessibleLabel: `Delete ${displayName}`, destructive: true, disabled: disabled || runningVM || Boolean(busyReason), tooltip: runningVM ? "Stop the sandbox before deleting it." : busyReason, popover: "delete" },

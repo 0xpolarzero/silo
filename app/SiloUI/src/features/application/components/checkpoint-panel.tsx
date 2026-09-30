@@ -263,7 +263,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                     delete: close => <ConfirmBody tone="destructive" title={`Delete “${checkpoint.name}”?`} description={deleteDescription(checkpoint, info)} confirmLabel="Delete" onConfirm={() => remove(checkpoint)} onClose={close} />,
                   }}
                   items={[
-                    ...(actions.forkCheckpoint ? [{ label: "Fork…", description: "Create a new sandbox with a copy of its files at this checkpoint.", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, popover: "fork" }] : []),
+                    ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, popover: "fork" }] : []),
                     ...(isLocal && onExport ? [{ label: "Export…", accessibleLabel: `Export ${checkpoint.name}`, disabled: locked || exportDisabled, onSelect: () => onExport(checkpoint) }] : []),
                     // Delete runs on this computer only; a pinned checkpoint says what still needs it.
                     ...(isLocal && actions.deleteCheckpoint ? [{ label: "Delete…", accessibleLabel: `Delete ${checkpoint.name}`, destructive: true, separatorBefore: true, disabled: locked || Boolean(info?.deleteBlocker), tooltip: info?.deleteBlocker, popover: "delete" }] : []),

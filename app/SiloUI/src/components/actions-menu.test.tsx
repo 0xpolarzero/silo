@@ -7,12 +7,11 @@ import { TooltipProvider } from "./ui/tooltip"
 it("supports keyboard selection and returns focus when dismissed", async () => {
   const select = vi.fn()
   const user = userEvent.setup()
-  render(<TooltipProvider><ActionsMenu label="More actions" items={[{ label: "Edit", description: "Change the sandbox settings.", onSelect: select }, { label: "Restart", disabled: true, onSelect: vi.fn() }]} /></TooltipProvider>)
+  render(<TooltipProvider><ActionsMenu label="More actions" items={[{ label: "Edit", onSelect: select }, { label: "Restart", disabled: true, onSelect: vi.fn() }]} /></TooltipProvider>)
   await user.tab()
   await user.keyboard("{ArrowDown}")
   const edit = await screen.findByRole("menuitem", { name: "Edit" })
   expect(edit).toHaveFocus()
-  expect(edit).toHaveAccessibleDescription("Change the sandbox settings.")
   await user.keyboard("{Enter}")
   expect(select).toHaveBeenCalledOnce()
   expect(screen.queryByRole("menu")).not.toBeInTheDocument()

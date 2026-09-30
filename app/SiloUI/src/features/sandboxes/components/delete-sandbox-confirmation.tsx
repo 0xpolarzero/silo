@@ -44,13 +44,18 @@ export function DeleteSandboxBody({ kind, displayName, details = {}, onDelete, o
     void Promise.resolve().then(action)
   }
 
+  const cancel = <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
+  const remove = <Button type="button" variant="destructive" size="sm" autoFocus data-popover-initial-focus="" onClick={() => run(onDelete)}>Delete permanently</Button>
   return <div className="grid gap-2">
     <p className="font-medium">{deleteSandboxTitle(displayName)}</p>
     <div className="text-muted-foreground">{deleteSandboxDescription(kind, checkpoints, size)}</div>
-    <div className="flex flex-wrap justify-end gap-2">
-      <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-      {exportFirst && <Button type="button" variant="outline" size="sm" onClick={() => run(async () => { if (await exportFirst()) await onDelete() })}>Export, then delete</Button>}
-      <Button type="button" variant="destructive" size="sm" autoFocus data-popover-initial-focus="" onClick={() => run(onDelete)}>Delete permanently</Button>
-    </div>
+    {/* Three choices do not fit one row of the popover, so they stack full width like a macOS alert. */}
+    {exportFirst
+      ? <div className="grid gap-1.5 pt-1">
+        {remove}
+        <Button type="button" variant="outline" size="sm" onClick={() => run(async () => { if (await exportFirst()) await onDelete() })}>Export, then delete</Button>
+        {cancel}
+      </div>
+      : <div className="flex justify-end gap-2">{cancel}{remove}</div>}
   </div>
 }
