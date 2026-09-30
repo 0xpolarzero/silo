@@ -730,6 +730,11 @@ fn convert_with(
     }
     progress(Step::Copying)?;
     copy_runtime_tree(&old_runtime, &staged)?;
+    // The copied image descriptors still name the old runtime's files by absolute path.
+    // An image already broken in the old runtime stays as it was; it does not stop the rest.
+    if let Err(message) = runtime::image_cache::repair(&staged.join("microsandbox/cache")) {
+        eprintln!("Image cache repair: {message}");
+    }
     runtime::prepare_runtime_home(&paths.home, paths.storage_home.as_deref())
         .map_err(|_| "Staged runtime home could not be prepared.")?;
     let total = machines.len();

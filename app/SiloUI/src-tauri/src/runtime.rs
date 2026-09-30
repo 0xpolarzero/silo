@@ -6,6 +6,7 @@ pub(crate) mod contract_tests;
 mod crash_acknowledgement;
 #[path = "guest_image.rs"]
 pub(crate) mod guest_image;
+pub(crate) mod image_cache;
 pub(crate) mod lifecycle_recovery;
 pub(crate) mod operation_gate;
 pub(crate) mod remote_ops;

@@ -178,6 +178,14 @@ pub(crate) fn install(app: &AppHandle) {
         if state.cancelled.load(Ordering::SeqCst) {
             return;
         }
+        // Runtimes converted by an earlier Silo still name the previous runtime's image
+        // files, so their VMs stop booting once it is removed. Repair before any start.
+        if let Ok(paths) = crate::runtime::runtime_paths(&app) {
+            let storage = paths.storage_home.as_deref().unwrap_or(&paths.home);
+            if let Err(message) = crate::runtime::image_cache::repair(&storage.join("cache")) {
+                eprintln!("Image cache repair: {message}");
+            }
+        }
         if let Err(message) = crate::runtime::configuration_recovery::recover(&app) {
             crate::notifications::notify(
                 &app,
