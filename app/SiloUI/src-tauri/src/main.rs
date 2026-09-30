@@ -215,7 +215,7 @@ fn main() {
                 let _ = queue_app.emit("silo://operation-queue-changed", ());
             });
             runtime_migration::install(app.handle())?;
-            remote::start(app.handle().clone())?;
+            remote::start(app.handle().clone());
             secrets::install(app.handle())?;
             github::install(app.handle());
             backup_controller::install(app.handle())?;

@@ -51,6 +51,8 @@ pub struct ManagementStatus {
     host_id: String,
     name: String,
     address: String,
+    /// Why remote management does not work on this computer right now, if it does not.
+    error: Option<String>,
 }
 fn directory() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
@@ -159,42 +161,96 @@ fn status(config: &Config) -> ManagementStatus {
         host_id: config.host_id.clone(),
         address: format!("{}@{}", std::env::var("USER").unwrap_or_default(), name),
         name,
+        error: START_ERROR
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
     }
+}
+/// Why remote management is not working although Silo runs, such as another Silo
+/// process owning it or a file in the way of the bridge link. Cleared once fixed.
+static START_ERROR: Mutex<Option<String>> = Mutex::new(None);
+/// True once this process serves the control socket.
+static LISTENING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn record_start_error(error: Option<String>) {
+    if let Some(error) = &error {
+        eprintln!("Remote management is unavailable: {error}");
+    }
+    *START_ERROR.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = error;
 }
 #[tauri::command]
 pub fn remote_management_status() -> Result<ManagementStatus, String> {
     let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
     Ok(status(&read_config()?))
 }
+/// The executable the bridge link should name: the AppImage file itself when running
+/// from one (its mount point changes every launch), else this executable.
+fn bridge_target() -> Result<PathBuf, String> {
+    let current = std::env::current_exe().map_err(|e| e.to_string())?;
+    select_bridge_target(std::env::var_os("APPIMAGE").map(PathBuf::from), current)
+}
+fn select_bridge_target(app_image: Option<PathBuf>, current: PathBuf) -> Result<PathBuf, String> {
+    if let Some(app_image) = app_image.filter(|path| {
+        path.is_absolute()
+            && fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    }) {
+        return Ok(app_image);
+    }
+    // macOS runs a quarantined app from a random read-only copy until it is moved.
+    if current.components().any(|part| part.as_os_str() == "AppTranslocation") {
+        return Err("Move Silo to the Applications folder and open it again before using remote management.".into());
+    }
+    Ok(current)
+}
+/// Points `~/.local/bin/silo-remote` under `home` at `target`, replacing only a link
+/// Silo made earlier: one to an executable with the same name, a Silo AppImage, or a
+/// link whose target is gone (an old AppImage mount or a moved app).
+fn link_bridge(home: &Path, target: &Path) -> Result<(), String> {
+    let path = home.join(".local/bin/silo-remote");
+    fs::create_dir_all(path.parent().ok_or("Home unavailable.")?).map_err(|e| e.to_string())?;
+    if let Ok(existing) = fs::symlink_metadata(&path) {
+        let previous = fs::read_link(&path).ok();
+        let ours = existing.file_type().is_symlink()
+            && previous.as_deref().is_some_and(|previous| {
+                !previous.exists()
+                    || previous.file_name() == target.file_name()
+                    || std::env::current_exe().is_ok_and(|current| previous.file_name() == current.file_name())
+                    || previous.extension().is_some_and(|extension| extension == "AppImage")
+            });
+        if !ours {
+            return Err("~/.local/bin/silo-remote already exists. Choose a different name for that file before enabling remote management.".into());
+        }
+        if previous.as_deref() == Some(target) {
+            return Ok(());
+        }
+    }
+    let temp = path.with_file_name(format!(".silo-remote-{}", uuid::Uuid::new_v4()));
+    symlink(target, &temp).map_err(|e| e.to_string())?;
+    if let Err(error) = fs::rename(&temp, &path) {
+        let _ = fs::remove_file(temp);
+        return Err(error.to_string());
+    }
+    Ok(())
+}
+fn link_bridge_for_this_account() -> Result<(), String> {
+    let home = PathBuf::from(std::env::var_os("HOME").ok_or("Home unavailable.")?);
+    link_bridge(&home, &bridge_target()?)
+}
 #[tauri::command]
-pub fn set_remote_management(enabled: bool) -> Result<ManagementStatus, String> {
+pub fn set_remote_management(app: AppHandle, enabled: bool) -> Result<ManagementStatus, String> {
     let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
     if enabled {
-        let path = PathBuf::from(std::env::var_os("HOME").ok_or("Home unavailable.")?)
-            .join(".local/bin/silo-remote");
-        fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
-        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
-        if let Ok(existing) = fs::symlink_metadata(&path) {
-            if !existing.file_type().is_symlink()
-                || fs::read_link(&path)
-                    .ok()
-                    .and_then(|p| p.file_name().map(|n| n.to_owned()))
-                    != executable.file_name().map(|n| n.to_owned())
-            {
-                return Err("~/.local/bin/silo-remote already exists. Choose a different name for that file before enabling remote management.".into());
-            }
-        }
-        let temp = path.with_file_name(format!(".silo-remote-{}", uuid::Uuid::new_v4()));
-        symlink(executable, &temp).map_err(|e| e.to_string())?;
-        if let Err(error) = fs::rename(&temp, &path) {
-            let _ = fs::remove_file(temp);
-            return Err(error.to_string());
-        }
+        link_bridge_for_this_account()?;
     }
     let mut config = read_config()?;
     config.enabled = enabled;
     save_config(&config)?;
     REMOTE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
+    if enabled {
+        // The link is in place now; a launch that could not serve remote management tries again.
+        let listening = if LISTENING.load(std::sync::atomic::Ordering::Acquire) { Ok(()) } else { listen(app) };
+        record_start_error(listening.err());
+    }
     Ok(status(&config))
 }
 #[tauri::command]
@@ -1131,12 +1187,24 @@ fn bind_control_socket(dir: &Path) -> Result<UnixListener, String> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(|e| e.to_string())?;
     Ok(listener)
 }
-pub(crate) fn start(app: AppHandle) -> Result<(), String> {
+/// Serves remote management for the app's lifetime. A failure never stops Silo from
+/// opening: it is kept for the settings page (`error`) and retried when the user turns
+/// remote management on again.
+pub(crate) fn start(app: AppHandle) {
+    let enabled = match read_config() {
+        Ok(config) => config.enabled,
+        Err(error) => return record_start_error(Some(error)),
+    };
+    REMOTE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
+    // Re-point the bridge link every launch: an AppImage mount or a moved app leaves it stale.
+    let linked = if enabled { link_bridge_for_this_account() } else { Ok(()) };
+    let listening = listen(app);
+    record_start_error(listening.err().or(linked.err()));
+}
+fn listen(app: AppHandle) -> Result<(), String> {
     let lease = lease_control(&directory()?)?;
-    if read_config()?.enabled {
-        set_remote_management(true)?;
-    }
     let listener = bind_control_socket(&directory()?)?;
+    LISTENING.store(true, std::sync::atomic::Ordering::Release);
     thread::spawn(move || {
         let _lease = lease;
         serve_connections(listener.incoming(), ACCEPT_BACKOFF, |mut stream| {
@@ -1817,6 +1885,72 @@ mod authorized_key_tests {
         assert!(!restrict_authorized_keys_file(&link, &public).unwrap());
         assert_eq!(fs::read_to_string(&target).unwrap(), format!("{public}\n"));
         assert!(!restrict_authorized_keys_file(&home.path().join("missing"), &public).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod bridge_link_tests {
+    use super::*;
+    fn executable(path: &Path) {
+        fs::write(path, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn the_link_names_the_appimage_file_not_its_temporary_mount() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("Silo.AppImage");
+        executable(&image);
+        let mounted = PathBuf::from("/tmp/.mount_SiloAb12/usr/bin/silo-ui");
+        assert_eq!(select_bridge_target(Some(image.clone()), mounted.clone()).unwrap(), image);
+        let plain = dir.path().join("plain");
+        fs::write(&plain, b"").unwrap();
+        for ignored in [dir.path().join("missing.AppImage"), plain, PathBuf::from("Silo.AppImage")] {
+            assert_eq!(select_bridge_target(Some(ignored), mounted.clone()).unwrap(), mounted);
+        }
+        let translocated = PathBuf::from("/private/var/folders/x/T/AppTranslocation/ABC/d/Silo.app/Contents/MacOS/silo-ui");
+        assert!(select_bridge_target(None, translocated).unwrap_err().contains("Applications"));
+    }
+
+    #[test]
+    fn the_link_is_repointed_but_never_replaces_someone_elses_file() {
+        let home = tempfile::tempdir().unwrap();
+        let apps = tempfile::tempdir().unwrap();
+        let link = home.path().join(".local/bin/silo-remote");
+        let target = apps.path().join("Silo_0.6.0_amd64.AppImage");
+        executable(&target);
+        link_bridge(home.path(), &target).unwrap();
+        assert_eq!(fs::read_link(&link).unwrap(), target);
+        link_bridge(home.path(), &target).unwrap();
+        // Links Silo made before: a vanished AppImage mount, an older AppImage, a moved app.
+        let older = apps.path().join("Silo_0.5.0_amd64.AppImage");
+        executable(&older);
+        for previous in [PathBuf::from("/tmp/.mount_gone/usr/bin/silo-ui"), older, apps.path().join("moved/silo-ui")] {
+            fs::remove_file(&link).unwrap();
+            symlink(&previous, &link).unwrap();
+            link_bridge(home.path(), &target).unwrap();
+            assert_eq!(fs::read_link(&link).unwrap(), target, "{}", previous.display());
+        }
+        // Another program's link or a real file stays untouched.
+        let other = apps.path().join("other-tool");
+        executable(&other);
+        fs::remove_file(&link).unwrap();
+        symlink(&other, &link).unwrap();
+        assert!(link_bridge(home.path(), &target).unwrap_err().contains("already exists"));
+        assert_eq!(fs::read_link(&link).unwrap(), other);
+        fs::remove_file(&link).unwrap();
+        fs::write(&link, b"mine").unwrap();
+        assert!(link_bridge(home.path(), &target).unwrap_err().contains("already exists"));
+        assert_eq!(fs::read(&link).unwrap(), b"mine");
+    }
+
+    #[test]
+    fn a_start_failure_is_reported_in_the_status() {
+        let config = Config { host_id: uuid::Uuid::new_v4().to_string(), enabled: true, hosts: vec![] };
+        record_start_error(Some("Another Silo instance owns remote management.".into()));
+        assert_eq!(status(&config).error.as_deref(), Some("Another Silo instance owns remote management."));
+        record_start_error(None);
+        assert_eq!(status(&config).error, None);
     }
 }
 
