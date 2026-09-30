@@ -22,3 +22,8 @@ hookup (I-44).
 
 Verification uses temporary stores and fake runtime children. It does not prove
 live VM health or installed-app behavior.
+
+`ScopedTokens` is host-only retirement material: it does not implement
+`Serialize`, and `Debug` prints only its redacted count. The production
+compile-time guard was checked by temporarily adding `Serialize`; compilation
+failed with E0283 at that guard. The temporary derive was removed.

@@ -4603,7 +4603,7 @@ mod tests {
                 match args[0].as_str() {
                     "snapshot" => Ok(CommandOutput { stdout: serde_json::json!([{"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"}]).to_string(), stderr: String::new() }),
                     "list" => Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() }),
-                    "restore" => Err(RuntimeError::Failed { operation: "restore".into(), detail: "incomplete".into() }),
+                    "restore" => Err(RuntimeError::Failed { operation: "restore".into(), exit_code: Some(1), detail: "incomplete".into() }),
                     _ => Err(RuntimeError::Unavailable("sandbox not found: dev".into())),
                 }
             }
