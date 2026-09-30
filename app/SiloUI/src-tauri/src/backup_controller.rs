@@ -81,13 +81,9 @@ pub(crate) struct BackupState {
     availability: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     availability_message: Option<String>,
-    #[serde(rename = "requiredSpaceGB", skip_serializing_if = "Option::is_none")]
-    required_space_gb: Option<f64>,
-    #[serde(rename = "availableSpaceGB", skip_serializing_if = "Option::is_none")]
-    available_space_gb: Option<f64>,
+    /// Always empty: exports are no longer listed (E-45). Kept because the
+    /// frontend contract still requires the field.
     archives: Vec<Archive>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    destination: Option<String>,
     operation: Option<Operation>,
 }
 
@@ -340,64 +336,41 @@ fn archive_from(path: &Path, inspected: &backup::ArchiveInspection) -> Archive {
     }
 }
 
-fn free_bytes(path: &Path) -> Result<u64, String> {
-    let path = fs::canonicalize(path)
-        .map_err(|error| format!("Silo could not inspect the selected destination: {error}"))?;
-    use std::{ffi::CString, os::unix::ffi::OsStrExt};
-    let encoded = CString::new(path.as_os_str().as_bytes())
-        .map_err(|_| "The selected export destination is invalid.".to_string())?;
-    let mut statistics: libc::statvfs = unsafe { std::mem::zeroed() };
-    // SAFETY: encoded is NUL terminated and statistics is a valid exclusive output pointer.
-    if unsafe { libc::statvfs(encoded.as_ptr(), &mut statistics) } != 0 {
-        return Err(format!(
-            "Silo could not measure the selected destination: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    (statistics.f_bavail as u64)
-        .checked_mul(statistics.f_frsize as u64)
-        .ok_or_else(|| "The selected destination reported an invalid capacity.".into())
-}
-
+/// Read on every refresh, so it runs off the main thread and reads only
+/// in-memory state: no file system access that a stalled or sleeping export
+/// volume could block (E-39).
 #[tauri::command]
-pub(crate) fn read_backup_state(
-    app: AppHandle,
+pub(crate) async fn read_backup_state(
     controller: State<'_, Arc<Controller>>,
 ) -> Result<BackupState, String> {
-    let paths = runtime::runtime_paths(&app)?;
-    let view = controller
-        .view
-        .lock()
-        .map_err(|_| "Backup state is unavailable.".to_string())?;
-    let available =
-        free_bytes(&paths.home)
-            .ok()
-            .and_then(|managed| match view.destination.as_deref() {
-                Some(destination) => free_bytes(destination)
-                    .ok()
-                    .map(|available| available.min(managed)),
-                None => Some(managed),
-            });
-    let availability_message = view.journal_error.clone().or_else(|| {
-        recovery::unresolved(&controller).unwrap_or(true).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
+    let controller = controller.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || backup_state(&controller))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn backup_state(controller: &Controller) -> Result<BackupState, String> {
+    let (journal_error, operation) = {
+        let view = controller
+            .view
+            .lock()
+            .map_err(|_| "Backup state is unavailable.".to_string())?;
+        (view.journal_error.clone(), view.operation.clone())
+    };
+    let availability_message = journal_error.or_else(|| {
+        recovery::unresolved(controller).unwrap_or(true).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
     });
     Ok(BackupState {
         snapshot_id: controller.revision.load(Ordering::Relaxed).to_string(),
-        operation_id: recovery::token(&controller)?,
+        operation_id: recovery::token(controller)?,
         availability: if availability_message.is_some() {
             "unavailable"
         } else {
             "available"
         },
         availability_message,
-        required_space_gb: None,
-        available_space_gb: available.map(|bytes| bytes as f64 / GIB as f64),
         archives: Vec::new(),
-        destination: view
-            .destination
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned()),
-        operation: view.operation.clone(),
+        operation,
     })
 }
 
@@ -538,16 +511,16 @@ pub(crate) async fn reveal_backup_archive(
     archive_path: String,
 ) -> Result<(), String> {
     require_main(&window)?;
-    let controller = controller.inner().clone();
-    let path = {
-        let view = controller
-            .view
-            .lock()
-            .map_err(|_| "Backup state is unavailable.".to_string())?;
-        authorize_reveal(view.operation.as_ref(), &archive_path)?
-    };
-    // Revealing shells out to the platform file manager, which can block.
+    let operation = controller
+        .view
+        .lock()
+        .map_err(|_| "Backup state is unavailable.".to_string())?
+        .operation
+        .clone();
+    // The file check and the platform file manager can block; neither runs
+    // under the state lock or on an async worker.
     tauri::async_runtime::spawn_blocking(move || {
+        let path = authorize_reveal(operation.as_ref(), &archive_path)?;
         tauri_plugin_opener::reveal_item_in_dir(&path)
             .map_err(|error| format!("Silo could not show the export file: {error}"))
     })
@@ -633,6 +606,22 @@ async fn start_backup_inner(
 ) -> Result<String, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
+    // Resolving the destination, reading settings and saving the journal all
+    // block on the file system; keep them off the async workers (E-39).
+    tauri::async_runtime::spawn_blocking(move || {
+        begin_export(app, controller, destination, sandboxes, checkpoint_id)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn begin_export(
+    app: AppHandle,
+    controller: Arc<Controller>,
+    destination: String,
+    sandboxes: Vec<String>,
+    checkpoint_id: Option<String>,
+) -> Result<String, String> {
     let selected_destination = controller
         .view
         .lock()
@@ -1205,12 +1194,27 @@ async fn start_restore_inner(
     source_name: Option<String>,
 ) -> Result<(), String> {
     require_main(&window)?;
+    let controller = controller.inner().clone();
+    // Saving the journal is an fsynced write; keep it off the async workers (E-39).
+    tauri::async_runtime::spawn_blocking(move || {
+        begin_import(app, controller, archive_path, new_name, source_name)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+fn begin_import(
+    app: AppHandle,
+    controller: Arc<Controller>,
+    archive_path: String,
+    new_name: String,
+    source_name: Option<String>,
+) -> Result<(), String> {
     runtime::validate_name(&new_name).map_err(|error| error.to_string())?;
     controller
         .busy
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .map_err(|_| "Another export or import is running.".to_string())?;
-    let controller = controller.inner().clone();
     let path = PathBuf::from(&archive_path);
     let cancellation = backup::Cancellation::default();
     let archive = Archive {
@@ -1512,13 +1516,17 @@ fn commit_import(
     Ok(())
 }
 
+/// Journal writes are fsynced, so cancel and dismiss run off the main thread (E-39).
 #[tauri::command]
-pub(crate) fn cancel_backup_operation(
+pub(crate) async fn cancel_backup_operation(
     window: WebviewWindow,
     controller: State<'_, Arc<Controller>>,
 ) -> Result<(), String> {
     require_main(&window)?;
-    cancel_operation(&controller)
+    let controller = controller.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || cancel_operation(&controller))
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 fn cancel_operation(controller: &Controller) -> Result<(), String> {
@@ -1538,7 +1546,7 @@ fn cancel_operation(controller: &Controller) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) fn dismiss_backup_operation(
+pub(crate) async fn dismiss_backup_operation(
     app: AppHandle,
     window: WebviewWindow,
     controller: State<'_, Arc<Controller>>,
@@ -1546,17 +1554,22 @@ pub(crate) fn dismiss_backup_operation(
     expected_operation_id: Option<String>,
 ) -> Result<bool, String> {
     require_main(&window)?;
-    // Report whether the result was actually dismissed so the caller does not
-    // hide a result the backend still holds (E-49).
-    let dismissed = dismiss_finished_operation(
-        &controller,
-        Some(&expected_operation),
-        expected_operation_id.as_deref(),
-    )?;
-    if dismissed {
-        publish(&app, &controller);
-    }
-    Ok(dismissed)
+    let controller = controller.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        // Report whether the result was actually dismissed so the caller does not
+        // hide a result the backend still holds (E-49).
+        let dismissed = dismiss_finished_operation(
+            &controller,
+            Some(&expected_operation),
+            expected_operation_id.as_deref(),
+        )?;
+        if dismissed {
+            publish(&app, &controller);
+        }
+        Ok(dismissed)
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
 fn dismiss_finished_operation(
@@ -2149,16 +2162,31 @@ mod tests {
             operation_id: None,
             availability: "available",
             availability_message: None,
-            required_space_gb: Some(2.5),
-            available_space_gb: Some(20.0),
             archives: Vec::new(),
-            destination: Some("/backups".into()),
             operation: None,
         };
         let expected: Value =
             serde_json::from_str(include_str!("../../src/test/contracts/backup-state.json"))
                 .unwrap();
         assert_eq!(serde_json::to_value(state).unwrap(), expected);
+    }
+
+    #[test]
+    fn backup_state_reads_only_memory_and_reports_a_saved_operation_error() {
+        // The export folder is on a volume that no longer exists; reading state
+        // must not touch it (a stalled mount would freeze every refresh).
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        controller.view.lock().unwrap().destination = Some(PathBuf::from("/Volumes/Unplugged/Exports"));
+        let state = serde_json::to_value(backup_state(&controller).unwrap()).unwrap();
+        assert_eq!(state["availability"], "available");
+        for unused in ["destination", "availableSpaceGB", "requiredSpaceGB"] {
+            assert!(state.get(unused).is_none(), "{unused}: {state}");
+        }
+        controller.view.lock().unwrap().journal_error = Some("Saved operation unreadable.".into());
+        let state = serde_json::to_value(backup_state(&controller).unwrap()).unwrap();
+        assert_eq!(state["availability"], "unavailable");
+        assert_eq!(state["availabilityMessage"], "Saved operation unreadable.");
     }
 
     #[test]
