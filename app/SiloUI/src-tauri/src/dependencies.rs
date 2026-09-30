@@ -688,13 +688,7 @@ fn virtualization_check() -> DependencyCheck {
                 Ok(())
             })
         } else if version < 0 {
-            DependencyCheck::failure(
-                id,
-                title,
-                CheckStatus::Unavailable,
-                format!("KVM API query failed: {}", io::Error::last_os_error()),
-                "Check KVM access on this host, then retry checks.",
-            )
+            kvm_api_query_failure(io::Error::last_os_error())
         } else {
             DependencyCheck::failure(
                 id,
@@ -705,6 +699,26 @@ fn virtualization_check() -> DependencyCheck {
             )
         };
     }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn kvm_api_query_failure(error: io::Error) -> DependencyCheck {
+    if kvm_hardware_disabled(&error) {
+        return DependencyCheck::failure(
+            "system-virtualization",
+            "Virtualization",
+            CheckStatus::Failed,
+            "KVM is installed, but hardware virtualization is unavailable.",
+            KVM_FIRMWARE_GUIDANCE,
+        );
+    }
+    DependencyCheck::failure(
+        "system-virtualization",
+        "Virtualization",
+        CheckStatus::Unavailable,
+        format!("KVM API query failed: {error}"),
+        "Check KVM access on this host, then retry checks.",
+    )
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -1291,6 +1305,18 @@ mod tests {
         for check in [missing, denied, transient] {
             assert!(!check.remediation.unwrap().contains("Reinstall"));
         }
+    }
+
+    #[test]
+    fn kvm_api_query_without_hardware_virtualization_points_to_firmware() {
+        for errno in [libc::ENODEV, libc::ENXIO] {
+            let check = kvm_api_query_failure(io::Error::from_raw_os_error(errno));
+            assert_eq!(check.status, CheckStatus::Failed, "{errno}");
+            assert!(check.remediation.unwrap().contains("firmware"));
+        }
+        let other = kvm_api_query_failure(io::Error::from_raw_os_error(libc::EIO));
+        assert_eq!(other.status, CheckStatus::Unavailable);
+        assert!(other.detail.contains("API query failed"));
     }
 
     #[test]
