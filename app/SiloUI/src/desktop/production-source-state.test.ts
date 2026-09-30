@@ -1,8 +1,9 @@
+import { act, renderHook } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { BackupState } from "@/features/application/model/backup-source"
-import { createProductionSource, parseApplicationSource, type ProductionBridge } from "./production-source"
+import { createProductionSource, parseApplicationSource, useProductionSource, type ProductionBridge } from "./production-source"
 
 // State-handling behaviour of the production source: request deduplication,
 // refresh ordering, polling and merges of partial native responses.
@@ -738,6 +739,23 @@ describe("native state validation", () => {
   it("rejects local state whose shown fields are malformed (H-17)", () => {
     expect(() => parseApplicationSource({ ...structuredClone(source), runtimeRepair: { status: "needed" } })).toThrow()
     expect(() => parseApplicationSource({ ...structuredClone(source), workspaces: [{ ...structuredClone(source.workspaces[0]), machine: { id: "x", kind: "vm", name: "dev" } }] })).toThrow()
+  })
+})
+
+describe("React binding", () => {
+  it("returns the same value across renders until the snapshot changes (H-19)", async () => {
+    const mock = bridge()
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const { result, rerender } = renderHook(() => useProductionSource(store))
+      const first = result.current
+      rerender()
+      expect(result.current).toBe(first)
+      await act(() => store.refresh())
+      expect(result.current).not.toBe(first)
+      expect(result.current.backup.actions).toBe(store.backupActions)
+    } finally { store.dispose() }
   })
 })
 

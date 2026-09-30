@@ -2,7 +2,7 @@ import { workspaceStorageStateSchema } from "@/features/application/model/worksp
 import { isUnsupportedRemote, logPageSchema } from "@/features/application/model/logs"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
-import { useSyncExternalStore } from "react"
+import { useMemo, useSyncExternalStore } from "react"
 import { z } from "zod"
 import { showOperationFailure } from "@/lib/operation-toast"
 
@@ -1745,10 +1745,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
 export type ProductionSource = ReturnType<typeof createProductionSource>
 
+/** The current snapshot with its backup controller; the same object until the snapshot changes. */
 export function useProductionSource(source: ProductionSource) {
   const snapshot = useSyncExternalStore(source.subscribe, source.getSnapshot)
-  return {
+  return useMemo(() => ({
     ...snapshot,
     backup: { state: snapshot.backup, actions: source.backupActions } satisfies BackupController,
-  }
+  }), [snapshot, source])
 }
