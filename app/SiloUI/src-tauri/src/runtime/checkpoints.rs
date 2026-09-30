@@ -598,9 +598,12 @@ fn capture_with(
     let result = runner.run(paths, &args, Duration::from_secs(900));
     match result {
         Ok(_) => {
-            if let Err(failure) =
+            // The capture exists once `create` returns: a cancel arriving now must not kill
+            // its verification and report a checkpoint that exists as failed (E-11).
+            let verified = super::operation_gate::uncancellable(|| {
                 snapshot_ready(runner, paths, &snapshot_group, &checkpoint_id, scope)
-            {
+            });
+            if let Err(failure) = verified {
                 // An unverified member is not kept as a checkpoint (E-03).
                 if discard_failed_capture(runner, paths, id, (snapshot_group.clone(), checkpoint_id.clone())) {
                     record.inflight_checkpoint = None;
@@ -619,6 +622,15 @@ fn capture_with(
             save(paths, id, &record)
         }
         Err(failure) => {
+            // A cancelled full capture is killed while MicroSandbox holds the VM paused for
+            // its memory copy. The VM was running when capture began, so resume it (E-11).
+            if scope == "full" && matches!(failure, RuntimeError::Cancelled { .. }) {
+                super::operation_gate::uncancellable(|| {
+                    if inspect_workspace(runner, paths, machine.name()).is_ok_and(|vm| vm.status == "Paused") {
+                        let _ = runner.run(paths, &["resume".into(), machine.name().into()], MUTATION_TIMEOUT);
+                    }
+                });
+            }
             // A failed or cancelled capture may still have published its member. Remove it
             // unless something builds on it; otherwise the in-flight entry keeps it
             // reachable and the next capture reconciles it (E-03, E-10).
@@ -4162,5 +4174,90 @@ mod tests {
             .with("silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9", "silo-backup-0-1-2", "snap_i", None);
         assert_eq!(sweep_orphans(&store, &paths).unwrap(), 2);
         assert_eq!(store.names(), [A, "user-made"]);
+    }
+
+    /// Models the process runner's cancel: any command started while the running operation
+    /// was asked to cancel (and not masked) is killed.
+    struct CancelRunner {
+        gate: &'static super::super::operation_gate::OperationGate,
+        kill_create: bool,
+        state: Mutex<&'static str>,
+        created: Mutex<Option<String>>,
+        calls: Mutex<Vec<Vec<String>>>,
+    }
+    impl RuntimeRunner for CancelRunner {
+        fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            if super::super::operation_gate::cancel_requested() {
+                return Err(RuntimeError::Cancelled { operation: args[0].clone() });
+            }
+            let ok = |stdout: String| Ok(CommandOutput { stdout, stderr: String::new() });
+            match (args[0].as_str(), args.get(1).map(String::as_str)) {
+                ("inspect", _) => ok(serde_json::json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{
+                    "labels":{"silo.managed":"true","silo.machine-id":ID},
+                    "mounts":[{"guest":"/workspace","type":"Owned","storage":{"kind":"disk","capacity_mib":1024}}]
+                }}).to_string()),
+                ("snapshot", Some("create")) => {
+                    let entry = self.gate.snapshot().running[0].id;
+                    self.gate.cancel(entry).unwrap();
+                    if self.kill_create {
+                        *self.state.lock().unwrap() = "Paused";
+                        return Err(RuntimeError::Cancelled { operation: "snapshot create".into() });
+                    }
+                    *self.created.lock().unwrap() = Some(args[2].clone());
+                    ok(String::new())
+                }
+                ("snapshot", Some("list")) => {
+                    let name = self.created.lock().unwrap().clone();
+                    ok(serde_json::Value::Array(name.into_iter().map(|name| serde_json::json!({
+                        "snapshot_id": "snap_1", "group": "dev", "name": name, "scope": "full", "availability": "ready"
+                    })).collect()).to_string())
+                }
+                ("resume", _) => {
+                    *self.state.lock().unwrap() = "Running";
+                    ok(String::new())
+                }
+                ("list", _) => ok(r#"[{"name":"dev"}]"#.into()),
+                _ => ok(String::new()),
+            }
+        }
+    }
+
+    fn cancel_runner(kill_create: bool) -> CancelRunner {
+        let gate: &'static super::super::operation_gate::OperationGate =
+            Box::leak(Box::new(super::super::operation_gate::OperationGate::new()));
+        CancelRunner { gate, kill_create, state: Mutex::new("Running"), created: Mutex::new(None), calls: Mutex::new(Vec::new()) }
+    }
+
+    #[test]
+    fn a_cancel_after_the_capture_returned_still_records_the_checkpoint() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let runner = cancel_runner(false);
+        let guard = runner.gate.kind(super::super::operation_gate::OperationKind::CheckpointCapture).vm(ID, "dev", "Creating checkpoint").unwrap();
+        guard.allow_cancel();
+        capture_with(&runner, &paths, ID, "Late cancel", "manual").unwrap();
+        drop(guard);
+        let record = load(&paths, ID).unwrap();
+        assert_eq!(record.checkpoints[0].name, "Late cancel");
+        assert!(record.checkpoint_operation.is_none());
+        assert!(record.inflight_checkpoint.is_none());
+    }
+
+    #[test]
+    fn a_cancelled_full_capture_resumes_the_vm_it_left_paused() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = restore_fixture(&directory, None);
+        let runner = cancel_runner(true);
+        let guard = runner.gate.kind(super::super::operation_gate::OperationKind::CheckpointCapture).vm(ID, "dev", "Creating checkpoint").unwrap();
+        guard.allow_cancel();
+        let failure = capture_with(&runner, &paths, ID, "Cancelled", "manual").unwrap_err();
+        drop(guard);
+        assert!(matches!(failure, RuntimeError::Cancelled { .. }));
+        assert_eq!(*runner.state.lock().unwrap(), "Running");
+        assert!(runner.calls.lock().unwrap().iter().any(|call| call[0] == "resume"));
+        let record = load(&paths, ID).unwrap();
+        assert_eq!(record.checkpoint_operation.unwrap().status, "failed");
+        assert!(record.inflight_checkpoint.is_none(), "nothing was published, so nothing is left to reconcile");
     }
 }
