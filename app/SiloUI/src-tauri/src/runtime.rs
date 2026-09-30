@@ -6562,14 +6562,18 @@ esac
         fs::write(&paths.executable, r#"#!/bin/sh
 printf '%s\n' "$1" >> "$MSB_HOME/commands"
 case "$1" in
-  inspect) exit 9 ;;
-  start) cat >/dev/null ;;
+  inspect)
+    if [ -f "$MSB_HOME/started" ]; then exit 9; fi
+    printf '{"name":"dev","status":"Stopped","config":{"labels":{"silo.managed":"true"}}}\n' ;;
+  start) cat >/dev/null; touch "$MSB_HOME/started" ;;
 esac
 "#).unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         let output = run_msb_process(&paths, &["start".into(), "dev".into()], Duration::from_secs(5), &|_| {});
-        assert!(output.is_ok());
-        assert_eq!(fs::read_to_string(paths.home.join("commands")).unwrap(), "start\ninspect\n");
+        assert!(output.is_ok(), "{output:?}");
+        let commands = fs::read_to_string(paths.home.join("commands")).unwrap();
+        assert!(commands.ends_with("start\ninspect\n"), "{commands}");
+        assert!(!commands.lines().any(|command| command == "stop"));
         let row = vm_workspace(&paths, vm(), &serde_json::from_value(inspect(&paths, "Running")).unwrap());
         assert!(matches!(row.state, WorkspaceState::Running));
         assert!(row.attention.unwrap().message.contains("sandbox started"));
