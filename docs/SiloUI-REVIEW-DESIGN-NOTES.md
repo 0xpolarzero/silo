@@ -573,6 +573,13 @@ the pinned source (`microsandbox-60d4dc8…`), not through a summary:
   sandbox's largest declared disk.
 - Filing the missing caps upstream (option 4) needs an owner with
   MicroSandbox access; it is not done.
+- State exports stop at 128 `silo-backup-*` captures per source group. This
+  bounds hidden export members without violating the owner's no-automatic-
+  deletion decision. The pinned `lineage.rs` commits each successful capture
+  as the next capture's parent, so deleting a completed export capture can
+  break later checkpoints. Existing checkpoint exports remain available at
+  the cap. The cap is conservative product policy; changing it needs no
+  archive migration.
 
 ---
 

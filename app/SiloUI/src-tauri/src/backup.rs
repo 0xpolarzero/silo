@@ -32,6 +32,9 @@ const MIN_TRANSFER_BYTES_PER_SECOND: u64 = 16 * 1024 * 1024;
 /// layers, image blobs and 32 MiB memory packs; a quarter million entries is
 /// far beyond any real sandbox chain.
 const MAX_SNAPSHOT_ENTRIES: u64 = 256 * 1024;
+/// Captures advance the source lineage and cannot be safely deleted automatically.
+/// Bound hidden state-export members while allowing reuse of an existing checkpoint.
+const MAX_STATE_EXPORT_CAPTURES: usize = 128;
 /// Free space left untouched on a volume an export or import writes to.
 const FREE_SPACE_RESERVE: u64 = 1024 * 1024 * 1024;
 const DEFAULT_MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
@@ -625,6 +628,17 @@ impl<R: MsbRunner> BackupService<R> {
                     validate_export_configs(&source.name, &runtime_config, &machine_config)?;
                     snapshot
                 } else {
+                    let entries = self.snapshot_index("Checking export capture limit", cancellation)?;
+                    let captures = entries.iter().filter(|entry| {
+                        entry["group"] == snapshot_group
+                            && entry["name"].as_str().is_some_and(|name| name.starts_with("silo-backup-"))
+                    }).count();
+                    if captures >= MAX_STATE_EXPORT_CAPTURES {
+                        return Err(BackupError::InvalidRequest(format!(
+                            "{} already has {} state-export captures. Export an existing checkpoint instead. Captures are kept until the sandbox is deleted because later checkpoints depend on them.",
+                            source.name, MAX_STATE_EXPORT_CAPTURES
+                        )));
+                    }
                     let snapshot_name = format!("silo-backup-{index}-{}", unique_suffix());
                     self.require_success_with(
                         "Capturing VM disk",
@@ -4175,6 +4189,39 @@ mod tests {
                 .first()
                 .is_some_and(|arg| arg == "stop" || arg == "start")
         }));
+    }
+
+    #[test]
+    fn state_export_refuses_to_grow_a_full_backup_lineage() {
+        let temp = tempfile::tempdir().unwrap();
+        let runner = FakeRunner::default();
+        for index in 0..128 {
+            runner.existing_members.lock().unwrap().push((
+                "dev".into(), format!("silo-backup-0-{index}-1"),
+            ));
+        }
+        // Other groups do not count toward this sandbox's cap.
+        runner.existing_members.lock().unwrap().push((
+            "other".into(), "silo-backup-0-999-1".into(),
+        ));
+        let service = service(&temp, runner);
+        let error = create_one(&service, temp.path().join("full.silo-backup"), false)
+            .unwrap_err();
+        assert!(error.to_string().contains("128 state-export captures"), "{error}");
+        assert!(error.to_string().contains("existing checkpoint"), "{error}");
+        let calls = service.runner.calls.lock().unwrap();
+        assert!(!calls.iter().any(|call| call.get(1).is_some_and(|verb| verb == "create")));
+        assert!(!calls.iter().any(|call| call.get(1).is_some_and(|verb| verb == "remove")));
+        drop(calls);
+        // Reusing an existing capture remains possible at the limit.
+        service.create_backup(BackupRequest {
+            destination: temp.path().join("reuse.silo-backup"),
+            sources: vec![BackupSource {
+                name: "dev".into(), snapshot_group: "dev".into(), was_running: false,
+                runtime_config: managed_config("dev"), machine_config: machine_config("dev"),
+                existing_member: Some("silo-backup-0-0-1".into()),
+            }],
+        }, &Cancellation::default()).unwrap();
     }
 
     #[test]
