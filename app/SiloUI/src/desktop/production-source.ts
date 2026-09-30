@@ -247,7 +247,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let operationQueueDirty = false
   let disposed = false
   let activeRefreshes = 0
+  /** Bumped whenever newer state is published outside a read: reads started earlier are dropped. */
   let refreshSequence = 0
+  let readSequence = 0
+  let appliedApplicationRead = 0
+  let appliedBackupRead = 0
   let refreshRepositoriesOnReturn = false
   let githubMutationSequence = 0
   let githubMutationPending = false
@@ -376,6 +380,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   async function changeSecret(command: string, arguments_: Record<string, unknown>) {
     const secrets = z.array(secretShape).parse(await native.invoke(command, arguments_))
+    ++refreshSequence
     if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
     void refresh()
   }
@@ -667,14 +672,18 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     finally { activeRefreshes-- }
   }
 
+  // Reads may overlap. A read's result is dropped when a mutation published newer
+  // state after it started, or when a later read's result is already shown. An
+  // UPDATING reply carries no state, so it never displaces an earlier read's result.
   async function readSnapshots(refreshRepositories: boolean) {
-    const sequence = ++refreshSequence
+    const epoch = refreshSequence
+    const sequence = ++readSequence
     const remotePassesAtStart = remotePasses
     const [applicationResult, backupResult] = await Promise.allSettled([
       refreshRepositories ? native.invoke<unknown>("read_application_state", { refreshRepositories: true }) : native.invoke<unknown>("read_application_state"),
       native.invoke<unknown>("read_backup_state"),
     ])
-    if (disposed || sequence !== refreshSequence) return
+    if (disposed || epoch !== refreshSequence) return
     let source = snapshot.source
     let backup = snapshot.backup
     let error: string | null = null
@@ -698,7 +707,14 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       }
       catch (cause) { backup = unreadableBackup(`Silo returned invalid backup state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
     } else backup = unreadableBackup(`Silo could not read backup state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
-    if (disposed || sequence !== refreshSequence) return
+    if (disposed || epoch !== refreshSequence) return
+    const applicationCurrent = sequence > appliedApplicationRead
+    const backupCurrent = sequence > appliedBackupRead
+    if (!applicationCurrent && !backupCurrent) return
+    if (!applicationCurrent) { source = snapshot.source; error = snapshot.error; configurationUpdating = false }
+    else if (!configurationUpdating) appliedApplicationRead = sequence
+    if (backupCurrent) appliedBackupRead = sequence
+    else backup = snapshot.backup
     // Only a known older policy revision is stale. The runtime's fallback for a failed
     // GitHub read carries no revision and must replace the last verified state.
     const githubRevision = source?.github.policyRevision
@@ -843,6 +859,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           void refreshComputers()
           return
         }
+        ++refreshSequence
         publish({ ...snapshot, source, error: null })
         void refresh()
       })
@@ -950,6 +967,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           ? native.invoke("retry_machine_configuration", { requestId, ...(resolved.workspace ? { retryWorkspace: resolved.workspace } : {}) })
           : native.invoke("change_machine_configuration", { change: resolved.changes.length === 1 ? resolved.changes[0] : { kind: "batch", changes: resolved.changes }, requestId })))
         activeConfiguration = null
+        ++refreshSequence
         publish({ ...snapshot, source: result, error: null })
         return result
       } catch (cause) {
@@ -1185,6 +1203,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
     try {
       const result = await native.invoke<unknown>(command, { workspaceId: localWorkspace!.machine.id, ...arguments_ })
+      ++refreshSequence
       publish({ ...snapshot, source: parseMutationSource(result), error: null })
       void refresh()
     } catch (cause) {
@@ -1476,6 +1495,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     retryStart(name) {
       void native.invoke<unknown>("retry_workspace_start", { name }).then((result) => {
         const source = parseMutationSource(result)
+        ++refreshSequence
         publish({ ...snapshot, source, error: null })
         return refresh()
       }).catch((cause) => setWorkspaceFailure("start", name, cause))

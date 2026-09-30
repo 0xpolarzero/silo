@@ -483,6 +483,75 @@ describe("mutation responses", () => {
   })
 })
 
+describe("overlapping state reads", () => {
+  const withState = (state: "running" | "stopped", detail: string) => ({ ...structuredClone(source), workspaces: source.workspaces.map((workspace, index) => index === 0 ? { ...workspace, state, stateDetail: detail } : workspace) })
+
+  it("shows an earlier read's result when a later read only reports UPDATING (H-37)", async () => {
+    const earlier = deferred<unknown>()
+    let reads = 0
+    const mock = bridge(command => {
+      if (command !== "read_application_state") return undefined
+      reads++
+      if (reads === 2) return earlier.promise
+      if (reads === 3) throw new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+      return withState("running", "Running")
+    })
+    const store = createProductionSource(mock.native)
+    const dev = () => store.getSnapshot().source?.workspaces[0]
+    try {
+      await store.initialize()
+      const first = store.refresh()
+      await vi.waitFor(() => expect(reads).toBe(2))
+      await store.refresh()
+      earlier.resolve(withState("stopped", "Stopped just now"))
+      await first
+      expect(dev()).toMatchObject({ state: "stopped", stateDetail: "Stopped just now" })
+    } finally { store.dispose() }
+  })
+
+  it("never lets an older read replace a newer read's result (H-37)", async () => {
+    const earlier = deferred<unknown>()
+    let reads = 0
+    const mock = bridge(command => {
+      if (command !== "read_application_state") return undefined
+      reads++
+      if (reads === 2) return earlier.promise
+      return withState(reads === 3 ? "stopped" : "running", reads === 3 ? "Newest" : "Initial")
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const first = store.refresh()
+      await vi.waitFor(() => expect(reads).toBe(2))
+      await store.refresh()
+      expect(store.getSnapshot().source?.workspaces[0].stateDetail).toBe("Newest")
+      earlier.resolve(withState("running", "Older"))
+      await first
+      expect(store.getSnapshot().source?.workspaces[0].stateDetail).toBe("Newest")
+    } finally { store.dispose() }
+  })
+
+  it("drops a read that started before an action published its result (H-37)", async () => {
+    const earlier = deferred<unknown>()
+    let reads = 0
+    const mock = bridge(command => {
+      if (command === "read_application_state") { reads++; return reads === 2 ? earlier.promise : reads === 3 ? new Promise(() => {}) : withState("running", "Running") }
+      if (command === "workspace_action") return withState("stopped", "Stopped by action")
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const before = store.refresh()
+      await vi.waitFor(() => expect(reads).toBe(2))
+      store.applicationActions.stopWorkspace("dev")
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces[0].stateDetail).toBe("Stopped by action"))
+      earlier.resolve(withState("running", "Before the action"))
+      await before
+      expect(store.getSnapshot().source?.workspaces[0].stateDetail).toBe("Stopped by action")
+    } finally { store.dispose() }
+  })
+})
+
 describe("GitHub state from full reads", () => {
   it("shows the unavailable state a failed GitHub read reports without a policy revision (H-20)", async () => {
     let failed = false
