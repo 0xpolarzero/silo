@@ -489,6 +489,35 @@ fetch; confirm line by line before relying on it):
   "only import files you created"?
 - Should the image be re-pulled by digest instead of trusting `--with-image`?
 
+**Implementation findings (2026-09-30, WP-E engine).** Read line by line in
+the pinned source (`microsandbox-60d4dc8…`), not through a summary:
+
+- `validate_archive_entry_type` (`sdk/rust/lib/backend/local/snapshot/archive.rs`)
+  allows only regular, contiguous, GNU sparse and directory entries; GNU
+  long names are handled separately and PAX headers are rejected. The table
+  above is therefore confirmed. There is still no size or entry-count limit.
+- `msb snapshot inspect` prints key/value text (image, scope, root disk,
+  parent, labels) without owned volumes or extensions, so it cannot be
+  compared with a manifest. The comparison reads the loaded member's
+  `snapshot.json` instead (the file `inspect` reads), found through
+  `snapshot list --format json` and confined to the native store.
+- That descriptor (`packages/microsandbox-types/rust/lib/snapshot/manifest.rs`,
+  `deny_unknown_fields`) is the full restorable configuration of a snapshot:
+  image reference and digest, root layout, owned volumes, default user and,
+  for a full checkpoint, CPU/memory geometry. It has no env, patch, init,
+  rlimit or host-mount fields, and `msb restore` binds host resources only
+  through explicit flags, which Silo never passes. Passing every setting to
+  `msb restore` (option 3) is therefore unnecessary.
+- `backup.rs` pre-scans the selected payload with the `tar` and `zstd`
+  crates (both already in `Cargo.lock`) in the same read that hashes and
+  extracts it: allowed entry types as above, relative normal UTF-8 paths, no
+  PAX or long-link headers, at most 262 144 entries, a decompressed-byte
+  budget equal to the runtime store's free space less 1 GiB (and less the
+  staged copy on a shared volume), and sparse entries no larger than the
+  sandbox's largest declared disk.
+- Filing the missing caps upstream (option 4) needs an owner with
+  MicroSandbox access; it is not done.
+
 ---
 
 ## B-05: GitHub permission allowlists for sandbox and host-push tokens
