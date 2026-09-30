@@ -213,6 +213,30 @@ fn relay(mut from: impl Stream, mut to: impl Stream, stop: Arc<AtomicBool>, ende
 }
 #[allow(clippy::too_many_arguments)]
 fn serve(
+    client: TcpStream,
+    port: u16,
+    upstream: &Path,
+    guest_port: u16,
+    cookie_name: &str,
+    token: &str,
+    authorization: &str,
+    stop: Arc<AtomicBool>,
+) -> std::io::Result<()> {
+    serve_with_header_progress(
+        client,
+        port,
+        upstream,
+        guest_port,
+        cookie_name,
+        token,
+        authorization,
+        stop,
+        |_, _| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serve_with_header_progress(
     mut client: TcpStream,
     port: u16,
     upstream: &Path,
@@ -221,6 +245,7 @@ fn serve(
     token: &str,
     authorization: &str,
     stop: Arc<AtomicBool>,
+    mut header_progress: impl FnMut(&TcpStream, usize),
 ) -> std::io::Result<()> {
     // On macOS, accepted sockets inherit the listener's O_NONBLOCK setting.
     // This handler uses timed blocking reads, so clear that flag explicitly.
@@ -234,6 +259,7 @@ fn serve(
         if bytes.len() >= 16 * 1024 || Instant::now() >= deadline || stop.load(Ordering::Acquire) {
             return Ok(());
         }
+        header_progress(&client, bytes.len());
         match client.read(&mut byte) {
             Ok(0) => return Ok(()),
             Ok(_) => bytes.push(byte[0]),
@@ -437,21 +463,11 @@ mod tests {
 
     #[test]
     fn accepted_nonblocking_client_waits_for_fragmented_request_headers() {
+        use std::{os::fd::AsRawFd, sync::mpsc};
+
         let (_directory, upstream, socket) = guest();
-        upstream.set_nonblocking(true).unwrap();
         let upstream_worker = thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let (mut stream, _) = loop {
-                match upstream.accept() {
-                    Ok(connection) => break connection,
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        assert!(Instant::now() < deadline, "proxy did not connect to stub upstream");
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => panic!("upstream accept failed: {error}"),
-                }
-            };
-            stream.set_nonblocking(false).unwrap();
+            let (mut stream, _) = upstream.accept().unwrap();
             stream
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
@@ -470,23 +486,15 @@ mod tests {
         });
 
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-        listener.set_nonblocking(true).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let client = TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let deadline = Instant::now() + Duration::from_secs(3);
-        let accepted = loop {
-            match listener.accept() {
-                Ok((stream, _)) => break stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "listener did not accept client");
-                    thread::sleep(Duration::from_millis(5));
-                }
-                Err(error) => panic!("accept failed: {error}"),
-            }
-        };
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        // Force the inherited state on every platform, even where accept clears it.
         accepted.set_nonblocking(true).unwrap();
+        let fragment = b"GET / HTTP/1.1\r\nHost: 127.0.0.1:";
+        let (progress_tx, progress_rx) = mpsc::sync_channel(0);
         let proxy_worker = thread::spawn(move || {
-            serve(
+            serve_with_header_progress(
                 accepted,
                 port,
                 &socket,
@@ -495,19 +503,33 @@ mod tests {
                 "secret",
                 "c2lsbzpwYXNzd29yZA==",
                 Arc::new(AtomicBool::new(false)),
+                |stream, consumed| {
+                    if consumed == 0 {
+                        // Inspect the descriptor before sending any request bytes.
+                        // This fails deterministically if serve stops clearing O_NONBLOCK.
+                        let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFL) };
+                        assert_ne!(flags, -1);
+                        assert_eq!(flags & libc::O_NONBLOCK, 0);
+                        progress_tx.send(consumed).unwrap();
+                    } else if consumed == fragment.len() {
+                        progress_tx.send(consumed).unwrap();
+                    }
+                },
             )
             .unwrap();
         });
 
-        let mut client = client;
         client
             .set_read_timeout(Some(Duration::from_secs(3)))
             .unwrap();
-        thread::sleep(Duration::from_millis(100));
-        client
-            .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1:")
-            .unwrap();
-        thread::sleep(Duration::from_millis(20));
+        assert_eq!(progress_rx.recv_timeout(Duration::from_secs(3)).unwrap(), 0);
+        client.write_all(fragment).unwrap();
+        // The proxy has consumed the entire incomplete fragment before we
+        // release the remainder, so scheduling cannot collapse the two reads.
+        assert_eq!(
+            progress_rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+            fragment.len()
+        );
         write!(client, "{port}\r\nCookie: session=secret\r\n\r\n").unwrap();
         let mut response = String::new();
         client.read_to_string(&mut response).unwrap();

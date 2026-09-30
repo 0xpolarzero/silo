@@ -99,7 +99,13 @@ fn wake_worker() {
     WORKER_WAKE.notify_all();
 }
 fn worker_sleep(timeout: Duration) {
+    worker_sleep_with(timeout, || {});
+}
+
+// The hook observes the locked sleep predicate immediately before the atomic wait.
+fn worker_sleep_with(timeout: Duration, before_wait: impl FnOnce()) {
     let woken = WORKER_WOKEN.lock().unwrap_or_else(PoisonError::into_inner);
+    before_wait();
     let (mut woken, _) = WORKER_WAKE
         .wait_timeout_while(woken, timeout, |woken| !*woken)
         .unwrap_or_else(PoisonError::into_inner);
@@ -187,11 +193,19 @@ struct IntentTicket<'a> {
 }
 impl<'a> IntentTicket<'a> {
     // The queue position is plain data that stays valid after a panic elsewhere (K-24).
-    fn wait(mut self) -> Result<IntentTurn<'a>, String> {
+    fn wait(self) -> Result<IntentTurn<'a>, String> {
+        self.wait_with(|| {})
+    }
+
+    fn wait_with(mut self, before_wait: impl FnOnce()) -> Result<IntentTurn<'a>, String> {
+        let mut before_wait = Some(before_wait);
         let queue = self.queue;
         let ticket = self.number.take().ok_or("GitHub settings queue is unavailable.")?;
         let mut turn = queue.turn.lock().unwrap_or_else(PoisonError::into_inner);
         while turn.next != ticket {
+            if let Some(before_wait) = before_wait.take() {
+                before_wait();
+            }
             turn = queue.ready.wait(turn).unwrap_or_else(PoisonError::into_inner);
         }
         Ok(IntentTurn(queue))
@@ -2955,7 +2969,7 @@ mod tests {
                     Ok(Some(1))
                 })
             });
-            reading.recv_timeout(Duration::from_secs(1)).unwrap();
+            reading.recv_timeout(Duration::from_secs(5)).unwrap();
             // A read waiting on the store (or its permission prompt) does not block peek.
             assert_eq!(cache.peek(), None);
             release.send(()).unwrap();
@@ -3144,12 +3158,14 @@ mod tests {
         // Other tests schedule work without a worker; start from a consumed wake-up.
         *WORKER_WOKEN.lock().unwrap() = false;
         let (done, finished) = std::sync::mpsc::channel();
+        let (waiting, ready) = std::sync::mpsc::sync_channel(0);
         let sleeper = std::thread::spawn(move || {
             let started = Instant::now();
-            worker_sleep(Duration::from_secs(30));
+            worker_sleep_with(Duration::from_secs(30), || waiting.send(()).unwrap());
             done.send(started.elapsed()).unwrap();
         });
-        std::thread::sleep(Duration::from_millis(50));
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        // schedule must acquire the predicate lock after the worker enters its wait.
         schedule(Duration::ZERO);
         assert!(finished.recv_timeout(Duration::from_secs(5)).unwrap() < Duration::from_secs(5));
         sleeper.join().unwrap();
@@ -3227,15 +3243,20 @@ mod tests {
         let second = queue.ticket();
         let first_turn = first.wait().unwrap();
         let (sent, received) = std::sync::mpsc::channel();
+        let (waiting, ready) = std::sync::mpsc::sync_channel(0);
         std::thread::scope(|scope| {
             scope.spawn(move || {
-                let _turn = second.wait().unwrap();
+                let _turn = second.wait_with(|| waiting.send(()).unwrap()).unwrap();
                 sent.send("second applied").unwrap();
             });
-            assert!(received.try_recv().is_err());
+            let waiting = ready.recv_timeout(Duration::from_secs(5));
+            let premature = received.try_recv();
+            // Release before asserting, so a failed barrier cannot strand the scoped worker.
             drop(first_turn);
+            waiting.unwrap();
+            assert!(matches!(premature, Err(std::sync::mpsc::TryRecvError::Empty)));
             assert_eq!(
-                received.recv_timeout(Duration::from_secs(1)).unwrap(),
+                received.recv_timeout(Duration::from_secs(5)).unwrap(),
                 "second applied"
             );
         });
@@ -3390,14 +3411,19 @@ mod tests {
         drop(second);
         let first_turn = first.wait().unwrap();
         let (sent, received) = std::sync::mpsc::channel();
+        let (waiting, ready) = std::sync::mpsc::sync_channel(0);
         std::thread::scope(|scope| {
             scope.spawn(move || {
-                let _turn = third.wait().unwrap();
+                let _turn = third.wait_with(|| waiting.send(()).unwrap()).unwrap();
                 sent.send("third applied").unwrap();
             });
-            assert!(received.try_recv().is_err());
+            let waiting = ready.recv_timeout(Duration::from_secs(5));
+            let premature = received.try_recv();
+            // Release before asserting, so a failed barrier cannot strand the scoped worker.
             drop(first_turn);
-            assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), "third applied");
+            waiting.unwrap();
+            assert!(matches!(premature, Err(std::sync::mpsc::TryRecvError::Empty)));
+            assert_eq!(received.recv_timeout(Duration::from_secs(5)).unwrap(), "third applied");
         });
         // Given up exactly at its turn.
         drop(fourth);
@@ -3408,7 +3434,7 @@ mod tests {
                 let _turn = fifth.wait().unwrap();
                 sent.send("fifth applied").unwrap();
             });
-            assert_eq!(received.recv_timeout(Duration::from_secs(1)).unwrap(), "fifth applied");
+            assert_eq!(received.recv_timeout(Duration::from_secs(5)).unwrap(), "fifth applied");
         });
     }
     #[test]
@@ -3882,9 +3908,10 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
+        let (reading, ready) = std::sync::mpsc::sync_channel(0);
         let browser = std::thread::spawn(move || {
             let mut stream = TcpStream::connect(address).unwrap();
-            std::thread::sleep(Duration::from_millis(200));
+            ready.recv_timeout(Duration::from_secs(5)).unwrap();
             stream
                 .write_all(b"GET /github/callback?state=right&code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
                 .unwrap();
@@ -3901,7 +3928,19 @@ mod tests {
         };
         // Accepted sockets can inherit the listener's non-blocking mode (macOS); an
         // early read must wait for the request instead of losing the single-use code.
-        let mut stream = callback_stream(stream).unwrap();
+        struct StartingRead {
+            stream: TcpStream,
+            reading: Option<std::sync::mpsc::SyncSender<()>>,
+        }
+        impl Read for StartingRead {
+            fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+                if let Some(reading) = self.reading.take() {
+                    reading.send(()).unwrap();
+                }
+                self.stream.read(bytes)
+            }
+        }
+        let mut stream = StartingRead { stream: callback_stream(stream).unwrap(), reading: Some(reading) };
         let request = read_callback_request(&mut stream).expect("the early read lost the callback");
         assert_eq!(callback(&request, "right").unwrap(), Some("x".into()));
         browser.join().unwrap();
@@ -3978,7 +4017,7 @@ mod tests {
                     },
                 )
             });
-            reading.recv_timeout(Duration::from_secs(1)).unwrap();
+            reading.recv_timeout(Duration::from_secs(5)).unwrap();
             // A pending OS permission prompt cannot hold the snapshot state lock.
             let state = observation.try_lock().unwrap().clone();
             let snapshot = observed_snapshot(Document::default(), state, None);
@@ -3996,7 +4035,7 @@ mod tests {
             }
             assert!(update.try_recv().is_err());
             release.send(()).unwrap();
-            update.recv_timeout(Duration::from_secs(1)).unwrap();
+            update.recv_timeout(Duration::from_secs(5)).unwrap();
             assert!(reader.join().unwrap().is_err());
             let snapshot = observed_snapshot(
                 Document::default(),

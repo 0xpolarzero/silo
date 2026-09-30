@@ -2698,12 +2698,12 @@ mod ssh_authorization_tests {
             let request = json!({"version":VERSION,"hostId":config.host_id,"method":method});
             validate_authorization(&config, &request).unwrap();
             config.enabled = false;
-            assert!(validate_authorization(&config, &request).is_err());
+            assert_eq!(validate_authorization(&config, &request).unwrap_err(), "Remote management is disabled on this computer.");
             config.enabled = true;
             let mut changed = request.clone(); changed["hostId"] = json!(uuid::Uuid::new_v4().to_string());
-            assert!(validate_authorization(&config, &changed).is_err());
+            assert_eq!(validate_authorization(&config, &changed).unwrap_err(), "This address now belongs to a different Silo computer. Reconnect it explicitly.");
             changed = request; changed["version"] = json!(VERSION + 1);
-            assert!(validate_authorization(&config, &changed).is_err());
+            assert_eq!(validate_authorization(&config, &changed).unwrap_err(), "Silo versions are incompatible. Update Silo on both computers.");
         }
     }
 }

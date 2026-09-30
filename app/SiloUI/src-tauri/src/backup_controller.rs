@@ -2459,26 +2459,44 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let guard = runtime::OPERATIONS.computer("Contended work").unwrap();
         let (sender, receiver) = std::sync::mpsc::channel();
+        let (queued, waiting) = std::sync::mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let result = mutation_guard(&backup::Cancellation::default(), runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {}).map(|_| ());
+            let result = mutation_guard(
+                &backup::Cancellation::default(),
+                runtime::operation_gate::OperationKind::Export,
+                "Exporting sandbox",
+                true,
+                &|| queued.send(()).unwrap(),
+            ).map(drop);
             sender.send(result).unwrap();
         });
-        assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert!(runtime::OPERATIONS.snapshot().waiting.iter().any(|entry| entry.label == "Exporting sandbox"));
+        assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+
         let cancellation = backup::Cancellation::default();
+        let worker_cancellation = cancellation.clone();
+        let (queued, waiting) = std::sync::mpsc::channel();
+        let (cancelled, result) = std::sync::mpsc::channel();
+        let cancelled_worker = std::thread::spawn(move || {
+            let result = mutation_guard(
+                &worker_cancellation,
+                runtime::operation_gate::OperationKind::Export,
+                "Cancelled export",
+                true,
+                &|| queued.send(()).unwrap(),
+            ).map(drop);
+            cancelled.send(result).unwrap();
+        });
+        waiting.recv_timeout(Duration::from_secs(5)).unwrap();
         cancellation.cancel();
-        assert!(
-            mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true, &|| {})
-                .err()
-                .expect("a cancelled wait must not acquire the gate")
-                .cancelled
-        );
+        assert!(result.recv_timeout(Duration::from_secs(5)).unwrap().unwrap_err().cancelled);
+        cancelled_worker.join().unwrap();
+        assert!(!runtime::OPERATIONS.snapshot().waiting.iter().any(|entry| entry.label == "Cancelled export"));
+        // The cancelled waiter must finish while the contending operation still holds its turn.
+        assert!(matches!(receiver.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
         drop(guard);
-        assert!(
-            receiver
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-                .is_ok()
-        );
+        receiver.recv_timeout(Duration::from_secs(5)).unwrap().unwrap();
         worker.join().unwrap();
     }
 
