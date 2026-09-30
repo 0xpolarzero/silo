@@ -840,7 +840,7 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     const catalog = store.getSnapshot().source?.github.repositoryCatalogStatus
-    await expect(store.applicationActions.saveGitHubConfiguration!({ accessEnabled: true, hostIdentity: null, workspaces: [] })).rejects.toThrow("Invalid Git identity settings.")
+    await expect(store.applicationActions.saveGitHubConfiguration!({ hostIdentity: null, workspaces: [] })).rejects.toThrow("Invalid Git identity settings.")
     expect(store.getSnapshot().source?.github.repositoryCatalogStatus).toEqual(catalog)
     expect(store.getSnapshot().error).toContain("Invalid Git identity settings.")
     store.dispose()
@@ -853,9 +853,9 @@ describe("production application bridge", () => {
     mock.invoke.mockImplementation((command, args) => command === "save_github_configuration" ? new Promise((resolve) => { pending.push(resolve) }) : original(command, args))
     const store = createProductionSource(mock.bridge)
     await store.initialize()
-    const configuration = { accessEnabled: true, hostIdentity: null, workspaces: [] }
+    const configuration = { baseRevision: 0, hostIdentity: null, workspaces: [] }
     store.applicationActions.saveGitHubConfiguration!(configuration)
-    store.applicationActions.saveGitHubConfiguration!({ ...configuration, accessEnabled: false })
+    store.applicationActions.saveGitHubConfiguration!({ ...configuration, baseRevision: 1 })
     pending[1]({ ...source.github, policyRevision: 2, accessEnabled: false })
     await vi.waitFor(() => expect(store.getSnapshot().source?.github.policyRevision).toBe(2))
     pending[0]({ ...source.github, policyRevision: 1, accessEnabled: true })
@@ -867,7 +867,7 @@ describe("production application bridge", () => {
 
   it("keeps all-repository intent and waits for native acknowledgment before showing changed access", async () => {
     let resolveMutation!: (value: unknown) => void
-    const request = { accessEnabled: false, hostIdentity: null, workspaces: [{ workspace: "dev", repositoryMode: "all" as const, allRepositoriesAllowChanges: false, repositories: [], identity: { name: "", email: "", apply: false } }] }
+    const request = { hostIdentity: null, workspaces: [{ workspace: "dev", repositoryMode: "all" as const, allRepositoriesAllowChanges: false, repositories: [], identity: { name: "", email: "", apply: false } }] }
     const mock = native()
     const original = mock.invoke.getMockImplementation()!
     mock.invoke.mockImplementation((command, args) => command === "save_github_configuration" ? new Promise((resolve) => { resolveMutation = resolve }) : original(command, args))
@@ -896,7 +896,7 @@ describe("production application bridge", () => {
       listen: async (event, handler) => { events.set(event, handler); return () => events.delete(event) },
     } as ProductionBridge)
     await store.initialize()
-    store.applicationActions.saveGitHubConfiguration!({ accessEnabled: true, hostIdentity: null, workspaces: [] })
+    store.applicationActions.saveGitHubConfiguration!({ hostIdentity: null, workspaces: [] })
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(store.getSnapshot().source?.github.workspaceOperations?.[0].status).toBe("applying")
     github = { ...github, workspaceOperations: [{ workspace: "dev", status: "succeeded", message: "Verified access" }] }

@@ -5,6 +5,7 @@ use std::{
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::{Mutex, PoisonError},
     thread,
     time::{Duration, Instant},
 };
@@ -15,7 +16,79 @@ pub struct HostIdentity {
     pub email: String,
 }
 
-pub fn read() -> Option<HostIdentity> {
+/// How long a read identity is used before it is read again in the background.
+const CACHE_TTL: Duration = Duration::from_secs(60);
+static CACHE: Cache = Cache::new();
+
+/// The last known host identity, without waiting. Reading runs Git and Jujutsu
+/// processes, so it never happens on the caller's thread (which may hold locks):
+/// a missing or stale value is refreshed by one background read, and `changed`
+/// runs if that read finds a different identity.
+pub fn cached(changed: impl FnOnce() + Send + 'static) -> Option<HostIdentity> {
+    CACHE.get(Instant::now(), CACHE_TTL, read, changed)
+}
+
+struct Cache(Mutex<CacheState>);
+struct CacheState {
+    value: Option<HostIdentity>,
+    read_at: Option<Instant>,
+    reading: bool,
+}
+impl Cache {
+    const fn new() -> Self {
+        Self(Mutex::new(CacheState { value: None, read_at: None, reading: false }))
+    }
+    fn state(&self) -> std::sync::MutexGuard<'_, CacheState> {
+        // A cache of a value re-read from the host; recover after a panic (K-24).
+        self.0.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+    fn get(
+        &'static self,
+        now: Instant,
+        ttl: Duration,
+        read: impl FnOnce() -> Option<HostIdentity> + Send + 'static,
+        changed: impl FnOnce() + Send + 'static,
+    ) -> Option<HostIdentity> {
+        let mut state = self.state();
+        let stale = state.read_at.is_none_or(|at| now.saturating_duration_since(at) >= ttl);
+        if stale && !state.reading {
+            state.reading = true;
+            let refresh = thread::Builder::new()
+                .name("host-identity".into())
+                .spawn(move || self.refresh(read, changed));
+            if refresh.is_err() {
+                state.reading = false;
+            }
+        }
+        state.value.clone()
+    }
+    fn refresh(
+        &self,
+        read: impl FnOnce() -> Option<HostIdentity>,
+        changed: impl FnOnce(),
+    ) {
+        struct Reading<'a>(&'a Cache);
+        impl Drop for Reading<'_> {
+            fn drop(&mut self) {
+                self.0.state().reading = false;
+            }
+        }
+        let _reading = Reading(self);
+        let value = read();
+        let differs = {
+            let mut state = self.state();
+            state.read_at = Some(Instant::now());
+            let differs = state.value != value;
+            state.value = value;
+            differs
+        };
+        if differs {
+            changed();
+        }
+    }
+}
+
+fn read() -> Option<HostIdentity> {
     let home = std::env::var_os("HOME")?;
     let mut directories: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|value| {
@@ -46,7 +119,7 @@ pub fn read() -> Option<HostIdentity> {
             use std::os::unix::fs::PermissionsExt;
             path.metadata().is_ok_and(|metadata| {
                 metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-            })
+            }) && !installer_shim(path)
         })?;
         let args = if tool == "git" {
             vec!["config", "--global", "--includes", "--get", key]
@@ -55,6 +128,28 @@ pub fn read() -> Option<HostIdentity> {
         };
         query(&executable, &args, &environment, Duration::from_secs(2))
     })
+}
+
+/// On macOS `/usr/bin/git` is a shim that opens the Command Line Tools installer
+/// dialog when no developer directory provides Git. An optional default must never
+/// open that dialog, so the shim is skipped unless a developer Git exists.
+fn installer_shim(path: &Path) -> bool {
+    cfg!(target_os = "macos")
+        && path == Path::new("/usr/bin/git")
+        && !developer_git_installed(&developer_directories())
+}
+fn developer_directories() -> Vec<PathBuf> {
+    // `xcode-select --switch` records its choice in this link; the defaults follow.
+    std::fs::read_link("/var/db/xcode_select_link")
+        .into_iter()
+        .chain([
+            PathBuf::from("/Applications/Xcode.app/Contents/Developer"),
+            PathBuf::from("/Library/Developer/CommandLineTools"),
+        ])
+        .collect()
+}
+fn developer_git_installed(directories: &[PathBuf]) -> bool {
+    directories.iter().any(|directory| directory.join("usr/bin/git").is_file())
 }
 
 fn read_with(mut get: impl FnMut(&str, &str) -> Option<String>) -> Option<HostIdentity> {
@@ -135,6 +230,61 @@ fn query(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn identity(name: &str) -> Option<HostIdentity> {
+        Some(HostIdentity { name: name.into(), email: "author@example.test".into() })
+    }
+
+    #[test]
+    fn cached_identity_is_read_once_in_the_background_and_refreshed_after_its_ttl() {
+        let cache: &'static Cache = Box::leak(Box::new(Cache::new()));
+        let start = Instant::now();
+        let ttl = Duration::from_secs(60);
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (notify, notified) = std::sync::mpsc::channel();
+        let first = notify.clone();
+        // The caller never waits for Git: the first call returns immediately.
+        assert_eq!(
+            cache.get(start, ttl, move || { released.recv().unwrap(); identity("First") }, move || first.send("first").unwrap()),
+            None
+        );
+        // Callers during the read do not start more Git processes.
+        assert_eq!(cache.get(start, ttl, || panic!("second concurrent read"), || panic!("second change")), None);
+        release.send(()).unwrap();
+        assert_eq!(notified.recv_timeout(Duration::from_secs(5)).unwrap(), "first");
+        while cache.state().reading {
+            thread::sleep(Duration::from_millis(5));
+        }
+        // A fresh value is served without reading again.
+        let read_at = cache.state().read_at.unwrap();
+        assert_eq!(cache.get(read_at, ttl, || panic!("read within ttl"), || panic!("change")), identity("First"));
+        // A stale value is still served while one background refresh runs; an
+        // unchanged identity does not announce a change.
+        let (done, finished) = std::sync::mpsc::channel();
+        assert_eq!(
+            cache.get(read_at + ttl, ttl, move || { done.send(()).unwrap(); identity("First") }, || panic!("unchanged identity announced")),
+            identity("First")
+        );
+        finished.recv_timeout(Duration::from_secs(5)).unwrap();
+        while cache.state().reading {
+            thread::sleep(Duration::from_millis(5));
+        }
+        let later = cache.state().read_at.unwrap() + ttl;
+        let changed = notify.clone();
+        cache.get(later, ttl, || identity("Second"), move || changed.send("second").unwrap());
+        assert_eq!(notified.recv_timeout(Duration::from_secs(5)).unwrap(), "second");
+    }
+
+    #[test]
+    fn git_installer_shim_is_used_only_with_developer_tools() {
+        let root = tempfile::tempdir().unwrap();
+        let tools = root.path().join("CommandLineTools");
+        assert!(!developer_git_installed(&[tools.clone()]));
+        std::fs::create_dir_all(tools.join("usr/bin")).unwrap();
+        std::fs::write(tools.join("usr/bin/git"), b"").unwrap();
+        assert!(developer_git_installed(&[root.path().join("missing"), tools]));
+        assert!(!installer_shim(Path::new("/opt/homebrew/bin/git")));
+    }
 
     #[test]
     fn prefers_complete_git_and_never_combines_tools() {
