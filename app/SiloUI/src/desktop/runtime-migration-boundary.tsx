@@ -38,9 +38,9 @@ function message(cause: unknown) {
 }
 
 function issueUrl(state: RuntimeMigrationState) {
-  const title = "Silo VM migration failed"
+  const title = "Silo sandbox migration failed"
   const body = [
-    "Silo VM migration failed while upgrading the runtime.",
+    "Silo sandbox migration failed while upgrading the runtime.",
     `Stage: ${state.stage}`,
     `Migrated: ${state.migratedCount} of ${state.totalCount}; failed: ${state.failedCount}.`,
     "Please describe what happened. Attach logs only after checking them for private data.",

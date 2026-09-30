@@ -118,7 +118,7 @@ export function WorkspaceFileTree({ workspace, store, active, editor, onOpenEdit
     </div>
     <CollapsibleContent className="ml-4">
       {open && (available ? active && <Directory editor={editor} workspace={target} path="/workspace" label={`Files in ${workspace.machine.name}`} store={store} expanded={expanded} toggle={toggle} register={register} onOpenEditor={onOpenEditor} />
-        : <p className="border-l border-border py-1 pl-5 text-xs text-muted-foreground">{workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this VM to browse its files." : "Files will be available when this VM is running."}</p>)}
+        : <p className="border-l border-border py-1 pl-5 text-xs text-muted-foreground">{workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this sandbox to browse its files." : "Files will be available when this sandbox is running."}</p>)}
     </CollapsibleContent>
   </Collapsible></li>
 }

@@ -30,7 +30,7 @@ export const siloBootstrapConfigurationSchema = z.object({
 }).strict().refine((configuration) => {
   const names = configuration.workspaces.map(({ name }) => name)
   return new Set(names).size === names.length
-}, { message: "workspace names must be unique" })
+}, { message: "Sandbox names must be unique." })
 
 export const desktopConfigurationSchema = z.object({
   startWithSandbox: z.boolean(),
@@ -76,10 +76,10 @@ export const setupMachineConfigurationRequestSchema = z.object({
 }).strict().refine((configuration) => {
   const names = configuration.machines.map(({ name }) => name.toLowerCase())
   return new Set(names).size === names.length
-}, { message: "machine names must be unique" }).refine((configuration) => {
+}, { message: "Sandbox names must be unique." }).refine((configuration) => {
   const ids = configuration.machines.map(({ id }) => id)
   return new Set(ids).size === ids.length
-}, { message: "machine IDs must be unique" })
+}, { message: "Sandbox IDs must be unique." })
 
 export const siloBootstrapPhaseSchema = z.enum([
   "welcome",
@@ -157,7 +157,7 @@ export const githubWorkspacePolicySchema = z.object({
   repositories: z.array(githubRepositoryPolicySchema),
 }).strict().refine((policy) => (
   policy.repositories.every((repository) => repository.workspace === policy.workspace)
-), { message: "repository workspaces must match the policy workspace" })
+), { message: "Repository sandboxes must match the sandbox access policy." })
 
 export const setupQueueItemIdSchema = z.enum([
   "workspaceRun",

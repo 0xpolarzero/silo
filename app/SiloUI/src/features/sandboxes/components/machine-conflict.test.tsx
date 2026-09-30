@@ -8,7 +8,7 @@ import type { SetupVirtualMachineConfiguration } from "@/contracts/silo"
 import { MachineList } from "./machine-list"
 
 const machine = productionMachineDefaults[0]
-const staleError = new Error("This VM changed while your edit was waiting. Review it and try again.")
+const staleError = new Error("This sandbox changed while your edit was waiting. Review it and try again.")
 
 async function openEditor(machines: readonly SetupVirtualMachineConfiguration[], props: Record<string, unknown> = {}) {
   const view = render(<TooltipProvider><MachineList machines={machines} onMachinesChange={vi.fn()}
@@ -25,14 +25,14 @@ it("keeps the editor open with the user's edits when a save is rejected as stale
   await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
   await user.click(screen.getByRole("button", { name: "Save" }))
 
-  expect(await screen.findByRole("alert")).toHaveTextContent("This VM changed since you opened it.")
+  expect(await screen.findByRole("alert")).toHaveTextContent("This sandbox changed since you opened it.")
   // The edited value is preserved rather than discarded.
   expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
   expect(screen.getByRole("button", { name: "Review changes" })).toBeInTheDocument()
 
   // Review changes clears the conflict but keeps the user's edit on the latest settings.
   await user.click(screen.getByRole("button", { name: "Review changes" }))
-  expect(screen.queryByText("This VM changed since you opened it.")).not.toBeInTheDocument()
+  expect(screen.queryByText("This sandbox changed since you opened it.")).not.toBeInTheDocument()
   expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
   expect(screen.getByRole("status", { name: "Review changes" })).toHaveTextContent("Your edits are kept on top of the latest settings.")
 })
@@ -71,7 +71,7 @@ it("notices when the VM is changed elsewhere while the editor is open", async ()
   const { view } = await openEditor([machine])
   view.rerender(<TooltipProvider><MachineList machines={[{ ...machine, maxCPUs: 4 }]} onMachinesChange={vi.fn()}
     isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
-  expect(await screen.findByRole("status")).toHaveTextContent("This VM was changed elsewhere.")
+  expect(await screen.findByRole("status")).toHaveTextContent("This sandbox was changed elsewhere.")
   expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
 })
 
@@ -106,6 +106,6 @@ it("blocks saving when the VM was deleted elsewhere while the editor is open", a
   const { view } = await openEditor([machine])
   view.rerender(<TooltipProvider><MachineList machines={[]} onMachinesChange={vi.fn()}
     isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
-  expect(await screen.findByText("This VM no longer exists.")).toBeInTheDocument()
+  expect(await screen.findByText("This sandbox no longer exists.")).toBeInTheDocument()
   expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
 })

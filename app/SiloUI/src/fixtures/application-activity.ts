@@ -109,7 +109,7 @@ export const activityCatalog: ApplicationActivity[] = [
   completed(45, { id: "catalog-secret-verification-failed", category: "secrets", title: "Secret verification failed", detail: "The sandbox restarted, but the secret state remained pending.", workspace: "dev", tone: "danger" }),
 
   completed(46, { id: "catalog-github-connected", category: "github", title: "GitHub connected", detail: "Connected account taylor.", tone: "success" }),
-  completed(47, { id: "catalog-github-disconnected", category: "github", title: "GitHub disconnected", detail: "Workspace grants were removed before the account was disconnected.", tone: "neutral" }),
+  completed(47, { id: "catalog-github-disconnected", category: "github", title: "GitHub disconnected", detail: "Sandbox grants were removed before the account was disconnected.", tone: "neutral" }),
   completed(48, { id: "catalog-auth-denied", category: "github", title: "Authorization denied", detail: "GitHub denied the device authorization request.", tone: "danger" }),
   completed(49, { id: "catalog-auth-expired", category: "github", title: "Authorization expired", detail: "Start a new authorization session to continue.", tone: "warning" }),
   completed(50, { id: "catalog-auth-cancelled", category: "github", title: "Authorization cancelled", detail: "Existing access stayed unchanged.", tone: "neutral" }),
@@ -119,7 +119,7 @@ export const activityCatalog: ApplicationActivity[] = [
   completed(54, { id: "catalog-access-failed", category: "github", title: "GitHub access failed", detail: "The saved policy could not be applied.", workspace: "dev", tone: "danger" }),
   completed(55, { id: "catalog-sync-cancelled", category: "github", title: "GitHub sync cancelled", detail: "The saved choices remain available for retry.", workspace: "dev", tone: "neutral" }),
   completed(56, { id: "catalog-grant-stored", category: "github", title: "Access saved", detail: "Verified repository access was saved.", workspace: "dev", tone: "success" }),
-  completed(57, { id: "catalog-push-enabled", category: "github", title: "Push access enabled", detail: "Push from VM was enabled for acme/docs.", workspace: "dev", tone: "success" }),
+  completed(57, { id: "catalog-push-enabled", category: "github", title: "Push access enabled", detail: "Push from sandbox was enabled for acme/docs.", workspace: "dev", tone: "success" }),
   completed(58, { id: "catalog-repository-removed", category: "github", title: "Repository access removed", detail: "acme/docs was removed from this sandbox.", workspace: "dev", tone: "neutral" }),
   completed(59, { id: "catalog-disconnect-incomplete", category: "github", title: "GitHub disconnect incomplete", detail: "GitHub was disabled, but its Mac credential could not be fully removed.", tone: "danger" }),
   completed(60, { id: "catalog-reauthenticated", category: "github", title: "GitHub reauthenticated", detail: "The Mac credential was replaced and verified.", tone: "success" }),
@@ -174,7 +174,7 @@ const liveSequences: Record<Exclude<ActivityFixtureMode, "catalog">, readonly Ap
   ],
   "github-live": [
     live("live-github", "github", "GitHub access saved", "Waiting to apply the reviewed repository policy.", "dev", 0.15, "GitHub access 15% complete"),
-    live("live-github", "github", "Applying GitHub access", "Binding and verifying the scoped workspace grant.", "dev", 0.55, "GitHub access 55% complete"),
+    live("live-github", "github", "Applying GitHub access", "Binding and verifying the scoped sandbox grant.", "dev", 0.55, "GitHub access 55% complete"),
     live("live-github", "github", "GitHub access delayed", "The policy is saved locally and Silo will keep trying.", "dev", 0.7, "GitHub access delayed", "warning"),
     live("live-github", "github", "GitHub access applied", "The verified repository scope is active.", "dev", 1, "GitHub access complete", "success", "completed"),
   ],

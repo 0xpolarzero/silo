@@ -678,19 +678,19 @@ describe("application", () => {
     expect(playgroundsRow).toHaveClass("hover:bg-muted/55", "focus-within:bg-muted/55")
     const playgroundsCells = within(playgroundsRow).getAllByRole("cell")
     expect(playgroundsCells[0]).toHaveTextContent("17:02:11")
-    expect(playgroundsCells[1]).toHaveTextContent("silo Workspace stopped cleanly")
+    expect(playgroundsCells[1]).toHaveTextContent("silo Sandbox stopped cleanly")
     expect(playgroundsCells[2]).toContainElement(within(playgroundsRow).getByLabelText("playgrounds, Stopped"))
     const copyLine = within(playgroundsRow).getByRole("button", { name: "Copy log line from playgrounds at 17:02:11" })
     expect(copyLine).toHaveClass("opacity-0", "group-hover/log-row:opacity-100", "group-focus-within/log-row:opacity-100")
     const copy = vi.spyOn(navigator.clipboard, "writeText")
     await user.click(copyLine)
-    expect(copy).toHaveBeenCalledWith("2026-09-03T17:02:11Z\tlocal\t00000000-0000-4000-8000-000000000002\toutput\t\t17:02:11  silo  Workspace stopped cleanly")
+    expect(copy).toHaveBeenCalledWith("2026-09-03T17:02:11Z\tlocal\t00000000-0000-4000-8000-000000000002\toutput\t\t17:02:11  silo  Sandbox stopped cleanly")
     const copiedLine = within(playgroundsRow).getByRole("button", { name: "Log line copied" })
     expect(copiedLine).toHaveAttribute("data-copy-status", "copied")
     expect(copiedLine.querySelector("svg")).toHaveClass("lucide-check")
 
     await user.click(panel.getByRole("button", { name: "Copy logs" }))
-    expect(copy).toHaveBeenLastCalledWith(expect.stringMatching(/2026-09-03T17:02:11Z\tlocal\t.*\n.*09:41:02.*\tlocal\t.*Workspace stopped cleanly/))
+    expect(copy).toHaveBeenLastCalledWith(expect.stringMatching(/2026-09-03T17:02:11Z\tlocal\t.*\n.*09:41:02.*\tlocal\t.*Sandbox stopped cleanly/))
     const copiedLogs = panel.getByRole("button", { name: "Logs copied" })
     expect(copiedLogs).toHaveTextContent("Copied")
     expect(copiedLogs.querySelector("svg")).toHaveClass("lucide-check")
@@ -1100,7 +1100,7 @@ describe("application", () => {
   })
 
   it.each([
-    ["add-configuring", "scratch", "Configuring workspace 'scratch'.", "0 of 3 steps complete"],
+    ["add-configuring", "scratch", "Configuring sandbox 'scratch'.", "0 of 3 steps complete"],
     ["add-networking", "scratch", "Starting candidate networking for 'scratch'.", "1 of 3 steps complete"],
     ["add-verifying", "scratch", "Verifying 'scratch'.", "2 of 3 steps complete"],
   ] as const)("shows %s progress inside only the affected sandbox", (fixture, workspace, message, progressLabel) => {
@@ -1146,7 +1146,7 @@ describe("application", () => {
 
     expect(row).not.toHaveAttribute("aria-busy")
     expect(within(row).getByRole("alert")).toHaveTextContent("Networking failed")
-    expect(within(row).getByRole("alert")).toHaveTextContent("Repair workspace startup or SSH forwarding, then retry.")
+    expect(within(row).getByRole("alert")).toHaveTextContent("Repair sandbox startup or SSH forwarding, then retry.")
     expect(within(row).queryByLabelText("Manage scratch")).not.toBeInTheDocument()
     await user.click(within(row).getByRole("button", { name: "Retry scratch configuration" }))
     expect(actions.retryMachineConfiguration).toHaveBeenCalledWith("scratch")
@@ -1172,7 +1172,7 @@ describe("application", () => {
 
     await user.click(overview.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    const name = overview.getByRole("textbox", { name: "Machine name" })
+    const name = overview.getByRole("textbox", { name: "Sandbox name" })
     expect(name).toHaveValue("workspace-4")
     expect(name).toHaveFocus()
     await user.clear(name)
@@ -1196,13 +1196,13 @@ describe("application", () => {
 
     await user.click(screen.getByRole("button", { name: "More actions for dev" }))
     await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
-    const name = overview.getByRole("textbox", { name: "Machine name" })
+    const name = overview.getByRole("textbox", { name: "Sandbox name" })
     expect(name).toHaveAttribute("readonly")
-    expect(overview.getByText("Existing VMs cannot be renamed or have their disks resized.")).toBeVisible()
+    expect(overview.getByText("Existing sandboxes cannot be renamed or have their disks resized.")).toBeVisible()
     expect(overview.getByRole("combobox", { name: "Workspace storage" })).toBeDisabled()
     expect(overview.getByRole("combobox", { name: "Runtime storage" })).toBeDisabled()
     await user.hover(overview.getByLabelText(/Workspace storage: .*read-only/))
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("To use a different disk size, create a new VM and transfer your data.")
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("To use a different disk size, create a new sandbox and transfer your data.")
     await user.selectOptions(overview.getByRole("combobox", { name: "CPU limit" }), "4")
     await user.click(overview.getByRole("button", { name: "Stop and save…" }))
     await user.click(overview.getByRole("button", { name: "Stop and save" }))
@@ -1456,7 +1456,7 @@ describe("application", () => {
     const page = within(appPanel("System issue"))
     expect(page.getByRole("heading", { name: "Silo runtime is unavailable", level: 3 })).toBeVisible()
     expect(page.getByText("This app build is missing its bundled Silo runtime.")).toBeVisible()
-    expect(page.getByText("Reinstall Silo from a complete app bundle. Keep your existing VMs and settings.")).toBeVisible()
+    expect(page.getByText("Reinstall Silo from a complete app bundle. Keep your existing sandboxes and settings.")).toBeVisible()
     expect(page.queryByRole("button", { name: /repair/i })).not.toBeInTheDocument()
   })
 

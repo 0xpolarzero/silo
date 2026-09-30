@@ -51,7 +51,7 @@ it("reports unavailable VM operations from the palette instead of calling the ru
   render(<ApplicationPreview source={applicationSourceForScenario("running", undefined, "stopped")} nativeOperations actions={{ startWorkspace }} />)
   await palette(user, "start dev")
   await user.click(screen.getByRole("option", { name: "Start dev" }))
-  expect(await screen.findByText("VM operation unavailable")).toBeVisible()
+  expect(await screen.findByText("Sandbox operation unavailable")).toBeVisible()
   expect(startWorkspace).not.toHaveBeenCalled()
 })
 

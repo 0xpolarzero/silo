@@ -42,11 +42,11 @@ describe("status bar", () => {
     const base = applicationSourceForScenario("complete")
     const { user, actions } = setup({
       workspaces: base.workspaces.map(workspace => ({ ...workspace, state: "stopped" })),
-      vmOperationsUnavailable: "This build cannot run local VMs.",
+      vmOperationsUnavailable: "This build cannot run local sandboxes.",
     })
     await user.click(screen.getByRole("button", { name: "Start dev" }))
     expect(actions.startWorkspace).not.toHaveBeenCalled()
-    expect(screen.getByRole("alert", { name: "VM operation unavailable" })).toHaveTextContent("This build cannot run local VMs.")
+    expect(screen.getByRole("alert", { name: "Sandbox operation unavailable" })).toHaveTextContent("This build cannot run local sandboxes.")
   })
 
   it("rechecks current availability before Start anyway (I-04)", async () => {
@@ -69,7 +69,7 @@ describe("status bar", () => {
     await user.click(screen.getByRole("button", { name: action }))
     expect(actions.stopWorkspace).not.toHaveBeenCalled()
     expect(actions.restartWorkspace).not.toHaveBeenCalled()
-    expect(screen.getByRole("alert", { name: "VM operation unavailable" })).toHaveTextContent("Local VMs unavailable.")
+    expect(screen.getByRole("alert", { name: "Sandbox operation unavailable" })).toHaveTextContent("Local VMs unavailable.")
   })
 
   it("keeps a remote Start independent of same-named local guards (I-04)", async () => {

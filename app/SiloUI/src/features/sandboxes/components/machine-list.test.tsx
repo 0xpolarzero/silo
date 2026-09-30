@@ -84,7 +84,7 @@ it("keeps the sandbox name field free of auto-capitalization and autocorrect", a
   render(<TooltipProvider><MachineList machines={[]} onMachinesChange={vi.fn()} /></TooltipProvider>)
   await user.click(screen.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-  const name = await screen.findByRole("textbox", { name: "Machine name" })
+  const name = await screen.findByRole("textbox", { name: "Sandbox name" })
   expect(name).toHaveAttribute("autocapitalize", "off")
   expect(name).toHaveAttribute("autocorrect", "off")
   expect(name).toHaveAttribute("spellcheck", "false")

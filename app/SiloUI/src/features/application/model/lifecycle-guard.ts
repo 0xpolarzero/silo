@@ -33,7 +33,7 @@ function sandboxName(workspace: ApplicationWorkspace) {
  */
 export function lifecycleCheck(source: ApplicationSource, workspace: ApplicationWorkspace, action: LifecycleAction): LifecycleCheck {
   const local = !workspace.computer
-  if (local && source.vmOperationsUnavailable) return { kind: "unavailable", title: "VM operation unavailable", message: source.vmOperationsUnavailable }
+  if (local && source.vmOperationsUnavailable) return { kind: "unavailable", title: "Sandbox operation unavailable", message: source.vmOperationsUnavailable }
   const notice = source.resourceNotice
   if (action === "start" && local && notice?.kind === "start-memory" && notice.sandbox === workspace.machine.name) {
     return { kind: "confirm", prompt: {

@@ -1,6 +1,6 @@
 import type { ApplicationWorkspace } from "@/features/application/model/application-source"
 
-/** Quit stops Silo-owned local VMs only; remote sandboxes keep running (decision 7). */
+/** Quit stops Silo-owned local sandboxes only; remote sandboxes keep running (decision 7). */
 export function sandboxesStoppedByQuit(workspaces: ApplicationWorkspace[]): string[] {
   return workspaces
     .filter((workspace) => !workspace.computer && workspace.machine.kind === "vm" && (workspace.state === "running" || workspace.state === "starting"))

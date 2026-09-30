@@ -145,7 +145,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
         {lifecycleIssue && <OperationIssue
           title={lifecycleIssue.title}
           detail={lifecycleIssue.message}
-          actionLabel="Review VM operation availability"
+          actionLabel="Review sandbox operation availability"
           onReview={() => actions.openSilo({ workspaceSection: "overview" })}
         />}
         {repair && <ListCard className="mb-2">

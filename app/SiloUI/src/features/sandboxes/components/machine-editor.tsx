@@ -79,7 +79,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
   )
   return readOnly ? (
     <TooltipProvider><Tooltip><TooltipTrigger asChild><span tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`}>{field}</span></TooltipTrigger>
-      <TooltipContent>To use a different disk size, create a new VM and transfer your data.</TooltipContent>
+      <TooltipContent>To use a different disk size, create a new sandbox and transfer your data.</TooltipContent>
     </Tooltip></TooltipProvider>
   ) : field
 }
@@ -208,16 +208,16 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
     <div ref={container} className="grid min-w-0 gap-3 p-3" data-testid={`machine-editor-${draft.id}`}>
       <div className="flex min-w-0 items-center gap-2">
         {draft.kind === "vm" ? <Monitor className="size-4 shrink-0" aria-hidden="true" /> : <Server className="size-4 shrink-0" aria-hidden="true" />}
-        <span className="min-w-0 flex-1 text-xs font-semibold">{draft.kind === "vm" ? "Virtual machine details" : "SSH machine details"}</span>
+        <span className="min-w-0 flex-1 text-xs font-semibold">{draft.kind === "vm" ? "Sandbox details" : "SSH host details"}</span>
         <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{draft.kind}</span>
       </div>
 
       {editorHeader}
       {deletedElsewhere ? (
-        <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/[.06] px-3 py-2 text-xs text-destructive">This VM no longer exists.</p>
+        <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/[.06] px-3 py-2 text-xs text-destructive">This sandbox no longer exists.</p>
       ) : conflict ? (
         <div role="alert" className="grid gap-2 rounded-md border border-destructive/30 bg-destructive/[.06] px-3 py-2 text-xs text-destructive">
-          <p>This VM changed since you opened it.</p>
+          <p>This sandbox changed since you opened it.</p>
           <div className="flex justify-end gap-2">
             <Button type="button" size="xs" variant="outline" disabled={saving} onClick={onDiscard}>Discard my edits</Button>
             <Button type="button" size="xs" disabled={saving} onClick={onReview}>Review changes</Button>
@@ -225,7 +225,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         </div>
       ) : divergent ? (
         <p role="status" className="rounded-md border border-amber-500/30 bg-amber-500/[.07] px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-          This VM was changed elsewhere.{changedFields.length > 0 ? ` Updated: ${changedFields.map(machineFieldLabel).join(", ")}.` : ""}
+          This sandbox was changed elsewhere.{changedFields.length > 0 ? ` Updated: ${changedFields.map(machineFieldLabel).join(", ")}.` : ""}
         </p>
       ) : review ? (
         <div role="status" aria-label="Review changes" className="grid gap-1 rounded-md border border-amber-500/30 bg-amber-500/[.07] px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
@@ -245,7 +245,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
       <TextField
         firstField
         inputRef={firstField}
-        label="Machine name"
+        label={draft.kind === "vm" ? "Sandbox name" : "SSH host name"}
         value={draft.name}
         readOnly={created}
         className={created ? "opacity-60" : undefined}
@@ -255,7 +255,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         onChange={(event) => update({ name: event.target.value })}
       />
 
-      {created && draft.kind === "vm" && <p className="text-[11px] text-muted-foreground">Existing VMs cannot be renamed or have their disks resized.</p>}
+      {created && draft.kind === "vm" && <p className="text-[11px] text-muted-foreground">Existing sandboxes cannot be renamed or have their disks resized.</p>}
 
       {draft.kind === "vm" ? (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">

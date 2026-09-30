@@ -354,7 +354,7 @@ export function OverviewPage({ active = true, readOnly = false,
   const deleteMachine = actions.deleteRemoteMachine ? async (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => {
     const computer = workspaces.get(machine.id)?.computer
     if (computer) {
-      if (!computer.connected) throw new Error("This computer is unavailable. Reconnect before deleting its VM.")
+      if (!computer.connected) throw new Error("This computer is unavailable. Reconnect before deleting its sandbox.")
       await actions.deleteRemoteMachine!(computer.id, machine)
     } else {
       const base = baseline ? localOnly(baseline) : localMachines
@@ -367,7 +367,7 @@ export function OverviewPage({ active = true, readOnly = false,
   }
   const validateMachineOperation = (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => {
     const computer = workspaces.get(machine.id)?.computer ?? source.remoteComputers?.find(computer => computer.id === computerId)
-    if (computer) return computer.busy ? "This computer is refreshing its VM status. Try again shortly." : computer.connected ? undefined : "This computer is unavailable. Reconnect before changing its VMs."
+    if (computer) return computer.busy ? "This computer is refreshing its VM status. Try again shortly." : computer.connected ? undefined : "This computer is unavailable. Reconnect before changing its sandboxes."
     if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
     const notice = source.resourceNotice
     if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
@@ -380,11 +380,11 @@ export function OverviewPage({ active = true, readOnly = false,
   const machineBusyReason = (machine: SetupMachineConfiguration) => sandboxBusyReason(workspaces.get(machine.id))
 
   function notifyOperationUnavailable() {
-    showActionFailure("VM operation unavailable", source.vmOperationsUnavailable ?? "VM operations are unavailable.", undefined, { native: false })
+    showActionFailure("Sandbox operation unavailable", source.vmOperationsUnavailable ?? "Sandbox operations are unavailable.", undefined, { native: false })
   }
 
   // Every lifecycle request from this page (row, sandbox page, menus, toasts) goes through the
-  // shared guard: unavailable VM operations are reported and memory pressure asks first.
+  // shared guard: unavailable Sandbox operations are reported and memory pressure asks first.
   const guard = lifecycleGuard(source, actions)
   // Notification actions run later: resolve the sandbox and its guard when clicked, so a toast
   // shown before the snapshot refreshed never acts on outdated state.

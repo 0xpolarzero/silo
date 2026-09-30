@@ -53,7 +53,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   }, [store, available, target, path])
   const folders = snapshot.entries?.filter((entry) => entry.kind === "folder") ?? []
   const filtered = folders.filter((entry) => entry.name.toLowerCase().includes(query.trim().toLowerCase()))
-  const unavailable = workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this VM to browse its files." : "Files will be available when this VM is running."
+  const unavailable = workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this sandbox to browse its files." : "Files will be available when this sandbox is running."
 
   function navigate(next: string[]) {
     setSegments(next)

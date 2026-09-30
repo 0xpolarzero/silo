@@ -1038,7 +1038,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function workspaceAction(action: string, name: string, extras: Record<string, unknown> = {}) {
     const remote = parseRemoteWorkspaceTarget(name)
     if (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected) {
-      reportUnavailable("This computer is unavailable. Reconnect before changing its VMs.")
+      reportUnavailable("This computer is unavailable. Reconnect before changing its sandboxes.")
       return
     }
     const key = `${action}:${name}`
@@ -1046,7 +1046,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     pendingWorkspaceActions.add(key)
     const lifecycle = action === "start" || action === "stop" || action === "restart" || action === "dismiss-error"
     // Submitting a lifecycle action supersedes any prior failure or cancellation for
-    // this VM: the view hides it while the resubmitted action waits or runs.
+    // this sandbox: the view hides it while the resubmitted action waits or runs.
     if (lifecycle) {
       workspaceFailures.delete(name)
       pendingLifecycle.set(name, action)
@@ -1292,14 +1292,14 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   // Onboarding can mount before the real configuration loads and seed its draft
-  // from defaults. A draft that keeps none of the existing VMs is therefore never
+  // from defaults. A draft that keeps none of the existing sandboxes is therefore never
   // treated as a request to delete them all; single removals remain explicit edits.
   function replacesEveryMachine(request: OnboardingCompletionRequest) {
     const committed = committedMachines()
     if (committed.length === 0) return null
     const kept = new Set(request.machineConfiguration.machines.map(({ id }) => id))
     if (committed.some(({ id }) => kept.has(id))) return null
-    return new Error(`Setup does not delete existing VMs (${committed.map(({ name }) => name).join(", ")}). Reopen Silo to load them, or delete them from Silo after setup. No VM changed.`)
+    return new Error(`Setup does not delete existing sandboxes (${committed.map(({ name }) => name).join(", ")}). Reopen Silo to load them, or delete them from Silo after setup. No sandbox changed.`)
   }
 
   function finishSetup(request: OnboardingCompletionRequest, markComplete: () => Promise<void>) {

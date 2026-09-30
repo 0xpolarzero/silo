@@ -138,13 +138,13 @@ export function operationMatchesVm(entry: OperationEntry, vmId: string): boolean
 
 /**
  * The waiting operation that a VM row should surface: the earliest waiter whose
- * scope is this VM. Computer-wide waiters are reported by the global indicator.
+ * scope is this sandbox. Computer-wide waiters are reported by the global indicator.
  */
 export function waitingOperationForVm(queue: OperationQueue, vmId: string): OperationEntry | undefined {
   return queue.waiting.find((entry) => operationMatchesVm(entry, vmId))
 }
 
-/** True when a matching operation for this VM is already running or waiting (a duplicate request). */
+/** True when a matching operation for this sandbox is already running or waiting (a duplicate request). */
 export function hasPendingOperationForVm(queue: OperationQueue, vmId: string): boolean {
   return [...queue.running, ...queue.waiting].some((entry) => operationMatchesVm(entry, vmId))
 }

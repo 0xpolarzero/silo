@@ -92,7 +92,7 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
         placeholder="Select sandboxes…"
         listLabel="Available sandboxes"
         selectedLabel="Selected sandboxes"
-        emptyMessage={workspaces.length === 0 ? "Add a virtual machine to assign secrets." : "No sandboxes available."}
+        emptyMessage={workspaces.length === 0 ? "Add a sandbox to assign secrets." : "No sandboxes available."}
         inputInvalid={Boolean(errors.workspaces)}
         inputDescribedBy={errors.workspaces ? `${id}-workspaces-error` : undefined}
       />

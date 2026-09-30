@@ -146,7 +146,7 @@ function AddAction({ label, disabled, onClick }: { label: string; disabled?: boo
 
 /** The Secrets section, scoped to this sandbox: assigned secrets with the same row states,
  * inline editor, and remove confirmation as the Secrets page. Add preselects this sandbox.
- * Only local VMs support secrets, so remote and SSH sandboxes stay read-only. */
+ * Only local sandboxes support secrets, so remote and SSH sandboxes stay read-only. */
 function SecretsSection({ workspace, source, actions, onNavigate }: { workspace: ApplicationWorkspace; source: ApplicationSource; actions: ApplicationActions; onNavigate?: (route: ApplicationInitialRoute) => void }) {
   const { machine } = workspace
   const canManage = machine.kind === "vm" && !workspace.computer

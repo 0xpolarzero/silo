@@ -81,7 +81,7 @@ it("starts a new sandbox from the palette", async () => {
   const user = userEvent.setup()
   render(<ApplicationPreview source={applicationSourceForScenario("running")} />)
   await run(user, "new sandbox", "New sandbox…")
-  expect(await screen.findByRole("textbox", { name: "Machine name" })).toBeVisible()
+  expect(await screen.findByRole("textbox", { name: "Sandbox name" })).toBeVisible()
 })
 
 it("keeps same-named sandboxes on different computers apart", async () => {

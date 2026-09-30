@@ -77,7 +77,7 @@ export function githubManagementFixtureModeFromSearch(search: string): GitHubMan
 const baseWorkspaces: ApplicationWorkspace[] = [
   {
     machine: { ...devMachine },
-    purpose: "Primary software development workspace",
+    purpose: "Primary software development sandbox",
     state: "running",
     stateDetail: "Running for 2h 18m",
     freshness: "fresh",
@@ -125,7 +125,7 @@ const baseWorkspaces: ApplicationWorkspace[] = [
       { name: "README.md", kind: "file" },
     ],
     ports: [],
-    logs: [{ line: "17:02:11  silo  Workspace stopped cleanly", occurredAt: "2026-09-03T17:02:11Z" }],
+    logs: [{ line: "17:02:11  silo  Sandbox stopped cleanly", occurredAt: "2026-09-03T17:02:11Z" }],
     githubRepositories: ["acme/platform-tools"],
     secretNames: ["PACKAGE_TOKEN"],
   },
@@ -143,7 +143,7 @@ const baseWorkspaces: ApplicationWorkspace[] = [
       { name: "notes.md", kind: "file" },
     ],
     ports: [],
-    logs: [{ line: "09:41:02  silo  Workspace stopped cleanly", occurredAt: "2026-08-31T09:41:02Z" }],
+    logs: [{ line: "09:41:02  silo  Sandbox stopped cleanly", occurredAt: "2026-08-31T09:41:02Z" }],
     githubRepositories: ["taylor/docs-site"],
     secretNames: [],
   },
@@ -239,7 +239,7 @@ function configurationOperationForFixture(
       ? machines.filter(({ name }) => name !== "playgrounds")
       : [...machines, scratchMachine],
   }
-  const configured = progressEvent("workspace-configuration", "scratch", 1, "Workspace 'scratch' is configured.")
+  const configured = progressEvent("workspace-configuration", "scratch", 1, "Sandbox 'scratch' is configured.")
   const networkReady = progressEvent("workspace-networking", "scratch", 1, "Candidate networking is ready for 'scratch'.")
 
   if (mode === "workspace-error") {
@@ -252,7 +252,7 @@ function configurationOperationForFixture(
       error: {
         code: "SILO_CANDIDATE_NETWORKING_FAILED",
         message: "Networking failed for 'scratch'.",
-        recovery: "Repair workspace startup or SSH forwarding, then retry.",
+        recovery: "Repair sandbox startup or SSH forwarding, then retry.",
         workspace: "scratch",
         retryable: true,
       },
@@ -260,7 +260,7 @@ function configurationOperationForFixture(
   }
 
   const progressEvents = mode === "add-configuring"
-    ? [progressEvent("workspace-configuration", "scratch", 0, "Configuring workspace 'scratch'.")]
+    ? [progressEvent("workspace-configuration", "scratch", 0, "Configuring sandbox 'scratch'.")]
     : mode === "add-networking"
       ? [configured, progressEvent("workspace-networking", "scratch", 0, "Starting candidate networking for 'scratch'.")]
       : mode === "add-verifying"
@@ -292,7 +292,7 @@ function runtimeRepairForFixture(
   return {
     status: "unavailable",
     reason: "This app build is missing its bundled Silo runtime.",
-    recovery: "Reinstall Silo from a complete app bundle. Keep your existing VMs and settings.",
+    recovery: "Reinstall Silo from a complete app bundle. Keep your existing sandboxes and settings.",
   }
 }
 

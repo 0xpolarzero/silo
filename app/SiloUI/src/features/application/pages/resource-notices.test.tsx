@@ -33,7 +33,7 @@ describe("operation-owned resource notices", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Add" }))
     fireEvent.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    fireEvent.change(screen.getByRole("textbox", { name: "Machine name" }), { target: { value: "sandbox" } })
+    fireEvent.change(screen.getByRole("textbox", { name: "Sandbox name" }), { target: { value: "sandbox" } })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
 
     expect((await screen.findAllByText(/Not enough storage to create sandbox.*18 GB is needed.*11 GB is available/)).length).toBeGreaterThan(0)
@@ -45,7 +45,7 @@ describe("operation-owned resource notices", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Start dev" }))
 
-    expect(await screen.findByText("VM operation unavailable")).toBeVisible()
+    expect(await screen.findByText("Sandbox operation unavailable")).toBeVisible()
     expect(startWorkspace).not.toHaveBeenCalled()
   })
 })

@@ -16,7 +16,7 @@ async function openNewSandbox() {
 describe("machine editor validation", () => {
   it("links each error to its field and moves focus to the first invalid field", async () => {
     const { user, onMachinesChange } = await openNewSandbox()
-    const name = screen.getByRole("textbox", { name: "Machine name" })
+    const name = screen.getByRole("textbox", { name: "Sandbox name" })
     await user.clear(name)
     await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "16")
     await user.click(screen.getByRole("button", { name: "Save" }))

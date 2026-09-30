@@ -10,7 +10,7 @@ async function addSandbox(user: ReturnType<typeof userEvent.setup>) {
   const overview = within(screen.getByRole("region", { name: "Sandboxes" }))
   await user.click(overview.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-  const name = overview.getByRole("textbox", { name: "Machine name" })
+  const name = overview.getByRole("textbox", { name: "Sandbox name" })
   await user.clear(name)
   await user.type(name, "scratch")
   await user.click(overview.getByRole("button", { name: "Save" }))

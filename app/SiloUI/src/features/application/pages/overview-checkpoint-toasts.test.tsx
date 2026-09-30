@@ -117,5 +117,5 @@ it("routes the restored-toast Start through the guard, so an unavailable VM oper
   await screen.findByText("Restored “Before deploy”")
   await user.click(screen.getByRole("button", { name: "Start" }))
   expect(startWorkspace).not.toHaveBeenCalled()
-  expect(screen.getByText("VM operation unavailable")).toBeVisible()
+  expect(screen.getByText("Sandbox operation unavailable")).toBeVisible()
 })
