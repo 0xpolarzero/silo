@@ -849,26 +849,7 @@ fn run_backup(
             message: "Sandbox exported.".into(),
             detail: None,
         },
-        Err(error) => Operation::Result {
-            operation: "backup",
-            archive: pending_archive,
-            running_names: Vec::new(),
-            target_name: None,
-            outcome: if error == "The operation was cancelled." {
-                "cancelled"
-            } else {
-                "failed"
-            },
-            title: if error == "The operation was cancelled." {
-                "Export cancelled".into()
-            } else {
-                "Export failed".into()
-            },
-            message: error,
-            detail: Some(
-                "No completed export was recorded; incomplete files were removed.".into(),
-            ),
-        },
+        Err(error) => failed_transfer("backup", pending_archive, None, error),
     };
     let operation = recovery::complete(&controller, operation);
     notify_transfer(&app, &operation, started.elapsed());
@@ -877,16 +858,109 @@ fn run_backup(
     publish(&app, &controller);
 }
 
+/// Why an export or import worker ended without a result. The outcome comes
+/// from `cancelled`, never from the message text (E-42).
+#[derive(Debug)]
+struct TransferError {
+    cancelled: bool,
+    message: String,
+    /// What was left behind, when it differs from the default for the kind.
+    detail: Option<&'static str>,
+}
+
+impl TransferError {
+    fn cancelled() -> Self {
+        Self {
+            cancelled: true,
+            message: String::new(),
+            detail: None,
+        }
+    }
+
+    /// An import that failed after its snapshot started unpacking may leave
+    /// that data in the runtime's snapshot store (see E-23).
+    fn after_unpacking(mut self) -> Self {
+        self.detail = Some("No sandbox was added. Data unpacked for it may still use disk space.");
+        self
+    }
+}
+
+impl From<String> for TransferError {
+    fn from(message: String) -> Self {
+        Self {
+            cancelled: false,
+            message,
+            detail: None,
+        }
+    }
+}
+
+impl From<&str> for TransferError {
+    fn from(message: &str) -> Self {
+        message.to_string().into()
+    }
+}
+
+impl From<backup::BackupError> for TransferError {
+    fn from(error: backup::BackupError) -> Self {
+        match error {
+            backup::BackupError::Cancelled => Self::cancelled(),
+            error => error.to_string().into(),
+        }
+    }
+}
+
+impl From<runtime::operation_gate::GateError> for TransferError {
+    fn from(error: runtime::operation_gate::GateError) -> Self {
+        match error {
+            runtime::operation_gate::GateError::Cancelled => Self::cancelled(),
+            error => error.to_string().into(),
+        }
+    }
+}
+
+/// The result for an export (`backup`) or import (`restore`) that did not
+/// finish. Details state only what is always true for that kind and stage.
+fn failed_transfer(
+    operation: &'static str,
+    archive: Archive,
+    target_name: Option<String>,
+    error: TransferError,
+) -> Operation {
+    let export = operation == "backup";
+    let detail = error.detail.unwrap_or(if export {
+        "No export file was saved."
+    } else {
+        "No sandbox was added. The export file was not changed."
+    });
+    let (outcome, title, message) = match (error.cancelled, export) {
+        (true, true) => ("cancelled", "Export cancelled", "The export was cancelled.".to_string()),
+        (true, false) => ("cancelled", "Import cancelled", "The import was cancelled.".to_string()),
+        (false, true) => ("failed", "Export failed", error.message),
+        (false, false) => ("failed", "Import failed", error.message),
+    };
+    Operation::Result {
+        operation,
+        archive,
+        running_names: Vec::new(),
+        target_name,
+        outcome,
+        title: title.into(),
+        message,
+        detail: Some(detail.into()),
+    }
+}
+
 fn mutation_guard(
     cancellation: &backup::Cancellation,
     kind: runtime::operation_gate::OperationKind,
     label: &str,
     cancellable: bool,
-) -> Result<runtime::operation_gate::OperationGuard<'static>, String> {
+) -> Result<runtime::operation_gate::OperationGuard<'static>, TransferError> {
     // Export and import change shared state and wait their turn (computer scope).
     // A queued export stays cancellable and gives up if the work ahead never ends.
     if cancellation.cancelled() {
-        return Err("The operation was cancelled.".into());
+        return Err(TransferError::cancelled());
     }
     let started = std::time::Instant::now();
     let mut guard = runtime::OPERATIONS
@@ -896,12 +970,12 @@ fn mutation_guard(
         })
         .map_err(|error| match error {
             runtime::operation_gate::GateError::Abandoned if cancellation.cancelled() => {
-                "The operation was cancelled.".to_string()
+                TransferError::cancelled()
             }
-            runtime::operation_gate::GateError::Abandoned => {
-                "The previous sandbox operation did not finish. Relaunch Silo to retry.".to_string()
-            }
-            error => error.to_string(),
+            runtime::operation_gate::GateError::Abandoned => TransferError::from(
+                "The previous sandbox operation did not finish. Relaunch Silo to retry.",
+            ),
+            error => error.into(),
         })?;
     // Export capture can be cancelled while running; import cannot. Share the one
     // cancel flag with the gate so the queue's Cancel and the export UI's Cancel agree.
@@ -921,7 +995,7 @@ fn backup_work(
     names: &[String],
     checkpoint_id: Option<&str>,
     cancellation: &backup::Cancellation,
-) -> Result<Archive, String> {
+) -> Result<Archive, TransferError> {
     let _guard = mutation_guard(cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true)?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
@@ -974,8 +1048,7 @@ fn backup_work(
         },
         cancellation,
         recovery::token(controller)?.as_deref(),
-    )
-    .map_err(|error| error.to_string())?;
+    )?;
     // Exports capture running sandboxes in place; they never stop or restart one.
     let inspection = backup::ArchiveInspection {
         created_at_ms: result.created_at_ms,
@@ -1304,10 +1377,7 @@ fn run_restore(
     let started = std::time::Instant::now();
     let mut archive = archive;
     let result = (|| {
-        let inspection = controller
-            .service
-            .inspect_archive(&path, &cancellation)
-            .map_err(|error| error.to_string())?;
+        let inspection = controller.service.inspect_archive(&path, &cancellation)?;
         let selected = select_archive_source(&inspection.sandboxes, source_name.as_deref())?;
         archive = archive_from(&path, &inspection);
         if let Ok(mut view) = controller.view.lock() {
@@ -1326,7 +1396,7 @@ fn run_restore(
             &new_name,
             &cancellation,
         )?;
-        Ok::<_, String>(selected)
+        Ok::<_, TransferError>(selected)
     })();
     let operation = match result {
         Ok(_) => Operation::Result {
@@ -1339,24 +1409,7 @@ fn run_restore(
             message: "Sandbox imported.".into(),
             detail: None,
         },
-        Err(error) => Operation::Result {
-            operation: "restore",
-            archive,
-            running_names: Vec::new(),
-            target_name: Some(new_name),
-            outcome: if error == "The operation was cancelled." {
-                "cancelled"
-            } else {
-                "failed"
-            },
-            title: if error == "The operation was cancelled." {
-                "Import cancelled".into()
-            } else {
-                "Import failed".into()
-            },
-            message: error,
-            detail: Some("No existing sandbox was replaced.".into()),
-        },
+        Err(error) => failed_transfer("restore", archive, Some(new_name), error),
     };
     let operation = recovery::complete(&controller, operation);
     notify_transfer(&app, &operation, started.elapsed());
@@ -1381,7 +1434,7 @@ fn restore_work(
     source_name: &str,
     new_name: &str,
     cancellation: &backup::Cancellation,
-) -> Result<(), String> {
+) -> Result<(), TransferError> {
     let paths = runtime::runtime_paths(app)?;
     restore_at_paths(
         &paths,
@@ -1420,7 +1473,7 @@ fn restore_at_paths(
     new_name: &str,
     cancellation: &backup::Cancellation,
     progress: &dyn Fn(&str),
-) -> Result<(), String> {
+) -> Result<(), TransferError> {
     progress("Preparing import");
     let _guard = mutation_guard(cancellation, runtime::operation_gate::OperationKind::Import, "Importing sandbox", false)?;
     let original = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
@@ -1429,7 +1482,7 @@ fn restore_at_paths(
         .iter()
         .any(|machine| machine.name().eq_ignore_ascii_case(new_name))
     {
-        return Err(format!("A sandbox named {new_name} already exists."));
+        return Err(format!("A sandbox named {new_name} already exists.").into());
     }
     let listed = runtime::run_msb(
         &paths,
@@ -1445,11 +1498,23 @@ fn restore_at_paths(
             .and_then(Value::as_str)
             .is_some_and(|name| name.eq_ignore_ascii_case(new_name))
     }) {
-        return Err(format!(
-            "A runtime sandbox named {new_name} already exists."
-        ));
+        return Err(format!("A runtime sandbox named {new_name} already exists.").into());
     }
     progress("Unpacking export");
+    unpack_and_save(paths, controller, archive, source_name, new_name, cancellation, progress, original)
+        .map_err(TransferError::after_unpacking)
+}
+
+fn unpack_and_save(
+    paths: &runtime::RuntimePaths,
+    controller: &Controller,
+    archive: &Path,
+    source_name: &str,
+    new_name: &str,
+    cancellation: &backup::Cancellation,
+    progress: &dyn Fn(&str),
+    original: runtime::MachineConfigurationRequest,
+) -> Result<(), TransferError> {
     let prepared = controller
         .service
         .prepare_restore(
@@ -1459,8 +1524,7 @@ fn restore_at_paths(
                 new_name: new_name.into(),
             },
             cancellation,
-        )
-        .map_err(|error| error.to_string())?;
+        )?;
     if prepared.source_name != source_name || prepared.new_name != new_name {
         return Err("The verified backup restore identity changed unexpectedly.".into());
     }
@@ -1488,7 +1552,8 @@ fn restore_at_paths(
         &id,
         &prepared.snapshot_group,
         &prepared.snapshot_member,
-    )
+    )?;
+    Ok(())
 }
 
 /// Saves an imported sandbox. Its id and snapshot group are journaled first,
@@ -2127,9 +2192,11 @@ mod tests {
         assert!(receiver.recv_timeout(Duration::from_millis(20)).is_err());
         let cancellation = backup::Cancellation::default();
         cancellation.cancel();
-        assert_eq!(
-            mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true).unwrap_err(),
-            "The operation was cancelled."
+        assert!(
+            mutation_guard(&cancellation, runtime::operation_gate::OperationKind::Export, "Exporting sandbox", true)
+                .err()
+                .expect("a cancelled wait must not acquire the gate")
+                .cancelled
         );
         drop(guard);
         assert!(
@@ -2332,6 +2399,45 @@ mod tests {
         assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
         let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
         assert!(!saved.contains(&id), "{saved}");
+    }
+
+    fn outcome_and_detail(operation: &Operation) -> (&'static str, String) {
+        match operation {
+            Operation::Result { outcome, detail, .. } => (*outcome, detail.clone().unwrap_or_default()),
+            Operation::Running { .. } => panic!("expected a result"),
+        }
+    }
+
+    #[test]
+    fn transfer_outcomes_come_from_the_error_kind_not_its_text() {
+        let cancelled = failed_transfer("backup", completed_archive(), None, backup::BackupError::Cancelled.into());
+        assert_eq!(outcome_and_detail(&cancelled), ("cancelled", "No export file was saved.".into()));
+        // A failure whose text happens to read like a cancellation is still a failure.
+        let failed = failed_transfer(
+            "backup",
+            completed_archive(),
+            None,
+            TransferError::from("The operation was cancelled.".to_string()),
+        );
+        assert_eq!(outcome_and_detail(&failed).0, "failed");
+        let gate = TransferError::from(runtime::operation_gate::GateError::Cancelled);
+        assert!(gate.cancelled);
+
+        let import = failed_transfer("restore", completed_archive(), Some("copy".into()), "Disk full".to_string().into());
+        let (outcome, detail) = outcome_and_detail(&import);
+        assert_eq!(outcome, "failed");
+        assert_eq!(detail, "No sandbox was added. The export file was not changed.");
+        let unpacked = failed_transfer(
+            "restore",
+            completed_archive(),
+            Some("copy".into()),
+            TransferError::from("Disk full".to_string()).after_unpacking(),
+        );
+        assert!(outcome_and_detail(&unpacked).1.contains("may still use disk space"));
+        for operation in [cancelled, failed, import, unpacked] {
+            let detail = outcome_and_detail(&operation).1;
+            assert!(!detail.contains("removed") && !detail.contains("replaced"), "{detail}");
+        }
     }
 
     #[test]
