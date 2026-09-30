@@ -10147,7 +10147,14 @@ exit 9
         #[cfg(target_os = "linux")]
         assert_eq!(
             bundled_runtime_library(
-                Path::new("/usr/bin/silo-ui"),
+                &crate::bundled_tools::resolve(
+                    Path::new("/usr/bin/silo-ui"),
+                    &resource_dir,
+                    Some(tauri::utils::config::BundleType::Deb),
+                    None,
+                )
+                .unwrap()
+                .join("msb"),
                 &resource_dir,
                 Some(tauri::utils::config::BundleType::Deb),
             ),
