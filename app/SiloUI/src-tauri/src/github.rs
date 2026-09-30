@@ -641,6 +641,20 @@ fn live_access_token(
         Err(error) => Err(error),
     }
 }
+/// The token that revokes the account's authorization on Disconnect. An expired token is
+/// renewed first through `active` (which stores the renewal, so a failed revocation can be
+/// retried with it): GitHub answers 404 for an expired token, which revocation would take
+/// for success while the authorization and its refresh token stay live.
+fn disconnect_token(
+    current: Option<Credential>,
+    at: u64,
+    active: impl FnOnce() -> Result<Credential, String>,
+) -> Result<Option<String>, String> {
+    let Some(current) = current else {
+        return Ok(None);
+    };
+    live_access_token(&current, at, |_| active())
+}
 /// Revoke the credential a reconnect replaced (best effort). The same account's new
 /// credential shares its authorization, so only the old token is revoked then; another
 /// account's authorization is revoked entirely, renewing an expired token first.
@@ -2112,15 +2126,17 @@ pub fn install(app: &tauri::AppHandle) {
                         }
                     }
                     if d.disconnect_pending {
-                        let result = revocation_credential().and_then(|c| {
-                            c.map_or(Ok(()), |c| {
-                                token_operation(
-                                    Operation::RevokeAuthorization,
-                                    json!({"accessToken":c.access_token}),
-                                )
-                                .map(|_| ())
-                            })
-                        });
+                        let result = revocation_credential()
+                            .and_then(|c| disconnect_token(c, now(), active_credential))
+                            .and_then(|token| {
+                                token.map_or(Ok(()), |token| {
+                                    token_operation(
+                                        Operation::RevokeAuthorization,
+                                        json!({"accessToken":token}),
+                                    )
+                                    .map(|_| ())
+                                })
+                            });
                         // The credential store can wait on a permission prompt; never
                         // delete from it under STATE. Connect cannot interleave: this
                         // worker pass holds OPERATION.
@@ -2797,6 +2813,23 @@ mod tests {
         let mut no_refresh = expired.clone();
         no_refresh.refresh_token = None;
         assert_eq!(live_access_token(&no_refresh, at, |_| panic!("renewed without a refresh token")).unwrap(), None);
+    }
+    #[test]
+    fn disconnect_revokes_with_a_renewed_token_when_the_stored_one_expired() {
+        let at = 1_000;
+        assert_eq!(disconnect_token(None, at, || panic!("renewed without a credential")).unwrap(), None);
+        let live = fixture_credential("live", at + 600);
+        assert_eq!(disconnect_token(Some(live), at, || panic!("renewed a live token")).unwrap(), Some("live".into()));
+        let expired = fixture_credential("expired", at);
+        let renewed = disconnect_token(Some(expired.clone()), at, || Ok(fixture_credential("renewed", at + 600)));
+        assert_eq!(renewed.unwrap(), Some("renewed".into()));
+        // A renewal GitHub rejects means the authorization is gone: finish disconnecting.
+        let gone = disconnect_token(Some(expired.clone()), at, || {
+            Err("GitHub rejected the authorization. Connect GitHub again.".into())
+        });
+        assert_eq!(gone.unwrap(), None);
+        // A network failure keeps Disconnect pending so it is retried.
+        assert!(disconnect_token(Some(expired), at, || Err("Cannot reach GitHub.".into())).is_err());
     }
     #[test]
     fn a_connection_holds_the_network_lock_only_for_its_steps() {
