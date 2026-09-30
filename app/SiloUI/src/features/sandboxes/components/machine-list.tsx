@@ -1,8 +1,8 @@
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
-import { CopyPlus, GripVertical, Monitor, Pencil, Plus, Trash2 } from "lucide-react"
+import { CopyPlus, GripVertical, Pencil, Plus, Trash2 } from "lucide-react"
 
-import { ConfirmBody, ConfirmPopover } from "@/components/confirm-popover"
+import { ConfirmPopover } from "@/components/confirm-popover"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
@@ -12,7 +12,9 @@ import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
 import { SandboxAction, SandboxList, SandboxListItem, SandboxListRow, type SandboxIconState, type SandboxRowTone } from "@/features/sandboxes/components/sandbox-list"
 import { machineSummary } from "@/features/sandboxes/model/machine-summary"
-import { deleteSandboxDescription } from "@/features/sandboxes/model/delete-sandbox-copy"
+import { deleteSandboxDescription, deleteSandboxTitle } from "@/features/sandboxes/model/delete-sandbox-copy"
+import { DeleteSandboxBody, type DeleteSandboxDetails } from "@/features/sandboxes/components/delete-sandbox-confirmation"
+import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 export interface MachineRowPresentation {
@@ -30,7 +32,13 @@ export interface MachineRowPresentation {
   actionsClassName?: string
   tone?: SandboxRowTone
   busy?: boolean
+  /** Disables the row's mutating controls (reorder, ⋯ menu) while work runs. Opening the
+   * sandbox's page stays available so its progress and errors remain reachable. */
   suppressInteractions?: boolean
+  /** False when the row has no page to open yet (a sandbox that is still being created). */
+  openable?: boolean
+  /** What the Delete dialog states (checkpoints, size) and offers (Export, then delete). */
+  deleteDetails?: DeleteSandboxDetails
 }
 
 interface MachineListProps {
@@ -234,7 +242,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                     <SandboxListRow
                       name={machine.name}
                       kind={machine.kind}
-                      onOpen={onOpenMachine && !presentation?.suppressInteractions ? () => onOpenMachine(machine) : undefined}
+                      onOpen={onOpenMachine && presentation?.openable !== false ? () => onOpenMachine(machine) : undefined}
                       remote={Boolean(getComputerId?.(machine)) || machine.kind === "ssh"}
                       kindBadge={presentation?.kindBadge}
                       badge={presentation?.badge}
@@ -263,26 +271,34 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       >
                         <GripVertical className="size-4" aria-hidden="true" />
                       </span>}
-                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu label={`More actions for ${machine.name}`} disabled={rowInteractionsDisabled} popovers={{
+                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu label={`More actions for ${machine.name}`} popovers={{
                         ...presentation.popovers,
-                        delete: close => <ConfirmBody
-                          tone="destructive"
-                          title={`Delete ${deletionName}?`}
-                          description={deleteSandboxDescription(machine.kind)}
-                          confirmLabel="Delete"
+                        delete: close => <DeleteSandboxBody
+                          kind={machine.kind}
+                          displayName={deletionName}
+                          details={presentation.deleteDetails}
                           onClose={close}
-                          onConfirm={() => deleteWithNotice(machine).then(() => undefined)}
+                          onDelete={() => deleteWithNotice(machine)}
                         />,
                       }} items={[
                         ...presentation.menuActions,
-                        { label: "Edit", separatorBefore: presentation.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: interactionDisabled, onSelect: () => startEdit(machine) },
-                        { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: interactionDisabled, onSelect: () => startDuplicate(machine) },
-                        ...(machine.kind === "vm" && !machine.desktop && isMachineCreated?.(machine) ? [{ label: "Add Linux desktop", icon: Monitor, disabled: interactionDisabled, onSelect: () => {
-                          beginOperation()
-                          captureBaseline()
-                          void save({ ...machine, desktop: { startWithSandbox: true } }, machine.id, getComputerId?.(machine) ?? "")
-                        } }] : []),
-                        { icon: Trash2, label: "Delete", accessibleLabel: `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled || runningVM, tooltip: deleteTooltip, popover: "delete" },
+                        // The menu stays open to navigation while work runs; its items that
+                        // change the sandbox follow the row's interaction lock.
+                        ...sandboxEditMenu({
+                          machine,
+                          displayName: deletionName,
+                          disabled: rowInteractionsDisabled,
+                          created: Boolean(isMachineCreated?.(machine)),
+                          running: runningVM,
+                          separatorBefore: presentation.menuActions.length > 0,
+                          onEdit: () => startEdit(machine),
+                          onDuplicate: () => startDuplicate(machine),
+                          onAddDesktop: (vm) => {
+                            beginOperation()
+                            captureBaseline()
+                            void save({ ...vm, desktop: { startWithSandbox: true } }, machine.id, getComputerId?.(machine) ?? "")
+                          },
+                        }),
                       ]} />}</> : undefined}
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
@@ -290,7 +306,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                         <SandboxAction tooltip={machine.kind === "vm" ? "Create a new VM with these settings" : "Create a new SSH configuration with these settings."} label={`Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
                           <CopyPlus />
                         </SandboxAction>
-                        <ConfirmPopover align="end" tone="destructive" title={`Delete ${deletionName}?`} description={deleteSandboxDescription(machine.kind)} confirmLabel="Delete" tooltip={deleteTooltip ?? `Delete ${deletionName}`} onConfirm={() => remove(machine)}>
+                        <ConfirmPopover align="end" tone="destructive" title={deleteSandboxTitle(deletionName)} description={deleteSandboxDescription(machine.kind)} confirmLabel="Delete permanently" tooltip={deleteTooltip ?? `Delete ${deletionName}`} onConfirm={() => remove(machine)}>
                           <Button type="button" variant="ghost" size="icon-xs" aria-label={`Delete ${deletionName}`} disabled={interactionDisabled || runningVM}>
                             <Trash2 />
                           </Button>

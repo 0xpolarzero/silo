@@ -315,11 +315,11 @@ it("confirms a delete in a popover on the detail page and returns to the list", 
   await user.click(screen.getByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
 
   // The confirmation is a popover anchored to the menu button, not a dialog.
-  expect(await screen.findByText(`Delete ${workspace.machine.name}?`)).toBeVisible()
+  expect(await screen.findByText(`Delete ${workspace.machine.name} permanently?`)).toBeVisible()
   expect(screen.queryByRole("dialog", { hidden: true })?.getAttribute("aria-modal")).not.toBe("true")
   const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
   expect(popover.getByText(/will be deleted. This can't be undone./)).toBeVisible()
-  await user.click(popover.getByRole("button", { name: "Delete" }))
+  await user.click(popover.getByRole("button", { name: "Delete permanently" }))
 
   expect(onMachinesChange).toHaveBeenCalled()
   expect(await screen.findByRole("list", { name: "Configured sandboxes" })).toBeVisible()
@@ -335,16 +335,16 @@ it("shows a destructive Delete confirmation from the detail ⋯ menu and Fork st
 
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
-  expect(await screen.findByText(`Delete ${workspace.machine.name}?`)).toBeVisible()
-  const remove = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete" })
+  expect(await screen.findByText(`Delete ${workspace.machine.name} permanently?`)).toBeVisible()
+  const remove = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete permanently" })
   expect(remove.className).toContain("destructive")
   await user.keyboard("{Escape}")
-  await waitFor(() => expect(screen.queryByText(`Delete ${workspace.machine.name}?`)).not.toBeInTheDocument())
+  await waitFor(() => expect(screen.queryByText(`Delete ${workspace.machine.name} permanently?`)).not.toBeInTheDocument())
 
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(await screen.findByRole("menuitem", { name: `Fork ${workspace.machine.name}` }))
   expect(await screen.findByText(`Fork ${workspace.machine.name}`)).toBeVisible()
-  expect(screen.queryByText(`Delete ${workspace.machine.name}?`)).not.toBeInTheDocument()
+  expect(screen.queryByText(`Delete ${workspace.machine.name} permanently?`)).not.toBeInTheDocument()
 })
 
 it("does not bring a closed fork popover back when returning to the list", async () => {
@@ -387,11 +387,12 @@ it("confirms a delete from the list row ⋯ menu with the same popover as the de
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={onMachinesChange} />)
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(await screen.findByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
-  expect(await screen.findByText(`Delete ${workspace.machine.name}?`)).toBeVisible()
+  expect(await screen.findByText(`Delete ${workspace.machine.name} permanently?`)).toBeVisible()
   const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
-  expect(popover.getByText("Its files and checkpoints will be deleted. This can't be undone.")).toBeVisible()
+  // The row states what is lost exactly as the page does, checkpoint count included.
+  expect(popover.getByText(`Its files and ${workspace.checkpoints?.length ?? 0} checkpoints will be deleted. This can't be undone.`)).toBeVisible()
   expect(screen.queryByRole("menuitem", { name: /Confirm deletion/ })).not.toBeInTheDocument()
-  await user.click(popover.getByRole("button", { name: "Delete" }))
+  await user.click(popover.getByRole("button", { name: "Delete permanently" }))
   await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())
 })
 

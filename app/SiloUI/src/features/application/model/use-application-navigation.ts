@@ -76,6 +76,25 @@ export function useApplicationNavigation(hasSystemIssue: boolean, initialRoute?:
     })
   }, [hasSystemIssue])
 
+  // A sandbox that no longer exists (deleted, or gone after a refresh) turns every entry
+  // that showed it into the plain Sandboxes list, in place: the current position and the
+  // forward history survive, and Back never lands on (and bounces off) a missing page.
+  const forgetSandboxes = useCallback((exists: (workspace: string) => boolean) => {
+    setHistory((stored) => {
+      if (!stored.entries.some(({ workspace }) => workspace !== undefined && !exists(workspace))) return stored
+      const entries: Location[] = []
+      let index = 0
+      stored.entries.forEach((entry, position) => {
+        const destination: Location = entry.workspace !== undefined && !exists(entry.workspace)
+          ? { ...entry, workspace: undefined, sandboxTab: undefined }
+          : entry
+        if (!entries.length || !sameDestination(entries.at(-1)!, destination)) entries.push(destination)
+        if (position <= stored.index) index = entries.length - 1
+      })
+      return { entries, index }
+    })
+  }, [])
+
   const move = useCallback((offset: number) => {
     setHistory((stored) => {
       const current = hasSystemIssue ? stored : withoutSystemIssue(stored)
@@ -97,5 +116,6 @@ export function useApplicationNavigation(hasSystemIssue: boolean, initialRoute?:
     openSandbox: (workspace: string, sandboxTab: SandboxDetailTab = "overview") => navigate({ tab: "workspaces", workspaceSection: "overview", workspace, sandboxTab }),
     selectSandboxTab: (sandboxTab: SandboxDetailTab) => navigate({ tab: "workspaces", workspaceSection: "overview", sandboxTab }),
     closeSandbox: () => navigate({ tab: "workspaces", workspaceSection: "overview", workspace: undefined, sandboxTab: undefined }),
+    forgetSandboxes,
   }
 }

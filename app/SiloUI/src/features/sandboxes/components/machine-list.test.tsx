@@ -1,10 +1,11 @@
 import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
 import { MachineList } from "./machine-list"
 
-it("keeps row controls mounted and in place across a busy transition", () => {
+it("keeps row controls mounted and in place across a busy transition", async () => {
   const machine = productionMachineDefaults[0]
   const onMachinesChange = vi.fn()
   const view = (busy: boolean) => <TooltipProvider><MachineList
@@ -25,7 +26,12 @@ it("keeps row controls mounted and in place across a busy transition", () => {
 
   rerender(view(true))
   expect(screen.getByRole("button", { name: `More actions for ${machine.name}` })).toBe(menu)
-  expect(menu).toBeDisabled()
+  // Busy rows keep their menu for navigation; only the items that change the sandbox lock.
+  expect(menu).toBeEnabled()
+  await userEvent.setup().click(menu)
+  expect(screen.getByRole("menuitem", { name: `Edit ${machine.name}` })).toHaveAttribute("data-disabled")
+  expect(screen.getByRole("menuitem", { name: "Checkpoints" })).not.toHaveAttribute("data-disabled")
+  await userEvent.setup().keyboard("{Escape}")
   expect(screen.getByRole("button", { name: `Reorder ${machine.name}` })).toBe(reorder)
   expect(reorder).toHaveAttribute("aria-disabled", "true")
   expect(reorder).toHaveAttribute("tabindex", "-1")
