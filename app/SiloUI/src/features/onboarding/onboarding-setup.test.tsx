@@ -167,7 +167,7 @@ it("enables Finish only after every queue operation succeeds", async () => {
   }} />)
   await user.click(screen.getByRole("tab", { name: /Review/ }))
   expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled()
-  expect(screen.queryByRole("list", { name: "Setup operations" })).not.toBeInTheDocument()
+  expect(screen.getAllByRole("list").map(list => list.getAttribute("aria-label"))).toEqual(["Sandboxes"])
   expect(within(screen.getByRole("list", { name: "Sandboxes" })).getAllByText("Complete")).toHaveLength(3)
   await user.click(screen.getByRole("button", { name: "Finish" }))
   expect(finishSetup).toHaveBeenCalledWith({

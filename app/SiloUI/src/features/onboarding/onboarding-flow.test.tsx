@@ -44,7 +44,7 @@ describe("onboarding continuity", () => {
     await user.click(screen.getByRole("button", { name: "Finish" }))
     expect(finishSetup).toHaveBeenCalledOnce()
     expect(screen.getByRole("status")).toHaveTextContent("Setup complete")
-    expect(screen.queryByRole("list", { name: "Setup operations" })).not.toBeInTheDocument()
+    expect(screen.queryAllByRole("list")).toEqual([])
     expect(screen.queryByRole("button", { name: "Finish" })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: "Back" })).not.toBeInTheDocument()
     for (const tab of within(screen.getByRole("navigation", { name: "Setup steps" })).getAllByRole("tab")) expect(tab).toBeDisabled()

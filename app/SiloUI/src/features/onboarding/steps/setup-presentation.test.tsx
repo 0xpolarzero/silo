@@ -75,7 +75,7 @@ describe("setup progress and review presentation", () => {
 
   it("shows validation on existing cards and preserves sandbox order and resources", () => {
     renderReview()
-    expect(screen.queryByRole("list", { name: "Setup operations" })).not.toBeInTheDocument()
+    expect(screen.getAllByRole("list").map(list => list.getAttribute("aria-label"))).toEqual(["Sandboxes"])
     expect(screen.queryByText("queued")).not.toBeInTheDocument()
     expect(screen.queryByText("succeeded")).not.toBeInTheDocument()
     const sandboxes = within(screen.getByRole("list", { name: "Sandboxes" })).getAllByRole("listitem")
@@ -130,8 +130,7 @@ describe("setup progress and review presentation", () => {
     expect(edit).toHaveBeenLastCalledWith("workspaces")
     await user.click(screen.getByRole("button", { name: "Edit GitHub and Git identity" }))
     expect(edit).toHaveBeenLastCalledWith("github")
-    expect(screen.queryByRole("button", { name: "Edit GitHub access" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Edit Git identity" })).not.toBeInTheDocument()
+    expect(screen.getAllByRole("button", { name: /^Edit / }).map(button => button.getAttribute("aria-label"))).toEqual(["Edit sandboxes", "Edit GitHub and Git identity"])
   })
 
   it("keeps recovery visible while technical evidence stays optional", async () => {

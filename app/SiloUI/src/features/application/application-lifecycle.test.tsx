@@ -492,7 +492,7 @@ it("keeps the issue visible and prevents duplicate retries while checking", asyn
   const page = within(appPanel("System issue"))
   expect(page.getByRole("alert")).toHaveTextContent("Silo could not verify the bundled runtime")
   expect(page.getByRole("button", { name: "Checking…" })).toBeDisabled()
-  expect(page.queryByRole("list", { name: "Repair progress" })).not.toBeInTheDocument()
+  expect(page.queryAllByRole("list")).toEqual([])
   await application.user.click(page.getByRole("button", { name: "Checking…" }))
   expect(application.actions.retryRuntimeChecks).not.toHaveBeenCalled()
 })
