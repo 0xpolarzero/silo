@@ -28,7 +28,8 @@ function sandboxName(workspace: ApplicationWorkspace) {
 /**
  * The guards every surface applies to a lifecycle request (list row, sandbox page, command
  * palette, toasts, and the status panel): local VM operations can be unavailable in this
- * build, and starting a VM under memory pressure asks first.
+ * build, starting a VM under memory pressure asks first, and stopping or restarting a
+ * running sandbox always asks first (decision 8). Start and Open never ask otherwise.
  */
 export function lifecycleCheck(source: ApplicationSource, workspace: ApplicationWorkspace, action: LifecycleAction): LifecycleCheck {
   const local = !workspace.computer
@@ -42,7 +43,14 @@ export function lifecycleCheck(source: ApplicationSource, workspace: Application
       tone: "default",
     } }
   }
+  if (action !== "start" && workspace.state === "running") return { kind: "confirm", prompt: interruptionPrompt(workspace, action) }
   return { kind: "ready" }
+}
+
+/** The tray's inline Stop/Restart confirmation, in words every surface shares. */
+export function interruptionPrompt(workspace: ApplicationWorkspace, action: "stop" | "restart"): LifecyclePrompt {
+  const label = action === "stop" ? "Stop" : "Restart"
+  return { title: `${label} ${sandboxName(workspace)}?`, description: "Running processes will be interrupted.", confirmLabel: label, tone: "destructive" }
 }
 
 /** Sends the action to the sandbox's own computer. */

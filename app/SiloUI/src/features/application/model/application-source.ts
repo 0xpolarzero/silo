@@ -170,9 +170,9 @@ export interface ApplicationWorkspace {
     level: "warning" | "error"
     message: string
   }
-  /** Keep the last settled reading while a native operation changes this sandbox. */
-  settling?: boolean
   freshness: "fresh" | "stale"
+  /** The native read overlapped an operation; runtime fields retain their last settled values. */
+  settling?: boolean
   host: string
   repositories: ApplicationRepository[]
   files: ApplicationFileEntry[]

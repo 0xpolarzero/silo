@@ -16,6 +16,7 @@ const MAX_ENTRIES: usize = 20_000;
 const MAX_SNAPSHOTS: usize = 64;
 const FAILED: &str = "Could not load this folder.";
 const EXPIRED: &str = "Folder listing expired. Refresh this folder.";
+const TOO_LARGE: &str = "This folder is too large to list.";
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Entry {
@@ -74,6 +75,7 @@ fn parse_listing(output: &str, path: &str) -> Result<Vec<Entry>, String> {
         Some("missing") => return Err("This folder no longer exists.".into()),
         Some("denied") => return Err("Permission denied.".into()),
         Some("invalid") => return Err("This folder cannot be browsed.".into()),
+        Some("large") => return Err(TOO_LARGE.into()),
         _ => return Err(FAILED.into()),
     }
     let mut entries = Vec::new();
@@ -91,16 +93,18 @@ fn parse_listing(output: &str, path: &str) -> Result<Vec<Entry>, String> {
             || name.contains('/')
             || entries.len() == MAX_ENTRIES
         {
-            return Err("This folder is too large to list.".into());
+            return Err(TOO_LARGE.into());
         }
         bytes += name.len() * 2 + path.len() + 96;
         if bytes > 2 * 1024 * 1024 {
-            return Err("This folder is too large to list.".into());
+            return Err(TOO_LARGE.into());
         }
         let kind = match kind {
             "d" => "folder",
             "l" => "symlink",
-            "f" | "b" | "c" | "p" | "s" => "file",
+            // "u": the guest escaped a name that is not UTF-8. Its path does not
+            // exist, so it is listed but never offered as a folder to open.
+            "f" | "b" | "c" | "p" | "s" | "u" => "file",
             _ => return Err(FAILED.into()),
         };
         entries.push(Entry {
@@ -185,10 +189,10 @@ pub(crate) async fn list_workspace_directory(
                 "--workdir".into(),
                 "/".into(),
                 "--".into(),
-                "bash".into(),
+                "python3".into(),
+                "-I".into(),
                 "-c".into(),
-                include_str!("../guest/list-directory.sh").into(),
-                "silo-files".into(),
+                include_str!("../guest/list-directory.py").into(),
                 path.clone(),
             ],
             Duration::from_secs(8),
@@ -272,6 +276,18 @@ mod tests {
             assert!(parse_listing(listing, "/workspace").is_err());
         }
         assert!(parse_listing("ok\0", "/workspace").unwrap().is_empty());
+    }
+    #[test]
+    fn undecodable_names_are_listed_but_never_opened_as_folders() {
+        let entries = parse_listing("ok\0u\0caf\\xe9\0d\0real\0", "/workspace").unwrap();
+        assert_eq!(entries[0].name, "real");
+        assert_eq!(entries[0].kind, "folder");
+        assert_eq!(entries[1].name, "caf\\xe9");
+        assert_eq!(entries[1].kind, "file");
+    }
+    #[test]
+    fn the_guest_reports_oversized_folders_before_the_output_cap() {
+        assert_eq!(parse_listing("large\0", "/workspace").unwrap_err(), TOO_LARGE);
     }
     #[test]
     fn long_paths_cannot_expand_snapshot_memory_without_bound() {

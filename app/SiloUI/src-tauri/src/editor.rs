@@ -33,18 +33,16 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
         let path = path.unwrap_or("/workspace");
         let (alias, _) = prepare_remote(app, &host, &vm, path)?;
         let application = applications::selected_editor(app)?;
-        let (executable, zed) = applications::editor_command(&application)?;
-        let mut launch = Command::new(executable);
-        if !zed { launch.arg("--folder-uri"); }
-        launch.arg(remote_uri(&alias, path, zed)?);
-        return run(&mut launch, Duration::from_secs(10));
+        let command = applications::editor_command(&application)?;
+        let home = app.path().home_dir().map_err(|_| FAILED)?;
+        return launch_editor(editor_launch(&command, &alias, path, &home)?, EDITOR_EXIT_WINDOW);
     }
     require_openssh("open VM folders in your editor")?;
     runtime::validate_name(name).map_err(|error| error.to_string())?;
     let path = path.unwrap_or("/workspace");
     validate_path(path)?;
     let application = applications::selected_editor(app)?;
-    let (executable, zed) = applications::editor_command(&application)?;
+    let command = applications::editor_command(&application)?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if !metadata
@@ -93,15 +91,37 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
     run(&mut probe, Duration::from_secs(10)).map_err(|_| {
         "Could not connect to this VM over SSH. Retry after checking that it is running."
     })?;
-    let uri = remote_uri(&alias, path, zed)?;
-    let mut launch = Command::new(executable);
-    if !zed {
-        launch.arg("--folder-uri");
+    launch_editor(editor_launch(&command, &alias, path, &user_home)?, EDITOR_EXIT_WINDOW)
+}
+
+/// How long an editor launcher may take to report a failure. Launchers that
+/// are still running then (an editor started without its CLI) are left
+/// running and reaped in the background, never killed (G-06).
+const EDITOR_EXIT_WINDOW: Duration = Duration::from_secs(10);
+
+fn launch_editor(mut launch: Command, window: Duration) -> Result<(), String> {
+    const FAILED_LAUNCH: &str =
+        "The editor could not be opened. Check its installation and Remote SSH support.";
+    let mut child = applications::launch::sanitize_child(&mut launch)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| FAILED_LAUNCH)?;
+    let deadline = Instant::now() + window;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) | Err(_) => return Err(FAILED_LAUNCH.into()),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Ok(());
+            }
+        }
     }
-    launch.arg(uri);
-    run(&mut launch, Duration::from_secs(10)).map_err(|_| {
-        "The editor could not be opened. Check its installation and Remote SSH support.".to_string()
-    })
 }
 
 /// Explains a missing system OpenSSH client instead of a generic failure.
@@ -128,6 +148,91 @@ fn validate_path(path: &str) -> Result<(), String> {
         return Err("Choose a folder inside /workspace.".into());
     }
     Ok(())
+}
+
+/// VS Code profile for every Silo sandbox window, so the settings below and
+/// the extensions that can reach the sandbox never mix with the user's own
+/// profile (decision 5, G-19). VS Code creates it empty on first use and
+/// offers to install Remote - SSH into it.
+const VSCODE_PROFILE: &str = "Silo";
+/// Carried by a Silo-owned workspace file on the host. Workspace settings
+/// apply from the first window, whether or not the profile exists yet, and
+/// outrank the "Remote" settings a sandbox can write for itself.
+const VSCODE_SETTINGS: [(&str, bool); 4] = [
+    // Git in the sandbox cannot borrow the host VS Code's GitHub session.
+    ("github.gitAuthentication", false),
+    // Sandbox terminals get no askpass handle back to the host VS Code.
+    ("git.terminalAuthentication", false),
+    // Sandbox ports reach this computer only through Silo's port publishing.
+    ("remote.autoForwardPorts", false),
+    ("remote.forwardOnOpen", false),
+];
+
+/// The editor command for a sandbox folder: Zed receives its SSH URI; VS Code
+/// opens the Silo profile with the folder's Silo workspace file.
+fn editor_launch(
+    command: &applications::launch::EditorCommand,
+    alias: &str,
+    path: &str,
+    user_home: &Path,
+) -> Result<Command, String> {
+    let mut launch = Command::new(&command.program);
+    launch.args(&command.args);
+    if command.zed {
+        launch.arg(remote_uri(alias, path, true)?);
+    } else {
+        launch
+            .args(["--profile", VSCODE_PROFILE])
+            .arg(vscode_workspace(&user_home.join(".silo"), alias, path)?);
+    }
+    Ok(launch)
+}
+
+/// Writes `~/.silo/editor/<alias>/<path hash>/<folder>.code-workspace`, keeping
+/// any other workspace settings the user added and restoring Silo's own.
+fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf, String> {
+    use sha2::{Digest, Sha256};
+    validate_path(path)?;
+    if alias.is_empty() || !alias.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
+        return Err(FAILED.into());
+    }
+    runtime::prepare_private_directory(silo_root).map_err(|_| FAILED)?;
+    let mut directory = silo_root.join("editor");
+    private_directory(&directory)?;
+    directory.push(alias);
+    private_directory(&directory)?;
+    directory.push(&format!("{:x}", Sha256::digest(path.as_bytes()))[..12]);
+    private_directory(&directory)?;
+    let folder: String = path
+        .rsplit('/')
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .map(|character| {
+            if character.is_alphanumeric() || " -_.".contains(character) { character } else { '_' }
+        })
+        .take(64)
+        .collect();
+    let folder = folder.trim_start_matches('.').trim();
+    let file = directory.join(format!(
+        "{}.code-workspace",
+        if folder.is_empty() { "workspace" } else { folder }
+    ));
+    let mut document = serde_json::from_slice::<serde_json::Value>(&read_regular(&file)?)
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| serde_json::json!({}));
+    document["folders"] = serde_json::json!([{ "uri": remote_uri(alias, path, false)? }]);
+    document["remoteAuthority"] = serde_json::json!(format!("ssh-remote+{alias}"));
+    if !document["settings"].is_object() {
+        document["settings"] = serde_json::json!({});
+    }
+    for (key, value) in VSCODE_SETTINGS {
+        document["settings"][key] = serde_json::json!(value);
+    }
+    let bytes = serde_json::to_vec_pretty(&document).map_err(|_| FAILED)?;
+    write_private(&file, &bytes)?;
+    Ok(file)
 }
 
 fn remote_uri(alias: &str, path: &str, zed: bool) -> Result<String, String> {
@@ -193,7 +298,7 @@ pub(crate) fn key(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn public_key(path: &Path) -> Result<String, String> {
-    let output = Command::new("/usr/bin/ssh-keygen")
+    let output = applications::launch::sanitize_child(&mut Command::new("/usr/bin/ssh-keygen"))
         .args(["-y", "-f"])
         .arg(path)
         .stdin(Stdio::null())
@@ -239,20 +344,86 @@ fn prepare(
     let known_hosts = root.join(format!("{name}.known_hosts"));
     let alias = prepare_configuration(paths, name, &config, &known_hosts)?;
     let _guard = files_lock();
-    let ssh_root = user_home.join(".ssh");
-    private_directory(&ssh_root)?;
-    let user_config = ssh_root.join("config");
-    let old = read_regular(&user_config)?;
-    let include = format!("Include {}\n", ssh_quote(&root.join("*.conf"))?);
-    if !old
-        .split(|byte| *byte == b'\n')
-        .any(|line| line == include.trim_end().as_bytes())
-    {
-        let mut new = include.into_bytes();
-        new.extend_from_slice(&old);
-        write_private(&user_config, &new)?;
-    }
+    install_include(user_home, &format!("Include {}", ssh_quote(&root.join("*.conf"))?))?;
     Ok((alias, config))
+}
+
+fn owned(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    metadata.uid() == unsafe { libc::geteuid() }
+}
+
+fn manual_include(config: &Path, include: &str) -> String {
+    format!(
+        "Silo can't safely update {}, which links to a file it can't change. Add this line at the top of that file, then try again: {include}",
+        config.display()
+    )
+}
+
+fn has_line(contents: &[u8], line: &str) -> bool {
+    contents.split(|byte| *byte == b'\n').any(|current| current == line.as_bytes())
+}
+
+/// Prepends Silo's `Include` to the user's SSH configuration once. Links from
+/// dotfile managers (stow, chezmoi) are followed when they lead to a folder or
+/// file this account owns; otherwise, such as a read-only home-manager file,
+/// the user gets the exact line to add (G-11).
+fn install_include(user_home: &Path, include: &str) -> Result<(), String> {
+    let link = user_home.join(".ssh");
+    let user_config = link.join("config");
+    let manual = || manual_include(&user_config, include);
+    let ssh_root = match fs::symlink_metadata(&link) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            let target = fs::canonicalize(&link).map_err(|_| manual())?;
+            match fs::metadata(&target) {
+                Ok(metadata) if metadata.is_dir() && owned(&metadata) => target,
+                _ => return Err(manual()),
+            }
+        }
+        _ => {
+            private_directory(&link)?;
+            link.clone()
+        }
+    };
+    let config = ssh_root.join("config");
+    if !fs::symlink_metadata(&config).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        let old = read_regular(&config)?;
+        if !has_line(&old, include) {
+            let mut new = format!("{include}\n").into_bytes();
+            new.extend_from_slice(&old);
+            write_private(&config, &new)?;
+        }
+        return Ok(());
+    }
+    let target = fs::canonicalize(&config).map_err(|_| manual())?;
+    let old = read_regular(&target)?;
+    if has_line(&old, include) {
+        return Ok(());
+    }
+    let parent_owned = target
+        .parent()
+        .and_then(|parent| fs::metadata(parent).ok())
+        .is_some_and(|metadata| owned(&metadata));
+    if !parent_owned || !fs::metadata(&target).is_ok_and(|metadata| metadata.is_file() && owned(&metadata)) {
+        return Err(manual());
+    }
+    let mut new = format!("{include}\n").into_bytes();
+    new.extend_from_slice(&old);
+    // Replacing the resolved file keeps the user's link in place.
+    replace_file(&target, &new).map_err(|_| manual())
+}
+
+/// Atomically replaces a regular file and keeps its permission bits.
+fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let mode = fs::metadata(path)?.mode() & 0o666;
+    let parent = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    file.as_file().set_permissions(fs::Permissions::from_mode(mode))?;
+    file.write_all(bytes)?;
+    file.as_file().sync_all()?;
+    file.persist(path).map_err(|error| error.error)?;
+    Ok(())
 }
 
 /// Private connections share the editor's host-only identity, without installing
@@ -307,30 +478,14 @@ fn prepare_configuration(
         &known_hosts,
         format!("{alias} {}\n", public_key(&host_key)?).as_bytes(),
     )?;
-    let proxy = [
-        "/usr/bin/env".to_owned(),
-        format!("MSB_HOME={}", paths.home.display()),
-        format!("MSB_PATH={}", paths.executable.display()),
-        format!("MSB_LIBKRUNFW_PATH={}", paths.library.display()),
-        paths.executable.to_string_lossy().into_owned(),
-        "ssh".into(),
-        "serve".into(),
-        name.into(),
-        "--stdio".into(),
-        "--no-start".into(),
-        "--no-inactivity-timeout".into(),
-    ]
-    .iter()
-    .map(|part| quote(&part.replace('%', "%%")))
-    .collect::<Vec<_>>()
-    .join(" ");
+    let proxy = local_proxy(paths, name)?;
     let content = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, content.as_bytes())?;
     Ok(alias)
 }
 
 fn run(command: &mut Command, timeout: Duration) -> Result<(), String> {
-    let mut child = command
+    let mut child = applications::launch::sanitize_child(command)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -418,14 +573,143 @@ pub(crate) fn prepare_remote_private(app: &AppHandle, host: &str, vm: &str, path
     let alias = format!("silo-remote-{host}-{vm}");
     let known_hosts = root.join(format!("{host}-{vm}.known_hosts"));
     write_private(&known_hosts, format!("{alias} {host_public}\n").as_bytes())?;
-    let executable = std::env::current_exe().map_err(|_| FAILED)?;
-    let executable = executable.to_str().ok_or(FAILED)?;
-    let proxy = [executable, "--remote-guest", host, vm].iter()
-        .map(|value| quote(&value.replace('%', "%%"))).collect::<Vec<_>>().join(" ");
+    let proxy = remote_proxy(host, vm)?;
     let config = root.join(format!("{host}-{vm}.conf"));
     let contents = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, contents.as_bytes())?;
     Ok((alias, config))
+}
+
+fn proxy_command<S: AsRef<str>>(parts: &[S]) -> String {
+    parts
+        .iter()
+        .map(|part| quote(&part.as_ref().replace('%', "%%")))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The ProxyCommand for a local sandbox. An AppImage's bundled tools live in a
+/// mount that changes on every start, so editor configurations that outlive
+/// Silo call the AppImage file itself instead (G-12).
+fn local_proxy(paths: &RuntimePaths, name: &str) -> Result<String, String> {
+    runtime::validate_name(name).map_err(|error| error.to_string())?;
+    let home = paths.home.to_str().ok_or(FAILED)?;
+    if applications::launch::tools_are_temporary() {
+        let silo = applications::launch::stable_executable()?;
+        return Ok(proxy_command(&[silo.to_str().ok_or(FAILED)?, TRANSPORT_MODE, home, name]));
+    }
+    let executable = paths.executable.to_str().ok_or(FAILED)?;
+    Ok(proxy_command(&[
+        "/usr/bin/env",
+        &format!("MSB_HOME={home}"),
+        &format!("MSB_PATH={executable}"),
+        &format!("MSB_LIBKRUNFW_PATH={}", paths.library.to_str().ok_or(FAILED)?),
+        executable,
+        "ssh",
+        "serve",
+        name,
+        "--stdio",
+        "--no-start",
+        "--no-inactivity-timeout",
+    ]))
+}
+
+/// The ProxyCommand for a sandbox on another computer, through this Silo.
+fn remote_proxy(host: &str, vm: &str) -> Result<String, String> {
+    uuid::Uuid::parse_str(host).map_err(|_| FAILED)?;
+    uuid::Uuid::parse_str(vm).map_err(|_| FAILED)?;
+    let silo = applications::launch::stable_executable()?;
+    Ok(proxy_command(&[silo.to_str().ok_or(FAILED)?, "--remote-guest", host, vm]))
+}
+
+/// `silo --msb-ssh-serve <runtime home> <sandbox>`: the local editor transport
+/// run from an AppImage, whose bundled runtime has no stable path (G-12).
+pub(crate) const TRANSPORT_MODE: &str = "--msb-ssh-serve";
+
+/// Runs the bundled `msb ssh serve` in this AppImage's mount for an editor.
+pub(crate) fn run_transport(args: &[String]) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let [home, name] = args else {
+        return Err("Expected a runtime home and a sandbox name.".into());
+    };
+    runtime::validate_name(name).map_err(|error| error.to_string())?;
+    let home = Path::new(home);
+    if !home.is_absolute() {
+        return Err("Expected an absolute runtime home.".into());
+    }
+    let executable = std::env::current_exe().map_err(|_| FAILED)?;
+    let bundle = tauri::utils::platform::bundle_type();
+    let appimage = std::env::var_os("APPDIR").map(PathBuf::from);
+    let msb = crate::bundled_tools::resolve(&executable, Path::new(""), bundle.clone(), appimage.as_deref())?
+        .join("msb");
+    let library = runtime::bundled_runtime_library(&msb, Path::new(""), bundle);
+    let error = Command::new(&msb)
+        .args(["ssh", "serve", name, "--stdio", "--no-start", "--no-inactivity-timeout"])
+        .env("MSB_HOME", home)
+        .env("MSB_PATH", &msb)
+        .env("MSB_LIBKRUNFW_PATH", &library)
+        .exec();
+    Err(format!("Could not start the sandbox connection: {error}"))
+}
+
+/// Replaces the ProxyCommand of a configuration Silo wrote.
+fn with_proxy(contents: &str, proxy: &str) -> Option<String> {
+    let mut found = false;
+    let lines: Vec<String> = contents
+        .split('\n')
+        .map(|line| {
+            if line.starts_with("  ProxyCommand ") {
+                found = true;
+                format!("  ProxyCommand {proxy}")
+            } else {
+                line.to_owned()
+            }
+        })
+        .collect();
+    found.then(|| lines.join("\n"))
+}
+
+/// Rewrites the ProxyCommand of every `*.conf` Silo wrote in `root`, where
+/// `proxy_for` maps a file stem to its current command.
+fn refresh_configs(root: &Path, proxy_for: &dyn Fn(&str) -> Option<String>) {
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_none_or(|extension| extension != "conf") {
+            continue;
+        }
+        let Some(proxy) = path.file_stem().and_then(|stem| stem.to_str()).and_then(proxy_for) else {
+            continue;
+        };
+        let Ok(bytes) = read_regular(&path) else { continue };
+        let Ok(contents) = String::from_utf8(bytes) else { continue };
+        if let Some(updated) = with_proxy(&contents, &proxy).filter(|updated| *updated != contents) {
+            let _ = write_private(&path, updated.as_bytes());
+        }
+    }
+}
+
+/// At startup under an AppImage, points editor configurations written by an
+/// earlier run at the AppImage file instead of that run's mount (G-12, with
+/// C-19). Editors reconnecting after a restart then find the transport.
+pub(crate) fn refresh_transports(app: &AppHandle) {
+    if !applications::launch::tools_are_temporary() {
+        return;
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let _guard = files_lock();
+        if let Ok(paths) = runtime::runtime_paths(&app) {
+            refresh_configs(&paths.home.join("ssh"), &|name| local_proxy(&paths, name).ok());
+        }
+        if let Ok(home) = app.path().home_dir() {
+            refresh_configs(&home.join(".silo/desktop-remote/ssh"), &|stem| {
+                let (host, vm) = (stem.get(..36)?, stem.get(37..)?);
+                (stem.as_bytes().get(36) == Some(&b'-')).then_some(())?;
+                remote_proxy(host, vm).ok()
+            });
+        }
+    });
 }
 
 pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) -> Result<(String, PathBuf), String> {
@@ -433,15 +717,7 @@ pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) 
     let root = config.parent().ok_or(FAILED)?;
     let home = app.path().home_dir().map_err(|_| FAILED)?;
     let _guard = files_lock();
-    let ssh_root = home.join(".ssh");
-    private_directory(&ssh_root)?;
-    let user_config = ssh_root.join("config");
-    let old = read_regular(&user_config)?;
-    let include = format!("Include {}\n", ssh_quote(&root.join("*.conf"))?);
-    if !old.split(|byte| *byte == b'\n').any(|line| line == include.trim_end().as_bytes()) {
-        let mut updated = include.into_bytes(); updated.extend_from_slice(&old);
-        write_private(&user_config, &updated)?;
-    }
+    install_include(&home, &format!("Include {}", ssh_quote(&root.join("*.conf"))?))?;
     Ok((alias, config))
 }
 
@@ -515,6 +791,214 @@ mod tests {
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert!(write_private(&link, b"replace").is_err());
         assert_eq!(fs::read(&file).unwrap(), b"Host existing\n  User user\n");
+    }
+
+    #[test]
+    fn editor_configurations_get_a_fresh_proxy_command_at_startup() {
+        let root = tempfile::tempdir().unwrap();
+        let config = "Host silo-abc-dev\n  HostName silo-abc-dev\n  User silo\n  ProxyCommand '/tmp/.mount_old/usr/libexec/silo/tools/msb' 'ssh' 'serve' 'dev'\n\nHost *\n";
+        fs::write(root.path().join("dev.conf"), config).unwrap();
+        fs::write(root.path().join("dev.known_hosts"), "unchanged").unwrap();
+        fs::write(root.path().join("bad name.conf"), config).unwrap();
+        refresh_configs(root.path(), &|name| {
+            runtime::validate_name(name).ok()?;
+            Some(proxy_command(&["/home/me/Silo.AppImage", TRANSPORT_MODE, "/home/me/.silo/abc", name]))
+        });
+        let updated = fs::read_to_string(root.path().join("dev.conf")).unwrap();
+        assert_eq!(
+            updated,
+            config.replace(
+                "'/tmp/.mount_old/usr/libexec/silo/tools/msb' 'ssh' 'serve' 'dev'",
+                "'/home/me/Silo.AppImage' '--msb-ssh-serve' '/home/me/.silo/abc' 'dev'"
+            )
+        );
+        assert_eq!(fs::read_to_string(root.path().join("bad name.conf")).unwrap(), config);
+        assert_eq!(fs::read_to_string(root.path().join("dev.known_hosts")).unwrap(), "unchanged");
+        assert_eq!(with_proxy("Host x\n", "p"), None);
+    }
+
+    #[test]
+    fn proxy_commands_outside_an_appimage_keep_their_direct_form() {
+        let paths = RuntimePaths {
+            guest_image: PathBuf::new(),
+            executable: "/Applications/Silo.app/Contents/MacOS/msb".into(),
+            home: "/Users/me/.silo/abc".into(),
+            storage_home: None,
+            library: "/Applications/Silo.app/Contents/Frameworks/libkrunfw.5.dylib".into(),
+            metadata: PathBuf::new(),
+            volumes: PathBuf::new(),
+        };
+        assert_eq!(
+            local_proxy(&paths, "dev").unwrap(),
+            "'/usr/bin/env' 'MSB_HOME=/Users/me/.silo/abc' 'MSB_PATH=/Applications/Silo.app/Contents/MacOS/msb' 'MSB_LIBKRUNFW_PATH=/Applications/Silo.app/Contents/Frameworks/libkrunfw.5.dylib' '/Applications/Silo.app/Contents/MacOS/msb' 'ssh' 'serve' 'dev' '--stdio' '--no-start' '--no-inactivity-timeout'"
+        );
+        let host = "0b6a1c9e-9f55-4d8e-9d2c-3f0a4b5c6d7e";
+        let vm = "1c7b2d0f-0a66-4e9f-8e3d-4a1b5c6d7e8f";
+        let remote = remote_proxy(host, vm).unwrap();
+        assert!(remote.ends_with(&format!("'--remote-guest' '{host}' '{vm}'")));
+        assert!(remote_proxy("not-a-uuid", vm).is_err());
+        assert!(run_transport(&["relative".into(), "dev".into()]).is_err());
+        assert!(run_transport(&["/home".into(), "bad;name".into()]).is_err());
+    }
+
+    fn vscode(program: &str) -> applications::launch::EditorCommand {
+        applications::launch::EditorCommand { program: program.into(), args: Vec::new(), zed: false }
+    }
+
+    #[test]
+    fn an_editor_that_keeps_running_is_left_open_and_a_failed_launch_is_reported() {
+        let started = Instant::now();
+        let mut long = Command::new("/bin/sh");
+        long.args(["-c", "echo $$ > \"$0\"; exec sleep 30"]);
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("editor.pid");
+        long.arg(&pid_file);
+        launch_editor(long, Duration::from_millis(300)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let pid: i32 = fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "the editor must not be killed");
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+        assert!(launch_editor(Command::new("/usr/bin/false"), Duration::from_secs(5)).is_err());
+        assert!(launch_editor(Command::new("/usr/bin/true"), Duration::from_secs(5)).is_ok());
+    }
+
+    fn launch_args(launch: &Command) -> Vec<String> {
+        launch.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn vscode_opens_the_silo_profile_with_protective_workspace_settings() {
+        let home = tempfile::tempdir().unwrap();
+        let code = vscode("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code");
+        let launch = editor_launch(&code, "silo-abc-dev", "/workspace/my repo", home.path()).unwrap();
+        assert_eq!(launch.get_program(), code.program.as_os_str());
+        let args = launch_args(&launch);
+        assert_eq!(args[..2], ["--profile", "Silo"]);
+        assert_eq!(args.len(), 3, "no --folder-uri: the workspace file names the folder");
+        let file = PathBuf::from(&args[2]);
+        assert!(file.starts_with(home.path().join(".silo/editor/silo-abc-dev")));
+        assert_eq!(file.file_name().unwrap(), "my repo.code-workspace");
+        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(file.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
+        let document: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(
+            document["folders"],
+            serde_json::json!([{ "uri": "vscode-remote://ssh-remote+silo-abc-dev/workspace/my%20repo" }])
+        );
+        assert_eq!(document["remoteAuthority"], "ssh-remote+silo-abc-dev");
+        assert_eq!(
+            document["settings"],
+            serde_json::json!({
+                "github.gitAuthentication": false,
+                "git.terminalAuthentication": false,
+                "remote.autoForwardPorts": false,
+                "remote.forwardOnOpen": false,
+            })
+        );
+        // Another folder of the same sandbox gets its own workspace file.
+        let other = editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap();
+        assert_ne!(launch_args(&other)[2], args[2]);
+        assert!(launch_args(&other)[2].ends_with("/workspace.code-workspace"));
+    }
+
+    #[test]
+    fn user_workspace_settings_survive_while_silo_settings_are_restored() {
+        let home = tempfile::tempdir().unwrap();
+        let code = vscode("/usr/bin/code");
+        let args = launch_args(&editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap());
+        fs::write(
+            &args[2],
+            br#"{"folders":[{"uri":"file:///elsewhere"}],"settings":{"editor.fontSize":15,"remote.autoForwardPorts":true}}"#,
+        )
+        .unwrap();
+        editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&fs::read(&args[2]).unwrap()).unwrap();
+        assert_eq!(document["settings"]["editor.fontSize"], 15);
+        assert_eq!(document["settings"]["remote.autoForwardPorts"], false);
+        assert_eq!(document["folders"][0]["uri"], "vscode-remote://ssh-remote+silo-abc-dev/workspace");
+    }
+
+    #[test]
+    fn zed_keeps_its_ssh_uri_and_no_workspace_file() {
+        let home = tempfile::tempdir().unwrap();
+        let zed = applications::launch::EditorCommand { program: "/usr/bin/flatpak".into(), args: vec!["run".into(), "dev.zed.Zed".into()], zed: true };
+        let launch = editor_launch(&zed, "silo-abc-dev", "/workspace", home.path()).unwrap();
+        assert_eq!(launch_args(&launch), ["run", "dev.zed.Zed", "ssh://silo-abc-dev/workspace"]);
+        assert!(!home.path().join(".silo").exists());
+    }
+
+    const INCLUDE: &str = "Include \"/home/user/.silo/abc/ssh/*.conf\"";
+
+    #[test]
+    fn a_stow_linked_ssh_config_is_updated_through_its_link() {
+        let home = tempfile::tempdir().unwrap();
+        let dotfiles = home.path().join("dotfiles/ssh");
+        fs::create_dir_all(&dotfiles).unwrap();
+        fs::write(dotfiles.join("config"), b"Host personal\n  User me\n").unwrap();
+        fs::set_permissions(dotfiles.join("config"), fs::Permissions::from_mode(0o644)).unwrap();
+        private_directory(&home.path().join(".ssh")).unwrap();
+        std::os::unix::fs::symlink("../dotfiles/ssh/config", home.path().join(".ssh/config")).unwrap();
+        install_include(home.path(), INCLUDE).unwrap();
+        install_include(home.path(), INCLUDE).unwrap();
+        let link = home.path().join(".ssh/config");
+        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link stays");
+        assert_eq!(
+            fs::read(&link).unwrap(),
+            format!("{INCLUDE}\nHost personal\n  User me\n").as_bytes()
+        );
+        assert_eq!(fs::metadata(&link).unwrap().permissions().mode() & 0o777, 0o644);
+    }
+
+    #[test]
+    fn a_linked_ssh_folder_receives_a_new_config_without_replacing_the_link() {
+        let home = tempfile::tempdir().unwrap();
+        let dotfiles = home.path().join("dotfiles/ssh");
+        fs::create_dir_all(&dotfiles).unwrap();
+        std::os::unix::fs::symlink(&dotfiles, home.path().join(".ssh")).unwrap();
+        install_include(home.path(), INCLUDE).unwrap();
+        assert!(fs::symlink_metadata(home.path().join(".ssh")).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read(dotfiles.join("config")).unwrap(), format!("{INCLUDE}\n").as_bytes());
+    }
+
+    #[test]
+    fn an_unwritable_linked_config_explains_the_line_to_add() {
+        let home = tempfile::tempdir().unwrap();
+        let store = home.path().join("store");
+        fs::create_dir_all(&store).unwrap();
+        fs::write(store.join("config"), b"Host managed\n").unwrap();
+        private_directory(&home.path().join(".ssh")).unwrap();
+        std::os::unix::fs::symlink(store.join("config"), home.path().join(".ssh/config")).unwrap();
+        // Like a read-only home-manager file in the Nix store: read-only for
+        // this account, or owned by someone else when the tests run as root.
+        let root = unsafe { libc::geteuid() } == 0;
+        let lock = |locked: bool| {
+            if root {
+                let owner = if locked { 65534 } else { 0 };
+                std::os::unix::fs::chown(&store, Some(owner), None).unwrap();
+                std::os::unix::fs::chown(store.join("config"), Some(owner), None).unwrap();
+            } else {
+                fs::set_permissions(&store, fs::Permissions::from_mode(if locked { 0o555 } else { 0o755 })).unwrap();
+            }
+        };
+        lock(true);
+        let error = install_include(home.path(), INCLUDE).unwrap_err();
+        assert!(error.ends_with(&format!("Add this line at the top of that file, then try again: {INCLUDE}")), "{error}");
+        assert_eq!(fs::read(store.join("config")).unwrap(), b"Host managed\n");
+        // Once the user adds the line, nothing needs to be written.
+        lock(false);
+        fs::write(store.join("config"), format!("{INCLUDE}\nHost managed\n")).unwrap();
+        lock(true);
+        install_include(home.path(), INCLUDE).unwrap();
+        lock(false);
+    }
+
+    #[test]
+    fn a_dangling_config_link_is_not_replaced() {
+        let home = tempfile::tempdir().unwrap();
+        private_directory(&home.path().join(".ssh")).unwrap();
+        std::os::unix::fs::symlink("/silo-test-missing/config", home.path().join(".ssh/config")).unwrap();
+        assert!(install_include(home.path(), INCLUDE).unwrap_err().contains(INCLUDE));
+        assert!(fs::symlink_metadata(home.path().join(".ssh/config")).unwrap().file_type().is_symlink());
     }
 
     #[test]
