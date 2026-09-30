@@ -4,7 +4,7 @@ import { z } from "zod"
 
 export const updateSnapshotSchema = z.object({
   phase: z.enum(["idle", "checking", "available", "downloading", "ready", "installing", "error"]),
-  lastChecked: z.string().nullable(), retryAction: z.enum(["check", "download", "install"]).nullable(),
+  lastChecked: z.string().nullable(), retryAction: z.enum(["check", "download", "install", "relaunch"]).nullable(),
   currentVersion: z.string(), availableVersion: z.string().nullable(), releaseNotes: z.string().nullable(),
   downloadedBytes: z.number().nonnegative(), totalBytes: z.number().positive().nullable(),
   automaticChecks: z.boolean(), packageKind: z.enum(["macos", "appimage", "debian", "manual"]),

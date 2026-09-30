@@ -28,13 +28,13 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
     return () => window.clearTimeout(timer)
   }, [query, loader])
   const invalidRange = Boolean(since && until && since > until)
-  const { results, rows, unsupportedNotice, busy, loadingOlder, error, ready, hasOlder, refresh, retry, loadOlder, scrollTop, setScrollTop, expandedRows, setExpandedRows } = useLogHistory({ workspaces, loader, active, query: searchQuery, source, since, until, invalidRange })
+  const { results, rows, unsupportedNotice, busy, loadingOlder, error, ready, hasOlder, refresh, follow, retry, loadOlder, scrollTop, setScrollTop, expandedRows, setExpandedRows } = useLogHistory({ workspaces, loader, active, query: searchQuery, source, since, until, invalidRange })
   useEffect(() => {
     if (!following || !active || busy || invalidRange || error) return
     // Schedule after completion so a slow owner cannot be starved by overlapping scans.
-    const timer = window.setTimeout(() => void refresh(), 3000)
+    const timer = window.setTimeout(() => void follow(), 3000)
     return () => window.clearTimeout(timer)
-  }, [following, active, busy, invalidRange, error, refresh])
+  }, [following, active, busy, invalidRange, error, follow])
   async function exportMatches() {
     if (!actions.exportLogs) return
     const id = "logs-export"
@@ -68,7 +68,7 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
     {invalidRange && <p role="alert" className="text-xs text-destructive">The start date is after the end date. Change the date filter to see logs.</p>}
     {error && <div role="alert" className="text-xs text-destructive">Logs unavailable: {error} <Button size="xs" variant="outline" disabled={busy} onClick={() => void retry()}>Retry</Button></div>}
     {unsupportedNotice && <p role="status" className="text-xs text-muted-foreground">{unsupportedNotice}</p>}
-    {!invalidRange && <p role="status" className="min-h-4 shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{rows.length > 0 ? `Showing ${rows.length} of ${total} matching records.` : ""}</p>}
+    {!invalidRange && <p role="status" className="min-h-4 shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{rows.length > 0 ? `Showing ${rows.length} of ${total} matching records.` : ""}{results.some(result => result.page.unreadableRecords) ? " Some records could not be read and are shown as placeholders or truncated." : ""}</p>}
     {!invalidRange && (rows.length > 0 || !ready && !error) ? <LogsTable
       rows={rows}
       loading={!ready}

@@ -62,7 +62,7 @@ function LogRecord({ row, rowIndex, open, onOpenChange, onHeightChange }: {
   return <Collapsible asChild open={open} onOpenChange={onOpenChange}>
     <tbody ref={element} role="rowgroup" className="collapsible-motion">
       <tr role="row" aria-rowindex={rowIndex} style={{ height: ROW_HEIGHT }} className="group/log-row border-b border-border hover:bg-muted/55 focus-within:bg-muted/55">
-        <td role="cell" title={entry.occurredAt} className="px-3 font-mono whitespace-nowrap text-muted-foreground"><time dateTime={entry.occurredAt}>{time}</time><span className="block text-[10px]">{timestamp.toLocaleDateString("en", { month: "short", day: "numeric" })}</span></td>
+        <td role="cell" title={entry.guestTimestamp ? `${entry.occurredAt} (time reported by the sandbox)` : entry.occurredAt} className="px-3 font-mono whitespace-nowrap text-muted-foreground"><time dateTime={entry.occurredAt}>{time}</time><span className="block text-[10px]">{timestamp.toLocaleDateString("en", { month: "short", day: "numeric" })}</span></td>
         <td role="cell" title={`${entry.source}${entry.session ? ` · session ${entry.session}` : ""}\n${entry.line}`} className="max-w-0 truncate px-3 font-mono">{embedded?.[2] ?? entry.line}</td>
         <td role="cell" className="px-3 whitespace-nowrap"><WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} /></td>
         <td role="cell" className="px-3 whitespace-nowrap text-muted-foreground">{entry.source}</td>
@@ -75,7 +75,7 @@ function LogRecord({ row, rowIndex, open, onOpenChange, onHeightChange }: {
         <td role="cell" colSpan={5} className="max-w-0 p-0">
           <CollapsibleContent role="region" aria-label={`Log details from ${workspace.machine.name} at ${time}`} className="collapsible-content-motion">
             <div className="border-b border-border bg-muted/20 px-3 py-3">
-              <p className="mb-2 text-[10px] text-muted-foreground">{entry.occurredAt} · {entry.source}{entry.session ? ` · Session ${entry.session}` : ""}</p>
+              <p className="mb-2 text-[10px] text-muted-foreground">{entry.occurredAt}{entry.guestTimestamp ? " (time reported by the sandbox)" : ""} · {entry.source}{entry.session ? ` · Session ${entry.session}` : ""}</p>
               <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs leading-5 select-text">{entry.line}</pre>
             </div>
           </CollapsibleContent>

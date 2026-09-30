@@ -72,22 +72,27 @@ class InstallerTests(unittest.TestCase):
             # A second, uncoordinated Silo instance must still block installation.
             other = subprocess.Popen(['/usr/bin/silo-ui', '600'], user=65534)
             try:
-                result = run('/usr/lib/silo/silo-system-update', str(process.pid), '0.2.0', check=False)
+                result = run('/usr/lib/silo/silo-system-update', str(process.pid), '0.2.0', check=False, input=b'install\n')
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn(b'Quit Silo', result.stderr)
                 self.assertIsNone(other.poll())
                 self.assertIsNone(process.poll())
             finally:
                 other.terminate(); other.wait()
-            result = run('/usr/lib/silo/silo-system-update', str(process.pid), '0.2.0')
-            self.assertEqual(result.stdout.decode().splitlines(), ['refreshing', 'downloading', 'installing'])
+            # Without the go-ahead after the download, nothing is installed.
+            result = run('/usr/lib/silo/silo-system-update', str(process.pid), '0.2.0', check=False, input=b'cancel\n')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout.decode().splitlines(), ['refreshing', 'downloading', 'ready'])
+            self.assertEqual(run('dpkg-query', '-W', '-f=${Version}', 'silo').stdout, b'0.1.0')
+            result = run('/usr/lib/silo/silo-system-update', str(process.pid), '0.2.0', input=b'install\n')
+            self.assertEqual(result.stdout.decode().splitlines(), ['refreshing', 'downloading', 'ready', 'installing'])
             self.assertEqual(run('dpkg-query', '-W', '-f=${Version}', 'silo').stdout, b'0.2.0')
             self.assertIsNone(process.poll(), 'The updater never kills the UI')
             self.assertFalse(Path('/run/silo/system-update.json').exists())
             self.assertFalse(MARKER.exists())
             # An already updated package only needs the older running app to restart.
-            self.assertEqual(run('/usr/lib/silo/silo-system-update', str(process.pid), '0.2.0').stdout, b'')
-            self.assertNotEqual(run('/usr/lib/silo/silo-system-update', str(process.pid), '0.1.0', check=False).returncode, 0)
+            self.assertEqual(run('/usr/lib/silo/silo-system-update', str(process.pid), '0.2.0', input=b'install\n').stdout, b'ready\n')
+            self.assertNotEqual(run('/usr/lib/silo/silo-system-update', str(process.pid), '0.1.0', check=False, input=b'install\n').returncode, 0)
         finally:
             if process is not None:
                 process.terminate(); process.wait()

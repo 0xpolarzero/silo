@@ -7,6 +7,8 @@ export function updateCommands(updates: Updates | null, openUpdates: () => void)
   if (!updates || updates.pending) return []
   const state = updates.snapshot
   if (state && ["checking", "downloading", "installing"].includes(state.phase)) return []
+  // An installed update only needs Silo to be reopened; checking again would offer it again.
+  if (state?.retryAction === "relaunch") return []
   const command = (id: string, label: string, icon: ApplicationCommand["icon"], action: () => void): ApplicationCommand[] => [{
     id: `updates:${id}`, label, icon, group: "Actions", keywords: ["silo", "updates", "upgrade", "version", ...(id === "install" ? ["install", "restart"] : id === "installers" ? ["download", "install", "package"] : [])],
     run: () => { openUpdates(); action() },

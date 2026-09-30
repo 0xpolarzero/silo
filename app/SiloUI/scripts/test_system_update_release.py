@@ -1,6 +1,7 @@
 """Privilege boundary and APT sequence tests; no host package state is changed."""
 import importlib.machinery
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -25,7 +26,10 @@ class SystemUpdateTests(unittest.TestCase):
             source = Path(tmp, 'silo.sources')
             source.write_text('Types: deb\nEnabled: yes\n')
             with patch.object(helper, 'SOURCE', source):
-                helper.upgrade('0.5.1', run=lambda args: calls.append(args), stage=lambda _: None)
+                helper.upgrade('0.5.1', run=lambda args: calls.append(args), stage=lambda name: calls.append(name), confirm=lambda: calls.append('confirmed'))
+        # Silo stops sandboxes between 'ready' and its go-ahead: only after refresh and download succeeded.
+        self.assertEqual([call for call in calls if isinstance(call, str)], ['refreshing', 'downloading', 'ready', 'confirmed', 'installing'])
+        calls = [call for call in calls if not isinstance(call, str)]
         self.assertIn('update', calls[0])
         self.assertIn('APT::Update::Error-Mode=any', calls[0])
         self.assertIn('--download-only', calls[1])
@@ -48,6 +52,34 @@ class SystemUpdateTests(unittest.TestCase):
             with patch.object(helper, 'SOURCE', source), self.assertRaisesRegex(RuntimeError, 'offline'):
                 helper.upgrade('0.5.1', run=fail, stage=lambda _: None)
         self.assertEqual(len(calls), 1)
+
+    def test_nothing_is_installed_without_the_go_ahead(self):
+        calls = []
+        def cancelled():
+            raise RuntimeError('Silo cancelled the update before installation. Nothing was installed.')
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp, 'silo.sources')
+            source.write_text('Types: deb\n')
+            with patch.object(helper, 'SOURCE', source), self.assertRaisesRegex(RuntimeError, 'Nothing was installed'):
+                helper.upgrade('0.5.1', run=calls.append, stage=lambda _: None, confirm=cancelled)
+        self.assertEqual(len(calls), 2)
+        self.assertIn('--download-only', calls[1])
+
+    def test_go_ahead_requires_an_explicit_install_line_before_the_timeout(self):
+        for sent, accepted in ((b'install\n', True), (b'cancel\n', False), (b'', False)):
+            read, write = os.pipe()
+            os.write(write, sent)
+            os.close(write)
+            with os.fdopen(read) as stream:
+                if accepted:
+                    helper.confirm(stream, timeout=5)
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'Nothing was installed'):
+                        helper.confirm(stream, timeout=5)
+        read, write = os.pipe()
+        with os.fdopen(read) as stream, os.fdopen(write, 'w'):
+            with self.assertRaisesRegex(RuntimeError, 'Nothing was installed'):
+                helper.confirm(stream, timeout=0.05)
 
     def test_missing_or_disabled_source_is_not_silently_reenabled(self):
         with tempfile.TemporaryDirectory() as tmp:
