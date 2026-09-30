@@ -115,9 +115,9 @@ describe("retained logs", () => {
     expect(alert).toHaveClass("text-xs", "text-destructive")
     expect(queryLogs).not.toHaveBeenCalled()
   })
-  it("uses the shared empty state when no sandbox matches", () => {
+  it("uses the shared empty state when no sandbox matches", async () => {
     const { actions } = fixture()
-    render(<Logs workspaces={[]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    await act(async () => { render(<Logs workspaces={[]} actions={actions} active query="" onQueryChange={vi.fn()} />) })
     expect(screen.getByText("No matching sandboxes").closest('[data-slot="empty-state"]')).not.toBeNull()
     expect(screen.queryByText(/No sandboxes selected/)).not.toBeInTheDocument()
   })

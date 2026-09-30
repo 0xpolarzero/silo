@@ -292,7 +292,7 @@ it("prefills and enables every workspace identity from the optional host identit
   expect(within(devIdentity).getByRole("checkbox")).toHaveAccessibleName("Apply Git identity to dev")
   expect(within(devIdentity).getByRole("button")).toHaveAccessibleName("Reset Git identity for dev")
   const identityTooltipTrigger = within(devIdentity).getByLabelText("About Git identity for dev")
-  identityTooltipTrigger.focus()
+  act(() => identityTooltipTrigger.focus())
   expect(identityTooltipTrigger).toHaveFocus()
   expect(await screen.findByRole("tooltip")).toHaveTextContent("Name and email used for Git commits in this sandbox.")
   expect(screen.queryByText("Git name")).not.toBeInTheDocument()

@@ -13,7 +13,14 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async (event: string, re
   if (event === "silo://operation-queue-changed") native.queueChanged = receive as unknown as typeof native.queueChanged
   return native.stop
 }) }))
-beforeEach(() => { vi.clearAllMocks(); native.invoke.mockResolvedValue(false) })
+beforeEach(() => {
+  vi.clearAllMocks()
+  native.invoke.mockImplementation(async (command: string) => {
+    if (command === "read_shutdown_state") return false
+    if (command === "read_operation_queue") return { running: [], waiting: [] }
+    throw new Error(`Unexpected command: ${command}`)
+  })
+})
 
 it("shows shutdown progress and disables the existing screen until native failure cancels Quit", async () => {
   const user = userEvent.setup()
@@ -33,7 +40,11 @@ it("shows shutdown progress and disables the existing screen until native failur
   await vi.waitFor(() => expect(screen.getByRole("button", { name: "Create VM" })).toHaveFocus())
 })
 it("reads active shutdown when a window opens after the event", async () => {
-  native.invoke.mockResolvedValue(true)
+  native.invoke.mockImplementation(async (command: string) => {
+    if (command === "read_shutdown_state") return true
+    if (command === "read_operation_queue") return { running: [], waiting: [] }
+    throw new Error(`Unexpected command: ${command}`)
+  })
   const view = render(<ShutdownBoundary compact><button>Quit Silo</button></ShutdownBoundary>)
   expect(await screen.findByRole("status")).toHaveTextContent("Stopping local sandboxes…")
   view.unmount()
@@ -75,7 +86,12 @@ it("waits for non-cancellable running work and offers no cancel control", async 
 })
 it("does not let an older snapshot replace a newer shutdown event", async () => {
   let resolve!: (value: boolean) => void
-  native.invoke.mockReturnValue(new Promise<boolean>(done => { resolve = done }))
+  const older = new Promise<boolean>(done => { resolve = done })
+  native.invoke.mockImplementation((command: string) => {
+    if (command === "read_shutdown_state") return older
+    if (command === "read_operation_queue") return Promise.resolve({ running: [], waiting: [] })
+    throw new Error(`Unexpected command: ${command}`)
+  })
   render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
   await vi.waitFor(() => expect(native.invoke).toHaveBeenCalled())
   act(() => native.receive({ payload: true }))
@@ -86,7 +102,7 @@ it("names pending setup work Quit waits for when no queued operation runs", asyn
   native.invoke.mockImplementation(async (name: string) => name === "read_operation_queue" ? { running: [], waiting: [] } : false)
   const view = render(<ShutdownBoundary pendingWork="Finishing setup (verifying GitHub access)…"><button>Create VM</button></ShutdownBoundary>)
   await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
-  act(() => native.receive({ payload: true }))
+  await act(async () => { native.receive({ payload: true }) })
   expect(screen.getByRole("status")).toHaveTextContent("Finishing setup (verifying GitHub access)…")
   view.rerender(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
   expect(screen.getByRole("status")).toHaveTextContent("Stopping local sandboxes…")

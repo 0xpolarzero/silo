@@ -22,7 +22,7 @@ const dependencyStore = {} as DependencyStore
 beforeEach(() => { state.source = {}; state.loading = false; state.error = null; state.checks = []; state.setupDrain = undefined; state.localUpdating = false; vi.clearAllMocks() })
 
 describe("production completion routing", () => {
-  it("shows the actual shell and saved rows while live state loads, then replaces skeletons", () => {
+  it("shows the actual shell and saved rows while live state loads, then replaces skeletons", async () => {
     state.source = null
     state.loading = true
     const settings = createMemorySettingsStore({ onboardingComplete: true, reduceMotion: true })
@@ -38,7 +38,7 @@ describe("production completion routing", () => {
     expect(application.container.querySelector(".animate-pulse")).toBeNull()
     state.loading = false
     state.source = {}
-    application.rerender(view())
+    await act(async () => { application.rerender(view()) })
     expect(screen.getByText("Main app")).toBeVisible()
     expect(screen.queryByText("Loading sandbox state")).not.toBeInTheDocument()
   })
@@ -81,16 +81,16 @@ describe("production completion routing", () => {
     expect(screen.queryByRole("button", { name: "Open Silo" })).not.toBeInTheDocument()
   })
 
-  it("opens the main app when relaunched after saved completion", () => {
+  it("opens the main app when relaunched after saved completion", async () => {
     const settings = createMemorySettingsStore({ onboardingComplete: true })
-    render(<SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
+    await act(async () => { render(<SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>) })
     expect(screen.getByText("Main app")).toBeVisible()
     expect(screen.queryByRole("button", { name: "Open Silo" })).not.toBeInTheDocument()
   })
 
-  it("names the setup work Quit is draining in the main window's shutdown overlay", () => {
+  it("names the setup work Quit is draining in the main window's shutdown overlay", async () => {
     state.setupDrain = "Finishing setup (verifying GitHub access)…"
-    render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
+    await act(async () => { render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>) })
     expect(screen.getByText("Quit overlay: Finishing setup (verifying GitHub access)…")).toBeVisible()
   })
 
@@ -161,30 +161,31 @@ describe("production dependency recovery", () => {
     expect(source.initialize).toHaveBeenCalledOnce()
     expect(screen.queryByRole("button", { name: /repair/i })).not.toBeInTheDocument()
   })
-  it("does not block remote-only use when this computer lacks virtualization", () => {
+  it("does not block remote-only use when this computer lacks virtualization", async () => {
     state.source = { workspaces: [], remoteComputers: [{ id: "office", connected: true }] }
     state.checks = [failure]
-    render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
+    await act(async () => { render(<SettingsProvider store={createMemorySettingsStore({ onboardingComplete: true })}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>) })
     expect(screen.getByText("Main app")).toBeVisible()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
-  it("retains recovery while rechecking and clears the issue only after passing", () => {
+  it("retains recovery while rechecking and clears the issue only after passing", async () => {
     state.checks = [failure]
     const settings = createMemorySettingsStore({ onboardingComplete: true })
     const view = () => <SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>
-    const application = render(view())
+    let application!: ReturnType<typeof render>
+    await act(async () => { application = render(view()) })
     expect(screen.getByRole("alert")).toHaveTextContent(failure.detail)
     fireEvent.click(screen.getByRole("button", { name: "Retry checks" }))
     expect(state.retry).toHaveBeenCalledOnce()
     state.checks = [{ ...failure, status: "pending" }]
-    application.rerender(view())
+    await act(async () => { application.rerender(view()) })
     expect(screen.getByRole("alert")).toHaveTextContent(failure.remediation)
     expect(screen.getByRole("button", { name: "Retry checks" })).toBeDisabled()
     state.checks = [{ ...failure, status: "pass" }]
-    application.rerender(view())
+    await act(async () => { application.rerender(view()) })
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     state.checks = [{ ...failure, status: "pending" }]
-    application.rerender(view())
+    await act(async () => { application.rerender(view()) })
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 })
