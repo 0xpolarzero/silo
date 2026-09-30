@@ -252,5 +252,6 @@ build, packaging, and protocol-probe checks.
 
 The build and smoke-test record above predates the generated source mapping.
 For the mapping revision, the focused upstream secret-values test and Silo's
-transport and secret-configuration tests pass. The patched CLI's compilation
-and parser tests are checked separately; live VMs remain unverified.
+transport and secret-configuration tests pass. The patched CLI compiled with `net,ssh,embed-binaries`; its five secret-parser
+tests and protocol-probe test passed. The patch applied through the production
+build helper and every manifest patch digest matched. Live VMs remain unverified.
