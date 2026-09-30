@@ -79,7 +79,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
   )
   return readOnly ? (
     <TooltipProvider><Tooltip><TooltipTrigger asChild><span tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`}>{field}</span></TooltipTrigger>
-      <TooltipContent>To use a different disk size, create a new sandbox and transfer your data.</TooltipContent>
+      <TooltipContent>Disk size is read-only.</TooltipContent>
     </Tooltip></TooltipProvider>
   ) : field
 }
@@ -255,7 +255,8 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         onChange={(event) => update({ name: event.target.value })}
       />
 
-      {created && draft.kind === "vm" && <p className="text-[11px] text-muted-foreground">Existing sandboxes cannot be renamed or have their disks resized.</p>}
+      {created && draft.kind === "vm" && <p className="text-[11px] text-muted-foreground">Existing sandboxes cannot be renamed or have their disks resized. To use a different disk size, create a new sandbox and transfer your data.</p>}
+      {editor.displayAfterID && <p className="text-[11px] text-muted-foreground">{draft.kind === "vm" ? "Creates a new empty sandbox with the same settings. Files are not included." : "Creates a new SSH host connection with the same settings."}</p>}
 
       {draft.kind === "vm" ? (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">

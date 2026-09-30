@@ -240,6 +240,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                 {" · "}{checkpointTag(checkpoint)}
                 {info?.sizeBytes != null && <>{" · "}{formatStorageBytes(info.sizeBytes)}</>}
                 {info?.usedBy?.length ? <>{" · "}Used by {info.usedBy.join(", ")}</> : null}
+                {info?.deleteBlocker && <span className="block text-muted-foreground">{info.deleteBlocker}</span>}
               </>}
               actions={<div className="flex shrink-0 items-center gap-1">
                 <ConfirmPopover
