@@ -3,18 +3,23 @@ import { runCheckpointOperation, syncCheckpointProgress } from "../model/checkpo
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
 import { SshAccessBadges } from "./ssh-access-panel"
 import { StatusFolderPicker } from "@/features/status-bar/status-folder-picker"
-import { workspaceAvailability } from "../model/workspace-availability"
+import { workspaceAvailability, type WorkspaceAvailability } from "../model/workspace-availability"
+import { DisabledReason } from "../components/disabled-reason"
+import type { SandboxCommandRequest } from "../components/application-commands"
+import { LifecycleControl } from "../components/lifecycle-control"
+import { lifecycleGuard, type LifecycleAction, type LifecycleGuard } from "../model/lifecycle-guard"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
 import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditing } from "./sandbox-detail-page"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
-import { CircleAlert, Code, Download, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal, TriangleAlert } from "lucide-react"
+import { CircleAlert, Code, Download, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
 import { dismissOperationToast, dismissSandboxToasts, showActionFailure, showOperationFailure, showOperationNotice, showOperationProgress } from "@/lib/operation-toast"
 
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
-import type { BackupController } from "../model/backup-source"
+import { ConfirmBody } from "@/components/confirm-popover"
+import type { BackupController, VerifiedExport } from "../model/backup-source"
 import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "../model/checkpoint-source"
 
 import { ErrorDetails } from "@/components/error-details"
@@ -23,7 +28,7 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent } from "@/contracts/silo"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
-import { OperationQueueToast, WorkspaceWaitingStatus } from "@/features/application/components/operation-queue-panel"
+import { WorkspaceStatus } from "@/features/application/components/workspace-status"
 import { emptyOperationQueue, waitingOperationForVm, waitingStatusText, cancelledActionLabel } from "@/features/application/model/operation-queue"
 import type {
   ApplicationActions,
@@ -31,13 +36,20 @@ import type {
   ApplicationWorkspace,
   SandboxConfigurationOperation,
   SandboxDetailTab,
-  WorkspaceState,
 } from "@/features/application/model/application-source"
 import { MachineList } from "@/features/sandboxes/components/machine-list"
+import type { DeleteSandboxDetails } from "@/features/sandboxes/components/delete-sandbox-confirmation"
 import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/components/sandbox-list"
 
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
+
+/** A command palette request carried out on a sandbox's page. */
+export interface SandboxPageRequest {
+  token: number
+  workspaceId: string
+  request: SandboxCommandRequest
+}
 
 /** A lifecycle action shows a progress notification only if it is still running after this long. */
 const LIFECYCLE_TOAST_DELAY_MS = 800
@@ -203,15 +215,17 @@ function ConfigurationDetail({ view }: { view: ConfigurationRowView }) {
   )
 }
 
-function WorkspaceActions({ machine, target, state, actions, disabled = false }: { target?: string; machine: SetupMachineConfiguration; state: WorkspaceState; actions: ApplicationActions; disabled?: boolean }) {
-  const canStop = state === "running" || state === "starting"
-  return (
-    <>
-      {canStop
-        ? <SandboxAction label={`Stop ${machine.name}`} disabled={disabled} onClick={() => actions.stopWorkspace(target ?? machine.name)}><Square /></SandboxAction>
-        : <SandboxAction label={`Start ${machine.name}`} disabled={disabled} onClick={() => actions.startWorkspace(target ?? machine.name)}><Play /></SandboxAction>}
-    </>
-  )
+/** The row's Start or Stop control, through the shared lifecycle guard. */
+function WorkspaceActions({ workspace, availability, readOnly, guard }: { workspace: ApplicationWorkspace; availability: WorkspaceAvailability; readOnly: boolean; guard: LifecycleGuard }) {
+  const { machine } = workspace
+  const action = workspace.state === "running" || workspace.state === "starting" ? "stop" : "start"
+  const enabled = !readOnly && (action === "stop" ? availability.canStop : availability.canStart)
+  const asks = enabled && guard.check(workspace, action).kind === "confirm"
+  return <LifecycleControl guard={guard} workspace={workspace} action={action} disabled={!enabled} reason={readOnly ? undefined : availability.reasons[action]}>
+    {({ onClick, disabled }) => action === "stop"
+      ? <SandboxAction label={`Stop ${machine.name}`} tooltip={asks ? `Stop ${machine.name}…` : undefined} disabled={disabled} onClick={onClick}><Square /></SandboxAction>
+      : <SandboxAction label={`Start ${machine.name}`} tooltip={asks ? `Start ${machine.name}…` : undefined} disabled={disabled} onClick={onClick}><Play /></SandboxAction>}
+  </LifecycleControl>
 }
 
 export function OverviewPage({ active = true, readOnly = false,
@@ -221,6 +235,8 @@ export function OverviewPage({ active = true, readOnly = false,
   onMachinesChange,
   newSandboxRequest,
   onNewSandboxRequestHandled,
+  sandboxRequest,
+  onSandboxRequestHandled,
   onExportSandbox,
   onImportSandbox,
   importPopover,
@@ -235,8 +251,11 @@ export function OverviewPage({ active = true, readOnly = false,
   readOnly?: boolean
   newSandboxRequest?: number
   onNewSandboxRequestHandled?: (id: number) => void
+  /** A palette command for a sandbox's page: its folder picker, Fork or Delete popover. */
+  sandboxRequest?: SandboxPageRequest
+  onSandboxRequestHandled?: (token: number) => void
   /** Pick a folder and export a sandbox (or one of its checkpoints) as a background toast. */
-  onExportSandbox?: (sandboxName: string, checkpoint?: { id: string; name: string }) => void
+  onExportSandbox?: (sandboxName: string, checkpoint?: { id: string; name: string }) => void | Promise<VerifiedExport | null>
   /** Open the import review dialog after picking an export file. */
   onImportSandbox?: () => void
   /** Wraps the sandbox list's Add button so the import review popover anchors to it. */
@@ -256,9 +275,11 @@ export function OverviewPage({ active = true, readOnly = false,
   onNavigate?: (route: ApplicationInitialRoute) => void
 }) {
   useSshAccessRefresh(readOnly ? undefined : actions.refreshSshAccess, active)
-  const [folderWorkspaceId, setFolderWorkspaceId] = useState<string | null>(null)
+  // The editor folder picker replaces the page for the route it was opened from. It closes
+  // for good when that route changes (palette, status panel, Back/Forward, another section)
+  // or when its sandbox can no longer be opened, so it never takes the screen over later.
+  const [folderPicker, setFolderPicker] = useState<{ workspaceId: string; route: string } | null>(null)
   const [connecting, setConnecting] = useState(false)
-  const [pendingStart, setPendingStart] = useState<string | null>(null)
   // Sandbox detail selection: controlled by the app's navigation when the callbacks are
   // supplied, otherwise kept locally so the page still opens details on its own.
   const controlledNav = onOpenSandbox !== undefined
@@ -291,7 +312,7 @@ export function OverviewPage({ active = true, readOnly = false,
   const machines = visibleWorkspaces.map(({ machine }) => machine)
   /** Whether "Fork…" is currently unavailable for a sandbox. */
   function forkDisabled(workspace: ApplicationWorkspace) {
-    return configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale" || workspace.checkpointOperation?.status === "running"
+    return configurationLocked || workspaceAvailability(workspace, source).busy || workspace.freshness === "stale"
   }
   /** The Fork popover body for a sandbox's ⋯ menu (row or detail page); state lives with that menu. */
   function forkPopovers(workspace: ApplicationWorkspace | undefined): MenuPopovers | undefined {
@@ -304,9 +325,12 @@ export function OverviewPage({ active = true, readOnly = false,
   const localOnly = (list: readonly SetupMachineConfiguration[]) => list.filter(machine => !workspaces.get(machine.id)?.computer)
 
   // Return to the list if the open sandbox disappeared (deleted, or removed by a refresh).
+  // Controlled navigation replaces its history entries in place (the app forgets missing
+  // sandboxes), so only the standalone page closes its own selection here: pushing a new
+  // entry would leave Back pointing at the missing sandbox.
   const detailWorkspace = selectedId ? workspaces.get(selectedId) : undefined
   const detailMissing = Boolean(selectedId) && !detailWorkspace
-  const returnToList = useEffectEvent(() => closeSandbox())
+  const returnToList = useEffectEvent(() => { if (!controlledNav) closeSandbox() })
   // oxlint-disable-next-line react/set-state-in-effect
   useEffect(() => { if (detailMissing) returnToList() }, [detailMissing])
 
@@ -350,24 +374,102 @@ export function OverviewPage({ active = true, readOnly = false,
   }
   const isMachineCreated = (machine: SetupMachineConfiguration) => committedWorkspaces.has(machine.id)
   const isMachineRunning = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.state === "running"
+  const latestDeleteState = useRef({ source, readOnly })
+  useEffect(() => { latestDeleteState.current = { source, readOnly } }, [source, readOnly])
 
   function notifyOperationUnavailable() {
     showActionFailure("VM operation unavailable", source.vmOperationsUnavailable ?? "VM operations are unavailable.", undefined, { native: false })
   }
 
-  // A single set of lifecycle handlers, guarded for capacity and unavailable-operation
-  // notices, shared by the row controls and the detail page so both behave identically.
-  function guardedLifecycle(workspace?: ApplicationWorkspace): Pick<ApplicationActions, "startWorkspace" | "stopWorkspace" | "restartWorkspace"> {
-    const isLocal = !workspace?.computer
-    return {
-      startWorkspace: (name) => {
-        if (isLocal && source.vmOperationsUnavailable) notifyOperationUnavailable()
-        else if (source.resourceNotice?.kind === "start-memory" && source.resourceNotice.sandbox === name) setPendingStart(name)
-        else actions.startWorkspace(name)
-      },
-      stopWorkspace: (name) => isLocal && source.vmOperationsUnavailable ? notifyOperationUnavailable() : actions.stopWorkspace(name),
-      restartWorkspace: (name) => isLocal && source.vmOperationsUnavailable ? notifyOperationUnavailable() : actions.restartWorkspace(name),
+  // Every lifecycle request from this page (row, sandbox page, menus, toasts) goes through the
+  // shared guard: unavailable VM operations are reported and memory pressure asks first.
+  const guard = lifecycleGuard(source, actions)
+  // Notification actions run later: resolve the sandbox and its guard when clicked, so a toast
+  // shown before the snapshot refreshed never acts on outdated state.
+  const latestLifecycle = useRef({ guard, workspaces })
+  useEffect(() => { latestLifecycle.current = { guard, workspaces } })
+  function lifecycleLater(workspace: ApplicationWorkspace, action: LifecycleAction, confirmed: boolean) {
+    return () => {
+      const { guard: current, workspaces: now } = latestLifecycle.current
+      const fresh = now.get(workspace.machine.id) ?? workspace
+      if (confirmed) current.confirm(fresh, action)
+      else current.request(fresh, action)
     }
+  }
+
+  /** Work runs on the sandbox or its computer is unreachable, so its settings can't change now. */
+  function changesBlocked(workspace: ApplicationWorkspace) {
+    return workspaceAvailability(workspace, source).busy || Boolean(workspace.computer && !workspace.computer.connected)
+  }
+
+  /** What a sandbox's Delete dialog states and offers, the same from its row and its page. */
+  function deleteDetails(workspace: ApplicationWorkspace): DeleteSandboxDetails {
+    const { machine } = workspace
+    const readStorage = actions.readWorkspaceStorage
+    return {
+      checkpoints: workspace.checkpoints?.length,
+      readSize: machine.kind === "vm" && !workspace.computer && readStorage
+        ? async () => {
+            const storage = await readStorage(machine.id)
+            return storage.workspaceHostBytes === null || storage.runtimeHostBytes === null
+              ? null : storage.workspaceHostBytes + storage.runtimeHostBytes
+          }
+        : undefined,
+      exportFirst: machine.kind === "vm" && !workspace.computer && exportSandbox
+        ? async () => {
+            try {
+              if (!await exportSandbox(machine.name)) return false
+            } catch (error) {
+              showActionFailure(`Couldn't export ${machine.name}`, error, undefined, { native: false })
+              return false
+            }
+            // Export can take minutes. A verified file does not authorize deleting a sandbox
+            // that started, disappeared, or became busy while that file was being written.
+            const current = latestDeleteState.current
+            const fresh = current.source.workspaces.find(item => item.machine.id === machine.id && !item.computer)
+            if (!fresh || current.readOnly || current.source.vmOperationsUnavailable || current.source.sandboxConfigurationOperation || workspaceAvailability(fresh, current.source).busy || fresh.state === "running" || fresh.freshness === "stale") {
+              showActionFailure(`Couldn't delete ${machine.name}`, "The sandbox changed while exporting. Review its current state before deleting it. Your export is saved.", undefined, { native: false })
+              return false
+            }
+            return true
+          }
+        : undefined,
+    }
+  }
+
+  /** Re-submits a failed lifecycle action, guarded like any other request. */
+  function lifecycleRetry(workspace: ApplicationWorkspace): (() => void) | undefined {
+    const action = workspace.lifecycleFailureAction ?? "start"
+    if (readOnly || !workspace.lifecycleFailure || action === "dismiss-error") return undefined
+    // The failed request was already confirmed, so Retry asks nothing again.
+    return lifecycleLater(workspace, action, true)
+  }
+
+  /** A sandbox's ⋯ menu actions and popovers, built once for its list row and its page. The
+   * page and the list append their own Edit, Duplicate, Add Linux desktop and Delete items. */
+  function sandboxMenu(workspace: ApplicationWorkspace): { items: MenuAction[]; popovers?: MenuPopovers } {
+    const { machine } = workspace
+    const target = workspaceTarget(workspace)
+    const availability = workspaceAvailability(workspace, source)
+    const stale = workspace.freshness === "stale"
+    const vm = machine.kind === "vm"
+    const local = !workspace.computer
+    const restartCheck = guard.check(workspace, "restart")
+    const restartPrompt = restartCheck.kind === "confirm" && availability.canRestart && !readOnly ? restartCheck.prompt : undefined
+    const items: MenuAction[] = [
+      ...(vm && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || availability.busy || Boolean(workspace.computer && stale), onSelect: () => { void actions.openDesktop!(target) } }] : []),
+      restartPrompt
+        ? { label: "Restart…", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, popover: "restart" }
+        : { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guard.request(workspace, "restart") },
+      // Checkpoints and Storage open the page's tabs, which disable their own actions as needed.
+      ...(vm ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, onSelect: () => openSandbox(machine.id, "checkpoints") }] : []),
+      ...(vm && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: forkDisabled(workspace), popover: "fork" }] : []),
+      ...(vm && local && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, onSelect: () => openSandbox(machine.id, "storage") }] : []),
+      ...(vm && local && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || availability.busy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
+    ]
+    const popovers: MenuPopovers = { ...forkPopovers(workspace) }
+    if (restartPrompt) popovers.restart = close => <ConfirmBody tone={restartPrompt.tone} title={restartPrompt.title} description={restartPrompt.description} confirmLabel={restartPrompt.confirmLabel} onClose={close} onConfirm={lifecycleLater(workspace, "restart", true)} />
+    return { items, popovers }
   }
 
   // Lifecycle failures and cancellations arrive from the backend as workspace state. Toast each
@@ -395,11 +497,8 @@ export function OverviewPage({ active = true, readOnly = false,
       }
       if (action === "dismiss-error") continue
       const verb = action === "restart" ? "restart" : action === "stop" ? "stop" : "start"
-      const target = workspaceTarget(workspace)
-      const guarded = guardedLifecycle(workspace)
-      const retry = readOnly ? undefined : () => { if (action === "start") guarded.startWorkspace(target); else if (action === "stop") guarded.stopWorkspace(target); else guarded.restartWorkspace(target) }
       dismissOperationToast(id)
-      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ? <ErrorDetails message={workspace.lifecycleFailure} /> : undefined, retry, sandbox: name, native: false })
+      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ? <ErrorDetails message={workspace.lifecycleFailure} /> : undefined, retry: lifecycleRetry(workspace), sandbox: name, native: false })
     }
   })
   useEffect(() => { lifecycleToasts(source.workspaces) }, [source.workspaces])
@@ -490,29 +589,42 @@ export function OverviewPage({ active = true, readOnly = false,
   useEffect(() => { trackLifecycle(source.workspaces) }, [source.workspaces, source.operationQueue])
   useEffect(() => () => { for (const entry of lifecycleProgress.current.values()) if (entry.timer) window.clearTimeout(entry.timer) }, [])
 
-  const folderWorkspace = folderWorkspaceId ? workspaces.get(folderWorkspaceId) : undefined
-  if (folderWorkspace && workspaceAvailability(folderWorkspace, source).canOpen) {
+  const pickerRoute = `${active}:${selectedId ?? ""}:${activeSandboxTab}`
+  const openFolderPicker = (workspaceId: string) => setFolderPicker({ workspaceId, route: pickerRoute })
+  // Palette requests open the sandbox's page (the app navigates there first) and then the
+  // same folder picker or ⋯ popover its own controls open.
+  const [menuRequest, setMenuRequest] = useState<{ token: number; workspaceId: string; panel: string }>()
+  const handledSandboxRequest = useRef(0)
+  const runSandboxRequest = useEffectEvent((request: SandboxPageRequest) => {
+    openSandbox(request.workspaceId)
+    if (request.request === "editor") setFolderPicker({ workspaceId: request.workspaceId, route: `${active}:${request.workspaceId}:${activeSandboxTab}` })
+    else setMenuRequest({ token: request.token, workspaceId: request.workspaceId, panel: request.request })
+    onSandboxRequestHandled?.(request.token)
+  })
+  useEffect(() => {
+    if (!sandboxRequest || handledSandboxRequest.current === sandboxRequest.token) return
+    handledSandboxRequest.current = sandboxRequest.token
+    runSandboxRequest(sandboxRequest)
+  }, [sandboxRequest])
+  // The request belongs to the page it was made for: leaving that page drops it, so the
+  // popover never reopens when the page is shown again later.
+  if (menuRequest && selectedId !== null && selectedId !== menuRequest.workspaceId) setMenuRequest(undefined)
+  if (menuRequest && selectedId === null && !sandboxRequest) setMenuRequest(undefined)
+  const folderWorkspace = folderPicker && folderPicker.route === pickerRoute ? workspaces.get(folderPicker.workspaceId) : undefined
+  const showFolderPicker = Boolean(folderWorkspace && workspaceAvailability(folderWorkspace, source).canOpen)
+  // Adjusting state while rendering: the picker is dropped before it could reappear.
+  if (folderPicker && !showFolderPicker) setFolderPicker(null)
+  if (folderWorkspace && showFolderPicker) {
     return <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
-      <StatusFolderPicker key={folderWorkspace.machine.id} workspace={folderWorkspace} editor={source.preferences.editor} listDirectory={actions.listWorkspaceDirectory} onBack={() => setFolderWorkspaceId(null)} onOpen={(path) => actions.openEditor(workspaceTarget(folderWorkspace), path)} />
+      <StatusFolderPicker key={folderWorkspace.machine.id} workspace={folderWorkspace} editor={source.preferences.editor} listDirectory={actions.listWorkspaceDirectory} onBack={() => setFolderPicker(null)} onOpen={(path) => actions.openEditor(workspaceTarget(folderWorkspace), path)} />
     </div>
   }
 
   function detailControls(workspace: ApplicationWorkspace): SandboxDetailControls {
     const machine = workspace.machine
     const target = workspaceTarget(workspace)
-    const state = workspace.state
-    const stale = workspace.freshness === "stale"
-    const isLocal = !workspace.computer
-    const workspaceOperationBusy = Boolean(workspace.lifecycleAction) || workspace.checkpointOperation?.status === "running" || Boolean(workspace.computer?.busy)
     const availability = workspaceAvailability(workspace, source)
-    const guarded = guardedLifecycle(workspace)
-    const lifecycleAction = workspace.lifecycleFailureAction
-    const menuActions: MenuAction[] = [
-      ...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer && stale), onSelect: () => { void actions.openDesktop!(target) } }] : []),
-      { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer && stale) || (state !== "running" && state !== "failed"), onSelect: () => guarded.restartWorkspace(target) },
-      ...(machine.kind === "vm" && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, popover: "fork" }] : []),
-      ...(machine.kind === "vm" && isLocal && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
-    ]
+    const menu = sandboxMenu(workspace)
     // Edit and Delete are appended and handled in place by the detail page; Duplicate hands
     // off to the list editor for the new sandbox. Editing is offered only when not read-only.
     const editing: SandboxDetailEditing | undefined = readOnly ? undefined : {
@@ -536,32 +648,29 @@ export function OverviewPage({ active = true, readOnly = false,
       onSelectTab: selectSandboxTab,
       readOnly,
       configurationLocked,
-      workspaceOperationBusy,
+      workspaceOperationBusy: availability.busy,
+      changesBlocked: changesBlocked(workspace),
+      menuRequest: menuRequest?.workspaceId === workspace.machine.id ? menuRequest : undefined,
+      deleteDetails: deleteDetails(workspace),
       canOpen: availability.canOpen && !readOnly,
       canStart: availability.canStart && !readOnly,
       canStop: availability.canStop && !readOnly,
-      menuActions,
-      popovers: forkPopovers(workspace),
+      disabledReasons: readOnly ? {} : availability.reasons,
+      menuActions: menu.items,
+      popovers: menu.popovers,
       onTerminal: () => actions.openTerminal(target),
-      onEditor: () => setFolderWorkspaceId(machine.id),
-      onStart: () => guarded.startWorkspace(target),
-      onStop: () => guarded.stopWorkspace(target),
-      onRetryLifecycle: workspace.lifecycleFailure && lifecycleAction && lifecycleAction !== "dismiss-error" && !readOnly
-        ? () => { if (lifecycleAction === "start") guarded.startWorkspace(target); else if (lifecycleAction === "stop") guarded.stopWorkspace(target); else if (lifecycleAction === "restart") guarded.restartWorkspace(target) }
-        : undefined,
+      onEditor: () => openFolderPicker(machine.id),
+      lifecycleGuard: guard,
       onCheckpointExport: exportSandbox ? (checkpoint: WorkspaceCheckpoint) => exportSandbox(machine.name, { id: checkpoint.id, name: checkpoint.name }) : undefined,
       checkpointExportDisabled: transferBusy || backup?.state.availability === "unavailable",
       onCheckpointForkedAction: (name: string) => forkOpenAction(name, workspace.computer?.id),
-      onCheckpointRestoredAction: () => ({ label: "Start", onClick: () => guarded.startWorkspace(target) }),
+      onCheckpointRestoredAction: () => ({ label: "Start", onClick: lifecycleLater(workspace, "start", false) }),
     }
   }
 
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
       <div className="min-h-0 flex-1">
-        {/* A single toast reflects VM-changing operations for both the list and detail
-            views; it renders nothing inline and never shifts the sandbox list. */}
-        <OperationQueueToast queue={source.operationQueue} onCancel={readOnly ? undefined : actions.cancelOperation} />
         {detailWorkspace ? (
           // Keyed per sandbox so edit drafts, delete confirmations and panel state never carry over.
           <SandboxDetailPage key={workspaceTarget(detailWorkspace)} workspace={detailWorkspace} source={source} actions={actions} controls={detailControls(detailWorkspace)} />
@@ -602,11 +711,6 @@ export function OverviewPage({ active = true, readOnly = false,
               getRowPresentation={(machine) => {
                 const workspace = workspaces.get(machine.id)
                 const state = workspace?.state ?? "stopped"
-                // The operation gate keys per-VM entries by the local workspace name. A
-                // remote computer's VMs run on that computer's own gate, so never match a
-                // local queue entry against a remote workspace. Local entries are keyed by
-                // the stable VM id, so matching uses the id rather than the display name.
-                const queueVmId = workspace?.computer ? null : machine.id
                 const pendingSecrets = machine.kind === "vm" && !workspace?.computer
                   ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map((secret) => secret.name)
                   : []
@@ -623,6 +727,7 @@ export function OverviewPage({ active = true, readOnly = false,
                     badge,
                     busy: !failed,
                     suppressInteractions: true,
+                    openable: committedWorkspaces.has(machine.id),
                     icon: <ConfigurationIcon failed={failed} />,
                     iconState: failed ? "error" as const : "normal" as const,
                     tone: failed ? "error" as const : "starting" as const,
@@ -638,28 +743,18 @@ export function OverviewPage({ active = true, readOnly = false,
                 const sshStale = Boolean((source.sshAccessError && !workspace?.computer) || workspace?.computer?.connected === false || workspace?.freshness === "stale")
                 const lifecycle = workspace?.lifecycleAction
                 const checkpointOperation = workspace?.checkpointOperation?.status === "running" ? workspace.checkpointOperation : undefined
-                const lifecycleLabel = lifecycle === "dismiss-error" ? "Dismissing…" : lifecycle === "restart" ? "Restarting…" : lifecycle === "stop" ? "Stopping…" : "Starting…"
                 const workspaceOperationBusy = Boolean(lifecycle) || Boolean(checkpointOperation)
-                const stale = workspace?.freshness === "stale"
-                // A pending lifecycle action can still be waiting its turn in the gate. Until
-                // its queue entry runs, the row reads "Waiting for <blocker>…" rather than the
-                // pending-action label, so the user sees what is holding the action up.
-                const waitingForVm = queueVmId !== null ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, queueVmId) : undefined
-                const guarded = guardedLifecycle(workspace)
+                const menu = workspace ? sandboxMenu(workspace) : { items: [] }
+                const availability = workspace ? workspaceAvailability(workspace, source) : undefined
+                const openReason = readOnly || availability?.canOpen ? undefined : availability?.reasons.open
                 return {
                   kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
                   badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
-                  popovers: forkPopovers(workspace),
-                  menuActions: [
-                    ...(machine.kind === "vm" && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && stale), onSelect: () => { void actions.openDesktop!(workspace ? workspaceTarget(workspace) : machine.name) } }] : []),
-                    { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && stale) || (state !== "running" && state !== "failed"), onSelect: () => guarded.restartWorkspace(workspace ? workspaceTarget(workspace) : machine.name) },
-                    ...(machine.kind === "vm" && workspace ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, onSelect: () => openSandbox(machine.id, "checkpoints") }] : []),
-                    ...(machine.kind === "vm" && workspace && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || Boolean(workspace.computer?.busy) || stale, popover: "fork" }] : []),
-                    ...(machine.kind === "vm" && workspace && !workspace.computer && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, disabled: configurationOperation !== null || workspaceOperationBusy, onSelect: () => openSandbox(machine.id, "storage") }] : []),
-                    ...(machine.kind === "vm" && workspace && !workspace.computer && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || workspaceOperationBusy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
-                  ],
+                  popovers: menu.popovers,
+                  menuActions: menu.items,
+                  deleteDetails: workspace ? deleteDetails(workspace) : undefined,
                   busy: workspaceOperationBusy || Boolean(workspace?.computer?.busy),
-                  suppressInteractions: workspaceOperationBusy || Boolean(workspace?.computer?.busy) || Boolean(workspace?.computer && !workspace.computer.connected),
+                  suppressInteractions: workspace ? changesBlocked(workspace) : false,
                   icon: workspaceOperationBusy ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
                   iconState: workspace?.lifecycleFailure && !workspace.lifecycleFailureCancelled ? "error" as const : visualState,
                   tone: workspaceOperationBusy ? "starting" as const : workspace?.lifecycleFailure && !workspace.lifecycleFailureCancelled ? "error" as const : workspaceRowTone(workspace),
@@ -669,24 +764,16 @@ export function OverviewPage({ active = true, readOnly = false,
                   </div> : (
                     <span className="inline-flex max-w-full items-center gap-1 align-middle">
                       <span className="truncate" title={workspace?.attention?.message}>
-                        {lifecycle
-                          ? (waitingForVm && queueVmId !== null
-                              ? <WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} onCancel={readOnly ? undefined : actions.cancelOperation} />
-                              : <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabel}</span>)
-                          : workspace?.computer?.busy ? <span role="status">Refreshing status…</span> : workspace?.computer && !workspace.computer.connected ? <span>Unavailable</span> : <WorkspaceStateLabel state={state} />}
+                        {workspace ? <WorkspaceStatus workspace={workspace} source={source} readOnly={readOnly} onCancel={actions.cancelOperation} /> : <WorkspaceStateLabel state={state} />}
                         {workspace?.attention && <> · {workspace.attention.message}</>}
-                        {!lifecycle && !workspaceOperationBusy && queueVmId !== null && waitingForVm && <> · <WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} onCancel={readOnly ? undefined : actions.cancelOperation} /></>}
                       </span>
-                      {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" className="h-4 rounded px-1 text-[10px] font-normal" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || workspaceOperationBusy || stale} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}
+                      {workspace?.canDismissError && state === "failed" && <Button size="xs" variant="ghost" className="h-4 rounded px-1 text-[10px] font-normal" aria-label={`Dismiss ${machine.name} error`} disabled={configurationLocked || workspaceOperationBusy || workspace.freshness === "stale"} onClick={() => actions.dismissWorkspaceError(workspaceTarget(workspace))}>Dismiss</Button>}
                     </span>
                   ),
                   actions: <>
-                    <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={readOnly || !workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction>
-                    <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={readOnly || !workspace || !workspaceAvailability(workspace, source).canOpen} onClick={() => setFolderWorkspaceId(machine.id)}><Code /></SandboxAction>
-                    <WorkspaceActions target={workspace && workspaceTarget(workspace)} machine={machine} state={state} actions={{
-                    ...actions,
-                    ...guarded,
-                  }} disabled={configurationLocked || workspaceOperationBusy || Boolean(workspace?.computer && stale)} />
+                    <DisabledReason reason={openReason}><SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={readOnly || !availability?.canOpen} onClick={() => workspace && actions.openTerminal(workspaceTarget(workspace))}><Terminal /></SandboxAction></DisabledReason>
+                    <DisabledReason reason={openReason}><SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={readOnly || !availability?.canOpen} onClick={() => openFolderPicker(machine.id)}><Code /></SandboxAction></DisabledReason>
+                    {workspace && availability && <WorkspaceActions workspace={workspace} availability={availability} readOnly={readOnly} guard={guard} />}
                   </>,
                 }
               }}
@@ -694,10 +781,6 @@ export function OverviewPage({ active = true, readOnly = false,
           </>
         )}
       </div>
-      {pendingStart && source.resourceNotice?.kind === "start-memory" && <div className="mt-3 rounded-lg border border-amber-500/25 bg-amber-500/[.07] p-3" role="status">
-        <div className="flex gap-2"><TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-amber-600" aria-hidden="true" /><div><p className="text-xs font-medium">Starting {pendingStart} may slow this computer</p><p className="mt-1 text-[11px] text-muted-foreground">Silo found high memory pressure now. This VM can use up to {source.resourceNotice.memoryGiB} GB. Close memory-heavy apps, or start anyway.</p></div></div>
-        <div className="mt-2 flex justify-end gap-1"><Button type="button" variant="ghost" size="xs" onClick={() => setPendingStart(null)}>Cancel</Button><Button type="button" variant="outline" size="xs" onClick={() => { actions.startWorkspace(pendingStart); setPendingStart(null) }}>Start anyway</Button></div>
-      </div>}
     </div>
   )
 }

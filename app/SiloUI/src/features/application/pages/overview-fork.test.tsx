@@ -63,7 +63,7 @@ it("allows current-state Fork for a pending restored sandbox without starting it
   expect(startWorkspace).not.toHaveBeenCalled()
 })
 
-it("shows persisted checkpoint progress and locks the workspace row after remount", () => {
+it("shows persisted checkpoint progress and locks the workspace row after remount", async () => {
   const source = structuredClone(applicationSourceForScenario("complete"))
   const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
   workspace.checkpointOperation = { kind: "capture", status: "running", stage: "Capturing VM state" }
@@ -72,7 +72,9 @@ it("shows persisted checkpoint progress and locks the workspace row after remoun
   expect(screen.getByRole("status")).toHaveTextContent("Capturing VM state")
   expect(screen.getByRole("progressbar", { name: "Checkpoint operation progress" })).toBeVisible()
   expect(document.querySelector(`[data-machine-id="${workspace.machine.id}"]`)).toHaveAttribute("aria-busy", "true")
-  expect(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` })).toBeDisabled()
+  // The menu stays available for navigation; the items that change the sandbox are locked.
+  await userEvent.setup().click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
+  for (const name of [`Fork ${workspace.machine.name}`, `Edit ${workspace.machine.name}`, `Delete ${workspace.machine.name}`]) expect(screen.getByRole("menuitem", { name })).toHaveAttribute("data-disabled")
 })
 
 it("opens the Checkpoints tab from the Overview menu and drives fork, restore, and create", async () => {
@@ -128,7 +130,7 @@ it("dismisses a sandbox's notifications when it is deleted and announces the del
 
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(await screen.findByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
-  await user.click(confirmButton("Delete"))
+  await user.click(confirmButton("Delete permanently"))
   expect(await screen.findByText(`Deleted ${workspace.machine.name}`)).toBeVisible()
 
   const remaining = { ...source, workspaces: source.workspaces.filter(item => item.machine.id !== workspace.machine.id) }

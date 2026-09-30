@@ -1,4 +1,4 @@
-import { Fragment, useRef, useState, type ReactNode, type Ref } from "react"
+import { Fragment, useEffect, useRef, useState, type ReactNode, type Ref } from "react"
 import { DropdownMenu } from "radix-ui"
 import { Ellipsis, type LucideIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -33,10 +33,26 @@ export type MenuPopovers = Record<string, (close: () => void) => ReactNode>
  * Escape, Cancel, an outside click and unmounting (leaving the page) all close it, and several
  * popovers never nest around the same button.
  */
-export function ActionsMenu({ label, items, onClose, disabled = false, ref, popovers }: { label: string; items: MenuAction[]; onClose?: () => void; disabled?: boolean; ref?: Ref<HTMLButtonElement>; popovers?: MenuPopovers }) {
+export function ActionsMenu({ label, items, onClose, disabled = false, ref, popovers, openPanel }: {
+  label: string
+  items: MenuAction[]
+  onClose?: () => void
+  disabled?: boolean
+  ref?: Ref<HTMLButtonElement>
+  popovers?: MenuPopovers
+  /** Opens a popover without the menu (a command palette request); each token opens it once. */
+  openPanel?: { token: number; panel: string }
+}) {
   const opensPopover = useRef(false)
   const trigger = useRef<HTMLButtonElement | null>(null)
   const [panel, setPanel] = useState<string | null>(null)
+  const openedPanel = useRef(0)
+  useEffect(() => {
+    if (!openPanel || openedPanel.current === openPanel.token) return
+    openedPanel.current = openPanel.token
+    // oxlint-disable-next-line react/set-state-in-effect
+    setPanel(openPanel.panel)
+  }, [openPanel])
   const close = () => setPanel(null)
   const render = panel ? popovers?.[panel] : undefined
   return <Popover open={Boolean(render)} onOpenChange={open => { if (!open) close() }}>

@@ -1032,21 +1032,25 @@ describe("application", () => {
     const app = renderApplication("running", source)
     const panel = within(appPanel("Sandboxes"))
     expect(panel.getByText("Restarting…")).toBeVisible()
-    expect(panel.getByRole("button", { name: "More actions for dev" })).toBeDisabled()
     expect(panel.getByRole("button", { name: "Stop dev" })).toBeDisabled()
+    // The ⋯ menu stays open to navigation; its items that change the sandbox are locked.
+    await app.user.click(panel.getByRole("button", { name: "More actions for dev" }))
+    for (const name of ["Restart dev", "Edit dev", "Delete dev"]) expect(screen.getByRole("menuitem", { name })).toHaveAttribute("data-disabled")
     app.unmount()
   })
 
   it("uses subtle row tones and readable labels for every fixture state", async () => {
-    const cases: Array<{ mode: WorkspaceFixtureMode; state: string; tone: string; labelClass: string; hoverClass: string; stopEnabled: boolean; restartEnabled: boolean }> = [
-      { mode: "running", state: "running", tone: "running", labelClass: "text-emerald-700", hoverClass: "hover:bg-emerald-500/[0.07]", stopEnabled: true, restartEnabled: true },
-      { mode: "starting", state: "starting", tone: "starting", labelClass: "text-amber-700", hoverClass: "hover:bg-amber-500/[0.07]", stopEnabled: true, restartEnabled: false },
-      { mode: "stopped", state: "stopped", tone: "stopped", labelClass: "text-muted-foreground", hoverClass: "hover:bg-muted/35", stopEnabled: false, restartEnabled: false },
-      { mode: "warning", state: "stopped", tone: "warning", labelClass: "text-muted-foreground", hoverClass: "hover:bg-amber-500/[0.08]", stopEnabled: false, restartEnabled: false },
-      { mode: "error", state: "failed", tone: "error", labelClass: "text-destructive", hoverClass: "hover:bg-destructive/[0.07]", stopEnabled: false, restartEnabled: true },
+    // One availability rule (I-12): Stop waits for a start to finish, and a sandbox whose
+    // status could not be refreshed (the error fixture is stale) takes no lifecycle action.
+    const cases: Array<{ mode: WorkspaceFixtureMode; state: string; tone: string; labelClass: string; hoverClass: string; stopShown: boolean; lifecycleEnabled: boolean; restartEnabled: boolean }> = [
+      { mode: "running", state: "running", tone: "running", labelClass: "text-emerald-700", hoverClass: "hover:bg-emerald-500/[0.07]", stopShown: true, lifecycleEnabled: true, restartEnabled: true },
+      { mode: "starting", state: "starting", tone: "starting", labelClass: "text-amber-700", hoverClass: "hover:bg-amber-500/[0.07]", stopShown: true, lifecycleEnabled: false, restartEnabled: false },
+      { mode: "stopped", state: "stopped", tone: "stopped", labelClass: "text-muted-foreground", hoverClass: "hover:bg-muted/35", stopShown: false, lifecycleEnabled: true, restartEnabled: false },
+      { mode: "warning", state: "stopped", tone: "warning", labelClass: "text-muted-foreground", hoverClass: "hover:bg-amber-500/[0.08]", stopShown: false, lifecycleEnabled: true, restartEnabled: false },
+      { mode: "error", state: "failed", tone: "error", labelClass: "text-destructive", hoverClass: "hover:bg-destructive/[0.07]", stopShown: false, lifecycleEnabled: false, restartEnabled: false },
     ]
 
-    for (const { mode, state, tone, labelClass, hoverClass, stopEnabled, restartEnabled } of cases) {
+    for (const { mode, state, tone, labelClass, hoverClass, stopShown, lifecycleEnabled, restartEnabled } of cases) {
       const source = applicationSourceForScenario("running", undefined, mode)
       const application = renderApplication("running", source)
       const overview = within(appPanel("Sandboxes"))
@@ -1060,11 +1064,10 @@ describe("application", () => {
       const devRow = rows.find((row) => row.getAttribute("data-sandbox-name") === "dev") as HTMLElement
       const controls = within(devRow).getByLabelText("Controls for dev")
       const stop = within(controls).queryByRole("button", { name: "Stop dev" })
-      if (stopEnabled) expect(stop).toBeEnabled()
-      else {
-        expect(stop).not.toBeInTheDocument()
-        expect(within(controls).getByRole("button", { name: "Start dev" })).toBeEnabled()
-      }
+      const lifecycle = stopShown ? stop : within(controls).getByRole("button", { name: "Start dev" })
+      if (!stopShown) expect(stop).not.toBeInTheDocument()
+      if (lifecycleEnabled) expect(lifecycle).toBeEnabled()
+      else expect(lifecycle).toBeDisabled()
       await application.user.click(within(controls).getByRole("button", { name: "More actions for dev" }))
       const restart = screen.getByRole("menuitem", { name: "Restart dev" })
       if (restartEnabled) expect(restart).not.toHaveAttribute("data-disabled")
@@ -1233,7 +1236,7 @@ describe("application", () => {
 
     await user.click(screen.getByRole("button", { name: "More actions for playgrounds" }))
     await user.click(screen.getByRole("menuitem", { name: "Delete playgrounds" }))
-    await user.click(within((await screen.findByText("Delete playgrounds?")).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete" }))
+    await user.click(within((await screen.findByText("Delete playgrounds permanently?")).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete permanently" }))
 
     const row = overview.getByText("playgrounds").closest("li") as HTMLElement
     expect(row).toHaveAttribute("aria-busy", "true")
@@ -1257,7 +1260,8 @@ describe("application", () => {
     await user.unhover(label)
     await user.click(screen.getByRole("button", { name: "More actions for dev" }))
     await user.click(screen.getByRole("menuitem", { name: "Restart dev" }))
-    expect(actions.restartWorkspace).toHaveBeenCalledWith("dev")
+    await user.click(within((await screen.findByText("Restart dev?")).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Restart" }))
+    await waitFor(() => expect(actions.restartWorkspace).toHaveBeenCalledWith("dev"))
     expect(label).toBeVisible()
 
     rerender(<ApplicationPreview source={{ ...source, secrets: source.secrets.map((secret) => ({ ...secret, state: "active" })) }} actions={actions} />)
@@ -1324,11 +1328,14 @@ describe("application", () => {
     expect(overview.queryByText(/items? need attention/)).not.toBeInTheDocument()
     expect(within(devControls).queryByRole("button", { name: "Pause dev" })).not.toBeInTheDocument()
     expect(within(devControls).queryByRole("button", { name: "Start dev" })).not.toBeInTheDocument()
+    const confirm = async (title: string, label: string) => running.user.click(within((await screen.findByText(title)).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: label }))
     await running.user.click(within(devControls).getByRole("button", { name: "Stop dev" }))
-    expect(running.actions.stopWorkspace).toHaveBeenCalledWith("dev")
+    await confirm("Stop dev?", "Stop")
+    await waitFor(() => expect(running.actions.stopWorkspace).toHaveBeenCalledWith("dev"))
     await running.user.click(within(devControls).getByRole("button", { name: "More actions for dev" }))
     await running.user.click(screen.getByRole("menuitem", { name: "Restart dev" }))
-    expect(running.actions.restartWorkspace).toHaveBeenCalledWith("dev")
+    await confirm("Restart dev?", "Restart")
+    await waitFor(() => expect(running.actions.restartWorkspace).toHaveBeenCalledWith("dev"))
     const startPlaygrounds = within(playgroundsControls).getByRole("button", { name: "Start playgrounds" })
     const stopPlaygrounds = within(playgroundsControls).queryByRole("button", { name: "Stop playgrounds" })
     await running.user.click(within(playgroundsControls).getByRole("button", { name: "More actions for playgrounds" }))
