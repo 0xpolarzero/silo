@@ -2891,6 +2891,7 @@ mod tests {
     fn real_backup_restore_preserves_root_and_workspace_without_original_cache() {
         crate::test_support::live::require_confirmation();
         let _test_state = crate::test_support::global_state();
+        // The live runtime control socket requires a short root (104 bytes on macOS).
         let directory = tempfile::Builder::new()
             .prefix("silo-proof-")
             .tempdir_in("/tmp")
@@ -3336,6 +3337,7 @@ mod tests {
     fn real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk() {
         crate::test_support::live::require_confirmation();
         let _test_state = crate::test_support::global_state();
+        // The live runtime control socket requires a short root (104 bytes on macOS).
         let directory = tempfile::Builder::new()
             .prefix("silo-ckpt-proof-")
             .tempdir_in("/tmp")

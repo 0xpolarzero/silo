@@ -207,10 +207,10 @@ index 31ca858..6cd02da 100644
          self.file = OpenOptions::new()
 diff --git a/crates/runtime/lib/runner/logging_retention.rs b/crates/runtime/lib/runner/logging_retention.rs
 new file mode 100644
-index 0000000..236ab44
+index 0000000..74a6eba
 --- /dev/null
 +++ b/crates/runtime/lib/runner/logging_retention.rs
-@@ -0,0 +1,186 @@
+@@ -0,0 +1,210 @@
 +//! Shared with the pinned runtime patch. Only call from Silo for stopped VMs.
 +//! Live runtime writers serialize retention and writes with their process lock.
 +use std::{
@@ -327,7 +327,21 @@ index 0000000..236ab44
 +#[cfg(test)]
 +mod tests {
 +    use super::*;
-+    fn dir() -> PathBuf {
++    // This module is copied into the runtime patch, so keep its tests std-only.
++    // The guard also removes fixtures when an assertion unwinds.
++    struct TestDir(PathBuf);
++    impl std::ops::Deref for TestDir {
++        type Target = Path;
++        fn deref(&self) -> &Path {
++            &self.0
++        }
++    }
++    impl Drop for TestDir {
++        fn drop(&mut self) {
++            let _ = fs::remove_dir_all(&self.0);
++        }
++    }
++    fn dir() -> TestDir {
 +        let dir = std::env::temp_dir().join(format!(
 +            "silo-retention-{}-{}",
 +            std::process::id(),
@@ -337,7 +351,7 @@ index 0000000..236ab44
 +                .as_nanos()
 +        ));
 +        fs::create_dir_all(&dir).unwrap();
-+        dir
++        TestDir(dir)
 +    }
 +    #[test]
 +    fn expires_oldest_segment_even_if_recently_modified() {
@@ -352,7 +366,6 @@ index 0000000..236ab44
 +        enforce_at(&dir, now, MAX_BYTES, MAX_AGE).unwrap();
 +        assert!(!old.exists());
 +        assert_eq!(fs::read_to_string(fresh).unwrap(), "new");
-+        fs::remove_dir_all(dir).unwrap();
 +    }
 +    #[test]
 +    fn budget_is_shared_and_current_path_survives_expiry() {
@@ -370,7 +383,6 @@ index 0000000..236ab44
 +        enforce_at(&dir, now + MAX_AGE, 10, MAX_AGE).unwrap();
 +        assert_eq!(fs::metadata(dir.join("kernel.log")).unwrap().len(), 0);
 +        assert!(dir.join("unrelated").exists());
-+        fs::remove_dir_all(dir).unwrap();
 +    }
 +    #[test]
 +    #[cfg(unix)]
@@ -386,7 +398,19 @@ index 0000000..236ab44
 +        enforce_at(&dir, now, MAX_BYTES, MAX_AGE).unwrap();
 +        assert_eq!(held.metadata().unwrap().len(), 0);
 +        assert_ne!(fs::metadata(&path).unwrap().ino(), old_inode);
-+        fs::remove_dir_all(dir).unwrap();
++    }
++
++    #[test]
++    fn fixture_directory_is_removed_when_an_assertion_unwinds() {
++        let mut fixture = PathBuf::new();
++        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            let dir = dir();
++            fixture = dir.to_path_buf();
++            fs::write(dir.join("fixture"), "test").unwrap();
++            panic!("simulate an assertion failure");
++        }));
++        assert!(result.is_err());
++        assert!(!fixture.exists());
 +    }
 +
 +    #[test]

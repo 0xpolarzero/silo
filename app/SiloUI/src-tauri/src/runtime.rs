@@ -8091,6 +8091,7 @@ esac
     #[test]
     fn runtime_alias_is_short_and_preserves_existing_storage() {
         let _test_state = crate::test_support::global_state();
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new()
             .prefix("silo")
             .tempdir_in("/tmp")
@@ -8130,6 +8131,7 @@ esac
     fn runtime_alias_secures_existing_parent_without_changing_its_contents() {
         let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
         let storage = directory.path().join("storage");
         let alias = runtime_home_alias(directory.path(), &storage);
@@ -8147,6 +8149,7 @@ esac
     fn runtime_alias_rejects_symlink_parent_without_changing_target_permissions() {
         let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
         let other = directory.path().join("other");
         fs::create_dir(&other).unwrap();
@@ -8163,6 +8166,7 @@ esac
     #[test]
     fn runtime_alias_reports_existing_directory_and_preserves_data() {
         let _test_state = crate::test_support::global_state();
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
         let storage = directory.path().join("storage");
         let alias = runtime_home_alias(directory.path(), &storage);
@@ -8180,6 +8184,7 @@ esac
     #[test]
     fn runtime_alias_is_prepared_before_configuration_lock_on_first_run() {
         let _test_state = crate::test_support::global_state();
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new().prefix("silo").tempdir_in("/tmp").unwrap();
         let mut paths = paths(&directory);
         let storage = directory.path().join("storage");
@@ -8196,6 +8201,7 @@ esac
     #[test]
     fn runtime_alias_never_replaces_an_existing_wrong_target() {
         let _test_state = crate::test_support::global_state();
+        // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new()
             .prefix("silo")
             .tempdir_in("/tmp")
