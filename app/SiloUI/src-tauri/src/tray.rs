@@ -147,7 +147,7 @@ mod platform {
         fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
             vec![
                 ksni::menu::StandardItem {
-                    label: "Open Silo…".into(),
+                    label: "Open Silo".into(),
                     activate: Box::new(|tray: &mut Self| {
                         status_panel::report(status_panel::open_main(tray.app.clone(), None))
                     }),
