@@ -224,3 +224,53 @@ Cleanup evidence: `cleanup-final.json`, `cache-cleanup.json`,
 
 Four fixes and this evidence record are committed locally. No push, version
 bump, tag, changeset consumption, plan edit, or publication occurred.
+
+## Normal-profile runtime migration (owner-authorized), 30 September 2026
+
+Follow-up on "Needs a person" item 1. The owner explicitly authorized migrating
+`dev-zeronival` and `trade-zeronival`. Installed `/usr/bin/silo-ui` 0.9.0 was
+launched (nohup, X11 `:0`, `/run/user/1000`) as the owner at about 18:28 local.
+No leftover hashing process from the earlier session existed beforehand. Both
+sandboxes were stopped (no `msb` process) before and after.
+
+Baseline: `machines.json` SHA-256 `a50cdb3b...b1dd` (unchanged): dev 8 vCPU/12 GiB,
+200 GiB workspace and runtime; trade 8 vCPU/12 GiB, 100 GiB each. Sparse content
+digests (SEEK_DATA/SEEK_HOLE, O_NOATIME, read-only) of `upper.ext4` and
+`volumes/*/workspace.raw` were taken before launch; the `upper.ext4` digests equal
+the earlier `final-content.json` baseline.
+
+Result: migration completed in about 5 minutes ("Sandbox 1 of 2 / 2 of 2 converted
+and verified", 2 migrated, 0 failed). Silo staged a converted generation in
+`~/.local/share/org.silo.preview/runtime-checkpoints-converted` (31 GB) and selected it
+through `runtime-generation.json`; the original `runtime/` tree is preserved. The
+free space on `/` fell from 44 GB to 13 GB (94% used), which the owner should know.
+
+Verification after migration:
+- Same names/settings; `machines.json` byte-identical between old and converted trees.
+- Original disks: size, mtime and sparse digests identical to baseline for all four files.
+- Converted disks: sparse digests, sizes and extent counts identical to baseline for
+  all four files (`upper.ext4` and `workspace.raw` of both sandboxes).
+- Silo UI lists both sandboxes: trade-zeronival Stopped; dev-zeronival shows Failed,
+  "The sandbox runtime crashed" (its last heartbeat is 16 Sep with an active exec
+  session, i.e. an old unclean stop, not caused here). Both show an "SSH error" badge.
+- At launch Silo tried to auto-start dev-zeronival (startup selection) and refused:
+  "This sandbox uses the old account layout. Migrate it to the silo account or create
+  a new sandbox before using it." The separate working-account migration
+  (`docs/SiloUI-WORKING-ACCOUNT-MIGRATION.md`) was not authorized and was not run.
+  No VM was started by the app.
+- Start/Stop through Silo was NOT performed: an "Unlock Login Keyring" password
+  dialog (the login keyring was not unlocked at login) and Silo's error dialog were
+  open, no xdotool was installed, and clicking around a password prompt was unsafe.
+  No password was typed. Silo was left running with both dialogs on screen.
+- VS Code Remote SSH retry was not performed: the same keyring dialog blocks it, and
+  Code had been purged in the previous session.
+
+Evidence (local, ignored): `app/SiloUI/src-tauri/target/verification/linux/migration/`
+(`before.json`, `after-orig.json`, `after-conv.json`, `runtime-migration.json`,
+`runtime-generation.json`, `s1.png` migration progress, `s2.png` post-migration UI).
+Temporary files on the Linux machine were removed.
+
+Needs the owner: dismiss or unlock the keyring dialog, decide on the dev-zeronival
+working-account migration, and then verify Start/Stop and VS Code Remote SSH.
+Free disk space is low; the pre-migration `runtime/` copy can be removed only by the
+owner once satisfied.
