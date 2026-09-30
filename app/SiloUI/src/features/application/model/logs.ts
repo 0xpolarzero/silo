@@ -11,6 +11,8 @@ export interface LogQuery {
   cursor?: string
   limit?: number
   aroundId?: string
+  /** Snapshot of the previous first page: Follow reads only records appended since. */
+  follow?: string
 }
 export const logEntrySchema = z.object({
   id: z.string(), line: z.string(), occurredAt: z.string(), sandboxId: z.string(),
@@ -27,6 +29,8 @@ export const logPageSchema = z.object({
   unsupported: z.boolean().optional(),
   /** Some records were malformed or too large and are shown as placeholders or truncated. */
   unreadableRecords: z.boolean().optional(),
+  /** Snapshot this page came from; the next Follow refresh continues it. */
+  snapshot: z.string().nullish(),
 })
 export function isUnsupportedRemote(reason: unknown): boolean {
   const message = String(reason)

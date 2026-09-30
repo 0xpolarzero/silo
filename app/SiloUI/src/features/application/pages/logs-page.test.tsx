@@ -226,6 +226,30 @@ describe("retained logs", () => {
     } finally { vi.useRealTimers() }
   })
 
+  it("continues the previous snapshot while following, but starts a new search on Refresh and Export", async () => {
+    vi.useFakeTimers()
+    try {
+      const { workspace, actions } = fixture()
+      workspace.logs = workspace.logs.slice(0, 2)
+      const requests: LogQuery[] = []
+      let snapshots = 0
+      actions.queryLogs = vi.fn(async (request: LogQuery) => {
+        requests.push(request)
+        return { ...fixtureLogPage(workspace, request), snapshot: `snapshot-${++snapshots}` }
+      })
+      actions.exportLogs = vi.fn(async () => true)
+      await act(async () => render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />))
+      fireEvent.click(screen.getByRole("button", { name: "Follow" }))
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+      expect(requests.map(request => request.follow)).toEqual([undefined, "snapshot-1", "snapshot-2"])
+      fireEvent.click(screen.getByRole("button", { name: "Pause" }))
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Refresh logs" })) })
+      expect(requests.at(-1)?.follow).toBeUndefined()
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Export…" })) })
+      expect(vi.mocked(actions.exportLogs!).mock.calls[0][0].every(request => request.follow === undefined)).toBe(true)
+    } finally { vi.useRealTimers() }
+  })
   it("buffers quiet-owner history until busy-owner pages reach it", async () => {
     const { workspace, actions } = fixture()
     workspace.logs = ["10", "09", "08", "07"].map(hour => ({ occurredAt: `2026-09-18T${hour}:00:00Z`, line: `busy ${hour}` }))

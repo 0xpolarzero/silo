@@ -185,6 +185,7 @@ mod tests {
             timestamp_estimated: false,
             unsupported: false,
             unreadable_records: false,
+            snapshot: None,
         }
     }
 

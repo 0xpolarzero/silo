@@ -15,6 +15,10 @@ pub(crate) struct Query {
     pub cursor: Option<String>,
     pub limit: Option<usize>,
     pub around_id: Option<String>,
+    /// Snapshot of the previous first page: a Follow refresh reads only what was
+    /// appended since. Older hosts ignore it and run a full query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -48,6 +52,9 @@ pub(crate) struct Page {
     /// or truncated. Older hosts never send this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unreadable_records: bool,
+    /// Snapshot this page came from, for the next Follow refresh. Older hosts never send this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Segment {
@@ -62,14 +69,20 @@ struct Location {
     time: String,
     id: String,
 }
+/// One retained file as indexed by a snapshot.
+struct Indexed {
+    segment: Segment,
+    /// Records before this offset end with a newline. A follow refresh reads from
+    /// here: a final record still being written is read again once complete.
+    consumed: u64,
+    /// Coverage of the records before `consumed`.
+    complete: Summary,
+}
 struct Cached {
     binding: String,
-    files: Vec<Segment>,
+    files: Vec<Indexed>,
     records: Vec<Location>,
-    oldest: Option<String>,
-    newest: Option<String>,
-    estimated: bool,
-    unreadable: bool,
+    summary: Summary,
 }
 static CACHE: std::sync::OnceLock<
     std::sync::Mutex<HashMap<String, (Instant, std::sync::Arc<Cached>)>>,
@@ -222,13 +235,13 @@ fn decode(segment: &Segment, raw: &[u8], oversized: bool) -> Decoded {
     }
 }
 /// Visits every record of `segment` from `start` up to its recorded length with
-/// its offset and identity. Returns the offset after the last terminated record:
+/// its offset, identity and whether it ended with a newline. Returns the offset after the last terminated record:
 /// an unterminated final record is still being written.
 fn scan(
     path: &Path,
     segment: &Segment,
     start: u64,
-    mut visit: impl FnMut(u64, String, Decoded) -> Result<(), String>,
+    mut visit: impl FnMut(u64, String, Decoded, bool) -> Result<(), String>,
 ) -> Result<u64, String> {
     let mut file = File::open(path).map_err(|_| "Retained logs could not be opened.")?;
     if file
@@ -268,7 +281,7 @@ fn scan(
             break;
         }
         let id = record_id(segment.inode, offset, &bytes);
-        visit(offset, id, decode(segment, &bytes, oversized))?;
+        visit(offset, id, decode(segment, &bytes, oversized), terminated)?;
         offset += length;
         if terminated {
             consumed = offset;
@@ -302,7 +315,7 @@ fn cached_page(
     };
     let available = files(directory)?;
     let mut handles = HashMap::new();
-    for segment in &cached.files {
+    for Indexed { segment, .. } in &cached.files {
         let (path, _) = available
             .iter()
             .find(|(_, s)| {
@@ -367,12 +380,13 @@ fn cached_page(
     Ok(Page {
         entries,
         next_cursor: (next < cached.records.len()).then(|| format!("{id}:{next}")),
-        oldest_available_timestamp: cached.oldest.clone(),
-        newest_available_timestamp: cached.newest.clone(),
+        oldest_available_timestamp: cached.summary.oldest.clone(),
+        newest_available_timestamp: cached.summary.newest.clone(),
         total_matches: cached.records.len(),
-        timestamp_estimated: cached.estimated,
+        timestamp_estimated: cached.summary.estimated,
         unsupported: false,
-        unreadable_records: cached.unreadable,
+        unreadable_records: cached.summary.unreadable,
+        snapshot: Some(id.to_owned()),
     })
 }
 fn stamp(value: &str) -> Result<String, String> {
@@ -504,6 +518,7 @@ fn remote_page(outcome: Result<Value, String>) -> Result<Page, String> {
             timestamp_estimated: false,
             unsupported: true,
             unreadable_records: false,
+            snapshot: None,
         }),
         Err(message) => Err(message),
     }
@@ -545,7 +560,8 @@ pub(super) fn query_local(
         .join("sandboxes")
         .join(machine.name())
         .join("logs");
-    if request.cursor.is_none() {
+    // Follow refreshes run every few seconds; opportunistic cleanup can wait for a search.
+    if request.cursor.is_none() && request.follow.is_none() {
         clean_up_if_stopped(
             &OPERATIONS,
             machine.id(),
@@ -628,24 +644,38 @@ fn read(
     if let Some(around) = &request.around_id {
         return context(&available, around, &request, sandbox_name, computer_id, computer_name);
     }
-    let mut summary = Summary::default();
-    let mut index = Index::default();
-    for (path, segment) in &available {
-        scan(path, segment, 0, |offset, id, decoded| {
-            summary.add(&decoded);
-            index.add(segment.inode, offset, id, decoded, &filter)
-        })?;
-    }
-    let cached = Cached {
-        binding: binding.clone(),
-        files: available.into_iter().map(|(_, segment)| segment).collect(),
-        records: index.sorted(),
-        oldest: summary.oldest,
-        newest: summary.newest,
-        estimated: summary.estimated,
-        unreadable: summary.unreadable,
+    // Follow continues its previous snapshot; anything unexpected rebuilds it.
+    let previous = request.follow.as_deref().and_then(|token| {
+        let mut cache = cache().lock().ok()?;
+        let (seen, cached) = cache.get_mut(token)?;
+        *seen = Instant::now();
+        (cached.binding == binding).then(|| cached.clone())
+    });
+    let followed = match &previous {
+        Some(previous) => follow_index(previous, &available, &filter)?,
+        None => None,
     };
-    let id = store(cached)?;
+    let cached = match followed {
+        Some(cached) => cached,
+        None => {
+            let mut summary = Summary::default();
+            let mut index = Index::default();
+            let mut files = Vec::with_capacity(available.len());
+            for (path, segment) in &available {
+                let mut complete = Summary::default();
+                let consumed = scan(path, segment, 0, |offset, id, decoded, terminated| {
+                    summary.add(&decoded);
+                    if terminated {
+                        complete.add(&decoded);
+                    }
+                    index.add(segment.inode, offset, id, decoded, &filter)
+                })?;
+                files.push(Indexed { segment: segment.clone(), consumed, complete });
+            }
+            Cached { binding: binding.clone(), files, records: index.sorted(), summary }
+        }
+    };
+    let id = store(cached, request.follow.as_deref())?;
     cached_page(
         directory,
         &format!("{id}:0"),
@@ -691,6 +721,20 @@ impl Summary {
         self.estimated |= decoded.estimated;
         self.unreadable |= decoded.unreadable;
     }
+    fn merge(&mut self, other: &Summary) {
+        if let Some(oldest) = &other.oldest {
+            if self.oldest.as_ref().is_none_or(|current| oldest < current) {
+                self.oldest = Some(oldest.clone());
+            }
+        }
+        if let Some(newest) = &other.newest {
+            if self.newest.as_ref().is_none_or(|current| newest > current) {
+                self.newest = Some(newest.clone());
+            }
+        }
+        self.estimated |= other.estimated;
+        self.unreadable |= other.unreadable;
+    }
 }
 /// Offsets of matching records; bodies are re-read per page.
 #[derive(Default)]
@@ -717,7 +761,9 @@ impl Index {
     }
 }
 const INDEX_BUDGET: usize = 128 * 1024 * 1024;
-const MAX_SNAPSHOTS: usize = 100;
+/// A following view keeps one snapshot (each refresh replaces its predecessor),
+/// so a few searches per view are enough.
+const MAX_SNAPSHOTS: usize = 16;
 const TOO_MANY_MATCHES: &str = "This search has too many matches. Narrow its time range or search text.";
 fn location_cost(time: &str, id: &str) -> usize {
     std::mem::size_of::<Location>() + time.len() + id.len()
@@ -725,13 +771,17 @@ fn location_cost(time: &str, id: &str) -> usize {
 fn cached_cost(cached: &Cached) -> usize {
     cached.records.iter().map(|record| location_cost(&record.time, &record.id)).sum()
 }
-/// Keep a snapshot for its cursors, evicting the least recently used over budget.
-fn store(cached: Cached) -> Result<String, String> {
+/// Keep a snapshot for its cursors, replacing the snapshot it follows and evicting
+/// the least recently used over budget.
+fn store(cached: Cached, replaces: Option<&str>) -> Result<String, String> {
     let cost = cached_cost(&cached);
     if cost > INDEX_BUDGET {
         return Err(TOO_MANY_MATCHES.into());
     }
     let mut cache = cache().lock().map_err(|_| "Log query unavailable.")?;
+    if let Some(previous) = replaces {
+        cache.remove(previous);
+    }
     cache.retain(|_, (seen, _)| seen.elapsed() < Duration::from_secs(1800));
     while cache.len() >= MAX_SNAPSHOTS
         || cache.values().map(|(_, cached)| cached_cost(cached)).sum::<usize>() + cost > INDEX_BUDGET
@@ -745,6 +795,76 @@ fn store(cached: Cached) -> Result<String, String> {
     cache.insert(id.clone(), (Instant::now(), std::sync::Arc::new(cached)));
     Ok(id)
 }
+/// Extends `previous` with what was appended since, reading each surviving file
+/// only from its consumed offset and new files in full. Files that expired drop
+/// their records. Returns None when a file shrank in place (retention truncation)
+/// or a boot failure changed without a new inode: the caller rebuilds instead.
+fn follow_index(
+    previous: &Cached,
+    available: &[(PathBuf, Segment)],
+    filter: &Filter,
+) -> Result<Option<Cached>, String> {
+    let mut summary = Summary::default();
+    let mut index = Index::default();
+    let mut files = Vec::with_capacity(available.len());
+    let mut carried = HashMap::new();
+    for (path, segment) in available {
+        let old = previous
+            .files
+            .iter()
+            .find(|old| old.segment.inode == segment.inode && old.segment.stream == segment.stream);
+        let (start, mut complete) = match old {
+            Some(old)
+                if segment.bytes < old.segment.bytes
+                    || (segment.stream == "boot-error" && segment.bytes != old.segment.bytes) =>
+            {
+                return Ok(None)
+            }
+            Some(old) => {
+                carried.insert(segment.inode, old.consumed);
+                (old.consumed, old.complete.clone())
+            }
+            None => (0, Summary::default()),
+        };
+        summary.merge(&complete);
+        let consumed = scan(path, segment, start, |offset, id, decoded, terminated| {
+            summary.add(&decoded);
+            if terminated {
+                complete.add(&decoded);
+            }
+            index.add(segment.inode, offset, id, decoded, filter)
+        })?;
+        files.push(Indexed { segment: segment.clone(), consumed, complete });
+    }
+    // Both lists are newest first; keep that order while merging.
+    let appended = index.sorted();
+    let mut records = Vec::with_capacity(previous.records.len() + appended.len());
+    let mut kept = previous
+        .records
+        .iter()
+        .filter(|record| carried.get(&record.file).is_some_and(|consumed| record.offset < *consumed))
+        .peekable();
+    let mut appended = appended.into_iter().peekable();
+    loop {
+        let take_kept = match (kept.peek(), appended.peek()) {
+            (Some(old), Some(new)) => (&old.time, &old.id) >= (&new.time, &new.id),
+            (Some(_), None) => true,
+            (None, Some(_)) => false,
+            (None, None) => break,
+        };
+        if take_kept {
+            let old = kept.next().expect("peeked");
+            records.push(Location { file: old.file, offset: old.offset, time: old.time.clone(), id: old.id.clone() });
+        } else {
+            records.push(appended.next().expect("peeked"));
+        }
+    }
+    let cached = Cached { binding: previous.binding.clone(), files, records, summary };
+    if cached_cost(&cached) > INDEX_BUDGET {
+        return Err(TOO_MANY_MATCHES.into());
+    }
+    Ok(Some(cached))
+}
 /// Up to 50 records on each side of `around`, across all streams. Filters do not apply.
 fn context(
     available: &[(PathBuf, Segment)],
@@ -756,7 +876,7 @@ fn context(
 ) -> Result<Page, String> {
     let mut anchor = None;
     for (path, segment) in available {
-        scan(path, segment, 0, |_, id, decoded| {
+        scan(path, segment, 0, |_, id, decoded, _| {
             if anchor.is_none() && id == around {
                 anchor = Some((decoded.occurred_at, id));
             }
@@ -769,7 +889,7 @@ fn context(
     let mut older = Vec::new();
     let mut newer = Vec::new();
     for (path, segment) in available {
-        scan(path, segment, 0, |_, id, decoded| {
+        scan(path, segment, 0, |_, id, decoded, _| {
             summary.add(&decoded);
             total += 1;
             let entry = Entry {
@@ -807,6 +927,7 @@ fn context(
         timestamp_estimated: summary.estimated,
         unsupported: false,
         unreadable_records: summary.unreadable,
+        snapshot: None,
     })
 }
 
@@ -1146,6 +1267,81 @@ mod tests {
             query.cursor = page.next_cursor;
         }
         (entries, first)
+    }
+    fn summary_of(entries: &[Entry]) -> Vec<(String, String, String)> {
+        entries.iter().map(|entry| (entry.id.clone(), entry.occurred_at.clone(), entry.line.clone())).collect()
+    }
+    fn append(path: &Path, text: &str) {
+        std::fs::OpenOptions::new().append(true).open(path).unwrap().write_all(text.as_bytes()).unwrap();
+    }
+    #[test]
+    fn follow_reads_appended_records_and_matches_a_full_refresh() {
+        let directory = tempfile::tempdir().unwrap();
+        let exec = directory.path().join("exec.log");
+        fs::write(&exec, (0..300).map(|i| line(i, "record")).collect::<String>()).unwrap();
+        let kernel = directory.path().join("kernel.log");
+        fs::write(&kernel, "2026-09-18T12:00:00.000000100Z kernel start\n2026-09-18T12:00:00.000000200Z partial").unwrap();
+        let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+        let snapshot = first.snapshot.clone().expect("a first page names its snapshot");
+        // Appends, a completed console line, a rotation and a new segment.
+        append(&exec, &line(301, "appended"));
+        append(&kernel, " line completed\n");
+        fs::rename(&exec, directory.path().join("exec.log.1")).unwrap();
+        fs::write(&exec, line(302, "new segment")).unwrap();
+        let mut follow = request();
+        follow.follow = Some(snapshot.clone());
+        let (followed, followed_first) = all_pages(directory.path(), follow);
+        let (full, full_first) = all_pages(directory.path(), request());
+        assert_eq!(summary_of(&followed), summary_of(&full));
+        // 301 execution records in the rotated file, one in the new file, two console lines.
+        assert_eq!(followed_first.total_matches, 304);
+        assert_eq!(
+            (followed_first.oldest_available_timestamp, followed_first.newest_available_timestamp),
+            (full_first.oldest_available_timestamp, full_first.newest_available_timestamp)
+        );
+        assert!(followed.iter().any(|entry| entry.line.ends_with("partial line completed")));
+        assert!(!followed.iter().any(|entry| entry.line.ends_with("partial")));
+        // A follow replaces its predecessor instead of accumulating snapshots.
+        let mut stale = request();
+        stale.cursor = Some(format!("{snapshot}:0"));
+        assert!(read(directory.path(), stale, "dev", "pc", "Desktop").err().unwrap().contains("expired"));
+    }
+    #[test]
+    fn follow_does_not_reread_records_it_already_indexed() {
+        let directory = tempfile::tempdir().unwrap();
+        let exec = directory.path().join("exec.log");
+        fs::write(&exec, (0..100).map(|i| line(i, "record")).collect::<String>()).unwrap();
+        let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+        let previous = cache().lock().unwrap()[first.snapshot.as_deref().unwrap()].1.clone();
+        // Overwrite indexed bytes in place: a rescan would find unreadable records.
+        let mut bytes = fs::read(&exec).unwrap();
+        bytes[..10].copy_from_slice(b"##########");
+        let mut file = std::fs::OpenOptions::new().write(true).open(&exec).unwrap();
+        file.write_all(&bytes).unwrap();
+        file.write_all(line(100, "appended").as_bytes()).unwrap();
+        drop(file);
+        let filter = Filter { since: None, until: None, needle: String::new(), source: None };
+        let next = follow_index(&previous, &files(directory.path()).unwrap(), &filter).unwrap().unwrap();
+        assert_eq!(next.records.len(), 101);
+        assert!(!next.summary.unreadable, "indexed bytes were read again");
+        assert_eq!(next.files[0].consumed, fs::metadata(&exec).unwrap().len());
+    }
+    #[test]
+    fn follow_rebuilds_after_truncation_or_an_unknown_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let exec = directory.path().join("exec.log");
+        fs::write(&exec, (0..50).map(|i| line(i, "old")).collect::<String>()).unwrap();
+        let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+        // Retention truncates the current inode in place; the writer starts again.
+        fs::OpenOptions::new().write(true).open(&exec).unwrap().set_len(0).unwrap();
+        append(&exec, &line(60, "after truncation"));
+        for token in [first.snapshot.clone().unwrap(), "unknown-snapshot".into()] {
+            let mut follow = request();
+            follow.follow = Some(token);
+            let page = read(directory.path(), follow, "dev", "pc", "Desktop").unwrap();
+            assert_eq!(page.total_matches, 1);
+            assert_eq!(page.entries[0].line, "after truncation");
+        }
     }
     #[test]
     fn malformed_exec_records_become_placeholders_instead_of_failing_every_query() {
