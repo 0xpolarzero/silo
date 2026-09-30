@@ -280,7 +280,7 @@ fn inspection_failure(stage: &str, name: &str, error: &runtime::RuntimeError) ->
         "sandbox".into()
     };
     let (reason, exit_code) = match error {
-        runtime::RuntimeError::Failed { detail, .. } => {
+        runtime::RuntimeError::Failed { detail, exit_code, .. } => {
             let lower = detail.to_ascii_lowercase();
             let reason = if lower.contains("permission denied") {
                 "staged runtime files could not be accessed"
@@ -297,10 +297,7 @@ fn inspection_failure(stage: &str, name: &str, error: &runtime::RuntimeError) ->
             } else {
                 "the runtime inspection command failed"
             };
-            let exit_code = detail.strip_prefix("exit code ")
-                .and_then(|value| value.split_once(':'))
-                .and_then(|(code, _)| code.parse::<u8>().ok());
-            (reason, exit_code)
+            (reason, exit_code.and_then(|code| u8::try_from(code).ok()))
         }
         runtime::RuntimeError::Unavailable(message) => {
             let reason = if message.contains("bundled MicroSandbox executable") {
@@ -309,13 +306,13 @@ fn inspection_failure(stage: &str, name: &str, error: &runtime::RuntimeError) ->
                 "the bundled runtime library is missing"
             } else if message.contains("managed runtime path") {
                 "the staged runtime home could not be prepared"
-            } else if message.contains("could not start its bundled runtime") {
-                "the bundled runtime could not start"
             } else {
                 "the runtime inspection was unavailable"
             };
             (reason, None)
         }
+        runtime::RuntimeError::Launch(_) => ("the bundled runtime could not start", None),
+        runtime::RuntimeError::Partial(_) => ("the runtime inspection command failed", None),
         runtime::RuntimeError::TimedOut { .. } => ("the runtime inspection timed out", None),
         runtime::RuntimeError::Cancelled { .. } => ("the runtime inspection was cancelled", None),
         runtime::RuntimeError::Busy => ("another sandbox operation is still running", None),
@@ -336,7 +333,7 @@ fn conversion_failure(name: &str, error: &runtime::RuntimeError) -> String {
         "sandbox".into()
     };
     let (reason, exit_code) = match error {
-        runtime::RuntimeError::Failed { detail, .. } => {
+        runtime::RuntimeError::Failed { detail, exit_code, .. } => {
             let lower = detail.to_ascii_lowercase();
             let reason = if lower.contains("unsupported persisted sandbox configuration")
                 && lower.contains("config.network.secrets.secrets[0].substitution.basic_auth")
@@ -365,10 +362,7 @@ fn conversion_failure(name: &str, error: &runtime::RuntimeError) -> String {
             } else {
                 "the runtime conversion command failed"
             };
-            let exit_code = detail.strip_prefix("exit code ")
-                .and_then(|value| value.split_once(':'))
-                .and_then(|(code, _)| code.parse::<u8>().ok());
-            (reason, exit_code)
+            (reason, exit_code.and_then(|code| u8::try_from(code).ok()))
         }
         runtime::RuntimeError::Unavailable(message) => {
             let reason = if message.contains("bundled MicroSandbox executable") {
@@ -382,6 +376,8 @@ fn conversion_failure(name: &str, error: &runtime::RuntimeError) -> String {
             };
             (reason, None)
         }
+        runtime::RuntimeError::Launch(_) => ("the bundled runtime could not start", None),
+        runtime::RuntimeError::Partial(_) => ("the runtime conversion command failed", None),
         runtime::RuntimeError::TimedOut { .. } => (
             "the disk conversion exceeded its 30-minute limit before the runtime reported a cause",
             None,
@@ -743,7 +739,8 @@ mod tests {
     fn inspection_diagnostic_keeps_exit_code_but_not_runtime_output() {
         let error = runtime::RuntimeError::Failed {
             operation: "Reading sandbox state".into(),
-            detail: "exit code 73: unknown option token=private /Users/person/data".into(),
+            exit_code: Some(73),
+            detail: "unknown option token=private /Users/person/data".into(),
         };
         let message = inspection_failure("Staged", "dev", &error);
         assert!(message.contains("dev"));
@@ -844,6 +841,7 @@ mod tests {
         let busy = runtime::RuntimeError::Busy;
         let no_exit = runtime::RuntimeError::Failed {
             operation: "adopt-disk".into(),
+            exit_code: None,
             detail: "the process could not be observed: interrupted".into(),
         };
 

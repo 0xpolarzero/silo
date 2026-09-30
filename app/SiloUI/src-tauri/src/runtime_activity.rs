@@ -12,7 +12,11 @@ pub(super) struct Event {
     machine_id: String,
     timestamp: u64,
     completed: bool,
+    /// One-line summary of a failed action (never raw runtime output).
     failure: Option<String>,
+    /// The runtime's own explanation of the failure, for a Details disclosure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostic: Option<String>,
     #[serde(default)]
     dismissed: bool,
     /// The user cancelled the action; it is neither a failure nor a success.
@@ -104,6 +108,7 @@ pub(super) fn begin(paths: &RuntimePaths, action: &str, workspace: &str, machine
         timestamp,
         completed: false,
         failure: None,
+        diagnostic: None,
         dismissed: false,
         cancelled: false,
         process: std::process::id(),
@@ -121,6 +126,7 @@ pub(super) fn resume(paths: &RuntimePaths, event: &mut Event, machine_id: &str) 
     event.process = std::process::id();
     event.completed = false;
     event.failure = None;
+    event.diagnostic = None;
     event.dismissed = false;
     event.cancelled = false;
     store(paths, event)
@@ -133,7 +139,11 @@ pub(super) fn finish(
 ) -> Result<(), String> {
     event.completed = true;
     event.cancelled = matches!(result, Err(RuntimeError::Cancelled { .. }));
-    event.failure = result.as_ref().err().filter(|_| !event.cancelled).map(failure_message);
+    let report = result.as_ref().err().filter(|_| !event.cancelled).map(failure_report);
+    // The summary is the user-facing line; the runtime's explanation (filtered like
+    // Logs and bounded) is kept separately for a Details disclosure.
+    event.failure = report.as_ref().map(|report| report.summary.clone());
+    event.diagnostic = report.and_then(|report| report.diagnostic);
     store(paths, event)
 }
 
@@ -151,19 +161,37 @@ pub(super) fn retire(paths: &RuntimePaths, event: &mut Event) -> Result<(), Stri
     finish(paths, event, &Err(RuntimeError::Cancelled { operation }))
 }
 
-pub(super) fn failure_message(error: &RuntimeError) -> String {
-    let summary = safe_activity_error(error);
-    let RuntimeError::Failed { detail, .. } = error else { return summary };
-    // Keep the runtime's explanation, using the same sensitive-output filtering
-    // as Logs. Bound the journal and IPC payload even for noisy CLI failures.
-    let diagnostic = log_text(detail);
-    let diagnostic = diagnostic.trim();
-    if diagnostic.is_empty() { return summary; }
-    let bounded: String = diagnostic.chars().take(8_192).collect();
-    format!("{summary}\n{bounded}{}", if bounded.len() < diagnostic.len() { "\n[Diagnostic truncated]" } else { "" })
+/// Summary and diagnostic of a recorded failure. Journals written before the
+/// diagnostic field existed kept both in `failure`, separated by the first newline.
+fn failure_parts(event: &Event) -> Option<(String, Option<String>)> {
+    let failure = event.failure.as_deref()?;
+    let (summary, legacy) = failure.split_once('\n').unwrap_or((failure, ""));
+    let diagnostic = event.diagnostic.as_deref().unwrap_or(legacy);
+    let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = summary.to_lowercase();
+    if lower.contains("exit code") || lower.contains("worker") {
+        let details = format!("{summary}\n{diagnostic}");
+        return Some((
+            "The sandbox action did not finish. Check its state and retry.".into(),
+            diagnostic_text(&details),
+        ));
+    }
+    Some((summary, diagnostic_text(diagnostic)))
 }
 
-pub(super) fn failures(paths: &RuntimePaths) -> Result<HashMap<String, String>, RuntimeError> {
+/// A VM's latest undismissed lifecycle failure, as shown on its row.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LifecycleFailureView {
+    /// One line, for example "Start failed: …". Serialized as `lifecycleFailure`.
+    lifecycle_failure: String,
+    /// The runtime's explanation, for a Details disclosure. Serialized as
+    /// `lifecycleFailureDiagnostic` and omitted when there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lifecycle_failure_diagnostic: Option<String>,
+}
+
+pub(super) fn failures(paths: &RuntimePaths) -> Result<HashMap<String, LifecycleFailureView>, RuntimeError> {
     let mut latest = HashMap::new();
     for event in events(paths)? {
         // Legacy records remain in Activity, but cannot be attributed safely to
@@ -172,7 +200,8 @@ pub(super) fn failures(paths: &RuntimePaths) -> Result<HashMap<String, String>, 
     }
     Ok(latest.into_iter().filter_map(|(name, event)| {
         let label = match event.action.as_str() { "start" => "Start", "stop" => "Stop", _ => "Restart" };
-        event.failure.filter(|_| !event.dismissed).map(|message| (name, format!("{label} failed: {message}")))
+        let (summary, diagnostic) = failure_parts(&event).filter(|_| !event.dismissed)?;
+        Some((name, LifecycleFailureView { lifecycle_failure: format!("{label} failed: {summary}"), lifecycle_failure_diagnostic: diagnostic }))
     }).collect())
 }
 
@@ -206,7 +235,14 @@ fn history_warning(kind: &str) -> Value {
 pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
     let mut warnings = Vec::new();
     let mut result: Vec<Value> = read_activity(paths, false).unwrap_or_else(|_| { warnings.push(history_warning("setup")); Vec::new() }).into_iter().enumerate().map(|(index, event)| {
-        serde_json::json!({"id": format!("setup-{}-{}-{}-{index}", event.request_id, event.timestamp, event.step), "category": "sandbox", "title": event.message, "detail": "Sandbox setup", "occurredAt": timestamp(event.timestamp), "time": timestamp(event.timestamp), "tone": if event.level == "error" { "danger" } else if event.level == "warning" { "warning" } else { "neutral" }, "status": "completed", "workspace": event.workspace})
+        let mut entry = serde_json::json!({"id": format!("setup-{}-{}-{}-{index}", event.request_id, event.timestamp, event.step), "category": "sandbox", "title": event.message, "detail": "Sandbox setup", "occurredAt": timestamp(event.timestamp), "time": timestamp(event.timestamp), "tone": if event.level == "error" { "danger" } else if event.level == "warning" { "warning" } else { "neutral" }, "status": "completed", "workspace": event.workspace});
+        if let Some(diagnostic) = event.diagnostic {
+            entry["diagnostic"] = diagnostic.into();
+        }
+        if event.partial {
+            entry["partial"] = true.into();
+        }
+        entry
     }).collect();
     result.extend(events(paths).unwrap_or_else(|_| { warnings.push(history_warning("sandbox")); Vec::new() }).into_iter().map(|event| {
         let interrupted = !event.completed && event.process != std::process::id();
@@ -215,11 +251,17 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
             let title = match event.action.as_str() { "start" => "Start cancelled", "stop" => "Stop cancelled", _ => "Restart cancelled" };
             return serde_json::json!({"id": event.id, "category": "sandbox", "title": title, "detail": "The action was cancelled.", "occurredAt": timestamp(event.timestamp), "time": timestamp(event.timestamp), "tone": "neutral", "status": "completed", "workspace": event.workspace, "cancelled": true});
         }
+        let (failure, diagnostic) = failure_parts(&event).map_or((None, None), |(summary, diagnostic)| (Some(summary), diagnostic));
         let title = match (event.action.as_str(), event.completed, failed) {
             ("start", true, false) => "Sandbox started", ("stop", true, false) => "Sandbox stopped", ("restart", true, false) => "Sandbox restarted",
             ("start", _, _) => "Starting sandbox", ("stop", _, _) => "Stopping sandbox", _ => "Restarting sandbox",
         };
-        serde_json::json!({"id": event.id, "category": "sandbox", "title": if failed { format!("{title} failed") } else { title.into() }, "detail": if interrupted { "Silo closed before the result was verified. Check the sandbox state.".into() } else { event.failure.unwrap_or_else(|| if event.completed { "Runtime state verified.".into() } else { "Waiting for the runtime…".into() }) }, "occurredAt": timestamp(event.timestamp), "time": timestamp(event.timestamp), "tone": if interrupted { "warning" } else if failed { "danger" } else if event.completed { "success" } else { "neutral" }, "status": if event.completed || interrupted { "completed" } else { "running" }, "workspace": event.workspace})
+        let mut entry = serde_json::json!({"id": event.id, "category": "sandbox", "title": if failed { format!("{title} failed") } else { title.into() }, "detail": if interrupted { "Silo closed before the result was verified. Check the sandbox state.".into() } else { failure.unwrap_or_else(|| if event.completed { "Runtime state verified.".into() } else { "Waiting for the runtime…".into() }) }, "occurredAt": timestamp(event.timestamp), "time": timestamp(event.timestamp), "tone": if interrupted { "warning" } else if failed { "danger" } else if event.completed { "success" } else { "neutral" }, "status": if event.completed || interrupted { "completed" } else { "running" }, "workspace": event.workspace});
+        // A failed entry's runtime explanation, for a Details disclosure (D-39).
+        if let Some(diagnostic) = diagnostic.filter(|_| !interrupted) {
+            entry["diagnostic"] = diagnostic.into();
+        }
+        entry
     }));
     result.extend(warnings);
     result.sort_by(|a, b| b["occurredAt"].as_str().cmp(&a["occurredAt"].as_str()));
@@ -371,18 +413,41 @@ mod tests {
         let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
         finish(&paths, &mut event, &Err(RuntimeError::Failed {
             operation: "Starting the sandbox".into(),
-            detail: "exit code 1: \u{1b}[31mlibkrunfw could not load: different Team IDs\u{1b}[0m\nTOKEN=private-value".into(),
+            exit_code: Some(1),
+            detail: "\u{1b}[31mlibkrunfw could not load: different Team IDs\u{1b}[0m\nTOKEN=private-value".into(),
         })).unwrap();
-        let detail = read(&paths).unwrap()[0]["detail"].as_str().unwrap().to_string();
-        assert!(detail.contains("libkrunfw could not load: different Team IDs"));
-        assert!(!detail.contains("private-value"));
-        assert!(!detail.contains('\u{1b}'));
-        assert!(failures(&paths).unwrap()["vm-1"].contains("different Team IDs"));
+        // The summary is one actionable line; the runtime's explanation is separate.
+        let entry = &read(&paths).unwrap()[0];
+        let detail = entry["detail"].as_str().unwrap();
+        assert_eq!(detail, "Starting the sandbox: The runtime did not complete the operation. Check the sandbox state and retry.");
+        let diagnostic = entry["diagnostic"].as_str().unwrap();
+        assert!(diagnostic.starts_with("Exit code 1\n"), "{diagnostic}");
+        assert!(diagnostic.contains("libkrunfw could not load: different Team IDs"));
+        assert!(!diagnostic.contains("private-value"));
+        assert!(!diagnostic.contains('\u{1b}'));
+        let failure = serde_json::to_value(&failures(&paths).unwrap()["vm-1"]).unwrap();
+        assert_eq!(failure["lifecycleFailure"], format!("Start failed: {detail}"));
+        assert!(failure["lifecycleFailureDiagnostic"].as_str().unwrap().contains("different Team IDs"));
         assert!(!failures(&paths).unwrap().contains_key("replacement-vm"));
         let mut retry = begin(&paths, "start", "dev", "vm-1").unwrap();
         finish(&paths, &mut retry, &Ok(())).unwrap();
         assert!(!failures(&paths).unwrap().contains_key("vm-1"));
-        assert!(read(&paths).unwrap().iter().any(|entry| entry["detail"].as_str().is_some_and(|text| text.contains("different Team IDs"))));
+        assert!(read(&paths).unwrap().iter().any(|entry| entry["diagnostic"].as_str().is_some_and(|text| text.contains("different Team IDs"))));
+    }
+
+    #[test]
+    fn failures_recorded_before_the_diagnostic_field_are_split_into_summary_and_detail() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let mut event = begin(&paths, "stop", "dev", "vm-1").unwrap();
+        event.completed = true;
+        event.failure = Some("Stopping the sandbox (exit code 2): The runtime did not complete the operation.\nruntime said no".into());
+        store(&paths, &event).unwrap();
+        let failure = serde_json::to_value(&failures(&paths).unwrap()["vm-1"]).unwrap();
+        assert_eq!(failure["lifecycleFailure"], "Stop failed: The sandbox action did not finish. Check its state and retry.");
+        let diagnostic = failure["lifecycleFailureDiagnostic"].as_str().unwrap();
+        assert!(diagnostic.contains("exit code 2") && diagnostic.contains("runtime said no"));
+        assert_eq!(read(&paths).unwrap()[0]["diagnostic"], diagnostic);
     }
 
     #[test]
@@ -396,7 +461,8 @@ mod tests {
             &mut event,
             &Err(RuntimeError::Failed {
                 operation: "Restarting the sandbox".into(),
-                detail: "exit code 1: TOKEN=private-value".into(),
+                exit_code: Some(1),
+                detail: "TOKEN=private-value".into(),
             }),
         )
         .unwrap();
@@ -442,10 +508,12 @@ mod tests {
         let entries: Vec<_> = (0..133).map(|index| { let mut entry = event.clone(); entry.id = index.to_string(); entry }).collect();
         fs::write(path(&paths), serde_json::to_vec(&entries).unwrap()).unwrap();
         finish(&paths, &mut event, &Err(RuntimeError::Failed {
-            operation: "Starting the sandbox".into(), detail: "💥".repeat(20_000),
+            operation: "Starting the sandbox".into(), exit_code: Some(1), detail: "💥".repeat(20_000),
         })).unwrap();
         assert!(fs::metadata(path(&paths)).unwrap().len() <= MAX_OUTPUT_BYTES);
         assert!(events(&paths).unwrap().len() < 134);
-        assert!(events(&paths).unwrap().last().unwrap().failure.as_ref().unwrap().contains("[Diagnostic truncated]"));
+        let stored = events(&paths).unwrap().last().unwrap().clone();
+        assert!(!stored.failure.as_ref().unwrap().contains('💥'));
+        assert!(stored.diagnostic.as_ref().unwrap().ends_with("[Diagnostic truncated]"));
     }
 }

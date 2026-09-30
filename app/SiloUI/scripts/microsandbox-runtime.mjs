@@ -84,6 +84,7 @@ const SILO_PROTOCOL_PROBES = [
   "--silo-github-token-protocol",
   "--silo-github-protocol",
   "--silo-working-account-protocol",
+  "--silo-secret-values-protocol",
 ]
 
 function hasSiloProtocolProbes(executable) {

@@ -1,4 +1,5 @@
 import type { ApplicationSecret, SecretConfigurationRequest } from "./application-source"
+import reservedSecretNames from "./reserved-secret-names.json"
 
 export interface SecretDraft {
   name: string
@@ -10,13 +11,13 @@ export interface SecretDraft {
 
 export type SecretValidationErrors = Partial<Record<keyof SecretDraft, string>>
 
-// Keep name validation aligned with the native secrets controller.
-const reservedNames = new Set([
-  "GH_TOKEN", "GITHUB_TOKEN", "PATH", "HOME", "SHELL", "USER", "LOGNAME", "TMPDIR", "TMP", "TEMP",
-  "BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS", "IFS", "CDPATH", "GLOBIGNORE", "HOSTNAME", "HOSTALIASES",
-  "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "GIT_CONFIG_NOSYSTEM",
-  "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy",
-])
+// The native secrets controller reads the same list, so both reject the same names.
+const reservedNames = new Set<string>(reservedSecretNames.names)
+
+function reservedName(name: string) {
+  const upper = name.toUpperCase()
+  return reservedNames.has(upper) || reservedSecretNames.prefixes.some((prefix) => upper.startsWith(prefix))
+}
 
 function validDomain(domain: string) {
   if (domain === "*") return true
@@ -35,7 +36,7 @@ export function secretConfiguration(draft: SecretDraft, secrets: readonly Applic
 
   if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) {
     errors.name = "Use up to 128 letters, digits, or underscores, starting with a letter or underscore."
-  } else if (reservedNames.has(name.toUpperCase()) || /^(DYLD_|LD_|SILO_|MSB_|RUST_)/.test(name.toUpperCase())) {
+  } else if (reservedName(name)) {
     errors.name = "This name is reserved. Choose another name."
   } else if (secrets.some((secret) => secret.id !== original?.id && secret.name === name)) {
     errors.name = "A secret with this name already exists."

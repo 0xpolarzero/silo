@@ -57,6 +57,14 @@ impl From<Attempt> for String {
 pub(super) const SILO_GITHUB_SECRET_SPEC: &str =
     "SILO_GITHUB:passthrough=*@github.com,api.github.com,uploads.github.com";
 
+/// Stable opaque runtime source, shared with the bundled CLI's stdin adapter.
+/// Hashing the guest name keeps references unchanged when other secrets change.
+pub(super) fn source_name(name: &str) -> String {
+    let digest = Sha256::digest(name.as_bytes());
+    let number = u128::from_be_bytes(digest[..16].try_into().expect("SHA-256 has 16 bytes"));
+    format!("SILO_SECRET_{number}")
+}
+
 fn names(config: &Value) -> HashSet<String> {
     config
         .pointer("/network/secrets/secrets")
@@ -72,41 +80,7 @@ fn names(config: &Value) -> HashSet<String> {
 pub(crate) fn validate_material(material: &Material) -> Result<(), String> {
     let mut seen = HashSet::new();
     for (name, value, domains) in material {
-        let upper = name.to_ascii_uppercase();
-        let reserved = ["SILO_", "MSB_", "LD_", "DYLD_", "RUST_"]
-            .iter()
-            .any(|prefix| upper.starts_with(prefix))
-            || [
-                "GH_TOKEN",
-                "GITHUB_TOKEN",
-                "PATH",
-                "HOME",
-                "SHELL",
-                "USER",
-                "LOGNAME",
-                "TMPDIR",
-                "TMP",
-                "TEMP",
-                "BASH_ENV",
-                "ENV",
-                "SHELLOPTS",
-                "BASHOPTS",
-                "IFS",
-                "CDPATH",
-                "GLOBIGNORE",
-                "HOSTNAME",
-                "HOSTALIASES",
-                "SSL_CERT_FILE",
-                "SSL_CERT_DIR",
-                "CURL_CA_BUNDLE",
-                "GIT_SSL_CAINFO",
-                "GIT_CONFIG_NOSYSTEM",
-                "HTTP_PROXY",
-                "HTTPS_PROXY",
-                "ALL_PROXY",
-                "NO_PROXY",
-            ]
-            .contains(&upper.as_str());
+        let reserved = crate::secrets::reserved_secret_name(name);
         if name.is_empty()
             || reserved
             || !name
@@ -187,50 +161,29 @@ fn modify(
     }
     // Runtime output can contain upstream diagnostics; never capture secret
     // update output in logs or temp files. Report a fixed actionable error.
-    let mut child = Command::new(&paths.executable)
-        .args(&args)
-        .envs(material.iter().map(|(name, value, _)| (name, value)))
-        .env("MSB_HOME", &paths.home)
-        .env("MSB_PATH", &paths.executable)
-        .env("MSB_LIBKRUNFW_PATH", &paths.library)
-        .env("SILO_GITHUB", github_environment(paths, &args))
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| "Could not update sandbox secrets.".to_string())?;
-    await_modify_child(child)
+    let result = spawn_runtime(paths, RuntimeLaunch {
+        args: &args,
+        timeout: MUTATION_TIMEOUT,
+        material,
+        github_profile: &github_environment(paths, &args),
+        capture: false,
+        report: &ignore_progress,
+    });
+    result.map(|_| ()).map_err(modify_error)
 }
 
-/// Polls a spawned `modify` child until it exits, the mutation timeout elapses, or the
-/// current operation is cancelled. On cancel or timeout the child is killed and reaped.
-/// A cancel returns a non-transient `Cancelled` so the retry boundary does not re-run it.
-fn await_modify_child(mut child: std::process::Child) -> Result<(), Attempt> {
-    let deadline = Instant::now() + MUTATION_TIMEOUT;
-    loop {
-        // A cancellable secret update asked to stop: kill the child like the timeout path
-        // and report a non-transient cancellation so auto-retry does not re-run it.
-        if operation_gate::cancel_requested() {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(Attempt::Cancelled("Saving secrets was cancelled.".into()));
+/// Classifies a failed secret `modify`. A cancel is non-transient so the retry
+/// boundary does not re-run it; a timed-out or unobservable command is worth retrying.
+fn modify_error(error: RuntimeError) -> Attempt {
+    match error {
+        RuntimeError::Cancelled { .. } => Attempt::Cancelled("Saving secrets was cancelled.".into()),
+        RuntimeError::Failed { exit_code: Some(_), .. } => {
+            "The sandbox rejected the secret update. Retry after checking its state.".into()
         }
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(_)) => {
-                return Err(
-                    "The sandbox rejected the secret update. Retry after checking its state."
-                        .into(),
-                )
-            }
-            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(25)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                // A timed-out or unverifiable runtime command is worth retrying.
-                return Err(Attempt::Transient("Updating sandbox secrets timed out or could not be verified. Retry after checking its state.".into()));
-            }
-        }
+        RuntimeError::TimedOut { .. } | RuntimeError::Failed { .. } => Attempt::Transient(
+            "Updating sandbox secrets timed out or could not be verified. Retry after checking its state.".into(),
+        ),
+        _ => "Could not update sandbox secrets.".into(),
     }
 }
 
@@ -275,7 +228,7 @@ pub(crate) fn verify_config(config: &Value, material: &Material) -> bool {
             })
             .collect();
         entry["source"]["kind"] == "env"
-            && entry["source"]["var"] == name.as_str()
+            && entry["source"]["var"] == source_name(name)
             && entry["value"].as_str().unwrap_or_default().is_empty()
             && entry["require_tls_identity"].as_bool().unwrap_or(true)
             && entry["placeholder"] == format!("$MSB_{name}")
@@ -394,20 +347,35 @@ mod tests {
         // A long-running stand-in child models a `modify` runtime command; cancelling the
         // owning operation must kill it and return a non-transient `Cancelled` so the retry
         // boundary does not re-run the update.
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test").unwrap();
+        fs::write(&paths.executable, "#!/bin/sh\necho $$ > \"$MSB_HOME/modify.pid\"\nexec sleep 30\n").unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         let gate: &'static operation_gate::OperationGate =
             Box::leak(Box::new(operation_gate::OperationGate::new()));
         let guard = gate.vm("secret-cancel-id", "secret-cancel", "Saving secrets").unwrap();
         guard.allow_cancel();
         let id = gate.snapshot().running[0].id;
-        let child = Command::new("sleep").arg("30").spawn().unwrap();
-        let pid = child.id() as i32;
-        // Request cancel first; the guard was acquired on this thread, so its current-operation
-        // token flips and `await_modify_child` observes it on the next poll.
-        gate.cancel(id).unwrap();
-        let result = await_modify_child(child);
-        assert!(matches!(result, Err(Attempt::Cancelled(_))));
+        let token = guard.cancel_token();
+        let pid_file = paths.home.join("modify.pid");
+        // Cancel once the runtime child is running; the guard was acquired on this thread,
+        // so the shared launcher observes the current-operation token on its next poll.
+        let canceller = thread::spawn(move || {
+            while !pid_file.exists() { thread::sleep(Duration::from_millis(10)); }
+            token.store(true, Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let result = modify(&paths, "secret-cancel", &["--secret-rm".into(), "OLD".into()], &Vec::new(), false);
+        canceller.join().unwrap();
+        assert!(matches!(result, Err(Attempt::Cancelled(_))), "{result:?}");
+        assert!(started.elapsed() < Duration::from_secs(20));
         // The child was killed and reaped, so its pid no longer names a live process.
+        let pid: i32 = fs::read_to_string(paths.home.join("modify.pid")).unwrap().trim().parse().unwrap();
         assert_ne!(unsafe { libc::kill(pid, 0) }, 0);
+        let _ = id;
         drop(guard);
     }
 
@@ -470,13 +438,26 @@ mod tests {
         assert_eq!(live, vec!["--secret", "TOKEN:passthrough=*@*"]);
     }
     #[test]
+    fn generated_sources_are_stable_and_distinct_from_guest_names() {
+        // Same vector as the bundled CLI patch, independent of assignment order.
+        assert_eq!(source_name("API_KEY"), "SILO_SECRET_272068193077316117667065620025266693635");
+        assert_ne!(source_name("API_KEY"), source_name("OTHER"));
+        let all = vec![("OTHER".into(), "other-value".into(), vec!["*".into()]), ("API_KEY".into(), "api-value".into(), vec!["*".into()])];
+        let one = vec![all[1].clone()];
+        let full: Value = serde_json::from_slice(&secret_values_document(&all, DISABLED_GITHUB_PROFILE).unwrap()).unwrap();
+        let reduced: Value = serde_json::from_slice(&secret_values_document(&one, DISABLED_GITHUB_PROFILE).unwrap()).unwrap();
+        assert_eq!(full[&source_name("API_KEY")], reduced[&source_name("API_KEY")]);
+        assert!(reduced.get("API_KEY").is_none());
+    }
+
+    #[test]
     fn verification_requires_host_reference_tls_and_exact_domains() {
         let material = vec![(
             "TOKEN".into(),
             "never-durable".into(),
             vec!["api.example.com".into()],
         )];
-        let mut config = json!({"network":{"tls":{"enabled":true},"secrets":{"secrets":[{"env_var":"TOKEN","source":{"kind":"env","var":"TOKEN"},"value":"","placeholder":"$MSB_TOKEN","require_tls_identity":true,"allowed_hosts":[{"exact":"api.example.com"}]}]}}});
+        let mut config = json!({"network":{"tls":{"enabled":true},"secrets":{"secrets":[{"env_var":"TOKEN","source":{"kind":"env","var":source_name("TOKEN")},"value":"","placeholder":"$MSB_TOKEN","require_tls_identity":true,"allowed_hosts":[{"exact":"api.example.com"}]}]}}});
         assert!(verify_config(&config, &material));
         config["network"]["secrets"]["secrets"][0]["value"] = json!("never-durable");
         assert!(!verify_config(&config, &material));

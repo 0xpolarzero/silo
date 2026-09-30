@@ -1036,7 +1036,7 @@ pub async fn remote_host_snapshot(app: AppHandle, host_id: String, refresh_repos
         let result = call_remote(&app, &host_id, "runtime.snapshot", json!({"refreshRepositories": refresh_repositories.unwrap_or(false)}));
         match &result {
             Ok(_) => poll_succeeded(&host_id),
-            Err(error) if error == "SILO_SANDBOX_UPDATE_IN_PROGRESS" => {}
+            Err(error) if error == crate::runtime::SANDBOX_UPDATE_IN_PROGRESS => {}
             Err(error) => close_after_failed_poll(&host_id, error),
         }
         result

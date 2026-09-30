@@ -136,6 +136,10 @@ export type ApplicationActivityCategory = "sandbox" | "git" | "backup" | "secret
 export type ApplicationActivityStatus = "running" | "completed"
 
 export interface ApplicationActivity {
+  /** Filtered runtime output for a Details disclosure. */
+  diagnostic?: string
+  /** Completed setup changes were retained after a later failure. */
+  partial?: boolean
   id: string
   category: ApplicationActivityCategory
   title: string
@@ -159,6 +163,8 @@ export interface ApplicationWorkspace {
   stateDetail: string
   canDismissError?: boolean
   lifecycleFailure?: string
+  /** Filtered runtime output for a Details disclosure; never inline summary text. */
+  lifecycleFailureDiagnostic?: string
   /** The lifecycle action that failed, so the UI can offer a matching Retry that
    * re-submits the same intent (re-reading fresh state server-side). */
   lifecycleFailureAction?: "start" | "stop" | "restart" | "dismiss-error"

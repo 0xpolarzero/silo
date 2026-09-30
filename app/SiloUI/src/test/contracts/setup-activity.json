@@ -32,12 +32,13 @@
     "phase": "workspaces",
     "step": "setup-failed",
     "workspace": "dev",
-    "message": "Sandbox setup failed (exit code 13): Permission was denied. Check access to Silo's storage and retry.",
+    "message": "Sandbox setup failed: Permission was denied. Check access to Silo's storage and retry.",
     "safeForDisplay": true,
     "timestamp": 1700000002000,
     "level": "error",
     "elapsedSeconds": 2,
     "failureCode": "permission",
-    "exitCode": 13
+    "exitCode": 13,
+    "diagnostic": "Exit code 13\nPermission denied"
   }
 ]

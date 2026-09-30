@@ -30,7 +30,7 @@ Silo now pins the official [MicroSandbox v0.7.2 release](https://github.com/supe
 | `aarch64-unknown-linux-gnu` | `msb-linux-aarch64` `33e4f5274b9eefa3a088d0f0c8b80a5e440fd60940c0469f71a389c6998cb714` | `agentd-aarch64` `ca6dde7a3000d8e93d5dca87fcebf77ebb36ce83377385bae2be70dbead9a5e1` | `libkrunfw-linux-aarch64.so` `98d01137190de7022a3132c6f55c245ef43d02d67d5d7e697ee19c303fce8769` |
 | `x86_64-unknown-linux-gnu` | `msb-linux-x86_64` `bdaa6c6fc58fa3d8e85d52fc299106a013d979edd0a781b4bc6ddd21da0f8b16` | `agentd-x86_64` `4d2b2aac7c4f2c54362f81b083c19715032d4f15468332bc1fa86bea29afe249` | `libkrunfw-linux-x86_64.so` `ce9a749e8471e89aa5e2ad88de0c1581c3384c100bcb107a75bb12739a12d590` |
 
-The release listing publishes SHA-256 values for these assets. The `checksums.sha256` listing digest is `e748a853ee3dac5cf8e674feba8c6a9c606d66c8063f17bba729232b4c17fa23`; the shell could not fetch that file for an independent byte-for-byte comparison, so runtime input pins are the published asset values recorded in the local ignored verification checklist. Silo applies nine ordered patches, each pinned by SHA-256 in `app/SiloUI/runtime-inputs.json`. Preflight validates their exact names, order, path containment, and bytes. The build cache key includes all patch hashes. Earlier macOS and Linux qualification cited above used the eight-patch runtime; it does not qualify the ninth patch.
+The release listing publishes SHA-256 values for these assets. The `checksums.sha256` listing digest is `e748a853ee3dac5cf8e674feba8c6a9c606d66c8063f17bba729232b4c17fa23`; the shell could not fetch that file for an independent byte-for-byte comparison, so runtime input pins are the published asset values recorded in the local ignored verification checklist. Silo applies ten ordered patches, each pinned by SHA-256 in `app/SiloUI/runtime-inputs.json`. Preflight validates their exact names, order, path containment, and bytes. The build cache key includes all patch hashes. Earlier macOS and Linux qualification cited above used the eight-patch runtime; it does not qualify the ninth or tenth patch.
 
 Ordered source patch pins:
 
@@ -45,12 +45,15 @@ Ordered source patch pins:
 | `microsandbox-portable-image-cache-0.7.2.patch` | `23b3b8e3cbc9ec20160306fd2aab5b196418efe132ed830e2e18738a89cfff57` |
 | `microsandbox-live-public-ports-0.7.2.patch` | `ad1abf1973c7e542ec7015575ab4ad35b321ac434e2bb9049aef096fa6b2b012` |
 | `microsandbox-preserve-basic-auth-0.7.2.patch` | `e1957e2bc8adb2552140a9309d1d26d2721a38113f375328b9def408f5b1b5aa` |
+| `microsandbox-secret-values-stdin-0.7.2.patch` | `32ba747bae584847a39d7727aa2d7a2046574085554e558ead066ad01a266250` |
 
 The ninth patch restores the independent Basic Auth substitution policy stored by MicroSandbox 0.6.x. Version 0.7.2 removed that field and made Basic Auth follow ordinary headers; its strict persisted-config decoder therefore rejected existing Silo sandbox records before owned-disk conversion. The patch preserves an explicit Basic Auth boolean, keeps the 0.7.2 headers behavior when the field is absent, and normalizes the observed historical `query_params` name to `query` at the persisted-config boundary. It never drops an unknown secret policy.
 
 On 2026-09-27, the nine-patch macOS runtime built with `msb` SHA-256 `ac0ee9daa3cab5852ae85206f7e7d29215436dfbf7afb17e068b4a55a4c838df`. An isolated copy of one affected sandbox's catalog and workspace disk reproduced the failure before this patch; with the new runtime, `adopt-disk` exited 0 in 0.43 seconds, persisted `/workspace` as owned, and preserved the saved `headers=true`, `basic_auth=true`, `query=false`, and `body=false` policy. The regular macOS `desktop:build` then exited 0, and its final app signature and exact bundled engine verification passed. On Retry in the user's running app, migration completed for both sandboxes with zero failures; the dashboard loaded afterward. These are macOS results for this patch and the affected live data. No nine-patch Linux build or live Linux migration has been verified.
 
-The v0.7.2 release adds the supported snapshot/restore surface used by Silo. The build checks `create --mount-owned`, `create --no-start`, `create --progress-json`, snapshot creation, forked restore, the five exact Silo protocol probes, and managed SSH. The CLI is built with `net,ssh,embed-binaries` so the verified `agentd` payload is included. Silo no longer carries the 0.6.17-only Imago storage override; v0.7.2's pinned Imago source preserves logical disk length during discard.
+The tenth patch keeps secret values out of the runtime's environment (review items B-19/D-45 and B-28). Upstream 0.7.2 resolves every secret source of kind `env` from the `msb` process environment, which other processes of the same user can read, and which passes names chosen for secrets (for example `SSLKEYLOGFILE`) to the host runtime; its alternative `store` source kind is declared but unimplemented ("store-backed secret sources are not supported yet"). With `MSB_SECRET_VALUES_STDIN=1`, the patched CLI reads one bounded JSON object of source values from standard input before any thread starts, removes the flag so the sandbox process does not inherit it, and resolves `env` sources only from those values; the host environment is then never consulted, so a missing value fails closed. Without the flag, behaviour is unchanged. Silo sets the flag for every runtime command and sends the GitHub access profile (`SILO_GITHUB`) and the sandbox's assigned secrets this way, never as environment variables. The patch adds the `--silo-secret-values-protocol` probe, which the build requires. It changes the three places that read an `env` source (the network resolver, live secret rotation in `modify`, and the restore pre-check). On 2026-09-30 the ten-patch macOS CLI built (release, `net,ssh,embed-binaries`); the new `secret_values` unit test, the CLI probe test and the network resolver tests passed, and a smoke test of the built binary accepted a valid document, rejected malformed and oversized ones, and ignored standard input without the flag. It has not been exercised with a live VM on macOS or Linux, and the SDK's `modify` tests were not run.
+
+The v0.7.2 release adds the supported snapshot/restore surface used by Silo. The build checks `create --mount-owned`, `create --no-start`, `create --progress-json`, snapshot creation, forked restore, the six exact Silo protocol probes, and managed SSH. The CLI is built with `net,ssh,embed-binaries` so the verified `agentd` payload is included. Silo no longer carries the 0.6.17-only Imago storage override; v0.7.2's pinned Imago source preserves logical disk length during discard.
 
 The manifest records the target, versions, release assets, packaged filenames, and staged-input hashes without claiming one cross-platform runtime path. The observed macOS bundle layout is:
 
@@ -229,3 +232,26 @@ fetch success alone does not establish completeness. On two historical 6 MB
 versions, a cold source transfer used 12,001,358 protocol bytes; a repeat with an
 existing host cache used 275 bytes. Local timings were 0.209 s and 0.157 s. These
 measurements establish cache bandwidth savings, not live VM or SSH-network latency.
+
+B-28 source mapping: each general secret keeps its guest name and placeholder,
+but the CLI records an opaque `SILO_SECRET_<number>` source. The number is the
+big-endian decimal value of the first 128 bits of SHA-256 of the guest name; it
+is stable across assignment order, additions and removals. Silo sends values
+under these generated names on stdin and refuses duplicate sources. The CLI's
+create, modify and restore adapters use the same mapping only when stdin
+transport is enabled. `SILO_GITHUB` remains the reserved GitHub protocol source.
+The shared reserved-name list guards guest settings, independently of transport.
+
+Primary-source gap verified in the pinned
+[CLI network adapter](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/crates/cli/lib/commands/common.rs):
+the parser persists the guest name as its environment source and offers no
+separate source-name option. This small bundled upstream patch supplies the
+mapping at the existing adapter seam; no credential broker or storage service
+is added. The source patch retains the upstream license and existing runtime
+build, packaging, and protocol-probe checks.
+
+The build and smoke-test record above predates the generated source mapping.
+For the mapping revision, the focused upstream secret-values test and Silo's
+transport and secret-configuration tests pass. The patched CLI compiled with `net,ssh,embed-binaries`; its five secret-parser
+tests and protocol-probe test passed. The patch applied through the production
+build helper and every manifest patch digest matched. Live VMs remain unverified.

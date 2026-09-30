@@ -91,6 +91,10 @@ fn entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new("org.silo.Silo.secrets", "values").map_err(|_| STORE_ERROR.into())
 }
 fn read_vault() -> Result<Vault, String> {
+    #[cfg(test)]
+    if let Some(values) = TEST_VAULT.with(|vault| vault.borrow().clone()) {
+        return Ok(values);
+    }
     {
         let mut cached = lock_vault();
         expire_failure(&mut cached, Instant::now());
@@ -112,6 +116,11 @@ fn read_vault() -> Result<Vault, String> {
         .clone()
 }
 fn write_vault(value: Vault) -> Result<(), String> {
+    #[cfg(test)]
+    if TEST_VAULT.with(|vault| vault.borrow().is_some()) {
+        TEST_VAULT.with(|vault| *vault.borrow_mut() = Some(value));
+        return Ok(());
+    }
     let mut cached = lock_vault();
     expire_failure(&mut cached, Instant::now());
     if let Some((Err(error), _)) = cached.as_ref() {
@@ -136,6 +145,13 @@ fn retry_store() {
 #[cfg(test)]
 thread_local! {
     static TEST_PATH: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+    static TEST_VAULT: std::cell::RefCell<Option<Vault>> = const { std::cell::RefCell::new(None) };
+}
+/// Tests on this thread read and write `values` instead of the system credential
+/// store, so they can assign secrets without touching the real Keychain.
+#[cfg(test)]
+pub(crate) fn use_test_vault(values: Option<BTreeMap<String, String>>) {
+    TEST_VAULT.with(|vault| *vault.borrow_mut() = values);
 }
 /// Tests on this thread use `path` as the secret document instead of the app's.
 /// Values still come from the credential store, so tests must not assign secrets
@@ -312,6 +328,33 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
         Ok(())
     })
 }
+#[derive(Deserialize)]
+struct ReservedSecretNames {
+    names: Vec<String>,
+    prefixes: Vec<String>,
+}
+
+/// The one list of names a secret may not use, shared with the UI's validation
+/// (`features/application/model/reserved-secret-names.json`).
+fn reserved_secret_names() -> &'static ReservedSecretNames {
+    static RESERVED: OnceLock<ReservedSecretNames> = OnceLock::new();
+    RESERVED.get_or_init(|| {
+        serde_json::from_str(include_str!(
+            "../../src/features/application/model/reserved-secret-names.json"
+        ))
+        .expect("the bundled reserved secret names are valid JSON")
+    })
+}
+
+/// True when a secret must not use `name` (compared case-insensitively): it would
+/// override guest shell, proxy, TLS or loader settings, or a Silo or runtime variable.
+pub(crate) fn reserved_secret_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    let reserved = reserved_secret_names();
+    reserved.names.iter().any(|reserved| *reserved == upper)
+        || reserved.prefixes.iter().any(|prefix| upper.starts_with(prefix.as_str()))
+}
+
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
@@ -319,40 +362,7 @@ fn valid_name(name: &str) -> bool {
             .bytes()
             .enumerate()
             .all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
-        && ![
-            "GH_TOKEN",
-            "GITHUB_TOKEN",
-            "PATH",
-            "HOME",
-            "SHELL",
-            "USER",
-            "LOGNAME",
-            "TMPDIR",
-            "TMP",
-            "TEMP",
-            "BASH_ENV",
-            "ENV",
-            "SHELLOPTS",
-            "BASHOPTS",
-            "IFS",
-            "CDPATH",
-            "GLOBIGNORE",
-            "HOSTNAME",
-            "HOSTALIASES",
-            "SSL_CERT_FILE",
-            "SSL_CERT_DIR",
-            "CURL_CA_BUNDLE",
-            "GIT_SSL_CAINFO",
-            "GIT_CONFIG_NOSYSTEM",
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "NO_PROXY",
-        ]
-        .contains(&name.to_ascii_uppercase().as_str())
-        && !["DYLD_", "LD_", "SILO_", "MSB_", "RUST_"]
-            .iter()
-            .any(|prefix| name.to_ascii_uppercase().starts_with(prefix))
+        && !reserved_secret_name(name)
 }
 fn valid_domain(domain: &str) -> bool {
     if domain == "*" {
@@ -428,6 +438,7 @@ fn reconcile(app: &AppHandle, id: &str, operation: &mut OperationGuard) -> Resul
         operation,
         &runtime_material,
         &mut |workspace, desired| crate::runtime::apply_secrets(app, workspace, desired),
+        &|workspace| crate::runtime::secret_revoked_without_runtime(app, workspace),
         &|| {
             let _ = app.emit("silo://application-state-changed", ());
         },
@@ -438,11 +449,16 @@ fn reconcile(app: &AppHandle, id: &str, operation: &mut OperationGuard) -> Resul
 /// for minutes, so forks, updates and other secret operations are not blocked. It
 /// is re-taken to record each result and before credential-store changes. When the
 /// VM's desired secrets changed while unlocked, the newer state is applied again.
+///
+/// While a secret is being removed, a VM whose update failed but that cannot hold
+/// secret values (`revoked`: removed, missing from the runtime, or stopped) counts as
+/// revoked, so one broken or deleted VM cannot make the secret unremovable (B-27).
 fn reconcile_with(
     id: &str,
     operation: &mut OperationGuard,
     material: &dyn Fn(&str) -> Result<Material, String>,
     apply: &mut dyn FnMut(&str, Material) -> Result<Vec<String>, String>,
+    revoked: &dyn Fn(&str) -> bool,
     changed: &dyn Fn(),
 ) -> Result<(), String> {
     update(|d| {
@@ -484,6 +500,17 @@ fn reconcile_with(
                 });
                 break result.map(|pending| if restarted { Vec::new() } else { pending });
             }
+        };
+        let result = match result {
+            Err(_) if secret.removing && {
+                // Reading the VM's state can wait on the runtime; do not block other
+                // secret operations meanwhile.
+                *operation = None;
+                let revoked = revoked(&workspace);
+                *operation = Some(lock_unit(&OPERATION));
+                revoked
+            } => Ok(Vec::new()),
+            other => other,
         };
         update(|document| {
             let secret = document
@@ -767,6 +794,17 @@ mod tests {
         assert!(validate(&request(), &Document::default()).is_ok());
     }
     #[test]
+    fn saving_and_applying_secrets_share_one_reserved_name_list() {
+        assert!(!reserved_secret_names().names.is_empty() && !reserved_secret_names().prefixes.is_empty());
+        for name in ["no_proxy", "Path", "silo_anything", "RUST_LOG"] {
+            assert!(reserved_secret_name(name), "{name}");
+            // The runtime refuses the same names even if a saved document contained them.
+            let material = vec![(name.to_string(), "value".to_string(), vec!["api.example.com".to_string()])];
+            assert!(crate::runtime::validate_secret_material_for_tests(&material).is_err(), "{name}");
+        }
+        assert!(!reserved_secret_name("API_KEY"));
+    }
+    #[test]
     fn values_and_domain_constraints_are_validated_on_host() {
         for value in [String::new(), "bad\0value".into(), "a".repeat(65537)] {
             let mut r = request();
@@ -942,6 +980,7 @@ mod tests {
                 }
                 Ok(Vec::new())
             },
+            &|_| false,
             &|| {},
         )
         .unwrap();
@@ -972,6 +1011,7 @@ mod tests {
                 workspace_started(workspace, &workspace_revision(workspace)?)?;
                 Ok(vec!["API_KEY".into()])
             },
+            &|_| false,
             &|| {},
         )
         .unwrap();
@@ -980,6 +1020,43 @@ mod tests {
         assert!(document.secrets[0].pending_workspaces.is_empty());
         assert_eq!(public(&document.secrets[0])["state"], "active");
         use_test_store(None);
+    }
+    #[test]
+    fn removal_completes_when_failed_vms_cannot_hold_the_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        use_test_vault(Some([("private-reference".to_string(), "private-value".to_string())].into()));
+        let mut removing = secret();
+        removing.workspaces = vec!["deleted".into(), "running".into()];
+        removing.affected = removing.workspaces.clone();
+        removing.removing = true;
+        save(&Document { secrets: vec![removing], activities: Vec::new() }).unwrap();
+        let reconcile = |running_revoked: bool| {
+            let mut operation = Some(lock_unit(&OPERATION));
+            reconcile_with(
+                "id",
+                &mut operation,
+                &|_| Ok(Vec::new()),
+                // Both VMs fail to confirm: one no longer exists, one is running.
+                &mut |workspace, _| Err(format!("{workspace} could not be inspected")),
+                &|workspace| workspace == "deleted" || running_revoked,
+                &|| {},
+            )
+            .unwrap();
+        };
+        // The VM that cannot hold the value counts as revoked; the running one does not,
+        // so the tombstone and the credential remain until it confirms.
+        reconcile(false);
+        let document = load().unwrap();
+        assert_eq!(document.secrets[0].errors.keys().collect::<Vec<_>>(), ["running"]);
+        assert_eq!(document.secrets[0].affected, ["running"]);
+        assert!(read_vault().unwrap().contains_key("private-reference"));
+        // Once that VM is stopped as well, removal finishes and the value is deleted.
+        reconcile(true);
+        assert!(load().unwrap().secrets.is_empty());
+        assert!(read_vault().unwrap().is_empty());
+        use_test_store(None);
+        use_test_vault(None);
     }
     #[test]
     fn history_is_bounded_and_contains_no_values() {
