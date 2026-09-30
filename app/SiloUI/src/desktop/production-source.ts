@@ -6,9 +6,9 @@ import { useSyncExternalStore } from "react"
 import { z } from "zod"
 import { showOperationFailure } from "@/lib/operation-toast"
 
-import { siloProgressEventSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
+import { siloBootstrapResultSchema, siloProgressEventSchema, siloProtocolErrorSchema, setupMachineConfigurationRequestSchema, setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent, type SetupMachineConfigurationRequest, type SetupQueueItemID } from "@/contracts/silo"
 import type { OnboardingCompletionRequest, OnboardingSource } from "@/features/onboarding/model/onboarding-source"
-import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationActivity, ApplicationPort, ApplicationSource, ApplicationWorkspace, SecretConfigurationRequest } from "@/features/application/model/application-source"
+import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActions, ApplicationActivity, ApplicationFileEntry, ApplicationPort, ApplicationSource, ApplicationWorkspace, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import { operationQueueSchema, isCancelledError, cancelledActionLabel, type OperationQueue } from "@/features/application/model/operation-queue"
 import { deriveMachineChanges, isStaleConfigurationError, type MachineConfigurationChange } from "@/features/application/model/machine-change"
 import type { BackupArchive, BackupController, BackupOperation, BackupState } from "@/features/application/model/backup-source"
@@ -91,34 +91,131 @@ const pendingCheckpointRestoreShape = z.object({
   checkpointId: z.string().min(1), sourceWorkspace: z.string().min(1), state: z.enum(["full", "disk"]),
 })
 
+/** An enum that maps a value from a newer Silo to a fallback instead of rejecting the whole state. */
+function tolerantEnum<const T extends readonly [string, ...string[]]>(values: T, fallback: T[number]) {
+  return z.string().transform((value): T[number] => (values as readonly string[]).includes(value) ? value : fallback)
+}
+
+/** A list that drops entries it cannot read instead of rejecting the state around it. */
+function tolerantArray<T extends z.ZodType>(item: T) {
+  return z.array(z.unknown()).transform(items => items.flatMap((entry): z.output<T>[] => {
+    const parsed = item.safeParse(entry)
+    return parsed.success ? [parsed.data] : []
+  }))
+}
+
+const workspaceStates = ["running", "starting", "stopped", "failed"] as const
+const repositoryShape = z.object({ path: z.string(), branch: z.string(), ahead: z.number().int().nonnegative(), behind: z.number().int().nonnegative(), dirty: z.boolean() })
+const fileEntryShape: z.ZodType<ApplicationFileEntry> = z.lazy(() => z.object({ name: z.string(), kind: z.enum(["folder", "file"]), children: z.array(fileEntryShape).optional() }))
+const workspacePortShape = z.object({
+  port: z.number().int().min(1).max(65535), listening: z.boolean().nullable(),
+  hostPort: z.number().int().min(1).max(65535).nullish(), scheme: z.enum(["http", "https"]).nullish(), configured: z.boolean().optional(),
+})
+const logShape = z.object({ line: z.string(), occurredAt: z.string() })
+const attentionShape = z.object({ level: tolerantEnum(["warning", "error"], "warning"), message: z.string() })
+
+// Fields from a newer Silo pass through untouched, so editing never drops them.
+const machineShape = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("vm"), id: z.string().min(1), name: z.string().min(1),
+    cpus: z.number().int().positive(), maxCPUs: z.number().int().positive(), memoryGiB: z.number().int().positive(), maxMemoryGiB: z.number().int().positive(),
+    workspaceStorageGiB: z.number().int().positive(), runtimeStorageGiB: z.number().int().positive(),
+    desktop: z.object({ startWithSandbox: z.boolean() }).optional(),
+  }).passthrough(),
+  z.object({ kind: z.literal("ssh"), id: z.string().min(1), name: z.string().min(1), host: z.string().min(1), user: z.string().min(1), port: z.number().int().min(1).max(65535) }).passthrough(),
+]).transform(machine => machine as SetupMachineConfiguration)
+
+const workspaceShape = z.object({
+  machine: machineShape,
+  purpose: z.string(),
+  // A state from a newer Silo is shown as the last reported detail, marked stale below.
+  state: z.string(),
+  stateDetail: z.string(),
+  canDismissError: z.boolean().optional(),
+  lifecycleFailure: z.string().optional(),
+  attention: attentionShape.nullish().transform(value => value ?? undefined),
+  freshness: tolerantEnum(["fresh", "stale"], "stale"),
+  host: z.string(),
+  repositories: tolerantArray(repositoryShape), files: tolerantArray(fileEntryShape), ports: tolerantArray(workspacePortShape), logs: tolerantArray(logShape),
+  githubRepositories: z.array(z.string()), secretNames: z.array(z.string()),
+  checkpoints: tolerantArray(checkpointShape).optional(),
+  checkpointOperation: checkpointOperationShape.nullable().optional().catch(null),
+  pendingCheckpointRestore: pendingCheckpointRestoreShape.nullable().optional().catch(null),
+}).passthrough().transform(workspace => (workspaceStates as readonly string[]).includes(workspace.state)
+  ? { ...workspace, state: workspace.state as (typeof workspaceStates)[number] }
+  : { ...workspace, state: "stopped" as const, freshness: "stale" as const, attention: workspace.attention ?? { level: "warning" as const, message: "This version of Silo cannot show this sandbox's current state. Update Silo to see it." } })
+
+/** Workspaces of a machine kind this version does not know (a newer Silo) are left out rather than rejecting the list. */
+const workspacesShape = z.array(z.unknown())
+  .transform(items => items.filter(item => {
+    const kind = (item as { machine?: { kind?: unknown } } | null)?.machine?.kind
+    return kind === "vm" || kind === "ssh"
+  }))
+  .pipe(z.array(workspaceShape))
+
+const activityShape = z.object({
+  id: z.string().min(1),
+  category: tolerantEnum(["sandbox", "git", "backup", "secrets", "github", "system"], "system"),
+  title: z.string(), detail: z.string(), occurredAt: z.string(), time: z.string(),
+  tone: tolerantEnum(["success", "neutral", "warning", "danger"], "neutral"),
+  status: tolerantEnum(["running", "completed"], "completed"),
+  workspace: z.string().nullish().transform(value => value ?? undefined),
+  progress: z.number().optional(), progressLabel: z.string().optional(),
+  cancelled: z.boolean().optional(),
+})
+
+const pushFields = { operationId: z.string().optional(), workspace: z.string().min(1), repositoryPath: z.string().min(1), commitCount: z.number().int().nonnegative() }
+const pushOperationShape = z.discriminatedUnion("status", [
+  z.object({ ...pushFields, status: z.literal("pushing"), message: z.string().optional() }),
+  z.object({ ...pushFields, status: z.literal("unknown"), message: z.string() }),
+  z.object({ ...pushFields, status: z.literal("succeeded") }),
+  z.object({ ...pushFields, status: z.literal("failed"), message: z.string(), diagnosticDetails: z.string().optional() }),
+])
+
+const runtimeRepairShape = z.object({
+  status: tolerantEnum(["needed", "unavailable"], "unavailable"), reason: z.string(), recovery: z.string().optional(), checking: z.boolean().optional(),
+})
+
+const sandboxConfigurationOperationShape = z.object({
+  id: z.string().min(1),
+  status: z.enum(["applying", "awaiting-approval", "failed"]),
+  candidate: setupMachineConfigurationRequestSchema,
+  progressEvents: z.array(siloProgressEventSchema),
+  result: siloBootstrapResultSchema.nullable(),
+  error: siloProtocolErrorSchema.nullable(),
+})
+
+const preferencesShape = z.object({
+  terminal: z.string(), editor: z.string(), browser: z.string(), launchAtLogin: z.boolean(),
+  startWorkspacesAtLaunch: z.boolean(), reduceMotion: z.boolean(),
+}).passthrough()
+const backupSummaryShape = z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() })
+
+// Every field the UI dereferences is validated here. Lists that only enrich the
+// view (activities, pushes, repositories, logs) drop an entry they cannot read,
+// and enums tolerate values from a newer Silo, so one unknown value never
+// rejects a whole computer's state or throws while it is being shown.
 const applicationSourceShape = z.object({
-  runtimeRepair: z.unknown().nullable(),
-  workspaces: z.array(z.object({
-    machine: z.object({ id: z.string().min(1), kind: z.enum(["vm", "ssh"]), name: z.string().min(1) }).passthrough(),
-    purpose: z.string(),
-    state: z.enum(["running", "starting", "stopped", "failed"]),
-    stateDetail: z.string(),
-    canDismissError: z.boolean().optional(),
-    lifecycleFailure: z.string().optional(),
-    freshness: z.enum(["fresh", "stale"]),
-    host: z.string(),
-    repositories: z.array(z.unknown()), files: z.array(z.unknown()), ports: z.array(z.unknown()), logs: z.array(z.unknown()),
-    githubRepositories: z.array(z.string()), secretNames: z.array(z.string()),
-    checkpoints: z.array(checkpointShape).optional(),
-    checkpointOperation: checkpointOperationShape.nullable().optional(),
-    pendingCheckpointRestore: pendingCheckpointRestoreShape.nullable().optional(),
-  }).passthrough()),
-  activities: z.array(z.unknown()),
-  sandboxConfigurationOperation: z.unknown().nullable(),
-  repositoryPushOperations: z.array(z.unknown()),
+  runtimeRepair: runtimeRepairShape.nullable(),
+  workspaces: workspacesShape,
+  activities: tolerantArray(activityShape),
+  // The runtime does not report an operation in progress; the source tracks its own.
+  sandboxConfigurationOperation: sandboxConfigurationOperationShape.nullable().catch(null),
+  repositoryPushOperations: tolerantArray(pushOperationShape),
   github: githubStateShape,
   secrets: z.array(secretShape),
-  backup: z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() }),
-  preferences: z.object({
-    terminal: z.string(), editor: z.string(), browser: z.string(), launchAtLogin: z.boolean(),
-    startWorkspacesAtLaunch: z.boolean(), reduceMotion: z.boolean(),
-  }).passthrough(),
+  backup: backupSummaryShape,
+  preferences: preferencesShape,
 }).passthrough()
+
+// Another computer's GitHub, secrets, export and preference state is never shown
+// here, so a newer shape of those must not make its sandboxes unavailable.
+const remoteApplicationSourceShape = applicationSourceShape.extend({
+  github: githubStateShape.catch({ state: "disconnected" as const, account: undefined }),
+  secrets: tolerantArray(secretShape),
+  backup: backupSummaryShape.catch({ lastArchive: "", completedLabel: "", compressedSize: "", destination: "" }),
+  preferences: preferencesShape.catch({ terminal: "", editor: "", browser: "", launchAtLogin: false, startWorkspacesAtLaunch: false, reduceMotion: false }),
+})
 
 const backupArchiveShape = z.object({
   name: z.string().min(1), archivePath: z.string().min(1), completedLabel: z.string(), size: z.string(), destination: z.string(), sandboxes: z.array(z.string()),
@@ -147,7 +244,12 @@ const networkStateShape = z.object({ workspaces: z.array(z.object({
 })) })
 
 export function parseApplicationSource(input: unknown): ApplicationSource {
-  return applicationSourceShape.parse(input) as unknown as ApplicationSource
+  return applicationSourceShape.parse(input) as ApplicationSource
+}
+
+/** Another computer's snapshot, which may come from an older or newer Silo. */
+export function parseRemoteApplicationSource(input: unknown): ApplicationSource {
+  return remoteApplicationSourceShape.parse(input) as ApplicationSource
 }
 
 export function parseBackupState(input: unknown): BackupState {
@@ -541,8 +643,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   // a full read (D-08): no log output, no repositories, no push operations, and a
   // placeholder GitHub state. Keep those from the state they replace until the full
   // refresh that follows every mutation; the merge stays as a guard once D-08 lands.
-  function parseMutationSource(value: unknown, previousSource = snapshot.source): ApplicationSource {
-    const parsed = parseApplicationSource(value)
+  function parseMutationSource(value: unknown, previousSource = snapshot.source, parse = parseApplicationSource): ApplicationSource {
+    const parsed = parse(value)
     const previous = new Map((previousSource?.workspaces ?? []).map(workspace => [workspace.machine.id, workspace]))
     const workspaces = parsed.workspaces.map(workspace => ({
       ...workspace,
@@ -607,7 +709,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         remoteRepositoryReads.delete(hostId)
         const revision = remoteRevision(hostId)
         let outcome: { source: ApplicationSource } | { cause: unknown }
-        try { outcome = { source: parseApplicationSource(await native.invoke("remote_host_snapshot", { hostId, ...(entry.repositories && { refreshRepositories: true }) })) } }
+        try { outcome = { source: parseRemoteApplicationSource(await native.invoke("remote_host_snapshot", { hostId, ...(entry.repositories && { refreshRepositories: true }) })) } }
         catch (cause) { outcome = { cause } }
         const host = remoteHosts.find(item => item.id === hostId)
         if (disposed || !host) return
@@ -898,7 +1000,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       // not be ignored while a slow remote snapshot settles.
       .then((result) => {
         if (remote && !lifecycle) { void refreshComputers(); return }
-        const source = parseMutationSource(result, remote ? remoteSnapshots.get(remote.hostId) ?? null : snapshot.source)
+        const source = remote ? parseMutationSource(result, remoteSnapshots.get(remote.hostId) ?? null, parseRemoteApplicationSource) : parseMutationSource(result)
         if (lifecycle || workspaceFailures.get(name)?.action === action) workspaceFailures.delete(name)
         if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
         if (remote) {
@@ -1302,7 +1404,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const source = parseMutationSource(await native.invoke("remote_upsert_machine", {
         hostId, machine: { ...machine, id: target?.vmId ?? machine.id },
         expected: expected ? { ...expected, id: parseRemoteWorkspaceTarget(expected.id)?.vmId ?? expected.id } : null,
-      }), remoteSnapshots.get(hostId) ?? null)
+      }), remoteSnapshots.get(hostId) ?? null, parseRemoteApplicationSource)
       bumpRemote(hostId)
       remoteSnapshots.set(hostId, source)
       publish({ ...snapshot })
@@ -1311,7 +1413,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     deleteRemoteMachine: async (hostId, machine) => {
       const vmId = parseRemoteWorkspaceTarget(machine.id)?.vmId
       if (!vmId) throw new Error("The remote VM identity is missing.")
-      const source = parseMutationSource(await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } }), remoteSnapshots.get(hostId) ?? null)
+      const source = parseMutationSource(await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } }), remoteSnapshots.get(hostId) ?? null, parseRemoteApplicationSource)
       bumpRemote(hostId)
       remoteSnapshots.set(hostId, source)
       publish({ ...snapshot })

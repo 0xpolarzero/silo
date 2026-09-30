@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { BackupState } from "@/features/application/model/backup-source"
-import { createProductionSource, type ProductionBridge } from "./production-source"
+import { createProductionSource, parseApplicationSource, type ProductionBridge } from "./production-source"
 
 // State-handling behaviour of the production source: request deduplication,
 // refresh ordering, polling and merges of partial native responses.
@@ -688,6 +688,56 @@ describe("cancelled lifecycle actions", () => {
       expect(dev?.lifecycleFailure).toBe("Start failed: not enough memory")
       expect(dev?.lifecycleFailureCancelled).toBeUndefined()
     } finally { store.dispose() }
+  })
+})
+
+describe("native state validation", () => {
+  it("keeps a newer computer available when it reports values this version does not know (H-17)", async () => {
+    const newer = remoteSource()
+    const known = newer.workspaces[0]
+    const payload = {
+      ...structuredClone(newer),
+      github: { ...newer.github, state: "suspended" },
+      workspaces: [
+        { ...structuredClone(known), state: "hibernating", stateDetail: "Hibernating since 10:00" },
+        { ...structuredClone(known), machine: { ...known.machine, id: "00000000-0000-4000-8000-0000000000aa", name: "box", kind: "container" } },
+      ],
+      activities: [{ id: "broken" }, { id: "a-1", category: "insights", title: "Checked", detail: "", occurredAt: "2026-09-30T10:00:00.000Z", time: "", tone: "info", status: "done", workspace: null }],
+      repositoryPushOperations: [{ workspace: known.machine.name, repositoryPath: "acme/silo", commitCount: 1, status: "queued" }],
+    }
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") return payload
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const view = store.getSnapshot().source!
+      expect(view.remoteComputers?.[0]).toMatchObject({ connected: true })
+      expect(view.remoteComputers?.[0].error).toBeUndefined()
+      const rows = view.workspaces.filter(workspace => workspace.computer)
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ state: "stopped", freshness: "stale", stateDetail: "Hibernating since 10:00", attention: { level: "warning" } })
+      const activity = view.activities.find(item => item.id.endsWith(encodeURIComponent("a-1")))
+      expect(activity).toMatchObject({ category: "system", tone: "neutral", status: "completed", workspace: undefined })
+      expect(view.activities.some(item => item.id.endsWith("broken"))).toBe(false)
+      expect(view.repositoryPushOperations.some(push => push.workspace === remoteTarget("office"))).toBe(false)
+    } finally { store.dispose() }
+  })
+
+  it("drops unreadable enrichment entries without rejecting local state (H-17)", () => {
+    const local = structuredClone(source) as unknown as Record<string, unknown>
+    const workspaces = local.workspaces as Array<Record<string, unknown>>
+    workspaces[0].repositories = [{ path: "acme/silo", branch: "main" }, { path: "acme/ok", branch: "main", ahead: 0, behind: 0, dirty: false }]
+    local.activities = [{ id: "no-title" }, ...(local.activities as unknown[])]
+    const parsed = parseApplicationSource(local)
+    expect(parsed.workspaces[0].repositories).toEqual([{ path: "acme/ok", branch: "main", ahead: 0, behind: 0, dirty: false }])
+    expect(parsed.activities).toHaveLength(source.activities.length)
+  })
+
+  it("rejects local state whose shown fields are malformed (H-17)", () => {
+    expect(() => parseApplicationSource({ ...structuredClone(source), runtimeRepair: { status: "needed" } })).toThrow()
+    expect(() => parseApplicationSource({ ...structuredClone(source), workspaces: [{ ...structuredClone(source.workspaces[0]), machine: { id: "x", kind: "vm", name: "dev" } }] })).toThrow()
   })
 })
 
