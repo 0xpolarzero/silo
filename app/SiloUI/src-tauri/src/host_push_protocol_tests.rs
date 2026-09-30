@@ -324,6 +324,8 @@ fn repeated_publication_reuses_host_objects_and_refreshes_branch_tracking() {
     let fixture = Fixture::new();
     let source = fixture.repo("source", true, false);
     let remote = fixture.repo("remote.git", true, true);
+    // Like GitHub, the destination has a default branch.
+    run(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
     let host = fixture.repo("publisher", false, true);
     let media = source.directory.join(".git/lfs/objects");
     let lfs_url = format!("file://{}", source.directory.join(".git").display());
@@ -349,7 +351,8 @@ fn repeated_publication_reuses_host_objects_and_refreshes_branch_tracking() {
     let second = commit(&source);
     capture(&source, &second);
     assert_eq!(publish(&second, "main"), 1);
-    assert_eq!(publish(&second, "other"), 2);
+    // A new branch at an already published commit adds no commits.
+    assert_eq!(publish(&second, "other"), 0);
     assert_eq!(
         run(&remote, &["rev-parse", "refs/heads/main"]).trim(),
         second
@@ -435,4 +438,45 @@ fn git_and_git_lfs_authenticate_through_the_credential_pipe() {
     assert!(other_requests
         .recv_timeout(std::time::Duration::from_secs(2))
         .is_err());
+}
+
+#[test]
+fn a_new_branch_counts_only_commits_missing_from_the_default_branch() {
+    let fixture = Fixture::new();
+    let source = fixture.repo("source", true, false);
+    let remote = fixture.repo("remote.git", true, true);
+    run(&remote, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    fs::write(source.directory.join("first.txt"), "first").unwrap();
+    let base = commit(&source);
+    capture(&source, &base);
+    assert_eq!(
+        fixture
+            .publish(&source, &remote, "publisher", &base, None)
+            .unwrap(),
+        1
+    );
+    for name in ["second.txt", "third.txt"] {
+        fs::write(source.directory.join(name), name).unwrap();
+        commit(&source);
+    }
+    let feature = run(&source, &["rev-parse", "HEAD"]).trim().to_owned();
+    capture(&source, &feature);
+    // A fresh publishing cache has never seen the remote's default branch.
+    let host = fixture.repo("feature-publisher", false, true);
+    let count = publish_committed(
+        &host,
+        source.directory.to_str().unwrap(),
+        &format!("file://{}", source.directory.join(".git").display()),
+        "refs/silo/captured",
+        &feature,
+        "feature",
+        remote.directory.to_str().unwrap(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(count, 2);
+    assert_eq!(
+        run(&remote, &["rev-parse", "refs/heads/feature"]).trim(),
+        feature
+    );
 }

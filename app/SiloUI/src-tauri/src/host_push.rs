@@ -273,7 +273,7 @@ pub(crate) fn discover(
 const DISCOVER_REPOSITORIES: &str = r#"find "$1" \( -name node_modules -o -name .venv -o -name __pycache__ -o -name .tox -o -name .gradle -o -name .pnpm-store \) -prune -o -name .git -prune -print 2>/dev/null | while IFS= read -r directory; do
 p=${directory%/.git}
 branch=$(git -C "$p" symbolic-ref --quiet --short HEAD) || continue
-counts=$(git -C "$p" rev-list --left-right --count HEAD..."refs/remotes/origin/$branch" 2>/dev/null) || counts="$(git -C "$p" rev-list --count HEAD) 0"
+counts=$(git -C "$p" rev-list --left-right --count HEAD..."refs/remotes/origin/$branch" 2>/dev/null) || counts="$(git -C "$p" rev-list --count HEAD --not --remotes=origin) 0"
 dirty=$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null)
 head=$(git -C "$p" rev-parse --verify --quiet HEAD) || head=
 origin=$(git -C "$p" remote get-url origin 2>/dev/null) || origin=
@@ -838,11 +838,9 @@ fn publish_committed_tracking(
     // complete trusted cache on every incremental push.
     // Only the currently advertised destination ref may exclude LFS uploads.
     // A previous cached branch must not suppress objects for a new destination.
-    git.run(
-        &["update-ref", "-d", "refs/remotes/origin/published"],
-        None,
-        "",
-    )?;
+    for stale in ["refs/remotes/origin/published", "refs/silo/remote-base"] {
+        git.run(&["update-ref", "-d", stale], None, "")?;
+    }
     let target_ref = format!("refs/heads/{branch}");
     let remote_head = git.run(
         &["ls-remote", "--heads", "origin", &target_ref],
@@ -850,7 +848,26 @@ fn publish_committed_tracking(
         remote,
     )?;
     let range = if remote_head.trim().is_empty() {
-        "refs/silo/push"
+        // A new branch: count only commits missing from the remote's default
+        // branch, not the whole history. An empty repository has no default
+        // branch, so every commit is new. Having that branch locally also
+        // keeps Git from re-sending history GitHub already has.
+        match git.run(
+            &[
+                "fetch",
+                "--no-tags",
+                "origin",
+                "+HEAD:refs/silo/remote-base",
+            ],
+            token,
+            remote,
+        ) {
+            Ok(_) => "refs/silo/remote-base..refs/silo/push",
+            Err(error) if matches!(error.lines().next(), Some(CANCELLED | CREDENTIAL_EXPIRED)) => {
+                return Err(error)
+            }
+            Err(_) => "refs/silo/push",
+        }
     } else {
         git.run(
             &[
@@ -1402,6 +1419,47 @@ mod tests {
             .lock()
             .unwrap()
             .remove(&format!("{}:dev", paths.home.display()));
+    }
+
+    #[test]
+    fn discovery_counts_only_unpublished_commits_of_a_new_branch() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = root.path().join("workspace");
+        let repository = workspace.join("repo");
+        fs::create_dir_all(&repository).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                ])
+                .args(args)
+                .current_dir(&repository)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        for message in ["one", "two"] {
+            git(&["commit", "--quiet", "--allow-empty", "-m", message]);
+        }
+        let published = git(&["rev-parse", "HEAD"]);
+        git(&["update-ref", "refs/remotes/origin/main", published.trim()]);
+        git(&["switch", "--quiet", "-c", "feature"]);
+        git(&["commit", "--quiet", "--allow-empty", "-m", "three"]);
+        let output = Command::new("sh")
+            .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
+            .arg(&workspace)
+            .output()
+            .unwrap();
+        let output = String::from_utf8(output.stdout).unwrap();
+        let record: Vec<_> = output.split('\0').collect();
+        assert_eq!(record[1], "feature");
+        // Not the whole history (3): only the commit missing from origin.
+        assert_eq!(record[2], "1 0");
     }
 
     #[test]
