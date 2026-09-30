@@ -1888,7 +1888,7 @@ fn bundled_runtime_version() -> &'static str {
 /// Earlier MicroSandbox versions whose snapshot archives the bundled runtime
 /// still loads. Add a version here only after loading one of its exports
 /// with the new runtime; archives from versions not listed are refused.
-const EARLIER_IMPORTABLE_RUNTIME_VERSIONS: &[&str] = &[];
+const EARLIER_IMPORTABLE_RUNTIME_VERSIONS: &[&str] = &["0.7.2"];
 
 /// MicroSandbox names its archive format per minor release.
 fn snapshot_format_for(version: &str) -> String {
@@ -4789,6 +4789,13 @@ mod tests {
             message.contains("cannot import") && message.contains("export it again"),
             "{message}"
         );
+
+        // 0.7.4 loads and verifies archives exported by Silo's 0.7.2 flow.
+        manifest.runtime.version = "0.7.2".into();
+        manifest.runtime.snapshot_format = snapshot_format_for("0.7.2");
+        validate_manifest(&manifest).unwrap();
+        manifest.runtime.snapshot_format = "msb-snapshot-tar-zstd-v0.6".into();
+        assert!(validate_manifest(&manifest).is_err());
     }
 
     #[cfg(unix)]
