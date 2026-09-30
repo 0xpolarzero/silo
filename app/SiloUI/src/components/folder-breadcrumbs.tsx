@@ -3,6 +3,7 @@ import { ChevronRight, MoreHorizontal } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
 import { useReduceMotion } from "@/components/ui/reduce-motion"
+import { visibleText } from "@/lib/visible-text"
 
 const crumbClass = "min-w-0 truncate rounded px-1 py-1 text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
 
@@ -15,7 +16,8 @@ export function FolderBreadcrumbs({ segments, onNavigate }: {
   const selectedAncestor = useRef(false)
   const reduceMotion = useReduceMotion()
   const [layout, setLayout] = useState({ collapsed: false, rootVisible: true })
-  const labels = ["/workspace", ...segments]
+  // Folder names come from the guest: reveal invisible and bidirectional characters.
+  const labels = ["/workspace", ...segments.map(visibleText)]
   const path = labels.join("/")
 
   useLayoutEffect(() => {

@@ -14,6 +14,7 @@ import { SandboxAction, SandboxListItem, SandboxListRow } from "@/features/sandb
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
 import { cn } from "@/lib/utils"
+import { visibleText } from "@/lib/visible-text"
 import { lifecycleOutcome, sandboxTargetLabel } from "./status-bar-model"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import type { StatusBarActions, WorkspaceMenuProps } from "./status-bar-types"
@@ -50,11 +51,14 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
   const canPush = workspaceAvailability(workspace, source).canOpen
   return (
     <div className="grid gap-1 px-2 pb-2">
-      {repositories.map(({ repository, operation }) => (
-        <div key={repository.path} className="flex min-h-6 min-w-0 items-center gap-2" role="group" aria-label={`${repository.path} in ${workspace.machine.name}`}>
-          <span className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-muted-foreground" title={repository.path}>
+      {repositories.map(({ repository, operation }) => {
+        // The row authorizes a push, so name the repository by its full path with any
+        // invisible or bidirectional characters revealed: a basename could imitate another.
+        const path = visibleText(repository.path)
+        return <div key={repository.path} className="flex min-h-6 min-w-0 items-center gap-2" role="group" aria-label={`${path} in ${workspace.machine.name}`}>
+          <span className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-muted-foreground" title={path}>
             <GitBranch className="size-3 shrink-0" aria-hidden="true" />
-            <span className="truncate">{repository.path.split("/").filter(Boolean).at(-1) ?? repository.path}</span>
+            <span className="truncate">{path}</span>
           </span>
           {operation ? <RepositoryPushFeedback
             operation={operation}
@@ -63,11 +67,11 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
             onRetry={() => actions.pushRepository(workspaceTarget(workspace), repository.path)}
             onDismiss={actions.dismissRepositoryPush}
             showSuccess
-          /> : <Button variant="outline" size="xs" disabled={!canPush} aria-label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${workspace.machine.name}`} onClick={() => { if (canPush) actions.pushRepository(workspaceTarget(workspace), repository.path) }}>
+          /> : <Button variant="outline" size="xs" disabled={!canPush} aria-label={`Push ${commitLabel(repository.ahead)} for ${path} in ${workspace.machine.name}`} onClick={() => { if (canPush) actions.pushRepository(workspaceTarget(workspace), repository.path) }}>
             Push {commitLabel(repository.ahead)}
           </Button>}
         </div>
-      ))}
+      })}
     </div>
   )
 }
@@ -138,13 +142,14 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
           const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === operation.workspace)
           const canRetry = workspace && workspace.repositories.some(({ path, ahead }) => path === operation.repositoryPath && ahead > 0) && workspaceAvailability(workspace, source).canOpen
           const sandbox = sandboxTargetLabel(operation.workspace, source)
+          const path = visibleText(operation.repositoryPath)
           return <OperationIssue
             key={`${operation.workspace}:${operation.repositoryPath}`}
             title={`Push failed · ${sandbox}`}
-            detail={`${operation.repositoryPath} · ${operation.message}`}
-            actionLabel={`Review push failure for ${sandbox}, ${operation.repositoryPath}`}
+            detail={`${path} · ${operation.message}`}
+            actionLabel={`Review push failure for ${sandbox}, ${path}`}
             onReview={() => actions.openSilo({ workspace: operation.workspace, workspaceSection: "files" })}
-            retry={<Button variant="outline" size="xs" aria-label={`Retry push for ${operation.repositoryPath}`} disabled={!canRetry} onClick={() => { if (canRetry) actions.pushRepository(operation.workspace, operation.repositoryPath) }}><RotateCw />Retry</Button>}
+            retry={<Button variant="outline" size="xs" aria-label={`Retry push for ${path}`} disabled={!canRetry} onClick={() => { if (canRetry) actions.pushRepository(operation.workspace, operation.repositoryPath) }}><RotateCw />Retry</Button>}
           />
         })}
       </div>

@@ -1,4 +1,5 @@
 import { Logs, type LogWindow } from "./logs-page"
+import { visibleText } from "@/lib/visible-text"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { NetworkPage } from "./network-page"
 import { FolderActions } from "@/features/application/components/folder-actions"
@@ -132,8 +133,8 @@ function Files({
                           data-repository-header
                           icon={<ListRowIcon aria-hidden="true"><GitBranch className="size-3.5" /></ListRowIcon>}
                           title={<TooltipProvider delayDuration={150}><Tooltip>
-                            <TooltipTrigger asChild><span className="truncate" tabIndex={0}>{repository.path.split("/").filter(Boolean).at(-1) ?? repository.path}</span></TooltipTrigger>
-                            <TooltipContent className="max-w-sm break-all">{repository.path}</TooltipContent>
+                            <TooltipTrigger asChild><span className="truncate" tabIndex={0}>{visibleText(repository.path.split("/").filter(Boolean).at(-1) ?? repository.path)}</span></TooltipTrigger>
+                            <TooltipContent className="max-w-sm break-all">{visibleText(repository.path)}</TooltipContent>
                           </Tooltip></TooltipProvider>}
                           detail={`${repository.branch} · ${repository.ahead} ahead, ${repository.behind} behind`}
                           actions={<><FolderActions editor={editor} path={repository.path} onOpen={() => onOpenEditor(workspaceTarget(workspace), repository.path)} disabled={workspace.state !== "running" || workspace.freshness !== "fresh"} /><WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} /></>}

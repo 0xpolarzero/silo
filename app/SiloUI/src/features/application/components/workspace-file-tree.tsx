@@ -1,4 +1,5 @@
 import { workspaceTarget } from "@/features/application/model/remote-computers"
+import { visibleText } from "@/lib/visible-text"
 import { FolderActions } from "./folder-actions"
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
 import { ChevronRight, File, Folder, Link } from "lucide-react"
@@ -45,19 +46,19 @@ function Directory({ workspace, path, label, store, expanded, toggle, editor, on
       {snapshot.entries?.map((entry) => (
         <li key={entry.path}>
           {entry.kind === "folder" ? <Collapsible open={expanded.has(entry.path)} onOpenChange={(open) => toggle(entry.path, open)}>
-            <div className="group/folder flex items-center rounded-md pr-1 hover:bg-muted focus-within:bg-muted"><CollapsibleTrigger className={`${rowClass} min-w-0 flex-1`} aria-label={`Folder ${entry.name}`}>
+            <div className="group/folder flex items-center rounded-md pr-1 hover:bg-muted focus-within:bg-muted"><CollapsibleTrigger className={`${rowClass} min-w-0 flex-1`} aria-label={`Folder ${visibleText(entry.name)}`}>
               <ChevronRight className="tree-caret size-3.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none" aria-hidden="true" />
-              <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="truncate">{entry.name}</span>
+              <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /><span className="truncate">{visibleText(entry.name)}</span>
             </CollapsibleTrigger>
               {onOpenEditor && <FolderActions editor={editor} path={entry.path} onOpen={() => onOpenEditor(workspace, entry.path)} />}
             </div>
             <CollapsibleContent className="ml-4">
-              {expanded.has(entry.path) && <Directory editor={editor} workspace={workspace} path={entry.path} label={`${entry.name} contents`} store={store} expanded={expanded} toggle={toggle} onOpenEditor={onOpenEditor} />}
+              {expanded.has(entry.path) && <Directory editor={editor} workspace={workspace} path={entry.path} label={`${visibleText(entry.name)} contents`} store={store} expanded={expanded} toggle={toggle} onOpenEditor={onOpenEditor} />}
             </CollapsibleContent>
           </Collapsible> : <div className="flex h-8 items-center gap-2 rounded-md px-2 font-mono text-xs" title={entry.kind === "symlink" ? "Symbolic link" : undefined}>
             <span className="size-3.5 shrink-0" aria-hidden="true" />
             {entry.kind === "symlink" ? <Link className="size-4 shrink-0 text-muted-foreground" aria-label="Symbolic link" /> : <File className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
-            <span className="truncate select-text">{entry.name}</span>
+            <span className="truncate select-text">{visibleText(entry.name)}</span>
           </div>}
         </li>
       ))}

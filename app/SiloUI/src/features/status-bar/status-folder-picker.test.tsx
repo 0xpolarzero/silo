@@ -63,6 +63,16 @@ describe("status folder picker live directories", () => {
       expect(onOpen).toHaveBeenCalledExactlyOnceWith("/workspace")
     } finally { vi.useRealTimers() }
   })
+  it("reveals hidden characters in folder names but opens the real path", async () => {
+    const spoofed = "photos\u202Egpj.exe"
+    const { user, onOpen, loader } = setup(vi.fn().mockResolvedValueOnce(page([spoofed])).mockResolvedValue(page([], `/workspace/${spoofed}`)))
+    const folder = await screen.findByRole("button", { name: "photos⟨U+202E⟩gpj.exe" })
+    await user.click(folder)
+    expect(loader).toHaveBeenLastCalledWith(workspace.machine.name, `/workspace/${spoofed}`, 0, undefined)
+    expect(screen.getByRole("navigation", { name: "Folder path" })).toHaveTextContent("photos⟨U+202E⟩gpj.exe")
+    await user.click(screen.getByRole("button", { name: "Open in Cursor" }))
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith(`/workspace/${spoofed}`)
+  })
   it.each(["stopped", "stale"])("does not load or open a %s VM", (state) => {
     const loader = vi.fn()
     render(<StatusFolderPicker workspace={{ ...workspace, ...(state === "stopped" ? { state: "stopped" } : { freshness: "stale" }) }} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} />)

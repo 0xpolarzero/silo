@@ -76,7 +76,7 @@ adds stale status, an empty list, and a long list. Repair and error notices and
 the footer remain visible while only the sandbox list scrolls.
 
 Repositories with outgoing commits add one compact line under their sandbox,
-with the repository name and a **Push N commits** action. Progress and the brief
+with the repository's full path (hidden characters revealed) and a **Push N commits** action. Progress and the brief
 success message reuse the Files page's push feedback. Failures remain pinned
 above the list with Details and Retry. Push actions require a fresh, running
 sandbox; the preview simulates completion and carries updated counts into Silo.

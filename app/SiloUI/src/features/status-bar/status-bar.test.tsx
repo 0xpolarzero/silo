@@ -38,6 +38,18 @@ describe("status bar", () => {
     expect(row.queryByRole("button", { name: /^Push / })).not.toBeInTheDocument()
   })
 
+  it("names a pushable repository by its full path with hidden characters revealed", async () => {
+    const source = applicationSourceForScenario("complete")
+    const spoofed = "acme/evil\u202Eolis"
+    const { user, actions } = setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, repositories: [{ path: spoofed, branch: "main", ahead: 1, behind: 0, dirty: false }] })) })
+    const row = screen.getByRole("group", { name: "acme/evil⟨U+202E⟩olis in dev" })
+    expect(row).toHaveTextContent("acme/evil⟨U+202E⟩olis")
+    expect(row).not.toHaveTextContent("\u202E")
+    await user.click(within(row).getByRole("button", { name: "Push 1 commit for acme/evil⟨U+202E⟩olis in dev" }))
+    // The action still targets the repository's real path.
+    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", spoofed)
+  })
+
   it("identifies multiple repositories and dispatches only the selected one", async () => {
     const source = applicationSourceForScenario("complete")
     const { user, actions } = setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, repositories: workspace.repositories.map((repository) => ({ ...repository, ahead: 1 })) })) })
