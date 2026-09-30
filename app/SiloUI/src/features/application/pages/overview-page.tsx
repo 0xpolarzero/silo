@@ -17,6 +17,7 @@ import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "rea
 import { dismissOperationToast, dismissSandboxToasts, showActionFailure, showOperationFailure, showOperationNotice, showOperationProgress } from "@/lib/operation-toast"
 
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
+import { ConfirmBody } from "@/components/confirm-popover"
 import type { BackupController } from "../model/backup-source"
 import type { WorkspaceCheckpoint } from "../model/checkpoint-source"
 
@@ -210,10 +211,11 @@ function WorkspaceActions({ workspace, availability, readOnly, guard }: { worksp
   const { machine } = workspace
   const action = workspace.state === "running" || workspace.state === "starting" ? "stop" : "start"
   const enabled = !readOnly && (action === "stop" ? availability.canStop : availability.canStart)
+  const asks = enabled && guard.check(workspace, action).kind === "confirm"
   return <LifecycleControl guard={guard} workspace={workspace} action={action} disabled={!enabled} reason={readOnly ? undefined : availability.reasons[action]}>
     {({ onClick, disabled }) => action === "stop"
-      ? <SandboxAction label={`Stop ${machine.name}`} disabled={disabled} onClick={onClick}><Square /></SandboxAction>
-      : <SandboxAction label={`Start ${machine.name}`} disabled={disabled} onClick={onClick}><Play /></SandboxAction>}
+      ? <SandboxAction label={`Stop ${machine.name}`} tooltip={asks ? `Stop ${machine.name}…` : undefined} disabled={disabled} onClick={onClick}><Square /></SandboxAction>
+      : <SandboxAction label={`Start ${machine.name}`} tooltip={asks ? `Start ${machine.name}…` : undefined} disabled={disabled} onClick={onClick}><Play /></SandboxAction>}
   </LifecycleControl>
 }
 
@@ -401,16 +403,22 @@ export function OverviewPage({ active = true, readOnly = false,
     const stale = workspace.freshness === "stale"
     const vm = machine.kind === "vm"
     const local = !workspace.computer
+    const restartCheck = guard.check(workspace, "restart")
+    const restartPrompt = restartCheck.kind === "confirm" && availability.canRestart && !readOnly ? restartCheck.prompt : undefined
     const items: MenuAction[] = [
       ...(vm && machine.desktop && actions.openDesktop ? [{ label: "Open Linux desktop", icon: Monitor, accessibleLabel: `Open ${machine.name} desktop`, disabled: configurationLocked || availability.busy || Boolean(workspace.computer && stale), onSelect: () => { void actions.openDesktop!(target) } }] : []),
-      { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guard.request(workspace, "restart") },
+      restartPrompt
+        ? { label: "Restart…", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, popover: "restart" }
+        : { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guard.request(workspace, "restart") },
       // Checkpoints and Storage open the page's tabs, which disable their own actions as needed.
       ...(vm ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, onSelect: () => openSandbox(machine.id, "checkpoints") }] : []),
       ...(vm && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: forkDisabled(workspace), popover: "fork" }] : []),
       ...(vm && local && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, onSelect: () => openSandbox(machine.id, "storage") }] : []),
       ...(vm && local && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || availability.busy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
     ]
-    return { items, popovers: forkPopovers(workspace) }
+    const popovers: MenuPopovers = { ...forkPopovers(workspace) }
+    if (restartPrompt) popovers.restart = close => <ConfirmBody tone={restartPrompt.tone} title={restartPrompt.title} description={restartPrompt.description} confirmLabel={restartPrompt.confirmLabel} onClose={close} onConfirm={lifecycleLater(workspace, "restart", true)} />
+    return { items, popovers }
   }
 
   // Lifecycle failures and cancellations arrive from the backend as workspace state. Toast each

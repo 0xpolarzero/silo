@@ -28,6 +28,7 @@ export function sandboxEditMenu({ machine, displayName, disabled, created, runni
     { label: "Edit", separatorBefore, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled, onSelect: onEdit },
     { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: disabled || !onDuplicate, onSelect: () => onDuplicate?.() },
     ...(machine.kind === "vm" && !machine.desktop && created ? [{ label: "Add Linux desktop", icon: Monitor, disabled, onSelect: () => onAddDesktop(machine) }] : []),
-    { label: "Delete", icon: Trash2, accessibleLabel: `Delete ${displayName}`, destructive: true, disabled: disabled || runningVM, tooltip: runningVM ? "Stop the sandbox before deleting it." : undefined, popover: "delete" },
+    // Delete always confirms (decision 6), so its label ends with an ellipsis (decision 8).
+    { label: "Delete…", icon: Trash2, accessibleLabel: `Delete ${displayName}`, destructive: true, disabled: disabled || runningVM, tooltip: runningVM ? "Stop the sandbox before deleting it." : undefined, popover: "delete" },
   ]
 }

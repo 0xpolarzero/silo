@@ -401,10 +401,10 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           <DisabledReason reason={controls.canOpen ? undefined : reasons.open}><Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={!controls.canOpen} onClick={controls.onEditor}><Code aria-hidden="true" data-icon="inline-start" />Editor</Button></DisabledReason>
           {canStop
             ? <LifecycleControl guard={controls.lifecycleGuard} workspace={workspace} action="stop" disabled={!controls.canStop} reason={reasons.stop}>
-              {({ onClick, disabled }) => <Button type="button" variant="outline" size="xs" aria-label={`Stop ${machine.name}`} disabled={disabled} onClick={onClick}><Square aria-hidden="true" data-icon="inline-start" />Stop</Button>}
+              {({ onClick, disabled }) => <Button type="button" variant="outline" size="xs" aria-label={`Stop ${machine.name}`} disabled={disabled} onClick={onClick}><Square aria-hidden="true" data-icon="inline-start" />{!disabled && controls.lifecycleGuard.check(workspace, "stop").kind === "confirm" ? "Stop…" : "Stop"}</Button>}
             </LifecycleControl>
             : <LifecycleControl guard={controls.lifecycleGuard} workspace={workspace} action="start" disabled={!controls.canStart} reason={reasons.start}>
-              {({ onClick, disabled }) => <Button type="button" variant="outline" size="xs" aria-label={`Start ${machine.name}`} disabled={disabled} onClick={onClick}><Play aria-hidden="true" data-icon="inline-start" />Start</Button>}
+              {({ onClick, disabled }) => <Button type="button" variant="outline" size="xs" aria-label={`Start ${machine.name}`} disabled={disabled} onClick={onClick}><Play aria-hidden="true" data-icon="inline-start" />{!disabled && controls.lifecycleGuard.check(workspace, "start").kind === "confirm" ? "Start…" : "Start"}</Button>}
             </LifecycleControl>}
           {menuActions.length > 0 && menu}
         </div>}

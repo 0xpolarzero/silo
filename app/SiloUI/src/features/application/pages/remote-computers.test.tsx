@@ -28,7 +28,11 @@ it("keeps the existing VM list and shows remote ownership through a focusable ba
   const row = within(badge.closest("li")!)
   expect(row.queryByText("Restart required")).not.toBeInTheDocument()
   await user.click(row.getByRole("button", { name: `Stop ${remote.machine.name}` }))
-  expect(actions.stopWorkspace).toHaveBeenCalledWith(remote.machine.id)
+  // Stopping a running sandbox confirms first, naming its computer (decision 8).
+  const stop = within((await screen.findByText(`Stop ${remote.machine.name} on Office Mac?`)).closest<HTMLElement>("[data-slot=popover-content]")!)
+  expect(actions.stopWorkspace).not.toHaveBeenCalled()
+  await user.click(stop.getByRole("button", { name: "Stop" }))
+  await waitFor(() => expect(actions.stopWorkspace).toHaveBeenCalledWith(remote.machine.id))
   await user.click(row.getByRole("button", { name: `More actions for ${remote.machine.name}` }))
   expect(screen.getByRole("menuitem", { name: `Delete ${remote.machine.name} on Office Mac` })).toHaveAttribute("aria-disabled", "true")
   await user.keyboard("{Escape}")
