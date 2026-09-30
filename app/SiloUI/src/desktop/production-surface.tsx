@@ -52,7 +52,7 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   const current = useProductionSource(source)
   const routeRequest = useMainRoute(!statusPanel)
   const dependencies = useDependencyStore(dependencyStore)
-  const { settings: currentSettings, store: settingsStore } = useSettings()
+  const { settings: currentSettings, revision: settingsRevision, writeProtected: settingsProtected, store: settingsStore } = useSettings()
   const [preparingUpdate, setPreparingUpdate] = useState(false)
   const updateBackend = useMemo(() => ({ ...desktopUpdateBackend, install: async (stopSandboxes: boolean) => {
     setPreparingUpdate(true)
@@ -77,7 +77,10 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
   // events, polling and refresh-on-focus; once live it only refreshes.
   const retryChecks = () => { dependencies?.retry(); void source.initialize().catch((error: unknown) => console.error("Silo live updates:", error)) }
   // Finish persists completion; keep this session on its preferences screen until Open Silo.
-  const [onboardingActive, setOnboardingActive] = useState(() => !currentSettings.onboardingComplete)
+  // Settings that could not be read (or a damaged, write-protected file) report defaults,
+  // so a missing completion flag is unknown, not "new user": never route to onboarding
+  // then. Onboarding could not save completion in that state anyway.
+  const [onboardingActive, setOnboardingActive] = useState(() => settingsRevision >= 0 && !settingsProtected && !currentSettings.onboardingComplete)
   if (!statusPanel && onboardingActive && dependencies) {
     return <UpdatesProvider backend={updateBackend}><UpdateInstallationBoundary preparing={preparingUpdate}><ProductionOnboarding application={current.source} dependencies={dependencies} source={source} onOpenApp={() => setOnboardingActive(false)} /></UpdateInstallationBoundary></UpdatesProvider>
   }

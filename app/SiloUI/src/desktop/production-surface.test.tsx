@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { createMemorySettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
+import { createMemorySettingsStore, createSettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
 import type { ProductionSource } from "./production-source"
 import type { DependencyStore } from "./dependencies"
 import { ProductionSurface } from "./production-surface"
@@ -60,6 +60,25 @@ describe("production completion routing", () => {
     expect(screen.queryByText("Main app")).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
     expect(screen.getByText("Main app")).toBeVisible()
+  })
+
+  it.each([
+    ["could not be read", { read: () => Promise.reject(new Error("settings unavailable")) }],
+    ["are damaged and write-protected", { read: async () => ({ revision: 0, settings: {}, onboardingDraft: null, saveError: "Settings could not be read; the file was left unchanged.", writeProtected: true }) }],
+  ])("never routes to onboarding while settings %s", async (_case, backend) => {
+    const settings = createSettingsStore({
+      subscribe: async () => () => {},
+      updateSettings: () => Promise.reject(new Error("unused")),
+      updateOnboardingDraft: () => Promise.reject(new Error("unused")),
+      flush: async () => {},
+      ...backend,
+    })
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    await settings.initialize()
+    expect(settings.getSnapshot().settings.onboardingComplete).toBe(false)
+    render(<SettingsProvider store={settings}><ProductionSurface source={source} dependencyStore={dependencyStore} /></SettingsProvider>)
+    expect(screen.getByText("Main app")).toBeVisible()
+    expect(screen.queryByRole("button", { name: "Open Silo" })).not.toBeInTheDocument()
   })
 
   it("opens the main app when relaunched after saved completion", () => {
