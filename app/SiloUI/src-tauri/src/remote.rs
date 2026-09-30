@@ -162,6 +162,7 @@ const METHODS: &[(&str, Access)] = &[
     ("guest.ssh", Access::Stream),
     ("network.state", Access::Read),
     ("network.publish", Access::Change),
+    ("network.unpublish", Access::Change),
     ("repository.push.status", Access::Read),
     ("repository.push.start", Access::Change),
     ("repository.push", Access::Change),
@@ -298,15 +299,21 @@ pub fn remote_host_list() -> Result<Vec<RemoteHost>, String> {
     Ok(read_config()?.hosts)
 }
 #[tauri::command]
-pub fn remove_remote_host(host_id: String) -> Result<(), String> {
-    let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
-    let mut config = read_config()?;
-    config.hosts.retain(|h| h.id != host_id);
-    save_config(&config)?;
-    drop(_guard);
-    crate::remote_network::close_host(&host_id);
-    crate::desktop_viewer::close_host(&host_id);
-    Ok(())
+pub async fn remove_remote_host(host_id: String) -> Result<(), String> {
+    // Closing tunnels and viewers waits for their processes; keep it off the main thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = CONFIG_LOCK.lock().map_err(|_| "Settings unavailable.")?;
+        let mut config = read_config()?;
+        config.hosts.retain(|h| h.id != host_id);
+        save_config(&config)?;
+        drop(_guard);
+        poll_succeeded(&host_id);
+        crate::remote_network::close_host(&host_id);
+        crate::desktop_viewer::close_host(&host_id);
+        Ok(())
+    })
+    .await
+    .map_err(|_| "Could not remove the computer.".to_string())?
 }
 fn validate_address(address: &str) -> Result<(), String> {
     let invalid = || {
@@ -1023,17 +1030,95 @@ fn save_connected_host(dir: &Path, host: RemoteHost, local_name: &str, replace: 
 pub async fn remote_host_snapshot(app: AppHandle, host_id: String, refresh_repositories: Option<bool>) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let result = call_remote(&app, &host_id, "runtime.snapshot", json!({"refreshRepositories": refresh_repositories.unwrap_or(false)}));
-        if result
-            .as_ref()
-            .is_err_and(|error| error != "SILO_SANDBOX_UPDATE_IN_PROGRESS")
-        {
-            crate::remote_network::close_host(&host_id);
-    crate::desktop_viewer::close_host(&host_id);
+        match &result {
+            Ok(_) => poll_succeeded(&host_id),
+            Err(error) if error == "SILO_SANDBOX_UPDATE_IN_PROGRESS" => {}
+            Err(error) => close_after_failed_poll(&host_id, error),
         }
         result
     })
     .await
     .map_err(|e| e.to_string())?
+}
+/// Consecutive failed polls of one saved computer.
+struct Health {
+    failures: u32,
+    last_error: String,
+    at: Instant,
+}
+static HEALTH: Mutex<std::collections::BTreeMap<String, Health>> =
+    Mutex::new(std::collections::BTreeMap::new());
+/// Failed polls in a row before this computer's tunnels and viewers are closed.
+const CLOSE_AFTER_FAILURES: u32 = 3;
+/// How long an unreachable computer is answered from its last error without asking again.
+const OFFLINE_FOR: Duration = Duration::from_secs(20);
+/// What a failed poll means for connections to that computer.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PollFailure {
+    /// Possibly a blip (network, timeout, a busy owner): keep everything open.
+    Transient,
+    /// Failed repeatedly: close live connections, but reopen tunnels when it answers again.
+    Disconnected,
+    /// Another computer answers at the address, or access was withdrawn: close everything.
+    Revoked,
+}
+/// Errors that mean the saved computer is not the one answering or no longer admits this one.
+fn revoked(error: &str) -> bool {
+    [
+        "This address now belongs to a different Silo computer",
+        "Remote management is disabled",
+        "Silo versions are incompatible",
+        "This computer is no longer connected.",
+        AUTHENTICATION_FAILED,
+        "The other computer's SSH host key changed",
+        "Host key verification failed",
+    ]
+    .iter()
+    .any(|marker| error.starts_with(marker))
+}
+pub(crate) fn poll_succeeded(host: &str) {
+    HEALTH.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(host);
+}
+pub(crate) fn poll_failed(host: &str, error: &str) -> PollFailure {
+    let mut health = HEALTH.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let entry = health.entry(host.to_owned()).or_insert(Health { failures: 0, last_error: String::new(), at: Instant::now() });
+    entry.failures += 1;
+    entry.last_error = error.to_owned();
+    entry.at = Instant::now();
+    if revoked(error) {
+        PollFailure::Revoked
+    } else if entry.failures >= CLOSE_AFTER_FAILURES {
+        PollFailure::Disconnected
+    } else {
+        PollFailure::Transient
+    }
+}
+/// The last error of a computer that failed repeatedly just now, so reads can answer at
+/// once instead of opening another SSH connection; `None` once it is worth asking again.
+pub(crate) fn offline(host: &str) -> Option<String> {
+    offline_at(host, Instant::now())
+}
+fn offline_at(host: &str, now: Instant) -> Option<String> {
+    let health = HEALTH.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    health
+        .get(host)
+        .filter(|entry| entry.failures >= CLOSE_AFTER_FAILURES && now.duration_since(entry.at) < OFFLINE_FOR)
+        .map(|entry| entry.last_error.clone())
+}
+/// Applies a failed poll: one blip closes nothing; repeated failures close live tunnels
+/// (reopened on the same local ports later) and desktop viewers; a revoked computer loses all.
+pub(crate) fn close_after_failed_poll(host: &str, error: &str) {
+    match poll_failed(host, error) {
+        PollFailure::Transient => {}
+        PollFailure::Disconnected => {
+            crate::remote_network::disconnect_host(host);
+            crate::desktop_viewer::close_host(host);
+        }
+        PollFailure::Revoked => {
+            crate::remote_network::close_host(host);
+            crate::desktop_viewer::close_host(host);
+        }
+    }
 }
 #[tauri::command]
 pub async fn remote_workspace_action(
@@ -1851,7 +1936,7 @@ mod setup_tests {
     fn commands_that_launch_processes_stay_off_the_main_thread() {
         // Tauri runs a synchronous command on the main thread; only quick settings reads
         // and writes may be synchronous here.
-        let quick = ["remote_management_status", "set_remote_management", "remote_host_list", "remove_remote_host"];
+        let quick = ["remote_management_status", "set_remote_management", "remote_host_list"];
         let source = include_str!("remote.rs");
         let mut commands = 0;
         for block in source.split("#[tauri::command]").skip(1) {
@@ -2002,6 +2087,44 @@ mod authorized_key_tests {
         assert!(!restrict_authorized_keys_file(&link, &public).unwrap());
         assert_eq!(fs::read_to_string(&target).unwrap(), format!("{public}\n"));
         assert!(!restrict_authorized_keys_file(&home.path().join("missing"), &public).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+
+    #[test]
+    fn one_failed_poll_closes_nothing_and_repeated_failures_disconnect() {
+        let host = uuid::Uuid::new_v4().to_string();
+        let blip = "The SSH connection timed out. Check that the other computer is awake and reachable.";
+        assert_eq!(poll_failed(&host, blip), PollFailure::Transient);
+        assert_eq!(poll_failed(&host, "This computer has too many active Silo connections."), PollFailure::Transient);
+        assert_eq!(offline(&host), None);
+        assert_eq!(poll_failed(&host, blip), PollFailure::Disconnected);
+        // Reads answer from the last error for a short while instead of reconnecting.
+        assert_eq!(offline(&host).as_deref(), Some(blip));
+        assert_eq!(offline_at(&host, Instant::now() + OFFLINE_FOR), None);
+        poll_succeeded(&host);
+        assert_eq!(offline(&host), None);
+        assert_eq!(poll_failed(&host, blip), PollFailure::Transient);
+        poll_succeeded(&host);
+    }
+
+    #[test]
+    fn identity_or_access_changes_close_everything_at_once() {
+        for error in [
+            "This address now belongs to a different Silo computer. Reconnect it explicitly.",
+            "Remote management is disabled on this computer.",
+            "Silo versions are incompatible. Update Silo on both computers.",
+            "This computer is no longer connected.",
+            AUTHENTICATION_FAILED,
+            "The other computer's SSH host key changed. Verify the computer before trusting its new key (Host key verification failed).",
+        ] {
+            let host = uuid::Uuid::new_v4().to_string();
+            assert_eq!(poll_failed(&host, error), PollFailure::Revoked, "{error}");
+            poll_succeeded(&host);
+        }
     }
 }
 
@@ -2280,7 +2403,7 @@ mod dispatch_tests {
             methods(Access::Change),
             [
                 "runtime.action", "runtime.upsert", "runtime.delete", "desktop.action",
-                "ssh.access.save", "guest.prepare", "network.publish", "repository.push.start",
+                "ssh.access.save", "guest.prepare", "network.publish", "network.unpublish", "repository.push.start",
                 "repository.push", "repository.dismiss", "checkpoint.create", "checkpoint.fork",
                 "checkpoint.restore",
             ]
