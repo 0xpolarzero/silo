@@ -36,6 +36,9 @@ fn migration_and_checkpoint_commands_are_allowlisted_for_the_main_window() {
         "create_checkpoint",
         "fork_checkpoint",
         "restore_checkpoint",
+        "delete_checkpoint",
+        "abandon_restore",
+        "read_checkpoint_usage",
         "remote_checkpoint_action",
     ] {
         let permission = format!("allow-{}", command.replace('_', "-"));

@@ -57,10 +57,13 @@ Disk allocation uses Unix `st_blocks * 512`; guest usage/capacity comes from
 the logical byte count printed by `fstrim`. Concurrent guest writes or APFS clones
 can make this differ from the increase in free space on the physical volume.
 
-The open workspace disk descriptor is checked after success or failure. A
-shortened logical tail is restored to the original length and reported as a
-failure; a growing image is never truncated. This is a defensive guard in
-addition to the underlying runtime fix.
+The workspace volume is measured as a whole: a fresh VM has one `disk.raw`, a
+full checkpoint rolls it onto qcow2 layers, and a VM restored from a checkpoint
+has only sealed layers and a writable qcow2 head. A missing volume is reported
+as unknown, not 0 B. Every layer's open descriptor is checked after success or
+failure. A shortened logical tail is restored to the original length and
+reported as a failure; a growing image is never truncated. This is a defensive
+guard in addition to the underlying runtime fix.
 
 ## Reproduction and upstream fix, 2026-09-20
 

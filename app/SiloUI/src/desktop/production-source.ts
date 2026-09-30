@@ -12,7 +12,7 @@ import type { SshAccessWorkspace, SshAccessState, NetworkState, ApplicationActio
 import { operationQueueSchema, isCancelledError, cancelledActionLabel, type OperationQueue } from "@/features/application/model/operation-queue"
 import { deriveMachineChanges, isStaleConfigurationError, type MachineConfigurationChange } from "@/features/application/model/machine-change"
 import { ExportIncompleteError, type BackupArchive, type BackupController, type BackupOperation, type BackupState, type VerifiedExport } from "@/features/application/model/backup-source"
-import type { WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
+import { checkpointUsageSchema, type WorkspaceCheckpointOperation } from "@/features/application/model/checkpoint-source"
 import type { StatusBarActions, StatusBarRoute } from "@/features/status-bar/status-bar-types"
 
 import { remoteComputerSchema, remoteManagementSchema, remoteWorkspaceTarget, parseRemoteWorkspaceTarget, workspaceTarget, type RemoteComputer, type RemoteManagement } from "@/features/application/model/remote-computers"
@@ -84,8 +84,11 @@ const checkpointShape = z.object({
   sizeBytes: z.number().int().nonnegative().optional(),
 })
 const checkpointOperationShape = z.object({
-  kind: z.enum(["capture", "fork", "restore"]), status: z.enum(["running", "failed"]),
+  kind: z.enum(["capture", "fork", "restore", "delete"]), status: z.enum(["running", "failed"]),
   stage: z.string(), error: z.string().optional(),
+})
+const unfinishedRestoreShape = z.object({
+  checkpointId: z.string().min(1), checkpointName: z.string().nullish(), phase: z.enum(["capturing", "secured"]),
 })
 const pendingCheckpointRestoreShape = z.object({
   checkpointId: z.string().min(1), sourceWorkspace: z.string().min(1), state: z.enum(["full", "disk"]),
@@ -105,7 +108,7 @@ function tolerantArray<T extends z.ZodType>(item: T) {
 }
 
 const workspaceStates = ["running", "starting", "stopped", "failed"] as const
-const repositoryShape = z.object({ path: z.string(), branch: z.string(), ahead: z.number().int().nonnegative(), behind: z.number().int().nonnegative(), dirty: z.boolean() })
+const repositoryShape = z.object({ path: z.string(), branch: z.string(), ahead: z.number().int().nonnegative(), behind: z.number().int().nonnegative(), dirty: z.boolean(), repository: z.string().nullable().optional(), head: z.string().nullable().optional() })
 const fileEntryShape: z.ZodType<ApplicationFileEntry> = z.lazy(() => z.object({ name: z.string(), kind: z.enum(["folder", "file"]), children: z.array(fileEntryShape).optional() }))
 const workspacePortShape = z.object({
   port: z.number().int().min(1).max(65535), listening: z.boolean().nullable(),
@@ -141,6 +144,8 @@ const workspaceShape = z.object({
   checkpoints: tolerantArray(checkpointShape).optional(),
   checkpointOperation: checkpointOperationShape.nullable().optional().catch(null),
   pendingCheckpointRestore: pendingCheckpointRestoreShape.nullable().optional().catch(null),
+  unfinishedRestore: unfinishedRestoreShape.nullable().optional().catch(null),
+  settling: z.boolean().optional(),
 }).passthrough().transform(workspace => (workspaceStates as readonly string[]).includes(workspace.state)
   ? { ...workspace, state: workspace.state as (typeof workspaceStates)[number] }
   : { ...workspace, state: "stopped" as const, freshness: "stale" as const, attention: workspace.attention ?? { level: "warning" as const, message: "This version of Silo cannot show this sandbox's current state. Update Silo to see it." } })
@@ -164,7 +169,8 @@ const activityShape = z.object({
   cancelled: z.boolean().optional(),
 })
 
-const pushFields = { operationId: z.string().optional(), workspace: z.string().min(1), repositoryPath: z.string().min(1), commitCount: z.number().int().nonnegative() }
+const pushTargetShape = z.object({ repository: z.string().min(1), branch: z.string().min(1), commit: z.string().min(1) })
+const pushFields = { operationId: z.string().optional(), workspace: z.string().min(1), repositoryPath: z.string().min(1), commitCount: z.number().int().nonnegative(), target: pushTargetShape.optional() }
 const pushOperationShape = z.discriminatedUnion("status", [
   z.object({ ...pushFields, status: z.literal("pushing"), message: z.string().optional() }),
   z.object({ ...pushFields, status: z.literal("unknown"), message: z.string() }),
@@ -1404,11 +1410,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (pendingCheckpointOperations.has(checkpointTarget) || ownerWorkspace?.checkpointOperation?.status === "running") {
       throw new Error("A checkpoint operation is already running for this sandbox.")
     }
-    const kind: WorkspaceCheckpointOperation["kind"] = command === "create_checkpoint" ? "capture" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : (() => { throw new Error("Unsupported checkpoint operation.") })()
+    const kind: WorkspaceCheckpointOperation["kind"] = command === "create_checkpoint" ? "capture" : command === "fork_checkpoint" ? "fork" : command === "restore_checkpoint" ? "restore" : command === "delete_checkpoint" ? "delete" : command === "abandon_restore" ? "restore" : (() => { throw new Error("Unsupported checkpoint operation.") })()
+    if (remote && kind === "delete") throw new Error("Delete checkpoints of this sandbox in Silo on its own computer.")
+    if (remote && command === "abandon_restore") throw new Error("Abandon this Restore in Silo on the sandbox’s own computer.")
     const operation: WorkspaceCheckpointOperation = {
       kind,
       status: "running",
-      stage: kind === "capture" ? "Creating checkpoint…" : kind === "fork" ? "Creating stopped fork…" : "Saving recovery checkpoint and restoring…",
+      stage: kind === "capture" ? "Creating checkpoint…" : kind === "fork" ? "Creating stopped fork…" : kind === "delete" ? "Deleting checkpoint…" : command === "abandon_restore" ? "Abandoning Restore…" : "Saving recovery checkpoint and restoring…",
     }
     pendingCheckpointOperations.set(checkpointTarget, operation)
     publish({ ...snapshot })
@@ -1446,6 +1454,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     createCheckpoint: (workspace, name) => checkpointAction("create_checkpoint", workspace, { name }),
     forkCheckpoint: (workspace, checkpointId, newName) => checkpointAction("fork_checkpoint", workspace, { checkpointId, newName }),
     restoreCheckpoint: (workspace, checkpointId) => checkpointAction("restore_checkpoint", workspace, { checkpointId }),
+    deleteCheckpoint: (workspace, checkpointId) => checkpointAction("delete_checkpoint", workspace, { checkpointId }),
+    abandonRestore: workspace => checkpointAction("abandon_restore", workspace, {}),
+    readCheckpointUsage: async workspaceId => checkpointUsageSchema.parse(await native.invoke("read_checkpoint_usage", { workspaceId })),
     refreshRepositories: async () => {
       await Promise.all([refresh(true), refreshComputers(true)])
       if (snapshot.error) throw new Error(snapshot.error)
@@ -1458,8 +1469,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       remoteManagementError = undefined
       publish({ ...snapshot })
     },
-    connectComputer: async address => {
-      remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address }))
+    connectComputer: async (address, options) => {
+      remoteComputerSchema.parse(await native.invoke("connect_remote_host", { address, replace: options?.replaceAddress ?? false }))
       // A list read that started before the connection is read again, so the new
       // computer is listed when this resolves.
       remoteListRevision++
@@ -1541,7 +1552,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (operation) void configureMachines(operation.candidate, { kind: "retry", workspace }).catch(() => {})
     },
     dismissRepositoryPush: (workspace, repositoryPath) => statusActions.dismissRepositoryPush(workspace, repositoryPath),
-    pushRepository: (workspace, repositoryPath) => {
+    pushRepository: (workspace, repositoryPath, target) => {
       const key = pushKey(workspace, repositoryPath)
       if (pendingRepositoryPushes.has(key) || view.source?.repositoryPushOperations.some(operation => operation.workspace === workspace && operation.repositoryPath === repositoryPath && (operation.status === "pushing" || operation.status === "unknown"))) return
       const commitCount = view.source?.workspaces.find(item => workspaceTarget(item) === workspace)?.repositories.find(repository => repository.path === repositoryPath)?.ahead ?? 0
@@ -1592,7 +1603,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const observe = async (start: boolean): Promise<void> => {
         if (!current()) return
         try {
-          const result = await native.invoke(start ? "start_repository_push" : "repository_push_status", { workspace, repositoryPath, operationId })
+          // The host pushes exactly the confirmed target or reports that the repository changed.
+          const result = await native.invoke(start ? "start_repository_push" : "repository_push_status", start ? { workspace, repositoryPath, operationId, target } : { workspace, repositoryPath, operationId })
           if (!current()) return
           // No saved job means the first request never arrived. Reuse its identifier.
           if (result === null && !start) return observe(true)

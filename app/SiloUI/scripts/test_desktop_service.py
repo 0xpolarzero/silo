@@ -531,6 +531,75 @@ class DesktopLifecycle(unittest.TestCase):
         self.assertEqual(state['streamState'], 'failed')
         self.assertEqual(state['streamAttempts'], 3)
 
+    def test_selkies_retries_back_off_between_failed_attempts(self):
+        state = {'sessionState': 'running', 'sessionProcesses': [],
+                 'streamState': 'starting', 'streamProcess': None, 'streamAttempts': 0}
+        children = [SimpleNamespace(poll=lambda: 1) for _ in range(3)]
+        slept = []
+        with patch.object(service, 'launch_selkies_streamer',
+                          side_effect=[(child, {'name': 'selkies', 'pid': n})
+                                       for child, n in zip(children, (13, 14, 15))]), \
+             patch.object(service, 'sleep_until_service_event', side_effect=slept.append):
+            service.supervise_selkies_stream(
+                state, {}, {}, lambda: state['streamState'] == 'failed', lambda: False)
+        self.assertEqual(state['streamState'], 'failed')
+        # Two retries wait 2 s and then 4 s; the first attempt starts immediately.
+        self.assertEqual(sum(slept), 6)
+
+    def test_restart_request_during_retry_backoff_starts_a_fresh_attempt(self):
+        state = {'sessionState': 'running', 'sessionProcesses': [],
+                 'streamState': 'starting', 'streamProcess': None, 'streamAttempts': 0}
+        requests = iter((False, False, True))
+        launches = []
+
+        def launch(*_args):
+            launches.append(state['streamAttempts'])
+            return SimpleNamespace(poll=lambda: 1), {'name': 'selkies', 'pid': 13}
+
+        with patch.object(service, 'launch_selkies_streamer', side_effect=launch), \
+             patch.object(service, 'sleep_until_service_event'):
+            service.supervise_selkies_stream(
+                state, {}, {}, lambda: len(launches) == 2,
+                lambda: next(requests, False))
+        # The request arrived while waiting to retry, so attempt 1 starts again.
+        self.assertEqual(launches, [1, 1])
+
+    def test_selkies_stable_stream_resets_retry_budget(self):
+        state = {'sessionState': 'running', 'sessionProcesses': [],
+                 'streamState': 'starting', 'streamProcess': None, 'streamAttempts': 0}
+        clock = {'now': 0.0}
+        launches = []
+        states = []
+
+        class LongRunningChild:
+            def __init__(self):
+                self.exited = False
+
+            def poll(self):
+                return 1 if self.exited else None
+
+            def wait(self, timeout):
+                # Each stream runs well past the stability window, then crashes.
+                clock['now'] += service.SELKIES_STABLE_SECONDS + 1
+                self.exited = True
+
+        def launch(*_args):
+            launches.append(state['streamAttempts'])
+            return LongRunningChild(), {'name': 'selkies', 'pid': 13}
+
+        with patch.object(service, 'launch_selkies_streamer', side_effect=launch), \
+             patch.object(service, 'selkies_http_ready', return_value=True), \
+             patch.object(service, 'sleep_until_service_event'), \
+             patch.object(service, 'stop_managed_child'), \
+             patch.object(service, 'write_selkies_state',
+                          side_effect=lambda value: states.append(value['streamState'])), \
+             patch.object(service.time, 'monotonic', side_effect=lambda: clock['now']):
+            service.supervise_selkies_stream(
+                state, {}, {}, lambda: len(launches) > service.SELKIES_MAX_ATTEMPTS + 1,
+                lambda: False)
+        self.assertNotIn('failed', states)
+        self.assertEqual(launches, [1] * (service.SELKIES_MAX_ATTEMPTS + 2))
+
     def test_restart_streamer_waits_for_failed_state_to_acknowledge_the_request(self):
         old = {'streamState': 'failed', 'streamAttempts': 3, 'streamProcess': None}
         starting = {'streamState': 'starting', 'streamAttempts': 1, 'streamProcess': None}
@@ -621,7 +690,8 @@ class DesktopLifecycle(unittest.TestCase):
             {'name': 'pulse', 'pid': 11},
             {'name': 'xfce', 'pid': 12},
         ]
-        state = {'sessionState': 'running', 'sessionProcesses': records,
+        # Records from this boot; on Linux a missing bootId means a stale state.
+        state = {'bootId': service.current_boot_id(), 'sessionState': 'running', 'sessionProcesses': records,
                  'streamState': 'running', 'streamProcess': {'name': 'selkies', 'pid': 13}}
         with patch.object(service, 'stop_managed_process') as stop_process:
             service.stop_selkies_processes(state)

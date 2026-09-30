@@ -35,6 +35,12 @@ DISPLAY_LOCK = TMP / '.X1-lock'
 DISPLAY_SOCKET_DIR = TMP / '.X11-unix'
 SELKIES_SCREEN = '1440x900x24'
 SELKIES_MAX_ATTEMPTS = 3
+# A stream that stays up this long starts a fresh retry budget, so unrelated
+# crashes hours apart never add up to a failed display.
+SELKIES_STABLE_SECONDS = 60
+# Retry n (n >= 1) waits SELKIES_RETRY_BASE_SECONDS * 2 ** (n - 1) seconds.
+SELKIES_RETRY_BASE_SECONDS = 2
+SELKIES_RETRY_MAX_SECONDS = 30
 
 
 def validate_policy_file(path):
@@ -553,12 +559,29 @@ def launch_selkies_streamer(account, environment):
     return launch_managed_process('selkies', argv, environment, account)
 
 
+def wait_before_stream_retry(failures, stopping, restart_requested):
+    """Back off before retry number `failures`; True when a restart request arrived."""
+    delay = min(SELKIES_RETRY_BASE_SECONDS * 2 ** (failures - 1), SELKIES_RETRY_MAX_SECONDS)
+    for _ in range(int(delay / 0.5)):
+        if stopping():
+            return False
+        if restart_requested():
+            return True
+        sleep_until_service_event(0.5)
+    return False
+
+
 def supervise_selkies_stream(state, account, environment, stopping, restart_requested):
     """Supervise only Selkies. Exhaustion never changes session processes or state."""
     attempts = 0
     while not stopping():
         if restart_requested():
             attempts = 0
+        if 0 < attempts < SELKIES_MAX_ATTEMPTS:
+            if wait_before_stream_retry(attempts, stopping, restart_requested):
+                attempts = 0
+            if stopping():
+                continue
         if attempts >= SELKIES_MAX_ATTEMPTS:
             state['streamState'] = 'failed'
             state['streamProcess'] = None
@@ -615,6 +638,7 @@ def supervise_selkies_stream(state, account, environment, stopping, restart_requ
             write_selkies_state(state)
             continue
 
+        running_since = time.monotonic()
         while child.poll() is None and not stopping():
             if restart_requested():
                 restarted = True
@@ -624,6 +648,8 @@ def supervise_selkies_stream(state, account, environment, stopping, restart_requ
                 child.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
                 pass
+            if attempts and time.monotonic() - running_since >= SELKIES_STABLE_SECONDS:
+                attempts = 0
         if stopping():
             stop_managed_child(child)
             state['streamProcess'] = None

@@ -72,6 +72,7 @@ fn main() {
         Some("--remote-guest") => Some(if args.len() == 4 {
             remote::run_remote_stream(&args[2], "guest.ssh", serde_json::json!({"vmId": args[3]}))
         } else { Err("Expected a computer and VM identity.".into()) }),
+        Some(editor::TRANSPORT_MODE) => Some(editor::run_transport(&args[2..])),
         _ => None,
     };
     if let Some(result) = bridge {
@@ -209,6 +210,9 @@ fn main() {
             runtime::checkpoints::create_checkpoint,
             runtime::checkpoints::fork_checkpoint,
             runtime::checkpoints::restore_checkpoint,
+            runtime::checkpoints::delete_checkpoint,
+            runtime::checkpoints::abandon_restore,
+            runtime::checkpoints::read_checkpoint_usage,
             runtime::read_setup_activity,
             runtime::read_operation_queue,
             runtime::cancel_operation,
@@ -225,7 +229,7 @@ fn main() {
                 let _ = queue_app.emit("silo://operation-queue-changed", ());
             });
             runtime_migration::install(app.handle())?;
-            remote::start(app.handle().clone())?;
+            remote::start(app.handle().clone());
             secrets::install(app.handle())?;
             github::install(app.handle());
             backup_controller::install(app.handle())?;
@@ -259,6 +263,7 @@ fn main() {
             notifications::install(app.handle());
             updates::install(app.handle())?;
             ssh_access::start_monitor(app.handle());
+            editor::refresh_transports(app.handle());
             runtime::storage::start_monitor(app.handle());
             startup::install(app.handle());
             Ok(())

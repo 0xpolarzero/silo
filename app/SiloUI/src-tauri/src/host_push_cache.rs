@@ -1,5 +1,7 @@
-//! Bounded, private publishing repositories. A root lock serializes cache use
-//! and eviction across application processes; credentials never belong here.
+//! Bounded, private publishing repositories; credentials never belong here.
+//! Each cached repository has its own lock, held for a whole push, so pushes
+//! of different repositories run concurrently. A short root lock serializes
+//! choosing, creating and evicting cache directories across processes.
 use sha2::{Digest, Sha256};
 use std::{
     cell::Cell,
@@ -20,7 +22,8 @@ pub(crate) struct Cache {
     root: PathBuf,
     budget: u64,
     discarded: Cell<bool>,
-    _lock: File,
+    /// This repository's lock; Git children inherit it.
+    lock: File,
 }
 
 pub(crate) fn acquire(root: &Path, key: &str) -> Result<Cache, String> {
@@ -41,35 +44,74 @@ fn private_directory(path: &Path) -> Result<(), String> {
     fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|_| FAILED.into())
 }
 
-fn acquire_with_budget(root: &Path, key: &str, budget: u64) -> Result<Cache, String> {
-    private_directory(root)?;
-    let lock = OpenOptions::new()
+fn open_lock(path: &Path, create: bool) -> std::io::Result<File> {
+    let file = OpenOptions::new()
         .read(true)
         .write(true)
-        .create(true)
+        .create(create)
         .truncate(false)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(root.join(".lock"))
-        .map_err(|_| FAILED)?;
-    if !lock.metadata().map_err(|_| FAILED)?.is_file() {
-        return Err(FAILED.into());
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::ErrorKind::InvalidInput.into());
     }
-    if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    Ok(file)
+}
+
+fn try_lock(file: &File) -> bool {
+    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
+}
+
+/// Held only while choosing, creating or evicting cache directories, never
+/// during a push and never by a Git process.
+struct RootLock(File);
+impl RootLock {
+    fn take(root: &Path) -> Result<Self, String> {
+        let file = open_lock(&root.join(".lock"), true).map_err(|_| FAILED)?;
+        while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                return Err(FAILED.into());
+            }
+        }
+        Ok(Self(file))
+    }
+}
+impl Drop for RootLock {
+    fn drop(&mut self) {
+        unsafe {
+            libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+fn is_cache_name(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn acquire_with_budget(root: &Path, key: &str, budget: u64) -> Result<Cache, String> {
+    private_directory(root)?;
+    let name = format!("{:x}", Sha256::digest(key.as_bytes()));
+    let root_lock = RootLock::take(root)?;
+    // Repository locks are opened and taken only under the root lock, so an
+    // eviction never deletes a lock file someone is about to take.
+    let lock = open_lock(&root.join(format!("{name}.lock")), true).map_err(|_| FAILED)?;
+    if !try_lock(&lock) {
         return Err(
-            "Another host push is using the publishing cache. Wait for it to finish.".into(),
+            "Another push of this repository is still using its publishing cache. Wait for it to finish."
+                .into(),
         );
     }
-    let directory = root.join(format!("{:x}", Sha256::digest(key.as_bytes())));
+    let directory = root.join(&name);
     private_directory(&directory)?;
-    // Obtaining the root lock proves no previous Git child is still using this
-    // cache. A surviving marker means its process died before normal cleanup.
+    // Obtaining this repository's lock proves no previous Git child is still
+    // using its cache. A surviving marker means its process died before cleanup.
     if fs::symlink_metadata(directory.join(".active")).is_ok() {
         fs::remove_dir_all(&directory).map_err(|_| FAILED)?;
         private_directory(&directory)?;
     }
     sweep(root, budget)?;
-    private_directory(&directory)?;
+    drop(root_lock);
     tree_size(&directory)?;
     let mut marker = OpenOptions::new()
         .write(true)
@@ -100,7 +142,7 @@ fn acquire_with_budget(root: &Path, key: &str, budget: u64) -> Result<Cache, Str
         root: root.into(),
         budget,
         discarded: Cell::new(false),
-        _lock: lock,
+        lock,
     })
 }
 
@@ -113,7 +155,7 @@ impl Cache {
     }
 
     pub(crate) fn lock_fd(&self) -> std::os::fd::RawFd {
-        self._lock.as_raw_fd()
+        self.lock.as_raw_fd()
     }
 }
 
@@ -124,11 +166,14 @@ impl Drop for Cache {
         if !self.discarded.get() {
             let _ = fs::remove_file(self.directory.join(".active"));
         }
-        let _ = sweep(&self.root, self.budget);
+        let root = RootLock::take(&self.root);
         // Explicitly release before close: an unrelated concurrent fork can
         // briefly inherit this open-file description until its exec closes it.
         unsafe {
-            libc::flock(self._lock.as_raw_fd(), libc::LOCK_UN);
+            libc::flock(self.lock.as_raw_fd(), libc::LOCK_UN);
+        }
+        if root.is_ok() {
+            let _ = sweep(&self.root, self.budget);
         }
     }
 }
@@ -154,6 +199,18 @@ fn tree_size(path: &Path) -> Result<u64, String> {
     Ok(bytes)
 }
 
+/// The repository's lock when nobody else holds it; `None` while another push
+/// (or a Git process surviving a crash) uses that cache. Caller holds the root lock.
+fn idle_lock(root: &Path, name: &str) -> Result<Option<Option<File>>, String> {
+    match open_lock(&root.join(format!("{name}.lock")), false) {
+        Ok(file) => Ok(try_lock(&file).then_some(Some(file))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Some(None)),
+        Err(_) => Err(FAILED.into()),
+    }
+}
+
+/// Evict least recently used caches beyond the budget, never one in use.
+/// Caller holds the root lock.
 fn sweep(root: &Path, budget: u64) -> Result<(), String> {
     let mut entries = Vec::new();
     let mut total = 0_u64;
@@ -165,8 +222,19 @@ fn sweep(root: &Path, budget: u64) -> Result<(), String> {
         let Some(name) = name.to_str() else {
             continue;
         };
-        if name == ".lock" || name.len() != 64 || !name.bytes().all(|byte| byte.is_ascii_hexdigit())
+        if let Some(stem) = name
+            .strip_suffix(".lock")
+            .filter(|stem| is_cache_name(stem))
         {
+            // A lock left by a discarded or evicted cache.
+            if fs::symlink_metadata(root.join(stem)).is_err() {
+                if let Some(Some(_lock)) = idle_lock(root, stem)? {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+            continue;
+        }
+        if !is_cache_name(name) {
             continue;
         }
         let path = entry.path();
@@ -175,24 +243,35 @@ fn sweep(root: &Path, budget: u64) -> Result<(), String> {
             continue;
         }
         let bytes = tree_size(&path)?;
+        let Some(lock) = idle_lock(root, name)? else {
+            total = total.saturating_add(bytes);
+            continue;
+        };
         if bytes > budget {
-            fs::remove_dir_all(&path).map_err(|_| FAILED)?;
+            evict(root, &path, name)?;
             continue;
         }
         let modified = fs::symlink_metadata(path.join(".last-used"))
             .and_then(|metadata| metadata.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);
         total = total.saturating_add(bytes);
-        entries.push((modified, path, bytes));
+        entries.push((modified, path, name.to_owned(), bytes, lock));
     }
-    entries.sort_by_key(|(modified, _, _)| *modified);
-    for (_, path, bytes) in entries {
+    entries.sort_by_key(|(modified, ..)| *modified);
+    for (_, path, name, bytes, _lock) in entries {
         if total <= budget {
             break;
         }
-        fs::remove_dir_all(path).map_err(|_| FAILED)?;
+        evict(root, &path, &name)?;
         total = total.saturating_sub(bytes);
     }
+    Ok(())
+}
+
+/// Caller holds the root lock and this repository's lock.
+fn evict(root: &Path, path: &Path, name: &str) -> Result<(), String> {
+    fs::remove_dir_all(path).map_err(|_| FAILED)?;
+    let _ = fs::remove_file(root.join(format!("{name}.lock")));
     Ok(())
 }
 
@@ -226,13 +305,15 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        assert!(acquire(&root, "second")
+        // Other repositories are unaffected; this one stays locked by the surviving child.
+        drop(acquire(&root, "second").unwrap());
+        assert!(acquire(&root, "first")
             .err()
             .unwrap()
-            .contains("Another host push"));
+            .contains("Another push of this repository"));
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
-            if acquire(&root, "second").is_ok() {
+            if acquire(&root, "first").is_ok() {
                 break;
             }
             assert!(
@@ -275,10 +356,10 @@ mod tests {
         let root = temporary.path().join("cache");
         let cache = acquire(&root, "computer/sandbox/repository").unwrap();
         fs::write(cache.directory.join("retained-object"), b"payload").unwrap();
-        assert!(acquire(&root, "another-repository")
+        assert!(acquire(&root, "computer/sandbox/repository")
             .err()
             .unwrap()
-            .contains("Another host push"));
+            .contains("Another push of this repository"));
         let directory = cache.directory.clone();
         drop(cache);
         let second = acquire(&root, "computer/sandbox/repository").unwrap();
@@ -291,6 +372,25 @@ mod tests {
             fs::metadata(&root).unwrap().permissions().mode() & 0o777,
             0o700
         );
+    }
+    #[test]
+    fn different_repositories_push_concurrently_and_eviction_skips_caches_in_use() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("cache");
+        let first = acquire_with_budget(&root, "first", 100).unwrap();
+        fs::write(first.directory.join("objects"), [0; 60]).unwrap();
+        // Another sandbox's push does not wait for, or fail because of, the first one.
+        let second = acquire_with_budget(&root, "second", 100).unwrap();
+        fs::write(second.directory.join("objects"), [0; 60]).unwrap();
+        let second_path = second.directory.clone();
+        drop(second);
+        // Over budget: the cache still in use survives; the idle one is evicted.
+        assert!(first.directory.join("objects").is_file());
+        assert!(!second_path.exists());
+        let first_path = first.directory.clone();
+        drop(first);
+        assert!(first_path.exists());
+        assert!(acquire_with_budget(&root, "first", 100).is_ok());
     }
     #[test]
     fn evicts_oldest_repository_and_removes_single_oversized_repository() {
@@ -332,7 +432,7 @@ mod tests {
         recovered.discard();
         assert!(!directory.exists());
         assert!(
-            acquire(&root, "another").is_err(),
+            acquire(&root, "key").is_err(),
             "discard must retain the lock"
         );
         drop(recovered);

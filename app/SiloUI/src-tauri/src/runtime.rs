@@ -507,6 +507,8 @@ struct ApplicationWorkspace {
     pending_checkpoint_restore: Option<checkpoints::PendingRestore>,
     #[serde(skip_serializing_if = "Option::is_none")]
     checkpoint_operation: Option<checkpoints::Operation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unfinished_restore: Option<checkpoints::UnfinishedRestore>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize)]
@@ -819,7 +821,7 @@ pub(crate) fn run_msb(
             if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
                 .find(|machine| machine.is_vm() && machine.name() == name) {
                 if checkpoints::needs_explicit_start(paths, machine.id())? {
-                    return Err(RuntimeError::Invalid("This stopped fork requires an explicit Start before other workspace actions.".into()));
+                    return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(paths, machine.id(), machine.name())));
                 }
             }
         }
@@ -3488,6 +3490,7 @@ fn unread_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
+        unfinished_restore: None,
     }
 }
 
@@ -3519,6 +3522,7 @@ fn ssh_workspace(machine: MachineConfiguration) -> ApplicationWorkspace {
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
+        unfinished_restore: None,
     }
 }
 
@@ -3543,6 +3547,7 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
             match checkpoints::load(paths, workspace.machine.id()) {
                 Ok(checkpoint) => {
                     workspace.pending_checkpoint_restore = checkpoints::view_pending(&checkpoint, workspace.machine.name());
+                    workspace.unfinished_restore = checkpoints::view_unfinished_restore(&checkpoint);
                     workspace.checkpoints = checkpoint.checkpoints;
                     let live = !OPERATIONS.is_vm_idle(workspace.machine.id());
                     workspace.checkpoint_operation = checkpoint.checkpoint_operation.map(|operation| checkpoint_operation_view(operation, live));
@@ -3552,6 +3557,7 @@ fn application_source_for_workspaces(paths: &RuntimePaths, mut workspaces: Vec<A
                     workspace.checkpoints = Vec::new();
                     workspace.pending_checkpoint_restore = None;
                     workspace.checkpoint_operation = None;
+                    workspace.unfinished_restore = None;
                     workspace.attention = Some(WorkspaceAttention {
                         level: AttentionLevel::Error,
                         message: format!("{error} Checkpoints and actions that need them are unavailable for this sandbox."),
@@ -3764,6 +3770,7 @@ fn vm_workspace(
         checkpoints: Vec::new(),
         pending_checkpoint_restore: None,
         checkpoint_operation: None,
+        unfinished_restore: None,
     }
 }
 
@@ -3993,7 +4000,7 @@ fn workspace_action_with(
         if let Some(machine) = read_metadata(&paths.metadata)?.machines.into_iter()
             .find(|machine| machine.is_vm() && machine.name() == name) {
             if checkpoints::needs_explicit_start(paths, machine.id())? {
-                return Err(RuntimeError::Invalid("This fork needs its first explicit Start from the workspace view.".into()));
+                return Err(RuntimeError::Invalid(checkpoints::explicit_start_message(paths, machine.id(), machine.name())));
             }
         }
     }
@@ -4084,6 +4091,7 @@ fn apply_whole_configuration_with_progress(
             forget_github_state(&paths.home, machine.name());
             crate::github::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             remove_machine_volumes(paths, machine)?;
+            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name());
             checkpoints::forget_removed(paths, machine.id())?;
             progress("workspace-removal", machine.name(), 1);
         }

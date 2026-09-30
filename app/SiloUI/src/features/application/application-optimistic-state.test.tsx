@@ -64,6 +64,9 @@ it("keeps an optimistic push when only the configuration operation changes", asy
   source.repositoryPushOperations = []
   const view = render(<ApplicationPreview source={source} actions={actions} initialRoute={{ workspaceSection: "files" }} />)
   await user.click(screen.getByRole("button", { name: "Push 2 commits for acme/silo in dev" }))
+  expect(pushRepository).not.toHaveBeenCalled()
+  await user.click(screen.getByRole("button", { name: "Push", exact: true }))
+  expect(pushRepository).toHaveBeenCalledOnce()
   expect(screen.getByText("Pushing 2 commits…")).toBeVisible()
 
   view.rerender(<ApplicationPreview source={{ ...source, sandboxConfigurationOperation: failedOperation(source, "Another change failed.") }} actions={actions} initialRoute={{ workspaceSection: "files" }} />)

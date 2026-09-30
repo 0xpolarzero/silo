@@ -11,7 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
-import { RepositoryPushFeedback } from "@/features/application/components/repository-push-feedback"
+import { RepositoryPushButton, RepositoryPushFeedback } from "@/features/application/components/repository-push-feedback"
 import type { ApplicationSource, ApplicationWorkspace } from "@/features/application/model/application-source"
 import { commitLabel } from "@/features/application/model/repository-push"
 import { SandboxAction, SandboxListItem, SandboxListRow } from "@/features/sandboxes/components/sandbox-list"
@@ -121,12 +121,13 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
             operation={operation}
             workspace={workspaceTarget(workspace)}
             repositoryPath={repository.path}
-            onRetry={() => actions.pushRepository(workspaceTarget(workspace), repository.path)}
+            repository={repository}
+            onPush={(target) => actions.pushRepository(workspaceTarget(workspace), repository.path, target)}
             onDismiss={actions.dismissRepositoryPush}
             showSuccess
-          /> : <Button variant="outline" size="xs" disabled={!canPush} aria-label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${workspace.machine.name}`} onClick={() => { if (canPush) actions.pushRepository(workspaceTarget(workspace), repository.path) }}>
+          /> : <RepositoryPushButton repository={repository} disabled={!canPush} label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${workspace.machine.name}`} onPush={(target) => { if (canPush) actions.pushRepository(workspaceTarget(workspace), repository.path, target) }}>
             Push {commitLabel(repository.ahead)}
-          </Button>}
+          </RepositoryPushButton>}
         </div>
       ))}
     </div>
@@ -188,14 +189,17 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
         />}
         {failedPushes.map((operation) => {
           const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === operation.workspace)
-          const canRetry = workspace && workspace.repositories.some(({ path, ahead }) => path === operation.repositoryPath && ahead > 0) && workspaceAvailability(workspace, source).canOpen
+          const repository = workspace?.repositories.find(({ path, ahead }) => path === operation.repositoryPath && ahead > 0)
+          const canRetry = workspace && repository && workspaceAvailability(workspace, source).canOpen
           return <OperationIssue
             key={`${operation.workspace}:${operation.repositoryPath}`}
             title={`Push failed · ${operation.workspace}`}
             detail={`${operation.repositoryPath} · ${operation.message}`}
             actionLabel={`Review push failure for ${operation.workspace}, ${operation.repositoryPath}`}
             onReview={() => actions.openSilo({ workspace: operation.workspace, workspaceSection: "files" })}
-            retry={<Button variant="outline" size="xs" aria-label={`Retry push for ${operation.repositoryPath}`} disabled={!canRetry} onClick={() => { if (canRetry) actions.pushRepository(operation.workspace, operation.repositoryPath) }}><RotateCw />Retry</Button>}
+            retry={repository
+              ? <RepositoryPushButton repository={repository} disabled={!canRetry} label={`Retry push for ${operation.repositoryPath}`} onPush={(target) => { if (canRetry) actions.pushRepository(operation.workspace, operation.repositoryPath, target) }}><RotateCw />Retry</RepositoryPushButton>
+              : <Button variant="outline" size="xs" aria-label={`Retry push for ${operation.repositoryPath}`} disabled><RotateCw />Retry</Button>}
           />
         })}
       </div>

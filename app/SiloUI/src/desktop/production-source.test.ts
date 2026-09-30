@@ -8,6 +8,8 @@ import type { BackupState } from "@/features/application/model/backup-source"
 import { createProductionSource, isUpdateInProgress, parseApplicationSource, parseBackupState, type ProductionBridge } from "./production-source"
 import { siloProgressEventSchema } from "@/contracts/silo"
 
+const pushTarget = { repository: "owner/repo", branch: "main", commit: "a".repeat(40) }
+
 const toasts = vi.hoisted(() => ({ showOperationFailure: vi.fn() }))
 vi.mock("@/lib/operation-toast", async (importOriginal) => ({ ...await importOriginal<typeof import("@/lib/operation-toast")>(), showOperationFailure: toasts.showOperationFailure }))
 
@@ -221,6 +223,54 @@ describe("production application bridge", () => {
     expect(mock.invoke).toHaveBeenCalledWith("remote_checkpoint_action", { hostId: "11111111-1111-4111-8111-111111111111", vmId: "22222222-2222-4222-8222-222222222222", action: "restore", checkpointId: "point-id" })
     expect(mock.invoke.mock.calls.some(([command]) => ["create_checkpoint", "fork_checkpoint", "restore_checkpoint"].includes(command as string))).toBe(false)
     store.dispose()
+  })
+
+  it("deletes a local checkpoint by VM ID, reads checkpoint usage, and refuses remote deletes", async () => {
+    const mock = native()
+    const usage = { totalBytes: 4096, checkpoints: [{ id: "point-1", sizeBytes: 4096, usedBy: ["experiment"], deleteBlocker: "Used by experiment." }] }
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
+      if (command === "delete_checkpoint") return structuredClone(source)
+      if (command === "read_checkpoint_usage") return usage
+      return mock.invoke(command, args)
+    })
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    try {
+      await store.initialize()
+      await store.applicationActions.deleteCheckpoint!("dev", "point-1")
+      expect(invoke).toHaveBeenCalledWith("delete_checkpoint", { workspaceId: source.workspaces[0].machine.id, checkpointId: "point-1" })
+      expect(await store.applicationActions.readCheckpointUsage!(source.workspaces[0].machine.id)).toEqual(usage)
+      await expect(store.applicationActions.deleteCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point-1")).rejects.toThrow("on its own computer")
+      expect(invoke.mock.calls.some(([command, args]) => command === "remote_checkpoint_action" && (args as Record<string, unknown>)?.action === "delete")).toBe(false)
+    } finally { store.dispose() }
+  })
+
+  it("keeps native checkpoint deletion progress and drops malformed unfinished Restore data", () => {
+    const response = structuredClone(source) as unknown as Record<string, unknown>
+    const workspaces = response.workspaces as Array<Record<string, unknown>>
+    const operation = { kind: "delete", status: "running", stage: "Deleting checkpoint…" }
+    workspaces[0].checkpointOperation = operation
+    workspaces[0].unfinishedRestore = { checkpointId: "point-1", phase: "unknown" }
+    workspaces[0].settling = true
+    const workspace = parseApplicationSource(response).workspaces[0]
+    expect(workspace.checkpointOperation).toEqual(operation)
+    expect(workspace.unfinishedRestore).toBeNull()
+    expect(workspace.settling).toBe(true)
+  })
+
+  it("keeps an unfinished Restore in the sandbox view and abandons it by VM ID", async () => {
+    const response = structuredClone(source) as unknown as Record<string, unknown>
+    const workspaces = response.workspaces as Array<Record<string, unknown>>
+    workspaces[0].unfinishedRestore = { checkpointId: "point-1", checkpointName: "Before refactor", phase: "capturing" }
+    expect(parseApplicationSource(response).workspaces[0].unfinishedRestore).toEqual({ checkpointId: "point-1", checkpointName: "Before refactor", phase: "capturing" })
+
+    const mock = native()
+    const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "abandon_restore" ? structuredClone(source) : mock.invoke(command, args))
+    const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
+    try {
+      await store.initialize()
+      await store.applicationActions.abandonRestore!("dev")
+      expect(invoke).toHaveBeenCalledWith("abandon_restore", { workspaceId: source.workspaces[0].machine.id })
+    } finally { store.dispose() }
   })
 
   it("recognizes the updating sentinel whether bare or wrapped by a remote bridge", () => {
@@ -680,9 +730,9 @@ describe("production application bridge", () => {
     })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
-    store.applicationActions.pushRepository("dev", "/workspace/repo")
+    store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
     await vi.waitFor(() => expect(store.getSnapshot().source?.repositoryPushOperations).toContainEqual({ workspace: "dev", repositoryPath: "/workspace/repo", commitCount: 0, status: "failed", message: "Repository authorization was removed" }))
-    expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String) })
+    expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String), target: pushTarget })
     store.dispose()
   })
 
@@ -700,13 +750,13 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     try {
       await store.initialize()
-      store.applicationActions.pushRepository("dev", "/workspace/repo")
+      store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
       expect(mock.invoke.mock.calls.some(([command]) => command === "start_repository_push")).toBe(false)
       store.applicationActions.dismissRepositoryPush!("dev", "/workspace/repo")
       await vi.waitFor(() => expect(store.getSnapshot().source?.repositoryPushOperations).toEqual([]))
       expect(mock.invoke.mock.calls.some(([command]) => command === "start_repository_push")).toBe(false)
-      store.applicationActions.pushRepository("dev", "/workspace/repo")
-      await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String) }))
+      store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
+      await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_repository_push", { workspace: "dev", repositoryPath: "/workspace/repo", operationId: expect.any(String), target: pushTarget }))
     } finally { store.dispose() }
   })
 

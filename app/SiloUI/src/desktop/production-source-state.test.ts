@@ -86,6 +86,7 @@ describe("machine configuration jobs", () => {
   })
 })
 
+const pushTarget = { repository: "octo/repo", branch: "main", commit: "0123456789abcdef0123456789abcdef01234567" }
 const office = { id: "office", name: "Office Mac", address: "user@office" }
 const studio = { id: "studio", name: "Studio", address: "user@studio" }
 const remoteTarget = (hostId: string) => `silo-remote:${hostId}:${source.workspaces[0].machine.id}`
@@ -327,7 +328,7 @@ describe("repository push status", () => {
     const checks = () => count(mock.invoke, "start_repository_push") + count(mock.invoke, "repository_push_status")
     try {
       await store.initialize()
-      store.applicationActions.pushRepository("dev", "/workspace/repo")
+      store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
       await vi.advanceTimersByTimeAsync(0)
       expect(pushOf(store)).toMatchObject({ status: "pushing", message: expect.stringContaining("connection lost") })
       await vi.advanceTimersByTimeAsync(14_000)
@@ -362,7 +363,7 @@ describe("repository push status", () => {
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      store.applicationActions.pushRepository("dev", "/workspace/repo")
+      store.applicationActions.pushRepository("dev", "/workspace/repo", pushTarget)
       await vi.advanceTimersByTimeAsync(4_000)
       expect(pushOf(store)?.status).toBe("pushing")
       deleted = true
@@ -387,7 +388,7 @@ describe("repository push status", () => {
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      store.applicationActions.pushRepository(remoteTarget("office"), "/workspace/repo")
+      store.applicationActions.pushRepository(remoteTarget("office"), "/workspace/repo", pushTarget)
       await vi.advanceTimersByTimeAsync(0)
       expect(pushOf(store, remoteTarget("office"))?.status).toBe("pushing")
       await store.applicationActions.removeComputer!("office")

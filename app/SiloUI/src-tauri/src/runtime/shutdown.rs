@@ -143,6 +143,8 @@ fn stop_local_vms_with(
         // perform verifies both Silo ownership and the immutable machine ID,
         // settles an in-flight transition, and verifies the resulting stop.
         let result = if *committed_vm {
+            // A VM an unfinished Restore left paused must resume before graceful stop.
+            checkpoints::release_paused_restore(runner, paths, machine);
             lifecycle_recovery::perform(runner, paths, &host, "stop", machine.name())
         } else {
             stop_uncommitted_vm(runner, paths, machine)
