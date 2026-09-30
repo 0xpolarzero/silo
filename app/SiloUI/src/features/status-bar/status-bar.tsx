@@ -62,6 +62,7 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
             <span className="truncate">{path}</span>
           </span>
           {operation ? <RepositoryPushFeedback
+            disabled={!canPush}
             operation={operation}
             workspace={workspaceTarget(workspace)}
             repositoryPath={repository.path}

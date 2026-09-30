@@ -949,6 +949,19 @@ describe("application", () => {
     expect(screen.getByRole("button", { name: "I’ve checked GitHub" })).toBeVisible()
   })
 
+  it.each(["stopped", "stale", "busy"])("blocks failed-push retry while the sandbox is %s", async (condition) => {
+    const source = structuredClone(applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "failed"))
+    const workspace = source.workspaces.find(workspace => workspace.machine.name === "dev")!
+    if (condition === "stopped") workspace.state = "stopped"
+    if (condition === "stale") workspace.freshness = "stale"
+    if (condition === "busy") workspace.checkpointOperation = { kind: "capture", status: "running", stage: "Capturing" }
+    const application = renderApplication("running", source)
+    await application.user.click(within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: "Files" }))
+    await application.user.click(screen.getByRole("button", { name: "Push failed for acme/silo. Show details" }))
+    expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Retry push for acme/silo" })).toBeDisabled()
+    expect(application.actions.pushRepository).not.toHaveBeenCalled()
+  })
+
   it("keeps a failed push as a small in-row label with details and retry", async () => {
     const source = applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "failed")
     const application = renderApplication("running", source)
