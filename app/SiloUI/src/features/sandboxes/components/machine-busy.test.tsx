@@ -29,7 +29,7 @@ describe("sandboxes that are starting or stopping", () => {
     }
     // The reason is announced on the disabled items' focusable wrappers.
     expect(screen.getAllByLabelText(starting).length).toBeGreaterThanOrEqual(3)
-    expect(screen.getByRole("menuitem", { name: `Duplicate ${machine.name}` })).not.toHaveAttribute("aria-disabled")
+    expect(screen.getByRole("menuitem", { name: `Duplicate settings for ${machine.name}` })).not.toHaveAttribute("aria-disabled")
   })
 
   it("blocks Save with the reason when an open editor's VM starts", () => {

@@ -183,7 +183,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
           <Button size="xs" variant="outline" className="shrink-0" disabled={locked}>New checkpoint</Button>
         </FormPopover>}
       </div>
-      <p className="text-[11px] text-muted-foreground">Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.</p>
+      <p className="text-[11px] text-muted-foreground">Checkpoints let you rewind this sandbox. Restore replaces its current files; Fork creates a new stopped sandbox with a copy of its files.</p>
 
       {staleFailure && <p className="text-muted-foreground">Last checkpoint operation failed: <span className="text-destructive">{staleFailure}</span></p>}
 
@@ -257,11 +257,11 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
                   label={`Checkpoint actions for ${checkpoint.name}`}
                   disabled={locked}
                   popovers={{
-                    fork: close => <ForkBody sandboxName={sandbox} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped sandbox from this checkpoint. Select Start when ready." disabled={locked} takenNames={takenNames} onFork={newName => fork(checkpoint, newName)} onClose={close} />,
+                    fork: close => <ForkBody sandboxName={sandbox} title={`Fork from “${checkpoint.name}”`} description="Creates a new stopped sandbox with a copy of this sandbox’s files at this checkpoint. Select Start when ready." disabled={locked} takenNames={takenNames} onFork={newName => fork(checkpoint, newName)} onClose={close} />,
                     delete: close => <ConfirmBody tone="destructive" title={`Delete “${checkpoint.name}”?`} description={deleteDescription(checkpoint, info)} confirmLabel="Delete" onConfirm={() => remove(checkpoint)} onClose={close} />,
                   }}
                   items={[
-                    ...(actions.forkCheckpoint ? [{ label: "Fork…", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, popover: "fork" }] : []),
+                    ...(actions.forkCheckpoint ? [{ label: "Fork…", description: "Create a new sandbox with a copy of its files at this checkpoint.", accessibleLabel: `Fork ${checkpoint.name}`, disabled: locked, popover: "fork" }] : []),
                     ...(isLocal && onExport ? [{ label: "Export…", accessibleLabel: `Export ${checkpoint.name}`, disabled: locked || exportDisabled, onSelect: () => onExport(checkpoint) }] : []),
                     // Delete runs on this computer only; a pinned checkpoint says what still needs it.
                     ...(isLocal && actions.deleteCheckpoint ? [{ label: "Delete…", accessibleLabel: `Delete ${checkpoint.name}`, destructive: true, separatorBefore: true, disabled: locked || Boolean(info?.deleteBlocker), tooltip: info?.deleteBlocker, popover: "delete" }] : []),

@@ -328,7 +328,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
                         <SandboxAction label={`Edit ${machine.name}`} tooltip={busyReason} disabled={interactionDisabled || Boolean(busyReason)} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
-                        <SandboxAction tooltip={machine.kind === "vm" ? "Create a new VM with these settings" : "Create a new SSH configuration with these settings."} label={`Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
+                        <SandboxAction tooltip={machine.kind === "vm" ? "Create a new empty sandbox with the same settings." : "Create a new SSH host connection with the same settings."} label={`Duplicate settings for ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
                           <CopyPlus />
                         </SandboxAction>
                         <ConfirmPopover align="end" tone="destructive" title={deleteSandboxTitle(deletionName)} description={deleteSandboxDescription(machine.kind)} confirmLabel="Delete permanently" tooltip={deleteTooltip ?? `Delete ${deletionName}`} onConfirm={() => remove(machine)}>
