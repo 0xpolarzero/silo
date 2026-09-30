@@ -621,6 +621,10 @@ the pinned source (`microsandbox-60d4dc8…`), not through a summary:
   break later checkpoints. Existing checkpoint exports remain available at
   the cap. The cap is conservative product policy; changing it needs no
   archive migration.
+- Import cleanup now shares the checkpoint native removal planner. The pinned
+  `store.rs` writes `manifest.parent` (a snapshot ID) to the historically
+  named `parent_digest` column. Fixtures must use that identity, not an
+  archive content digest, to verify child-before-parent removal.
 - E-25 export preflight estimates sparse file data from allocated blocks
   in source disks, native snapshots and the image cache, with headers and
   compression overhead. The pinned `archive.rs::save_snapshot` includes

@@ -1130,62 +1130,44 @@ impl<R: MsbRunner> BackupService<R> {
         if members.is_empty() {
             return Ok(());
         }
-        let selector = |entry: &Value| -> Result<String, BackupError> {
-            entry["name"]
-                .as_str()
-                .filter(|name| !name.is_empty())
-                .or_else(|| {
-                    entry["snapshot_id"]
-                        .as_str()
-                        .filter(|id| valid_snapshot_id(id))
-                })
-                .map(|member| format!("{group}:{member}"))
-                .ok_or_else(|| {
-                    BackupError::InvalidArchive(
-                        "an imported checkpoint member has no identity".into(),
-                    )
-                })
-        };
-        // Depth within the group's own parent chain; deeper members go first.
-        let parent_in_group = |entry: &Value| {
-            let parent = entry["parent_digest"].as_str()?;
-            members
-                .iter()
-                .copied()
-                .find(|candidate| candidate["digest"].as_str() == Some(parent))
-        };
-        let depth = |entry: &Value| {
-            let mut depth = 0_usize;
-            let mut current = entry;
-            while let Some(parent) = parent_in_group(current) {
-                depth += 1;
-                if depth > members.len() {
-                    break; // A valid index has no cycles; stop regardless.
-                }
-                current = parent;
+        use crate::runtime::checkpoints::{NativeMember, native_removal_plan};
+        // The runtime's historical parent_digest column holds a snapshot ID,
+        // not a content digest. Reuse checkpoint cleanup's graph planner.
+        let inventory: Vec<NativeMember> = members.iter().map(|entry| {
+            let mut member: NativeMember = serde_json::from_value((*entry).clone())?;
+            if member.name.as_deref().is_none_or(str::is_empty) && valid_snapshot_id(&member.snapshot_id) {
+                member.name = Some(member.snapshot_id.clone());
             }
-            depth
+            Ok::<_, BackupError>(member)
+        }).collect::<Result<_, _>>()?;
+        let candidates = inventory.iter().filter_map(NativeMember::key).collect();
+        let plan = native_removal_plan(&inventory, &candidates, &Default::default(), &Default::default());
+        if !plan.kept.is_empty() || plan.remove.len() != members.len() {
+            return Err(BackupError::InvalidArchive(
+                "the incomplete import has a cyclic or invalid checkpoint chain".into(),
+            ));
+        }
+        let selector = |member: &NativeMember| -> Result<String, BackupError> {
+            let (group, name) = member.key().ok_or_else(|| {
+                BackupError::InvalidArchive("an imported checkpoint member has no identity".into())
+            })?;
+            Ok(format!("{group}:{name}"))
         };
-        let mut ordered: Vec<(usize, &Value)> = members
-            .iter()
-            .map(|entry| (depth(entry), *entry))
-            .collect();
-        // Deepest first; the shallowest (a root) ends up last.
-        ordered.sort_by(|left, right| right.0.cmp(&left.0));
-        let (_, last) = ordered.pop().expect("members is not empty");
+        let mut ordered = plan.remove;
+        let last = ordered.pop().expect("members is not empty");
         if !ordered.is_empty() {
             // Keep one root as the group's head so every other member can go.
             self.require_success_with(
                 "Selecting the incomplete import to remove last",
-                &["snapshot".into(), "head".into(), selector(last)?],
+                &["snapshot".into(), "head".into(), selector(&last)?],
                 timeout,
                 &cleanup,
             )?;
         }
-        for (_, entry) in ordered {
-            self.remove_snapshot_member(&selector(entry)?, timeout, &cleanup)?;
+        for entry in ordered {
+            self.remove_snapshot_member(&selector(&entry)?, timeout, &cleanup)?;
         }
-        self.remove_snapshot_member(&selector(last)?, timeout, &cleanup)
+        self.remove_snapshot_member(&selector(&last)?, timeout, &cleanup)
     }
 
     fn remove_snapshot_member(
@@ -3436,7 +3418,7 @@ mod tests {
                         let parent = format!("sha256:{}", "a".repeat(64));
                         entries.push(serde_json::json!({"group":group,"name":"imported-parent","availability":"ready","snapshot_id":"snap_00000000000000000000000000000000","digest":parent,"parent_digest":null,
                             "artifact_path": artifact("snap_00000000000000000000000000000000", &serde_json::json!({}))?}));
-                        entries.push(serde_json::json!({"group":group,"name":"imported-member","availability":"ready","snapshot_id":"snap_11111111111111111111111111111111","digest":format!("sha256:{}", "b".repeat(64)),"parent_digest":parent,
+                        entries.push(serde_json::json!({"group":group,"name":"imported-member","availability":"ready","snapshot_id":"snap_11111111111111111111111111111111","digest":format!("sha256:{}", "b".repeat(64)),"parent_digest":"snap_00000000000000000000000000000000",
                             "artifact_path": artifact("snap_11111111111111111111111111111111", &head)?}));
                     }
                     let removed = self.removed.lock().unwrap();

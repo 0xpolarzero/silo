@@ -1932,7 +1932,7 @@ mod tests {
             directory.join("snapshots.json"),
             serde_json::json!([
                 {"group": group, "name": "imported-parent", "snapshot_id": format!("snap_{}", "0".repeat(32)), "digest": parent, "parent_digest": null, "availability": "ready"},
-                {"group": group, "name": "imported-member", "snapshot_id": format!("snap_{}", "1".repeat(32)), "digest": format!("sha256:{}", "b".repeat(64)), "parent_digest": parent, "availability": "ready"},
+                {"group": group, "name": "imported-member", "snapshot_id": format!("snap_{}", "1".repeat(32)), "digest": format!("sha256:{}", "b".repeat(64)), "parent_digest": format!("snap_{}", "0".repeat(32)), "availability": "ready"},
                 {"group": "dev", "name": "kept", "snapshot_id": format!("snap_{}", "2".repeat(32)), "availability": "ready"}
             ])
             .to_string(),
