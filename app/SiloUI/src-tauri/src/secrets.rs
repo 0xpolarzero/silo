@@ -444,6 +444,7 @@ fn reconcile(app: &AppHandle, id: &str, operation: &mut OperationGuard) -> Resul
         operation,
         &runtime_material,
         &mut |workspace, desired| crate::runtime::apply_secrets(app, workspace, desired),
+        &|workspace| crate::runtime::secret_revoked_without_runtime(app, workspace),
         &|| {
             let _ = app.emit("silo://application-state-changed", ());
         },
@@ -454,11 +455,16 @@ fn reconcile(app: &AppHandle, id: &str, operation: &mut OperationGuard) -> Resul
 /// for minutes, so forks, updates and other secret operations are not blocked. It
 /// is re-taken to record each result and before credential-store changes. When the
 /// VM's desired secrets changed while unlocked, the newer state is applied again.
+///
+/// While a secret is being removed, a VM whose update failed but that cannot hold
+/// secret values (`revoked`: removed, missing from the runtime, or stopped) counts as
+/// revoked, so one broken or deleted VM cannot make the secret unremovable (B-27).
 fn reconcile_with(
     id: &str,
     operation: &mut OperationGuard,
     material: &dyn Fn(&str) -> Result<Material, String>,
     apply: &mut dyn FnMut(&str, Material) -> Result<Vec<String>, String>,
+    revoked: &dyn Fn(&str) -> bool,
     changed: &dyn Fn(),
 ) -> Result<(), String> {
     update(|d| {
@@ -500,6 +506,17 @@ fn reconcile_with(
                 });
                 break result.map(|pending| if restarted { Vec::new() } else { pending });
             }
+        };
+        let result = match result {
+            Err(_) if secret.removing && {
+                // Reading the VM's state can wait on the runtime; do not block other
+                // secret operations meanwhile.
+                *operation = None;
+                let revoked = revoked(&workspace);
+                *operation = Some(lock_unit(&OPERATION));
+                revoked
+            } => Ok(Vec::new()),
+            other => other,
         };
         update(|document| {
             let secret = document
@@ -958,6 +975,7 @@ mod tests {
                 }
                 Ok(Vec::new())
             },
+            &|_| false,
             &|| {},
         )
         .unwrap();
@@ -988,6 +1006,7 @@ mod tests {
                 workspace_started(workspace, &workspace_revision(workspace)?)?;
                 Ok(vec!["API_KEY".into()])
             },
+            &|_| false,
             &|| {},
         )
         .unwrap();
@@ -996,6 +1015,43 @@ mod tests {
         assert!(document.secrets[0].pending_workspaces.is_empty());
         assert_eq!(public(&document.secrets[0])["state"], "active");
         use_test_store(None);
+    }
+    #[test]
+    fn removal_completes_when_failed_vms_cannot_hold_the_secret() {
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        use_test_vault(Some([("private-reference".to_string(), "private-value".to_string())].into()));
+        let mut removing = secret();
+        removing.workspaces = vec!["deleted".into(), "running".into()];
+        removing.affected = removing.workspaces.clone();
+        removing.removing = true;
+        save(&Document { secrets: vec![removing], activities: Vec::new() }).unwrap();
+        let reconcile = |running_revoked: bool| {
+            let mut operation = Some(lock_unit(&OPERATION));
+            reconcile_with(
+                "id",
+                &mut operation,
+                &|_| Ok(Vec::new()),
+                // Both VMs fail to confirm: one no longer exists, one is running.
+                &mut |workspace, _| Err(format!("{workspace} could not be inspected")),
+                &|workspace| workspace == "deleted" || running_revoked,
+                &|| {},
+            )
+            .unwrap();
+        };
+        // The VM that cannot hold the value counts as revoked; the running one does not,
+        // so the tombstone and the credential remain until it confirms.
+        reconcile(false);
+        let document = load().unwrap();
+        assert_eq!(document.secrets[0].errors.keys().collect::<Vec<_>>(), ["running"]);
+        assert_eq!(document.secrets[0].affected, ["running"]);
+        assert!(read_vault().unwrap().contains_key("private-reference"));
+        // Once that VM is stopped as well, removal finishes and the value is deleted.
+        reconcile(true);
+        assert!(load().unwrap().secrets.is_empty());
+        assert!(read_vault().unwrap().is_empty());
+        use_test_store(None);
+        use_test_vault(None);
     }
     #[test]
     fn history_is_bounded_and_contains_no_values() {

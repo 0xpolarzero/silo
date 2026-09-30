@@ -7181,6 +7181,38 @@ esac
     }
 
     #[test]
+    fn only_vms_that_cannot_hold_secret_values_count_as_revoked() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let missing = || Err(RuntimeError::Failed { operation: "Reading sandbox state".into(), exit_code: Some(1), detail: "sandbox 'dev' not found".into() });
+        let unavailable = || Err(RuntimeError::Unavailable("The managed runtime is unavailable.".into()));
+        // No longer a configured VM: nothing can hold the value, and nothing is inspected.
+        assert!(vm_holds_no_secret_material(&StubRunner::new(Vec::new()), &paths, "deleted"));
+        for (output, expected) in [
+            (StubRunner::successful_json(vec![inspect(&paths, "Stopped")]), true),
+            (StubRunner::successful_json(vec![inspect(&paths, "Crashed")]), true),
+            (StubRunner::new(vec![missing()]), true),
+            (StubRunner::successful_json(vec![inspect(&paths, "Running")]), false),
+            (StubRunner::successful_json(vec![inspect(&paths, "Starting")]), false),
+            (StubRunner::new(vec![unavailable()]), false),
+        ] {
+            assert_eq!(vm_holds_no_secret_material(&output, &paths, "dev"), expected);
+        }
+        // While another operation (for example a start) holds the VM, it is never assumed revoked.
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let (held, holding) = std::sync::mpsc::channel();
+        let holder = thread::spawn(move || {
+            let _guard = OPERATIONS.vm("00000000-0000-4000-8000-000000000001", "dev", "Starting dev").unwrap();
+            held.send(()).unwrap();
+            released.recv().unwrap();
+        });
+        holding.recv().unwrap();
+        assert!(!vm_holds_no_secret_material(&StubRunner::successful_json(vec![inspect(&paths, "Stopped")]), &paths, "dev"));
+        release.send(()).unwrap();
+        holder.join().unwrap();    }
+
+    #[test]
     fn default_startup_selection_never_picks_an_ssh_entry() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
@@ -8555,6 +8587,37 @@ pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str, desired: Vec<(Stri
         || secrets_runtime::Attempt::Cancelled("Saving secrets was cancelled.".into()),
     )
     .map_err(String::from)
+}
+
+/// True when `workspace` cannot be holding secret values right now, so a secret being
+/// removed is already revoked there even if its runtime update failed: it is no longer
+/// a configured local VM, its runtime sandbox does not exist, or the runtime reports it
+/// stopped. A stopped VM only receives secrets that are still assigned when it next
+/// boots (boot re-applies the current assignment, and a removed value is no longer
+/// passed to the runtime). A running, transitional or unreadable VM is never assumed
+/// revoked. The VM's turn is held while it is read so no boot can begin meanwhile.
+pub(crate) fn secret_revoked_without_runtime(app: &AppHandle, workspace: &str) -> bool {
+    runtime_paths(app).is_ok_and(|paths| vm_holds_no_secret_material(&ProcessRunner, &paths, workspace))
+}
+
+fn vm_holds_no_secret_material(runner: &dyn RuntimeRunner, paths: &RuntimePaths, workspace: &str) -> bool {
+    let Ok(metadata) = read_metadata(&paths.metadata) else {
+        return false;
+    };
+    let Some(machine) = metadata.machines.iter().find(|machine| machine.is_vm() && machine.name() == workspace) else {
+        return true;
+    };
+    let Ok(_turn) = OPERATIONS.try_vm_hidden(machine.id(), workspace, "Checking secret revocation") else {
+        return false;
+    };
+    match observe_vm(runner, paths, workspace) {
+        Ok(VmRuntime::Absent) => true,
+        Ok(VmRuntime::Present(inspected)) => {
+            ensure_managed(&inspected).is_ok()
+                && matches!(inspected.status.as_str(), "Stopped" | "Created" | "Crashed")
+        }
+        Err(_) => false,
+    }
 }
 
 pub(crate) fn validate_secret_workspaces(app: &AppHandle, workspaces: &[String]) -> Result<(),String> {
