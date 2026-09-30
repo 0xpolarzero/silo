@@ -27,7 +27,7 @@ it("asks before the palette starts a sandbox under memory pressure, inside the p
 
   const dialog = within(screen.getByRole("dialog", { name: "Commands" }))
   expect(dialog.getByText("Starting dev may slow this computer")).toBeVisible()
-  expect(dialog.getByText(/can use up to 32 GB/)).toBeVisible()
+  expect(dialog.getByText(/can use up to 32 GiB/)).toBeVisible()
   expect(startWorkspace).not.toHaveBeenCalled()
   await user.click(dialog.getByRole("button", { name: "Start anyway" }))
   expect(startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")
@@ -51,7 +51,7 @@ it("reports unavailable VM operations from the palette instead of calling the ru
   render(<ApplicationPreview source={applicationSourceForScenario("running", undefined, "stopped")} nativeOperations actions={{ startWorkspace }} />)
   await palette(user, "start dev")
   await user.click(screen.getByRole("option", { name: "Start dev" }))
-  expect(await screen.findByText("VM operation unavailable")).toBeVisible()
+  expect(await screen.findByText("Sandbox operation unavailable")).toBeVisible()
   expect(startWorkspace).not.toHaveBeenCalled()
 })
 

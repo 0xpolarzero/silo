@@ -83,7 +83,7 @@ describe("optional Linux desktop", () => {
   it("adds a desktop to a running sandbox without asking to stop it", async () => {
     const user = userEvent.setup()
     const save = editor(machine, true)
-    await user.click(screen.getByRole("button", { name: "Add desktop" }))
+    await user.click(screen.getByRole("button", { name: "Add Linux desktop" }))
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(save).toHaveBeenCalledWith([expect.objectContaining({ desktop: { startWithSandbox: true } })])
@@ -91,7 +91,7 @@ describe("optional Linux desktop", () => {
   it("changes startup policy without offering desktop removal or stopping the VM", async () => {
     const user = userEvent.setup()
     const save = editor({ ...machine, desktop: { startWithSandbox: true } }, true)
-    expect(screen.queryByRole("button", { name: "Add desktop" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Add Linux desktop" })).not.toBeInTheDocument()
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
     await user.click(screen.getByRole("switch", { name: "Start desktop with sandbox" }))
     await user.click(screen.getByRole("button", { name: "Save" }))
@@ -100,7 +100,7 @@ describe("optional Linux desktop", () => {
   it("still explains the VM stop required by a resource change", async () => {
     const user = userEvent.setup()
     editor({ ...machine, desktop: { startWithSandbox: true } }, true)
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
     expect(screen.getByRole("button", { name: "Stop and save…" })).toBeVisible()
   })
 })

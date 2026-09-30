@@ -16,8 +16,8 @@ describe("splitErrorDetails", () => {
   })
 
   it("uses a separate diagnostic when the backend supplies one", () => {
-    expect(splitErrorDetails("Couldn't start dev. Restart Silo and try again.", "exit code 1: boom")).toEqual({
-      summary: "Couldn't start dev. Restart Silo and try again.", details: "exit code 1: boom",
+    expect(splitErrorDetails("Could not start dev. Restart Silo and try again.", "exit code 1: boom")).toEqual({
+      summary: "Could not start dev. Restart Silo and try again.", details: "exit code 1: boom",
     })
   })
 

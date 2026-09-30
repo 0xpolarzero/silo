@@ -109,7 +109,7 @@ describe("local state updating at launch", () => {
   function updating(options: { remotes: boolean; updatingReads?: number }) {
     let updatingReads = options.updatingReads ?? Number.POSITIVE_INFINITY
     return bridge({ invoke: (command, args) => {
-      if (command === "read_application_state") return updatingReads-- > 0 ? Promise.reject(new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS")) : Promise.resolve(structuredClone(source))
+      if (command === "read_application_state") return updatingReads-- > 0 ? Promise.reject({ code: "update_in_progress", message: "Sandbox settings are changing." }) : Promise.resolve(structuredClone(source))
       if (command === "remote_host_list") return Promise.resolve(options.remotes ? [office] : [])
       if (command === "remote_host_snapshot") return Promise.resolve(structuredClone(source))
       if (command === "remote_management_status") return Promise.resolve({ enabled: false, hostId: "this-mac", name: "This Mac", address: "this-mac.local" })

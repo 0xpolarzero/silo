@@ -27,15 +27,15 @@ export function initialBackupArchive(source: ApplicationSource): BackupArchive {
 }
 
 const backupPhases: Array<[string, string]> = [
-  ["Prepare export", "Taking a live snapshot with a guest filesystem flush."],
+  ["Prepare export", "Saving a checkpoint after flushing sandbox files."],
   ["Save disk copies", "Saving each managed disk."],
-  ["Write and verify archive", "Writing a self-contained export file."],
+  ["Write and verify export file", "Writing a self-contained export file."],
   ["Finalize export", "Saving the durable result."],
 ]
 const restorePhases: Array<[string, string]> = [
   ["Validate export", "Checking the manifest and checksum."],
   ["Create new sandbox", "Writing managed disk data."],
-  ["Apply Silo settings", "Restoring the saved VM settings."],
+  ["Apply Silo settings", "Importing the sandbox settings."],
   ["Verify new sandbox", "Checking the new stopped sandbox."],
 ]
 
@@ -58,7 +58,7 @@ type RunningFixture = { operation: BackupOperationKind; archive: BackupArchive; 
 function resultFor(running: RunningFixture, mode: BackupFixtureMode): Extract<BackupOperation, { kind: "result" }> {
   const common = { operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }) }
   if (running.operation === "backup") {
-    if (mode === "stop-failed") return { ...common, kind: "result", outcome: "failed", title: "Export could not start", message: "dev could not be snapshotted. No export file was created.", detail: "No sandbox data changed." }
+    if (mode === "stop-failed") return { ...common, kind: "result", outcome: "failed", title: "Export could not start", message: "dev could not be saved. No export file was created.", detail: "No sandbox data changed." }
     if (mode === "capture-failed") return { ...common, kind: "result", outcome: "failed", title: "Could not save the disk copy", message: "The disk copy failed. No export file was created.", detail: "Earlier exports were not changed." }
     if (mode === "backup-failed") return { ...common, kind: "result", outcome: "failed", title: "Export could not be verified", message: "The destination disconnected while writing. The incomplete temporary file was removed.", detail: "Earlier exports were not changed." }
     return { ...common, kind: "result", outcome: "success", title: "Export ready", message: `${running.archive.name} · ${running.archive.size} · checksum verified`, detail: `Saved in ${running.archive.destination}.` }
@@ -119,12 +119,12 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
     actions: {
       async chooseDestination() { return source.backup.destination },
       async chooseArchive() {
-        const archive = { ...initialBackupArchive(source), name: "dev.silo-backup", archivePath: "/selected/dev.silo-backup", destination: "Selected file", completedLabel: "Selected archive", size: "12.4 GB" }
-        return previewMode === "invalid-archive" ? { archive, valid: false, reason: "The checksum does not match, or this backup format is newer than this Silo version." } : { archive, valid: true }
+        const archive = { ...initialBackupArchive(source), name: "dev.silo-backup", archivePath: "/selected/dev.silo-backup", destination: "Selected file", completedLabel: "Selected export file", size: "12.4 GiB" }
+        return previewMode === "invalid-archive" ? { archive, valid: false, reason: "The checksum does not match, or this export file format is newer than this Silo version." } : { archive, valid: true }
       },
       async inspectArchive(selection) {
         const archive = selection
-        return previewMode === "invalid-archive" ? { archive, valid: false, reason: "The checksum does not match, or this backup format is newer than this Silo version." } : { archive, valid: true }
+        return previewMode === "invalid-archive" ? { archive, valid: false, reason: "The checksum does not match, or this export file format is newer than this Silo version." } : { archive, valid: true }
       },
       startBackup,
       exportAndVerify(destination, sandboxes, checkpointId) {
@@ -150,11 +150,11 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
 
 export function useUnavailableBackup(source: ApplicationSource): BackupController {
   return {
-    state: { snapshotId: JSON.stringify(source.backup), availability: "unavailable", availabilityMessage: "Backup and restore are not available in this Silo build. No sandbox data was changed.", requiredSpaceGB: 0, archives: [], operation: null },
+    state: { snapshotId: JSON.stringify(source.backup), availability: "unavailable", availabilityMessage: "Export and import are not available in this Silo build. No sandbox data was changed.", requiredSpaceGB: 0, archives: [], operation: null },
     actions: {
       chooseDestination: async () => null,
       chooseArchive: async () => null,
-      inspectArchive: async (selection) => ({ archive: selection, valid: false, reason: "Native restore validation is unavailable in this Silo build." }),
+      inspectArchive: async (selection) => ({ archive: selection, valid: false, reason: "Import validation is unavailable in this Silo build." }),
       startBackup: () => undefined,
       exportAndVerify: async () => { throw new ExportIncompleteError("rejected", "Export is not available in this Silo build.") },
       startRestore: () => undefined,

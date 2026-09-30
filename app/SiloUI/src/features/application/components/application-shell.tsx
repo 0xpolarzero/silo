@@ -25,7 +25,7 @@ const primaryItems = [
 ] as const
 
 const workspaceItems = [
-  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "overview", label: "All sandboxes", icon: LayoutDashboard },
   { id: "files", label: "Files", icon: File },
   { id: "logs", label: "Logs", icon: Terminal },
   { id: "network", label: "Network", icon: Network },

@@ -13,5 +13,5 @@ it("opens the new-sandbox editor from a sandbox page when there are no sandboxes
   render(<ApplicationPreview source={source} initialRoute={{ workspaceSection: "files" }} />)
   expect(screen.getByText("No sandboxes yet")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "New sandbox" }))
-  expect(await screen.findByRole("textbox", { name: "Machine name" })).toHaveFocus()
+  expect(await screen.findByRole("textbox", { name: "Sandbox name" })).toHaveFocus()
 })

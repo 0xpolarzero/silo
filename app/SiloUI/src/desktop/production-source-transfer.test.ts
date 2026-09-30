@@ -8,7 +8,7 @@ import { createProductionSource, type ProductionBridge } from "./production-sour
 // specific export's verified result, never with another operation's.
 
 const source = applicationSourceForScenario("running")
-const exported = { name: "dev-2026-09-29.silo-backup", archivePath: "/Volumes/Backups/dev-2026-09-29.silo-backup", completedLabel: "Intact archive", size: "1.0 GB", destination: "/Volumes/Backups", sandboxes: ["dev"] }
+const exported = { name: "dev-2026-09-29.silo-backup", archivePath: "/Volumes/Backups/dev-2026-09-29.silo-backup", completedLabel: "Intact archive", size: "1.0 GiB", destination: "/Volumes/Backups", sandboxes: ["dev"] }
 const idle: BackupState = { snapshotId: "1", availability: "available", archives: [], operation: null }
 
 const running: BackupOperation = { kind: "running", operation: "backup", archive: exported, runningNames: [], progress: 0, phases: [] }
@@ -35,7 +35,7 @@ function bridge(start: (args?: Record<string, unknown>) => Promise<unknown>) {
   return {
     bridge: { invoke, listen } as unknown as ProductionBridge,
     invoke,
-    /** Replace the backend's backup state and announce it like the Rust side does. */
+    /** Replace the backend's export and import state and announce it like the Rust side does. */
     publish(next: BackupState) { backup = next; handlers.get("silo://application-state-changed")?.() },
   }
 }

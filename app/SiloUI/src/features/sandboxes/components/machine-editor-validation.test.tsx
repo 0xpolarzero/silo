@@ -16,21 +16,21 @@ async function openNewSandbox() {
 describe("machine editor validation", () => {
   it("links each error to its field and moves focus to the first invalid field", async () => {
     const { user, onMachinesChange } = await openNewSandbox()
-    const name = screen.getByRole("textbox", { name: "Machine name" })
+    const name = screen.getByRole("textbox", { name: "Sandbox name" })
     await user.clear(name)
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "16")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "16")
     await user.click(screen.getByRole("button", { name: "Save" }))
 
     expect(onMachinesChange).not.toHaveBeenCalled()
     expect(name).toHaveFocus()
     expect(name).toHaveAttribute("aria-invalid", "true")
     expect(name).toHaveAccessibleDescription("Use 1–32 lowercase letters, numbers, or hyphens, starting with a letter.")
-    expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveAccessibleDescription("CPU limit cannot exceed its ceiling.")
+    expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveAccessibleDescription("CPU limit cannot exceed its ceiling.")
     // Valid fields carry no stale description.
-    expect(screen.getByRole("combobox", { name: "Memory limit" })).not.toHaveAttribute("aria-describedby")
+    expect(screen.getByRole("combobox", { name: "Memory" })).not.toHaveAttribute("aria-describedby")
 
     await user.type(name, "dev")
     await user.click(screen.getByRole("button", { name: "Save" }))
-    expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveFocus()
+    expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveFocus()
   })
 })

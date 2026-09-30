@@ -24,7 +24,7 @@ export function DependenciesStep({
       <h2 id="dependencies-title" className="sr-only" data-visual-heading="hidden">Dependencies</h2>
       {onConnectComputer && <div className="mb-5 grid justify-items-start gap-2">
         <Button variant="outline" size="sm" onClick={onConnectComputer}>Connect another computer…</Button>
-        <p className="text-xs text-muted-foreground">Use VMs on another computer without setting up local VMs.</p>
+        <p className="text-xs text-muted-foreground">Use sandboxes on another computer without setting up local sandboxes.</p>
       </div>}
       <div className="grid gap-2">
         {groups.map((group) => <DependencyDisclosure key={group.id} group={group} onRetry={group.id === retryGroup ? onRetry : undefined} />)}

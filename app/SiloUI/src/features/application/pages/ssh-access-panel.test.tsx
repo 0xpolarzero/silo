@@ -16,7 +16,7 @@ function setup(patch: Partial<SshAccessWorkspace> = {}, save = vi.fn().mockResol
   return { user: userEvent.setup(), access, save, actions, ...view }
 }
 afterEach(() => { toast.dismiss() })
-async function expand(user: ReturnType<typeof userEvent.setup>) { await user.click(screen.getByRole("button", { name: "SSH controls for dev" })) }
+async function expand(user: ReturnType<typeof userEvent.setup>) { await user.click(screen.getByRole("button", { name: "SSH access controls for dev" })) }
 async function selectAction(user: ReturnType<typeof userEvent.setup>, name: string) {
   await user.click(screen.getByRole("button", { name: name.includes("network") ? "More network SSH actions" : "More local SSH actions" }))
   await user.click(screen.getByRole("menuitem", { name }))
@@ -231,7 +231,7 @@ describe("managed SSH access", () => {
     await expand(user)
     await selectAction(user, "Copy local SSH command")
     expect(await screen.findByText("Clipboard unavailable.")).toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Local SSH command copied" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "SSH host command copied" })).not.toBeInTheDocument()
   })
   it("routes connection preparation and changes to the remote owner", async () => {
     const target = "silo-remote:office:vm-immutable-id"

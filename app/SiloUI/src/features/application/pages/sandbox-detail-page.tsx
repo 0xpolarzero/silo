@@ -21,7 +21,7 @@ import { StatusSeparator, WorkspaceStatus } from "@/features/application/compone
 import { DisabledReason } from "@/features/application/components/disabled-reason"
 import { LifecycleControl } from "@/features/application/components/lifecycle-control"
 import type { LifecycleGuard } from "@/features/application/model/lifecycle-guard"
-import type { ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
+import type { NetworkPort, ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
 import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { SshAccessBadges, SshAccessRow } from "@/features/application/pages/ssh-access-panel"
@@ -100,7 +100,7 @@ function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess
   onCancel?: ApplicationActions["cancelOperation"]
 }) {
   const { machine } = workspace
-  const location = workspace.computer ? workspace.computer.name : machine.kind === "vm" ? "VM" : "SSH"
+  const location = workspace.computer ? workspace.computer.name : machine.kind === "vm" ? "VM" : "SSH host"
   return <span>
     <WorkspaceStatus workspace={workspace} source={source} readOnly={readOnly} onCancel={onCancel} />
     <Sep />{location}
@@ -146,7 +146,7 @@ function AddAction({ label, disabled, onClick }: { label: string; disabled?: boo
 
 /** The Secrets section, scoped to this sandbox: assigned secrets with the same row states,
  * inline editor, and remove confirmation as the Secrets page. Add preselects this sandbox.
- * Only local VMs support secrets, so remote and SSH sandboxes stay read-only. */
+ * Only local sandboxes support secrets, so remote and SSH sandboxes stay read-only. */
 function SecretsSection({ workspace, source, actions, onNavigate }: { workspace: ApplicationWorkspace; source: ApplicationSource; actions: ApplicationActions; onNavigate?: (route: ApplicationInitialRoute) => void }) {
   const { machine } = workspace
   const canManage = machine.kind === "vm" && !workspace.computer
@@ -218,7 +218,7 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
               return <ListRow
                 key={key}
                 icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-                title={<span className="truncate font-mono" title={address ? `${port.port} → ${address}` : `VM port ${port.port}`}>{address ? `${port.port} → ${address}` : `VM port ${port.port}`}</span>}
+                title={<span className="truncate font-mono" title={address ? `${port.port} → ${address}` : `Port ${port.port}`}>{address ? `${port.port} → ${address}` : `Port ${port.port}`}</span>}
                 detailClassName="whitespace-normal"
                 detail={<span className="inline-flex flex-wrap items-center gap-1.5">
                   <span className={cn("size-1.5 rounded-full", stateText === "Reachable" ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />
@@ -232,25 +232,32 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
             })}</div>
           : !draft && <ListRow
               icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-              title={<span className="font-normal text-muted-foreground">No forwarded ports.</span>}
+              title={<span className="font-normal text-muted-foreground">No ports</span>}
               detail=""
             />
         : fallbackPorts.length > 0
           ? <div className="divide-y divide-border">{fallbackPorts.map(port => {
-              const url = `${port.scheme ? `${port.scheme}://` : ""}localhost:${port.hostPort ?? port.port}`
+              const cachedPort: NetworkPort = {
+                ...port, hostPort: port.hostPort ?? null, scheme: port.scheme ?? null,
+                configured: port.configured ?? false,
+                state: port.hostPort == null || port.configured === false ? "unpublished" : port.listening === true ? "reachable" : port.listening === false ? "waiting" : "unknown",
+              }
+              const address = networkAddress(cachedPort)
+              const stateText = networkPortState(workspace, cachedPort)
+              const title = address ?? `Port ${port.port}`
               return <ListRow
                 key={port.port}
                 icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-                title={<span className="truncate" title={url}>{url}</span>}
+                title={<span className="truncate" title={title}>{title}</span>}
                 detail={<span className="inline-flex items-center gap-1.5">
-                  <span className={cn("size-1.5 rounded-full", port.listening === true ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />
-                  {port.listening === true ? "Listening" : port.listening === false ? "Not listening" : "Unknown"}
+                  <span className={cn("size-1.5 rounded-full", stateText === "Reachable" ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />
+                  {stateText}
                 </span>}
               />
             })}</div>
           : <ListRow
               icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-              title={<span className="font-normal text-muted-foreground">No forwarded ports.</span>}
+              title={<span className="font-normal text-muted-foreground">No ports</span>}
               detail=""
             />}
     </ListCard>
@@ -265,7 +272,7 @@ function OverviewTab({ workspace, source, actions, active, onEdit, onNavigate }:
   const hasRepositories = repositories.length > 0 || extraGithub.length > 0
 
   const resourceTitle = isVm
-    ? `${machine.cpus} CPU${machine.cpus === 1 ? "" : "s"} · ${machine.memoryGiB} GB memory · ${machine.workspaceStorageGiB} GB disk`
+    ? `CPUs: ${machine.cpus} · Memory: ${machine.memoryGiB} GiB · Disk: ${machine.workspaceStorageGiB} GiB`
     : `${machine.user}@${machine.host}:${machine.port}`
 
   return <div className="grid gap-5">
@@ -274,7 +281,7 @@ function OverviewTab({ workspace, source, actions, active, onEdit, onNavigate }:
         <ListRow
           icon={<ListRowIcon aria-hidden="true">{isVm ? <Cpu className="size-3.5" /> : <Server className="size-3.5" />}</ListRowIcon>}
           title={resourceTitle}
-          detail={isVm ? "Allocated to this sandbox" : "SSH machine connection"}
+          detail={isVm ? "Allocated to this sandbox" : "SSH host connection"}
           actions={isVm && onEdit ? <Button type="button" variant="outline" size="xs" onClick={onEdit}>Edit</Button> : undefined}
         />
       </ListCard>
@@ -376,7 +383,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     { value: "overview", label: "Overview", visible: true },
     { value: "checkpoints", label: "Checkpoints", visible: showCheckpoints },
     { value: "storage", label: "Storage", visible: showStorage },
-    { value: "access", label: "SSH", visible: showAccess },
+    { value: "access", label: "SSH access", visible: showAccess },
   ]
   const visibleTabs = tabs.filter(tab => tab.visible)
   const menuPopovers: MenuPopovers = {
@@ -428,7 +435,8 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
                 saving={editing.committing}
                 blockedReason={editing.saveBlockedReason}
                 capacity={editing.computerId ? undefined : hostCapacityFrom(source.hostCapacity)}
-                editorHeader={editingContext?.computers && editing.editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={editing.computerId} disabled={Boolean(editing.editor.originalID) || editing.committing} onChange={event => editing.setComputerId(event.target.value)}><option value="">This computer</option>{editingContext.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined}
+                computerName={workspace.computer?.name}
+                editorHeader={editingContext?.computers && editing.editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={editing.computerId} disabled={Boolean(editing.editor.originalID) || editing.committing} onChange={event => editing.setComputerId(event.target.value)}><option value="">This computer</option>{editingContext.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (offline)" : ""}</option>)}</select></label> : undefined}
                 focusRequest={editing.editorFocusRequest}
                 created={Boolean(editing.editor.originalID && editingContext?.isMachineCreated?.(machine))}
                 running={Boolean(editing.editor.originalID && machine.kind === "vm" && editingContext?.isMachineRunning?.(machine))}

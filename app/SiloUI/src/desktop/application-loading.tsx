@@ -35,7 +35,7 @@ function StatusPanelFrame({ busy = false, children }: { busy?: boolean; children
     <div className="flex max-h-[518px] shrink-0 flex-col overflow-hidden">
       {children}
       <footer className="flex shrink-0 items-center justify-between border-t px-2 py-2">
-        <Button variant="ghost" size="sm" className="gap-2" onClick={() => { void desktopCommand("open_main") }}><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
+        <Button variant="ghost" size="sm" className="gap-2" onClick={() => { void desktopCommand("open_main") }}><SiloMark data-icon="inline-start" /><span>Open Silo</span></Button>
         <Button variant="ghost" size="icon-xs" aria-label="Quit Silo" onClick={() => { void desktopCommand("quit_app") }}><Power /></Button>
       </footer>
     </div>

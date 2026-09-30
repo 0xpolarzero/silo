@@ -51,7 +51,7 @@ it("still asks when the running sandboxes could not be read", async () => {
   render(<QuitRequestConfirmation connect={connection.connect} />)
   await waitFor(() => expect(connection.connect).toHaveBeenCalled())
   void connection.ask({ requestId: 1, sandboxes: [] })
-  expect(await screen.findByRole("alertdialog", { name: "Quit Silo?" })).toHaveAccessibleDescription(/couldn’t check which sandboxes are running/)
+  expect(await screen.findByRole("alertdialog", { name: "Quit Silo?" })).toHaveAccessibleDescription(/could not check which sandboxes are running/)
 })
 
 it("keeps Silo open and stops listening when the window's UI goes away mid-question", async () => {

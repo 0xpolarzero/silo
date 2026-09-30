@@ -66,7 +66,7 @@ describe("GitHub operation notifications", () => {
     await startUserChange(user, actions)
     view.rerender(page(sourceWith([{ workspace, status: "applying", message: "Applying repository access…" }]), actions))
     view.rerender(page(sourceWith([{ workspace, status: "failed", message: "runtime output", canRetry: true }], 2), actions))
-    expect(await screen.findByText("GitHub settings couldn’t be applied.")).toBeInTheDocument()
+    expect(await screen.findByText("GitHub settings could not be applied.")).toBeInTheDocument()
     expect(screen.getByRole("button", { name: new RegExp(`not applied for ${workspace}`, "i") })).toBeInTheDocument()
     expect(document.body).not.toHaveTextContent("runtime output")
     await user.click(screen.getByRole("button", { name: "Retry" }))
@@ -79,13 +79,13 @@ describe("GitHub operation notifications", () => {
     view.rerender(page(sourceWith([{ workspace, status: "failed", message: "background failure", canRetry: true }], 2)))
     await new Promise((resolve) => setTimeout(resolve, 300))
     expect(screen.getByRole("button", { name: new RegExp(`not applied for ${workspace}`, "i") })).toBeInTheDocument()
-    expect(screen.queryByText("GitHub settings couldn’t be applied.")).not.toBeInTheDocument()
+    expect(screen.queryByText("GitHub settings could not be applied.")).not.toBeInTheDocument()
   })
 
   it("shows only the inline label for a failure already present on load", () => {
     render(page(sourceWith([{ workspace, status: "failed", message: "old failure", canRetry: true }])))
     expect(screen.getByRole("button", { name: new RegExp(`not applied for ${workspace}`, "i") })).toBeInTheDocument()
-    expect(screen.queryByText("GitHub settings couldn’t be applied.")).not.toBeInTheDocument()
+    expect(screen.queryByText("GitHub settings could not be applied.")).not.toBeInTheDocument()
   })
 })
 

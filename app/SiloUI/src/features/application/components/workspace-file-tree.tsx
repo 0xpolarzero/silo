@@ -64,7 +64,7 @@ function Directory({ workspace, path, label, store, expanded, toggle, register, 
       </li>}
       {snapshot.entries?.length === 0 && !snapshot.error && <li className="px-2 py-1 text-xs text-muted-foreground">Empty folder.</li>}
       {snapshot.error && <li className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
-        <span role="alert">{snapshot.errorOperation === "refresh" && snapshot.entries ? "Couldn’t refresh. Showing previous files." : snapshot.error}</span>
+        <span role="alert">{snapshot.errorOperation === "refresh" && snapshot.entries ? "Could not refresh. Showing previous files." : snapshot.error}</span>
         <Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(workspace, path, snapshot.errorOperation === "more" ? { more: true } : { refresh: true })}>Retry</Button>
       </li>}
       {snapshot.nextOffset !== null && <li><Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(workspace, path, { more: true })}>Load more</Button></li>}
@@ -118,7 +118,7 @@ export function WorkspaceFileTree({ workspace, store, active, editor, onOpenEdit
     </div>
     <CollapsibleContent className="ml-4">
       {open && (available ? active && <Directory editor={editor} workspace={target} path="/workspace" label={`Files in ${workspace.machine.name}`} store={store} expanded={expanded} toggle={toggle} register={register} onOpenEditor={onOpenEditor} />
-        : <p className="border-l border-border py-1 pl-5 text-xs text-muted-foreground">{workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this VM to browse its files." : "Files will be available when this VM is running."}</p>)}
+        : <p className="border-l border-border py-1 pl-5 text-xs text-muted-foreground">{workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this sandbox to browse its files." : "Files will be available when this sandbox is running."}</p>)}
     </CollapsibleContent>
   </Collapsible></li>
 }

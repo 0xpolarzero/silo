@@ -21,7 +21,7 @@ describe("operation-owned resource notices", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start dev" }))
     // The question opens next to the Start button that asked it.
     const prompt = screen.getByText("Starting dev may slow this computer").closest<HTMLElement>("[data-slot=popover-content]")!
-    expect(prompt).toHaveTextContent("32 GB")
+    expect(prompt).toHaveTextContent("32 GiB")
     expect(startWorkspace).not.toHaveBeenCalledWith("dev")
     fireEvent.click(within(prompt).getByRole("button", { name: "Start anyway" }))
     await waitFor(() => expect(startWorkspace).toHaveBeenCalledWith("dev"))
@@ -33,10 +33,10 @@ describe("operation-owned resource notices", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Add" }))
     fireEvent.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    fireEvent.change(screen.getByRole("textbox", { name: "Machine name" }), { target: { value: "sandbox" } })
+    fireEvent.change(screen.getByRole("textbox", { name: "Sandbox name" }), { target: { value: "sandbox" } })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
 
-    expect((await screen.findAllByText(/Not enough storage to create sandbox.*18 GB is needed.*11 GB is available/)).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText(/Not enough storage to create sandbox.*18 GiB is needed.*11 GiB is available/)).length).toBeGreaterThan(0)
   })
 
   it("reports unavailable native VM actions without changing fixture state", async () => {
@@ -45,7 +45,7 @@ describe("operation-owned resource notices", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Start dev" }))
 
-    expect(await screen.findByText("VM operation unavailable")).toBeVisible()
+    expect(await screen.findByText("Sandbox operation unavailable")).toBeVisible()
     expect(startWorkspace).not.toHaveBeenCalled()
   })
 })

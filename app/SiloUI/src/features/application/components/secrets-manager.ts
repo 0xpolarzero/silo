@@ -55,7 +55,7 @@ export function useSecretsManager({ source, onSaveSecret, onRemoveSecret, onRetr
       await onSaveSecret(request)
       closeEditor()
     } catch (error) {
-      setSaveError(operationFailure(error, "Couldn’t save this secret. Your changes are still here. Retry."))
+      setSaveError(operationFailure(error, "Could not save this secret. Your changes are still here. Retry."))
     } finally {
       setSaving(false)
     }
@@ -67,7 +67,7 @@ export function useSecretsManager({ source, onSaveSecret, onRemoveSecret, onRetr
     try {
       await action(id)
     } catch (error) {
-      setOperationError({ id, message: operationFailure(error, "Couldn’t update this secret. Retry."), action })
+      setOperationError({ id, message: operationFailure(error, "Could not update this secret. Retry."), action })
     } finally {
       setBusy(null)
     }

@@ -191,7 +191,7 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
   const queueStatus = combineQueueStatus(queueItems.filter(({ id }) => queueByStep.workspaces.includes(id)))
   const recordedProgress = !source.setupQueue && activeEvents.some(({ step }) => step && workspaceOperationSteps.has(step))
   const idleWorkspaceQueue = source.setupQueue?.filter(({ id }) => queueByStep.workspaces.includes(id)).every(({ status }) => status === "idle") === true
-  const pendingMessage = source.setupQueue?.some(({ id, status }) => queueByStep.workspaces.includes(id) && status === "queued") ? "Sandbox setup is queued" : source.setupQueue ? "Continue to create sandboxes" : "Waiting to create workspaces"
+  const pendingMessage = source.setupQueue?.some(({ id, status }) => queueByStep.workspaces.includes(id) && status === "queued") ? "Sandbox setup is queued" : source.setupQueue ? "Continue to create sandboxes" : "Waiting to create sandboxes"
   const totalOperations = workspaces.length * (recordedProgress ? 3 : 2)
   const completedOperations = recordedProgress ? completionKeys.size : queueItems.filter(({ id, status }) => queueByStep.workspaces.includes(id) && status === "succeeded").length * workspaces.length
   return {

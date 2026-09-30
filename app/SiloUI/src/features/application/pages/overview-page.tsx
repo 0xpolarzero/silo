@@ -354,7 +354,7 @@ export function OverviewPage({ active = true, readOnly = false,
   const deleteMachine = actions.deleteRemoteMachine ? async (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => {
     const computer = workspaces.get(machine.id)?.computer
     if (computer) {
-      if (!computer.connected) throw new Error("This computer is unavailable. Reconnect before deleting its VM.")
+      if (!computer.connected) throw new Error(`${computer.name} is offline. Reconnect to it before deleting ${machine.name}.`)
       await actions.deleteRemoteMachine!(computer.id, machine)
     } else {
       const base = baseline ? localOnly(baseline) : localMachines
@@ -367,11 +367,11 @@ export function OverviewPage({ active = true, readOnly = false,
   }
   const validateMachineOperation = (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => {
     const computer = workspaces.get(machine.id)?.computer ?? source.remoteComputers?.find(computer => computer.id === computerId)
-    if (computer) return computer.busy ? "This computer is refreshing its VM status. Try again shortly." : computer.connected ? undefined : "This computer is unavailable. Reconnect before changing its VMs."
+    if (computer) return computer.busy ? `${computer.name} is updating. Wait before changing ${machine.name}.` : computer.connected ? undefined : `${computer.name} is offline. Reconnect to it before changing ${machine.name}.`
     if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
     const notice = source.resourceNotice
     if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
-    return `Not enough storage to create ${machine.name}. About ${notice.requiredGB} GB is needed on ${notice.volume}; ${notice.availableGB} GB is available. No sandbox was created.`
+    return `Not enough storage to create ${machine.name}. About ${notice.requiredGB} GiB is needed on ${notice.volume}; ${notice.availableGB} GiB is available. No sandbox was created.`
   }
   const isMachineCreated = (machine: SetupMachineConfiguration) => committedWorkspaces.has(machine.id)
   const isMachineRunning = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.state === "running"
@@ -380,11 +380,11 @@ export function OverviewPage({ active = true, readOnly = false,
   const machineBusyReason = (machine: SetupMachineConfiguration) => sandboxBusyReason(workspaces.get(machine.id))
 
   function notifyOperationUnavailable() {
-    showActionFailure("VM operation unavailable", source.vmOperationsUnavailable ?? "VM operations are unavailable.", undefined, { native: false })
+    showActionFailure("Sandbox operation unavailable", source.vmOperationsUnavailable ?? "Sandbox operations are unavailable.", undefined, { native: false })
   }
 
   // Every lifecycle request from this page (row, sandbox page, menus, toasts) goes through the
-  // shared guard: unavailable VM operations are reported and memory pressure asks first.
+  // shared guard: unavailable Sandbox operations are reported and memory pressure asks first.
   const guard = lifecycleGuard(source, actions)
   // Notification actions run later: resolve the sandbox and its guard when clicked, so a toast
   // shown before the snapshot refreshed never acts on outdated state.
@@ -422,7 +422,7 @@ export function OverviewPage({ active = true, readOnly = false,
             try {
               if (!await exportSandbox(machine.name)) return false
             } catch (error) {
-              showActionFailure(`Couldn't export ${machine.name}`, error, undefined, { native: false })
+              showActionFailure(`Could not export ${machine.name}`, error, undefined, { native: false })
               return false
             }
             // Export can take minutes. A verified file does not authorize deleting a sandbox
@@ -430,7 +430,7 @@ export function OverviewPage({ active = true, readOnly = false,
             const current = latestDeleteState.current
             const fresh = current.source.workspaces.find(item => item.machine.id === machine.id && !item.computer)
             if (!fresh || current.readOnly || current.source.vmOperationsUnavailable || current.source.sandboxConfigurationOperation || workspaceAvailability(fresh, current.source).busy || fresh.state === "running" || fresh.freshness === "stale") {
-              showActionFailure(`Couldn't delete ${machine.name}`, "The sandbox changed while exporting. Review its current state before deleting it. Your export is saved.", undefined, { native: false })
+              showActionFailure(`Could not delete ${machine.name}`, "The sandbox changed while exporting. Review its current state before deleting it. Your export is saved.", undefined, { native: false })
               return false
             }
             return true
@@ -465,7 +465,7 @@ export function OverviewPage({ active = true, readOnly = false,
         : { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guard.request(workspace, "restart") },
       // Checkpoints and Storage open the page's tabs, which disable their own actions as needed.
       ...(vm ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, onSelect: () => openSandbox(machine.id, "checkpoints") }] : []),
-      ...(vm && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: forkDisabled(workspace), popover: "fork" }] : []),
+      ...(vm && actions.forkCheckpoint ? [{ label: "Fork…", description: "Create a new sandbox with a copy of this sandbox’s files.", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: forkDisabled(workspace), popover: "fork" }] : []),
       ...(vm && local && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, onSelect: () => openSandbox(machine.id, "storage") }] : []),
       ...(vm && local && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || availability.busy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
     ]
@@ -500,7 +500,7 @@ export function OverviewPage({ active = true, readOnly = false,
       if (action === "dismiss-error") continue
       const verb = action === "restart" ? "restart" : action === "stop" ? "stop" : "start"
       dismissOperationToast(id)
-      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ? <ErrorDetails message={workspace.lifecycleFailure} diagnostic={workspace.lifecycleFailureDiagnostic} /> : undefined, retry: lifecycleRetry(workspace), sandbox: name, native: false })
+      showOperationFailure(id, `Could not ${verb} ${name}`, { description: workspace.lifecycleFailure ? <ErrorDetails message={workspace.lifecycleFailure} diagnostic={workspace.lifecycleFailureDiagnostic} /> : undefined, retry: lifecycleRetry(workspace), sandbox: name, native: false })
     }
   })
   useEffect(() => { lifecycleToasts(source.workspaces) }, [source.workspaces])

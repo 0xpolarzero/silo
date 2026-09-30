@@ -53,7 +53,7 @@ export function UpdatesCard() {
           <div role="progressbar" aria-label="Update download" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-valuetext={percent === undefined ? `${state.downloadedBytes.toLocaleString()} bytes downloaded` : `${percent}%`} className="h-1 overflow-hidden rounded-full bg-muted">
             <div className={percent === undefined ? "h-full w-1/3 animate-pulse bg-primary motion-reduce:animate-none" : "h-full bg-primary"} style={percent === undefined ? undefined : { width: `${percent}%` }} />
           </div>
-          <p className="mt-1 text-[11px] text-muted-foreground">{percent === undefined ? `${(state.downloadedBytes / 1048576).toFixed(1)} MB downloaded` : `${percent}%`}</p>
+          <p className="mt-1 text-[11px] text-muted-foreground">{percent === undefined ? `${(state.downloadedBytes / 1048576).toFixed(1)} MiB downloaded` : `${percent}%`}</p>
         </div>}
         {error && <div role="alert" className="mx-2 mb-2 rounded-md border border-destructive/25 bg-destructive/[.06] p-2 text-xs">
           <div className="flex items-center justify-between gap-2"><p>{error}</p>{!confirm && state?.retryAction !== "relaunch" && <Button size="xs" variant="outline" disabled={busy || (state?.retryAction === "install" && !state.canInstall)} onClick={retry}>Retry</Button>}</div>

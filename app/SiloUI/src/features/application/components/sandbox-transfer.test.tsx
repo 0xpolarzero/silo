@@ -10,7 +10,7 @@ import { ExportIncompleteError, type BackupController, type BackupOperation } fr
 
 const source = applicationSourceForScenario("running")
 const localVm = source.workspaces.find((w) => !w.computer && w.machine.kind === "vm")!
-const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GB", destination: "/backups", sandboxes: ["dev"] }
+const archive = { name: "dev.silo-backup", archivePath: "/backups/dev.silo-backup", completedLabel: "Today", size: "2 GiB", destination: "/backups", sandboxes: ["dev"] }
 
 function controller(overrides: Partial<BackupController["state"]> = {}, actions: Partial<BackupController["actions"]> = {}): BackupController {
   return {
@@ -103,13 +103,13 @@ describe("export notifications", () => {
     expect(backup.actions.exportAndVerify).not.toHaveBeenCalled()
   })
 
-  it("keeps a success toast with Show in Finder that reveals the archive", async () => {
+  it("keeps a success toast with Show in Finder that reveals the export file", async () => {
     const success: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "success", title: "Export ready", message: "done" }
     const backup = controller({ operation: success })
     const { rerender } = render(<Harness backup={controller()} />)
     rerender(<Harness backup={backup} />)
     expect(await screen.findByText("Exported")).toBeInTheDocument()
-    expect(screen.getByText("dev.silo-backup · 2 GB")).toBeInTheDocument()
+    expect(screen.getByText("dev.silo-backup · 2 GiB")).toBeInTheDocument()
     fireEvent.click(await screen.findByRole("button", { name: /Show in (Finder|folder)/ }))
     expect(backup.actions.revealArchive).toHaveBeenCalledWith(archive)
   })

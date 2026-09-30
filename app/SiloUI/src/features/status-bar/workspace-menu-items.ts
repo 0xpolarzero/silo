@@ -46,7 +46,7 @@ export function workspaceMenuItems(workspace: ApplicationWorkspace, source: Appl
     {
       kind: "submenu",
       id: "sites",
-      label: "Open site",
+      label: "Open in browser",
       enabled: canOpen,
       items: sites.length
         ? [
@@ -58,10 +58,10 @@ export function workspaceMenuItems(workspace: ApplicationWorkspace, source: Appl
             label: `Copy port ${port} address`,
             value: `${scheme}://127.0.0.1:${hostPort}`,
             copied: `Port ${port} address copied`,
-            failed: `Couldn't copy port ${port} address`,
+            failed: `Could not copy port ${port} address`,
           } as const)),
         ]
-        : [{ kind: "action", id: "no-sites", label: "No active sites", enabled: false, run: () => {} }],
+        : [{ kind: "action", id: "no-sites", label: "No reachable ports", enabled: false, run: () => {} }],
     },
   ]
 }

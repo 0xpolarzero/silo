@@ -180,7 +180,7 @@ describe("remote computer onboarding", () => {
   })
 
   it("keeps setup incomplete when the remote connection fails", async () => {
-    const connectComputer = vi.fn().mockRejectedValue(new Error("Computer unavailable"))
+    const connectComputer = vi.fn().mockRejectedValue(new Error("Offline · last known status"))
     const onOpenApp = vi.fn()
     const store = createMemorySettingsStore()
     const source = { applicationActions: { connectComputer } } as unknown as ProductionSource
@@ -188,7 +188,7 @@ describe("remote computer onboarding", () => {
     act(() => captured.props!.onConnectComputer!())
     fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: "owner@office" } })
     fireEvent.click(screen.getByRole("button", { name: "Connect" }))
-    expect(await screen.findByRole("alert")).toHaveTextContent("Computer unavailable")
+    expect(await screen.findByRole("alert")).toHaveTextContent("Offline · last known status")
     expect(store.getSnapshot().settings.onboardingComplete).toBe(false)
     expect(onOpenApp).not.toHaveBeenCalled()
   })

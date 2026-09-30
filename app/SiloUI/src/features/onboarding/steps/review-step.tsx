@@ -77,7 +77,7 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, workspace
       <h2 id="review-title" className="sr-only" data-visual-heading="hidden">Review setup</h2>
 
       {errorMessage && <SetupNotice
-        title="Setup couldn’t finish"
+        title="Setup could not finish"
         detail={errorMessage}
         recovery={errorRecovery}
         action={workspaceRetryable && <Button type="button" variant="outline" size="xs" onClick={onRetryWorkspaceSetup}><RotateCw aria-hidden="true" />Retry</Button>}
@@ -120,16 +120,16 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, workspace
         <ListCard divided>
           {[
             { title: "GitHub access", detail: githubSummary, Icon: GitBranch, complete: githubComplete },
-            { title: "Git author", detail: identitySummary, Icon: UserRound, complete: identityStatus === "succeeded" },
+            { title: "Git identity", detail: identitySummary, Icon: UserRound, complete: identityStatus === "succeeded" },
           ].map(({ title, detail, Icon, complete }) => <ListRow
             key={title}
             icon={<ListRowIcon aria-hidden="true"><Icon className="size-3.5" /></ListRowIcon>}
             role="group"
             aria-label={title}
             className={complete ? "bg-emerald-500/[0.035] hover:bg-emerald-500/[0.07] focus-within:bg-emerald-500/[0.07]" : undefined}
-            title={<>{title}{title === "Git author" ? <ValidationBadge status={identityStatus} /> : githubConnected ? <ValidationBadge status={githubStatus} /> : <span className="text-[10px] font-normal text-muted-foreground">Skipped</span>}</>}
-            detail={title === "Git author" && identityFailure?.failure ? `${detail} · ${identityFailure.failure}` : detail}
-            detailClassName={title === "Git author" && identityFailure ? "whitespace-normal break-words text-destructive" : undefined}
+            title={<>{title}{title === "Git identity" ? <ValidationBadge status={identityStatus} /> : githubConnected ? <ValidationBadge status={githubStatus} /> : <span className="text-[10px] font-normal text-muted-foreground">Skipped</span>}</>}
+            detail={title === "Git identity" && identityFailure?.failure ? `${detail} · ${identityFailure.failure}` : detail}
+            detailClassName={title === "Git identity" && identityFailure ? "whitespace-normal break-words text-destructive" : undefined}
           />)}
         </ListCard>
       </section>

@@ -97,5 +97,5 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
 
 function UnavailableApplicationPreview({ source, actions, initialRoute }: Parameters<typeof ApplicationPreview>[0]) {
   const backup = useUnavailableBackup(source)
-  return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><ApplicationApp source={{ ...source, vmOperationsUnavailable: "VM operations are not available in this Silo build. No sandbox state was changed." }} initialRoute={initialRoute} routeRequest={initialRoute} backup={backup} actions={{ ...inactiveApplicationActions, ...actions }} /></ApplicationCatalogProvider>
+  return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><ApplicationApp source={{ ...source, vmOperationsUnavailable: "Sandbox operations are not available in this Silo build. No sandbox state was changed." }} initialRoute={initialRoute} routeRequest={initialRoute} backup={backup} actions={{ ...inactiveApplicationActions, ...actions }} /></ApplicationCatalogProvider>
 }

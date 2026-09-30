@@ -97,7 +97,7 @@ describe("desktop viewer lifecycle", () => {
   })
   it("does not offer agent control or installation inside the viewer", () => {
     viewer({ installed: false, autoStart: true, state: "uninstalled" })
-    expect(screen.getByText("Add a desktop in the sandbox configuration.")).toBeVisible()
+    expect(screen.getByText("Choose Add Linux desktop in the sandbox’s actions menu.")).toBeVisible()
     expect(screen.queryByRole("button", { name: /Start desktop|agent|control/i })).not.toBeInTheDocument()
   })
 })

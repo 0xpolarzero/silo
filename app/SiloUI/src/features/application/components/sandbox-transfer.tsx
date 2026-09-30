@@ -70,7 +70,7 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
     // Another export or import is running: leave its toast and Retry untouched (E-52).
     if (backupRef.current.state.operation?.kind === "running") return null
     retryRef.current = () => { void exportSandbox(sandboxName, checkpoint) }
-    // The toast, driven by the backup state, reports every outcome; only a verified export resolves.
+    // The toast, driven by the export and import state, reports every outcome; only a verified export resolves.
     return backupRef.current.actions.exportAndVerify(destination, [sandboxName], checkpoint?.id).catch(() => null)
   }
 

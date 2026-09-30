@@ -33,7 +33,7 @@ describe("status bar", () => {
     } else await user.click(screen.getByRole("button", { name: "Start dev" }))
     expect(actions.startWorkspace).not.toHaveBeenCalled()
     const prompt = screen.getByRole("group", { name: "Starting dev may slow this computer" })
-    expect(prompt).toHaveTextContent("32 GB")
+    expect(prompt).toHaveTextContent("32 GiB")
     await user.click(within(prompt).getByRole("button", { name: "Start anyway" }))
     expect(actions.startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")
   })
@@ -42,11 +42,11 @@ describe("status bar", () => {
     const base = applicationSourceForScenario("complete")
     const { user, actions } = setup({
       workspaces: base.workspaces.map(workspace => ({ ...workspace, state: "stopped" })),
-      vmOperationsUnavailable: "This build cannot run local VMs.",
+      vmOperationsUnavailable: "This build cannot run local sandboxes.",
     })
     await user.click(screen.getByRole("button", { name: "Start dev" }))
     expect(actions.startWorkspace).not.toHaveBeenCalled()
-    expect(screen.getByRole("alert", { name: "VM operation unavailable" })).toHaveTextContent("This build cannot run local VMs.")
+    expect(screen.getByRole("alert", { name: "Sandbox operation unavailable" })).toHaveTextContent("This build cannot run local sandboxes.")
   })
 
   it("rechecks current availability before Start anyway (I-04)", async () => {
@@ -69,7 +69,7 @@ describe("status bar", () => {
     await user.click(screen.getByRole("button", { name: action }))
     expect(actions.stopWorkspace).not.toHaveBeenCalled()
     expect(actions.restartWorkspace).not.toHaveBeenCalled()
-    expect(screen.getByRole("alert", { name: "VM operation unavailable" })).toHaveTextContent("Local VMs unavailable.")
+    expect(screen.getByRole("alert", { name: "Sandbox operation unavailable" })).toHaveTextContent("Local VMs unavailable.")
   })
 
   it("keeps a remote Start independent of same-named local guards (I-04)", async () => {
@@ -358,7 +358,7 @@ describe("status bar", () => {
     screen.getByRole("button", { name: "Actions for dev" }).focus()
     await user.keyboard("{Enter}")
     expect(screen.queryByRole("menuitem", { name: "Files" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("menuitem", { name: "Open Silo…" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("menuitem", { name: "Open Silo" })).not.toBeInTheDocument()
     await user.keyboard("{End}{ArrowUp}{Enter}")
     expect(screen.getByRole("heading", { name: "dev folders" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Back to sandboxes" })).toHaveFocus()
@@ -368,7 +368,7 @@ describe("status bar", () => {
     const source = applicationSourceForScenario("complete")
     const { user, actions } = setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, ports: [{ port: 8080, listening: true, configured: true, hostPort: 18080, scheme: "http" }, { port: 3000, listening: true, configured: true, hostPort: 13000, scheme: "http" }, { port: 5173, listening: false }] })) })
     await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-    screen.getByRole("menuitem", { name: "Open site" }).focus()
+    screen.getByRole("menuitem", { name: "Open in browser" }).focus()
     await user.keyboard("{ArrowRight}")
     const ports = screen.getAllByRole("menuitem", { name: /^Port / })
     expect(ports.map((port) => port.textContent)).toEqual(["Port 3000", "Port 8080"])
@@ -381,7 +381,7 @@ describe("status bar", () => {
     const { user, actions } = setup()
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)
     await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-    screen.getByRole("menuitem", { name: "Open site" }).focus()
+    screen.getByRole("menuitem", { name: "Open in browser" }).focus()
     await user.keyboard("{ArrowRight}")
     expect(screen.queryByRole("menuitem", { name: "Choose port…" })).not.toBeInTheDocument()
     await user.click(screen.getByRole("menuitem", { name: "Copy port 3000 address" }))
@@ -396,9 +396,9 @@ describe("status bar", () => {
     const { user } = setup()
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockRejectedValueOnce(new Error("Clipboard unavailable")).mockResolvedValue(undefined)
     await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-    screen.getByRole("menuitem", { name: "Open site" }).focus()
+    screen.getByRole("menuitem", { name: "Open in browser" }).focus()
     await user.keyboard("{ArrowRight}{End}{Enter}")
-    expect(screen.getByRole("menuitem", { name: "Couldn't copy port 3000 address" })).toHaveTextContent("Copy failed")
+    expect(screen.getByRole("menuitem", { name: "Could not copy port 3000 address" })).toHaveTextContent("Copy failed")
     await user.keyboard("{Enter}")
     expect(writeText).toHaveBeenNthCalledWith(2, "http://127.0.0.1:3000")
     expect(screen.getByRole("menuitem", { name: "Port 3000 address copied" })).toHaveFocus()

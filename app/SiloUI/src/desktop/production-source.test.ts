@@ -23,7 +23,7 @@ const backup: BackupState = {
   availability: "available",
   requiredSpaceGB: 2,
   availableSpaceGB: 40,
-  archives: [{ name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GB", destination: "/tmp", sandboxes: ["dev"] }],
+  archives: [{ name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GiB", destination: "/tmp", sandboxes: ["dev"] }],
   operation: null,
 }
 
@@ -185,7 +185,7 @@ describe("production application bridge", () => {
       const refreshing = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === target)
       expect(refreshing).toMatchObject({
         state: source.workspaces[0].state,
-        stateDetail: "Refreshing status",
+        stateDetail: "Updating…",
         freshness: "stale",
         computer: { connected: true, busy: true },
         lifecycleAction: "start",
@@ -439,7 +439,7 @@ describe("production application bridge", () => {
     const before = store.getSnapshot().source?.workspaces
     toasts.showOperationFailure.mockClear()
     await store.applicationActions.openDesktop!("dev")
-    expect(toasts.showOperationFailure).toHaveBeenCalledWith("open-desktop:dev", "Could not open the desktop", { description: expect.stringContaining("Owning computer unavailable") })
+    expect(toasts.showOperationFailure).toHaveBeenCalledWith("open-desktop:dev", "Could not open the Linux desktop", { description: expect.stringContaining("Owning computer unavailable") })
     expect(store.getSnapshot().error).toBeNull()
     expect(store.getSnapshot().source?.workspaces).toEqual(before)
     store.dispose()
@@ -985,7 +985,7 @@ describe("production application bridge", () => {
     const events = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../test/contracts/setup-activity.json"), "utf8")) as unknown[]
     expect(events.map((event) => siloProgressEventSchema.parse(event))).toEqual(events)
   })
-  it("accepts the exact backup state serialized by the Rust bridge", () => {
+  it("accepts the exact export and import state serialized by the Rust bridge", () => {
     const state = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../test/contracts/backup-state.json"), "utf8"))
     expect(parseBackupState(state)).toEqual(state)
   })
@@ -1051,7 +1051,7 @@ describe("production application bridge", () => {
   it("keeps captured logs during configuration and reloads them after it finishes", async () => {
     const initial = structuredClone(source)
     const oldLog = { line: "VM booted", occurredAt: "2026-09-10T09:00:00Z" }
-    const newLog = { line: "VM stopped", occurredAt: "2026-09-10T09:01:00Z" }
+    const newLog = { line: "Sandbox stopped", occurredAt: "2026-09-10T09:01:00Z" }
     initial.workspaces[0].logs = [oldLog]
     const mutation = structuredClone(initial)
     mutation.workspaces[0].logs = []
@@ -1301,14 +1301,14 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.backupActions.startRestore(backup.archives[0], "restored", "dev")
-    await vi.waitFor(() => expect(store.getSnapshot().backup.availabilityMessage).toContain("invalid backup state"))
+    await vi.waitFor(() => expect(store.getSnapshot().backup.availabilityMessage).toContain("invalid export and import state"))
     // A malformed read is not evidence that the restore failed.
     expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running", operation: "restore", targetName: "restored" })
     store.dispose()
   })
 
   it("shows restore immediately, ignores stale results and dismisses results locally", async () => {
-    const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Backup complete", message: "Backup completed successfully." }
+    const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Export complete", message: "Export completed successfully." }
     let release: (() => void) | undefined
     let current = { ...structuredClone(backup), operation: completed, operationId: "first-operation" } as BackupState
     const mock = native({ invoke: nativeBridgeMock({
@@ -1348,7 +1348,7 @@ describe("production application bridge", () => {
   })
 
   it("keeps a submission failure visible across refreshes until dismissed", async () => {
-    const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Backup complete", message: "Backup completed successfully." }
+    const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Export complete", message: "Export completed successfully." }
     const mock = native({ invoke: nativeBridgeMock({
       ...initializationHandlers(),
       read_application_state: () => structuredClone(source),

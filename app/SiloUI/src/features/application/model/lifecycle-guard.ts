@@ -33,12 +33,12 @@ function sandboxName(workspace: ApplicationWorkspace) {
  */
 export function lifecycleCheck(source: ApplicationSource, workspace: ApplicationWorkspace, action: LifecycleAction): LifecycleCheck {
   const local = !workspace.computer
-  if (local && source.vmOperationsUnavailable) return { kind: "unavailable", title: "VM operation unavailable", message: source.vmOperationsUnavailable }
+  if (local && source.vmOperationsUnavailable) return { kind: "unavailable", title: "Sandbox operation unavailable", message: source.vmOperationsUnavailable }
   const notice = source.resourceNotice
   if (action === "start" && local && notice?.kind === "start-memory" && notice.sandbox === workspace.machine.name) {
     return { kind: "confirm", prompt: {
       title: `Starting ${workspace.machine.name} may slow this computer`,
-      description: `Silo found high memory pressure now. This sandbox can use up to ${notice.memoryGiB} GB. Close memory-heavy apps, or start anyway.`,
+      description: `Silo found high memory pressure now. This sandbox can use up to ${notice.memoryGiB} GiB. Close memory-heavy apps, or start anyway.`,
       confirmLabel: "Start anyway",
       tone: "default",
     } }
@@ -97,7 +97,7 @@ export function lifecycleGuard(source: ApplicationSource, actions: LifecycleActi
     const availability = workspaceAvailability(workspace, source)
     const allowed = action === "start" ? availability.canStart : action === "stop" ? availability.canStop : availability.canRestart
     const reason = availability.reasons[action]
-    if (!allowed) return { kind: "unavailable", title: `Couldn't ${verbs[action]} ${sandboxName(workspace)}`, message: reason ?? "It is busy." }
+    if (!allowed) return { kind: "unavailable", title: `Could not ${verbs[action]} ${sandboxName(workspace)}`, message: reason ?? "It is busy." }
     return undefined
   }
   const guard: LifecycleGuard = {

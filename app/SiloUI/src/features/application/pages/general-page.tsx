@@ -80,7 +80,7 @@ export function GeneralPage({
         <h3 className="text-xs font-medium">Startup</h3>
         <ListCard divided>
           <div>
-            <SettingRow icon={Power} title="Launch Silo at login" description="Keep workspace status and notifications available." control={<Switch checked={integrations.loginEnabled} disabled={!integrations.initialized || integrations.loginPending || integrations.loginItem.state === "error" || integrations.loginItem.state === "unavailable"} onCheckedChange={(enabled) => { void integrations.setLaunchAtLogin(enabled) }} aria-label="Launch Silo at login" />} />
+            <SettingRow icon={Power} title="Launch Silo at login" description="Keep sandbox status and notifications available." control={<Switch checked={integrations.loginEnabled} disabled={!integrations.initialized || integrations.loginPending || integrations.loginItem.state === "error" || integrations.loginItem.state === "unavailable"} onCheckedChange={(enabled) => { void integrations.setLaunchAtLogin(enabled) }} aria-label="Launch Silo at login" />} />
             {integrations.loginItem.state === "requiresApproval" && <ListRow
               icon={null}
               title="Approval required"

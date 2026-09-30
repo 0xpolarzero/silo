@@ -145,7 +145,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
         {lifecycleIssue && <OperationIssue
           title={lifecycleIssue.title}
           detail={lifecycleIssue.message}
-          actionLabel="Review VM operation availability"
+          actionLabel="Review sandbox operation availability"
           onReview={() => actions.openSilo({ workspaceSection: "overview" })}
         />}
         {repair && <ListCard className="mb-2">
@@ -201,7 +201,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
               const review = workspace.state === "failed" || workspace.attention?.level === "error"
               // A failed Start leaves the sandbox "Stopped": show the failure instead of a neutral row.
               const lifecycle = lifecycleOutcome(workspace)
-              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.computer ? "Computer unavailable · Last known status" : "Last known status" : lifecycle?.text)
+              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.computer ? "Offline · last known status" : "Last known status" : lifecycle?.text)
               return <SandboxListItem key={machine.id} aria-label={machine.name} aria-busy={availability.busy || undefined}>
                 <SandboxListRow
                   name={machine.name}
@@ -228,7 +228,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} onClick={() => actions.openTerminal(target)}><Terminal /></SandboxAction>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} onClick={() => openFolders(machine.id)}><Code /></SandboxAction>
                         </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => guardedActions.startWorkspace(target)}><Play /></SandboxAction>
-                          : <SandboxAction label={`Open ${machine.name} in Silo`} onClick={() => actions.openSilo({ workspace: target })}><SiloMark /></SandboxAction>)}
+                          : <SandboxAction label="Open Silo" onClick={() => actions.openSilo({ workspace: target })}><SiloMark /></SandboxAction>)}
                     <WorkspaceActions workspace={workspace} source={source} actions={guardedActions} onFolders={() => openFolders(machine.id)} onConfirm={(action) => setConfirmation({ workspace: target, action })} />
                   </>}
                 />
@@ -269,7 +269,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
         {quitPending && stoppedByQuit.length
           ? <QuitConfirmation names={stoppedByQuit} onCancel={() => { setQuitPending(false); focusContent() }} onQuit={() => { setQuitPending(false); actions.quit() }} />
           : <>
-            <Button variant="ghost" size="sm" className="gap-2" onClick={() => actions.openSilo()}><SiloMark data-icon="inline-start" /><span>Open Silo…</span></Button>
+            <Button variant="ghost" size="sm" className="gap-2" onClick={() => actions.openSilo()}><SiloMark data-icon="inline-start" /><span>Open Silo</span></Button>
             <SandboxAction label="Quit Silo" onClick={requestQuit}><Power /></SandboxAction>
           </>}
       </footer>

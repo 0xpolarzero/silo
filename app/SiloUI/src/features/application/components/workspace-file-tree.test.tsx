@@ -56,7 +56,7 @@ describe("live file tree", () => {
     const loader = vi.fn()
     const store = createDirectoryStore(loader)
     const { rerender } = render(<WorkspaceFileTree editor="Cursor" workspace={{ ...workspace, state: "stopped" }} store={store} active />)
-    expect(screen.getByText("Start this VM to browse its files.")).toBeVisible()
+    expect(screen.getByText("Start this sandbox to browse its files.")).toBeVisible()
     rerender(<WorkspaceFileTree editor="Cursor" workspace={{ ...workspace, freshness: "stale" }} store={store} active />)
     expect(screen.getByText("Reconnect to browse files.")).toBeVisible()
     rerender(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active={false} />)

@@ -20,7 +20,7 @@ it("toasts a new lifecycle failure without inserting it in the row, and keeps St
   workspace.lifecycleFailureAction = "start"
   view.rerender(page(source, actions))
   const row = within(screen.getByText("dev").closest("li")!)
-  expect(await screen.findByText("Couldn't start dev")).toBeVisible()
+  expect(await screen.findByText("Could not start dev")).toBeVisible()
   expect(screen.getByText(/The library signature was rejected/)).toBeVisible()
   expect(row.queryByRole("alert")).not.toBeInTheDocument()
   expect(row.getByRole("button", { name: "Start dev" })).toBeEnabled()
@@ -34,7 +34,7 @@ it("does not toast a lifecycle failure already present at first load", () => {
   workspace.lifecycleFailure = "Start failed: earlier"
   workspace.lifecycleFailureAction = "start"
   render(page(source, {} as ApplicationActions))
-  expect(screen.queryByText("Couldn't start dev")).not.toBeInTheDocument()
+  expect(screen.queryByText("Could not start dev")).not.toBeInTheDocument()
 })
 
 it("offers a Retry action on a failed restart that re-submits the same intent", async () => {
@@ -45,7 +45,7 @@ it("offers a Retry action on a failed restart that re-submits the same intent", 
   workspace.lifecycleFailure = "Restart failed: Starting dev was cancelled."
   workspace.lifecycleFailureAction = "restart"
   view.rerender(page(source, actions))
-  expect(await screen.findByText("Couldn't restart dev")).toBeVisible()
+  expect(await screen.findByText("Could not restart dev")).toBeVisible()
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
   expect(actions.restartWorkspace).toHaveBeenCalledWith("dev")
 })
@@ -85,7 +85,7 @@ it("reports a cancelled lifecycle action as a neutral toast, not an error", asyn
   workspace.lifecycleFailureCancelled = true
   view.rerender(page(source, actions))
   expect(await screen.findByText("Stop cancelled")).toBeVisible()
-  expect(screen.queryByText("Couldn't stop dev")).not.toBeInTheDocument()
+  expect(screen.queryByText("Could not stop dev")).not.toBeInTheDocument()
   expect(within(screen.getByText("dev").closest("li")!).queryByRole("alert")).not.toBeInTheDocument()
 })
 
@@ -102,8 +102,8 @@ it("keeps a known lifecycle action visible while its remote computer refreshes s
 
   delete workspace.lifecycleAction
   view.rerender(<><Toaster /><OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} /></>)
-  expect(row.getByRole("status")).toHaveTextContent("Refreshing status…")
-  expect(row.queryByText(/Applying VM changes/)).not.toBeInTheDocument()
+  expect(row.getByRole("status")).toHaveTextContent("Updating…")
+  expect(row.getAllByText("Updating…")).toHaveLength(1)
 })
 
 it("shows a lifecycle progress notification only for actions slower than the debounce, then dismisses it", async () => {

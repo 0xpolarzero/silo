@@ -13,7 +13,7 @@ export function remoteWorkspaceTarget(hostId: string, vmId: string): string {
 export function parseRemoteWorkspaceTarget(target: string): { hostId: string; vmId: string } | undefined {
   if (!target.startsWith("silo-remote:")) return undefined
   const parts = target.split(":")
-  if (parts.length !== 3 || !parts[1] || !parts[2]) throw new Error("Invalid remote VM target.")
+  if (parts.length !== 3 || !parts[1] || !parts[2]) throw new Error("Silo could not identify the remote sandbox. Refresh its computer and retry.")
   return { hostId: decodeURIComponent(parts[1]), vmId: decodeURIComponent(parts[2]) }
 }
 export function workspaceTarget(workspace: ApplicationWorkspace): string {

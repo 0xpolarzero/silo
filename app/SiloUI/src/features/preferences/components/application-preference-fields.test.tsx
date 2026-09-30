@@ -207,7 +207,7 @@ describe("application preference choices", () => {
     expect(screen.getByRole("combobox", { name: "Browser" })).toHaveTextContent("Firefox")
     // The failure is explained beside the select instead of only in the console.
     const alert = screen.getByRole("alert")
-    expect(alert).toHaveTextContent("Couldn't use the chosen browser. The selected item is not an available application.")
+    expect(alert).toHaveTextContent("Could not use the chosen browser. The selected item is not an available application.")
     expect(screen.getByRole("combobox", { name: "Browser" })).toHaveAccessibleDescription(alert.textContent!)
     await user.click(screen.getByRole("combobox", { name: "Browser" }))
     await user.click(screen.getByRole("option", { name: "System default (Firefox)" }))

@@ -51,7 +51,7 @@ describe("sidebar attention", () => {
 
   it("counts sandboxes, not errors, next to Overview", () => {
     renderAttention()
-    const overview = within(screen.getByRole("button", { name: /^Overview/ }))
+    const overview = within(screen.getByRole("button", { name: /^All sandboxes/ }))
     expect(overview.getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
     expect(overview.getByRole("status", { name: "2 sandboxes have warnings" })).toHaveTextContent("2")
   })
@@ -62,7 +62,7 @@ describe("sidebar attention", () => {
     expect(sandboxes()).not.toHaveAttribute("aria-busy")
     expect(screen.queryByRole("status", { name: /need attention/ })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Collapse Sandboxes menu" }))
-    expect(screen.queryByRole("button", { name: /^Overview/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /^All sandboxes/ })).not.toBeInTheDocument()
     expect(screen.getByRole("status", { name: "3 sandboxes need attention" })).toBeInTheDocument()
     expect(sandboxes()).toHaveAccessibleDescription("3 sandboxes need attention")
     expect(mark()).toHaveTextContent("3")
@@ -82,7 +82,7 @@ describe("sidebar attention", () => {
   it("names the collapsed-sidebar Overview dot by the sandboxes that need attention", () => {
     renderAttention()
     fireEvent.click(screen.getByRole("button", { name: "Collapse sidebar" }))
-    expect(within(screen.getByRole("button", { name: /^Overview/ })).getByRole("status", { name: "3 sandboxes need attention" })).toHaveClass("bg-destructive")
+    expect(within(screen.getByRole("button", { name: /^All sandboxes/ })).getByRole("status", { name: "3 sandboxes need attention" })).toHaveClass("bg-destructive")
   })
 })
 

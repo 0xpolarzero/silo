@@ -65,7 +65,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
       </select>
       {isCustom && <Input technical
         type="number" inputMode="numeric" disabled={readOnly} min={1} max={max} step={1}
-        aria-label={`${label} custom (${suffix === "CPU" ? "CPUs" : "GiB"})`}
+        aria-label={`${label} custom (${suffix === "CPUs" ? "CPUs" : "GiB"})`}
         aria-invalid={Boolean(error)}
         aria-describedby={describedBy}
         value={customText}
@@ -79,7 +79,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
   )
   return readOnly ? (
     <TooltipProvider><Tooltip><TooltipTrigger asChild><span tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`}>{field}</span></TooltipTrigger>
-      <TooltipContent>To use a different disk size, create a new VM and transfer your data.</TooltipContent>
+      <TooltipContent>Disk size is read-only.</TooltipContent>
     </Tooltip></TooltipProvider>
   ) : field
 }
@@ -208,16 +208,16 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
     <div ref={container} className="grid min-w-0 gap-3 p-3" data-testid={`machine-editor-${draft.id}`}>
       <div className="flex min-w-0 items-center gap-2">
         {draft.kind === "vm" ? <Monitor className="size-4 shrink-0" aria-hidden="true" /> : <Server className="size-4 shrink-0" aria-hidden="true" />}
-        <span className="min-w-0 flex-1 text-xs font-semibold">{draft.kind === "vm" ? "Virtual machine details" : "SSH machine details"}</span>
-        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{draft.kind}</span>
+        <span className="min-w-0 flex-1 text-xs font-semibold">{draft.kind === "vm" ? "Sandbox details" : "SSH host details"}</span>
+        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{draft.kind === "ssh" ? "SSH host" : draft.kind}</span>
       </div>
 
       {editorHeader}
       {deletedElsewhere ? (
-        <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/[.06] px-3 py-2 text-xs text-destructive">This VM no longer exists.</p>
+        <p role="alert" className="rounded-md border border-destructive/30 bg-destructive/[.06] px-3 py-2 text-xs text-destructive">This sandbox no longer exists.</p>
       ) : conflict ? (
         <div role="alert" className="grid gap-2 rounded-md border border-destructive/30 bg-destructive/[.06] px-3 py-2 text-xs text-destructive">
-          <p>This VM changed since you opened it.</p>
+          <p>This sandbox changed since you opened it.</p>
           <div className="flex justify-end gap-2">
             <Button type="button" size="xs" variant="outline" disabled={saving} onClick={onDiscard}>Discard my edits</Button>
             <Button type="button" size="xs" disabled={saving} onClick={onReview}>Review changes</Button>
@@ -225,7 +225,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         </div>
       ) : divergent ? (
         <p role="status" className="rounded-md border border-amber-500/30 bg-amber-500/[.07] px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-          This VM was changed elsewhere.{changedFields.length > 0 ? ` Updated: ${changedFields.map(machineFieldLabel).join(", ")}.` : ""}
+          This sandbox was changed elsewhere.{changedFields.length > 0 ? ` Updated: ${changedFields.map(machineFieldLabel).join(", ")}.` : ""}
         </p>
       ) : review ? (
         <div role="status" aria-label="Review changes" className="grid gap-1 rounded-md border border-amber-500/30 bg-amber-500/[.07] px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
@@ -245,7 +245,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
       <TextField
         firstField
         inputRef={firstField}
-        label="Machine name"
+        label={draft.kind === "vm" ? "Sandbox name" : "SSH host name"}
         value={draft.name}
         readOnly={created}
         className={created ? "opacity-60" : undefined}
@@ -255,16 +255,18 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         onChange={(event) => update({ name: event.target.value })}
       />
 
-      {created && draft.kind === "vm" && <p className="text-[11px] text-muted-foreground">Existing VMs cannot be renamed or have their disks resized.</p>}
+      {created && draft.kind === "vm" && <p className="text-[11px] text-muted-foreground">Existing sandboxes cannot be renamed or have their disks resized. To use a different disk size, create a new sandbox and transfer your data.</p>}
+      {editor.displayAfterID && <p className="text-[11px] text-muted-foreground">{draft.kind === "vm" ? "Creates a new empty sandbox with the same settings. Files are not included." : "Creates a new SSH host connection with the same settings."}</p>}
 
       {draft.kind === "vm" ? (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
-          <SelectField custom label="CPU limit" value={draft.cpus} values={cpuPresets} max={maximums.cpus} suffix="CPU" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="CPU ceiling" value={draft.maxCPUs} values={cpuPresets} max={maximums.cpus} suffix="CPU" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory limit" value={draft.memoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom readOnly={created} label="Workspace storage" value={draft.workspaceStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom readOnly={created} label="Runtime storage" value={draft.runtimeStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <p className="col-span-full text-[11px] text-muted-foreground">CPUs and Memory set the startup allocation; ceilings set the maximum. The Workspace disk holds /workspace; the Runtime disk holds the operating system and installed applications.</p>
+          <SelectField custom label="CPUs" value={draft.cpus} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="CPUs ceiling" value={draft.maxCPUs} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory" value={draft.memoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom readOnly={created} label="Workspace disk" value={draft.workspaceStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GiB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom readOnly={created} label="Runtime disk" value={draft.runtimeStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GiB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
         </div>
       ) : (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7rem]">
@@ -294,7 +296,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
           <Switch aria-label="Start desktop with sandbox" checked={draft.desktop?.startWithSandbox ?? true} disabled={saving} onCheckedChange={startWithSandbox => update({ desktop: { startWithSandbox } })} />
         </label> : created ? <div className="flex items-center justify-between gap-3">
           <div className="text-xs">Linux desktop<p className="mt-1 text-[11px] text-muted-foreground">Use graphical applications in this sandbox.</p></div>
-          {draft.desktop ? <span className="text-xs text-muted-foreground">Installs when you save</span> : <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => update({ desktop: { startWithSandbox: true } })}>Add desktop</Button>}
+          {draft.desktop ? <span className="text-xs text-muted-foreground">Installs when you save</span> : <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => update({ desktop: { startWithSandbox: true } })}>Add Linux desktop</Button>}
         </div> : <label className="flex items-start gap-2 text-xs">
           <Checkbox aria-label="Linux desktop" checked={Boolean(draft.desktop)} disabled={saving} onCheckedChange={checked => update({ desktop: checked === true ? { startWithSandbox: true } : undefined })} />
           <span>Linux desktop<span className="mt-1 block text-[11px] text-muted-foreground">Run graphical applications. Starts with the sandbox.</span></span>

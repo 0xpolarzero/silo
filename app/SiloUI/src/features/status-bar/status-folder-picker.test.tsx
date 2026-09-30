@@ -56,7 +56,7 @@ describe("status folder picker live directories", () => {
       await act(async () => {})
       expect(screen.getByRole("button", { name: "project" })).toBeVisible()
       await act(async () => vi.advanceTimersByTime(10_000))
-      expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t refresh. Showing previous folders.")
+      expect(await screen.findByRole("alert")).toHaveTextContent("Could not refresh. Showing previous folders.")
       const open = screen.getByRole("button", { name: "Open in Cursor" })
       expect(open).toBeEnabled()
       act(() => open.click())
@@ -76,7 +76,7 @@ describe("status folder picker live directories", () => {
   it.each(["stopped", "stale"])("does not load or open a %s VM", (state) => {
     const loader = vi.fn()
     render(<StatusFolderPicker workspace={{ ...workspace, ...(state === "stopped" ? { state: "stopped" } : { freshness: "stale" }) }} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} />)
-    expect(screen.getByText(state === "stopped" ? "Start this VM to browse its files." : "Reconnect to browse files.")).toBeVisible()
+    expect(screen.getByText(state === "stopped" ? "Start this sandbox to browse its files." : "Reconnect to browse files.")).toBeVisible()
     expect(loader).not.toHaveBeenCalled()
     expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeDisabled()
   })

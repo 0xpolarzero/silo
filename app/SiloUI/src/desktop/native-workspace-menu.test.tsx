@@ -38,7 +38,7 @@ describe("native workspace menu", () => {
     const items = menus[0]!
     items.find((item) => item.text === "Start")?.action?.()
     items.find((item) => item.text?.startsWith("Open in ") && !item.text.endsWith("…"))?.action?.()
-    items.find((item) => item.text === "Open site")?.items?.find((item) => item.text === "Port 3000")?.action?.()
+    items.find((item) => item.text === "Open in browser")?.items?.find((item) => item.text === "Port 3000")?.action?.()
     const target = remoteWorkspaceTarget("office", "vm-1")
     expect(actions.startWorkspace).toHaveBeenCalledWith(target)
     expect(actions.openTerminal).toHaveBeenCalledWith(target)
@@ -60,7 +60,7 @@ describe("native workspace menu", () => {
     render(<NativeWorkspaceMenu workspace={workspace} source={source} actions={actions} onFolders={vi.fn()} onConfirm={vi.fn()} />)
     await userEvent.click(screen.getByRole("button", { name: `Actions for ${workspace.machine.name}` }))
     await vi.waitFor(() => expect(menus).toHaveLength(1))
-    const sites = menus[0]!.find((item) => item.text === "Open site")!.items!
+    const sites = menus[0]!.find((item) => item.text === "Open in browser")!.items!
     expect(sites.map((item) => item.text)).toEqual(["Port 3000", undefined, "Copy port 3000 address"])
     sites.find((item) => item.text === "Copy port 3000 address")!.action!()
     expect(writeText).toHaveBeenCalledExactlyOnceWith("http://127.0.0.1:43000")

@@ -62,7 +62,7 @@ describe("application", () => {
     await user.click(sections.getByRole("button", { name: "Logs" }))
     expect(screen.getByText(/Showing .* matching records/)).toBeVisible()
     expect(queryLogs).toHaveBeenCalledTimes(calls)
-    await user.click(sections.getByRole("button", { name: "Overview" }))
+    await user.click(sections.getByRole("button", { name: "All sandboxes" }))
     await user.click(sections.getByRole("button", { name: "Logs" }))
     expect(screen.getByText(/Showing .* matching records/)).toBeVisible()
     expect(queryLogs).toHaveBeenCalledTimes(calls)
@@ -144,7 +144,7 @@ describe("application", () => {
     await user.click(form.getByRole("button", { name: "Save" }))
     expect(actions.saveSecret).toHaveBeenCalledExactlyOnceWith({ operation: "edit", id: "package-token", name: "PACKAGE_TOKEN", workspaces: ["dev", "playgrounds", "personal"], allowedDomains: ["packages.example.test"] })
 
-    await user.click(within(appNavigation()).getByRole("button", { name: "Overview" }))
+    await user.click(within(appNavigation()).getByRole("button", { name: "All sandboxes" }))
     expect(screen.getByRole("note", { name: "Secret changes apply on next start for personal" })).toBeVisible()
     await user.click(within(appNavigation()).getByRole("button", { name: "Secrets" }))
     expect(screen.getByLabelText("Allowed domains for PACKAGE_TOKEN")).toHaveTextContent("packages.example.test")
@@ -165,7 +165,7 @@ describe("application", () => {
     expect(within(appNavigation()).getByRole("button", { name: "Activity" })).toHaveAttribute("aria-current", "page")
     expect(appNavigation()).toHaveAttribute("data-collapsed", "true")
     rerender(<ApplicationPreview source={source} initialRoute={{ workspace: "dev" }} />)
-    expect(within(appNavigation()).getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page")
+    expect(within(appNavigation()).getByRole("button", { name: "All sandboxes" })).toHaveAttribute("aria-current", "page")
   })
 
   it("opens a sandbox detail page and returns to the list with the app's Back control", async () => {
@@ -194,7 +194,7 @@ describe("application", () => {
     expect(appNavigation()).toHaveAttribute("data-collapsed", "true")
     expect(navigation.queryByRole("button", { name: "Collapse Sandboxes menu" })).not.toBeInTheDocument()
     expect(navigation.queryByRole("group", { name: "Settings sections" })).not.toBeInTheDocument()
-    for (const label of ["Overview", "Files", "Logs", "Network", "Activity", "GitHub", "Secrets", "Settings"]) {
+    for (const label of ["All sandboxes", "Files", "Logs", "Network", "Activity", "GitHub", "Secrets", "Settings"]) {
       const button = navigation.getByRole("button", { name: label })
       expect(button.querySelector("svg")).toBeInTheDocument()
       expect(button).toHaveAccessibleName(label)
@@ -368,7 +368,7 @@ describe("application", () => {
     vi.useFakeTimers()
     const application = renderApplication()
     try {
-      const overviewNav = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: "Overview" })
+      const overviewNav = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: "All sandboxes" })
       fireEvent.click(screen.getByRole("button", { name: "Add" }))
       fireEvent.click(screen.getByRole("menuitem", { name: "Import sandbox…" }))
       await act(async () => { await Promise.resolve() })
@@ -404,15 +404,15 @@ describe("application", () => {
 
     expect(within(navigation).getByRole("button", { name: "Sandboxes" })).toHaveAttribute("aria-current", "page")
     const sandboxSections = within(navigation).getByRole("group", { name: "Sandbox sections" })
-    expect(within(sandboxSections).getAllByRole("button")).toEqual(["Overview", "Files", "Logs", "Network", "Activity"].map(name => within(sandboxSections).getByRole("button", { name })))
-    expect(within(sandboxSections).getByRole("button", { name: "Overview" })).toHaveAttribute("aria-current", "page")
+    expect(within(sandboxSections).getAllByRole("button")).toEqual(["All sandboxes", "Files", "Logs", "Network", "Activity"].map(name => within(sandboxSections).getByRole("button", { name })))
+    expect(within(sandboxSections).getByRole("button", { name: "All sandboxes" })).toHaveAttribute("aria-current", "page")
     expect(sandboxSections).toHaveClass("sidebar-subnav")
 
     const overview = within(appPanel("Sandboxes"))
-    expect(overview.queryByRole("heading", { name: "Overview" })).not.toBeInTheDocument()
+    expect(overview.queryByRole("heading", { name: "All sandboxes" })).not.toBeInTheDocument()
     expect(overview.queryByText(/Updated just now/)).not.toBeInTheDocument()
     expect(overview.getByRole("heading", { name: "Sandboxes" })).toBeVisible()
-    expect(overview.getByText("3 sandboxes · 3 on this computer · 0 remote")).toBeVisible()
+    expect(overview.getByText("3 sandboxes · 3 on this computer · 0 on other computers · 0 SSH hosts")).toBeVisible()
     expect(overview.getByRole("button", { name: "Add" })).toBeVisible()
     const sandboxList = overview.getByRole("list", { name: "Configured sandboxes" })
     expect(sandboxList).toBeVisible()
@@ -429,7 +429,7 @@ describe("application", () => {
   ] as const)("counts %s sandboxes next to Overview", (mode, label, count) => {
     renderApplication("running", applicationSourceForScenario("running", undefined, mode))
 
-    const overview = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
+    const overview = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /All sandboxes/ })
     expect(within(overview).getByRole("status", { name: label })).toHaveTextContent(count)
   })
 
@@ -439,14 +439,14 @@ describe("application", () => {
       source: ApplicationSource
       section?: "workspace"
     }> = [
-      { label: "Overview", source: applicationSourceForScenario("running", undefined, "starting"), section: "workspace" },
-      { label: "Overview", source: applicationSourceForScenario("running", undefined, undefined, "add-verifying"), section: "workspace" },
+      { label: "All sandboxes", source: applicationSourceForScenario("running", undefined, "starting"), section: "workspace" },
+      { label: "All sandboxes", source: applicationSourceForScenario("running", undefined, undefined, "add-verifying"), section: "workspace" },
       { label: "Files", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "pushing"), section: "workspace" },
       { label: "Files", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "git-live"), section: "workspace" },
       { label: "GitHub", source: applicationSourceForScenario("running", "connecting") },
       { label: "GitHub", source: applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "applying") },
       { label: "Secrets", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "secrets-live") },
-      { label: "Overview", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "backup-live"), section: "workspace" },
+      { label: "All sandboxes", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "backup-live"), section: "workspace" },
       { label: "System issue", source: applicationSourceForScenario("running", undefined, undefined, undefined, "checking") },
     ]
 
@@ -480,7 +480,7 @@ describe("application", () => {
     const navigation = within(appNavigation())
     const sandboxSections = within(navigation.getByRole("group", { name: "Sandbox sections" }))
 
-    for (const label of ["Overview", "Files", "Logs", "Network", "Activity"]) {
+    for (const label of ["All sandboxes", "Files", "Logs", "Network", "Activity"]) {
       expect(sandboxSections.getByRole("button", { name: label })).not.toHaveAttribute("aria-busy")
     }
     for (const label of ["GitHub", "Secrets", "Settings"]) {
@@ -523,9 +523,9 @@ describe("application", () => {
     const panel = within(appPanel("Sandboxes"))
     await user.click(panel.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    expect(panel.getByRole("combobox", { name: "CPU ceiling" })).toHaveValue("8")
+    expect(panel.getByRole("combobox", { name: "CPUs ceiling" })).toHaveValue("8")
     expect(panel.getByRole("combobox", { name: "Memory ceiling" })).toHaveValue("16")
-    expect(panel.getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+    expect(panel.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
   })
 
   it("keeps an unsaved sandbox edit while visiting another section (I-37)", async () => {
@@ -533,11 +533,11 @@ describe("application", () => {
     const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
     await user.click(screen.getByRole("button", { name: "More actions for dev" }))
     await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
-    await user.selectOptions(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.selectOptions(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs" }), "4")
     await user.click(sandboxSections.getByRole("button", { name: "Files" }))
-    expect(within(appPanel("Sandboxes")).queryByRole("combobox", { name: "CPU limit" })).not.toBeInTheDocument()
-    await user.click(sandboxSections.getByRole("button", { name: "Overview" }))
-    expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+    expect(within(appPanel("Sandboxes")).queryByRole("combobox", { name: "CPUs" })).not.toBeInTheDocument()
+    await user.click(sandboxSections.getByRole("button", { name: "All sandboxes" }))
+    expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
   })
 
   it("uses one global sandbox filter across Files, Logs, Network, and Activity", async () => {
@@ -678,26 +678,26 @@ describe("application", () => {
     expect(playgroundsRow).toHaveClass("hover:bg-muted/55", "focus-within:bg-muted/55")
     const playgroundsCells = within(playgroundsRow).getAllByRole("cell")
     expect(playgroundsCells[0]).toHaveTextContent("17:02:11")
-    expect(playgroundsCells[1]).toHaveTextContent("silo Workspace stopped cleanly")
+    expect(playgroundsCells[1]).toHaveTextContent("silo Sandbox stopped cleanly")
     expect(playgroundsCells[2]).toContainElement(within(playgroundsRow).getByLabelText("playgrounds, Stopped"))
     const copyLine = within(playgroundsRow).getByRole("button", { name: "Copy log line from playgrounds at 17:02:11" })
     expect(copyLine).toHaveClass("opacity-0", "group-hover/log-row:opacity-100", "group-focus-within/log-row:opacity-100")
     const copy = vi.spyOn(navigator.clipboard, "writeText")
     await user.click(copyLine)
-    expect(copy).toHaveBeenCalledWith("2026-09-03T17:02:11Z\tlocal\t00000000-0000-4000-8000-000000000002\toutput\t\t17:02:11  silo  Workspace stopped cleanly")
+    expect(copy).toHaveBeenCalledWith("2026-09-03T17:02:11Z\tlocal\t00000000-0000-4000-8000-000000000002\toutput\t\t17:02:11  silo  Sandbox stopped cleanly")
     const copiedLine = within(playgroundsRow).getByRole("button", { name: "Log line copied" })
     expect(copiedLine).toHaveAttribute("data-copy-status", "copied")
     expect(copiedLine.querySelector("svg")).toHaveClass("lucide-check")
 
     await user.click(panel.getByRole("button", { name: "Copy logs" }))
-    expect(copy).toHaveBeenLastCalledWith(expect.stringMatching(/2026-09-03T17:02:11Z\tlocal\t.*\n.*09:41:02.*\tlocal\t.*Workspace stopped cleanly/))
+    expect(copy).toHaveBeenLastCalledWith(expect.stringMatching(/2026-09-03T17:02:11Z\tlocal\t.*\n.*09:41:02.*\tlocal\t.*Sandbox stopped cleanly/))
     const copiedLogs = panel.getByRole("button", { name: "Logs copied" })
     expect(copiedLogs).toHaveTextContent("Copied")
     expect(copiedLogs.querySelector("svg")).toHaveClass("lucide-check")
 
     await user.click(sandboxSections.getByRole("button", { name: "Network" }))
     expect(panel.queryByRole("region", { name: "Network for dev" })).not.toBeInTheDocument()
-    expect(panel.getByText("No configured ports")).toBeVisible()
+    expect(panel.getByText("No ports")).toBeVisible()
 
     await user.click(sandboxSections.getByRole("button", { name: "Activity" }))
     const activity = panel.getByRole("list", { name: "Recent activity" })
@@ -707,7 +707,7 @@ describe("application", () => {
     expect(panel.queryByRole("heading", { name: "Activity" })).not.toBeInTheDocument()
     expect(within(activity).queryByText("dev")).not.toBeInTheDocument()
     expect(within(activity).getByText("playgrounds")).toBeVisible()
-    expect(within(activity).getByText("Backup completed")).toBeVisible()
+    expect(within(activity).getByText("Export completed")).toBeVisible()
     const activityRows = within(activity).getAllByRole("listitem")
     expect(activityRows).toHaveLength(2)
     expect(within(activityRows[0]).getByText("Stop verified")).toBeVisible()
@@ -735,7 +735,7 @@ describe("application", () => {
     await user.click(screen.getByRole("option", { name: "Export & import" }))
     expect(categoryFilters.getByRole("button", { name: "Remove Export & import" })).toBeVisible()
     expect(within(activity).getAllByRole("listitem")).toHaveLength(1)
-    expect(within(activity).getByText("Backup completed")).toBeVisible()
+    expect(within(activity).getByText("Export completed")).toBeVisible()
 
     await user.click(categoryCombobox)
     await user.click(screen.getByRole("option", { name: "Sandbox" }))
@@ -755,7 +755,7 @@ describe("application", () => {
       expect.stringContaining("Start verified"),
       expect.stringContaining("Stop verified"),
       expect.stringContaining("Push completed"),
-      expect.stringContaining("Backup completed"),
+      expect.stringContaining("Export completed"),
     ])
     expect(filters.queryByRole("button", { name: "All" })).not.toBeInTheDocument()
   })
@@ -810,12 +810,12 @@ describe("application", () => {
     expect(within(rows[1]).getByText("Waiting for service")).toBeVisible()
 
     expect(rows[0]).toHaveClass("hover:bg-muted/55", "focus-within:bg-muted/55")
-    const open = within(rows[0]).getByRole("button", { name: "Open http://127.0.0.1:3000 in Firefox" })
+    const open = within(rows[0]).getByRole("button", { name: "Open port 3000 in browser" })
     const actions = open.closest('[role="cell"]') as HTMLElement
     expect(actions).not.toHaveClass("opacity-0", "group-hover/network-row:opacity-100", "group-focus-within/network-row:opacity-100")
     expect(within(rows[1]).getByRole("button", { name: "Copy http://127.0.0.1:5173" })).toBeVisible()
     await application.user.hover(open)
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Open in Firefox")
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Open in browser")
     await application.user.unhover(open)
 
     const copy = vi.spyOn(navigator.clipboard, "writeText")
@@ -867,7 +867,7 @@ describe("application", () => {
     }
     expect(within(activity).getByText("Restart outcome unknown")).toBeVisible()
     expect(within(activity).getByText("Push failed")).toBeVisible()
-    expect(within(activity).getByText("Backup completed · restart required")).toBeVisible()
+    expect(within(activity).getByText("Export completed · restart required")).toBeVisible()
     expect(within(activity).getByText("Secret verification failed")).toBeVisible()
     expect(within(activity).getByText("GitHub disconnect incomplete")).toBeVisible()
     expect(within(activity).getByText("Deep check failed")).toBeVisible()
@@ -899,18 +899,18 @@ describe("application", () => {
     application.rerender(<ApplicationPreview source={sourceAt(2)} actions={application.actions} />)
     const progressingRow = panel.getByRole("list", { name: "Recent activity" }).querySelector<HTMLElement>('[data-activity-id="live-backup"]')
     expect(progressingRow).toBe(firstRow)
-    expect(progressingRow).toHaveTextContent("Checksumming archive")
+    expect(progressingRow).toHaveTextContent("Checksumming export file")
     expect(within(progressingRow!).getByRole("progressbar")).toHaveAttribute("aria-valuenow", "75")
 
     application.rerender(<ApplicationPreview source={sourceAt(4)} actions={application.actions} />)
     const completedRow = panel.getByRole("list", { name: "Recent activity" }).querySelector<HTMLElement>('[data-activity-id="live-backup"]')
     expect(completedRow).toBe(firstRow)
     expect(completedRow).not.toHaveAttribute("aria-busy")
-    expect(completedRow).toHaveTextContent("Backup completed")
+    expect(completedRow).toHaveTextContent("Export completed")
     expect(completedRow?.querySelector("svg")).toHaveClass("lucide-check")
     expect(within(completedRow!).queryByRole("progressbar")).not.toBeInTheDocument()
     expect(panel.getByRole("list", { name: "Recent activity" }).querySelectorAll('[data-activity-id="live-backup"]')).toHaveLength(1)
-    expect(within(panel.getByRole("list", { name: "Recent activity" })).getAllByText("Backup completed")).toHaveLength(1)
+    expect(within(panel.getByRole("list", { name: "Recent activity" })).getAllByText("Export completed")).toHaveLength(1)
   })
 
   it("shows repository push progress inside its row", async () => {
@@ -1005,7 +1005,7 @@ describe("application", () => {
     expect(rows[2].querySelector("[data-sandbox-icon-state='normal']")).toBeVisible()
     expect(within(rows[0]).getByRole("img", { name: "error status" })).toBeVisible()
     expect(within(rows[1]).getByRole("img", { name: "warning status" })).toBeVisible()
-    expect(rows[1]).toHaveTextContent("ssh")
+    expect(rows[1]).toHaveTextContent("SSH host")
     expect(rows[0]).toHaveTextContent("Failed")
     expect(rows[1]).toHaveTextContent("Stopped")
     expect(rows[2]).toHaveTextContent("Running")
@@ -1017,12 +1017,12 @@ describe("application", () => {
     expect(overview.queryByLabelText("Sandbox attention")).not.toBeInTheDocument()
     expect(overview.queryByText(/needs attention/i)).not.toBeInTheDocument()
 
-    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
+    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /All sandboxes/ })
     expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
     expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has a warning" })).toHaveTextContent("1")
 
     await user.click(screen.getByRole("button", { name: "More actions for error" }))
-    await user.click(screen.getByRole("menuitem", { name: "Duplicate error" }))
+    await user.click(screen.getByRole("menuitem", { name: "Duplicate settings for error" }))
     expect(within(list).getAllByRole("listitem").map((row) => row.getAttribute("data-sandbox-name"))).toEqual(["error", "error-copy", "warning", "normal"])
     await user.click(overview.getByRole("button", { name: "Cancel" }))
 
@@ -1100,14 +1100,14 @@ describe("application", () => {
   })
 
   it.each([
-    ["add-configuring", "scratch", "Configuring workspace 'scratch'.", "0 of 3 steps complete"],
+    ["add-configuring", "scratch", "Configuring sandbox 'scratch'.", "0 of 3 steps complete"],
     ["add-networking", "scratch", "Starting candidate networking for 'scratch'.", "1 of 3 steps complete"],
     ["add-verifying", "scratch", "Verifying 'scratch'.", "2 of 3 steps complete"],
   ] as const)("shows %s progress inside only the affected sandbox", (fixture, workspace, message, progressLabel) => {
     renderApplication("running", applicationSourceForScenario("running", undefined, undefined, fixture))
     const overview = within(appPanel("Sandboxes"))
     const row = overview.getByText(workspace).closest("li") as HTMLElement
-    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
+    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /All sandboxes/ })
 
     const existing = overview.getByText("dev").closest("li") as HTMLElement
     expect(existing).not.toHaveAttribute("aria-busy")
@@ -1146,13 +1146,13 @@ describe("application", () => {
 
     expect(row).not.toHaveAttribute("aria-busy")
     expect(within(row).getByRole("alert")).toHaveTextContent("Networking failed")
-    expect(within(row).getByRole("alert")).toHaveTextContent("Repair workspace startup or SSH forwarding, then retry.")
+    expect(within(row).getByRole("alert")).toHaveTextContent("Repair sandbox startup or SSH forwarding, then retry.")
     expect(within(row).queryByLabelText("Manage scratch")).not.toBeInTheDocument()
     await user.click(within(row).getByRole("button", { name: "Retry scratch configuration" }))
     expect(actions.retryMachineConfiguration).toHaveBeenCalledWith("scratch")
     expect(overview.queryByText(/needs attention/i)).not.toBeInTheDocument()
 
-    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
+    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /All sandboxes/ })
     expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
     expect(within(overviewNavigation).getByRole("status", { name: "3 sandboxes have warnings" })).toHaveTextContent("3")
   })
@@ -1166,13 +1166,13 @@ describe("application", () => {
 
     expect(within(devRow as HTMLElement).queryByLabelText("Manage dev")).not.toBeInTheDocument()
     await user.click(within(devRow as HTMLElement).getByRole("button", { name: "More actions for dev" }))
-    for (const action of ["Edit dev", "Duplicate dev", "Delete dev"]) expect(screen.getByRole("menuitem", { name: action })).toBeVisible()
+    for (const action of ["Edit dev", "Duplicate settings for dev", "Delete dev"]) expect(screen.getByRole("menuitem", { name: action })).toBeVisible()
     await user.keyboard("{Escape}")
     await user.hover(devRow as HTMLElement)
 
     await user.click(overview.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    const name = overview.getByRole("textbox", { name: "Machine name" })
+    const name = overview.getByRole("textbox", { name: "Sandbox name" })
     expect(name).toHaveValue("workspace-4")
     expect(name).toHaveFocus()
     await user.clear(name)
@@ -1196,14 +1196,14 @@ describe("application", () => {
 
     await user.click(screen.getByRole("button", { name: "More actions for dev" }))
     await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
-    const name = overview.getByRole("textbox", { name: "Machine name" })
+    const name = overview.getByRole("textbox", { name: "Sandbox name" })
     expect(name).toHaveAttribute("readonly")
-    expect(overview.getByText("Existing VMs cannot be renamed or have their disks resized.")).toBeVisible()
-    expect(overview.getByRole("combobox", { name: "Workspace storage" })).toBeDisabled()
-    expect(overview.getByRole("combobox", { name: "Runtime storage" })).toBeDisabled()
-    await user.hover(overview.getByLabelText(/Workspace storage: .*read-only/))
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("To use a different disk size, create a new VM and transfer your data.")
-    await user.selectOptions(overview.getByRole("combobox", { name: "CPU limit" }), "4")
+    expect(overview.getByText("Existing sandboxes cannot be renamed or have their disks resized. To use a different disk size, create a new sandbox and transfer your data.")).toBeVisible()
+    expect(overview.getByRole("combobox", { name: "Workspace disk" })).toBeDisabled()
+    expect(overview.getByRole("combobox", { name: "Runtime disk" })).toBeDisabled()
+    await user.hover(overview.getByLabelText(/Workspace disk: .*read-only/))
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Disk size is read-only.")
+    await user.selectOptions(overview.getByRole("combobox", { name: "CPUs" }), "4")
     await user.click(overview.getByRole("button", { name: "Stop and save…" }))
     await user.click(overview.getByRole("button", { name: "Stop and save" }))
 
@@ -1456,7 +1456,7 @@ describe("application", () => {
     const page = within(appPanel("System issue"))
     expect(page.getByRole("heading", { name: "Silo runtime is unavailable", level: 3 })).toBeVisible()
     expect(page.getByText("This app build is missing its bundled Silo runtime.")).toBeVisible()
-    expect(page.getByText("Reinstall Silo from a complete app bundle. Keep your existing VMs and settings.")).toBeVisible()
+    expect(page.getByText("Reinstall Silo from a complete app bundle. Keep your existing sandboxes and settings.")).toBeVisible()
     expect(page.queryByRole("button", { name: /repair/i })).not.toBeInTheDocument()
   })
 
@@ -1549,7 +1549,7 @@ describe("application", () => {
     }))
   })
 
-  it("allows repository selection without inventing a missing Git author", async () => {
+  it("allows repository selection without inventing a missing Git identity", async () => {
     const source = applicationSourceForScenario("running")
     source.github.workspaces = []
     source.github.hostIdentity = null
@@ -1832,7 +1832,7 @@ describe("application", () => {
 
     await application.user.click(github.getByRole("button", { name: "Disable access" }))
     next("failed", 3)
-    expect(await screen.findByText(/GitHub settings couldn’t be applied\./)).toBeVisible()
+    expect(await screen.findByText(/GitHub settings could not be applied\./)).toBeVisible()
     expect(screen.queryByText("GitHub settings applied")).not.toBeInTheDocument()
     expect(github.getByRole("button", { name: /GitHub settings not applied for dev/ })).toHaveTextContent("Not applied")
     await application.user.click(screen.getByRole("button", { name: "Retry" }))

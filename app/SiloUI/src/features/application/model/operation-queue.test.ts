@@ -159,7 +159,7 @@ describe("toastableQueue", () => {
   it("keeps operations that have no notification of their own, including a label that looks like a lifecycle one", () => {
     const queue: OperationQueue = {
       running: [entry({ id: 1, label: "Applying the sandbox configuration" }), entry({ id: 2, label: "Starting to look like a lifecycle label", kind: "other" })],
-      waiting: [entry({ id: 3, label: "Saving Git identities" }), entry({ id: 4, label: "Stopping local VMs", kind: "shutdown" })],
+      waiting: [entry({ id: 3, label: "Saving Git identities" }), entry({ id: 4, label: "Stopping local sandboxes", kind: "shutdown" })],
     }
     const toastable = toastableQueue(queue)
     expect(toastable.running.map((e) => e.id)).toEqual([1, 2])
@@ -170,7 +170,7 @@ describe("toastableQueue", () => {
 describe("shutdown helpers", () => {
   it("ignores the shutdown entry itself when listing what Quit waits on or can cancel", () => {
     const queue: OperationQueue = {
-      running: [entry({ id: 1, label: "Stopping local VMs", kind: "shutdown", cancellable: true }), entry({ id: 2, label: "Backing up sandboxes", cancellable: true }), entry({ id: 3, label: "Installing update", cancellable: false })],
+      running: [entry({ id: 1, label: "Stopping local sandboxes", kind: "shutdown", cancellable: true }), entry({ id: 2, label: "Backing up sandboxes", cancellable: true }), entry({ id: 3, label: "Installing update", cancellable: false })],
       waiting: [],
     }
     expect(shutdownWaitingLabel(queue)).toBe("Waiting for Backing up sandboxes and Installing update…")

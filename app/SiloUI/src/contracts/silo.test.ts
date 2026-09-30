@@ -70,7 +70,7 @@ describe("Silo contract fixtures", () => {
         ...onboardingScenarios.running.githubPolicies[0].repositories[0],
         workspace: "personal",
       }],
-    })).toThrow("repository workspaces must match the policy workspace")
+    })).toThrow("Repository sandboxes must match the sandbox access policy.")
   })
 
   it("keeps the machine host-boundary request discriminated, ordered, and strict", () => {
@@ -101,7 +101,7 @@ describe("Silo contract fixtures", () => {
     expect(() => setupMachineConfigurationRequestSchema.parse({
       ...request,
       machines: [request.machines[0], { ...request.machines[1], id: request.machines[0].id }],
-    })).toThrow("machine IDs must be unique")
+    })).toThrow("Sandbox IDs must be unique.")
   })
 })
 

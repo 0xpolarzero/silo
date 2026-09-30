@@ -114,7 +114,7 @@ it("opens the sandbox editor in place on the detail page without leaving it", as
   // The editor renders on the detail page under an "Edit <name>" label, the tabs are hidden,
   // and the sandbox list is never shown.
   expect(screen.getByRole("heading", { name: `Edit ${workspace.machine.name}` })).toBeVisible()
-  expect(screen.getByRole("textbox", { name: "Machine name" })).toBeVisible()
+  expect(screen.getByRole("textbox", { name: "Sandbox name" })).toBeVisible()
   expect(screen.queryByRole("tab", { name: "Overview" })).not.toBeInTheDocument()
   expect(screen.queryByRole("list", { name: "Configured sandboxes" })).not.toBeInTheDocument()
   expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toHaveTextContent(`Sandboxes${workspace.machine.name}`)
@@ -140,7 +140,7 @@ it("commits an in-place edit with a baseline and returns to the overview tab", a
 
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
   await user.click(screen.getByRole("button", { name: "Edit" }))
-  await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   // The sandbox is running, so saving asks to stop it first.
   await user.click(screen.getByRole("button", { name: "Stop and save…" }))
   await user.click(screen.getByRole("button", { name: "Stop and save" }))
@@ -173,7 +173,7 @@ it("cancels an in-place edit without committing", async () => {
 it("shows the stale-edit conflict review in place when a save is rejected", async () => {
   const source = localVmSource()
   const workspace = source.workspaces.find(item => item.machine.kind === "vm")!
-  const onMachinesChange = vi.fn().mockRejectedValue(new Error("This VM changed while your edit was waiting. Review it and try again."))
+  const onMachinesChange = vi.fn().mockRejectedValue(new Error("This sandbox changed while your edit was waiting. Review it and try again."))
   // A defined saveRemoteMachine routes the commit through the awaited path, which keeps the
   // editor open on a stale rejection (the optimistic list path closes it immediately).
   const user = userEvent.setup()
@@ -181,19 +181,19 @@ it("shows the stale-edit conflict review in place when a save is rejected", asyn
 
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
   await user.click(screen.getByRole("button", { name: "Edit" }))
-  await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   // The sandbox is running, so saving asks to stop it first.
   await user.click(screen.getByRole("button", { name: "Stop and save…" }))
   await user.click(screen.getByRole("button", { name: "Stop and save" }))
 
-  expect(await screen.findByText("This VM changed since you opened it.")).toBeVisible()
+  expect(await screen.findByText("This sandbox changed since you opened it.")).toBeVisible()
   expect(screen.getByRole("button", { name: "Review changes" })).toBeVisible()
   // Still on the detail page, not the list.
   expect(screen.getByRole("navigation", { name: "Breadcrumb" })).toBeVisible()
   expect(screen.queryByRole("list", { name: "Configured sandboxes" })).not.toBeInTheDocument()
 
   await user.click(screen.getByRole("button", { name: "Review changes" }))
-  expect(screen.queryByText("This VM changed since you opened it.")).not.toBeInTheDocument()
+  expect(screen.queryByText("This sandbox changed since you opened it.")).not.toBeInTheDocument()
 })
 
 it("adds a secret from the Overview tab preselected to this sandbox", async () => {
@@ -274,7 +274,7 @@ it("reflects live network data and opens a reachable port from the Overview tab"
   const { user } = await openDetail(source, { openNetworkPort, saveNetworkPort: vi.fn(), removeNetworkPort: vi.fn(), refreshNetwork: vi.fn(async () => {}) })
 
   expect(screen.getByText("3000 → http://127.0.0.1:43000")).toBeVisible()
-  await user.click(screen.getByRole("button", { name: `Open http://127.0.0.1:43000 in ${source.preferences.browser}` }))
+  await user.click(screen.getByRole("button", { name: `Open port 3000 in browser` }))
   expect(openNetworkPort).toHaveBeenCalledWith(workspaceTarget(workspace), 3000)
 })
 
@@ -286,7 +286,7 @@ it("adds a port fixed to this sandbox from the Overview tab", async () => {
   const { user } = await openDetail(source, { saveNetworkPort, removeNetworkPort: vi.fn(), openNetworkPort: vi.fn(), refreshNetwork: vi.fn(async () => {}) })
 
   await user.click(screen.getByRole("button", { name: "Add port" }))
-  await user.type(screen.getByRole("spinbutton", { name: "VM port" }), "9000")
+  await user.type(screen.getByRole("spinbutton", { name: "Port" }), "9000")
   await user.click(screen.getByRole("button", { name: "Add" }))
   expect(saveNetworkPort).toHaveBeenCalledWith({ workspace: workspaceTarget(workspace), port: 9000, hostPort: null, scheme: "http" })
 })

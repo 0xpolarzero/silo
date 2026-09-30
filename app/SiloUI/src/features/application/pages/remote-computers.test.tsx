@@ -23,7 +23,7 @@ function setup(connected = true) {
 
 it("keeps the existing VM list and shows remote ownership through a focusable badge", async () => {
   const { remote, actions, user, source, view, onMachinesChange } = setup()
-  const badge = screen.getByLabelText(/Remote VM on Office Mac/)
+  const badge = screen.getByLabelText(/Sandbox on Office Mac/)
   expect(badge).toHaveAttribute("tabindex", "0")
   const row = within(badge.closest("li")!)
   expect(row.queryByText("Restart required")).not.toBeInTheDocument()
@@ -47,9 +47,9 @@ it("keeps the existing VM list and shows remote ownership through a focusable ba
 
 it("disables remote lifecycle operations while preserving last-known rows when the computer is unavailable", () => {
   const { remote } = setup(false)
-  expect(screen.getByText("4 sandboxes · 3 on this computer · 1 remote")).toBeVisible()
-  const row = within(screen.getByLabelText(/Remote VM on Office Mac/).closest("li")!)
-  expect(row.getByText("Unavailable")).toBeVisible()
+  expect(screen.getByText("4 sandboxes · 3 on this computer · 1 on other computers · 0 SSH hosts")).toBeVisible()
+  const row = within(screen.getByLabelText(/Sandbox on Office Mac/).closest("li")!)
+  expect(row.getByText("Offline · last known status")).toBeVisible()
   expect(row.getByRole("button", { name: `Stop ${remote.machine.name}` })).toBeDisabled()
   expect(row.queryByRole("button", { name: `Delete ${remote.machine.name} on Office Mac` })).not.toBeInTheDocument()
 })
@@ -66,7 +66,7 @@ it("creates a VM on the selected computer without rewriting the local inventory"
 
 it("edits a remote VM with the same name as a local VM using its original configuration", async () => {
   const { actions, remote, user } = setup()
-  const row = within(screen.getByLabelText(/Remote VM on Office Mac/).closest("li")!)
+  const row = within(screen.getByLabelText(/Sandbox on Office Mac/).closest("li")!)
   await user.click(row.getByRole("button", { name: `More actions for ${remote.machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Edit ${remote.machine.name}` }))
   expect(screen.getByRole("combobox", { name: "Run on" })).toBeDisabled()
@@ -92,7 +92,7 @@ it("removes the last VM from a remote computer and can create from an empty list
   await user.click(within((await screen.findByText(`Delete ${remote.machine.name} on Office Mac permanently?`)).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete permanently" }))
   await waitFor(() => expect(actions.deleteRemoteMachine).toHaveBeenCalledWith("office", remote.machine))
   view.rerender(<OverviewPage source={{ ...source, workspaces: [] }} actions={actions} onMachinesChange={onMachinesChange} />)
-  expect(screen.getByText("0 sandboxes · 0 on this computer · 0 remote")).toBeVisible()
+  expect(screen.getByText("0 sandboxes · 0 on this computer · 0 on other computers · 0 SSH hosts")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Add" }))
   await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")

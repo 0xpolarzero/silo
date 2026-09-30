@@ -149,7 +149,7 @@ describe("remote computer refresh", () => {
       const refreshing = store.applicationActions.refreshRepositories!()
       await vi.advanceTimersByTimeAsync(15_000)
       await refreshing
-      expect(row()).toMatchObject({ freshness: "stale", stateDetail: "Refreshing status" })
+      expect(row()).toMatchObject({ freshness: "stale", stateDetail: "Updating…" })
       answer.resolve(remoteSource({ stateDetail: "Answered" }))
       await vi.advanceTimersByTimeAsync(0)
       expect(row()).toMatchObject({ freshness: "fresh", stateDetail: "Answered" })
@@ -498,7 +498,7 @@ describe("overlapping state reads", () => {
       if (command !== "read_application_state") return undefined
       reads++
       if (reads === 2) return earlier.promise
-      if (reads === 3) throw new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS")
+      if (reads === 3) throw { code: "update_in_progress", message: "Sandbox settings are changing." }
       return withState("running", "Running")
     })
     const store = createProductionSource(mock.native)
@@ -581,7 +581,7 @@ describe("export and import state", () => {
 })
 
 describe("result and job identity", () => {
-  const archive = { name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GB", destination: "/tmp", sandboxes: ["dev"] }
+  const archive = { name: "dev.silo-backup", archivePath: "/tmp/dev.silo-backup", completedLabel: "Today", size: "1 GiB", destination: "/tmp", sandboxes: ["dev"] }
   const result = { operation: "backup" as const, archive, runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Export complete", message: "Exported dev." }
 
   it("shows a result again when the runtime refuses to dismiss it (H-33, E-49)", async () => {
@@ -668,7 +668,7 @@ describe("cancelled lifecycle actions", () => {
     } finally { store.dispose() }
   })
 
-  it("shows an older computer's cancelled action as neutral instead of a failure (H-34)", async () => {
+  it("keeps an older computer's unclassified cancellation text as a failure (H-34)", async () => {
     const mock = bridge(command => {
       if (command === "remote_host_list") return [office]
       if (command === "remote_host_snapshot") return remoteSource({ state: "stopped", lifecycleFailure: "Stop failed: stop dev was cancelled." })
@@ -676,9 +676,9 @@ describe("cancelled lifecycle actions", () => {
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
-      expect(store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))).toMatchObject({
-        lifecycleFailure: "stop dev was cancelled.", lifecycleFailureAction: "stop", lifecycleFailureCancelled: true,
-      })
+      const remote = store.getSnapshot().source?.workspaces.find(workspace => workspace.machine.id === remoteTarget("office"))
+      expect(remote?.lifecycleFailure).toBe("Stop failed: stop dev was cancelled.")
+      expect(remote?.lifecycleFailureCancelled).toBeUndefined()
     } finally { store.dispose() }
   })
 

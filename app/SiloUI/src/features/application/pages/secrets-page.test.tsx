@@ -54,7 +54,7 @@ describe("SecretsPage", () => {
     rerender(<SecretsPage source={structuredClone(source)} onSaveSecret={save} onRemoveSecret={vi.fn()} />)
     expect(screen.getByRole("form")).toBeVisible()
     await act(async () => reject(new Error("private-test-value")))
-    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t save this secret.")
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not save this secret.")
     expect(screen.getByRole("alert")).not.toHaveTextContent("private-test-value")
     expect(screen.getByLabelText("Replacement value")).toHaveValue("private-test-value")
     await user.click(screen.getByRole("button", { name: "Retry" }))
@@ -80,7 +80,7 @@ describe("SecretsPage", () => {
     await user.click(screen.getByRole("button", { name: "Remove PACKAGE_TOKEN" }))
     await user.click(screen.getByRole("button", { name: /^Remove$/ }))
     expect(screen.getByText("PACKAGE_TOKEN")).toBeVisible()
-    expect(screen.getByRole("alert")).toHaveTextContent("Couldn’t update this secret.")
+    expect(screen.getByRole("alert")).toHaveTextContent("Could not update this secret.")
     await user.click(screen.getByRole("button", { name: "Retry" }))
     expect(remove).toHaveBeenCalledTimes(2)
   })
@@ -88,7 +88,7 @@ describe("SecretsPage", () => {
   it("shows the affected sandboxes and retries partial runtime application", async () => {
     const user = userEvent.setup()
     const source = structuredClone(applicationSourceForScenario("running"))
-    source.secrets[0] = { ...source.secrets[0], state: "restart-required", pendingWorkspaces: ["dev"], error: "Couldn’t apply access to playgrounds." }
+    source.secrets[0] = { ...source.secrets[0], state: "restart-required", pendingWorkspaces: ["dev"], error: "Could not apply access to playgrounds." }
     const retry = vi.fn().mockResolvedValue(undefined)
     render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={vi.fn()} onRetrySecret={retry} />)
     expect(screen.getByText("Restart to apply: dev")).toBeVisible()

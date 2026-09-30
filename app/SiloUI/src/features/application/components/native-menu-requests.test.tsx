@@ -12,7 +12,7 @@ const actions = {} as ApplicationActions
 it("opens the real VM form once per native request without discarding its edited draft on refresh", () => {
   const changed = vi.fn()
   const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={changed} newSandboxRequest={1} />)
-  const input = screen.getByRole("textbox", { name: "Machine name" })
+  const input = screen.getByRole("textbox", { name: "Sandbox name" })
   fireEvent.change(input, { target: { value: "my-native-vm" } })
   view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={changed} newSandboxRequest={1} />)
   expect(input).toHaveValue("my-native-vm")
@@ -21,9 +21,9 @@ it("opens the real VM form once per native request without discarding its edited
 it("does not defer a new sandbox request received during a configuration operation", () => {
   const locked = applicationSourceForScenario("running", undefined, undefined, "add-configuring")
   const view = render(<OverviewPage source={locked} actions={actions} onMachinesChange={vi.fn()} newSandboxRequest={1} />)
-  expect(screen.queryByRole("textbox", { name: "Machine name" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("textbox", { name: "Sandbox name" })).not.toBeInTheDocument()
   view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} newSandboxRequest={1} />)
-  expect(screen.queryByRole("textbox", { name: "Machine name" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("textbox", { name: "Sandbox name" })).not.toBeInTheDocument()
 })
 it("lets native CmdK own toggling without a duplicate DOM shortcut toggle", () => {
   const view = render(<ApplicationCommandMenu commands={[]} nativeShortcuts openRequest={1} />)
@@ -52,10 +52,10 @@ it("acknowledges a VM request so its owner can clear it before an Overview remou
   const handled = vi.fn()
   const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} newSandboxRequest={7} onNewSandboxRequestHandled={handled} />)
   expect(handled).toHaveBeenCalledExactlyOnceWith(7)
-  expect(screen.getByRole("textbox", { name: "Machine name" })).toBeVisible()
+  expect(screen.getByRole("textbox", { name: "Sandbox name" })).toBeVisible()
   view.unmount()
   render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} newSandboxRequest={0} onNewSandboxRequestHandled={handled} />)
-  expect(screen.queryByRole("textbox", { name: "Machine name" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("textbox", { name: "Sandbox name" })).not.toBeInTheDocument()
   expect(handled).toHaveBeenCalledOnce()
 })
 it("does not open Commands over a focused unrelated dialog", () => {
@@ -67,11 +67,11 @@ it("does not open Commands over a focused unrelated dialog", () => {
 it("preserves and focuses an existing VM draft on another new-sandbox request", () => {
   const handled = vi.fn()
   const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} newSandboxRequest={1} onNewSandboxRequestHandled={handled} />)
-  const name = screen.getByRole("textbox", { name: "Machine name" })
+  const name = screen.getByRole("textbox", { name: "Sandbox name" })
   fireEvent.change(name, { target: { value: "keep-my-draft" } })
   name.blur()
   view.rerender(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} newSandboxRequest={2} onNewSandboxRequestHandled={handled} />)
-  expect(screen.getByRole("textbox", { name: "Machine name" })).toHaveValue("keep-my-draft")
+  expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveValue("keep-my-draft")
   expect(name).toHaveFocus()
   expect(handled).toHaveBeenLastCalledWith(2)
 })

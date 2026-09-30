@@ -114,7 +114,7 @@ export function useMachineEditing({
    */
   function reportSaveFailure(cause: unknown, machine?: Pick<SetupMachineConfiguration, "id" | "name">) {
     if (machine && isStaleConfigurationError(cause) && editorRef.current?.originalID === machine.id) setEditorConflict(true)
-    else showActionFailure(machine ? `Couldn't save ${machine.name}` : "Couldn't save changes", cause, undefined, { native: false })
+    else showActionFailure(machine ? `Could not save ${machine.name}` : "Could not save changes", cause, undefined, { native: false })
   }
 
   function beginOperation() {
@@ -124,7 +124,7 @@ export function useMachineEditing({
   function startEdit(machine: SetupMachineConfiguration) {
     if (disabled) return
     const busy = busyReason(machine)
-    if (busy) { showActionFailure(`Couldn't edit ${machine.name}`, busy, undefined, { native: false }); return }
+    if (busy) { showActionFailure(`Could not edit ${machine.name}`, busy, undefined, { native: false }); return }
     beginOperation()
     captureBaseline()
     setEditorBaseline(structuredClone(machine))
@@ -180,9 +180,9 @@ export function useMachineEditing({
     if (committing) return
     // Also covers menu saves with no editor open (Add Linux desktop).
     const blockedReason = saveBlockedReason ?? (originalID ? busyReason(machines.find(({ id }) => id === originalID)) : undefined)
-    if (blockedReason) { showActionFailure(`Couldn't save ${machine.name}`, blockedReason, undefined, { native: false }); return }
+    if (blockedReason) { showActionFailure(`Could not save ${machine.name}`, blockedReason, undefined, { native: false }); return }
     const blocked = validateOperation?.(machine, !originalID, targetComputerId)
-    if (blocked) { showActionFailure(`Couldn't save ${machine.name}`, blocked, undefined, { native: false }); return }
+    if (blocked) { showActionFailure(`Could not save ${machine.name}`, blocked, undefined, { native: false }); return }
     const baseline = baselineRef.current ?? undefined
     if (onCommitMachine) {
       setCommitting(true)
@@ -235,14 +235,14 @@ export function useMachineEditing({
   async function remove(machine: SetupMachineConfiguration) {
     if (disabled || (machine.kind === "vm" && isMachineRunning?.(machine))) return
     const busy = busyReason(machine)
-    if (busy) { showActionFailure(`Couldn't delete ${machine.name}`, busy, undefined, { native: false }); return }
+    if (busy) { showActionFailure(`Could not delete ${machine.name}`, busy, undefined, { native: false }); return }
     beginOperation()
     captureBaseline()
     const baseline = baselineRef.current ?? undefined
     if (onDeleteMachine) {
       setCommitting(true)
       try { await onDeleteMachine(baseline?.find(item => item.id === machine.id) ?? machine, baseline) }
-      catch (cause) { showActionFailure(`Couldn't delete ${machine.name}`, cause, undefined, { native: false }) }
+      catch (cause) { showActionFailure(`Could not delete ${machine.name}`, cause, undefined, { native: false }) }
       finally { setCommitting(false) }
       return
     }
@@ -269,12 +269,12 @@ export function useMachineEditing({
   async function deleteWithNotice(machine: SetupMachineConfiguration): Promise<boolean> {
     // The popover may have been opened while the sandbox was stopped; never delete a running VM.
     if (machine.kind === "vm" && isMachineRunning?.(machine)) {
-      showActionFailure(`Couldn't delete ${machine.name}`, "Stop the sandbox before deleting it.", undefined, { native: false })
+      showActionFailure(`Could not delete ${machine.name}`, "Stop the sandbox before deleting it.", undefined, { native: false })
       return false
     }
     const busy = busyReason(machine)
     if (busy) {
-      showActionFailure(`Couldn't delete ${machine.name}`, busy, undefined, { native: false })
+      showActionFailure(`Could not delete ${machine.name}`, busy, undefined, { native: false })
       return false
     }
     try {
@@ -282,7 +282,7 @@ export function useMachineEditing({
       showOperationNotice(`sandbox-deleted:${machine.id}`, `Deleted ${machine.name}`)
       return true
     } catch (cause) {
-      showActionFailure(`Couldn't delete ${machine.name}`, cause, undefined, { native: false })
+      showActionFailure(`Could not delete ${machine.name}`, cause, undefined, { native: false })
       return false
     }
   }

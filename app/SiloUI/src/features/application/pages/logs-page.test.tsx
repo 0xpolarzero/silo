@@ -183,7 +183,7 @@ describe("retained logs", () => {
     await screen.findByText(/Showing 400 of 100001/)
     expect(within(screen.getByRole("table")).getAllByRole("row").length).toBeLessThan(70)
     expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "200" }))
-    fireEvent.click(screen.getByRole("button", { name: "Export…" }))
+    fireEvent.click(screen.getByRole("button", { name: "Save logs…" }))
     expect(actions.exportLogs).toHaveBeenCalledWith([expect.not.objectContaining({ cursor: expect.any(String) })])
     expect(await within(document.body).findByText("Logs saved")).toBeInTheDocument()
     expect(screen.getByText(/Showing 400 of 100001/).textContent).not.toMatch(/saved/)
@@ -193,8 +193,8 @@ describe("retained logs", () => {
     actions.exportLogs = vi.fn().mockRejectedValueOnce(new Error("Disk full")).mockResolvedValue(true)
     render(<><Toaster /><Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} /></>)
     await screen.findByText(/Showing 200 of 100001/)
-    fireEvent.click(screen.getByRole("button", { name: "Export…" }))
-    expect(await within(document.body).findByText("Export failed")).toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Save logs…" }))
+    expect(await within(document.body).findByText("Could not save logs")).toBeInTheDocument()
     expect(within(document.body).getByText("Disk full")).toBeInTheDocument()
     fireEvent.click(within(document.body).getByRole("button", { name: "Retry" }))
     expect(await within(document.body).findByText("Logs saved")).toBeInTheDocument()
@@ -261,7 +261,7 @@ describe("retained logs", () => {
       fireEvent.click(screen.getByRole("button", { name: "Pause" }))
       await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Refresh logs" })) })
       expect(requests.at(-1)?.follow).toBeUndefined()
-      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Export…" })) })
+      await act(async () => { fireEvent.click(screen.getByRole("button", { name: "Save logs…" })) })
       expect(vi.mocked(actions.exportLogs!).mock.calls[0][0].every(request => request.follow === undefined)).toBe(true)
     } finally { vi.useRealTimers() }
   })
@@ -294,7 +294,7 @@ describe("retained logs", () => {
     // An owner error pauses automatic pagination until the user retries.
     expect(screen.getByText(/Showing 2 of 4/)).toBeVisible()
     expect(screen.getByRole("alert")).toHaveTextContent("Offline owner")
-    expect(screen.getByRole("button", { name: "Export…" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Save logs…" })).toBeDisabled()
   })
   it("waits for a slow follow scan instead of invalidating its response", async () => {
     vi.useFakeTimers()
@@ -341,10 +341,10 @@ describe("retained logs", () => {
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
   })
 
-  it("treats a raw unsupported-request rejection as an update hint too", async () => {
+  it("uses the unsupported remote error code as an update hint", async () => {
     const { workspace, actions } = fixture()
     const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:zeronival:dev-zeronival", name: "dev-zeronival" }, computer: { id: "zeronival", vmId: "dev-zeronival", name: "zeronival", address: "zeronival.local", connected: true } }
-    actions.queryLogs = vi.fn(async () => { throw new Error("Unsupported remote request.") })
+    actions.queryLogs = vi.fn(async () => { throw { code: "unsupported_remote_operation", message: "This computer cannot query logs." } })
     render(<Logs workspaces={[remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
     expect(await screen.findByText("Update Silo on zeronival to see logs for dev-zeronival.")).toBeVisible()
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()

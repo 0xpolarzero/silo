@@ -24,7 +24,7 @@ export interface DirectorySnapshot {
 const safeErrors = new Set([
   'Could not load this folder.', 'Folder listing expired. Refresh this folder.',
   'This folder no longer exists.', 'Permission denied.', 'This folder cannot be browsed.',
-  'This folder is too large to list.', 'Start this VM to browse its files.', 'Invalid folder request.',
+  'This folder is too large to list.', 'Start this sandbox to browse its files.', 'Invalid folder request.',
   'Folder changed. Reload to continue.',
 ])
 const emptySnapshot: DirectorySnapshot = { snapshotId: null, loadingMore: false, errorOperation: null, entries: null, nextOffset: null, loading: false, error: null }

@@ -568,7 +568,7 @@ describe("onboarding", () => {
     expect(panel.queryByLabelText("Sandbox activity")).not.toBeInTheDocument()
     expect(panel.getByLabelText("Elapsed time")).toHaveTextContent("02:18")
     expect(panel.getByText("27 of 36 operations complete")).toBeVisible()
-    expect(panel.getByText("12 sandboxes · 12 on this computer · 0 remote")).toBeVisible()
+    expect(panel.getByText("12 sandboxes · 12 on this computer · 0 on other computers · 0 SSH hosts")).toBeVisible()
     const list = panel.getByRole("list", { name: "Configured sandboxes" })
     expect(within(list).getAllByRole("listitem")).toHaveLength(12)
     expect(within(list).getByText("client-alpha-integration")).toBeVisible()
@@ -753,9 +753,9 @@ describe("onboarding", () => {
 
     expect(rows).toHaveLength(3)
     expect(rows.map((row) => within(row).getByText(/^(dev|playgrounds|personal)$/).textContent)).toEqual(["dev", "playgrounds", "personal"])
-    expect(rows[0]).toHaveTextContent("8 CPU · 32 GB RAM · 120 GB workspace")
-    expect(rows[1]).toHaveTextContent("4 CPU · 32 GB RAM · 60 GB workspace")
-    expect(rows[2]).toHaveTextContent("6 CPU · 16 GB RAM · 100 GB workspace")
+    expect(rows[0]).toHaveTextContent("CPUs: 8 · Memory: 32 GiB · Disk: 120 GiB")
+    expect(rows[1]).toHaveTextContent("CPUs: 4 · Memory: 32 GiB · Disk: 60 GiB")
+    expect(rows[2]).toHaveTextContent("CPUs: 6 · Memory: 16 GiB · Disk: 100 GiB")
     expect(within(list).queryByText("docs-build")).not.toBeInTheDocument()
   })
 
@@ -764,19 +764,19 @@ describe("onboarding", () => {
 
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    const draftName = screen.getByRole("textbox", { name: "Machine name" })
+    const draftName = screen.getByRole("textbox", { name: "Sandbox name" })
     expect(draftName).toHaveValue("workspace-4")
     expect(draftName).toHaveFocus()
-    expect(screen.getByRole("combobox", { name: "CPU limit" })).toHaveValue("8")
+    expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("8")
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(screen.queryByDisplayValue("workspace-4")).not.toBeInTheDocument()
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
 
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    await user.clear(screen.getByRole("textbox", { name: "Machine name" }))
-    await user.type(screen.getByRole("textbox", { name: "Machine name" }), "build")
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.clear(screen.getByRole("textbox", { name: "Sandbox name" }))
+    await user.type(screen.getByRole("textbox", { name: "Sandbox name" }), "build")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
     await user.click(screen.getByRole("button", { name: "Save" }))
 
     expect(saveMachineConfiguration).toHaveBeenCalledOnce()
@@ -796,8 +796,8 @@ describe("onboarding", () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
 
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("menuitem", { name: "Connect a machine via SSH" }))
-    expect(screen.getByRole("textbox", { name: "Machine name" })).toHaveValue("remote-1")
+    await user.click(screen.getByRole("menuitem", { name: "Connect an SSH host…" }))
+    expect(screen.getByRole("textbox", { name: "SSH host name" })).toHaveValue("remote-1")
     expect(screen.getByRole("spinbutton", { name: "SSH port" })).toHaveValue(22)
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(screen.getByText("Enter an SSH host.")).toBeVisible()
@@ -807,9 +807,9 @@ describe("onboarding", () => {
     expect(screen.queryByDisplayValue("remote-1")).not.toBeInTheDocument()
 
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("menuitem", { name: "Connect a machine via SSH" }))
-    await user.clear(screen.getByRole("textbox", { name: "Machine name" }))
-    await user.type(screen.getByRole("textbox", { name: "Machine name" }), "staging")
+    await user.click(screen.getByRole("menuitem", { name: "Connect an SSH host…" }))
+    await user.clear(screen.getByRole("textbox", { name: "SSH host name" }))
+    await user.type(screen.getByRole("textbox", { name: "SSH host name" }), "staging")
     await user.type(screen.getByRole("textbox", { name: "SSH host" }), "staging.example.com")
     await user.type(screen.getByRole("textbox", { name: "SSH user" }), "deploy")
     await user.clear(screen.getByRole("spinbutton", { name: "SSH port" }))
@@ -832,18 +832,18 @@ describe("onboarding", () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
 
     await user.click(screen.getByRole("button", { name: "Edit dev" }))
-    const name = screen.getByRole("textbox", { name: "Machine name" })
+    const name = screen.getByRole("textbox", { name: "Sandbox name" })
     expect(name).toHaveFocus()
     expect(name).toHaveAttribute("readonly")
-    expect(screen.getByRole("combobox", { name: "Workspace storage" })).toBeDisabled()
-    expect(screen.getByRole("combobox", { name: "Runtime storage" })).toBeDisabled()
-    await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "16")
+    expect(screen.getByRole("combobox", { name: "Workspace disk" })).toBeDisabled()
+    expect(screen.getByRole("combobox", { name: "Runtime disk" })).toBeDisabled()
+    await user.selectOptions(screen.getByRole("combobox", { name: "Memory" }), "16")
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
     expect(screen.getByRole("button", { name: "Edit dev" })).toBeVisible()
 
     await user.click(screen.getByRole("button", { name: "Edit dev" }))
-    await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "16")
+    await user.selectOptions(screen.getByRole("combobox", { name: "Memory" }), "16")
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(saveMachineConfiguration.mock.lastCall?.[0].machines[0]).toMatchObject({ name: "dev", memoryGiB: 16 })
     expect(screen.getByRole("button", { name: "Edit dev" })).toBeVisible()
@@ -861,7 +861,7 @@ describe("onboarding", () => {
 
     const tooltipCases = [
       ["Edit dev", "Edit dev"],
-      ["Duplicate dev", "Create a new VM with these settings"],
+      ["Duplicate settings for dev", "Create a new empty sandbox with the same settings."],
       ["Delete dev", "Delete dev"],
     ] as const
 
@@ -898,7 +898,7 @@ describe("onboarding", () => {
 
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
     await user.click(screen.getByRole("button", { name: "Edit dev" }))
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
     await user.click(screen.getByRole("button", { name: "Save" }))
 
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
@@ -909,17 +909,17 @@ describe("onboarding", () => {
   it("duplicates after the source, cancels drafts, and generates collision-free copy names", async () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
 
-    await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
-    expect(screen.getByRole("textbox", { name: "Machine name" })).toHaveValue("dev-copy")
+    await user.click(screen.getByRole("button", { name: "Duplicate settings for dev" }))
+    expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveValue("dev-copy")
     await user.click(screen.getByRole("button", { name: "Cancel" }))
     expect(saveMachineConfiguration).not.toHaveBeenCalled()
 
-    await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
+    await user.click(screen.getByRole("button", { name: "Duplicate settings for dev" }))
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(saveMachineConfiguration.mock.lastCall?.[0].machines.map(({ name }: { name: string }) => name)).toEqual(["dev", "dev-copy", "playgrounds", "personal"])
 
-    await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
-    expect(screen.getByRole("textbox", { name: "Machine name" })).toHaveValue("dev-copy-2")
+    await user.click(screen.getByRole("button", { name: "Duplicate settings for dev" }))
+    expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveValue("dev-copy-2")
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(saveMachineConfiguration.mock.lastCall?.[0].machines.map(({ name }: { name: string }) => name)).toEqual(["dev", "dev-copy-2", "dev-copy", "playgrounds", "personal"])
   })
@@ -927,9 +927,9 @@ describe("onboarding", () => {
   it("places a replacement duplicate after its source when another draft is open", async () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
 
-    await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
-    await user.click(screen.getByRole("button", { name: "Duplicate playgrounds" }))
-    expect(screen.getByRole("textbox", { name: "Machine name" })).toHaveValue("playgrounds-copy")
+    await user.click(screen.getByRole("button", { name: "Duplicate settings for dev" }))
+    await user.click(screen.getByRole("button", { name: "Duplicate settings for playgrounds" }))
+    expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveValue("playgrounds-copy")
     await user.click(screen.getByRole("button", { name: "Save" }))
 
     expect(saveMachineConfiguration.mock.lastCall?.[0].machines.map(({ name }: { name: string }) => name)).toEqual([
@@ -984,16 +984,16 @@ describe("onboarding", () => {
 
   it("saves smaller memory presets and custom whole GiB values", async () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
-    await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
-    await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "12")
+    await user.click(screen.getByRole("button", { name: "Duplicate settings for dev" }))
+    await user.selectOptions(screen.getByRole("combobox", { name: "Memory" }), "12")
     await user.selectOptions(screen.getByRole("combobox", { name: "Memory ceiling" }), "12")
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(saveMachineConfiguration.mock.lastCall?.[0].machines).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "dev-copy", memoryGiB: 12, maxMemoryGiB: 12 }),
     ]))
     await user.click(screen.getByRole("button", { name: "Edit dev-copy" }))
-    await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "custom")
-    const input = screen.getByRole("spinbutton", { name: "Memory limit custom (GiB)" })
+    await user.selectOptions(screen.getByRole("combobox", { name: "Memory" }), "custom")
+    const input = screen.getByRole("spinbutton", { name: "Memory custom (GiB)" })
     await user.clear(input)
     await user.type(input, "10")
     await user.click(screen.getByRole("button", { name: "Save" }))
@@ -1001,16 +1001,16 @@ describe("onboarding", () => {
       expect.objectContaining({ name: "dev-copy", memoryGiB: 10, maxMemoryGiB: 12 }),
     ]))
     await user.click(screen.getByRole("button", { name: "Edit dev-copy" }))
-    expect(screen.getByRole("spinbutton", { name: "Memory limit custom (GiB)" })).toHaveValue(10)
+    expect(screen.getByRole("spinbutton", { name: "Memory custom (GiB)" })).toHaveValue(10)
     saveMachineConfiguration.mockClear()
-    const customInput = screen.getByRole("spinbutton", { name: "Memory limit custom (GiB)" })
+    const customInput = screen.getByRole("spinbutton", { name: "Memory custom (GiB)" })
     for (const invalid of ["0", "1.5", "13"]) {
       await user.clear(customInput)
       await user.type(customInput, invalid)
       await user.click(screen.getByRole("button", { name: "Save" }))
       expect(saveMachineConfiguration).not.toHaveBeenCalled()
     }
-    await user.selectOptions(screen.getByRole("combobox", { name: "Memory limit" }), "8")
+    await user.selectOptions(screen.getByRole("combobox", { name: "Memory" }), "8")
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(saveMachineConfiguration.mock.lastCall?.[0].machines).toEqual(expect.arrayContaining([
       expect.objectContaining({ name: "dev-copy", memoryGiB: 8, maxMemoryGiB: 12 }),
@@ -1019,8 +1019,8 @@ describe("onboarding", () => {
 
   it("saves custom CPU and disk values and reopens them", async () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
-    await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
-    for (const [label, unit, value] of [["CPU limit", "CPUs", "3"], ["CPU ceiling", "CPUs", "5"], ["Workspace storage", "GiB", "35"], ["Runtime storage", "GiB", "25"]]) {
+    await user.click(screen.getByRole("button", { name: "Duplicate settings for dev" }))
+    for (const [label, unit, value] of [["CPUs", "CPUs", "3"], ["CPUs ceiling", "CPUs", "5"], ["Workspace disk", "GiB", "35"], ["Runtime disk", "GiB", "25"]]) {
       await user.selectOptions(screen.getByRole("combobox", { name: label }), "custom")
       const input = screen.getByRole("spinbutton", { name: `${label} custom (${unit})` })
       await user.clear(input)
@@ -1031,17 +1031,17 @@ describe("onboarding", () => {
       expect.objectContaining({ name: "dev-copy", cpus: 3, maxCPUs: 5, workspaceStorageGiB: 35, runtimeStorageGiB: 25 }),
     ]))
     await user.click(screen.getByRole("button", { name: "Edit dev-copy" }))
-    expect(screen.getByRole("spinbutton", { name: "CPU limit custom (CPUs)" })).toHaveValue(3)
-    expect(screen.getByRole("spinbutton", { name: "Workspace storage custom (GiB)" })).toHaveValue(35)
+    expect(screen.getByRole("spinbutton", { name: "CPUs custom (CPUs)" })).toHaveValue(3)
+    expect(screen.getByRole("spinbutton", { name: "Workspace disk custom (GiB)" })).toHaveValue(35)
   })
 
   it("blocks duplicate names and invalid VM resource ranges", async () => {
     const { user, saveMachineConfiguration } = await renderMachineScenario()
-    await user.click(screen.getByRole("button", { name: "Duplicate dev" }))
-    await user.clear(screen.getByRole("textbox", { name: "Machine name" }))
-    await user.type(screen.getByRole("textbox", { name: "Machine name" }), "personal")
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "12")
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPU ceiling" }), "4")
+    await user.click(screen.getByRole("button", { name: "Duplicate settings for dev" }))
+    await user.clear(screen.getByRole("textbox", { name: "Sandbox name" }))
+    await user.type(screen.getByRole("textbox", { name: "Sandbox name" }), "personal")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "12")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs ceiling" }), "4")
     await user.click(screen.getByRole("button", { name: "Save" }))
 
     expect(screen.getByText("Sandbox names must be unique.")).toBeVisible()
@@ -1077,9 +1077,9 @@ describe("onboarding", () => {
   it("mirrors final machine order and kind in Review while preserving activity collapse", async () => {
     const { user } = await renderMachineScenario()
     await user.click(screen.getByRole("button", { name: "Add" }))
-    await user.click(screen.getByRole("menuitem", { name: "Connect a machine via SSH" }))
-    await user.clear(screen.getByRole("textbox", { name: "Machine name" }))
-    await user.type(screen.getByRole("textbox", { name: "Machine name" }), "remote")
+    await user.click(screen.getByRole("menuitem", { name: "Connect an SSH host…" }))
+    await user.clear(screen.getByRole("textbox", { name: "SSH host name" }))
+    await user.type(screen.getByRole("textbox", { name: "SSH host name" }), "remote")
     await user.type(screen.getByRole("textbox", { name: "SSH host" }), "remote.example.com")
     await user.type(screen.getByRole("textbox", { name: "SSH user" }), "ops")
     await user.click(screen.getByRole("button", { name: "Save" }))
@@ -1096,10 +1096,10 @@ describe("onboarding", () => {
     const review = screen.getByRole("list", { name: "Sandboxes" })
     const rows = within(review).getAllByRole("listitem")
     const expected = [
-      ["remote", "ssh", "ops@remote.example.com:22"],
-      ["dev", "vm", "8 CPU · 32 GB RAM"],
-      ["playgrounds", "vm", "4 CPU · 32 GB RAM"],
-      ["personal", "vm", "6 CPU · 16 GB RAM"],
+      ["remote", "SSH host", "ops@remote.example.com:22"],
+      ["dev", "vm", "CPUs: 8 · Memory: 32 GiB"],
+      ["playgrounds", "vm", "CPUs: 4 · Memory: 32 GiB"],
+      ["personal", "vm", "CPUs: 6 · Memory: 16 GiB"],
     ]
     expect(rows).toHaveLength(expected.length)
     expected.forEach(([name, kind, detail], index) => {

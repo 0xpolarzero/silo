@@ -82,7 +82,7 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
         <p className="text-sm">{busy && state?.ludaState === "installing" ? "Setting up agent tools…" : busy || state?.state === "starting" ? "Connecting to desktop…" : !state ? "Desktop unavailable" : state.state === "uninstalled" ? "Desktop is not installed" : state.state === "failed" ? "Desktop needs attention" : state.state === "vm-stopped" ? "Sandbox is stopped" : "Desktop is stopped"}</p>
         {state && state.state !== "uninstalled" && state.state !== "starting" && <Button disabled={busy} size="sm" onClick={() => onAction(primaryAction)}>{actionLabel}</Button>}
         {updateAvailable && !updateRequired && <Button disabled={busy} size="sm" variant="ghost" onClick={() => onAction("update-streamer")}>Update desktop</Button>}
-        {state?.state === "uninstalled" && <p className="text-xs text-muted-foreground">Add a desktop in the sandbox configuration.</p>}
+        {state?.state === "uninstalled" && <p className="text-xs text-muted-foreground">Choose Add Linux desktop in the sandbox’s actions menu.</p>}
       </div>
     </div>}
   </main></TooltipProvider>

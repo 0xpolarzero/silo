@@ -349,7 +349,7 @@ describe("production setup queue", () => {
     store.dispose()
   })
 
-  it("never deletes existing VMs from onboarding", async () => {
+  it("never deletes existing sandboxes from onboarding", async () => {
     const { store, invoke } = await setup()
     const existing = application.workspaces.map(({ machine }) => machine)
     const replacement = { ...existing[0], id: "7f3c2a10-4b5d-4e6f-8a9b-0c1d2e3f4a5b", name: "fresh-default" }

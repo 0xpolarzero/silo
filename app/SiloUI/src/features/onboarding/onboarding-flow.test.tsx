@@ -20,13 +20,13 @@ describe("onboarding continuity", () => {
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
     await user.click(screen.getByRole("button", { name: "Add" }))
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
-    await user.clear(screen.getByRole("textbox", { name: "Machine name" }))
-    await user.type(screen.getByRole("textbox", { name: "Machine name" }), "unfinished")
+    await user.clear(screen.getByRole("textbox", { name: "Sandbox name" }))
+    await user.type(screen.getByRole("textbox", { name: "Sandbox name" }), "unfinished")
     await user.click(screen.getByRole("tab", { name: /GitHub/ }))
-    expect(screen.queryByRole("textbox", { name: "Machine name" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("textbox", { name: "Sandbox name" })).not.toBeInTheDocument()
     expect(screen.getAllByRole("tabpanel")).toHaveLength(1)
     await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
-    expect(screen.getByRole("textbox", { name: "Machine name" })).toHaveValue("unfinished")
+    expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveValue("unfinished")
   })
 
   it("retains expanded dependency details when returning to the step", async () => {

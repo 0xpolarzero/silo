@@ -18,7 +18,7 @@ export const siloBootstrapWorkspaceSchema = z.object({
   memoryCeilingGiB: z.number().int().min(1).max(4_294_967_295),
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
   runtimeStorageGiB: z.number().int().min(1).max(4_194_303),
-}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "Combined storage exceeds the runtime limit", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpu <= workspace.cpuCeiling, {
+}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "The two disks together exceed 4,194,303 GiB. Reduce a disk size.", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpu <= workspace.cpuCeiling, {
   message: "cpu must not exceed cpuCeiling",
 }).refine((workspace) => workspace.memoryGiB <= workspace.memoryCeilingGiB, {
   message: "memoryGiB must not exceed memoryCeilingGiB",
@@ -30,7 +30,7 @@ export const siloBootstrapConfigurationSchema = z.object({
 }).strict().refine((configuration) => {
   const names = configuration.workspaces.map(({ name }) => name)
   return new Set(names).size === names.length
-}, { message: "workspace names must be unique" })
+}, { message: "Sandbox names must be unique." })
 
 export const desktopConfigurationSchema = z.object({
   startWithSandbox: z.boolean(),
@@ -46,7 +46,7 @@ export const setupWorkspaceConfigurationSchema = z.object({
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
   runtimeStorageGiB: z.number().int().min(1).max(4_194_303),
   desktop: desktopConfigurationSchema.optional(),
-}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "Combined storage exceeds the runtime limit", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpus <= workspace.maxCPUs, {
+}).strict().refine((workspace) => workspace.workspaceStorageGiB + workspace.runtimeStorageGiB <= 4_194_303, { message: "The two disks together exceed 4,194,303 GiB. Reduce a disk size.", path: ["workspaceStorageGiB"] }).refine((workspace) => workspace.cpus <= workspace.maxCPUs, {
   message: "cpus must not exceed maxCPUs",
 }).refine((workspace) => workspace.memoryGiB <= workspace.maxMemoryGiB, {
   message: "memoryGiB must not exceed maxMemoryGiB",
@@ -76,10 +76,10 @@ export const setupMachineConfigurationRequestSchema = z.object({
 }).strict().refine((configuration) => {
   const names = configuration.machines.map(({ name }) => name.toLowerCase())
   return new Set(names).size === names.length
-}, { message: "machine names must be unique" }).refine((configuration) => {
+}, { message: "Sandbox names must be unique." }).refine((configuration) => {
   const ids = configuration.machines.map(({ id }) => id)
   return new Set(ids).size === ids.length
-}, { message: "machine IDs must be unique" })
+}, { message: "Sandbox IDs must be unique." })
 
 export const siloBootstrapPhaseSchema = z.enum([
   "welcome",
@@ -157,7 +157,7 @@ export const githubWorkspacePolicySchema = z.object({
   repositories: z.array(githubRepositoryPolicySchema),
 }).strict().refine((policy) => (
   policy.repositories.every((repository) => repository.workspace === policy.workspace)
-), { message: "repository workspaces must match the policy workspace" })
+), { message: "Repository sandboxes must match the sandbox access policy." })
 
 export const setupQueueItemIdSchema = z.enum([
   "workspaceRun",

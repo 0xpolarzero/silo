@@ -18,7 +18,7 @@ it("summarizes a long lifecycle failure and keeps the runtime output behind Deta
   workspace.lifecycleFailure = `Start failed: the VM did not boot\n${output}\n[Diagnostic truncated]`
   workspace.lifecycleFailureAction = "start"
   view.rerender(page(source))
-  expect(await screen.findByText("Couldn't start dev")).toBeVisible()
+  expect(await screen.findByText("Could not start dev")).toBeVisible()
   expect(screen.getByText("Start failed: the VM did not boot")).toBeVisible()
   expect(screen.queryByText(/stage 29/)).not.toBeInTheDocument()
   await userEvent.setup().click(screen.getByRole("button", { name: "Show details" }))

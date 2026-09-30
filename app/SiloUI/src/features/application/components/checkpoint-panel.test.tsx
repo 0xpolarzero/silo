@@ -76,7 +76,7 @@ it("explains the pause, memory checkpoint and force-stop before restoring a runn
 
 it("explains Restore and Fork in visible helper text", () => {
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{} as ApplicationActions} disabled={false} />)
-  expect(screen.getByText("Saved states of this sandbox. Restore rewinds it; Fork creates a new stopped sandbox.")).toBeVisible()
+  expect(screen.getByText("Checkpoints let you rewind this sandbox. Restore replaces its current files; Fork creates a new stopped sandbox with a copy of its files.")).toBeVisible()
 })
 
 it("confirms a restore in a popover before restoring", async () => {
@@ -246,7 +246,7 @@ it("shows who uses a pinned checkpoint and keeps its Delete unavailable with the
   const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ deleteCheckpoint, readCheckpointUsage: vi.fn().mockResolvedValue(usage) } as unknown as ApplicationActions} disabled={false} />)
   const row = within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!)
-  expect(await row.findByText(/Used by experiment/)).toBeVisible()
+  expect(await row.findByText("Used by experiment. experiment was started from this checkpoint and still builds on it.")).toBeVisible()
   await user.click(row.getByRole("button", { name: "Checkpoint actions for Before refactor" }))
   const item = screen.getByRole("menuitem", { name: "Delete Before refactor" })
   expect(item).toHaveAttribute("data-disabled")

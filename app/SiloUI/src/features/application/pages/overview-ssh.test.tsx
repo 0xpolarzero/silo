@@ -15,13 +15,13 @@ it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", asy
   const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn() } as unknown as ApplicationActions
   const user = userEvent.setup()
   const view = render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
-  // The list row keeps a single scope badge and no inline SSH controls.
+  // The list row keeps a single scope badge and no inline SSH access controls.
   const row = within(screen.getByLabelText("SSH from Ada Mac and other computers").closest("li")!)
   expect(row.queryByRole("switch")).not.toBeInTheDocument()
-  expect(row.queryByRole("button", { name: /SSH controls/ })).not.toBeInTheDocument()
+  expect(row.queryByRole("button", { name: /SSH access controls/ })).not.toBeInTheDocument()
 
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
-  await user.click(screen.getByRole("tab", { name: "SSH" }))
+  await user.click(screen.getByRole("tab", { name: "SSH access" }))
   expect(screen.getAllByRole("switch")).toHaveLength(2)
   expect(screen.getByText("ssh -p 2222 silo@127.0.0.1")).toBeVisible()
   expect(screen.getByText("ssh -p 2222 silo@192.168.1.42")).toBeVisible()
@@ -41,7 +41,7 @@ it("keeps Network limited to service ports", () => {
   const source = applicationSourceForScenario("complete")
   render(<NetworkPage workspaces={source.workspaces} browser="Safari" actions={{ refreshSshAccess: vi.fn() } as unknown as ApplicationActions} active />)
   expect(screen.getByRole("button", { name: "Add port" })).toBeVisible()
-  expect(screen.queryByRole("button", { name: /SSH controls/ })).not.toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: /SSH access controls/ })).not.toBeInTheDocument()
 })
 
 it("allows read-only SSH disclosure without refreshing, copying, or changing the sandbox", async () => {
@@ -53,7 +53,7 @@ it("allows read-only SSH disclosure without refreshing, copying, or changing the
   expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Stop dev" })).toBeDisabled()
   await user.click(screen.getByRole("button", { name: "Open dev" }))
-  await user.click(screen.getByRole("tab", { name: "SSH" }))
+  await user.click(screen.getByRole("tab", { name: "SSH access" }))
   expect(screen.getByText("ssh -p 2222 silo@192.168.1.42")).toBeVisible()
   for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled()
   expect(screen.getByRole("button", { name: "Copy SSH address" })).toBeDisabled()

@@ -282,7 +282,7 @@ function errorMessage(error: unknown): string {
   if (message) return message
   if (error instanceof Error && error.message.trim()) return error.message
   const text = String(error).trim()
-  return text || "The desktop bridge returned an unknown error."
+  return text || "Silo could not complete the action. Retry; if it fails again, relaunch Silo."
 }
 
 /** A JSON key that does not depend on object property order. */
@@ -344,7 +344,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     setupQueue: ["workspaceRun", "workspaceVerify", "identityRun", "identityVerify", "githubRun", "githubVerify", "completion"].map((id) => ({ id: id as SetupQueueItemID, status: "idle" })),
     setupEvents: [],
     source: null,
-    backup: unavailableBackup("Backup state has not loaded. No sandbox data changed."),
+    backup: unavailableBackup("Export and import state has not loaded. No sandbox data changed."),
     loading: true,
     error: null,
   }
@@ -453,7 +453,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (disposed || revision !== sshRevision) return
       sshAccessError = results[0].status === "rejected" ? "Could not check SSH access." : null
       sshAccess = { workspaces: results.flatMap((result, index) => {
-        if (index === 0) return result.status === "fulfilled" ? result.value.workspaces : unavailableSshRows("", remoteManagement?.name ?? "Silo host", "Could not check SSH access.")
+        if (index === 0) return result.status === "fulfilled" ? result.value.workspaces : unavailableSshRows("", remoteManagement?.name ?? "This computer", "Could not check SSH access.")
         const computer = computers[index - 1]
         const current = remoteComputers.find(item => item.id === computer.id)
         if (!current) return []
@@ -481,7 +481,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const remotes = await Promise.all(remoteComputers.map(async computer => {
           const unavailable = (error: string) => (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error }))
           // An offline computer would only cost a connection timeout on every poll.
-          if (!computer.connected) return unavailable(`${computer.name} is unavailable. Reconnect to see network services.`)
+          if (!computer.connected) return unavailable(`${computer.name} is offline. Reconnect to see network services.`)
           try { return parseNetworkState(await native.invoke("remote_network_state", { hostId: computer.id })).workspaces }
           catch (cause) {
             return unavailable(isUnsupportedRemote(cause) ? `Update Silo on ${computer.name} to see network services.` : errorMessage(cause))
@@ -616,7 +616,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           computer: { ...computer, vmId: workspace.machine.id },
           ports: derivePorts(networkRows.get(target), computer.connected),
           freshness: computer.connected && !computer.busy && !slow ? workspace.freshness : "stale",
-          stateDetail: computer.busy || (computer.connected && slow) ? "Refreshing status" : computer.connected ? workspace.stateDetail : "Computer unavailable",
+          stateDetail: computer.busy || (computer.connected && slow) ? "Updating…" : computer.connected ? workspace.stateDetail : "Offline · last known status",
         })
       }
       for (const push of owner.repositoryPushOperations) {
@@ -901,8 +901,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       try {
         backup = backendBackup = parseBackupState(backupResult.value)
       }
-      catch (cause) { backup = unreadableBackup(`Silo returned invalid backup state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
-    } else backup = unreadableBackup(`Silo could not read backup state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
+      catch (cause) { backup = unreadableBackup(`Silo returned invalid export and import state: ${errorMessage(cause)} Refresh to confirm the operation result.`) }
+    } else backup = unreadableBackup(`Silo could not read export and import state: ${errorMessage(backupResult.reason)} Refresh to confirm the operation result.`)
     if (disposed || epoch !== refreshSequence) return
     if (backendBackup) { const state = backendBackup; exportWaiters.forEach(waiter => waiter(state, sequence)) }
     const applicationCurrent = sequence > appliedApplicationRead
@@ -1002,7 +1002,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     })().finally(() => { eventRefresh = undefined })
   }
 
-  // Remote VM ports are opened through the remote bridge; the local command
+  // Remote Ports are opened through the remote bridge; the local command
   // never handles `silo-remote:` targets.
   function openNetworkPort(workspace: string, port: number) {
     const remote = parseRemoteWorkspaceTarget(workspace)
@@ -1045,7 +1045,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function workspaceAction(action: string, name: string, extras: Record<string, unknown> = {}) {
     const remote = parseRemoteWorkspaceTarget(name)
     if (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected) {
-      reportUnavailable("This computer is unavailable. Reconnect before changing its VMs.")
+      reportUnavailable(`${remoteComputers.find(computer => computer.id === remote.hostId)?.name ?? "The remote computer"} is offline. Reconnect to it before changing ${remoteDisplayName(name) ?? "the sandbox"}.`)
       return
     }
     const key = `${action}:${name}`
@@ -1053,7 +1053,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     pendingWorkspaceActions.add(key)
     const lifecycle = action === "start" || action === "stop" || action === "restart" || action === "dismiss-error"
     // Submitting a lifecycle action supersedes any prior failure or cancellation for
-    // this VM: the view hides it while the resubmitted action waits or runs.
+    // this sandbox: the view hides it while the resubmitted action waits or runs.
     if (lifecycle) {
       workspaceFailures.delete(name)
       pendingLifecycle.set(name, action)
@@ -1299,14 +1299,14 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   // Onboarding can mount before the real configuration loads and seed its draft
-  // from defaults. A draft that keeps none of the existing VMs is therefore never
+  // from defaults. A draft that keeps none of the existing sandboxes is therefore never
   // treated as a request to delete them all; single removals remain explicit edits.
   function replacesEveryMachine(request: OnboardingCompletionRequest) {
     const committed = committedMachines()
     if (committed.length === 0) return null
     const kept = new Set(request.machineConfiguration.machines.map(({ id }) => id))
     if (committed.some(({ id }) => kept.has(id))) return null
-    return new Error(`Setup does not delete existing VMs (${committed.map(({ name }) => name).join(", ")}). Reopen Silo to load them, or delete them from Silo after setup. No VM changed.`)
+    return new Error(`Setup does not delete existing sandboxes (${committed.map(({ name }) => name).join(", ")}). Reopen Silo to load them, or delete them from Silo after setup. No sandbox changed.`)
   }
 
   function finishSetup(request: OnboardingCompletionRequest, markComplete: () => Promise<void>) {
@@ -1511,7 +1511,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     },
     deleteRemoteMachine: async (hostId, machine) => {
       const vmId = parseRemoteWorkspaceTarget(machine.id)?.vmId
-      if (!vmId) throw new Error("The remote VM identity is missing.")
+      if (!vmId) throw new Error("Silo could not identify the remote sandbox. Refresh its computer and retry.")
       const source = parseMutationSource(await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } }), remoteSnapshots.get(hostId) ?? null, parseRemoteApplicationSource)
       bumpRemote(hostId)
       remoteSnapshots.set(hostId, source)
@@ -1661,7 +1661,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     dismissWorkspaceError: (name) => workspaceAction("dismiss-error", name),
     openDesktop: async (workspace) => {
       try { await native.invoke("open_desktop", { workspace }) }
-      catch (cause) { reportActionFailure(`open-desktop:${workspace}`, "Could not open the desktop", errorMessage(cause)) }
+      catch (cause) { reportActionFailure(`open-desktop:${workspace}`, "Could not open the Linux desktop", errorMessage(cause)) }
     },
     openTerminal: (name) => workspaceAction("open-terminal", name),
     openEditor: (name, path) => workspaceAction("open-editor", name, path ? { path } : undefined),
@@ -1690,7 +1690,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   function backupFailure(operation: "backup" | "restore", archive: BackupArchive, message: string, targetName?: string): BackupOperation {
-    return { operation, archive, runningNames: [], targetName, kind: "result", outcome: "failed", title: `${operation === "backup" ? "Backup" : "Restore"} failed`, message, detail: "No successful result was recorded." }
+    return { operation, archive, runningNames: [], targetName, kind: "result", outcome: "failed", title: `${operation === "backup" ? "Export" : "Import"} failed`, message, detail: "No successful result was recorded." }
   }
 
   function showPendingBackup(operation: "backup" | "restore", archive: BackupArchive, targetName?: string) {
@@ -1703,7 +1703,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       void native.invoke("dismiss_backup_operation", { expectedOperation: previous, expectedOperationId: view.backup.operationId ?? null }).catch(() => {})
     }
     localBackupOperation = { operation, archive, targetName, runningNames: [], kind: "running", progress: 0, indeterminate: true, canCancel: false,
-      phases: [{ title: operation === "backup" ? "Preparing backup" : "Checking backup", detail: operation === "backup" ? "Preparing the selected sandboxes." : "Verifying the archive before restoring it.", tone: "running" }],
+      phases: [{ title: operation === "backup" ? "Preparing export" : "Checking export file", detail: operation === "backup" ? "Preparing the selected sandboxes." : "Verifying the export file before importing it.", tone: "running" }],
     }
     publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
   }
@@ -1762,7 +1762,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     async exportAndVerify(destination, sandboxes, checkpointId) {
       if (pendingBackupOperation || view.backup.operation?.kind === "running") throw new ExportIncompleteError("busy", "Another export or import is running.")
       pendingBackupOperation = true
-      const archive: BackupArchive = { name: "Backup", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes }
+      const archive: BackupArchive = { name: "Export file", archivePath: "", completedLabel: "Not completed", size: "Unknown", destination, sandboxes }
       showPendingBackup("backup", archive)
       let operationId: string
       try { operationId = z.string().min(1).parse(await native.invoke("start_backup", { destination, sandboxes, ...(checkpointId && { checkpointId }) })) }
@@ -1786,7 +1786,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         publish({ ...snapshot, backup: { ...snapshot.backup, operation: localBackupOperation } })
       }).finally(() => { pendingBackupOperation = false })
     },
-    cancelOperation() { void native.invoke("cancel_backup_operation").then(() => refresh()).catch((cause) => reportUnavailable(`Backup cancellation failed: ${errorMessage(cause)} The operation may still be running.`)) },
+    cancelOperation() { void native.invoke("cancel_backup_operation").then(() => refresh()).catch((cause) => reportUnavailable(`Export or import cancellation failed: ${errorMessage(cause)} The operation may still be running.`)) },
     async revealArchive(archive) {
       await native.invoke("reveal_backup_archive", { archivePath: archive.archivePath })
     },

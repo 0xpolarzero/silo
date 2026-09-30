@@ -74,7 +74,7 @@ it("uses an OS popup and retains stop confirmation in the panel", async () => {
 it("routes a native site selection through panel dismissal", async () => {
   const { user, actions } = setup()
   await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-  const sites = native.menu.mock.calls[0][0].items.find((item: { text: string }) => item.text === "Open site")
+  const sites = native.menu.mock.calls[0][0].items.find((item: { text: string }) => item.text === "Open in browser")
   expect(sites.enabled).toBe(true)
   const port = sites.items.find((item: { text?: string }) => item.text?.startsWith("Port "))
   expect(port).toBeDefined()
@@ -88,7 +88,7 @@ it("reports native menu failure and allows retry", async () => {
   native.popup.mockRejectedValueOnce(new Error("Popup failed"))
   const { user } = setup()
   await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-  expect(await screen.findByText("Couldn't open sandbox actions")).toBeInTheDocument()
+  expect(await screen.findByText("Could not open sandbox actions")).toBeInTheDocument()
   expect(screen.getByText("Popup failed")).toBeInTheDocument()
   expect(native.close).toHaveBeenCalledOnce()
   await user.click(screen.getByRole("button", { name: "Retry" }))

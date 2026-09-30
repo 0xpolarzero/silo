@@ -45,7 +45,7 @@ function SandboxIcon({ kind, state, remote }: { kind: "vm" | "ssh"; state: Sandb
       ) : state === "warning" ? (
         <TriangleAlert className="size-3.5" aria-hidden="true" />
       ) : (
-        <ConnectionIcon kind={kind} network={remote} label={kind === "vm" ? `${remote ? "Remote" : "Local"} VM` : `${remote ? "Network" : "Local"} SSH`} />
+        <ConnectionIcon kind={kind} network={remote} label={kind === "vm" ? `${remote ? "Remote" : "Local"} VM` : "SSH host"} />
       )}
     </ListRowIcon>
   )
@@ -104,7 +104,7 @@ export function SandboxListRow({
           {onOpen
             ? <button type="button" aria-label={`Open ${name}`} title={name} onClick={onOpen} className="min-w-0 cursor-pointer truncate rounded-sm text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/50">{name}</button>
             : <span className="truncate" title={name}>{name}</span>}
-          {kindBadge ?? <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase text-muted-foreground">{kind}</span>}
+          {kindBadge ?? <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium uppercase text-muted-foreground">{kind === "ssh" ? "SSH host" : kind}</span>}
           {badge}
         </>
       }

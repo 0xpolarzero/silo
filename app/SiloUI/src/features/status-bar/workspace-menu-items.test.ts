@@ -27,12 +27,12 @@ describe("sandbox menu items shared by the native and preview menus", () => {
     const items = workspaceMenuItems(workspace, source, actions)
     expect(shape(items)).toEqual([
       "Stop…", "Restart…", "---", "Open in Terminal", "Open in Visual Studio Code…",
-      { "Open site": ["Port 3000", "Port 8080", "---", "copy http://127.0.0.1:13000", "copy https://127.0.0.1:18080"], enabled: true },
+      { "Open in browser": ["Port 3000", "Port 8080", "---", "copy http://127.0.0.1:13000", "copy https://127.0.0.1:18080"], enabled: true },
     ])
     const find = (label: string, list = items) => list.find((item) => "label" in item && item.label === label)
     ;(find("Stop…") as Extract<WorkspaceMenuItem, { kind: "action" }>).run()
     expect(actions.confirm).toHaveBeenCalledWith("stop")
-    const sites = (find("Open site") as Extract<WorkspaceMenuItem, { kind: "submenu" }>).items
+    const sites = (find("Open in browser") as Extract<WorkspaceMenuItem, { kind: "submenu" }>).items
     ;(find("Port 8080", sites) as Extract<WorkspaceMenuItem, { kind: "action" }>).run()
     expect(actions.openSite).toHaveBeenCalledWith(8080)
   })
@@ -42,7 +42,7 @@ describe("sandbox menu items shared by the native and preview menus", () => {
     const workspace = { ...source.workspaces[0]!, state: "stopped" as const, ports: [] }
     expect(shape(workspaceMenuItems(workspace, source, handlers()))).toEqual([
       "Start", "---", "Open in Terminal (disabled)", "Open in Visual Studio Code… (disabled)",
-      { "Open site": ["No active sites (disabled)"], enabled: false },
+      { "Open in browser": ["No reachable ports (disabled)"], enabled: false },
     ])
   })
 

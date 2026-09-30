@@ -27,7 +27,7 @@ export function githubFailure(message: string) {
     }
   }
   return {
-    message: "GitHub settings couldn’t be applied.",
+    message: "GitHub settings could not be applied.",
     details: "Silo could not verify the requested GitHub settings for this sandbox. Retry to apply them again. Technical command output is omitted because it can contain private values.",
     canRetry: true,
   }
