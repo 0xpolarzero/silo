@@ -45,10 +45,10 @@ describe("native workspace menu", () => {
     expect(actions.openSite).toHaveBeenCalledWith(target, 3000)
   })
 
-  it("copies each site's own address, like the preview menu, instead of a port-less base URL", async () => {
+  it("copies the sandbox website host and forwarded port", async () => {
     menus.length = 0
     const base = applicationSourceForScenario("complete")
-    const workspace = { ...base.workspaces[0]!, ports: [{ port: 3000, listening: true, configured: true, scheme: "http" as const, hostPort: 43000 }] }
+    const workspace = { ...base.workspaces[0]!, ports: [{ port: 3000, listening: true, configured: true, scheme: "http" as const, hostPort: 43000, host: "dev.localhost" }] }
     const source = { ...base, workspaces: [workspace] }
     const actions = {
       listWorkspaceDirectory: fixtureDirectoryLoader(source.workspaces),
@@ -63,6 +63,6 @@ describe("native workspace menu", () => {
     const sites = menus[0]!.find((item) => item.text === "Open in browser")!.items!
     expect(sites.map((item) => item.text)).toEqual(["Port 3000", undefined, "Copy port 3000 address"])
     sites.find((item) => item.text === "Copy port 3000 address")!.action!()
-    expect(writeText).toHaveBeenCalledExactlyOnceWith("http://127.0.0.1:43000")
+    expect(writeText).toHaveBeenCalledExactlyOnceWith("http://dev.localhost:43000")
   })
 })

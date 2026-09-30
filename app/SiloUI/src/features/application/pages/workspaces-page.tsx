@@ -140,7 +140,7 @@ function Files({
                         {(operation || repository.ahead > 0) && (
                           <div className="flex min-h-6 items-start pr-2 pb-2 pl-10" data-repository-actions>
                             {operation
-                              ? <RepositoryPushFeedback operation={operation} workspace={workspaceTarget(workspace)} repositoryPath={repository.path} repository={repository} onPush={push} onDismiss={onDismissRepositoryPush} />
+                              ? <RepositoryPushFeedback disabled={!canPush} operation={operation} workspace={workspaceTarget(workspace)} repositoryPath={repository.path} repository={repository} onPush={push} onDismiss={onDismissRepositoryPush} />
                               : <RepositoryPushButton repository={repository} disabled={!canPush} label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${sandbox}`} onPush={push}>Push {commitLabel(repository.ahead)}</RepositoryPushButton>}
                           </div>
                         )}

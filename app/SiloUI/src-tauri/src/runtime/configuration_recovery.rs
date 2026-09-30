@@ -124,9 +124,16 @@ pub(super) fn finish(paths: &RuntimePaths) -> Result<(), RuntimeError> {
 pub(crate) struct CommandLock {
     file: File,
     inherited_by_child: bool,
+    release_on_drop: bool,
 }
 
 impl CommandLock {
+    /// A shutdown worker shares the parent's flock. Only the parent unlocks after
+    /// all workers have joined; each runtime child still inherits its own descriptor.
+    pub(crate) fn duplicate_for_shutdown(&self) -> Result<Self, RuntimeError> {
+        Ok(Self { file: self.file.try_clone().map_err(failure)?, inherited_by_child: false, release_on_drop: false })
+    }
+
     /// Keep the flock until the deliberately inheriting runtime child exits.
     /// Call only after a child with the lock's close-on-exec flag cleared spawned.
     pub(crate) fn mark_inherited_by_child(&mut self) {
@@ -148,7 +155,7 @@ impl AsRawFd for CommandLock {
 
 impl Drop for CommandLock {
     fn drop(&mut self) {
-        if !self.inherited_by_child {
+        if self.release_on_drop && !self.inherited_by_child {
             // SAFETY: this descriptor remains owned by self until after Drop.
             // LOCK_UN also releases copies inherited by unrelated forks.
             unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN); }
@@ -164,7 +171,7 @@ pub(crate) fn command_lock(paths: &RuntimePaths, timeout: Duration) -> Result<Co
     loop {
         // SAFETY: the open file owns this descriptor until the lock is dropped.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
-            return Ok(CommandLock { file, inherited_by_child: false });
+            return Ok(CommandLock { file, inherited_by_child: false, release_on_drop: true });
         }
         let error = std::io::Error::last_os_error();
         if error.kind() != std::io::ErrorKind::WouldBlock { return Err(failure(error)); }
@@ -229,8 +236,21 @@ fn reconcile(runner: &dyn RuntimeRunner, paths: &RuntimePaths, journal: &Journal
             }
         }
     }
-    if current.machines.is_empty() && !paths.metadata.exists() { return Ok(()); }
-    write_metadata(&paths.metadata, &current)
+    if !current.machines.is_empty() || paths.metadata.exists() {
+        write_metadata(&paths.metadata, &current)?;
+    }
+    // An interrupted removal keeps its checkpoint history until exact native members
+    // have entered the cleanup journal. The updated inventory releases its own pins.
+    for machine in journal.previous.machines.iter().filter(|machine| {
+        !journal.request.machines.iter().any(|next| next.id() == machine.id())
+            && !current.machines.iter().any(|next| next.id() == machine.id())
+    }) {
+        if machine.is_vm() {
+            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name())?;
+        }
+        checkpoints::forget_removed(paths, machine.id())?;
+    }
+    Ok(())
 }
 
 fn verify_committed_edits(runner: &dyn RuntimeRunner, paths: &RuntimePaths, journal: &Journal, requested: &MachineConfigurationRequest) -> Result<(), RuntimeError> {
@@ -251,6 +271,7 @@ fn verify_committed_edits(runner: &dyn RuntimeRunner, paths: &RuntimePaths, jour
 }
 
 pub(super) fn recover_at_paths(runner: &dyn RuntimeRunner, paths: &RuntimePaths, resources: &HostResources, progress: &dyn Fn(&str, &str, u8)) -> Result<(), RuntimeError> {
+    debug_assert!(operation_gate::held(), "configuration recovery requires the computer operation gate");
     let Some(journal) = load(paths)? else { return Ok(()); };
     // Drain a surviving child before inspecting state. The caller holds the
     // operation gate (computer scope), which serializes the application-level

@@ -207,6 +207,7 @@ const backupSummaryShape = z.object({ lastArchive: z.string(), completedLabel: z
 // rejects a whole computer's state or throws while it is being shown.
 const applicationSourceShape = z.object({
   runtimeRepair: runtimeRepairShape.nullable(),
+  hostCapacity: z.object({ logicalCpus: z.number().int().positive(), physicalMemoryBytes: z.number().int().positive(), maxMemoryGib: z.number().int().positive() }).optional().catch(undefined),
   workspaces: workspacesShape,
   activities: tolerantArray(activityShape),
   // The runtime does not report an operation in progress; the source tracks its own.
@@ -396,6 +397,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let refreshSequence = 0
   let readSequence = 0
   let appliedApplicationRead = 0
+  const appliedWorkspaceReads = new Map<string, number>()
   let appliedBackupRead = 0
   let refreshRepositoriesOnReturn = false
   let githubMutationSequence = 0
@@ -575,7 +577,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   function derivePorts(row: NetworkState["workspaces"][number] | undefined, reachable: boolean): ApplicationPort[] {
-    return (row?.ports ?? []).map(port => ({ port: port.port, listening: reachable && !networkError && !row?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured }))
+    return (row?.ports ?? []).map(port => ({ port: port.port, listening: reachable && !networkError && !row?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured, host: row?.host }))
   }
 
   function withPendingCheckpoint(workspace: ApplicationWorkspace, target: string): ApplicationWorkspace {
@@ -746,7 +748,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           const lastSeen = remoteComputers.find(item => item.id === hostId)?.lastSeen
           slowComputers.delete(hostId)
           if ("source" in outcome) {
-            remoteSnapshots.set(hostId, outcome.source)
+            const previous = new Map((remoteSnapshots.get(hostId)?.workspaces ?? []).map(row => [row.machine.id, row]))
+            remoteSnapshots.set(hostId, { ...outcome.source, workspaces: outcome.source.workspaces.map(row => {
+              const known = previous.get(row.machine.id)
+              return row.settling && known ? { ...known, settling: true } : row
+            }) })
             setComputer({ ...host, connected: true, lastSeen: Date.now() })
           } else if (isUpdateInProgress(outcome.cause)) setComputer({ ...host, connected: true, busy: true, lastSeen })
           else setComputer({ ...host, connected: false, error: errorMessage(outcome.cause), lastSeen })
@@ -882,9 +888,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     let source = snapshot.source
     let backup = snapshot.backup
     let error: string | null = null
+    let reportedSource: ApplicationSource | undefined
     let configurationUpdating = false
     if (applicationResult.status === "fulfilled") {
-      try { source = parseApplicationSource(applicationResult.value) }
+      try { source = reportedSource = parseApplicationSource(applicationResult.value) }
       catch (cause) {
         error = `Silo returned invalid application state: ${errorMessage(cause)}`
         source = await unavailableLocalSource(error)
@@ -907,9 +914,27 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (backendBackup) { const state = backendBackup; exportWaiters.forEach(waiter => waiter(state, sequence)) }
     const applicationCurrent = sequence > appliedApplicationRead
     const backupCurrent = sequence > appliedBackupRead
-    if (!applicationCurrent && !backupCurrent) return
+    if (!applicationCurrent && !backupCurrent && !reportedSource) return
     if (!applicationCurrent) { source = snapshot.source; error = snapshot.error; configurationUpdating = false }
     else if (!configurationUpdating) appliedApplicationRead = sequence
+    if (source && reportedSource) {
+      // A settling row carries an older runtime reading and cannot advance that row's
+      // sequence. An earlier fresh read can still complete it after this read publishes
+      // newer metadata and fresh readings for other sandboxes.
+      const previousRows = new Map((snapshot.source?.workspaces ?? []).map(row => [row.machine.id, row]))
+      const incomingRows = new Map(reportedSource.workspaces.map(row => [row.machine.id, row]))
+      const rows = applicationCurrent ? reportedSource.workspaces : source.workspaces
+      source = { ...source, workspaces: rows.map(row => {
+        const incoming = incomingRows.get(row.machine.id)
+        const previous = previousRows.get(row.machine.id)
+        if (!incoming) return row
+        if (incoming.settling && !applicationCurrent) return row
+        if (incoming.settling) return previous ? { ...previous, settling: true } : incoming
+        if (sequence <= (appliedWorkspaceReads.get(row.machine.id) ?? 0)) return previous ?? row
+        appliedWorkspaceReads.set(row.machine.id, sequence)
+        return incoming
+      }) }
+    }
     if (backupCurrent) appliedBackupRead = sequence
     else backup = snapshot.backup
     // Only a known older policy revision is stale. The runtime's fallback for a failed

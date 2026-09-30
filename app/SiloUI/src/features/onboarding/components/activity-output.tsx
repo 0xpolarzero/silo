@@ -30,6 +30,7 @@ function activityOutput(events: SiloProgressEvent[]): string {
     if (!event.safeForDisplay) continue
     const lines = attempts.get(event.requestId) ?? []
     lines.push(eventLine(event))
+    if (event.step === "setup-failed" && event.diagnostic) lines.push(event.diagnostic)
     attempts.set(event.requestId, lines)
   }
   return [...attempts.values()].map((lines, index) => `Attempt ${index + 1}\n${lines.join("\n")}`).join("\n\n")

@@ -121,11 +121,19 @@ Silo's patch does not change any of this.
    - Check pins and head.
    - Move the head with `snapshot head` first if needed.
    - Call `snapshot remove`, then drop the record.
-2. `forget_removed` (line 698): remove every member of the group (head last).
+2. `remove_deleted_snapshots`: journal the deleted sandbox's native members,
+   then remove unneeded members in dependency order, moving each group's head
+   when required. Keep fork dependencies journaled before `forget_removed`
+   clears the sandbox's history. Run the same path after interrupted deletion.
 3. On capture or import failure, remove the partial member or `silo-import-*`
    group (shared with E-23 and E-24 journaling).
-4. Add a startup sweep of unowned `silo-import-*` and `silo-backup-*` groups
-   that are older than 24 h.
+4. No age-based sweep. Delete unneeded data at sandbox deletion, retaining exact
+   native member identities in `checkpoint-cleanup.json` while forks or other
+   dependents need them. Deleting the last dependent retries those identities.
+   Failed or cancelled captures and imports remove their partial data immediately.
+   At next launch, retry only data identified by an interrupted operation's own
+   journal: checkpoint in-flight records, deletion candidates, and import/export
+   journals. Never infer ownership or interruption from age.
 5. UI: `checkpoint-panel.tsx` Delete action (decision 8, inline two-step);
    add checkpoint storage to the Storage tab.
 
@@ -134,16 +142,15 @@ Silo's patch does not change any of this.
 - pinned refusal
 - head move before removal
 - failed-capture cleanup
-- sweep ignores owned groups
+- deletion keeps a fork's base, then removes it when the last fork is deleted
+- launch cleanup selects only journaled identities, preserving unrelated orphans
+- failed deletion retries after launch without removing a reused member name
 
 Also a `mac` live run for storage reclamation.
 
-**Open questions.**
-
-- Should deleting a sandbox also delete its forks' pinned base? The guide
-  suggests forks own their files, so yes, but this needs a live check.
-- Should "Before restore" and "Fork point" members be auto-collected after N
-  days?
+**Owner policy.** A fork's pinned base stays until its last dependent is
+removed. "Before restore" and "Fork point" checkpoints have no age-based
+collection policy; explicit checkpoint or sandbox deletion removes them.
 
 **Implementation findings (2026-09-30).** Verified by reading the pinned
 MicroSandbox source (`crates/cli/lib/commands/snapshot.rs`,
@@ -166,15 +173,30 @@ MicroSandbox source (`crates/cli/lib/commands/snapshot.rs`,
   measures artifact directories instead.
 
 Implemented: Delete checkpoint refuses pinned checkpoints with the reason
-(another record, a pending start, a later capture, a lineage position);
-sandbox deletion removes the members only it used; a failed capture removes a
-published member it no longer needs; a sweep five minutes after launch removes
-Silo-named members no record references that are older than 24 hours. Answer to
-the first open question: a started fork keeps the checkpoint it was restored
-from (it is the fork's lineage position); the sweep removes it after the fork no
-longer builds on it. Import-failure cleanup of `silo-import-*` groups is left to
-E-23; the sweep collects them after 24 hours. Deleting checkpoints of a sandbox
-on another computer is done in Silo on that computer.
+(another record, a pending start, a later capture, a lineage position).
+Sandbox deletion journals exact members and removes the ones no dependent needs;
+deleting the last fork retries its pinned base. Launch retries only those deletion
+journals and checkpoint captures still recorded as in flight. Export records its
+capture before creation, removes an incomplete member on failure or relaunch, and
+keeps a verified capture while a sandbox uses it as its lineage parent. Import
+records its new group before load, removes indexed unfinished members even before
+allocating a sandbox identity, and keeps ownership journaled when removal fails.
+A normal failed or cancelled load also removes its new snapshot and cache stages
+from the before/after census of that running operation, preserving older stages.
+There is no age-based startup sweep. Deleting checkpoints of a sandbox on another
+computer is done in Silo on that computer.
+
+**Remaining runtime gap.** The
+[pinned archive loader](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/snapshot/archive/batch.rs#L263)
+creates random `.msb-snapshot-import-*` folders under the native snapshot store
+and `snapshot-import-*` folders in `cache/tmp`. Neither name identifies the
+chosen group or Silo operation, and the CLI does not expose the exact paths.
+A crash during unpacking before member publication therefore leaves unindexed
+stages that Silo cannot attribute to its journal. Startup preserves those stages;
+it never prefix-sweeps or uses age to infer ownership. Full E-03 crash cleanup
+requires an upstream runtime journal or a supported API that lets Silo choose
+and journal those paths before the runtime writes them. The indexed import-group
+cleanup required by E-24 is implemented.
 
 ---
 
@@ -280,9 +302,11 @@ local method once a tao release that Tauri uses carries it.
 - Session end never cancels the exit: a failed or late stop is logged and Silo
   exits. `RunEvent::Exit` without an approved Quit (and not an update restart)
   runs a bounded stop as a backstop.
-- Gap: `runtime::shutdown::stop_local_vms` (WP-D) still stops VMs one at a
-  time, so several running VMs may not all stop inside logind's default 5 s
-  delay. Stopping them in parallel is a WP-D follow-up.
+- Shutdown dispatches local VM stops concurrently under the computer gate.
+  The parent shares one worker flock with scoped stop workers so child stops
+  overlap without admitting another process's runtime mutation. Slow enumeration
+  or inspection and individual stop latency can still exceed logind's default
+  5 s delay; live logout verification remains required.
 
 ---
 
@@ -766,7 +790,9 @@ loses the log line that a panic happened under a lock.
 
 - **E-03 automatic cleanup:** no. Checkpoints (including "Before restore" and
   "Fork point") are removed only by an explicit Delete checkpoint action or
-  when their sandbox is deleted.
+  when their sandbox is deleted. Dependency-blocked data is removed as soon as
+  its last dependent is deleted. Failed or cancelled operations remove partial
+  data immediately; crash cleanup at next launch uses their journals, never age.
 - **C-24 published-port hosts:** `*.localhost` addresses are acceptable and
   Safari must work. Verify Safari resolution in the macOS live session; if
   Safari cannot open `*.localhost`, fall back to `127.0.0.1` for Safari.

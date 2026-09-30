@@ -51,7 +51,12 @@ fn events(paths: &RuntimePaths) -> Result<Vec<Event>, RuntimeError> {
     Ok(events)
 }
 
+static ACTIVITY_WRITES: Mutex<()> = Mutex::new(());
+
 fn store(paths: &RuntimePaths, event: &Event) -> Result<(), String> {
+    // Shutdown stops several VMs concurrently. Keep each read-modify-write atomic
+    // so one completed stop cannot erase another VM's activity entry.
+    let _write = ACTIVITY_WRITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut entries = events(paths).map_err(|error| error.to_string())?;
     entries.retain(|old| old.id != event.id);
     entries.push(event.clone());
@@ -94,14 +99,8 @@ pub(super) fn begin(paths: &RuntimePaths, action: &str, workspace: &str, machine
     }
     let timestamp = activity_timestamp();
     let event = Event {
-        id: format!(
-            "lifecycle-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ),
+        // Concurrent shutdown workers can observe the same clock tick.
+        id: format!("lifecycle-{}-{}", std::process::id(), uuid::Uuid::new_v4()),
         action: action.into(),
         workspace: workspace.into(),
         machine_id: machine_id.into(),

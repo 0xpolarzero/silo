@@ -52,11 +52,11 @@ export function workspaceMenuItems(workspace: ApplicationWorkspace, source: Appl
         ? [
           ...sites.map(({ port }) => ({ kind: "action", id: `site:${port}`, label: `Port ${port}`, enabled: true, run: () => handlers.openSite(port) } as const)),
           { kind: "separator" } as const,
-          ...sites.map(({ port, scheme, hostPort }) => ({
+          ...sites.map(({ port, scheme, hostPort, host }) => ({
             kind: "copy",
             id: `copy:${port}`,
             label: `Copy port ${port} address`,
-            value: `${scheme}://127.0.0.1:${hostPort}`,
+            value: `${scheme}://${host ?? "127.0.0.1"}:${hostPort}`,
             copied: `Port ${port} address copied`,
             failed: `Could not copy port ${port} address`,
           } as const)),

@@ -393,11 +393,11 @@ mod native {
                 let app = app.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let result = destination.and_then(|destination| {
-                        std::process::Command::new(if cfg!(target_os = "macos") {
+                        crate::applications::launch::sanitize_child(&mut std::process::Command::new(if cfg!(target_os = "macos") {
                             "/usr/bin/open"
                         } else {
                             "xdg-open"
-                        })
+                        }))
                         .arg(destination)
                         .status()
                         .map_err(|_| "The document or browser could not be opened.")

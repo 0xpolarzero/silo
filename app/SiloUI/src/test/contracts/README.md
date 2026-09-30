@@ -41,4 +41,7 @@ nice -n 10 npx vitest run --testTimeout=30000 src/desktop/native-contracts.test.
 
 The Rust test executables use synthetic GitHub configuration and must not be
 distributed. Normal tests never rewrite fixtures. Existing GitHub, backup, and
-setup activity fixtures retain their dedicated Rust verification tests.
+setup activity fixtures retain their dedicated Rust verification tests. To regenerate
+export/import operation wording, use the same synthetic configuration and update
+flag with the `backup_operation_serialization_matches_frontend_contract` filter,
+repeat without the update flag, then run `src/desktop/production-source.test.ts`.

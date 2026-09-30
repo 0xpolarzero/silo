@@ -142,8 +142,9 @@ These variables exist only in the compiled test harness, not the application.
 The test writes distinct root/workspace markers, exports, and deletes the
 isolated original runtime/cache/volumes. It imports into different runtime
 homes, first empty and then already containing an independently created VM.
-It starts imported VMs, verifies files and identity, and checks that the existing
-VM and its cached disks remain intact. It cleans up its own VMs. It never uses existing user VM data.
+It verifies that import saves a pending sandbox without creating or starting a
+runtime VM. It then uses the app's explicit Start path, verifies files and identity,
+and checks that the existing VM and its cached disks remain intact. It cleans up its own VMs. It never uses existing user VM data.
 
 ## Coverage limits
 
@@ -153,6 +154,23 @@ Linux code and packaging inputs are covered by source and focused tests, but
 neither Linux architecture is live-qualified on this Mac. Run the same real
 create/export/import flow on supported arm64 and x86_64 Linux before release.
 An ad-hoc debug signature is not notarization or release-signing verification.
+
+## Interrupted import cleanup limit
+
+Silo saves the new import's native checkpoint group before invoking `snapshot load`.
+Recovery removes indexed members of that group, including an import interrupted
+before sandbox settings were saved. A failed cleanup keeps that ownership journal
+for another launch. Other groups and completed imports remain intact.
+
+The [pinned runtime's archive loader](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/snapshot/archive/batch.rs#L263)
+creates random `.msb-snapshot-import-*` folders in its snapshot store and
+`snapshot-import-*` folders in `cache/tmp`. These folders carry no destination
+group or Silo operation identity. A normal failed or cancelled load removes its
+new snapshot and cache stages; a process crash before publication can leave unattributed
+snapshot or cache stages. Startup preserves them because it cannot prove which
+operation owns them. Complete crash cleanup requires the runtime to expose or
+journal its exact stage paths before writing them; Silo does not run an age or
+prefix sweep.
 
 ## Recorded evidence, 2026-09-08
 

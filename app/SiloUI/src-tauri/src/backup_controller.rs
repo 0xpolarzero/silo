@@ -251,10 +251,8 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         revision: AtomicU64::new(1),
     });
     app.manage(controller.clone());
-    // Settle an interrupted operation even while the runtime migration blocks
-    // sandbox operations: recovery runs no runtime command and only removes
-    // this operation's own output, and the migration refuses to start while
-    // the journal is pending (E-50).
+    // Settle an interrupted operation before automatic runtime migration starts.
+    // Recovery removes only the output journaled for this export or import.
     if let Some(journal) = journal {
         recovery::resume(app.clone(), controller, journal)?;
     }
@@ -267,20 +265,38 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
 /// import. An interrupted export's recovery only checks its own files, so
 /// startup does not wait for it (E-31).
 pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
+    wait_for_recovery_with(app, false)
+}
+
+/// Migration must wait for exports too: selecting a new generation quarantines
+/// the previous generation's journal, including an interrupted export's result.
+pub(crate) fn wait_for_migration_recovery(app: &AppHandle) -> Result<(), String> {
+    wait_for_recovery_with(app, true)
+}
+
+fn wait_for_recovery_with(app: &AppHandle, migration: bool) -> Result<(), String> {
     let controller = app.state::<Arc<Controller>>();
+    wait_for_controller_recovery(&controller, migration, &|| crate::startup::is_cancelled(app))
+}
+
+fn wait_for_controller_recovery(
+    controller: &Controller,
+    migration: bool,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<(), String> {
     let pending = controller
         .journal
         .lock()
         .map_err(|_| "Export and import recovery status could not be read. Relaunch Silo and retry.")?
         .as_ref()
-        .filter(|journal| journal.is_pending() && journal.blocks_startup())
+        .filter(|journal| journal.is_pending() && (migration || journal.blocks_startup()))
         .map(|journal| journal.identity().to_string());
     let Some(identity) = pending else {
         return Ok(());
     };
     let started = std::time::Instant::now();
     loop {
-        if crate::startup::is_cancelled(app) {
+        if cancelled() {
             return Ok(());
         }
         let pending = controller
@@ -293,6 +309,9 @@ pub(crate) fn wait_for_recovery(app: &AppHandle) -> Result<(), String> {
             return Ok(());
         }
         if !controller.busy.load(Ordering::Acquire) {
+            if migration {
+                return Err("An interrupted export or import could not be recovered. Dismiss its result before retrying migration. No sandbox data was changed.".into());
+            }
             // Recovery failed and published its error in the export/import
             // view, where the user can retry by relaunching or abandon it.
             // Exports no longer stop sandboxes and imports stay pending until
@@ -1187,7 +1206,17 @@ fn backup_work(
         },
         cancellation,
         recovery::token(controller)?.as_deref(),
-    )?;
+        &|source, member| recovery::export_capture_intent(controller, source, member),
+    );
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Err(cleanup) = recovery::settle_export_capture(&runtime::ProcessRunner, &paths, controller) {
+                return Err(format!("{error} {cleanup}").into());
+            }
+            return Err(error.into());
+        }
+    };
     // Exports capture running sandboxes in place; they never stop or restart one.
     let inspection = backup::ArchiveInspection {
         created_at_ms: result.created_at_ms,
@@ -1650,8 +1679,14 @@ fn restore_at_paths(
         return Err(format!("A runtime sandbox named {new_name} already exists.").into());
     }
     progress("Unpacking export");
-    unpack_and_save(paths, controller, archive, source_name, new_name, cancellation, progress, original)
-        .map_err(TransferError::after_unpacking)
+    let result = unpack_and_save(paths, controller, archive, source_name, new_name, cancellation, progress, original);
+    result.map_err(|error| {
+        let mut error = error.after_unpacking();
+        if let Err(cleanup) = recovery::discard_pending_import(paths, controller) {
+            error.message = format!("{} {cleanup}", error.message);
+        }
+        error
+    })
 }
 
 fn unpack_and_save(
@@ -1664,15 +1699,18 @@ fn unpack_and_save(
     progress: &dyn Fn(&str),
     original: runtime::MachineConfigurationRequest,
 ) -> Result<(), TransferError> {
+    let group = backup::new_import_group();
     let prepared = controller
         .service
-        .prepare_restore(
+        .prepare_restore_in_group(
             backup::RestoreRequest {
                 archive: archive.to_path_buf(),
                 source_name: Some(source_name.into()),
                 new_name: new_name.into(),
             },
+            &group,
             cancellation,
+            &|| recovery::save_restore_group(controller, &group).map_err(backup::BackupError::InvalidRequest),
         )?;
     // Until the new sandbox is saved, a failure removes the loaded import
     // group instead of stranding it in the native store (E-23).
@@ -1965,7 +2003,7 @@ mod tests {
             name: "saved.silo-backup".into(),
             archive_path: "/backups/saved.silo-backup".into(),
             completed_label: "Verified archive".into(),
-            size: "1 GB".into(),
+            size: "1 GiB".into(),
             destination: "/backups".into(),
             sandboxes: vec!["dev".into()],
             checkpoint_name: None,
@@ -2376,7 +2414,7 @@ mod tests {
                 indeterminate: None,
                 can_cancel: Some(false),
                 phases: vec![Phase {
-                    title: "Restore".into(),
+                    title: "Import".into(),
                     detail: "Creating sandbox".into(),
                     tone: "running",
                 }],
@@ -2387,16 +2425,12 @@ mod tests {
                 running_names: Vec::new(),
                 target_name: Some("restored".into()),
                 outcome: "failed",
-                title: "Restore failed".into(),
+                title: "Import failed".into(),
                 message: "Runtime refused creation".into(),
                 detail: Some("No new sandbox was retained".into()),
             },
         ];
-        let expected: Value = serde_json::from_str(include_str!(
-            "../../src/test/contracts/backup-operations.json"
-        ))
-        .unwrap();
-        assert_eq!(serde_json::to_value(operations).unwrap(), expected);
+        crate::runtime::contract_tests::assert_fixture("backup-operations.json", operations);
     }
 
     #[test]
@@ -2891,6 +2925,52 @@ mod tests {
     }
 
     #[test]
+    fn migration_waits_for_a_pending_export_to_settle_before_conversion() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(directory.path().join("backup-history.json")));
+        recovery::begin(&controller, recovery::Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
+        controller.busy.store(true, Ordering::Release);
+        let (entered, observed) = std::sync::mpsc::channel();
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let waiter_controller = controller.clone();
+        let waiter_release = release.clone();
+        let waiter = std::thread::spawn(move || {
+            let announced = AtomicBool::new(false);
+            wait_for_controller_recovery(&waiter_controller, true, &|| {
+                if !announced.swap(true, Ordering::Relaxed) {
+                    entered.send(()).unwrap();
+                    waiter_release.wait();
+                }
+                false
+            })
+        });
+        observed.recv_timeout(Duration::from_secs(5)).expect("migration reached the pending recovery");
+        assert!(recovery::pending(&controller).unwrap());
+        recovery::complete(&controller, Operation::Result {
+            operation: "backup", archive: completed_archive(), running_names: vec![],
+            target_name: None, outcome: "failed", title: "Export interrupted".into(),
+            message: "No export file was saved.".into(), detail: None,
+        });
+        controller.busy.store(false, Ordering::Release);
+        release.wait();
+        waiter.join().unwrap().unwrap();
+        assert!(!recovery::pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn migration_refuses_failed_recovery_but_startup_can_continue() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), None)).unwrap();
+        assert!(wait_for_controller_recovery(&controller, true, &|| false).unwrap_err()
+            .contains("Dismiss its result"));
+        wait_for_controller_recovery(&controller, false, &|| false).unwrap();
+        assert!(recovery::pending(&controller).unwrap());
+    }
+
+    #[test]
     fn multi_vm_restore_requires_an_explicit_source() {
         let _test_state = crate::test_support::global_state();
         let names = vec!["first".into(), "second".into()];
@@ -3171,13 +3251,13 @@ mod tests {
                 "Saving stopped sandbox",
             ]
         );
-        let restored = inspect(&paths, restored_name).unwrap();
-        assert_eq!(restored.status, "Created");
+        assert!(runtime::is_pending_restore(&paths, restored_name));
+        let native: Vec<Value> = serde_json::from_str(&run(&["list", "--format", "json"]).stdout).unwrap();
+        assert!(native.iter().all(|sandbox| sandbox["name"] != restored_name));
         // Settings were saved, but process death preceded the success result.
-        // Relaunch adopts the import under its journaled identity.
-        let restored_id = restored.config["labels"]["silo.machine-id"]
-            .as_str()
-            .unwrap();
+        // Relaunch adopts the import under its journaled identity without booting it.
+        let restored_id = runtime::read_metadata(&paths.metadata).unwrap().machines.into_iter()
+            .find(|machine| machine.name() == restored_name).unwrap().id().to_owned();
         let checkpoint = recovery::load(&controller.history_path).unwrap().unwrap();
         let recovered = recovery::recover_at_paths(
             &paths,
@@ -3193,15 +3273,20 @@ mod tests {
             .iter()
             .any(|machine| machine.id() == restored_id));
 
+        runtime::start_disposable_test_import(&paths, restored_name).unwrap();
+        assert!(!runtime::is_pending_restore(&paths, restored_name));
+        let restored = inspect(&paths, restored_name).unwrap();
+        assert_eq!(restored.status, "Running");
         assert_eq!(
             restored.config.get("pull_policy").and_then(Value::as_str),
             Some("Never")
         );
-        assert!(backup::default_github_network(&restored.config["network"]));
+        assert_eq!(restored.config["network"]["policy"], serde_json::json!({
+            "default_egress":"deny", "default_ingress":"deny", "rules":[]
+        }));
         assert_eq!(restored.config["labels"]["silo.github-protocol"], "1");
         assert_eq!(restored.config["labels"]["silo.working-account"], "1");
         let restored_user = crate::working_account::working_user(&restored.config).unwrap();
-        run(&["start", restored_name]);
         assert_eq!(
             run(&[
                 "exec",
@@ -3311,8 +3396,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(original_cache, cache_hashes());
-        assert_eq!(inspect(&paths, restored_name).unwrap().status, "Created");
-        run(&["start", restored_name]);
+        assert!(runtime::is_pending_restore(&paths, restored_name));
+        runtime::start_disposable_test_import(&paths, restored_name).unwrap();
+        assert_eq!(inspect(&paths, restored_name).unwrap().status, "Running");
         let second_proof = run(&[
             "exec",
             restored_name,
@@ -3506,56 +3592,11 @@ mod tests {
         )
         .unwrap();
 
-        // Read the imported pending-restore selectors, then cold-boot the disk only.
-        let restored_id = runtime::read_metadata(&cold.metadata)
-            .unwrap()
-            .machines
-            .into_iter()
-            .find(|m| m.name() == restored_name)
-            .unwrap()
-            .id()
-            .to_owned();
-        let record: Value = serde_json::from_slice(
-            &fs::read(
-                cold.metadata
-                    .with_file_name("checkpoints")
-                    .join(format!("{restored_id}.json")),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-        let import_group = record["pendingCheckpointRestore"]["sourceWorkspace"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        let import_member = record["pendingCheckpointRestore"]["checkpointId"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        // A full checkpoint imported as disk-state cold-boots with --disk-only.
-        run(
-            &cold,
-            &[
-                "restore",
-                &format!("{import_group}:{import_member}"),
-                "--name",
-                restored_name,
-                "--disk-only",
-                "--cpus",
-                "1",
-                "--memory",
-                "1G",
-            ],
-        );
-        // Consume the pending restore as a successful explicit Start does, so the
-        // guarded exec below treats the imported workspace as active.
-        let record_path = cold
-            .metadata
-            .with_file_name("checkpoints")
-            .join(format!("{restored_id}.json"));
-        let mut active: Value = serde_json::from_slice(&fs::read(&record_path).unwrap()).unwrap();
-        active["pendingCheckpointRestore"] = Value::Null;
-        fs::write(&record_path, serde_json::to_vec(&active).unwrap()).unwrap();
+        assert!(runtime::is_pending_restore(&cold, restored_name));
+        // Use the app's explicit Start path; it consumes the pending import only
+        // after the runtime verifies the new sandbox's identity and policy.
+        runtime::start_disposable_test_import(&cold, restored_name).unwrap();
+        assert!(!runtime::is_pending_restore(&cold, restored_name));
         let proof = run(
             &cold,
             &[

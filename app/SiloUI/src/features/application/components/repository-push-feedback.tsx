@@ -121,6 +121,7 @@ export function RepositoryPushFeedback({
   onPush,
   onDismiss,
   showSuccess = false,
+  disabled = false,
 }: {
   operation: RepositoryPushOperation
   workspace: string
@@ -131,6 +132,8 @@ export function RepositoryPushFeedback({
   onDismiss: (workspace: string, repositoryPath: string) => void
   /** Show the success line and clear it after a few seconds. For surfaces without notifications. */
   showSuccess?: boolean
+  /** The sandbox must be available to retry a push. */
+  disabled?: boolean
 }) {
   useEffect(() => {
     if (!showSuccess || operation.status !== "succeeded") return
@@ -162,10 +165,11 @@ export function RepositoryPushFeedback({
       </div>
     )
   }
-  return <FailedPush operation={operation} repositoryPath={repositoryPath} repository={repository} onPush={onPush} />
+  return <FailedPush operation={operation} repositoryPath={repositoryPath} repository={repository} onPush={onPush} disabled={disabled} />
 }
 
-function FailedPush({ operation, repositoryPath, repository, onPush }: {
+function FailedPush({ operation, repositoryPath, repository, onPush, disabled }: {
+  disabled: boolean
   operation: Extract<RepositoryPushOperation, { status: "failed" }>
   repositoryPath: string
   repository?: ApplicationRepository
@@ -188,12 +192,12 @@ function FailedPush({ operation, repositoryPath, repository, onPush }: {
           </Button>
         </PopoverTrigger>
         <PopoverContent align="start" className="grid w-80 max-w-[calc(100vw-2rem)] gap-2 text-xs">
-          {confirming && target && repository
+          {confirming && !disabled && target && repository
             ? <ConfirmBody {...pushConfirmation(target, repository.ahead)} onConfirm={() => onPush(target)} onClose={() => change(false)} />
             : <>
               <p className="text-destructive">{operation.message}</p>
               {operation.diagnosticDetails && <pre className="max-h-48 overflow-auto rounded-md bg-muted px-2.5 py-2 font-mono text-[10px] leading-4 whitespace-pre-wrap text-muted-foreground">{operation.diagnosticDetails}</pre>}
-              <Button className="justify-self-start" variant="outline" size="xs" disabled={!target} title={target ? undefined : UNCONFIRMABLE} onClick={() => setConfirming(true)} aria-label={`Retry push for ${repositoryPath}`}>
+              <Button className="justify-self-start" variant="outline" size="xs" disabled={disabled || !target} title={target ? undefined : UNCONFIRMABLE} onClick={() => setConfirming(true)} aria-label={`Retry push for ${repositoryPath}`}>
                 <RotateCw aria-hidden="true" />
                 Retry
               </Button>

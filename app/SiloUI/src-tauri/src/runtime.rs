@@ -1021,31 +1021,41 @@ fn run_msb_process(
         report,
     })?;
     if let Some(workspace) = github_command_workspace(args).filter(|_| matches!(args[0].as_str(), "start" | "restart")) {
-        let verified = inspect_workspace(&ProcessRunner, paths, workspace).and_then(|inspected| {
-            if inspected.status != "Running" {
-                return Ok(());
+        record_start_refresh(paths, workspace, || {
+            let inspected = inspect_workspace(&ProcessRunner, paths, workspace)?;
+            if inspected.status == "Running" {
+                crate::secrets::workspace_started(workspace, secret_revision.as_deref().unwrap_or_default())
+                    .map_err(|_| RuntimeError::Unavailable("Silo could not record the sandbox's applied secret revision.".into()))?;
             }
-            crate::secrets::workspace_started(workspace, secret_revision.as_deref().unwrap_or_default())
-                .map_err(|error| RuntimeError::Unavailable(format!(
-                    "Silo could not record which secrets {workspace} started with, so it stopped the sandbox again. {error}"
-                )))
+            Ok(())
         });
-        if let Err(error) = verified {
-            // The VM booted, but Silo could not confirm its state or record the secret
-            // revision it booted with. Undo the boot (the stop is not cancellable) so no
-            // caller reports, or leaves behind, a running VM in an unverified state.
-            let stopped = without_cancellation(|| {
-                run_msb_process(paths, &["stop".into(), workspace.into()], STOP_TIMEOUT, &ignore_progress)
-            });
-            return Err(match stopped {
-                Ok(_) => error,
-                Err(cleanup) => RuntimeError::Unavailable(format!(
-                    "{error} Stopping the sandbox also failed: {cleanup}"
-                )),
-            });
-        }
     }
     Ok(output)
+}
+
+// Post-boot reads and host bookkeeping cannot undo a successful runtime start.
+// Keep a visible hint until a later start verifies both state and secret revision.
+type StartRefreshWarnings = HashMap<(PathBuf, String), String>;
+static START_REFRESH_WARNINGS: OnceLock<Mutex<StartRefreshWarnings>> = OnceLock::new();
+
+fn record_start_refresh(paths: &RuntimePaths, workspace: &str, refresh: impl FnOnce() -> Result<(), RuntimeError>) {
+    let result = refresh();
+    let mut warnings = START_REFRESH_WARNINGS.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let key = (paths.home.clone(), workspace.to_owned());
+    match result {
+        Ok(()) => { warnings.remove(&key); }
+        Err(error) => {
+            warnings.insert(key, format!("The sandbox started, but Silo could not refresh its state or secret status. {}", safe_activity_error(&error)));
+        }
+    }
+}
+
+fn start_refresh_attention(paths: &RuntimePaths, workspace: &str) -> Option<WorkspaceAttention> {
+    START_REFRESH_WARNINGS.get_or_init(|| Mutex::new(HashMap::new()))
+        .lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&(paths.home.clone(), workspace.to_owned())).cloned()
+        .map(|message| WorkspaceAttention { level: AttentionLevel::Warning, message })
 }
 
 fn ensure_runtime_files(paths: &RuntimePaths) -> Result<(), RuntimeError> {
@@ -1106,6 +1116,34 @@ fn takes_worker_lock(args: &[String]) -> bool {
     args.first().is_some_and(|command| matches!(command.as_str(), "create" | "modify" | "remove" | "stop" | "restore" | "adopt-disk"))
 }
 
+thread_local! {
+    // Quit already owns the computer gate and a parent worker flock. Its scoped
+    // workers may share that flock only for independent stop commands.
+    static SHUTDOWN_WORKER_LOCK: std::cell::RefCell<Option<configuration_recovery::CommandLock>> = const { std::cell::RefCell::new(None) };
+}
+
+fn with_shutdown_worker_lock<T>(lock: configuration_recovery::CommandLock, work: impl FnOnce() -> T) -> T {
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) { SHUTDOWN_WORKER_LOCK.with(|slot| { slot.borrow_mut().take(); }); }
+    }
+    SHUTDOWN_WORKER_LOCK.with(|slot| {
+        assert!(slot.borrow().is_none(), "shutdown worker lock cannot be nested");
+        *slot.borrow_mut() = Some(lock);
+    });
+    let _clear = Clear;
+    work()
+}
+
+fn runtime_worker_lock(paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<configuration_recovery::CommandLock, RuntimeError> {
+    if args.first().is_some_and(|command| command == "stop") {
+        if let Some(lock) = SHUTDOWN_WORKER_LOCK.with(|slot| slot.borrow().as_ref().map(configuration_recovery::CommandLock::duplicate_for_shutdown)) {
+            return lock;
+        }
+    }
+    configuration_recovery::command_lock(paths, timeout)
+}
+
 fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<CommandOutput, RuntimeError> {
     let RuntimeLaunch { args, timeout, material, github_profile, capture, report } = launch;
     ensure_runtime_files(paths)?;
@@ -1121,7 +1159,7 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
         None
     };
     let mut worker_lock = if takes_worker_lock(args) {
-        Some(configuration_recovery::command_lock(paths, timeout)?)
+        Some(runtime_worker_lock(paths, args, timeout)?)
     } else { None };
     let mut command = Command::new(&paths.executable);
     if let Some(lock) = &worker_lock {
@@ -3954,7 +3992,8 @@ fn vm_workspace(
         "Running" => (
             WorkspaceState::Running,
             "Running".into(),
-            configuration_attention(paths, &machine, inspected),
+            configuration_attention(paths, &machine, inspected)
+                .or_else(|| start_refresh_attention(paths, machine.name())),
         ),
         "Starting" => (WorkspaceState::Starting, "Starting".into(), None),
         "Draining" => (WorkspaceState::Starting, "Stopping".into(), None),
@@ -4325,7 +4364,7 @@ fn apply_whole_configuration_with_progress(
             forget_github_state(&paths.home, machine.name());
             crate::github::workspace_removed(machine.name()).map_err(RuntimeError::Unavailable)?;
             remove_machine_volumes(paths, machine)?;
-            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name());
+            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name())?;
             checkpoints::forget_removed(paths, machine.id())?;
             progress("workspace-removal", machine.name(), 1);
         }
@@ -4615,6 +4654,21 @@ pub(crate) fn create_disposable_test_machine(
     request.machines.push(machine.clone());
     apply_whole_configuration(&ProcessRunner, paths, &host_resources()?, request)?;
     Ok(machine)
+}
+
+/// Exercise the same explicit Start path as the app for an imported sandbox.
+/// Live regressions supply disposable runtime paths; no app data is resolved here.
+#[cfg(test)]
+pub(crate) fn start_disposable_test_import(
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<(), RuntimeError> {
+    let _guard = OPERATIONS.computer("Starting disposable imported sandbox")
+        .map_err(|error| RuntimeError::Invalid(error.to_string()))?;
+    let machine = read_metadata(&paths.metadata)?.machines.into_iter()
+        .find(|machine| machine.is_vm() && machine.name() == name)
+        .ok_or_else(|| RuntimeError::Invalid("Imported test sandbox is missing.".into()))?;
+    checkpoints::start_pending(&ProcessRunner, paths, &machine)
 }
 
 fn cleanup_failed_create(
@@ -5417,7 +5471,7 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
     }
 
     #[test]
-    fn a_start_whose_boot_cannot_be_verified_or_recorded_is_stopped_again() {
+    fn a_successful_start_with_failed_verification_or_bookkeeping_keeps_running_with_a_warning() {
         let _test_state = crate::test_support::global_state();
         use std::os::unix::fs::PermissionsExt;
         for failure in ["inspect", "record"] {
@@ -5443,10 +5497,11 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
             let result = run_msb_with_progress(&paths, &["start".into(), "cleanup".into()], Duration::from_secs(20), &|_| {});
             crate::secrets::use_test_store(None);
             fs::set_permissions(&secrets_directory, fs::Permissions::from_mode(0o700)).unwrap();
-            assert!(result.is_err(), "{failure}: the unverified start was reported as a success");
+            assert!(result.is_ok(), "{failure}: the successful start was reported as a failure: {result:?}");
             let calls = fs::read_to_string(paths.home.join("calls")).unwrap();
-            assert_eq!(calls.lines().last(), Some("stop"), "{failure}: {calls}");
-            assert_eq!(fs::read_to_string(paths.home.join("state")).unwrap(), "Stopped", "{failure}");
+            assert!(!calls.lines().any(|command| command == "stop"), "{failure}: {calls}");
+            assert_eq!(fs::read_to_string(paths.home.join("state")).unwrap(), "Running", "{failure}");
+            assert!(start_refresh_attention(&paths, "cleanup").is_some(), "{failure}: missing post-boot warning");
         }
     }
 
@@ -6385,6 +6440,8 @@ esac
     #[test]
     fn configuration_recovery_adopts_only_the_created_vm_with_the_saved_id() {
         let _test_state = crate::test_support::global_state();
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let candidate = request(vec![vm()]);
@@ -6403,6 +6460,8 @@ esac
     #[test]
     fn interrupted_desktop_creation_is_retried_before_metadata_adoption() {
         let _test_state = crate::test_support::global_state();
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let mut machine = vm();
@@ -6434,6 +6493,8 @@ esac
     #[test]
     fn configuration_recovery_verifies_an_edit_committed_before_interruption() {
         let _test_state = crate::test_support::global_state();
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         for (valid, retry) in [(false, false), (true, false), (false, true), (true, true)] {
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
@@ -6488,6 +6549,8 @@ esac
     #[test]
     fn configuration_adoption_releases_worker_lock_before_guest_verification() {
         let _test_state = crate::test_support::global_state();
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         struct LockAwareRunner(StubRunner);
         impl RuntimeRunner for LockAwareRunner {
             fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
@@ -6516,6 +6579,82 @@ esac
             assert_eq!(read_metadata(&paths.metadata).unwrap(), candidate);
             assert!(runner.0.calls.lock().unwrap().iter().any(|args| args[0] == "exec"));
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_start_survives_failed_post_boot_inspection() {
+        let _test_state = crate::test_support::global_state();
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test library").unwrap();
+        fs::write(&paths.executable, r#"#!/bin/sh
+printf '%s\n' "$1" >> "$MSB_HOME/commands"
+case "$1" in
+  inspect)
+    if [ -f "$MSB_HOME/started" ]; then exit 9; fi
+    printf '{"name":"dev","status":"Stopped","config":{"labels":{"silo.managed":"true"}}}\n' ;;
+  start) cat >/dev/null; touch "$MSB_HOME/started" ;;
+esac
+"#).unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let output = run_msb_process(&paths, &["start".into(), "dev".into()], Duration::from_secs(5), &|_| {});
+        assert!(output.is_ok(), "{output:?}");
+        let commands = fs::read_to_string(paths.home.join("commands")).unwrap();
+        assert!(commands.ends_with("start\ninspect\n"), "{commands}");
+        assert!(!commands.lines().any(|command| command == "stop"));
+        let row = vm_workspace(&paths, vm(), &serde_json::from_value(inspect(&paths, "Running")).unwrap());
+        assert!(matches!(row.state, WorkspaceState::Running));
+        assert!(row.attention.unwrap().message.contains("sandbox started"));
+    }
+
+    #[test]
+    fn failed_start_bookkeeping_keeps_a_warning_until_verified() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        record_start_refresh(&paths, "dev", || Err(RuntimeError::Unavailable("Applied secret revision could not be saved.".into())));
+        assert!(start_refresh_attention(&paths, "dev").unwrap().message.contains("secret status"));
+        record_start_refresh(&paths, "dev", || Ok(()));
+        assert!(start_refresh_attention(&paths, "dev").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shutdown_stops_share_the_worker_flock_without_serializing_children() {
+        let _test_state = crate::test_support::global_state();
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test library").unwrap();
+        fs::write(&paths.executable, r#"#!/bin/sh
+cat >/dev/null
+touch "$MSB_HOME/$2-entered"
+for attempt in 1 2 3 4 5 6 7 8 9 10; do
+  if [ -f "$MSB_HOME/first-entered" ] && [ -f "$MSB_HOME/second-entered" ]; then exit 0; fi
+  sleep 0.1
+done
+exit 9
+"#).unwrap();
+        fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let parent = configuration_recovery::command_lock(&paths, Duration::ZERO).unwrap();
+        thread::scope(|scope| {
+            let workers: Vec<_> = ["first", "second"].into_iter().map(|workspace| {
+                let shared = parent.duplicate_for_shutdown().unwrap();
+                let paths = &paths;
+                scope.spawn(move || with_shutdown_worker_lock(shared, || {
+                    run_msb_process(paths, &["stop".into(), workspace.into()], Duration::from_secs(5), &|_| {})
+                }))
+            }).collect();
+            for worker in workers { worker.join().unwrap().unwrap(); }
+        });
+        // A child that finished first must not unlock the parent's shared flock.
+        assert!(configuration_recovery::command_lock(&paths, Duration::ZERO).is_err());
+        drop(parent);
+        drop(configuration_recovery::command_lock(&paths, Duration::ZERO).unwrap());
     }
 
     #[cfg(unix)]
@@ -6565,6 +6704,8 @@ esac
     #[test]
     fn configuration_recovery_preserves_a_replacement_vm() {
         let _test_state = crate::test_support::global_state();
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         configuration_recovery::begin(&paths, &request(vec![vm()])).unwrap();
@@ -6613,6 +6754,8 @@ esac
     #[test]
     fn configuration_recovery_finishes_interrupted_deletion() {
         let _test_state = crate::test_support::global_state();
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         let remote = MachineConfiguration::Ssh { id: uuid::Uuid::new_v4().to_string(), name: "remote".into(), host: "host".into(), user: "user".into(), port: 22 };
@@ -8631,26 +8774,24 @@ esac
             write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
             pending_restore_record(&paths, true);
             let attempt = restore_attempt(&paths, status);
-            let mut outputs = vec![attempt.clone(), attempt];
-            if stops { outputs.push(json!(null)); }
-            outputs.push(json!(null));
-            outputs.extend([
-                json!([{"snapshot_id": "restore-snapshot", "group": "dev", "name": "c000000000000000000000000000000"}]),
-                json!([]), // No remaining VM builds on the snapshot.
-                json!({"head": "restore-snapshot"}),
-                json!(null), // Native snapshot removal.
+            use crate::test_support::runner::{ExpectedCommand, ScriptedRunner};
+            let mut commands = vec![
+                ExpectedCommand::ok(["inspect", "dev", "--format", "json"], attempt.to_string()),
+                ExpectedCommand::ok(["inspect", "dev", "--format", "json"], attempt.to_string()),
+            ];
+            if stops { commands.push(ExpectedCommand::ok(["stop", "dev", "--quiet"], "")); }
+            let inventory = json!([{"snapshot_id": "restore-snapshot", "group": "dev", "name": "c000000000000000000000000000000"}]).to_string();
+            commands.extend([
+                ExpectedCommand::ok(["remove", "--quiet", "dev"], ""),
+                ExpectedCommand::ok(["snapshot", "list", "--format", "json"], inventory.clone()),
+                ExpectedCommand::ok(["snapshot", "list", "--format", "json"], inventory),
+                ExpectedCommand::ok(["list", "--format", "json"], "[]"),
+                ExpectedCommand::ok(["snapshot", "head", "dev", "--format", "json"], json!({"head": "restore-snapshot"}).to_string()),
+                ExpectedCommand::ok(["snapshot", "remove", "dev:c000000000000000000000000000000", "--quiet"], ""),
             ]);
-            let runner = StubRunner::successful_json(outputs);
+            let runner = ScriptedRunner::new(commands);
             apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
-            let calls = runner.calls.lock().unwrap();
-            let commands: Vec<&str> = calls.iter().map(|args| args[0].as_str()).collect();
-            let expected: &[&str] = if stops { &["inspect", "inspect", "stop", "remove", "snapshot", "list", "snapshot", "snapshot"] } else { &["inspect", "inspect", "remove", "snapshot", "list", "snapshot", "snapshot"] };
-            assert_eq!(commands, expected, "{status}");
-            assert_eq!(calls[calls.len() - 5], ["remove", "--quiet", "dev"]);
-            assert_eq!(calls[calls.len() - 4], ["snapshot", "list", "--format", "json"]);
-            assert_eq!(calls[calls.len() - 3], ["list", "--format", "json"]);
-            assert_eq!(calls[calls.len() - 2], ["snapshot", "head", "dev", "--format", "json"]);
-            assert_eq!(calls.last().unwrap(), &["snapshot", "remove", "dev:c000000000000000000000000000000", "--quiet"]);
+            runner.assert_finished();
             // The runtime VM is removed before Silo forgets the sandbox and its record.
             assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
             assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{}.json", vm().id())).exists());
@@ -8664,16 +8805,14 @@ esac
         let paths = paths(&directory);
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
         pending_restore_record(&paths, false);
-        let runner = StubRunner::new(vec![
-            missing_sandbox(), missing_sandbox(),
-            Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() }),
-            Ok(CommandOutput { stdout: "[]".into(), stderr: String::new() }),
+        use crate::test_support::runner::{ExpectedCommand, ScriptedRunner};
+        let runner = ScriptedRunner::new([
+            ExpectedCommand::error(["inspect", "dev", "--format", "json"], missing_sandbox().unwrap_err()),
+            ExpectedCommand::error(["inspect", "dev", "--format", "json"], missing_sandbox().unwrap_err()),
+            ExpectedCommand::ok(["snapshot", "list", "--format", "json"], "[]"),
         ]);
         apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
-        assert_eq!(
-            *runner.calls.lock().unwrap(),
-            vec![vec!["inspect", "dev", "--format", "json"], vec!["inspect", "dev", "--format", "json"], vec!["snapshot", "list", "--format", "json"], vec!["list", "--format", "json"]],
-        );
+        runner.assert_finished();
         assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
     }
 

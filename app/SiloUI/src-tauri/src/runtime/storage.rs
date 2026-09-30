@@ -357,26 +357,19 @@ fn periodic(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<bool, Ru
     }
     Ok(false)
 }
-/// Ticks after launch before the once-per-launch orphan sweep, so startup recovery and
-/// launch-time starts settle first.
-const SWEEP_AFTER_TICKS: u32 = 5;
-
 pub(crate) fn start_monitor(app: &AppHandle) {
     let app = app.clone();
     thread::spawn(move || {
-        let mut ticks = 0u32;
-        let mut swept = false;
+        let mut recovered = false;
         loop {
-            ticks = ticks.saturating_add(1);
             // Periodic background work skips whenever any operation is active or waiting.
             if let Ok(_guard) = OPERATIONS.try_computer_hidden("Trimming sandbox storage") {
                 if shutdown::ensure_accepting_operations().is_ok() {
                     if let Ok(paths) = runtime_paths(&app) {
-                        if !swept && ticks > SWEEP_AFTER_TICKS && !crate::runtime_migration::blocks_operations(&app) {
-                            // Checkpoint data that no sandbox references any longer (E-03).
-                            swept = true;
-                            if let Err(failure) = checkpoints::sweep_orphans(&ProcessRunner, &paths) {
-                                eprintln!("Unused checkpoint data was kept: {failure}");
+                        if !recovered && !crate::runtime_migration::blocks_operations(&app) {
+                            match checkpoints::recover_interrupted(&ProcessRunner, &paths) {
+                                Ok(()) => recovered = true,
+                                Err(failure) => eprintln!("Interrupted checkpoint data was kept: {failure}"),
                             }
                         } else {
                             let _ = periodic(&ProcessRunner, &paths);

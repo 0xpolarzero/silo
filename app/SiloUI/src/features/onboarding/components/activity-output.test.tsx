@@ -32,13 +32,13 @@ describe("live setup activity", () => {
 
   it("copies exactly the visible diagnostics and excludes unsafe events", async () => {
     const { user, output } = await show([
-      event({ safeForDisplay: false, requestId: "private", message: "secret credential" }),
-      event({ message: "Verification completed" }),
+      event({ safeForDisplay: false, requestId: "private", message: "secret credential", diagnostic: "private diagnostic" }),
+      event({ message: "Verification completed", step: "setup-failed", diagnostic: "Exit code 13\nPermission denied" }),
     ])
     const write = vi.spyOn(navigator.clipboard, "writeText")
     await user.click(screen.getByRole("button", { name: "Copy activity" }))
     expect(write).toHaveBeenCalledWith(output.textContent)
-    expect(output.textContent).toBe("Attempt 1\ndev  ·  Verification completed")
+    expect(output.textContent).toBe("Attempt 1\ndev  ·  Verification completed\nExit code 13\nPermission denied")
     expect(output.textContent).not.toContain("secret")
   })
 
