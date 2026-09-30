@@ -4,6 +4,7 @@ mod backup;
 mod backup_controller;
 mod bridge_error;
 mod bundled_tools;
+mod channel;
 #[cfg(test)]
 mod command_permissions_tests;
 mod dependencies;
@@ -69,6 +70,10 @@ fn main() {
         return;
     }
 
+    // The bundle identifier embedded at build time decides the channel, including
+    // for the bridge modes below that run without a window or Tauri runtime.
+    let context = tauri::generate_context!();
+    channel::init(&context.config().identifier);
     let args: Vec<_> = std::env::args().collect();
     let bridge = match args.get(1).map(String::as_str) {
         Some("--remote-bridge") => Some(remote::run_bridge()),
@@ -284,7 +289,7 @@ fn main() {
             }
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .unwrap_or_else(|error| {
             eprintln!("Silo could not start: {error}");
             std::process::exit(1);

@@ -9,8 +9,11 @@ use gio::DesktopAppInfo;
 
 use super::{IntegrationStatus, SystemIntegrations};
 
-const DESKTOP_ID: &str = "org.silo.preview.desktop";
 const GROUP: &str = "Desktop Entry";
+
+fn desktop_id() -> &'static str {
+    crate::channel::current().desktop_entry_id()
+}
 
 #[derive(Clone, Debug)]
 struct Environment {
@@ -59,13 +62,13 @@ impl Environment {
     }
 
     fn user_entry(&self) -> PathBuf {
-        self.config_home.join("autostart").join(DESKTOP_ID)
+        self.config_home.join("autostart").join(desktop_id())
     }
 
     fn system_entries(&self) -> impl Iterator<Item = PathBuf> + '_ {
         self.config_dirs
             .iter()
-            .map(|directory| directory.join("autostart").join(DESKTOP_ID))
+            .map(|directory| directory.join("autostart").join(desktop_id()))
     }
 
     fn effective_entry(&self) -> Option<PathBuf> {
@@ -182,7 +185,11 @@ fn desktop_entry(environment: &Environment, hidden: bool) -> Result<Vec<u8>, Str
         .ok_or("Silo's executable path is not valid UTF-8")?;
     let entry = gio::glib::KeyFile::new();
     entry.set_string(GROUP, "Type", "Application");
-    entry.set_string(GROUP, "Name", "Silo Preview");
+    entry.set_string(
+        GROUP,
+        "Name",
+        crate::channel::current().desktop_entry_name(),
+    );
     // GIO rejects a desktop entry when the executable token itself contains an
     // escaped percent. A fixed env executable lets field-code expansion happen
     // only in the following argument, which remains one safely quoted path.
@@ -329,12 +336,12 @@ pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(),
     let hints = std::collections::HashMap::from([
         (
             "desktop-entry",
-            super::NOTIFICATION_DESKTOP_ENTRY.to_variant(),
+            super::notification_desktop_entry().to_variant(),
         ),
         ("urgency", 1u8.to_variant()),
     ]);
     let parameters = (
-        "Silo",
+        crate::channel::current().tray_title(),
         replaces,
         super::NOTIFICATION_ICON,
         notice.title.as_str(),
@@ -483,7 +490,7 @@ mod tests {
         permissions.set_mode(0o755);
         fs::set_permissions(&executable, permissions).unwrap();
         let environment = environment(root.path(), &executable);
-        let entry_path = root.path().join(DESKTOP_ID);
+        let entry_path = root.path().join(desktop_id());
         write_entry(&entry_path, &desktop_entry(&environment, false).unwrap()).unwrap();
 
         let parsed = gio::glib::KeyFile::new();
@@ -535,7 +542,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let blocker = root.path().join("not-a-directory");
         fs::write(&blocker, "file").unwrap();
-        let error = write_entry(&blocker.join(DESKTOP_ID), b"entry").unwrap_err();
+        let error = write_entry(&blocker.join(desktop_id()), b"entry").unwrap_err();
         assert!(matches!(
             error.kind(),
             io::ErrorKind::NotADirectory | io::ErrorKind::AlreadyExists

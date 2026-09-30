@@ -639,8 +639,11 @@ fn delete_account_credential() -> Result<(), String> {
     }
 }
 fn entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new("org.silo.Silo.github", "account")
-        .map_err(|_| "The system credential store is unavailable.".into())
+    keyring::Entry::new(
+        crate::channel::current().keychain_service(crate::channel::Keychain::Github),
+        "account",
+    )
+    .map_err(|_| "The system credential store is unavailable.".into())
 }
 fn credential() -> Result<Option<Credential>, String> {
     observe_credential_read(
@@ -1094,8 +1097,11 @@ fn public_snapshot(
 }
 type TokenLedger = std::collections::HashMap<String, Vec<String>>;
 fn ledger_entry() -> Result<keyring::Entry, String> {
-    keyring::Entry::new("org.silo.Silo.github", "runtime-grants")
-        .map_err(|_| "The system credential store is unavailable.".into())
+    keyring::Entry::new(
+        crate::channel::current().keychain_service(crate::channel::Keychain::Github),
+        "runtime-grants",
+    )
+    .map_err(|_| "The system credential store is unavailable.".into())
 }
 fn read_ledger(entry: &keyring::Entry) -> Result<TokenLedger, String> {
     match entry.get_password() {
