@@ -45,13 +45,6 @@ pub(crate) fn open_browser(app: &AppHandle, url: &str) -> Result<(), String> {
     platform::open_browser(selection, &url)
 }
 
-/// Identity of the browser `open_browser` uses: the macOS bundle identifier or the
-/// Linux desktop-entry id, when it can be determined. Queries only; opens nothing.
-pub(crate) fn browser_identity(app: &AppHandle) -> Option<String> {
-    let settings = crate::settings::current_settings(app).ok()?;
-    platform::browser_identity(browser_selection(&settings).ok()?)
-}
-
 fn browser_url(value: &str) -> Result<String, String> {
     if value.len() > 8192 || value.chars().any(char::is_control) {
         return Err("The website address is invalid.".into());

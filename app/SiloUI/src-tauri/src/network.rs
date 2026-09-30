@@ -73,8 +73,8 @@ pub(crate) struct Workspace {
     workspace: String,
     ports: Vec<Port>,
     error: Option<String>,
-    /// Host name this sandbox's published websites open at (see `sandbox_host`), or
-    /// `None` when the browser needs `127.0.0.1`.
+    /// Host name this sandbox's published websites open at (see `sandbox_host`).
+    /// Assigned when local observations are assembled into the network state.
     #[serde(skip_serializing_if = "Option::is_none")]
     host: Option<String>,
 }
@@ -111,43 +111,6 @@ pub(crate) fn sandbox_host(name: &str, vm_id: &str) -> String {
     } else {
         format!("{label}-{id}.localhost")
     }
-}
-
-/// Whether a browser resolves `*.localhost` names itself. Chromium- and Gecko-based
-/// browsers hard-code them to loopback. Safari and other WebKit browsers rely on
-/// the system resolver, which on macOS does not resolve `*.localhost`, so they (and
-/// any browser Silo cannot identify) open `127.0.0.1` instead, as the owner
-/// required Safari to keep working (C-24 design note). Recheck Safari in the macOS
-/// live session before widening this.
-fn resolves_localhost_names(browser: Option<&str>) -> bool {
-    let Some(browser) = browser.map(str::to_ascii_lowercase) else {
-        return false;
-    };
-    const ENGINES: &[&str] = &[
-        "chrome",
-        "chromium",
-        "edgemac",
-        "microsoft-edge",
-        "brave",
-        "vivaldi",
-        "opera",
-        "thebrowser",
-        "firefox",
-        "mozilla",
-        "librewolf",
-        "waterfox",
-        "floorp",
-        "zen-browser",
-    ];
-    const WEBKIT: &[&str] = &["safari", "epiphany", "orion", "kagi", "duckduckgo"];
-    !WEBKIT.iter().any(|name| browser.contains(name))
-        && ENGINES.iter().any(|name| browser.contains(name))
-}
-
-/// Whether published websites open at their sandbox host names in the browser Silo
-/// uses for them.
-pub(crate) fn uses_sandbox_hosts(app: &AppHandle) -> bool {
-    resolves_localhost_names(crate::applications::browser_identity(app).as_deref())
 }
 
 /// The address a published website opens at.
@@ -787,8 +750,8 @@ fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
         }
     });
 }
-/// Every local VM's observed ports. With `hosts`, each carries its sandbox host name.
-fn state_with(paths: &RuntimePaths, config: &Configuration, hosts: bool) -> Result<State, String> {
+/// Every local VM's observed ports, each with its sandbox host name.
+fn state_with(paths: &RuntimePaths, config: &Configuration) -> Result<State, String> {
     let metadata = runtime::read_metadata(&paths.metadata)
         .map_err(|_| "Could not read sandbox configuration.")?;
     let mut workspaces = vec![];
@@ -815,7 +778,7 @@ fn state_with(paths: &RuntimePaths, config: &Configuration, hosts: bool) -> Resu
                     error: Some(FAILED.into()),
                     host: None,
                 });
-                workspace.host = hosts.then(|| sandbox_host(name, id));
+                workspace.host = Some(sandbox_host(name, id));
                 workspaces.push(workspace);
             }
         });
@@ -829,7 +792,7 @@ fn state_with(paths: &RuntimePaths, config: &Configuration, hosts: bool) -> Resu
 fn apply_saved(app: &AppHandle, paths: &RuntimePaths, workspace: &str) -> Result<State, String> {
     let result = reconcile_forwarding(paths, workspace).and_then(|failures| {
         let config = read_config(paths)?;
-        let mut state = state_with(paths, &config, uses_sandbox_hosts(app))?;
+        let mut state = state_with(paths, &config)?;
         if !failures.is_empty() {
             let mut repaired = observe(paths, workspace, &config, &failures);
             if let Some(slot) = state
@@ -855,7 +818,7 @@ pub(crate) async fn read_network_state(app: AppHandle) -> Result<State, String> 
         // forward that drifted from its saved intent is repaired in the background.
         let paths = runtime::runtime_paths(&app).map_err(|_| FAILED)?;
         let config = read_config(&paths)?;
-        let state = state_with(&paths, &config, uses_sandbox_hosts(&app));
+        let state = state_with(&paths, &config);
         schedule_network_reconcile(&app, &config);
         state
     })
@@ -981,13 +944,9 @@ pub(crate) async fn open_network_port(
             .as_deref()
             .ok_or("This TCP service is not configured as a website.")?;
         let host_port = endpoint.host_port.ok_or("This service is not reachable.")?;
-        let host = if uses_sandbox_hosts(&app) {
-            let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
-            Some(sandbox_host(&workspace, &vm_id))
-        } else {
-            None
-        };
-        crate::applications::open_browser(&app, &website_url(scheme, host.as_deref(), host_port))
+        let vm_id = runtime::resolve_vm_id(&paths, &workspace).map_err(|e| e.to_string())?;
+        let host = sandbox_host(&workspace, &vm_id);
+        crate::applications::open_browser(&app, &website_url(scheme, Some(&host), host_port))
     })
     .await
     .map_err(|_| FAILED.to_string())?
@@ -1173,7 +1132,7 @@ mod tests {
         });
         held_rx.recv().unwrap();
         let start = Instant::now();
-        let state = state_with(&paths, &config, true);
+        let state = state_with(&paths, &config);
         let elapsed = start.elapsed();
         release_tx.send(()).unwrap();
         holder.join().unwrap();
@@ -1227,36 +1186,6 @@ mod tests {
             "http://dev-1a2b3c4d.localhost:43000"
         );
         assert_eq!(website_url("https", None, 43000), "https://127.0.0.1:43000");
-    }
-
-    #[test]
-    fn safari_and_unknown_browsers_keep_the_loopback_address() {
-        let _test_state = crate::test_support::global_state();
-        for browser in [
-            "com.google.Chrome",
-            "com.microsoft.edgemac",
-            "com.brave.Browser",
-            "company.thebrowser.Browser",
-            "org.mozilla.firefox",
-            "org.mozilla.firefoxdeveloperedition",
-            "firefox_firefox.desktop",
-            "google-chrome.desktop",
-            "chromium_chromium.desktop",
-            "org.mozilla.firefox.desktop",
-        ] {
-            assert!(resolves_localhost_names(Some(browser)), "{browser}");
-        }
-        for browser in [
-            "com.apple.Safari",
-            "com.apple.SafariTechnologyPreview",
-            "com.kagi.kagimacOS",
-            "com.duckduckgo.macos.browser",
-            "org.gnome.Epiphany.desktop",
-            "com.example.unknown",
-        ] {
-            assert!(!resolves_localhost_names(Some(browser)), "{browser}");
-        }
-        assert!(!resolves_localhost_names(None));
     }
 
     fn temp_paths(temp: &tempfile::TempDir) -> RuntimePaths {

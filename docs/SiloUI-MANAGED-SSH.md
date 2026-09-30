@@ -59,7 +59,7 @@ its sandbox in Overview. The controls display the office computer's name,
 available interface addresses and connection controls.
 Updates run in the office computer's Silo app.
 
-The displayed `127.0.0.1` address belongs to the office computer. To connect from
+The displayed SSH `127.0.0.1` address belongs to the office computer. To connect from
 the laptop, enable access on a reachable LAN or VPN address of the office
 computer and copy that network address or command. Managing access remotely
 does not create a tunnel or make the office computer's loopback address local
@@ -73,6 +73,42 @@ connection does not revoke the independently configured SSH access. An
 unreachable or incompatible owner reports an error instead of presenting stale
 settings as current. Update Silo on both computers if the owner does not support
 SSH access management.
+
+## Published websites
+
+Network website ports use a per-sandbox address such as
+`http://dev-1a2b3c4d.localhost:43000` in every browser, including Safari. This
+keeps host-only cookies separate between sandboxes and other local services.
+For remote sandboxes, the website address reaches the tunnel on the computer
+opening the browser. It does not change the SSH access addresses described above.
+The website forward still binds only `127.0.0.1`. Use **Copy 127.0.0.1 address**
+for development servers that reject other host names.
+
+The browser check on 2026-09-30 used macOS 26.5 and an IPv4-only temporary HTTP
+server. Safari 26.5, Chrome 154.0.8037.58 and Firefox 156.0 all reached
+`silo-check-1a2b3c4d.localhost:65217` with that Host header, although the system
+resolver returned `::1` before `127.0.0.1` and `::1:65217` refused connections.
+In each browser, a host-only cookie set on `a-<test-id>.localhost` returned to
+that host and was absent from `b-<test-id>.localhost` and `127.0.0.1` on the same
+port. The test deleted its cookie and stopped its own server by recorded PID;
+it left browser windows open. Raw evidence is local and ignored at
+`app/SiloUI/src-tauri/target/verification/safari/` (`verify.py`, `requests.jsonl`,
+`results.json`, `run.log`, `cleanup.json`). A second server check opened the exact
+root URL with `open -a` in all three browsers; `root-results.json` and
+`root-requests.jsonl` record those requests, and `root-cleanup.json` records its
+server PID shutdown. No Silo bundle or VM was launched.
+The first exact-root repeat used a single-threaded server and timed out in
+Firefox after Safari and Chrome succeeded. Repeating with the threaded server
+used by the original check passed all three; the failed attempt is preserved
+under `root-single-threaded-attempt/` in the same evidence directory.
+This check covers those browser versions on that macOS version, not Linux or
+every supported macOS version.
+
+[RFC 6761, section 6.3](https://www.rfc-editor.org/rfc/rfc6761.html#section-6.3)
+reserves localhost names and their subdomains for loopback addresses. The live
+check establishes the IPv4-only connection and host-only cookie behavior on
+this machine. It does not prevent a page from sending requests to other local
+services; open sandbox websites only when you trust their code.
 
 ## Ownership and persistence
 
