@@ -80,6 +80,21 @@ describe("desktop viewer lifecycle", () => {
     expect(trigger).toHaveFocus()
     expect(onAction).not.toHaveBeenCalled()
   })
+  it("frames the guest display so sandbox content is never mistaken for Silo's", () => {
+    viewer({ installed: true, autoStart: true, state: "running" })
+    const frame = screen.getByRole("region", { name: "Sandbox display" })
+    expect(frame).toHaveAccessibleDescription(/comes from the sandbox/)
+    // The guest webview is placed on the inner element, never over the frame.
+    const display = within(frame).getByLabelText("Linux desktop display")
+    expect(display).not.toBe(frame)
+    expect(frame).toHaveClass("p-1")
+    expect(within(screen.getByRole("banner")).getByText("Sandbox content")).toHaveAttribute("title", expect.stringContaining("amber frame"))
+  })
+  it("shows no sandbox frame without a running desktop", () => {
+    viewer({ installed: true, autoStart: true, state: "stopped" })
+    expect(screen.queryByRole("region", { name: "Sandbox display" })).not.toBeInTheDocument()
+    expect(screen.queryByText("Sandbox content")).not.toBeInTheDocument()
+  })
   it("does not offer agent control or installation inside the viewer", () => {
     viewer({ installed: false, autoStart: true, state: "uninstalled" })
     expect(screen.getByText("Add a desktop in the sandbox configuration.")).toBeVisible()

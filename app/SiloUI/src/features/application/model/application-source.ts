@@ -171,6 +171,8 @@ export interface ApplicationWorkspace {
     message: string
   }
   freshness: "fresh" | "stale"
+  /** The native read overlapped an operation; runtime fields retain their last settled values. */
+  settling?: boolean
   host: string
   repositories: ApplicationRepository[]
   files: ApplicationFileEntry[]

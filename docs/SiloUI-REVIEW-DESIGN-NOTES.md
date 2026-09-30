@@ -504,6 +504,16 @@ session.
 **Open question.** Is any supported controller running an OpenSSH older than
 6.7? Unlikely on Ubuntu 24.04 or macOS 14+.
 
+**Implementation note (G-04).** The per-workspace directory is too long for
+`sun_path` (104 bytes on macOS including the NUL: `~/.silo/<hash>/ssh/desktop-viewer/`
+plus a 32-character name already reaches about 100 for a short home, and remote
+workspace identifiers are two UUIDs). Each connection therefore gets a fresh
+0700 `~/.silo/desktop-XXXXXX/desktop.sock` directory (`~/.silo` itself is
+0700 and owned by the account), removed when the tunnel is reaped. Paths with
+`:` or over 103 bytes are refused. The proxy sends `Host`/`Origin`
+`127.0.0.1:<guest port>` to the guest, and the system OpenSSH's parsing of the
+forward is checked with `ssh -G` in the unit test.
+
 ---
 
 ## E-19 / E-20: import safety versus msb extraction guarantees
