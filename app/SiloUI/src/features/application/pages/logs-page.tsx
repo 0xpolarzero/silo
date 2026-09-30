@@ -67,7 +67,7 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
     {invalidRange && <p role="alert">The start must precede the end.</p>}
     {error && <div role="alert" className="text-xs text-destructive">Logs unavailable: {error} <Button size="xs" variant="outline" disabled={busy} onClick={() => void retry()}>Retry</Button></div>}
     {unsupportedNotice && <p role="status" className="text-xs text-muted-foreground">{unsupportedNotice}</p>}
-    {!invalidRange && <p role="status" className="min-h-4 shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{rows.length > 0 ? `Showing ${rows.length} of ${total} matching records.` : ""}</p>}
+    {!invalidRange && <p role="status" className="min-h-4 shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{rows.length > 0 ? `Showing ${rows.length} of ${total} matching records.` : ""}{results.some(result => result.page.unreadableRecords) ? " Some records could not be read and are shown as placeholders or truncated." : ""}</p>}
     {!invalidRange && (rows.length > 0 || !ready && !error) ? <LogsTable
       rows={rows}
       loading={!ready}

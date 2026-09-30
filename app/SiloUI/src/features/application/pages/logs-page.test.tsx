@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
-import { fixtureLogPage, type LogPage, type LogQuery } from "../model/logs"
+import { fixtureLogPage, logPageSchema, type LogPage, type LogQuery } from "../model/logs"
 import { Toaster } from "@/components/ui/sonner"
 import { Logs } from "./logs-page"
 
@@ -23,6 +23,18 @@ function scrollNearEnd() {
   return viewport
 }
 describe("retained logs", () => {
+  it("says when records could not be read and labels times the sandbox reported", async () => {
+    const { workspace, actions } = fixture()
+    const occurredAt = "2020-01-01T00:00:00.000000000Z"
+    const page = logPageSchema.parse({
+      entries: [{ id: "1", line: "forged time", occurredAt, sandboxId: workspace.machine.id, computerId: "local", source: "kernel", guestTimestamp: true }],
+      nextCursor: null, oldestAvailableTimestamp: occurredAt, newestAvailableTimestamp: occurredAt, totalMatches: 1, timestampEstimated: false, unreadableRecords: true,
+    })
+    actions.queryLogs = vi.fn(async () => page)
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    expect(await screen.findByText(/Some records could not be read/)).toBeVisible()
+    expect(screen.getByTitle(`${occurredAt} (time reported by the sandbox)`)).toBeInTheDocument()
+  })
   it("restores expanded logs alongside the cached history after navigation", async () => {
     const { workspace, actions, queryLogs } = fixture()
     workspace.logs = workspace.logs.slice(0, 2)

@@ -68,6 +68,19 @@ memory pressure. Refresh to begin a new snapshot. Search indexes store record
 offsets rather than log bodies, with a shared 128 MiB index budget; an oversized
 query returns an explicit request to narrow its time range or search text.
 
+A malformed execution record, an unreadable boot failure, or any record over
+1 MiB no longer fails every query and export for the sandbox (review finding
+F-08). Malformed records appear as placeholders with the file time, marked
+estimated; console records over 1 MiB keep their first 64 KiB and end with
+"[record over 1 MiB truncated]"; execution records over 1 MiB become a
+placeholder. The view and export coverage report `unreadableRecords`. Times
+parsed from kernel console text are chosen by the guest, so those records carry
+`guestTimestamp` and the view labels them "time reported by the sandbox".
+Separate retention budgets for guest console output and host-written execution
+records are not implemented: retention runs in the pinned runtime patch, whose
+`log_retention.rs` must match Silo's copy byte for byte, so changing it requires
+re-pinning and rebuilding the bundled runtime.
+
 Copy copies the records currently fetched, with identifying context.
 Export… saves all matching pages through the native save dialog as JSON
 Lines. It includes coverage metadata and complete record identities. Export

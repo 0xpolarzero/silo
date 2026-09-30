@@ -137,6 +137,7 @@ fn write_requests(
                         "newestAvailableTimestamp": page.newest_available_timestamp,
                         "totalMatches": page.total_matches,
                         "timestampEstimated": page.timestamp_estimated,
+                        "unreadableRecords": page.unreadable_records,
                     }),
                 )?;
             }
@@ -174,6 +175,7 @@ mod tests {
                     computer_name: "Build computer".into(),
                     source: "stderr".into(),
                     session: Some("42".into()),
+                    guest_timestamp: false,
                 })
                 .collect(),
             next_cursor: (end < total).then(|| end.to_string()),
@@ -182,6 +184,7 @@ mod tests {
             total_matches: total,
             timestamp_estimated: false,
             unsupported: false,
+            unreadable_records: false,
         }
     }
 

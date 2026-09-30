@@ -28,6 +28,9 @@ pub(crate) struct Entry {
     pub computer_name: String,
     pub source: String,
     pub session: Option<String>,
+    /// The timestamp was parsed from console text the guest wrote, so the guest chose it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub guest_timestamp: bool,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +44,10 @@ pub(crate) struct Page {
     /// The owning computer runs a Silo that cannot serve logs. Older hosts never send this.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unsupported: bool,
+    /// Some records were malformed or over the size limit and are shown as placeholders
+    /// or truncated. Older hosts never send this.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unreadable_records: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Segment {
@@ -48,11 +55,6 @@ struct Segment {
     bytes: u64,
     stream: String,
     modified: String,
-}
-#[derive(Serialize, Deserialize)]
-struct Snapshot {
-    binding: String,
-    files: Vec<Segment>,
 }
 struct Location {
     file: u64,
@@ -67,6 +69,7 @@ struct Cached {
     oldest: Option<String>,
     newest: Option<String>,
     estimated: bool,
+    unreadable: bool,
 }
 static CACHE: std::sync::OnceLock<
     std::sync::Mutex<HashMap<String, (Instant, std::sync::Arc<Cached>)>>,
@@ -90,10 +93,188 @@ fn boot_record(raw: &str) -> Result<(String, String), String> {
     Ok((stamp(&error.t)?, format!("Boot failed ({}{errno}): {}", error.stage, error.message)))
 }
 
+/// Longest record read as written. Longer records are truncated or replaced by a
+/// placeholder instead of failing every query for the sandbox.
+const RECORD_LIMIT: u64 = 1024 * 1024;
+/// Text kept from a console record over the limit.
+const TRUNCATED_TEXT: usize = 64 * 1024;
+const TRUNCATED: &str = " … [record over 1 MiB truncated]";
+
+/// Reads at most `RECORD_LIMIT + 1` bytes: more than the limit marks an oversized record.
 fn read_record(reader: &mut impl BufRead, stream: &str, bytes: &mut Vec<u8>, limit: u64) -> std::io::Result<usize> {
-    let mut bounded = reader.take(limit.min(1024 * 1024 + 1));
+    let mut bounded = reader.take(limit.min(RECORD_LIMIT + 1));
     if stream == "boot-error" { bounded.read_to_end(bytes) }
     else { bounded.read_until(b'\n', bytes) }
+}
+/// Skips the rest of an oversized line within `remaining` bytes. Returns the bytes
+/// skipped and whether the line ended with a newline.
+fn skip_line(reader: &mut impl BufRead, mut remaining: u64) -> std::io::Result<(u64, bool)> {
+    let mut skipped = 0;
+    while remaining > 0 {
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            break;
+        }
+        let window = &buffer[..buffer.len().min(usize::try_from(remaining).unwrap_or(usize::MAX))];
+        if let Some(index) = window.iter().position(|byte| *byte == b'\n') {
+            reader.consume(index + 1);
+            return Ok((skipped + index as u64 + 1, true));
+        }
+        let length = window.len();
+        reader.consume(length);
+        skipped += length as u64;
+        remaining -= length as u64;
+    }
+    Ok((skipped, false))
+}
+fn truncate_text(text: &mut String) {
+    let mut end = TRUNCATED_TEXT.min(text.len());
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+    text.push_str(TRUNCATED);
+}
+
+/// One retained record, as displayed and searched.
+struct Decoded {
+    occurred_at: String,
+    source: String,
+    body: String,
+    session: Option<String>,
+    /// The file time stands in for a missing or unreadable record time.
+    estimated: bool,
+    /// The time was parsed from console text the guest wrote.
+    guest_time: bool,
+    /// The record could not be read as written: a placeholder or truncated text.
+    unreadable: bool,
+}
+/// `raw` holds the record, or only its first bytes when `oversized`. A malformed
+/// or oversized record becomes a placeholder instead of an error, so one bad
+/// record cannot hide every other record until its segment expires.
+fn decode(segment: &Segment, raw: &[u8], oversized: bool) -> Decoded {
+    let text = String::from_utf8_lossy(raw);
+    let placeholder = |source: &str, body: &str| Decoded {
+        occurred_at: segment.modified.clone(),
+        source: source.into(),
+        body: body.into(),
+        session: None,
+        estimated: true,
+        guest_time: false,
+        unreadable: true,
+    };
+    match segment.stream.as_str() {
+        "exec" if oversized => placeholder("system", "[Execution log record over 1 MiB omitted]"),
+        "exec" => {
+            let Ok(value) = serde_json::from_str::<Value>(&text) else {
+                return placeholder("system", "[Unreadable execution log record]");
+            };
+            let time = value["t"].as_str().and_then(|time| stamp(time).ok());
+            Decoded {
+                estimated: time.is_none(),
+                occurred_at: time.unwrap_or_else(|| segment.modified.clone()),
+                source: value["s"].as_str().unwrap_or("system").to_string(),
+                body: if value["e"] == "b64" {
+                    "[Binary runtime output]".into()
+                } else {
+                    value["d"].as_str().unwrap_or("").to_string()
+                },
+                session: value["id"].as_u64().map(|id| id.to_string()),
+                guest_time: false,
+                unreadable: false,
+            }
+        }
+        "boot-error" => match (!oversized).then(|| boot_record(&text)) {
+            Some(Ok((occurred_at, body))) => Decoded {
+                occurred_at,
+                source: "runtime".into(),
+                body,
+                session: None,
+                estimated: false,
+                guest_time: false,
+                unreadable: false,
+            },
+            _ => placeholder("runtime", "[Unreadable boot failure record]"),
+        },
+        stream => {
+            let clean = runtime_activity::strip_ansi(&text);
+            let prefix = clean
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(['[', ']']);
+            let parsed = stamp(prefix).ok();
+            let mut body = text.trim_end().to_string();
+            if oversized {
+                truncate_text(&mut body);
+            }
+            Decoded {
+                estimated: parsed.is_none(),
+                // Console output is written by the guest, including any time it prints.
+                guest_time: parsed.is_some() && stream == "kernel",
+                occurred_at: parsed.unwrap_or_else(|| segment.modified.clone()),
+                source: stream.to_string(),
+                body,
+                session: None,
+                unreadable: oversized,
+            }
+        }
+    }
+}
+/// Visits every record of `segment` from `start` up to its recorded length with
+/// its offset and identity. Returns the offset after the last terminated record:
+/// an unterminated final record is still being written.
+fn scan(
+    path: &Path,
+    segment: &Segment,
+    start: u64,
+    mut visit: impl FnMut(u64, String, Decoded) -> Result<(), String>,
+) -> Result<u64, String> {
+    let mut file = File::open(path).map_err(|_| "Retained logs could not be opened.")?;
+    if file
+        .metadata()
+        .map_err(|_| "Retained logs could not be read.")?
+        .ino()
+        != segment.inode
+    {
+        return Err("Logs rotated during this request. Refresh the search.".into());
+    }
+    file.seek(SeekFrom::Start(start))
+        .map_err(|_| "Retained logs could not be read.")?;
+    let mut reader = BufReader::new(file.take(segment.bytes.saturating_sub(start)));
+    let mut offset = start;
+    let mut consumed = start;
+    loop {
+        let mut bytes = Vec::new();
+        let count = read_record(&mut reader, &segment.stream, &mut bytes, segment.bytes.saturating_sub(offset))
+            .map_err(|_| "Retained logs could not be read.")? as u64;
+        if count == 0 {
+            break;
+        }
+        let oversized = count > RECORD_LIMIT;
+        let (length, terminated) = if segment.stream == "boot-error" {
+            // One atomically written document fills the file.
+            (segment.bytes - offset, true)
+        } else if oversized {
+            let (rest, terminated) = skip_line(&mut reader, segment.bytes - offset - count)
+                .map_err(|_| "Retained logs could not be read.")?;
+            (count + rest, terminated)
+        } else {
+            (count, bytes.last() == Some(&b'\n'))
+        };
+        // An unfinished JSON write is not a record. Plain console chunks can
+        // rotate without a newline; their captured bytes remain searchable.
+        if segment.stream == "exec" && !terminated {
+            break;
+        }
+        let id = record_id(segment.inode, offset, &bytes);
+        visit(offset, id, decode(segment, &bytes, oversized))?;
+        offset += length;
+        if terminated {
+            consumed = offset;
+        }
+    }
+    Ok(consumed)
 }
 
 fn cached_page(
@@ -157,38 +338,24 @@ fn cached_page(
         if record_id(location.file, location.offset, &raw_bytes) != location.id {
             return Err("Retained log data changed or expired. Refresh the search.".into());
         }
-        let raw = String::from_utf8_lossy(&raw_bytes);
-        let (source, body, session) = if segment.stream == "exec" {
-            let value: Value = serde_json::from_str(&raw)
-                .map_err(|_| "Retained log data changed. Refresh the search.")?;
-            (
-                value["s"].as_str().unwrap_or("system").to_string(),
-                if value["e"] == "b64" {
-                    "[Binary runtime output]".into()
-                } else {
-                    value["d"].as_str().unwrap_or("").to_string()
-                },
-                value["id"].as_u64().map(|id| id.to_string()),
-            )
-        } else if segment.stream == "boot-error" {
-            ("runtime".into(), boot_record(&raw)?.1, None)
-        } else {
-            (segment.stream.clone(), raw.trim_end().to_string(), None)
-        };
-        let entry = Entry {
+        let decoded = decode(segment, &raw_bytes, raw_bytes.len() as u64 > RECORD_LIMIT);
+        let mut entry = Entry {
             id: location.id.clone(),
-            line: runtime_activity::log_text(&body),
+            line: runtime_activity::log_text(&decoded.body),
             occurred_at: location.time.clone(),
             sandbox_id: request.sandbox_id.clone(),
             sandbox_name: sandbox_name.into(),
             computer_id: computer_id.into(),
             computer_name: computer_name.into(),
-            source,
-            session,
+            source: decoded.source,
+            session: decoded.session,
+            guest_timestamp: decoded.guest_time,
         };
-        let size = serde_json::to_vec(&entry).map_err(|e| e.to_string())?.len();
-        if size > 1024 * 1024 {
-            return Err("A log record is too large to display or export.".into());
+        let mut size = serde_json::to_vec(&entry).map_err(|e| e.to_string())?.len();
+        if size as u64 > RECORD_LIMIT {
+            // Escaping can grow a record near the limit; show its start instead.
+            truncate_text(&mut entry.line);
+            size = serde_json::to_vec(&entry).map_err(|e| e.to_string())?.len();
         }
         if bytes + size > 1024 * 1024 {
             break;
@@ -205,6 +372,7 @@ fn cached_page(
         total_matches: cached.records.len(),
         timestamp_estimated: cached.estimated,
         unsupported: false,
+        unreadable_records: cached.unreadable,
     })
 }
 fn stamp(value: &str) -> Result<String, String> {
@@ -335,6 +503,7 @@ fn remote_page(outcome: Result<Value, String>) -> Result<Page, String> {
             total_matches: 0,
             timestamp_estimated: false,
             unsupported: true,
+            unreadable_records: false,
         }),
         Err(message) => Err(message),
     }
@@ -450,242 +619,195 @@ fn read(
             computer_name,
         );
     }
-    let snapshot = Snapshot {
-        binding,
-        files: available.iter().map(|(_, s)| s.clone()).collect(),
+    let filter = Filter {
+        since,
+        until,
+        needle: request.query.as_deref().unwrap_or("").to_lowercase(),
+        source: request.source.clone().filter(|source| source != "all"),
     };
-    let mut locations = Vec::new();
-    let mut index_bytes = 0usize;
-    let mut page = Page {
-        entries: Vec::new(),
-        next_cursor: None,
-        oldest_available_timestamp: None,
-        newest_available_timestamp: None,
-        total_matches: 0,
-        timestamp_estimated: false,
-        unsupported: false,
+    if let Some(around) = &request.around_id {
+        return context(&available, around, &request, sandbox_name, computer_id, computer_name);
+    }
+    let mut summary = Summary::default();
+    let mut index = Index::default();
+    for (path, segment) in &available {
+        scan(path, segment, 0, |offset, id, decoded| {
+            summary.add(&decoded);
+            index.add(segment.inode, offset, id, decoded, &filter)
+        })?;
+    }
+    let cached = Cached {
+        binding: binding.clone(),
+        files: available.into_iter().map(|(_, segment)| segment).collect(),
+        records: index.sorted(),
+        oldest: summary.oldest,
+        newest: summary.newest,
+        estimated: summary.estimated,
+        unreadable: summary.unreadable,
     };
-    let needle = request.query.as_deref().unwrap_or("").to_lowercase();
-
-    let mut anchor = None;
-    let mut newer = Vec::new();
-    // A context request locates its original record first; the second streaming pass selects neighbours.
-    for pass in 0..if request.around_id.is_some() { 2 } else { 1 } {
-        for segment in &snapshot.files {
-            let (path, current) = available
-                .iter()
-                .find(|(_, s)| {
-                    s.inode == segment.inode
-                        && s.stream == segment.stream
-                        && s.bytes >= segment.bytes
-                })
-                .ok_or("Retained history changed or expired. Refresh the log search.")?;
-            let file = File::open(path).map_err(|_| "Retained logs could not be opened.")?;
-            if file
-                .metadata()
-                .map_err(|_| "Retained logs could not be read.")?
-                .ino()
-                != current.inode
-            {
-                return Err("Logs rotated during this request. Refresh the search.".into());
-            }
-            let mut reader = BufReader::new(file.take(segment.bytes));
-            let mut offset = 0;
-            loop {
-                let mut bytes = Vec::new();
-                let count = read_record(&mut reader, &segment.stream, &mut bytes, segment.bytes.saturating_sub(offset))
-                    .map_err(|_| "Retained logs could not be read.")?;
-                if count == 0 {
-                    break;
-                }
-                if count > 1024 * 1024 {
-                    return Err("A retained log record exceeds the supported 1 MiB size.".into());
-                }
-                let id = record_id(segment.inode, offset, &bytes);
-                offset += count as u64;
-                // An unfinished JSON write is not a record. Plain console chunks can
-                // rotate without a newline; their captured bytes remain searchable.
-                if segment.stream == "exec" && bytes.last() != Some(&b'\n') {
-                    break;
-                }
-                let raw = String::from_utf8_lossy(&bytes);
-                let (occurred_at, source, body, session) = if segment.stream == "exec" {
-                    let value: Value = serde_json::from_str(&raw)
-                        .map_err(|_| "Retained execution logs contain invalid data.")?;
-                    (
-                        stamp(value["t"].as_str().ok_or("A log timestamp is missing.")?)?,
-                        value["s"].as_str().unwrap_or("system").to_string(),
-                        if value["e"] == "b64" {
-                            "[Binary runtime output]".into()
-                        } else {
-                            value["d"].as_str().unwrap_or("").to_string()
-                        },
-                        value["id"].as_u64().map(|id| id.to_string()),
-                    )
-                } else if segment.stream == "boot-error" {
-                    let (timestamp, message) = boot_record(&raw)?;
-                    (timestamp, "runtime".into(), message, None)
-                } else {
-                    let clean = runtime_activity::strip_ansi(&raw);
-                    let prefix = clean
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .trim_matches(['[', ']']);
-                    let parsed = stamp(prefix).ok();
-                    if parsed.is_none() {
-                        page.timestamp_estimated = true;
-                    }
-                    (
-                        parsed.unwrap_or_else(|| segment.modified.clone()),
-                        segment.stream.clone(),
-                        raw.trim_end().to_string(),
-                        None,
-                    )
-                };
-                if request.around_id.is_some() && pass == 0 {
-                    if request.around_id.as_ref() == Some(&id) {
-                        anchor = Some((occurred_at, id));
-                    }
-                    continue;
-                }
-                page.oldest_available_timestamp = Some(
-                    page.oldest_available_timestamp
-                        .take()
-                        .map_or_else(|| occurred_at.clone(), |old| old.min(occurred_at.clone())),
-                );
-                page.newest_available_timestamp = Some(
-                    page.newest_available_timestamp
-                        .take()
-                        .map_or_else(|| occurred_at.clone(), |old| old.max(occurred_at.clone())),
-                );
-                let line = runtime_activity::log_text(&body);
-                if request.around_id.is_none()
-                    && (since.as_ref().is_some_and(|s| occurred_at < *s)
-                        || until.as_ref().is_some_and(|u| occurred_at > *u)
-                        || !line.to_lowercase().contains(&needle)
-                        || request
-                            .source
-                            .as_deref()
-                            .is_some_and(|s| s != "all" && s != source))
-                {
-                    continue;
-                }
-                page.total_matches += 1;
-                if request.around_id.is_none() {
-                    index_bytes += std::mem::size_of::<Location>() + occurred_at.len() + id.len();
-                    if index_bytes > 128 * 1024 * 1024 {
-                        return Err("This search has too many matches. Narrow its time range or search text.".into());
-                    }
-                    locations.push(Location {
-                        file: segment.inode,
-                        offset: offset - count as u64,
-                        time: occurred_at.clone(),
-                        id: id.clone(),
-                    });
-                    continue;
-                }
-                let entry = Entry {
-                    id,
-                    line,
-                    occurred_at,
-                    sandbox_id: request.sandbox_id.clone(),
-                    sandbox_name: sandbox_name.into(),
-                    computer_id: computer_id.into(),
-                    computer_name: computer_name.into(),
-                    source,
-                    session,
-                };
-                if request.around_id.is_some() {
-                    let anchor = anchor
-                        .as_ref()
-                        .ok_or("The selected log record expired. Refresh the log search.")?;
-                    if key(&entry) > *anchor {
-                        keep(&mut newer, entry, 50, true);
-                    } else {
-                        keep(&mut page.entries, entry, 51, false);
-                    }
-                }
-            }
-        }
+    let id = store(cached)?;
+    cached_page(
+        directory,
+        &format!("{id}:0"),
+        &binding,
+        &request,
+        sandbox_name,
+        computer_id,
+        computer_name,
+    )
+}
+/// Search filters of one request.
+struct Filter {
+    since: Option<String>,
+    until: Option<String>,
+    needle: String,
+    source: Option<String>,
+}
+impl Filter {
+    fn matches(&self, occurred_at: &str, source: &str, line: &str) -> bool {
+        self.since.as_deref().is_none_or(|since| occurred_at >= since)
+            && self.until.as_deref().is_none_or(|until| occurred_at <= until)
+            && self.source.as_deref().is_none_or(|wanted| wanted == source)
+            && line.to_lowercase().contains(&self.needle)
     }
-    if request.around_id.is_some() {
-        if anchor.is_none() {
-            return Err("The selected log record expired. Refresh the log search.".into());
+}
+/// Coverage of every scanned record, matching or not.
+#[derive(Clone, Default)]
+struct Summary {
+    oldest: Option<String>,
+    newest: Option<String>,
+    estimated: bool,
+    unreadable: bool,
+}
+impl Summary {
+    fn add(&mut self, decoded: &Decoded) {
+        let time = &decoded.occurred_at;
+        if self.oldest.as_ref().is_none_or(|oldest| time < oldest) {
+            self.oldest = Some(time.clone());
         }
-        page.entries.extend(newer);
-        page.entries
-            .sort_by_key(|entry| std::cmp::Reverse(key(entry)));
-    } else {
-        locations.sort_unstable_by(|a, b| (&b.time, &b.id).cmp(&(&a.time, &a.id)));
-        let id = uuid::Uuid::new_v4().to_string();
-        let cached = Cached {
-            binding: snapshot.binding.clone(),
-            files: snapshot.files,
-            records: locations,
-            oldest: page.oldest_available_timestamp,
-            newest: page.newest_available_timestamp,
-            estimated: page.timestamp_estimated,
-        };
-        {
-            let mut cache = cache().lock().map_err(|_| "Log query unavailable.")?;
-            cache.retain(|_, (seen, _)| seen.elapsed() < Duration::from_secs(1800));
-            let cost = cached
-                .records
-                .iter()
-                .map(|r| std::mem::size_of::<Location>() + r.time.capacity() + r.id.capacity())
-                .sum::<usize>();
-            const INDEX_BUDGET: usize = 128 * 1024 * 1024;
-            if cost > INDEX_BUDGET {
-                return Err(
-                    "This search has too many matches. Narrow its time range or search text."
-                        .into(),
-                );
-            }
-            while cache.len() >= 100
-                || cache
-                    .values()
-                    .map(|(_, c)| {
-                        c.records
-                            .iter()
-                            .map(|r| {
-                                std::mem::size_of::<Location>()
-                                    + r.time.capacity()
-                                    + r.id.capacity()
-                            })
-                            .sum::<usize>()
-                    })
-                    .sum::<usize>()
-                    + cost
-                    > INDEX_BUDGET
-            {
-                let oldest = cache
-                    .iter()
-                    .min_by_key(|(_, (seen, _))| *seen)
-                    .map(|(id, _)| id.clone())
-                    .unwrap();
-                cache.remove(&oldest);
-            }
-            cache.insert(id.clone(), (Instant::now(), std::sync::Arc::new(cached)));
+        if self.newest.as_ref().is_none_or(|newest| time > newest) {
+            self.newest = Some(time.clone());
         }
-        return cached_page(
-            directory,
-            &format!("{id}:0"),
-            &snapshot.binding,
-            &request,
-            sandbox_name,
-            computer_id,
-            computer_name,
-        );
+        self.estimated |= decoded.estimated;
+        self.unreadable |= decoded.unreadable;
     }
-    if serde_json::to_vec(&page.entries)
-        .map_err(|e| e.to_string())?
-        .len()
-        > 1024 * 1024
+}
+/// Offsets of matching records; bodies are re-read per page.
+#[derive(Default)]
+struct Index {
+    records: Vec<Location>,
+    bytes: usize,
+}
+impl Index {
+    fn add(&mut self, file: u64, offset: u64, id: String, decoded: Decoded, filter: &Filter) -> Result<(), String> {
+        if !filter.matches(&decoded.occurred_at, &decoded.source, &runtime_activity::log_text(&decoded.body)) {
+            return Ok(());
+        }
+        self.bytes += location_cost(&decoded.occurred_at, &id);
+        if self.bytes > INDEX_BUDGET {
+            return Err(TOO_MANY_MATCHES.into());
+        }
+        self.records.push(Location { file, offset, time: decoded.occurred_at, id });
+        Ok(())
+    }
+    /// Newest first, the order pages are served in.
+    fn sorted(mut self) -> Vec<Location> {
+        self.records.sort_unstable_by(|a, b| (&b.time, &b.id).cmp(&(&a.time, &a.id)));
+        self.records
+    }
+}
+const INDEX_BUDGET: usize = 128 * 1024 * 1024;
+const MAX_SNAPSHOTS: usize = 100;
+const TOO_MANY_MATCHES: &str = "This search has too many matches. Narrow its time range or search text.";
+fn location_cost(time: &str, id: &str) -> usize {
+    std::mem::size_of::<Location>() + time.len() + id.len()
+}
+fn cached_cost(cached: &Cached) -> usize {
+    cached.records.iter().map(|record| location_cost(&record.time, &record.id)).sum()
+}
+/// Keep a snapshot for its cursors, evicting the least recently used over budget.
+fn store(cached: Cached) -> Result<String, String> {
+    let cost = cached_cost(&cached);
+    if cost > INDEX_BUDGET {
+        return Err(TOO_MANY_MATCHES.into());
+    }
+    let mut cache = cache().lock().map_err(|_| "Log query unavailable.")?;
+    cache.retain(|_, (seen, _)| seen.elapsed() < Duration::from_secs(1800));
+    while cache.len() >= MAX_SNAPSHOTS
+        || cache.values().map(|(_, cached)| cached_cost(cached)).sum::<usize>() + cost > INDEX_BUDGET
     {
+        let Some(oldest) = cache.iter().min_by_key(|(_, (seen, _))| *seen).map(|(id, _)| id.clone()) else {
+            break;
+        };
+        cache.remove(&oldest);
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    cache.insert(id.clone(), (Instant::now(), std::sync::Arc::new(cached)));
+    Ok(id)
+}
+/// Up to 50 records on each side of `around`, across all streams. Filters do not apply.
+fn context(
+    available: &[(PathBuf, Segment)],
+    around: &str,
+    request: &Query,
+    sandbox_name: &str,
+    computer_id: &str,
+    computer_name: &str,
+) -> Result<Page, String> {
+    let mut anchor = None;
+    for (path, segment) in available {
+        scan(path, segment, 0, |_, id, decoded| {
+            if anchor.is_none() && id == around {
+                anchor = Some((decoded.occurred_at, id));
+            }
+            Ok(())
+        })?;
+    }
+    let anchor = anchor.ok_or("The selected log record expired. Refresh the log search.")?;
+    let mut summary = Summary::default();
+    let mut total = 0;
+    let mut older = Vec::new();
+    let mut newer = Vec::new();
+    for (path, segment) in available {
+        scan(path, segment, 0, |_, id, decoded| {
+            summary.add(&decoded);
+            total += 1;
+            let entry = Entry {
+                id,
+                line: runtime_activity::log_text(&decoded.body),
+                occurred_at: decoded.occurred_at,
+                sandbox_id: request.sandbox_id.clone(),
+                sandbox_name: sandbox_name.into(),
+                computer_id: computer_id.into(),
+                computer_name: computer_name.into(),
+                source: decoded.source,
+                session: decoded.session,
+                guest_timestamp: decoded.guest_time,
+            };
+            if key(&entry) > anchor {
+                keep(&mut newer, entry, 50, true);
+            } else {
+                keep(&mut older, entry, 51, false);
+            }
+            Ok(())
+        })?;
+    }
+    let mut entries = older;
+    entries.extend(newer);
+    entries.sort_by_key(|entry| std::cmp::Reverse(key(entry)));
+    if serde_json::to_vec(&entries).map_err(|e| e.to_string())?.len() > 1024 * 1024 {
         return Err("This context window is too large. Narrow the time range instead.".into());
     }
-    Ok(page)
+    Ok(Page {
+        total_matches: total,
+        entries,
+        next_cursor: None,
+        oldest_available_timestamp: summary.oldest,
+        newest_available_timestamp: summary.newest,
+        timestamp_estimated: summary.estimated,
+        unsupported: false,
+        unreadable_records: summary.unreadable,
+    })
 }
 
 #[cfg(test)]
@@ -1014,6 +1136,87 @@ mod tests {
         );
     }
 
+    fn all_pages(directory: &Path, mut query: Query) -> (Vec<Entry>, Page) {
+        let first = read(directory, query.clone(), "dev", "pc", "Desktop").unwrap();
+        let mut entries = first.entries.clone();
+        query.cursor = first.next_cursor.clone();
+        while query.cursor.is_some() {
+            let page = read(directory, query.clone(), "dev", "pc", "Desktop").unwrap();
+            entries.extend(page.entries);
+            query.cursor = page.next_cursor;
+        }
+        (entries, first)
+    }
+    #[test]
+    fn malformed_exec_records_become_placeholders_instead_of_failing_every_query() {
+        let directory = tempfile::tempdir().unwrap();
+        let exec = [
+            line(1, "before"),
+            "not json from a broken writer\n".into(),
+            "{\"s\":\"stdout\",\"d\":\"no timestamp\"}\n".into(),
+            line(4, "after"),
+        ]
+        .concat();
+        fs::write(directory.path().join("exec.log"), exec).unwrap();
+        fs::write(directory.path().join("boot-error.json"), "{ truncated").unwrap();
+        let mut query = request();
+        query.limit = Some(2);
+        let (entries, first) = all_pages(directory.path(), query);
+        assert_eq!(first.total_matches, 5);
+        assert!(first.unreadable_records);
+        assert!(first.timestamp_estimated);
+        let lines: Vec<_> = entries.iter().map(|entry| entry.line.as_str()).collect();
+        for expected in ["before", "after", "no timestamp", "[Unreadable execution log record]", "[Unreadable boot failure record]"] {
+            assert!(lines.contains(&expected), "{expected}: {lines:?}");
+        }
+    }
+    #[test]
+    fn an_oversized_console_record_is_truncated_and_later_records_stay_readable() {
+        let directory = tempfile::tempdir().unwrap();
+        // A guest can write megabytes to /dev/console without a newline.
+        let mut kernel = "flood ".repeat(400_000).into_bytes();
+        kernel.extend_from_slice(b"\n2026-09-18T08:00:01Z after the flood\n");
+        kernel.extend("unterminated ".repeat(100_000).as_bytes());
+        fs::write(directory.path().join("kernel.log"), kernel).unwrap();
+        let mut exec = vec![b'{'; 1_200_000];
+        exec.extend_from_slice(b"\n");
+        exec.extend_from_slice(line(2, "exec after").as_bytes());
+        fs::write(directory.path().join("exec.log"), exec).unwrap();
+        let mut query = request();
+        query.limit = Some(1);
+        let (entries, first) = all_pages(directory.path(), query);
+        assert_eq!(first.total_matches, 5);
+        assert!(first.unreadable_records);
+        let lines: Vec<_> = entries.iter().map(|entry| entry.line.as_str()).collect();
+        assert!(lines.contains(&"2026-09-18T08:00:01Z after the flood"));
+        assert!(lines.contains(&"exec after"));
+        assert!(lines.contains(&"[Execution log record over 1 MiB omitted]"));
+        let truncated: Vec<_> = lines.iter().filter(|line| line.ends_with("[record over 1 MiB truncated]")).collect();
+        assert_eq!(truncated.len(), 2, "{:?}", lines.iter().map(|line| line.len()).collect::<Vec<_>>());
+        assert!(truncated.iter().all(|line| line.len() < 70 * 1024));
+        let mut search = request();
+        search.query = Some("after the flood".into());
+        assert_eq!(read(directory.path(), search, "dev", "pc", "Desktop").unwrap().total_matches, 1);
+    }
+    #[test]
+    fn guest_console_timestamps_are_labelled() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("kernel.log"), "2020-01-01T00:00:00Z forged by the guest\n").unwrap();
+        fs::write(directory.path().join("runtime.log"), "2026-09-18T08:00:00Z runtime\n").unwrap();
+        fs::write(directory.path().join("exec.log"), line(1, "exec")).unwrap();
+        let page = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+        for entry in &page.entries {
+            assert_eq!(entry.guest_timestamp, entry.source == "kernel", "{}", entry.line);
+        }
+        let json = serde_json::to_value(&page).unwrap();
+        let kernel = json["entries"].as_array().unwrap().iter().find(|entry| entry["source"] == "kernel").unwrap();
+        assert_eq!(kernel["guestTimestamp"], true);
+        assert!(json["entries"].as_array().unwrap().iter().filter(|entry| entry["source"] != "kernel").all(|entry| entry.get("guestTimestamp").is_none()));
+        let mut context = request();
+        context.around_id = Some(kernel["id"].as_str().unwrap().into());
+        let around = read(directory.path(), context, "dev", "pc", "Desktop").unwrap();
+        assert!(around.entries.iter().any(|entry| entry.guest_timestamp));
+    }
     #[test]
     fn time_and_source_filters_cover_rotated_plain_text_with_estimated_timestamps() {
         let directory = tempfile::tempdir().unwrap();

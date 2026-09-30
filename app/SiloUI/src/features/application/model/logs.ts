@@ -16,6 +16,8 @@ export const logEntrySchema = z.object({
   id: z.string(), line: z.string(), occurredAt: z.string(), sandboxId: z.string(),
   sandboxName: z.string().optional(), computerName: z.string().optional(),
   computerId: z.string(), source: z.string(), session: z.string().nullish(),
+  /** The time was parsed from console text the sandbox wrote. */
+  guestTimestamp: z.boolean().optional(),
 })
 export const logPageSchema = z.object({
   entries: z.array(logEntrySchema), nextCursor: z.string().nullable(),
@@ -23,6 +25,8 @@ export const logPageSchema = z.object({
   totalMatches: z.number(), timestampEstimated: z.boolean(),
   /** The owning computer runs a Silo that cannot serve logs. */
   unsupported: z.boolean().optional(),
+  /** Some records were malformed or too large and are shown as placeholders or truncated. */
+  unreadableRecords: z.boolean().optional(),
 })
 export function isUnsupportedRemote(reason: unknown): boolean {
   const message = String(reason)
