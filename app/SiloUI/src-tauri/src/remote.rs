@@ -352,7 +352,43 @@ fn read_frame(mut reader: impl Read) -> Result<Value, String> {
     reader.read_exact(&mut bytes).map_err(|e| e.to_string())?;
     serde_json::from_slice(&bytes).map_err(|_| "Invalid remote Silo response.".into())
 }
+/// Which keys ssh offers the other computer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Identity {
+    /// Only Silo's key (and keys the user's ssh config names for that host), so a
+    /// long agent key list cannot exhaust the server's MaxAuthTries first.
+    SiloOnly,
+    /// Silo's key and every other key ssh would offer (agent, defaults).
+    AnyKey,
+}
+/// Addresses where only the user's own keys authenticated, so later connections
+/// (including tunnels) start with every key instead of Silo's alone.
+static ANY_KEY_ADDRESSES: Mutex<std::collections::BTreeSet<String>> =
+    Mutex::new(std::collections::BTreeSet::new());
+fn silo_key() -> Option<PathBuf> {
+    directory()
+        .ok()
+        .map(|dir| dir.join("id_ed25519"))
+        .filter(|key| key.is_file())
+}
+fn preferred_identity(address: &str) -> Identity {
+    let any = ANY_KEY_ADDRESSES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains(address);
+    if any { Identity::AnyKey } else { Identity::SiloOnly }
+}
+fn remember_identity(address: &str, identity: Identity) {
+    let mut addresses = ANY_KEY_ADDRESSES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    match identity {
+        Identity::AnyKey => addresses.insert(address.to_owned()),
+        Identity::SiloOnly => addresses.remove(address),
+    };
+}
 fn ssh_for_address(address: &str) -> Result<Command, String> {
+    ssh_with_identity(address, silo_key().as_deref(), preferred_identity(address))
+}
+fn ssh_with_identity(address: &str, key: Option<&Path>, identity: Identity) -> Result<Command, String> {
     validate_address(address)?;
     let mut command = Command::new("/usr/bin/ssh");
     command.args([
@@ -368,11 +404,42 @@ fn ssh_for_address(address: &str) -> Result<Command, String> {
         "-o",
         "ServerAliveCountMax=2",
     ]);
-    let key = directory()?.join("id_ed25519");
-    if key.is_file() {
+    if let Some(key) = key {
         command.arg("-i").arg(key);
+        if identity == Identity::SiloOnly {
+            command.args(["-o", "IdentitiesOnly=yes"]);
+        }
     }
     Ok(command)
+}
+/// Tries the preferred keys, and after an authentication failure the other choice once.
+/// The choice that authenticated is remembered for later connections to `address`.
+fn with_identity_fallback(
+    address: &str,
+    has_silo_key: bool,
+    mut attempt: impl FnMut(Identity) -> Result<Value, Failure>,
+) -> Result<Value, Failure> {
+    let first = preferred_identity(address);
+    let result = attempt(first);
+    let refused = |result: &Result<Value, Failure>| {
+        matches!(result, Err(Failure::Failed(message)) if message == AUTHENTICATION_FAILED)
+    };
+    if !has_silo_key {
+        return result;
+    }
+    if !refused(&result) {
+        remember_identity(address, first);
+        return result;
+    }
+    let second = match first {
+        Identity::SiloOnly => Identity::AnyKey,
+        Identity::AnyKey => Identity::SiloOnly,
+    };
+    let retried = attempt(second);
+    if !refused(&retried) {
+        remember_identity(address, second);
+    }
+    retried
 }
 pub(crate) fn ssh_tunnel_command(
     host_id: &str,
@@ -552,6 +619,7 @@ fn request_timeout(request: &Value) -> Duration {
 }
 const CONNECTION_HELP: &str = "Cannot connect to Silo over SSH. Verify the address, authorize its host key using SSH, and configure an SSH key or agent. On the other computer, keep Silo running with remote management enabled.";
 /// Names the cause of a failed connection from the ssh exit code and stderr, without echoing raw output.
+const AUTHENTICATION_FAILED: &str = "SSH authentication failed. Set up Silo's SSH key for this computer, or configure an SSH key or agent.";
 fn connection_failure(code: Option<i32>, stderr: &str) -> String {
     let has = |needle: &str| stderr.contains(needle);
     if code == Some(255) {
@@ -560,7 +628,7 @@ fn connection_failure(code: Option<i32>, stderr: &str) -> String {
         } else if has("Host key verification failed") {
             "Host key verification failed. Connect once with SSH in a terminal to verify and trust the other computer's host key."
         } else if has("Permission denied") || has("Too many authentication failures") {
-            "SSH authentication failed. Set up Silo's SSH key for this computer, or configure an SSH key or agent."
+            AUTHENTICATION_FAILED
         } else if has("Could not resolve hostname") {
             "Cannot resolve the computer's address. Check the address and network."
         } else if has("Connection refused") {
@@ -618,9 +686,14 @@ fn lost_connection(code: Option<i32>, stderr: &str) -> bool {
 }
 fn exchange(address: &str, request: &Value, deadline: Instant) -> Result<Value, Failure> {
     validate_address(address).map_err(Failure::Failed)?;
-    let mut command = ssh_for_address(address).map_err(Failure::Failed)?;
-    command.args(["--", address, BRIDGE_COMMAND]);
-    run_exchange(command, request, deadline)
+    let key = silo_key();
+    // An authentication failure means the request never reached the bridge, so sending
+    // it again with other keys cannot repeat a change.
+    with_identity_fallback(address, key.is_some(), |identity| {
+        let mut command = ssh_with_identity(address, key.as_deref(), identity).map_err(Failure::Failed)?;
+        command.args(["--", address, BRIDGE_COMMAND]);
+        run_exchange(command, request, deadline)
+    })
 }
 /// Sends one framed request through `command` (ssh running the bridge) and reads the reply.
 fn run_exchange(mut command: Command, request: &Value, deadline: Instant) -> Result<Value, Failure> {
@@ -1744,6 +1817,62 @@ mod authorized_key_tests {
         assert!(!restrict_authorized_keys_file(&link, &public).unwrap());
         assert_eq!(fs::read_to_string(&target).unwrap(), format!("{public}\n"));
         assert!(!restrict_authorized_keys_file(&home.path().join("missing"), &public).unwrap());
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    fn arguments(command: &Command) -> Vec<String> {
+        command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn silos_key_is_offered_alone_unless_only_other_keys_work() {
+        let key = Path::new("/private/key");
+        let only = arguments(&ssh_with_identity("office", Some(key), Identity::SiloOnly).unwrap());
+        assert!(only.windows(2).any(|pair| pair == ["-i", "/private/key"]));
+        assert!(only.windows(2).any(|pair| pair == ["-o", "IdentitiesOnly=yes"]));
+        let any = arguments(&ssh_with_identity("office", Some(key), Identity::AnyKey).unwrap());
+        assert!(any.windows(2).any(|pair| pair == ["-i", "/private/key"]));
+        assert!(!any.iter().any(|arg| arg.starts_with("IdentitiesOnly")));
+        let none = arguments(&ssh_with_identity("office", None, Identity::SiloOnly).unwrap());
+        assert!(!none.iter().any(|arg| arg == "-i" || arg.starts_with("IdentitiesOnly")));
+    }
+
+    #[test]
+    fn a_refused_key_choice_falls_back_once_and_is_remembered() {
+        let address = format!("fallback-{}", uuid::Uuid::new_v4());
+        let refused = || Err(Failure::Failed(AUTHENTICATION_FAILED.into()));
+        // Silo's key is not installed there yet: the user's agent keys authenticate.
+        let mut tried = Vec::new();
+        let result = with_identity_fallback(&address, true, |identity| {
+            tried.push(identity);
+            if identity == Identity::SiloOnly { refused() } else { Ok(json!(1)) }
+        });
+        assert_eq!((result, tried), (Ok(json!(1)), vec![Identity::SiloOnly, Identity::AnyKey]));
+        assert_eq!(preferred_identity(&address), Identity::AnyKey);
+        // After "Set up Silo SSH key", too many agent keys are refused; Silo's key alone works.
+        let mut tried = Vec::new();
+        let result = with_identity_fallback(&address, true, |identity| {
+            tried.push(identity);
+            if identity == Identity::AnyKey { refused() } else { Ok(json!(2)) }
+        });
+        assert_eq!((result, tried), (Ok(json!(2)), vec![Identity::AnyKey, Identity::SiloOnly]));
+        assert_eq!(preferred_identity(&address), Identity::SiloOnly);
+        // Other failures and computers without Silo's key are tried once.
+        let mut attempts = 0;
+        let lost = with_identity_fallback(&address, true, |_| {
+            attempts += 1;
+            Err(Failure::Lost("dropped".into()))
+        });
+        assert_eq!((lost, attempts), (Err(Failure::Lost("dropped".into())), 1));
+        let mut attempts = 0;
+        let result = with_identity_fallback(&address, false, |_| {
+            attempts += 1;
+            refused()
+        });
+        assert_eq!((result, attempts), (refused(), 1));
     }
 }
 
