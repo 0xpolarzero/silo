@@ -296,7 +296,7 @@ archives including the seed verified; the source group and imported group
 remained stable after app relaunch. Each VM retained 2 CPU, 2048 MiB RAM, and
 an 8 GiB root; `qemu-img` reported 8,589,934,592 bytes for each raw root image.
 Evidence is
-[`snapshot-groups-result.json`](../app/SiloUI/src-tauri/target/verification/x86-legacy-final7-matrix-20260926/evidence/snapshot-groups-result.json).
+`app/SiloUI/src-tauri/target/verification/x86-legacy-final7-matrix-20260926/evidence/snapshot-groups-result.json` (untracked local evidence).
 
 The guest desktop service's exact stale `:1` lock/socket recovery passed 35
 focused tests. A later X11-directory normalization fix passed 40 focused
@@ -316,7 +316,7 @@ runtime-input manifest SHA-256:
 proof covers positive/denied/absent probes, 128-port enforcement, occupied
 host-port conflict preservation, established relay closure, and immediate
 port reuse. Evidence is in
-[`native8-live-ports/`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/).
+`app/SiloUI/src-tauri/target/verification/native8-live-ports/` (untracked local evidence).
 The initial patch8 transfer to the x86 build host was rejected by automatic
 review. The user later authorized the exact transfer, and the x86 native8
 runtime was built and exercised in the task-owned Ubuntu 24.04 guest. Its live
@@ -324,7 +324,7 @@ port proof passed positive, absent, and ingress-denied probes; denied-listener
 behavior; host-port-zero allocation; idempotence and conflict preservation;
 the 128-port cap; established relay closure after removal; and exact-port
 republish with new traffic. The guest was stopped and mappings removed.
-Evidence is [`x86-live-ports.json`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/x86-live-ports.json)
+Evidence is `app/SiloUI/src-tauri/target/verification/native8-live-ports/x86-live-ports.json` (untracked local evidence)
 (SHA-256 `b6991e628ae18875057dac7c043caace1f6c357bad145f052137c2312d29935d`);
 the tested `msb` SHA-256 is
 `285d0bb9a67dcef45e78fe4e4f2bc1608fa4ae6e3532053461c54a8878be2fe2`.
@@ -377,10 +377,10 @@ records all eight patches. The package smoke verified the embedded payload
 hashes, MicroSandbox 0.7.2 and all five Silo protocol probes, Git/Git LFS
 versions and hashes, and dynamic dependencies for the app, MicroSandbox, and
 Git. The preserved package report is
-[`package-smoke.json`](../app/SiloUI/src-tauri/target/verification/native8-final-package/package-smoke.json)
+`app/SiloUI/src-tauri/target/verification/native8-final-package/package-smoke.json` (untracked local evidence)
 (SHA-256 `d7b44744a6b363237293a6182d4b39784fccfc0390c08f4f785ba265baf68d04`);
 the verified AppImage is stored beside it. The final x86 live port result is
-[`x86-live-ports.json`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/x86-live-ports.json)
+`app/SiloUI/src-tauri/target/verification/native8-live-ports/x86-live-ports.json` (untracked local evidence)
 (SHA-256 `b6991e628ae18875057dac7c043caace1f6c357bad145f052137c2312d29935d`);
 it covers allowed, absent, and ingress-denied probes, bind conflicts and
 mapping preservation, the 128-port cap, relay closure on removal, and
@@ -402,7 +402,7 @@ the earlier live-tested binary. The eight-patch runtime manifest SHA-256 remains
 `8d4c9b61cffb3d3bee8096d2c4684ff901f89f59f35a995e6394e41ef3ddd41d`.
 Packaged Git support hashes, version commands, and unresolved-dependency checks
 passed. Evidence is
-[`arm64-package-x11-fix.json`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-package-x11-fix.json)
+`app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-package-x11-fix.json` (untracked local evidence)
 (SHA-256 `be7686f86d6333cf6cd11ba091983afe077248834ca85cb3993bc02aaf7c68af`).
 This is a package-content and dependency check; it did not rerun installed-app
 UI or live VM behavior.
@@ -418,7 +418,7 @@ Its app executable differs from the preceding package and embeds the exact
 guest service script. Its packaged MicroSandbox, eight-patch manifest, and
 libkrunfw hashes remain unchanged. Packaged Git support hashes, tool version
 commands, and unresolved-dependency checks passed. Evidence is
-[`arm64-package-remote-flush.json`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-package-remote-flush.json)
+`app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-package-remote-flush.json` (untracked local evidence)
 (SHA-256 `b7f82ece5a891035f5c62e99a1123c7f5b2b72a888d065103dfe2828c8112a12`).
 This ARM rebuild does not itself prove the remote desktop UI flow; the x86
 production result is recorded below.
@@ -437,7 +437,7 @@ and its eight-patch manifest SHA-256 remains
 `8d4c9b61cffb3d3bee8096d2c4684ff901f89f59f35a995e6394e41ef3ddd41d`.
 Packaged Git support hashes, tool version commands, and unresolved-dependency
 checks passed. Evidence is
-[`arm64-package-binary-flush.json`](../app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-package-binary-flush.json)
+`app/SiloUI/src-tauri/target/verification/native8-live-ports/arm64-package-binary-flush.json` (untracked local evidence)
 (SHA-256 `7b7ee39f14e632ec9daf7f841673fee4ca26bfe32b216ae1a7af9753fdeb3947`).
 This package check did not rerun installed-app UI or live VM behavior.
 
@@ -450,7 +450,7 @@ running source viewer connected, and opening stopped fork
 `54e8b201-7e30-44e1-b866-855b23fb7d4a` left it stopped. The controller
 executable SHA-256 is
 `96ffb0bad56f0e655d2072a7d9ad7bf987c83961292b5c62d84f5d437d671465`. Evidence
-is in [`remote-final/`](../app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/remote-final/)
+is in `app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/remote-final/` (untracked local evidence)
 (`final-binary-remote-viewer-result.json`, running/stopped viewer screenshots,
 and `final-binary-flush-real-ssh.log`). The earlier patch-transfer rejection
 was superseded by explicit user authorization. The final x86 runtime-8 live

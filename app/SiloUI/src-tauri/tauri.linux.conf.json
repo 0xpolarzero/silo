@@ -11,7 +11,8 @@
           "libcurl4 | libcurl4t64",
           "libcap-ng0",
           "zlib1g",
-          "gstreamer1.0-libav"
+          "gstreamer1.0-libav",
+          "openssh-client"
         ]
       },
       "rpm": {
@@ -19,7 +20,8 @@
           "glibc",
           "libcurl",
           "libcap-ng",
-          "zlib"
+          "zlib",
+          "openssh-clients"
         ]
       }
     }

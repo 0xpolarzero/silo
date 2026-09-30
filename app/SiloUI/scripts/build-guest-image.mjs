@@ -26,10 +26,33 @@ sudo -n -u nobody sh -ec 'test "$(id -u)" != 0; /usr/lib/openssh/sftp-server -Q 
   run("docker", ["run", "--rm", "--pull", "never", "--network", "none", "--platform", `linux/${architecture}`, imageReference, "sh", "-ec", check], { stdio: "inherit" })
 }
 
+/** The recipe version. Increment it for every image update; published versions are never reused. */
+export const GUEST_IMAGE_VERSION = "ubuntu-24.04-v3"
+
+/**
+ * Names derived from the recipe version and the publishing repository. The
+ * publication workflow reads these instead of repeating the version or owner.
+ */
+export function guestImageMetadata(env = process.env) {
+  const repository = env.GITHUB_REPOSITORY || env.GH_REPO
+    || /github\.com\/([^/]+\/[^/.]+)/.exec(JSON.parse(readFileSync(resolve(root, "package.json"), "utf8")).repository.url)?.[1]
+  const owner = repository?.split("/")[0]
+  if (!owner || !/^[A-Za-z0-9-]+$/.test(owner)) throw new Error("Cannot determine the publishing GitHub owner.")
+  const match = /^ubuntu-(\d+\.\d+)-(v\d+)$/.exec(GUEST_IMAGE_VERSION)
+  if (!match) throw new Error("Guest image versions look like ubuntu-24.04-v3.")
+  return {
+    version: GUEST_IMAGE_VERSION,
+    // Container registries require lowercase repository names.
+    image: `ghcr.io/${owner.toLowerCase()}/silo-guest:${GUEST_IMAGE_VERSION}`,
+    tag: `guest-${GUEST_IMAGE_VERSION}`,
+    title: `Silo guest Ubuntu ${match[1]} ${match[2]}`,
+  }
+}
+
 export async function buildGuestImage(architecture) {
-  if (!["arm64", "amd64"].includes(architecture)) throw new Error("Usage: node scripts/build-guest-image.mjs arm64|amd64")
-  const version = "ubuntu-24.04-v3"
-  const imageReference = `ghcr.io/0xpolarzero/silo-guest:${version}-${architecture}`
+  if (!["arm64", "amd64"].includes(architecture)) throw new Error("Usage: node scripts/build-guest-image.mjs arm64|amd64|metadata")
+  const { version, image: imageName } = guestImageMetadata()
+  const imageReference = `${imageName}-${architecture}`
   const revision = process.env.GITHUB_SHA || execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim()
   const output = resolve(root, "src-tauri/guest-image-artifacts", architecture)
   await mkdir(output, { recursive: true })
@@ -51,5 +74,10 @@ export async function buildGuestImage(architecture) {
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  await buildGuestImage(process.argv[2])
+  if (process.argv[2] === "metadata") {
+    // key=value lines for $GITHUB_OUTPUT.
+    for (const [key, value] of Object.entries(guestImageMetadata())) console.log(`${key}=${value}`)
+  } else {
+    await buildGuestImage(process.argv[2])
+  }
 }

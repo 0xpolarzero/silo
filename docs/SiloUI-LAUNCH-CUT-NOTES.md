@@ -13,7 +13,7 @@ is the independent [54-second launch cut](../artifacts/silo-launch-cut/README.md
 | An agent can use a Linux desktop | [Luda integration](SiloUI-LUDA.md) | Optional desktop; supported agents must be installed and signed in by the user; example is labeled an illustration |
 | Selected repositories, read-only by default | README and [GitHub access editor](../app/SiloUI/src/features/github/components/github-access-editor.tsx) | Shows OAuth policies; does not generalize this restriction to full-permission personal tokens |
 | Credentials scoped by sandbox and HTTPS domain | [Secrets](SiloUI-SECRETS.md) | Does not claim secret values can never be disclosed, or that local signing keys are supported |
-| Export local disks; restore as new sandboxes | README and [Backup page](../app/SiloUI/src/features/application/pages/backup-page.tsx) | No claim of remote backup management or rollback of a running machine |
+| Export local disks; restore as new sandboxes | README and the since-removed [Backup page](https://github.com/0xpolarzero/silo/blob/5ce177022e714329903cbf754f98dcce93c7e582/app/SiloUI/src/features/application/pages/backup-page.tsx) | No claim of remote backup management or rollback of a running machine |
 
 The film uses Playwright for fixture capture, the installed `@napi-rs/canvas`
 package for motion graphics, and FFmpeg for H.264/AAC mastering. These tools

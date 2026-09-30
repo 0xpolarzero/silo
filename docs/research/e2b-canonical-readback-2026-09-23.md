@@ -35,8 +35,8 @@ The same manifest is preserved in the scratch VM under
 `/opt/silo-e2b-poc/evidence/sdk-lifecycle/`.
 
 The command used the tracked
-[`verify-canonical-snapshot.py`](../../experiments/e2b-local/verify-canonical-snapshot.py)
-and [`inspect-snapshot-header.py`](../../experiments/e2b-local/inspect-snapshot-header.py)
+[`verify-canonical-snapshot.py`](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/verify-canonical-snapshot.py)
+and [`inspect-snapshot-header.py`](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/inspect-snapshot-header.py)
 copied into `/tmp` in the scratch VM:
 
 ```sh

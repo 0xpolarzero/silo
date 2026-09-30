@@ -2,7 +2,7 @@
 
 `SiloRelease` is a 59-second, 1920×1080, 30 fps release composition in
 [`demo/`](../demo/). It leads with agent computer use, then shows local and
-remote sandboxes, familiar tools, SSH agent handoff, scoped access, local backup,
+remote sandboxes, familiar tools, SSH agent handoff, scoped access, local export,
 and a browser preview. It replaces the website's original v11 tour and covers
 every feature category with a chapter destination.
 The film is silent, matching the existing [demo direction](SiloUI-DEMO-SCRIPT.md).
@@ -19,7 +19,7 @@ The original `SiloDemo` and `SiloSshDemo` compositions remain available.
 | 21–32s | “Your agents. Connected.” | Production SSH controls enable local/network access, copy the address, and show Save key file. An illustrated client connects using that address and key, then reads a remote project. |
 | 32–37s | “The right repositories. You decide.” | Production GitHub view; OAuth repository selection and read-only defaults. |
 | 37–42s | “The right credentials. In scope.” | Production Secrets view with a fixture token assigned to a sandbox and HTTPS domain. |
-| 42–47s | “Keep a copy. Keep going.” | Production Backup page shows capture and verification, then success and a recent archive of local stopped web. |
+| 42–47s | “Keep a copy. Keep going.” | Production sandbox page for local stopped web, on its Checkpoints tab where Export saves the sandbox to an export file; shows capture and verification, then success. |
 | 47–54s | “Build there. Open here.” | Production Network view followed by an illustrated browser using a forwarded local address. |
 | 54–59s | “Give your agents a space of their own.” | Silo identity, website address, macOS/Linux availability, and MIT license. |
 
@@ -46,7 +46,7 @@ Rendering does not call a VM, SSH, credential store, agent, or external service.
 | Repository selection and read-only defaults | [GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md). The copy explicitly names OAuth; [personal tokens](SiloUI-GITHUB-PERSONAL-TOKENS.md) use their full permissions. |
 | Sandbox and HTTPS-domain credential scope | [Secrets](SiloUI-SECRETS.md). Allowed servers receive the real value; the film does not claim credentials can never be revealed. |
 | SSH handoff | [Production SSH controls](../app/SiloUI/src/features/application/pages/ssh-access-panel.tsx) and [remote computers](SiloUI-REMOTE-COMPUTERS.md). Key handoff and client are illustrations; the computers already have a network route. No host-agent MCP inheritance is implied. |
-| Local backup | [Production backup controller](../app/SiloUI/src-tauri/src/backup_controller.rs) and [Backup page](../app/SiloUI/src/features/application/pages/backup-page.tsx). Uses the current native indeterminate Capture and verify phase and archive naming convention. The stopped local sandbox remains stopped; elapsed time is compressed. Restore is described, not simulated as completed. |
+| Local export | [Production export controller](../app/SiloUI/src-tauri/src/backup_controller.rs), [sandbox export and import](../app/SiloUI/src/features/application/components/sandbox-transfer.tsx) and [checkpoints](../app/SiloUI/src/features/application/components/checkpoint-panel.tsx). Uses the current native indeterminate Capture and verify phase and export file naming convention. The stopped local sandbox remains stopped; elapsed time is compressed. Restore is described, not simulated as completed. |
 | Development-server preview | [README setup](../README.md#start-working) and [production Network page](../app/SiloUI/src/features/application/pages/network-page.tsx). Discovering a port and connecting it are separate steps; a local address requires forwarding. |
 | Availability and license | [README installation](../README.md#install) and [LICENSE](../LICENSE). Platform requirements remain in the installation guide. |
 

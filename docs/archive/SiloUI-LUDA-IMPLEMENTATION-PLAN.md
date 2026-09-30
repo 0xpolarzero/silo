@@ -1,7 +1,7 @@
 # Luda desktop integration plan
 
 Research date: 2026-09-21. This records the original plan. Current implementation
-and verification are documented in [agent desktop tools](SiloUI-LUDA.md).
+and verification are documented in [agent desktop tools](../SiloUI-LUDA.md).
 
 ## Decision
 

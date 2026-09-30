@@ -7,13 +7,13 @@ precedence over the investigation order and unqualified causal claims in the
 **Tool selection update, 2026-09-24:** the user requires reuse of maintained,
 well-recognized tools before custom infrastructure. Keep the Python credential
 broker as a fixture only. Read the
-[credential-tool comparison](research/e2b-credential-tools-2026-09-24.md)
+[credential-tool comparison](../research/e2b-credential-tools-2026-09-24.md)
 before credential implementation work: qualify iron-proxy first and Infisical
 Agent Vault second, preserve the existing credential acceptance contract, and do not
 infer production readiness from vendor reputation or the fixture passes.
 
 **Current status, reconciled 2026-09-24:** use the
-[updated gate matrix](research/e2b-qualification-gates-2026-09-23.md) and the
+[updated gate matrix](../research/e2b-qualification-gates-2026-09-23.md) and the
 last 2026-09-24 work-log entries for remaining work. Durable host shutdown,
 suite self-cleanup, packaged Tauri input/IPC isolation, real-provider subsets
 and basic two-computer lifecycle now have passing evidence. Qualification
@@ -34,8 +34,8 @@ is `b81239406f115b2dc6317e206ced2822d243c188852523a35514cb258c001e7c`.
 The pinned orchestrator is healthy, with no active run-owned guests. The
 historical VM remains untouched. The viewer-owner change also passed a live
 two-viewer A-to-B-to-agent transition; see
-[viewer readiness](research/e2b-viewer-input-readiness-2026-09-23.md) and the
-[fresh-run report](research/e2b-fresh-desktop-qualification-2026-09-23.md).
+[viewer readiness](../research/e2b-viewer-input-readiness-2026-09-23.md) and the
+[fresh-run report](../research/e2b-fresh-desktop-qualification-2026-09-23.md).
 Native WKWebView typing and guest file readback passed, but native pointer and
 save-modifier behavior did not. One observer-input experiment was blocked by
 automatic approval review and must be reported as unmeasured, not bypassed.
@@ -45,19 +45,19 @@ source build showed SDK unaddressability after errors. They do not establish
 the historical cause, a source match to the deployed release, or a documented
 E2B failure-preservation promise. D3's historical restore panic has no
 controlled causal reproduction. No upstream bug report is ready. Read
-[D1 report readiness](research/e2b-d1-report-readiness-2026-09-23.md),
-[D2 independent review](research/e2b-d2-independent-review-2026-09-23.md),
-[D3 report readiness](research/e2b-d3-report-readiness-2026-09-23.md), and the
-[release-source mapping](research/e2b-release-source-mapping-2026-09-23.md)
+[D1 report readiness](../research/e2b-d1-report-readiness-2026-09-23.md),
+[D2 independent review](../research/e2b-d2-independent-review-2026-09-23.md),
+[D3 report readiness](../research/e2b-d3-report-readiness-2026-09-23.md), and the
+[release-source mapping](../research/e2b-release-source-mapping-2026-09-23.md)
 before opening an issue. A narrower exact-ID D1 `ResumeSandbox` call-boundary
 patch exists at
-[`d1-resume-allocation-exact-id.patch`](../experiments/e2b-local/patches/d1-resume-allocation-exact-id.patch)
+[`d1-resume-allocation-exact-id.patch`](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/patches/d1-resume-allocation-exact-id.patch)
 but has not been built or run in the VM. It substitutes an error before real
 allocation and cannot by itself prove the historical allocator failure.
 
 **Current decision:** The PoC has passing local workflow subsets, not an
 all-gates qualification. The current gate matrix is
-[e2b-qualification-gates-2026-09-23.md](research/e2b-qualification-gates-2026-09-23.md).
+[e2b-qualification-gates-2026-09-23.md](../research/e2b-qualification-gates-2026-09-23.md).
 Do not start a Silo cutover or file an upstream bug on the present evidence.
 Finish the unresolved causal, native, provider, operational, and platform
 checks; if a required external resource is unavailable, state that precise
@@ -65,9 +65,9 @@ limit rather than replacing it with a synthetic pass.
 
 2026-09-23 execution update: the separate owned diagnostic VM completed
 source-built D1 and D2 failure comparisons with passing unarmed SDK controls;
-see the [gate matrix](research/e2b-qualification-gates-2026-09-23.md),
-[D1 receipt](research/e2b-d1-post-capture-repro-2026-09-23.md), and
-[D2 receipt](research/e2b-d2-rootfs-sync-repro-2026-09-23.md). Neither case
+see the [gate matrix](../research/e2b-qualification-gates-2026-09-23.md),
+[D1 receipt](../research/e2b-d1-post-capture-repro-2026-09-23.md), and
+[D2 receipt](../research/e2b-d2-rootfs-sync-repro-2026-09-23.md). Neither case
 establishes the historical trigger or a lifecycle repair. The pinned
 orchestrator is restored healthy with no SDK guests. The historical VM remains
 read-only. Full PoC qualification and Silo cutover remain blocked.
@@ -75,8 +75,8 @@ read-only. Full PoC qualification and Silo cutover remain blocked.
 Later 2026-09-23 update: a fresh full ARM64 desktop run on the same scratch
 candidate passed six workflow and three synthetic Git cases. Browser and
 disposable WKWebView rendering passed; this run did not verify a persisted
-native file save. See the [fresh-run report](research/e2b-fresh-desktop-qualification-2026-09-23.md)
-and current [gate matrix](research/e2b-qualification-gates-2026-09-23.md).
+native file save. See the [fresh-run report](../research/e2b-fresh-desktop-qualification-2026-09-23.md)
+and current [gate matrix](../research/e2b-qualification-gates-2026-09-23.md).
 All three run-owned desktops were deleted after evidence collection. D1–D3,
 native input, real provider and platform gates remain open.
 
@@ -235,7 +235,9 @@ Read `AGENTS.md`, the user instructions and this brief. Existing context:
   provenance and evidence corrections in this brief.
 - `docs/research/e2b-local-poc-2026-09-22.md`: earlier template baseline; do not
   combine its successes with the later incident into one release verdict.
-- `experiments/e2b-local/README.md` and the experiment sources.
+- `experiments/e2b-local/README.md` and the experiment sources, removed from `main`
+  and preserved on the `archive/media-and-experiments` branch and at
+  [`c122a49`](https://github.com/0xpolarzero/silo/tree/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local).
 - `app/SiloUI/src-tauri/src/github.rs`, `github_tokens.rs`,
   `github_personal_token.rs`, `github_http.rs`, `github_live_tests.rs`,
   `secrets.rs`, `secrets_runtime.rs`: current product authorization contract.

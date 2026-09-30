@@ -24,6 +24,24 @@ export function release(action, root = app, run = (command, args) => execFileSyn
 
   if (action === "draft") {
     preflight(root)
+    // Fail here, not after an hour of CI builds: release only history that is on
+    // origin/main, and only a version newer than every release tag on origin.
+    run("git", ["fetch", "--quiet", "origin", "main"])
+    try { run("git", ["merge-base", "--is-ancestor", "HEAD", "origin/main"]) }
+    catch { throw new Error("This commit is not on origin/main. Merge the release preparation into main and release from that checkout. No tag was pushed.") }
+    const remoteTags = new Map()
+    for (const line of run("git", ["ls-remote", "--tags", "origin", "refs/tags/v*"]).split("\n")) {
+      const match = /^(\S+)\s+refs\/tags\/v(\d+\.\d+\.\d+)(\^\{\})?$/.exec(line.trim())
+      // Prefer the peeled commit of an annotated tag.
+      if (match && (match[3] || !remoteTags.has(match[2]))) remoteTags.set(match[2], match[1])
+    }
+    const compare = (a, b) => {
+      const [x, y] = [a, b].map(value => value.split(".").map(Number))
+      return x[0] - y[0] || x[1] - y[1] || x[2] - y[2]
+    }
+    const newer = [...remoteTags.keys()].filter(other => compare(other, version) > 0).sort(compare).at(-1)
+    if (newer) throw new Error(`origin already has v${newer}, newer than ${version}. Prepare a newer version. No tag was pushed.`)
+    if (remoteTags.has(version) && remoteTags.get(version) !== head) throw new Error(`The remote ${tag} belongs to a different commit. Prepare a newer version. No tag was pushed.`)
     // The library creates the tag; push only this version, never unrelated local tags.
     if (!localTag) run(process.execPath, [resolve(root, "node_modules/@changesets/cli/bin.js"), "git-tag"])
     if (run("git", ["rev-parse", `${tag}^{commit}`]) !== head) throw new Error(`${tag} does not identify this commit.`)

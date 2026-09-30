@@ -2,14 +2,14 @@
 
 **Superseded direction, 2026-09-25:** the user chose to bring upstream MicroSandbox
 checkpoints and forks into retained Silo. Follow the
-[checkpoint implementation plan](SiloUI-CHECKPOINTS-PLAN.md). This E2B plan is
+[checkpoint implementation plan](../SiloUI-CHECKPOINTS-PLAN.md). This E2B plan is
 retained as historical design and qualification context, not the active cutover plan.
 
 **Decision reassessment, 2026-09-24:** the user proposes keeping Silo, adding
 efficient checkpoints/live forks, improving the desktop and using full LCU.
-The [follow-up research](research/checkpoints-desktop-direction-2026-09-24.md)
+The [follow-up research](../research/checkpoints-desktop-direction-2026-09-24.md)
 finds that released MicroSandbox 0.7.2 already provides an upstream snapshot/fork
-implementation to qualify. The [comparative assessment](research/e2b-adoption-assessment-2026-09-24.md)
+implementation to qualify. The [comparative assessment](../research/e2b-adoption-assessment-2026-09-24.md)
 therefore recommends evaluating that upgrade before an E2B replacement. No
 runtime upgrade or desktop selection is qualified or implemented. The E2B plan
 below remains conditional on subsequently choosing E2B.
@@ -27,9 +27,9 @@ remaining qualification gates. Computer use is under rewrite; preserve its
 integration seam and defer deeper LCU work.
 
 Current qualification status, reconciled 2026-09-24: **cutover blocked**.
-The [current gate matrix](research/e2b-qualification-gates-2026-09-23.md)
+The [current gate matrix](../research/e2b-qualification-gates-2026-09-23.md)
 separates executed subsets from the remaining adoption work. Later evidence in
-the [work log](research/e2b-qualification-worklog-2026-09-23.md) supersedes the
+the [work log](../research/e2b-qualification-worklog-2026-09-23.md) supersedes the
 earlier summaries: durable full-desktop host shutdown/restart passed; suite
 self-cleanup passed with zero survivors; the last recorded deterministic suite
 passed 97 tests. Real GitHub operations and policy-layer revocation passed in
@@ -63,7 +63,7 @@ it is not selected for production.
 supported upstream features throughout the refactor. Research existing solutions
 before creating infrastructure, retain only necessary Silo policy/integration,
 and fix reusable gaps upstream. Successful PoC code does not override this rule.
-The [credential-tool comparison](research/e2b-credential-tools-2026-09-24.md)
+The [credential-tool comparison](../research/e2b-credential-tools-2026-09-24.md)
 selects iron.sh's iron-proxy first and Infisical's standalone Agent Vault second,
 not an approved production dependency. It also records the E2B deployment gap,
 CyberArk's CONNECT limitation, and Envoy's incompatible filter threat model.
@@ -96,12 +96,12 @@ experience, execution-host management, workspace ownership, credentials and
 repository policy. Replace implementations that have become unnecessary; retain
 requirements that still matter.
 
-The [local PoC](research/e2b-local-poc-2026-09-22.md) proves nested ARM64 desktops,
+The [local PoC](../research/e2b-local-poc-2026-09-22.md) proves nested ARM64 desktops,
 agent input, human takeover, checkpoints, forks, pause/resume and clean host
 restart recovery on an M4 Max. It does not yet prove Silo's complete credential,
 SSH/editor, portable backup, Linux distribution or remote-owner workflows.
 
-The [historical qualification](research/e2b-lcu-qualification-2026-09-22.md)
+The [historical qualification](../research/e2b-lcu-qualification-2026-09-22.md)
 records LCU, synthetic credential brokering, Git/LFS and SSH/SFTP successes on
 that host across resumed runs. It also records unavailable source runtimes after
 checkpoint/pause errors and a later failed latest-state restore. The exact causes
@@ -373,7 +373,7 @@ Implementation direction, revised 2026-09-24: preserve Silo's native credential
 authority and qualify an existing credential broker outside all sandbox VMs.
 Start with iron-proxy, then Infisical Agent Vault; a supported E2B injection backend
 remains an alternative if its local deployment and redistribution are established.
-See the [tool comparison](research/e2b-credential-tools-2026-09-24.md) for exact
+See the [tool comparison](../research/e2b-credential-tools-2026-09-24.md) for exact
 remaining requirements. Do not promote `credential-broker.py`, implement a new
 HTTP/TLS proxy, or copy its fixture GitHub path recognizer into production.
 Keep provider-issued GitHub scope enforcement and Silo's current grant selection.
@@ -436,7 +436,7 @@ the actual diff file (runs `bf19ecc9…`, `4dcd6f60…`, 2/2, with the byte-for-
 historical error chain). A later release-binary run reproduced the checkpoint
 failure with real hugepage exhaustion and kernel ENOMEM. The exact physical
 writeback cause and incident-time source mapping remain unestablished; see
-[causal bounds](research/e2b-causal-bounds-2026-09-23-late.md). Require a
+[causal bounds](../research/e2b-causal-bounds-2026-09-23-late.md). Require a
 regression that preserves either the live source or a discoverable, complete,
 resumable paused state for both failures. Silo must never report success for a
 missing runtime. Include Mac physical capacity as well as Linux guest capacity.
@@ -447,7 +447,7 @@ during that same storage-exhaustion window stored internally inconsistent
 state, and its restore panics Firecracker deterministically (reproduced 3/3
 from hash-verified artifacts on a healthy host; the previous generation
 restores cleanly — see [D3 root
-cause](research/e2b-d3-root-cause-2026-09-23.md) and
+cause](../research/e2b-d3-root-cause-2026-09-23.md) and
 [e2b-dev/runtime#3659](https://github.com/e2b-dev/runtime/issues/3659)). A
 pause/checkpoint response therefore proves neither preservation nor
 restorability until E2B ships capture-side verification or Silo adds its own
@@ -492,7 +492,7 @@ tickets immediately.
 ### D. Packaged WebKit and reliable input
 
 A disposable native WKWebView harness rendered noVNC and observed takeover.
-The later [input investigation](research/e2b-viewer-input-root-cause-2026-09-24.md)
+The later [input investigation](../research/e2b-viewer-input-root-cause-2026-09-24.md)
 isolated the synthetic-event failure and proved modifier-correct input through
 both WKWebView and a packaged, production-version-matched Tauri harness. The
 Tauri harness also rejected a viewer IPC probe. A human keypress is now optional
@@ -519,7 +519,7 @@ dual-write state.
 ### Phase 1: finish the reusable PoC and record all adoption gates
 
 Historical progress lives in the
-[qualification report](research/e2b-lcu-qualification-2026-09-22.md); the
+[qualification report](../research/e2b-lcu-qualification-2026-09-22.md); the
 [corrected execution brief](SiloUI-E2B-QUALIFICATION-HANDOFF.md) defines the
 current gates. Reproduce and attribute checkpoint/pause/restore failures, then
 fix the responsible layer. Parallelize independent credential and access work;
@@ -739,12 +739,12 @@ that resolves the highest-risk gaps before most of the rewrite is spent.
 
 Repository basis: current `src-tauri/src/runtime.rs`, `remote.rs`, `network.rs`,
 `desktop_viewer.rs`, `Cargo.toml`, `tauri.conf.json`, `src/desktop/production-source.ts`
-and `src/contracts/silo.ts`; the [PoC results](research/e2b-local-poc-2026-09-22.md);
-[remote ownership](SiloUI-REMOTE-COMPUTERS.md), [secrets](SiloUI-SECRETS.md),
-[GitHub](SiloUI-GITHUB-IMPLEMENTATION.md), [native editor](SiloUI-EDITOR-HANDOFF.md),
-[network](SiloUI-NETWORK-PLAN.md), [backup](SiloUI-RUNTIME-BACKUP-FINDINGS.md),
-[guest distribution](SiloUI-GUEST-IMAGES.md) and
-[storage reclamation](SiloUI-STORAGE-RECLAMATION.md).
+and `src/contracts/silo.ts`; the [PoC results](../research/e2b-local-poc-2026-09-22.md);
+[remote ownership](../SiloUI-REMOTE-COMPUTERS.md), [secrets](../SiloUI-SECRETS.md),
+[GitHub](../SiloUI-GITHUB-IMPLEMENTATION.md), [native editor](../SiloUI-EDITOR-HANDOFF.md),
+[network](../SiloUI-NETWORK-PLAN.md), [backup](../SiloUI-RUNTIME-BACKUP-FINDINGS.md),
+[guest distribution](../SiloUI-GUEST-IMAGES.md) and
+[storage reclamation](../SiloUI-STORAGE-RECLAMATION.md).
 
 Upstream basis, inspected September 22:
 

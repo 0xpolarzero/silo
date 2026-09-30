@@ -1,5 +1,6 @@
 """Test package relocation at the dpkg-deb process boundary, without root access."""
 import hashlib
+import json
 from pathlib import Path
 import runpy
 import shutil
@@ -111,6 +112,12 @@ class DebianReleaseTests(unittest.TestCase):
         self.assertIn(runtime + '|', guard)
         self.assertIn(f"'{runtime} (deleted)'", guard)
         self.assertNotIn('/usr/lib/Silo/bin', guard)
+
+    def test_linux_packages_depend_on_the_openssh_client(self):
+        # The desktop viewer and editor handoff run /usr/bin/ssh and ssh-keygen.
+        config = json.loads((SCRIPT.parent.parent / 'src-tauri/tauri.linux.conf.json').read_text())
+        self.assertIn('openssh-client', config['bundle']['linux']['deb']['depends'])
+        self.assertIn('openssh-clients', config['bundle']['linux']['rpm']['depends'])
 
     def test_unrelated_global_command_is_rejected_without_replacing_package(self):
         (self.fixture / 'usr/bin/unrelated').write_text('must not ship')

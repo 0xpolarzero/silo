@@ -17,12 +17,12 @@ and expanded states. Avoid adding page-specific title or caption sizes.
 
 | Surface | Shared rows |
 | --- | --- |
-| Overview | VM and SSH records through `SandboxListRow`; configuration status uses the same icon tile. |
+| Sandboxes | Sandbox and SSH host records through `SandboxListRow`; configuration status uses the same icon tile. |
 | Files | Repository records; push controls and feedback remain below the header. |
 | Activity | Every event, including progress, success, warning, and failure. |
 | GitHub | Connected, connecting, and disconnected account cards. |
 | Secrets | Secret records, sandbox badges, and restart notices. |
-| Backup | Create backup, restore archive, and recent archives; inline review and results use `ListRowDetails`. |
+| Sandbox page | Checkpoint history and its empty state on the Checkpoints tab, and the Overview tab's secret and port rows. Export and import progress and results are notifications, not rows. |
 | General | Startup, polling, application preferences, and accessibility settings. |
 | Notifications | Main toggle and alert categories. |
 | System issue | Repair header and expanded details; ordered repair steps share the icon tile. |
@@ -68,10 +68,12 @@ the system's `prefers-reduced-motion` setting.
 
 ## Status bar preview
 
-Open `?view=status-bar` or choose **status-bar** in the development View selector.
-State and System fixtures use the app's existing snapshots. The Preview selector
-adds stale status, an empty list, and a long list. Repair and error notices and
-the footer remain visible while only the sandbox list scrolls.
+`src/fixtures/status-bar-preview.tsx` renders the status bar against the app's
+existing fixture snapshots, and its Preview selector adds stale status, an empty
+list, and a long list. There is no browser route for it yet: `npm run dev` only
+shows a desktop-app notice and `glass.html` renders the main app fixture.
+`status-bar-preview.test.tsx` exercises it. Repair and error notices and the
+footer remain visible while only the sandbox list scrolls.
 
 Repositories with outgoing commits add one compact line under their sandbox,
 with the repository name and a **Push N commits** action. Progress and the brief

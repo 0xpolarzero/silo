@@ -1,0 +1,13 @@
+version: 2
+updates:
+  # Workflows pin every action to a commit SHA with a version comment; Dependabot
+  # proposes new SHAs and updates the comments. Grouped to one weekly pull request.
+  - package-ecosystem: github-actions
+    directories:
+      - '/'
+      - '/.github/actions/prepare-release-runtime'
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ['*']

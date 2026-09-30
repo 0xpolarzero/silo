@@ -36,7 +36,7 @@ undocumented guarantee. [Python SDK source](https://github.com/e2b-dev/E2B/blob/
 | Historical D2, sandbox `ihuji71ivqwchwhlzmd7s` | Pause RPC began 2026-09-22 16:53:30Z; Firecracker paused 16:53:32.341Z; full snapshot created 16:53:33.040Z; lifecycle stopped 16:53:33.141Z; rootfs diff sync reported `input/output error` at 16:53:37.555Z; gRPC Pause returned `Internal`. | Preserved orchestrator log, not a syscall trace. The original `/tmp` log and relevant kernel journal interval are unavailable. [Audit](e2b-d2-error-audit-2026-09-23.md). |
 | Historical catalog and files | Snapshot `naa4djgwyr0zwl7ns8d2`, build `2d5669c0-ca9c-4815-bffb-0621fc738f59`, terminal `failed`; exact build diff and canonical template directory absent at later inspection. | Later absence does not prove bytes were erased at failure time or rule out another recovery copy. [Audit](e2b-d2-error-audit-2026-09-23.md). |
 | Source-built control | SDK pause/resume on `d7af6d2e5a714287b88dba00ecda21ac` preserved both process nonce and fsynced file; a new write worked. | This is an unarmed control on the diagnostic VM. [Receipt](e2b-d2-rootfs-sync-repro-2026-09-23.md). |
-| Source-built one-shot EIO, sandbox `iy5y0c74qsqjmi1l2pscb` | Rootfs sync hook fired once for the exact sandbox ID. Lifecycle stopped 12:05:35.907Z, synthetic EIO logged 12:05:37.939Z, Pause failed; failed build `d47bcdef-89a9-4839-8b87-a9d7c07cca07` remained. SDK get/list, exact `connect`, and create-from-failed-snapshot could not recover it; no matching Firecracker process remained. | The hook returned `PathError(EIO)` *instead of invoking* `File.Sync`; it proves propagation and cleanup, not a kernel writeback fault. The after-inspection file inventory was about two minutes later. [Receipt](e2b-d2-rootfs-sync-repro-2026-09-23.md), [patch](../../experiments/e2b-local/patches/d2-rootfs-sync-eio-exact-id.patch). |
+| Source-built one-shot EIO, sandbox `iy5y0c74qsqjmi1l2pscb` | Rootfs sync hook fired once for the exact sandbox ID. Lifecycle stopped 12:05:35.907Z, synthetic EIO logged 12:05:37.939Z, Pause failed; failed build `d47bcdef-89a9-4839-8b87-a9d7c07cca07` remained. SDK get/list, exact `connect`, and create-from-failed-snapshot could not recover it; no matching Firecracker process remained. | The hook returned `PathError(EIO)` *instead of invoking* `File.Sync`; it proves propagation and cleanup, not a kernel writeback fault. The after-inspection file inventory was about two minutes later. [Receipt](e2b-d2-rootfs-sync-repro-2026-09-23.md), [patch](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/patches/d2-rootfs-sync-eio-exact-id.patch). |
 
 The exact historical error chain was:
 
@@ -88,10 +88,10 @@ branch conditions, feature flags, or build provenance for the incident.
 
 ## Deterministic next reproduction and preservation oracle
 
-The existing [exact-ID hook](../../experiments/e2b-local/patches/d2-rootfs-sync-eio-exact-id.patch)
+The existing [exact-ID hook](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/patches/d2-rootfs-sync-eio-exact-id.patch)
 is the fast control for the Go error branch. The next discriminating test must
 make the *actual `File.Sync` syscall boundary* return EIO and record its syscall
-result. A small [Linux syscall probe](../../experiments/e2b-local/d2-report/run-sync-probe.sh)
+result. A small [Linux syscall probe](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/d2-report/run-sync-probe.sh)
 is prepared as a one-command preflight. It makes an unarmed `File.Sync` control,
 then launches the same Go helper under `strace -P <exact-target-path>
 --inject=fsync:error=EIO:when=1`. A second file's sync must succeed in the

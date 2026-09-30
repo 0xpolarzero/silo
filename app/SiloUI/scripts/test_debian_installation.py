@@ -1,4 +1,5 @@
 """Root-only package lifecycle test. Run only in a disposable Linux container/runner."""
+import ctypes
 import os
 from pathlib import Path
 import shutil
@@ -9,6 +10,40 @@ import unittest
 SCRIPTS = Path(__file__).parent
 SOURCE = Path('/etc/apt/sources.list.d/silo.sources')
 MARKER = Path('/var/lib/silo/package-update-in-progress')
+TOOLS_DIR = 'usr/libexec/silo/tools'
+PTRACE_TRACEME, PTRACE_DETACH = 0, 17
+
+
+def fake_package_tree(tree):
+    """Silo's packaged layout: the app in /usr/bin, its tools and runtime in libexec."""
+    (tree / 'usr/bin').mkdir(parents=True)
+    shutil.copy('/bin/sleep', tree / 'usr/bin/silo-ui')
+    tools = tree / TOOLS_DIR
+    tools.mkdir(parents=True)
+    for name in ('msb', 'git', 'git-lfs', 'git-remote-http', 'git-remote-https', 'libkrunfw.so.5.6.1'):
+        shutil.copy('/bin/true', tools / name)
+
+
+def held(argv):
+    """Start argv held right after exec: a real /proc identity without running it."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    pid = os.fork()
+    if pid == 0:
+        try:
+            libc.ptrace(PTRACE_TRACEME, 0, None, None)
+            os.execv(argv[0], argv)
+        finally:
+            os._exit(127)
+    _, status = os.waitpid(pid, os.WUNTRACED)
+    if not os.WIFSTOPPED(status):
+        raise RuntimeError(f'{argv[0]} did not stop after exec')
+    return pid
+
+
+def release(pid):
+    """Let a held process continue; the fake executables then exit on their own."""
+    ctypes.CDLL(None, use_errno=True).ptrace(PTRACE_DETACH, pid, None, None)
+    os.waitpid(pid, 0)
 
 
 @unittest.skipUnless(os.environ.get('SILO_APT_LIFECYCLE_TEST') == '1' and os.geteuid() == 0, 'Explicit disposable root environment required')
@@ -28,9 +63,7 @@ class InstallerTests(unittest.TestCase):
         arch = run('dpkg', '--print-architecture').stdout.decode().strip()
         for version, target, package in fixture.packages:
             tree = fixture.root / f'{version}-{target}'
-            (tree / 'usr/bin').mkdir(parents=True)
-            for name in ('silo-ui', 'msb', 'git', 'git-lfs', 'git-remote-http', 'git-remote-https'):
-                shutil.copy('/bin/sleep' if name == 'silo-ui' else '/bin/true', tree / 'usr/bin' / name)
+            fake_package_tree(tree)
             run('dpkg-deb', '--build', str(tree), str(package))
             run('python3', str(SCRIPTS / 'package-debian-release.py'), str(package))
         old = [item for item in fixture.packages if item[0] == '0.1.0']
@@ -113,12 +146,8 @@ class InstallerTests(unittest.TestCase):
             for version in ('0.1.0', '0.2.0'):
                 tree = Path(tmp, version)
                 (tree / 'DEBIAN').mkdir(parents=True)
-                (tree / 'usr/bin').mkdir(parents=True)
                 (tree / 'DEBIAN/control').write_text(f'Package: silo\nVersion: {version}\nArchitecture: {subprocess.check_output(["dpkg", "--print-architecture"], text=True).strip()}\nMaintainer: Test\nDescription: Disposable Silo lifecycle test\n')
-                shutil.copyfile('/bin/sleep', tree / 'usr/bin/silo-ui')
-                (tree / 'usr/bin/silo-ui').chmod(0o755)
-                for name in ('msb', 'git', 'git-lfs', 'git-remote-http', 'git-remote-https'):
-                    shutil.copy('/bin/true', tree / 'usr/bin' / name)
+                fake_package_tree(tree)
                 package = Path(tmp, f'{version}.deb')
                 run('dpkg-deb', '--build', str(tree), str(package))
                 run('python3', str(SCRIPTS / 'package-debian-release.py'), str(package))
@@ -137,12 +166,27 @@ class InstallerTests(unittest.TestCase):
                     result = run('dpkg', '-i', packages[1], check=False)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(b'Quit Silo', result.stderr)
+                    self.assertIn(f'Silo (process {process.pid})'.encode(), result.stderr)
                     self.assertIsNone(process.poll())
                     self.assertFalse(MARKER.exists())
                 finally:
                     process.terminate(); process.wait()
-                SOURCE.write_text(SOURCE.read_text() + 'Enabled: no\n')
-                run('apt-get', '-y', 'install', packages[1])
+                runtime = held(['/' + TOOLS_DIR + '/msb', 'server'])
+                try:
+                    result = run('dpkg', '-i', packages[1], check=False)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f'msb, process {runtime}'.encode(), result.stderr)
+                    self.assertFalse(MARKER.exists())
+                finally:
+                    release(runtime)
+                # Remote-management relays hold no VM or app state and never block.
+                relays = [held(['/usr/bin/silo-ui', '--remote-bridge']), held(['/usr/bin/silo-ui', '--remote-guest', 'office', 'vm'])]
+                try:
+                    SOURCE.write_text(SOURCE.read_text() + 'Enabled: no\n')
+                    run('apt-get', '-y', 'install', packages[1])
+                finally:
+                    for relay in relays:
+                        release(relay)
                 self.assertEqual(run('dpkg-query', '-W', '-f=${Version}', 'silo').stdout, b'0.2.0')
                 self.assertIn('Enabled: no', SOURCE.read_text())
                 self.assertFalse(MARKER.exists())

@@ -50,17 +50,19 @@ class BenchmarkSourceTests(unittest.TestCase):
                 self.assertEqual(output, '')
 
     def test_all_checkout_jobs_use_validated_source(self):
-        refs = re.findall(r'uses: actions/checkout@v4\n        with:\n          ref: (.+)', WORKFLOW)
+        refs = re.findall(r'uses: actions/checkout@[0-9a-f]{40} # v4[.\d]*\n        with:\n          ref: (.+)', WORKFLOW)
         self.assertEqual(len(refs), WORKFLOW.count('uses: actions/checkout@'))
         self.assertEqual(refs, ['${{ steps.source.outputs.ref }}'] + ['${{ needs.validate.outputs.source-ref }}'] * 3)
-        refs = re.findall(r'uses: actions/checkout@v4\n        with:\n          ref: (.+)', PLATFORM)
+        refs = re.findall(r'uses: actions/checkout@[0-9a-f]{40} # v4[.\d]*\n        with:\n          ref: (.+)', PLATFORM)
         self.assertEqual(refs, ['${{ inputs.source-ref }}'] * 3)
         self.assertEqual(len(refs), PLATFORM.count('uses: actions/checkout@'))
         self.assertIn('source-ref: ${{ needs.validate.outputs.source-ref }}', WORKFLOW)
         self.assertLess(WORKFLOW.index('Validate source revision before checkout'), WORKFLOW.index('uses: actions/checkout@'))
 
-    def test_concurrency_separates_artifact_runs_and_preserves_production_group(self):
-        self.assertIn("group: ${{ github.event_name == 'workflow_dispatch' && !inputs.draft && format('silo-release-benchmark-{0}', github.run_id) || 'silo-release-build' }}", WORKFLOW)
+    def test_concurrency_separates_artifact_runs_and_release_refs(self):
+        # GitHub keeps only one pending run per group, so a shared group would let
+        # a third queued release run cancel another release that is waiting.
+        self.assertIn("group: ${{ github.event_name == 'workflow_dispatch' && !inputs.draft && format('silo-release-benchmark-{0}', github.run_id) || format('silo-release-build-{0}', github.ref) }}", WORKFLOW)
         self.assertIn('cancel-in-progress: false', WORKFLOW)
 
 

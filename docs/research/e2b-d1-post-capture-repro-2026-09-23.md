@@ -12,7 +12,7 @@ A disposable copy added an exact-ID diagnostic return after
 `snapshotAndCacheSandbox` succeeded and before template lookup or
 `ResumeSandbox` in `checkpointResumeFresh`. The patch archive SHA-256 was
 `a23c5b9019c1685a5f7b46462db6ac8b249025cd6605c0dd5ecad83f9be04e3e`;
-the [reproducible patch](../../experiments/e2b-local/patches/d1-post-capture-exact-id.patch)
+the [reproducible patch](https://github.com/0xpolarzero/silo/blob/c122a498da064f08321c29bff82a6e92056a917d/experiments/e2b-local/patches/d1-post-capture-exact-id.patch)
 is kept with the PoC;
 the bounded Go 1.26.8 build produced binary SHA-256
 `44b6aa54bd0d884db46151f3c2ce20e30e7e7b29e521691c4b4f27c1acc2e172`.
@@ -58,7 +58,7 @@ subsequent kill/removal, marked build
 `5936871a-ee75-46f2-9add-3ebb07f36b5a` failed, and returned 500. The SDK
 exposed only `500: Error creating snapshot template`, so the first runner
 reported `failed-runner` when it expected the internal marker in the SDK
-exception. The saved [redacted correlation receipt](../../app/SiloUI/src-tauri/target/verification/e2b-local/deployments/diagnostic-d1/evidence/d1-source-fault/a0fdce093ab641698707d9428ac7d531-correlation.json)
+exception. The saved redacted correlation receipt (untracked local evidence: `app/SiloUI/src-tauri/target/verification/e2b-local/deployments/diagnostic-d1/evidence/d1-source-fault/a0fdce093ab641698707d9428ac7d531-correlation.json`)
 ties this run and sandbox ID to the exact marker in one orchestrator log line
 at 11:31:38.139Z and one API log line at 11:31:38.147Z. It also records the
 failed build ID and confirms that its catalog reason contains that marker and
