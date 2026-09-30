@@ -165,10 +165,18 @@ pub(super) fn retire(paths: &RuntimePaths, event: &mut Event) -> Result<(), Stri
 /// diagnostic field existed kept both in `failure`, separated by the first newline.
 fn failure_parts(event: &Event) -> Option<(String, Option<String>)> {
     let failure = event.failure.as_deref()?;
-    Some(match (failure.split_once('\n'), &event.diagnostic) {
-        (Some((summary, legacy)), None) => (summary.to_string(), Some(legacy.trim().to_string()).filter(|text| !text.is_empty())),
-        _ => (failure.to_string(), event.diagnostic.clone()),
-    })
+    let (summary, legacy) = failure.split_once('\n').unwrap_or((failure, ""));
+    let diagnostic = event.diagnostic.as_deref().unwrap_or(legacy);
+    let summary = summary.split_whitespace().collect::<Vec<_>>().join(" ");
+    let lower = summary.to_lowercase();
+    if lower.contains("exit code") || lower.contains("worker") {
+        let details = format!("{summary}\n{diagnostic}");
+        return Some((
+            "The sandbox action did not finish. Check its state and retry.".into(),
+            diagnostic_text(&details),
+        ));
+    }
+    Some((summary, diagnostic_text(diagnostic)))
 }
 
 /// A VM's latest undismissed lifecycle failure, as shown on its row.
@@ -436,9 +444,10 @@ mod tests {
         event.failure = Some("Stopping the sandbox (exit code 2): The runtime did not complete the operation.\nruntime said no".into());
         store(&paths, &event).unwrap();
         let failure = serde_json::to_value(&failures(&paths).unwrap()["vm-1"]).unwrap();
-        assert_eq!(failure["lifecycleFailure"], "Stop failed: Stopping the sandbox (exit code 2): The runtime did not complete the operation.");
-        assert_eq!(failure["lifecycleFailureDiagnostic"], "runtime said no");
-        assert_eq!(read(&paths).unwrap()[0]["diagnostic"], "runtime said no");
+        assert_eq!(failure["lifecycleFailure"], "Stop failed: The sandbox action did not finish. Check its state and retry.");
+        let diagnostic = failure["lifecycleFailureDiagnostic"].as_str().unwrap();
+        assert!(diagnostic.contains("exit code 2") && diagnostic.contains("runtime said no"));
+        assert_eq!(read(&paths).unwrap()[0]["diagnostic"], diagnostic);
     }
 
     #[test]

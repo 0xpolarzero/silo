@@ -210,8 +210,8 @@ impl std::fmt::Display for RuntimeError {
             Self::Busy => formatter.write_str("Another sandbox operation is still running."),
             Self::Invalid(message)
             | Self::Unavailable(message)
-            | Self::Launch(message)
             | Self::Malformed(message) => formatter.write_str(message),
+            Self::Launch(_) => formatter.write_str("Silo could not start the sandbox runtime. Retry; if it keeps happening, quit and reopen Silo."),
             Self::TimedOut { operation } => {
                 write!(
                     formatter,
@@ -3017,10 +3017,17 @@ pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
             };
             FailureReport { code, summary, exit_code: None, diagnostic: None, partial: false }
         }
+        RuntimeError::Launch(message) => FailureReport {
+            code: "unavailable",
+            summary: error.to_string(),
+            exit_code: None,
+            diagnostic: diagnostic_text(message),
+            partial: false,
+        },
         RuntimeError::Invalid(message)
         | RuntimeError::Malformed(message)
         | RuntimeError::Unavailable(message)
-        | RuntimeError::Launch(message) => {
+        => {
             let code = match (failure_category(message), error) {
                 ("runtime", RuntimeError::Invalid(_) | RuntimeError::Malformed(_)) => "configuration",
                 ("runtime", _) => "unavailable",
@@ -3300,7 +3307,7 @@ pub async fn read_setup_activity(app: AppHandle) -> Result<Vec<MachineConfigurat
         read_setup_activity_at(&paths)
     })
     .await
-    .map_err(|error| format!("Setup activity worker failed: {error}"))?
+    .map_err(|_| internal_failure("reading setup activity"))?
 }
 
 /// An unfinished last attempt was interrupted only when no setup journal is being
@@ -6208,7 +6215,7 @@ esac
     #[test]
     fn user_facing_failures_never_name_exit_codes_or_workers() {
         let error = RuntimeError::Failed { operation: "Starting the sandbox".into(), exit_code: Some(3), detail: "boom".into() };
-        for text in [error.to_string(), safe_activity_error(&error), setup_failure_message("runtime").unwrap(), internal_failure("reading sandbox state")] {
+        for text in [error.to_string(), safe_activity_error(&error), setup_failure_message("runtime").unwrap(), internal_failure("reading sandbox state"), safe_activity_error(&RuntimeError::Launch("could not launch: worker failure (exit code 2)".into()))] {
             let lower = text.to_lowercase();
             assert!(!lower.contains("exit code") && !lower.contains("worker") && !text.contains('\n'), "{text}");
         }
