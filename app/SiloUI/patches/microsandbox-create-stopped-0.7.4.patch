@@ -1,0 +1,564 @@
+diff --git a/crates/cli/lib/commands/create.rs b/crates/cli/lib/commands/create.rs
+index e2f70d2e..0c002d58 100644
+--- a/crates/cli/lib/commands/create.rs
++++ b/crates/cli/lib/commands/create.rs
+@@ -18,6 +18,14 @@ pub struct CreateArgs {
+     /// May be omitted when a config file supplies `image`.
+     pub image: Option<String>,
+ 
++    /// Prepare persistent storage without executing guest code.
++    #[arg(long)]
++    pub no_start: bool,
++
++    /// Emit credential-free structured progress on stderr.
++    #[arg(long)]
++    pub progress_json: bool,
++
+     /// Sandbox configuration options.
+     #[command(flatten)]
+     pub sandbox: SandboxOpts,
+@@ -54,14 +62,22 @@ pub async fn run(
+         apply_sandbox_opts(builder, &args.sandbox)?
+     };
+ 
+-    let (mut progress, task) = builder.detached(true).create_detached_with_progress()?;
++    let (mut progress, task) = if args.no_start {
++        builder.create_stopped_with_progress()?
++    } else {
++        builder.detached(true).create_detached_with_progress()?
++    };
+     let mut display = if args.sandbox.quiet {
+         ui::PullProgressDisplay::quiet(&image.display())
+     } else {
+         ui::PullProgressDisplay::new(&image.display())
+     };
+ 
++    let mut last_bytes = None;
+     while let Some(event) = progress.recv().await {
++        if args.progress_json && should_emit_progress(&event, &mut last_bytes) {
++            eprintln!("{}", safe_progress(&event));
++        }
+         display.handle_creation_event(event);
+     }
+ 
+@@ -69,7 +85,7 @@ pub async fn run(
+         Ok(Ok(sandbox)) => {
+             display.finish();
+             super::common::display_restore_warnings(&sandbox).await;
+-            sandbox.detach().await;
++            if !args.no_start { sandbox.detach().await; }
+             // Print auto-generated name to stdout so it's scriptable.
+             if !is_named {
+                 println!("{name}");
+@@ -87,3 +103,35 @@ pub async fn run(
+ 
+     Ok(())
+ }
++
++// Never serialize the source event: image references and digests can contain private data.
++fn safe_progress(event: &microsandbox::CreationProgress) -> serde_json::Value {
++    use microsandbox::CreationProgress;
++    use microsandbox_image::PullProgress;
++    use serde_json::json;
++    match event {
++        CreationProgress::Startup(value) => json!({"type":"silo-progress","phase":format!("runtime-{:?}", value.phase).to_lowercase(),"completedBytes":value.completed_bytes,"totalBytes":value.total_bytes}),
++        CreationProgress::Pull(value) => match value {
++            PullProgress::Resolving { .. } => json!({"type":"silo-progress","phase":"image-resolving"}),
++            PullProgress::Resolved { layer_count, total_download_bytes, .. } => json!({"type":"silo-progress","phase":"image-resolved","layerCount":layer_count,"totalBytes":total_download_bytes}),
++            PullProgress::LayerDownloadProgress { layer_index, downloaded_bytes, total_bytes, .. } => json!({"type":"silo-progress","phase":"image-download","layerIndex":layer_index,"downloadedBytes":downloaded_bytes,"totalBytes":total_bytes}),
++            PullProgress::LayerDownloadComplete { layer_index, downloaded_bytes, .. } => json!({"type":"silo-progress","phase":"image-downloaded","layerIndex":layer_index,"downloadedBytes":downloaded_bytes}),
++            PullProgress::LayerDownloadVerifying { layer_index, .. } => json!({"type":"silo-progress","phase":"image-verifying","layerIndex":layer_index}),
++            PullProgress::LayerMaterializeProgress { layer_index, bytes_read, total_bytes } => json!({"type":"silo-progress","phase":"image-preparing","layerIndex":layer_index,"preparedBytes":bytes_read,"totalBytes":total_bytes}),
++            PullProgress::LayerMaterializeStarted { layer_index, .. } | PullProgress::LayerMaterializeWriting { layer_index } | PullProgress::LayerMaterializeComplete { layer_index, .. } => json!({"type":"silo-progress","phase":"image-preparing","layerIndex":layer_index}),
++            PullProgress::Complete { .. } => json!({"type":"silo-progress","phase":"image-ready"}),
++            _ => json!({"type":"silo-progress","phase":"image-preparing"}),
++        },
++    }
++}
++
++fn should_emit_progress(event: &microsandbox::CreationProgress, last: &mut Option<std::time::Instant>) -> bool {
++    let byte_event = matches!(event,
++        microsandbox::CreationProgress::Pull(microsandbox_image::PullProgress::LayerDownloadProgress { .. } |
++            microsandbox_image::PullProgress::LayerMaterializeProgress { .. }));
++    if !byte_event { return true; }
++    let now = std::time::Instant::now();
++    if last.is_some_and(|before| now.duration_since(before) < std::time::Duration::from_secs(1)) { return false; }
++    *last = Some(now);
++    true
++}
+diff --git a/sdk/rust/lib/backend/local/sandbox/create.rs b/sdk/rust/lib/backend/local/sandbox/create.rs
+index db7cbf05..e9fa9de3 100644
+--- a/sdk/rust/lib/backend/local/sandbox/create.rs
++++ b/sdk/rust/lib/backend/local/sandbox/create.rs
+@@ -132,6 +132,7 @@ impl LocalBackend {
+         &self,
+         backend: Arc<dyn Backend>,
+         input: impl Into<SandboxBuilder>,
++        start: bool,
+         mode: SpawnMode,
+         progress: Option<PullProgressSender>,
+     ) -> MicrosandboxResult<Sandbox> {
+@@ -286,6 +287,10 @@ impl LocalBackend {
+                 &mut config,
+                 &materialized.manifest.root_disk,
+             )?;
++            crate::sandbox::apply_snapshot_root_capacity(
++                &mut config,
++                materialized.root_virtual_size,
++            )?;
+             if let Some(restore) = materialized.checkpoint_restore {
+                 let state = match &materialized.manifest.state {
+                     crate::snapshot::SnapshotState::Checkpoint(state) => state,
+@@ -395,6 +400,10 @@ impl LocalBackend {
+                         &config.restore_resources,
+                     )
+                     .await?;
++                    crate::sandbox::apply_snapshot_root_capacity(
++                        &mut config,
++                        materialized.root_virtual_size,
++                    )?;
+                     config.checkpoint_restore = Some(materialized.restore);
+                     crate::snapshot::apply_additional_disks(&mut config, materialized.disk_mounts);
+                     config.snapshot_upper_layers = materialized.upper_layers;
+@@ -408,6 +417,10 @@ impl LocalBackend {
+                         &config.restore_resources,
+                     )
+                     .await?;
++                    crate::sandbox::apply_snapshot_root_capacity(
++                        &mut config,
++                        materialized.root_virtual_size,
++                    )?;
+                     crate::snapshot::apply_additional_disks(&mut config, materialized.disk_mounts);
+                     config.snapshot_upper_layers = materialized.upper_layers;
+                 }
+@@ -437,6 +450,10 @@ impl LocalBackend {
+                 &root_layout,
+             )
+             .await?;
++            crate::sandbox::apply_snapshot_root_capacity(
++                &mut config,
++                materialized.root_virtual_size,
++            )?;
+             config.snapshot_upper_layers = materialized.upper_layers;
+         }
+         if let Some((source, owned)) = config.snapshot_owned_source.take() {
+@@ -826,7 +843,15 @@ impl LocalBackend {
+         let sandbox_id = match timing::measure(
+             &timing_name,
+             "persist_start",
+-            Self::insert_starting_sandbox_record(write_db, &persisted_config, Some(self.config())),
++            Self::insert_sandbox_record_with_status(
++                write_db,
++                &persisted_config,
++                if start {
++                    SandboxStatus::Starting
++                } else {
++                    SandboxStatus::Created
++                },
++            ),
+         )
+         .await
+         {
+@@ -849,6 +874,39 @@ impl LocalBackend {
+         }
+         tracing::debug!(sandbox_id, sandbox = %config.spec.name, "create_local: db record inserted");
+ 
++        if !start {
++            if let Some(manifest_digest) = pinned_manifest_digest.as_deref()
++                && let Err(error) =
++                    Self::persist_oci_manifest_pin(write_db, sandbox_id, manifest_digest).await
++            {
++                // No guest owns this storage. Keep cleanup armed until the row and
++                // private directory are both gone, so cancellation remains safe.
++                rollback_created_named_volumes(self, &created_named_volumes).await;
++                let cleanup = Self::delete_sandbox_record(write_db, sandbox_id)
++                    .await
++                    .and_then(|_| remove_dir_if_exists(&sandbox_dir));
++                return Err(match cleanup {
++                    Ok(()) => {
++                        creation_cleanup.disarm();
++                        error
++                    }
++                    Err(cleanup) => {
++                        creation_cleanup
++                            .finish_owned_failure(crate::MicrosandboxError::Runtime(format!(
++                                "{error}; {cleanup}"
++                            )))
++                            .await
++                    }
++                });
++            }
++            creation_cleanup.disarm();
++            return Ok(Sandbox::from_local_created(
++                backend,
++                sandbox_id,
++                persisted_config,
++            ));
++        }
++
+         // Spawn the sandbox process and create the bridge. On failure, mark the sandbox
+         // from Starting to Stopped so it cannot remain as a phantom boot.
+         let restore_closure = config
+@@ -1162,6 +1220,28 @@ impl LocalBackend {
+             }
+         };
+ 
++        // Silo's optional guest service starts on every actual boot, including
++        // boots initiated through the CLI or SSH. A missing service must not
++        // prevent the VM from becoming usable.
++        if config.spec.labels.get("silo.managed").map(String::as_str) == Some("true") {
++            let boot = crate::sandbox::exec::agent::exec(
++                self,
++                &config.spec.name,
++                &config,
++                "/bin/sh".into(),
++                crate::sandbox::exec::ExecOptions {
++                    args: vec!["-c".into(), "if [ -x /usr/local/bin/silo-desktop ]; then /usr/local/bin/silo-desktop boot >/dev/null 2>&1; fi".into()],
++                    cwd: Some("/".into()),
++                    user: Some("root".into()),
++                    timeout: Some(std::time::Duration::from_secs(15)),
++                    ..Default::default()
++                },
++            );
++            if let Err(error) = boot.await {
++                tracing::warn!(%error, "optional guest desktop startup failed; sandbox remains available");
++            }
++        }
++
+         if let Ok(ready) = client.ready() {
+             tracing::info!(
+                 sandbox_name = %config.spec.name,
+@@ -1929,6 +2009,7 @@ impl LocalBackend {
+     }
+ 
+     /// Insert a provisional local create record that remains non-connectable until ready.
++    #[cfg(test)]
+     async fn insert_starting_sandbox_record(
+         db: &DbWriteConnection,
+         config: &SandboxConfig,
+@@ -2294,7 +2375,7 @@ mod tests {
+                 .image("registry.invalid/review-never-pulled:missing")
+                 .pull_policy(crate::sandbox::PullPolicy::Never);
+             let error = backend
+-                .create_sandbox(backend.clone(), input, SpawnMode::Attached, None)
++                .create_sandbox(backend.clone(), input, true, SpawnMode::Attached, None)
+                 .await
+                 .err()
+                 .unwrap();
+@@ -2353,7 +2434,7 @@ mod tests {
+             .cpus(8)
+             .max_cpus(3);
+         let error = backend
+-            .create_sandbox(backend.clone(), builder, SpawnMode::Attached, None)
++            .create_sandbox(backend.clone(), builder, true, SpawnMode::Attached, None)
+             .await
+             .err()
+             .expect("missing rootfs must fail without starting a VM");
+@@ -2396,7 +2477,7 @@ mod tests {
+             .cpus(2)
+             .replace();
+         let error = backend
+-            .create_sandbox(backend.clone(), builder, SpawnMode::Attached, None)
++            .create_sandbox(backend.clone(), builder, true, SpawnMode::Attached, None)
+             .await
+             .err()
+             .expect("invalid managed CPU count must fail");
+@@ -2860,7 +2941,7 @@ mod tests {
+         config.replace_existing = true;
+ 
+         let error = match backend
+-            .create_sandbox(backend.clone(), config, SpawnMode::Attached, None)
++            .create_sandbox(backend.clone(), config, true, SpawnMode::Attached, None)
+             .await
+         {
+             Ok(_) => panic!("snapshot descriptor must be validated before replacement"),
+@@ -2898,7 +2979,7 @@ mod tests {
+         ));
+ 
+         let error = match backend
+-            .create_sandbox(backend.clone(), config, SpawnMode::Attached, None)
++            .create_sandbox(backend.clone(), config, true, SpawnMode::Attached, None)
+             .await
+         {
+             Ok(_) => panic!("stored snapshot references must be resolved before ordinary creation"),
+@@ -2945,7 +3026,7 @@ mod tests {
+         ];
+ 
+         let err = match backend
+-            .create_sandbox(backend_trait, config, SpawnMode::Attached, None)
++            .create_sandbox(backend_trait, config, true, SpawnMode::Attached, None)
+             .await
+         {
+             Ok(_) => panic!("expected invalid direct-config mounts to be rejected"),
+@@ -2974,7 +3055,7 @@ mod tests {
+         config.spec.runtime.hostname = Some("y".repeat(MAX_HOSTNAME_BYTES + 1));
+ 
+         let err = match backend
+-            .create_sandbox(backend.clone(), config, SpawnMode::Attached, None)
++            .create_sandbox(backend.clone(), config, true, SpawnMode::Attached, None)
+             .await
+         {
+             Ok(_) => panic!("invalid hostname should fail before sandbox creation"),
+diff --git a/sdk/rust/lib/backend/local/sandbox/create/archive_tests.rs b/sdk/rust/lib/backend/local/sandbox/create/archive_tests.rs
+index a29aa20c..d91ffb56 100644
+--- a/sdk/rust/lib/backend/local/sandbox/create/archive_tests.rs
++++ b/sdk/rust/lib/backend/local/sandbox/create/archive_tests.rs
+@@ -136,7 +136,7 @@ async fn assert_rejection_preserves_target(
+         archive.to_string_lossy(),
+     ));
+     let error = match backend
+-        .create_sandbox(backend.clone(), config, SpawnMode::Attached, None)
++        .create_sandbox(backend.clone(), config, true, SpawnMode::Attached, None)
+         .await
+     {
+         Ok(_) => panic!("unsupported archive must not launch"),
+diff --git a/sdk/rust/lib/backend/local/sandbox/create/cleanup.rs b/sdk/rust/lib/backend/local/sandbox/create/cleanup.rs
+index 07db0804..57a61318 100644
+--- a/sdk/rust/lib/backend/local/sandbox/create/cleanup.rs
++++ b/sdk/rust/lib/backend/local/sandbox/create/cleanup.rs
+@@ -328,6 +328,7 @@ mod tests {
+             .create_sandbox(
+                 fixture.backend.clone(),
+                 fixture.config.clone(),
++                true,
+                 crate::runtime::SpawnMode::Detached,
+                 None,
+             )
+diff --git a/sdk/rust/lib/backend/local/sandbox/mod.rs b/sdk/rust/lib/backend/local/sandbox/mod.rs
+index fe9db176..a19b9ad3 100644
+--- a/sdk/rust/lib/backend/local/sandbox/mod.rs
++++ b/sdk/rust/lib/backend/local/sandbox/mod.rs
+@@ -1194,12 +1194,10 @@ impl SandboxBackend for LocalBackend {
+         &'a self,
+         backend: Arc<dyn Backend>,
+         config: SandboxConfig,
+-        _start: bool,
++        start: bool,
+     ) -> BoxFuture<'a, MicrosandboxResult<Sandbox>> {
+         Box::pin(async move {
+-            // Local backend always boots immediately — `start` only differs
+-            // for cloud where create-without-start is a distinct state.
+-            self.create_sandbox(backend, config, SpawnMode::Attached, None)
++            self.create_sandbox(backend, config, start, SpawnMode::Attached, None)
+                 .await
+         })
+     }
+@@ -1210,7 +1208,7 @@ impl SandboxBackend for LocalBackend {
+         config: SandboxConfig,
+     ) -> BoxFuture<'a, MicrosandboxResult<Sandbox>> {
+         Box::pin(async move {
+-            self.create_sandbox(backend, config, SpawnMode::Detached, None)
++            self.create_sandbox(backend, config, true, SpawnMode::Detached, None)
+                 .await
+         })
+     }
+diff --git a/sdk/rust/lib/backend/sandbox.rs b/sdk/rust/lib/backend/sandbox.rs
+index 6d5aee4f..f0f9cf08 100644
+--- a/sdk/rust/lib/backend/sandbox.rs
++++ b/sdk/rust/lib/backend/sandbox.rs
+@@ -61,6 +61,11 @@ pub type LogStream = Pin<Box<dyn Stream<Item = MicrosandboxResult<LogEntry>> + S
+ pub enum SandboxInner {
+     /// Local libkrun-backed sandbox state.
+     Local(SandboxLocalState),
++    /// Persisted local sandbox whose guest has never run.
++    LocalCreated {
++        /// Persisted database identity.
++        db_id: i32,
++    },
+     /// Cloud msb-cloud-backed sandbox state.
+     Cloud(SandboxCloudState),
+ }
+@@ -175,12 +180,7 @@ pub trait SandboxBackend: Send + Sync {
+     /// `backend` Arc and the variant-specific state inside `SandboxInner`.
+     ///
+     /// `start` controls whether the sandbox is booted as part of create.
+-    /// **Cloud honours `start`** (forwards it as `?start=true|false` on the
+-    /// create request). **Local always boots immediately** — the local impl
+-    /// ignores the flag, because libkrun has no equivalent "create-without-
+-    /// start" state. This asymmetry is intentional per the SDK parity plan
+-    /// (D6.4); callers that need a stopped local sandbox should create then
+-    /// `stop()` it explicitly.
++    /// Both backends honor `start`; local `false` persists prepared storage without guest execution.
+     fn create<'a>(
+         &'a self,
+         backend: Arc<dyn Backend>,
+diff --git a/sdk/rust/lib/sandbox/builder.rs b/sdk/rust/lib/sandbox/builder.rs
+index d3e3b024..6aee1c29 100644
+--- a/sdk/rust/lib/sandbox/builder.rs
++++ b/sdk/rust/lib/sandbox/builder.rs
+@@ -1462,6 +1462,7 @@ impl SandboxBuilder {
+         // compose multiple creates in a single async task.
+         Box::pin(self.create_with_mode(
+             detached,
++            true,
+             #[cfg(feature = "local")]
+             None,
+         ))
+@@ -1504,6 +1505,7 @@ impl SandboxBuilder {
+     /// Create the sandbox for detached/background use.
+     pub async fn create_detached(self) -> MicrosandboxResult<Sandbox> {
+         Box::pin(self.create_with_mode(
++            true,
+             true,
+             #[cfg(feature = "local")]
+             None,
+@@ -1517,7 +1519,29 @@ impl SandboxBuilder {
+     /// result; dropping the progress receiver does not cancel it. Abort the task to cancel.
+     #[cfg(feature = "local")]
+     pub fn create_with_progress(
++        self,
++    ) -> crate::MicrosandboxResult<(
++        crate::CreationProgressHandle,
++        tokio::task::JoinHandle<crate::MicrosandboxResult<super::Sandbox>>,
++    )> {
++        self.create_with_progress_mode(true)
++    }
++
++    /// Prepare the local sandbox and persist it without executing guest code.
++    #[cfg(feature = "local")]
++    pub fn create_stopped_with_progress(
++        self,
++    ) -> crate::MicrosandboxResult<(
++        crate::CreationProgressHandle,
++        tokio::task::JoinHandle<crate::MicrosandboxResult<super::Sandbox>>,
++    )> {
++        self.create_with_progress_mode(false)
++    }
++
++    #[cfg(feature = "local")]
++    fn create_with_progress_mode(
+         mut self,
++        start: bool,
+     ) -> crate::MicrosandboxResult<(
+         crate::CreationProgressHandle,
+         tokio::task::JoinHandle<crate::MicrosandboxResult<super::Sandbox>>,
+@@ -1532,7 +1556,7 @@ impl SandboxBuilder {
+             }
+             let (mut pull, pull_sender) = microsandbox_image::progress_channel();
+             let detached = self.detached;
+-            let create = self.create_with_mode(detached, Some(pull_sender));
++            let create = self.create_with_mode(detached, start, Some(pull_sender));
+             let forward = async {
+                 while let Some(event) = pull.recv().await {
+                     let _ = sender.try_send(crate::CreationProgress::Pull(event));
+@@ -1574,7 +1598,7 @@ impl SandboxBuilder {
+         let (handle, sender) = microsandbox_image::progress_channel();
+         let task = tokio::spawn(async move {
+             let detached = self.detached;
+-            self.create_with_mode(detached, Some(sender)).await
++            self.create_with_mode(detached, true, Some(sender)).await
+         });
+         Ok((handle, task))
+     }
+@@ -1589,13 +1613,14 @@ impl SandboxBuilder {
+         tokio::task::JoinHandle<crate::MicrosandboxResult<Sandbox>>,
+     )> {
+         let (handle, sender) = microsandbox_image::progress_channel();
+-        let task = tokio::spawn(async move { self.create_with_mode(true, Some(sender)).await });
++        let task = tokio::spawn(async move { self.create_with_mode(true, true, Some(sender)).await });
+         Ok((handle, task))
+     }
+ 
+     async fn create_with_mode(
+         mut self,
+         detached: bool,
++        start: bool,
+         #[cfg(feature = "local")] progress: Option<PullProgressSender>,
+     ) -> MicrosandboxResult<Sandbox> {
+         let backend = default_backend();
+@@ -1607,7 +1632,7 @@ impl SandboxBuilder {
+                 SpawnMode::Attached
+             };
+             // Keep the local restore future off callers' stacks, including cloud callers.
+-            return Box::pin(local.create_sandbox(backend.clone(), self, mode, progress)).await;
++            return Box::pin(local.create_sandbox(backend.clone(), self, start, mode, progress)).await;
+         }
+ 
+         // Cloud doesn't transmit progress information yet.
+@@ -1615,7 +1640,7 @@ impl SandboxBuilder {
+         drop(progress);
+         #[cfg(feature = "cloud")]
+         if let Some(cloud) = backend.as_cloud() {
+-            return cloud.create_from_builder(backend.clone(), self, true).await;
++            return cloud.create_from_builder(backend.clone(), self, start).await;
+         }
+         self.prepare(backend.clone()).await?;
+ 
+@@ -1625,7 +1650,7 @@ impl SandboxBuilder {
+         if detached || config.resumed_from_full_snapshot() {
+             sandboxes.create_detached(backend.clone(), config).await
+         } else {
+-            sandboxes.create(backend.clone(), config, true).await
++            sandboxes.create(backend.clone(), config, start).await
+         }
+     }
+ }
+diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
+index 943f72cf..f505a1db 100644
+--- a/sdk/rust/lib/sandbox/mod.rs
++++ b/sdk/rust/lib/sandbox/mod.rs
+@@ -404,7 +404,7 @@ impl Sandbox {
+                         crate::MicrosandboxError::local_only(Operation::SandboxCreate)
+                     })?;
+                     local
+-                        .create_sandbox(backend.clone(), config, mode, Some(sender))
++                        .create_sandbox(backend.clone(), config, true, mode, Some(sender))
+                         .await
+                 }
+                 crate::backend::BackendKind::Cloud => {
+@@ -531,6 +531,21 @@ impl Default for SandboxListBuilder {
+ //--------------------------------------------------------------------------------------------------
+ 
+ impl Sandbox {
++    /// Build an outer `Sandbox` for a persisted local sandbox without a guest process.
++    #[cfg(feature = "local")]
++    pub(crate) fn from_local_created(
++        backend: Arc<dyn crate::backend::Backend>,
++        db_id: i32,
++        config: SandboxConfig,
++    ) -> Self {
++        Self {
++            backend,
++            inner: Arc::new(crate::backend::SandboxInner::LocalCreated { db_id }),
++            name: config.spec.name.clone(),
++            config,
++        }
++    }
++
+     /// Build an outer `Sandbox` from local-variant inner state.
+     #[cfg(feature = "local")]
+     pub(crate) fn from_local(
+@@ -631,6 +646,7 @@ impl Sandbox {
+     pub fn id(&self) -> SandboxId {
+         match self.inner.as_ref() {
+             crate::backend::SandboxInner::Local(state) => SandboxId::local(state.db_id),
++            crate::backend::SandboxInner::LocalCreated { db_id } => SandboxId::local(*db_id),
+             crate::backend::SandboxInner::Cloud(state) => SandboxId::cloud(&state.id),
+         }
+     }
+@@ -638,6 +654,7 @@ impl Sandbox {
+     fn identity(&self) -> SandboxIdentity {
+         match self.inner.as_ref() {
+             crate::backend::SandboxInner::Local(state) => SandboxIdentity::Local(state.db_id),
++            crate::backend::SandboxInner::LocalCreated { db_id } => SandboxIdentity::Local(*db_id),
+             crate::backend::SandboxInner::Cloud(state) => SandboxIdentity::Cloud(state.id.clone()),
+         }
+     }
+@@ -698,7 +715,7 @@ impl Sandbox {
+     pub fn local(&self) -> Option<&crate::backend::SandboxLocalState> {
+         match self.inner.as_ref() {
+             crate::backend::SandboxInner::Local(s) => Some(s),
+-            crate::backend::SandboxInner::Cloud(_) => None,
++            crate::backend::SandboxInner::Cloud(_) | crate::backend::SandboxInner::LocalCreated { .. } => None,
+         }
+     }
+ 
+@@ -707,7 +724,7 @@ impl Sandbox {
+     pub fn cloud(&self) -> Option<&crate::backend::SandboxCloudState> {
+         match self.inner.as_ref() {
+             crate::backend::SandboxInner::Cloud(s) => Some(s),
+-            crate::backend::SandboxInner::Local(_) => None,
++            crate::backend::SandboxInner::Local(_) | crate::backend::SandboxInner::LocalCreated { .. } => None,
+         }
+     }
+ 

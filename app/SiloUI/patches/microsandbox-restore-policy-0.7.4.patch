@@ -1,38 +1,8 @@
---- a/sdk/rust/lib/sandbox/restore_builder.rs
-+++ b/sdk/rust/lib/sandbox/restore_builder.rs
-@@ -100,6 +100,29 @@
-     /// Set the unique destination sandbox name.
-     pub fn name(mut self, name: impl Into<String>) -> Self {
-         self.inner.config.spec.name = name.into();
-+        self
-+    }
-+
-+    /// Set a destination identity label before restored execution starts.
-+    pub fn label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-+        self.inner = self.inner.label(key, value);
-+        self
-+    }
-+
-+    /// Set a default environment variable for future exec commands. Captured
-+    /// processes keep their saved environment.
-+    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-+        self.inner = self.inner.env(key, value);
-+        self
-+    }
-+
-+    /// Configure a destination host secret before captured execution resumes.
-+    #[cfg(feature = "net")]
-+    pub fn secret(
-+        mut self,
-+        configure: impl FnOnce(super::SecretBuilder) -> super::SecretBuilder,
-+    ) -> Self {
-+        self.inner = self.inner.secret(configure);
-         self
-     }
- 
+diff --git a/crates/cli/lib/commands/common.rs b/crates/cli/lib/commands/common.rs
+index 65a694e1..36a1206f 100644
 --- a/crates/cli/lib/commands/common.rs
 +++ b/crates/cli/lib/commands/common.rs
-@@ -2965,7 +2965,7 @@
+@@ -2966,7 +2966,7 @@ fn extend_unique(target: &mut Vec<String>, values: impl IntoIterator<Item = Stri
  }
  
  #[cfg(feature = "net")]
@@ -41,9 +11,11 @@
      builder: microsandbox::sandbox::SecretBuilder,
      host: &str,
  ) -> microsandbox::sandbox::SecretBuilder {
+diff --git a/crates/cli/lib/commands/restore.rs b/crates/cli/lib/commands/restore.rs
+index 41a0cc73..2aa3a88c 100644
 --- a/crates/cli/lib/commands/restore.rs
 +++ b/crates/cli/lib/commands/restore.rs
-@@ -8,6 +8,8 @@
+@@ -8,6 +8,8 @@ use microsandbox::sandbox::{
  #[cfg(feature = "net")]
  use super::common::parse_port_mapping;
  use super::common::{display_restore_warnings, parse_restore_volume, parse_vsock_route};
@@ -52,7 +24,7 @@
  use crate::ui;
  
  //--------------------------------------------------------------------------------------------------
-@@ -40,6 +42,16 @@
+@@ -40,6 +42,16 @@ pub struct RestoreArgs {
      /// Destination controls applied before the restored workload can run.
      #[command(flatten)]
      pub controls: RestoreControlArgs,
@@ -60,7 +32,7 @@
 +    #[arg(long, value_name = "KEY=VALUE")]
 +    pub label: Vec<String>,
 +    /// Set an environment default for new exec commands (captured processes retain theirs).
-+    #[arg(long, value_name = "KEY=VALUE")]
++    #[arg(short, long, value_name = "KEY=VALUE")]
 +    pub env: Vec<String>,
 +    /// Resolve a protected destination secret from a host environment variable before resume.
 +    #[cfg(feature = "net")]
@@ -69,7 +41,7 @@
      /// Suppress progress output, but not unavailable-resource warnings.
      #[arg(short, long)]
      pub quiet: bool,
-@@ -95,6 +107,14 @@
+@@ -95,6 +107,14 @@ pub struct RestoreControlArgs {
      #[cfg(feature = "net")]
      #[arg(long, value_parser = ["allow", "deny"])]
      pub net_default: Option<String>,
@@ -84,7 +56,7 @@
      /// Destination host policy rules, using the same syntax as create/run (repeatable).
      /// Requires --net-default or --no-net so the complete replacement policy is explicit.
      #[cfg(feature = "net")]
-@@ -162,14 +182,21 @@
+@@ -162,14 +182,21 @@ impl RestoreControlArgs {
      fn network_policy(
          &self,
      ) -> anyhow::Result<Option<microsandbox_network::policy::NetworkPolicy>> {
@@ -108,7 +80,7 @@
              net_rule: self.net_rule.clone(),
              ..Default::default()
          }
-@@ -204,6 +231,49 @@
+@@ -204,6 +231,49 @@ pub async fn run(
      }
      builder = args.resources.apply_restore(builder)?;
      builder = args.controls.apply(builder)?;
@@ -150,7 +122,7 @@
 +                secret = allow_secret_host(secret, &host);
 +            }
 +            for host in parsed.passthrough_hosts {
-+                secret = secret.allow_passthrough_for(host);
++                secret = secret.allow_placeholder_for(host);
 +            }
 +            secret
 +        });
@@ -158,14 +130,13 @@
      let (mut progress, task) = builder.restore_with_progress()?;
      let mut display = if args.quiet {
          ui::PullProgressDisplay::quiet(&args.snapshot)
-@@ -457,8 +527,18 @@
+@@ -457,8 +527,18 @@ mod tests {
                  .network_policy()
                  .unwrap_err()
                  .to_string()
 -                .contains("--net-default")
--        );
 +                .contains("explicit destination policy defaults")
-+        );
+         );
 +        let asymmetric = TestCli::try_parse_from([
 +            "restore", "ready", "--name", "worker",
 +            "--net-default-egress", "deny",
@@ -179,3 +150,37 @@
          let allowlist = RestoreControlArgs {
              no_net: true,
              ..rule_only
+diff --git a/sdk/rust/lib/sandbox/restore_builder.rs b/sdk/rust/lib/sandbox/restore_builder.rs
+index e18a55ad..8f541d35 100644
+--- a/sdk/rust/lib/sandbox/restore_builder.rs
++++ b/sdk/rust/lib/sandbox/restore_builder.rs
+@@ -112,6 +112,29 @@ impl RestoreBuilder {
+         self
+     }
+ 
++    /// Set a destination identity label before restored execution starts.
++    pub fn label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
++        self.inner = self.inner.label(key, value);
++        self
++    }
++
++    /// Set a default environment variable for future exec commands. Captured
++    /// processes keep their saved environment.
++    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
++        self.inner = self.inner.env(key, value);
++        self
++    }
++
++    /// Configure a destination host secret before captured execution resumes.
++    #[cfg(feature = "net")]
++    pub fn secret(
++        mut self,
++        configure: impl FnOnce(super::SecretBuilder) -> super::SecretBuilder,
++    ) -> Self {
++        self.inner = self.inner.secret(configure);
++        self
++    }
++
+     /// Set guest CPUs for disk boot. Full restore accepts only the captured CPU count.
+     pub fn cpus(mut self, count: u8) -> Self {
+         self.inner = self.inner.cpus(count);

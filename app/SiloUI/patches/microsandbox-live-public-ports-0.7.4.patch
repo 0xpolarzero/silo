@@ -1,5 +1,5 @@
 diff --git a/crates/network/lib/engine/netstack/poll.rs b/crates/network/lib/engine/netstack/poll.rs
-index 5f99f7d..e73ad94 100644
+index 5f99f7d2..e73ad94e 100644
 --- a/crates/network/lib/engine/netstack/poll.rs
 +++ b/crates/network/lib/engine/netstack/poll.rs
 @@ -10,6 +10,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -45,7 +45,7 @@ index 5f99f7d..e73ad94 100644
  
          // ── Phase 1: Drain all guest frames with pre-inspection ──────────
 diff --git a/crates/network/lib/engine/network.rs b/crates/network/lib/engine/network.rs
-index 499eab5..385dace 100644
+index 499eab58..385dace1 100644
 --- a/crates/network/lib/engine/network.rs
 +++ b/crates/network/lib/engine/network.rs
 @@ -7,6 +7,7 @@
@@ -149,7 +149,7 @@ index 499eab5..385dace 100644
      fn deployment_profile_defaults_and_explicit_connection_limits() {
          for profile in [
 diff --git a/crates/network/lib/engine/ports/mod.rs b/crates/network/lib/engine/ports/mod.rs
-index 994ecf0..7bbd7b0 100644
+index 994ecf0e..7bbd7b0c 100644
 --- a/crates/network/lib/engine/ports/mod.rs
 +++ b/crates/network/lib/engine/ports/mod.rs
 @@ -6,4 +6,4 @@ pub mod publisher;
@@ -159,7 +159,7 @@ index 994ecf0..7bbd7b0 100644
 -pub use publisher::PortPublisher;
 +pub use publisher::{PortCommand, PortControlHandle, PortPublisher};
 diff --git a/crates/network/lib/engine/ports/publisher.rs b/crates/network/lib/engine/ports/publisher.rs
-index baf24e1..0e9bf84 100644
+index baf24e18..0e9bf849 100644
 --- a/crates/network/lib/engine/ports/publisher.rs
 +++ b/crates/network/lib/engine/ports/publisher.rs
 @@ -11,6 +11,7 @@ use std::collections::HashMap;
@@ -1115,7 +1115,7 @@ index baf24e1..0e9bf84 100644
          let src = SocketAddr::new(IpAddr::V4(guest_ip), 5353);
          let frame = construct_udp_response(
 diff --git a/crates/protocol/lib/control/message.rs b/crates/protocol/lib/control/message.rs
-index 1c4b4f8..c051c20 100644
+index 1c4b4f8b..c051c20c 100644
 --- a/crates/protocol/lib/control/message.rs
 +++ b/crates/protocol/lib/control/message.rs
 @@ -3,7 +3,10 @@
@@ -1268,7 +1268,7 @@ index 1c4b4f8..c051c20 100644
 +    }
 +}
 diff --git a/crates/protocol/lib/control/types.rs b/crates/protocol/lib/control/types.rs
-index dea17de..4b7027a 100644
+index dea17de0..4b7027a4 100644
 --- a/crates/protocol/lib/control/types.rs
 +++ b/crates/protocol/lib/control/types.rs
 @@ -146,6 +146,25 @@ pub enum SecretsResult {
@@ -1366,7 +1366,7 @@ index dea17de..4b7027a 100644
  // Methods
  //--------------------------------------------------------------------------------------------------
 diff --git a/crates/runtime/lib/client/control.rs b/crates/runtime/lib/client/control.rs
-index f6e3eab..98be740 100644
+index f6e3eab1..98be740c 100644
 --- a/crates/runtime/lib/client/control.rs
 +++ b/crates/runtime/lib/client/control.rs
 @@ -35,6 +35,25 @@ pub const CONTROL_PROTOCOL_VERSION: u16 = 1;
@@ -1483,7 +1483,7 @@ index f6e3eab..98be740 100644
      fn secret_value_debug_is_redacted() {
          let request = ControlRequest::SecretsUpdate {
 diff --git a/crates/runtime/lib/runner/control/executor.rs b/crates/runtime/lib/runner/control/executor.rs
-index 066777b..bff52e7 100644
+index 066777ba..bff52e7f 100644
 --- a/crates/runtime/lib/runner/control/executor.rs
 +++ b/crates/runtime/lib/runner/control/executor.rs
 @@ -33,6 +33,8 @@ pub struct RuntimeControlExecutor {
@@ -1628,7 +1628,7 @@ index 066777b..bff52e7 100644
          #[cfg(feature = "net")]
          {
 diff --git a/crates/runtime/lib/runner/control/handler.rs b/crates/runtime/lib/runner/control/handler.rs
-index e587985..4b75369 100644
+index e587985e..4b753692 100644
 --- a/crates/runtime/lib/runner/control/handler.rs
 +++ b/crates/runtime/lib/runner/control/handler.rs
 @@ -51,6 +51,8 @@ pub(crate) struct Response {
@@ -1670,7 +1670,7 @@ index e587985..4b75369 100644
              Reply::Capabilities(Capabilities {
                  root_disk_grow: caps.root_disk_grow,
 diff --git a/crates/runtime/lib/runner/vm.rs b/crates/runtime/lib/runner/vm.rs
-index 4bd76d5..5d6f9d9 100644
+index 4bd76d59..5d6f9d9f 100644
 --- a/crates/runtime/lib/runner/vm.rs
 +++ b/crates/runtime/lib/runner/vm.rs
 @@ -441,12 +441,18 @@ type NetworkActivationHandle = microsandbox_network::network::NetworkActivationH

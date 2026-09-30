@@ -1,7 +1,8 @@
 diff --git a/crates/image/Cargo.toml b/crates/image/Cargo.toml
+index f6447054..591334b4 100644
 --- a/crates/image/Cargo.toml
 +++ b/crates/image/Cargo.toml
-@@ -30,6 +30,7 @@
+@@ -30,6 +30,7 @@ serde = { workspace = true, features = ["rc"] }
  serde_json.workspace = true
  sha2.workspace = true
  tar.workspace = true
@@ -9,20 +10,19 @@ diff --git a/crates/image/Cargo.toml b/crates/image/Cargo.toml
  thiserror.workspace = true
  tokio = { workspace = true, features = ["fs", "io-util", "rt", "sync"] }
  tracing.workspace = true
-@@ -39,4 +40,3 @@
+@@ -39,4 +40,3 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
  
  [dev-dependencies]
  rcgen.workspace = true
 -tempfile.workspace = true
 diff --git a/crates/image/lib/cache/store.rs b/crates/image/lib/cache/store.rs
+index 3ebe2772..179ed1ee 100644
 --- a/crates/image/lib/cache/store.rs
 +++ b/crates/image/lib/cache/store.rs
-@@ -305,6 +305,84 @@
-     /// Check if a VMDK descriptor exists for a given manifest digest.
-     pub fn is_vmdk_materialized(&self, manifest_digest: &Digest) -> bool {
+@@ -307,6 +307,84 @@ impl GlobalCache {
          self.vmdk_path(manifest_digest).exists()
-+    }
-+
+     }
+ 
 +    /// Bind a cached VMDK to the EROFS files in this cache. Archive VMDKs contain
 +    /// absolute extent paths, so importing their bytes cannot make them portable.
 +    pub fn rebind_vmdk(
@@ -99,13 +99,16 @@ diff --git a/crates/image/lib/cache/store.rs b/crates/image/lib/cache/store.rs
 +                source: error.error,
 +            })?;
 +        Ok(())
-     }
- 
++    }
++
      // ── Flat ext4 artifact paths (manifest ref → content blob) ───────
+ 
+     /// Path to the manifest-keyed flat rootfs reference.
 diff --git a/sdk/rust/lib/backend/local/snapshot/archive.rs b/sdk/rust/lib/backend/local/snapshot/archive.rs
+index dcaf9518..0711e73a 100644
 --- a/sdk/rust/lib/backend/local/snapshot/archive.rs
 +++ b/sdk/rust/lib/backend/local/snapshot/archive.rs
-@@ -3721,7 +3721,7 @@
+@@ -3732,7 +3732,7 @@ async fn install_staged_cache(
              MicrosandboxError::Custom(format!("invalid snapshot image digest: {e}"))
          })?;
      let staged_cache = microsandbox_image::GlobalCache::new_async(cache_stage).await?;
@@ -114,7 +117,7 @@ diff --git a/sdk/rust/lib/backend/local/snapshot/archive.rs b/sdk/rust/lib/backe
      let metadata = staged_cache
          .read_image_metadata_async(&image_ref)
          .await?
-@@ -3741,11 +3741,43 @@
+@@ -3752,12 +3752,44 @@ async fn install_staged_cache(
          manifest.root_disk.clone(),
      )?;
      ensure_only_expected_cache_files(cache_stage, &expected_files)?;
@@ -150,17 +153,19 @@ diff --git a/sdk/rust/lib/backend/local/snapshot/archive.rs b/sdk/rust/lib/backe
 +        .filter(|path| **path != metadata_path)
 +    {
          install_cache_file(source, cache_stage, cache_dir).await?;
-+    }
+     }
 +    if needs_vmdk {
 +        tokio::task::spawn_blocking(move || {
 +            real_cache.rebind_vmdk(&pinned_digest, &layer_diff_ids)
 +        })
 +        .await
 +        .map_err(|error| MicrosandboxError::Custom(format!("VMDK rebinding task: {error}")))??;
-     }
++    }
      install_cache_file(&metadata_path, cache_stage, cache_dir).await?;
  
+     Ok(())
 diff --git a/sdk/rust/tests/snapshot_artifact.rs b/sdk/rust/tests/snapshot_artifact.rs
+index 067db7a4..892300f8 100644
 --- a/sdk/rust/tests/snapshot_artifact.rs
 +++ b/sdk/rust/tests/snapshot_artifact.rs
 @@ -7,6 +7,8 @@
@@ -172,7 +177,7 @@ diff --git a/sdk/rust/tests/snapshot_artifact.rs b/sdk/rust/tests/snapshot_artif
  use std::path::{Path, PathBuf};
  use std::sync::Arc;
  
-@@ -377,7 +379,7 @@
+@@ -377,7 +379,7 @@ async fn seed_image_cache(cache: &microsandbox_image::GlobalCache) -> SeededImag
      microsandbox_image::erofs::write_erofs(&empty_tree, &cache.layer_erofs_path(&diff_id)).unwrap();
      microsandbox_image::erofs::write_erofs(&empty_tree, &cache.fsmeta_erofs_path(&image_digest))
          .unwrap();
@@ -181,12 +186,10 @@ diff --git a/sdk/rust/tests/snapshot_artifact.rs b/sdk/rust/tests/snapshot_artif
  
      SeededImageCache {
          image_ref,
-@@ -385,6 +387,34 @@
-         image_digest,
-         diff_id,
+@@ -387,6 +389,34 @@ async fn seed_image_cache(cache: &microsandbox_image::GlobalCache) -> SeededImag
      }
-+}
-+
+ }
+ 
 +fn write_test_vmdk(
 +    cache: &microsandbox_image::GlobalCache,
 +    image_digest: &microsandbox_image::Digest,
@@ -213,13 +216,16 @@ diff --git a/sdk/rust/tests/snapshot_artifact.rs b/sdk/rust/tests/snapshot_artif
 +        sectors.div_ceil(16 * 63)
 +    ));
 +    std::fs::write(cache.vmdk_path(image_digest), descriptor).unwrap();
- }
- 
++}
++
  fn write_regular_file_archive(archive: &Path, path: &str, payload: &[u8]) {
-@@ -2136,6 +2166,118 @@
+     let file = std::fs::File::create(archive).unwrap();
+     let mut builder = Builder::new(file);
+@@ -2135,6 +2165,118 @@ async fn save_with_image_includes_only_pinned_cache_artifacts() {
+     );
  }
  
- #[tokio::test]
++#[tokio::test]
 +async fn imported_image_vmdk_uses_destination_cache_after_source_is_removed() {
 +    let tmp = TempDir::new().unwrap();
 +    let export_home = tmp.path().join("retired-export-home");
@@ -331,7 +337,6 @@ diff --git a/sdk/rust/tests/snapshot_artifact.rs b/sdk/rust/tests/snapshot_artif
 +    }
 +}
 +
-+#[tokio::test]
+ #[tokio::test]
  async fn load_rejects_symlink_entries_without_writing_outside_dest() {
      let tmp = TempDir::new().unwrap();
-     let archive = tmp.path().join("malicious.tar");

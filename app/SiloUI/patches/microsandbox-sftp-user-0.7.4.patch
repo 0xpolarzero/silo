@@ -1,7 +1,8 @@
 diff --git a/sdk/rust/lib/sandbox/ssh.rs b/sdk/rust/lib/sandbox/ssh.rs
+index 507e9d41..9a22b53c 100644
 --- a/sdk/rust/lib/sandbox/ssh.rs
 +++ b/sdk/rust/lib/sandbox/ssh.rs
-@@ -1660,6 +1660,24 @@ impl russh::server::Handler for SshSession {
+@@ -1674,6 +1674,24 @@ impl russh::server::Handler for SshSession {
              return Ok(());
          }
  
