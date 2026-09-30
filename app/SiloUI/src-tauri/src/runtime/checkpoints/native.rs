@@ -11,7 +11,7 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 
 /// A native member as `msb snapshot list --format json` reports it.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub(crate) struct Member {
     #[serde(default)]
     pub(crate) snapshot_id: String,
@@ -343,15 +343,4 @@ pub(crate) fn artifact_bytes(paths: &RuntimePaths, member: &Member) -> Option<u6
         }
     }
     Some(total)
-}
-
-/// Seconds since the member was created, when the runtime reported a valid time.
-pub(crate) fn age_seconds(member: &Member, now: SystemTime) -> Option<u64> {
-    let created = time::OffsetDateTime::parse(
-        member.created_at.as_deref()?,
-        &time::format_description::well_known::Rfc3339,
-    )
-    .ok()?;
-    let now = time::OffsetDateTime::from(now);
-    u64::try_from((now - created).whole_seconds()).ok()
 }

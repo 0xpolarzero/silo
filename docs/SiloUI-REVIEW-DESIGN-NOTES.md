@@ -124,8 +124,13 @@ Silo's patch does not change any of this.
 2. `forget_removed` (line 698): remove every member of the group (head last).
 3. On capture or import failure, remove the partial member or `silo-import-*`
    group (shared with E-23 and E-24 journaling).
-4. Add a startup sweep of unowned `silo-import-*` and `silo-backup-*` groups
-   that are older than 24 h.
+4. No age-based sweep. Delete unneeded data at sandbox deletion, retaining exact
+   native member identities in `checkpoint-cleanup.json` while forks or other
+   dependents need them. Deleting the last dependent retries those identities.
+   Failed or cancelled captures and imports remove their partial data immediately.
+   At next launch, retry only data identified by an interrupted operation's own
+   journal: checkpoint in-flight records, deletion candidates, and import/export
+   journals. Never infer ownership or interruption from age.
 5. UI: `checkpoint-panel.tsx` Delete action (decision 8, inline two-step);
    add checkpoint storage to the Storage tab.
 
@@ -134,7 +139,9 @@ Silo's patch does not change any of this.
 - pinned refusal
 - head move before removal
 - failed-capture cleanup
-- sweep ignores owned groups
+- deletion keeps a fork's base, then removes it when the last fork is deleted
+- launch cleanup selects only journaled identities, preserving unrelated orphans
+- failed deletion retries after launch without removing a reused member name
 
 Also a `mac` live run for storage reclamation.
 
@@ -766,7 +773,9 @@ loses the log line that a panic happened under a lock.
 
 - **E-03 automatic cleanup:** no. Checkpoints (including "Before restore" and
   "Fork point") are removed only by an explicit Delete checkpoint action or
-  when their sandbox is deleted.
+  when their sandbox is deleted. Dependency-blocked data is removed as soon as
+  its last dependent is deleted. Failed or cancelled operations remove partial
+  data immediately; crash cleanup at next launch uses their journals, never age.
 - **C-24 published-port hosts:** `*.localhost` addresses are acceptable and
   Safari must work. Verify Safari resolution in the macOS live session; if
   Safari cannot open `*.localhost`, fall back to `127.0.0.1` for Safari.

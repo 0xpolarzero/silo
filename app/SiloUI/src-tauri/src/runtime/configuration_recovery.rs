@@ -236,8 +236,21 @@ fn reconcile(runner: &dyn RuntimeRunner, paths: &RuntimePaths, journal: &Journal
             }
         }
     }
-    if current.machines.is_empty() && !paths.metadata.exists() { return Ok(()); }
-    write_metadata(&paths.metadata, &current)
+    if !current.machines.is_empty() || paths.metadata.exists() {
+        write_metadata(&paths.metadata, &current)?;
+    }
+    // An interrupted removal keeps its checkpoint history until exact native members
+    // have entered the cleanup journal. The updated inventory releases its own pins.
+    for machine in journal.previous.machines.iter().filter(|machine| {
+        !journal.request.machines.iter().any(|next| next.id() == machine.id())
+            && !current.machines.iter().any(|next| next.id() == machine.id())
+    }) {
+        if machine.is_vm() {
+            checkpoints::remove_deleted_snapshots(runner, paths, machine.id(), machine.name())?;
+        }
+        checkpoints::forget_removed(paths, machine.id())?;
+    }
+    Ok(())
 }
 
 fn verify_committed_edits(runner: &dyn RuntimeRunner, paths: &RuntimePaths, journal: &Journal, requested: &MachineConfigurationRequest) -> Result<(), RuntimeError> {
