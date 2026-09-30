@@ -26,6 +26,12 @@ const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 const WORKER_LOCK_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const CLEANUP_COMMAND_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 const TERMINATE_GRACE: Duration = Duration::from_secs(10);
+/// A snapshot archive holds a handful of descriptors per snapshot, its disk
+/// layers, image blobs and 32 MiB memory packs; a quarter million entries is
+/// far beyond any real sandbox chain.
+const MAX_SNAPSHOT_ENTRIES: u64 = 256 * 1024;
+/// Free space left untouched on a volume an export or import writes to.
+const FREE_SPACE_RESERVE: u64 = 1024 * 1024 * 1024;
 const DEFAULT_MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
 
 #[derive(Clone, Default)]
@@ -494,6 +500,8 @@ pub(crate) struct BackupService<R = SystemMsbRunner> {
     busy: AtomicBool,
     command_timeout: Duration,
     max_archive_bytes: u64,
+    /// Bytes available to this account on the volume holding a path.
+    free_space: fn(&Path) -> io::Result<u64>,
 }
 
 impl BackupService<SystemMsbRunner> {
@@ -511,7 +519,14 @@ impl<R: MsbRunner> BackupService<R> {
             busy: AtomicBool::new(false),
             command_timeout: DEFAULT_COMMAND_TIMEOUT,
             max_archive_bytes: DEFAULT_MAX_ARCHIVE_BYTES,
+            free_space: available_bytes,
         }
+    }
+
+    /// Where MicroSandbox unpacks and keeps snapshots (`cache/tmp` and
+    /// `snapshots` under the runtime home, which may alias external storage).
+    fn native_store_root(&self) -> &Path {
+        self.command.storage_home.as_deref().unwrap_or(&self.command.home)
     }
 
     fn begin(&self) -> Result<OperationGuard<'_>, BackupError> {
@@ -799,6 +814,10 @@ impl<R: MsbRunner> BackupService<R> {
         let stage = tempfile::Builder::new()
             .prefix("restore-")
             .tempdir_in(&self.scratch_root)?;
+        // Everything the payload unpacks to must fit in the runtime store.
+        let unpack_budget = (self.free_space)(self.native_store_root())?
+            .saturating_sub(FREE_SPACE_RESERVE)
+            .min(DEFAULT_MAX_ARCHIVE_BYTES);
         let package = read_and_verify_package(
             &request.archive,
             self.max_archive_bytes,
@@ -806,6 +825,7 @@ impl<R: MsbRunner> BackupService<R> {
             PayloadMode::Extract {
                 dir: stage.path(),
                 source: request.source_name.as_deref(),
+                unpack_budget,
             },
         )?;
         let extracted = package.extracted.as_ref().ok_or_else(|| {
@@ -1201,11 +1221,13 @@ struct ExtractedPayload {
 enum PayloadMode<'a> {
     /// Hash every payload: the review inspection and the export's final check.
     VerifyAll,
-    /// Verify and extract only the selected sandbox's payload; skip the
-    /// others without reading them.
+    /// Verify, pre-scan and extract only the selected sandbox's payload; skip
+    /// the others without reading them.
     Extract {
         dir: &'a Path,
         source: Option<&'a str>,
+        /// Most decompressed bytes the runtime store can take for this import.
+        unpack_budget: u64,
     },
 }
 
@@ -1272,30 +1294,49 @@ fn read_and_verify_package(
         ));
     }
 
-    let (extract_dir, selected) = match mode {
-        PayloadMode::VerifyAll => (None, None),
-        PayloadMode::Extract { dir, source } => {
-            (Some(dir), Some(select_restore_source(&manifest, source)?))
-        }
+    let extract = match mode {
+        PayloadMode::VerifyAll => None,
+        PayloadMode::Extract {
+            dir,
+            source,
+            unpack_budget,
+        } => Some((dir, select_restore_source(&manifest, source)?, unpack_budget)),
     };
     let mut extracted = None;
     for (index, sandbox) in manifest.sandboxes.iter().enumerate() {
-        if selected.is_some_and(|selected| selected != index) {
-            let skip = i64::try_from(sandbox.payload_size)
-                .map_err(|_| BackupError::InvalidArchive("payload sizes overflow".into()))?;
-            file.seek(SeekFrom::Current(skip))?;
-            continue;
-        }
-        let output = extract_verified_payload(
-            &mut file,
-            sandbox.payload_size,
-            &sandbox.payload_sha256,
-            extract_dir.map(|dir| dir.join(format!("snapshot-{index}.tar.zst"))),
-            &format!("snapshot payload for {}", sandbox.name),
-            cancellation,
-        )?;
-        if let Some(path) = output {
-            extracted = Some(ExtractedPayload { index, path });
+        let label = format!("snapshot payload for {}", sandbox.name);
+        match extract {
+            None => {
+                extract_verified_payload(
+                    &mut file,
+                    sandbox.payload_size,
+                    &sandbox.payload_sha256,
+                    None,
+                    &label,
+                    cancellation,
+                )?;
+            }
+            Some((dir, selected, unpack_budget)) if selected == index => {
+                let (path, _scan) = extract_scanned_payload(
+                    &mut file,
+                    sandbox.payload_size,
+                    &sandbox.payload_sha256,
+                    dir.join(format!("snapshot-{index}.tar.zst")),
+                    &label,
+                    ScanLimits {
+                        max_unpacked_bytes: unpack_budget,
+                        max_entries: MAX_SNAPSHOT_ENTRIES,
+                        max_sparse_bytes: largest_declared_disk(&sandbox.machine_config),
+                    },
+                    cancellation,
+                )?;
+                extracted = Some(ExtractedPayload { index, path });
+            }
+            Some(_) => {
+                let skip = i64::try_from(sandbox.payload_size)
+                    .map_err(|_| BackupError::InvalidArchive("payload sizes overflow".into()))?;
+                file.seek(SeekFrom::Current(skip))?;
+            }
         }
     }
     Ok(VerifiedPackage {
@@ -1303,6 +1344,17 @@ fn read_and_verify_package(
         extracted,
         size_bytes: metadata.len(),
     })
+}
+
+/// Size of the larger of the sandbox's two disks; `validate_machine_config`
+/// has already bounded both.
+fn largest_declared_disk(machine_config: &Value) -> u64 {
+    ["workspaceStorageGiB", "runtimeStorageGiB"]
+        .iter()
+        .filter_map(|field| machine_config.get(*field).and_then(Value::as_u64))
+        .max()
+        .unwrap_or(0)
+        .saturating_mul(1024 * 1024 * 1024)
 }
 
 fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
@@ -1893,6 +1945,266 @@ fn network_uses_host_files(network: &Value) -> bool {
             })
 }
 
+/// Caps for the MicroSandbox snapshot archive (`.tar.zst`) inside an export,
+/// checked before `msb snapshot load` sees it (E-20). MicroSandbox 0.7.2
+/// rejects absolute and `..` paths and non-regular entry types itself, but
+/// has no aggregate size or entry-count limit.
+#[derive(Clone, Copy, Debug)]
+struct ScanLimits {
+    /// Decompressed tar stream bytes: everything `load` can write densely.
+    max_unpacked_bytes: u64,
+    /// Every tar entry, including directories.
+    max_entries: u64,
+    /// Logical size of a sparse entry (a disk layer), which may exceed its data.
+    max_sparse_bytes: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PayloadScan {
+    pub(crate) entries: u64,
+    pub(crate) unpacked_bytes: u64,
+}
+
+enum ScanFailure {
+    Cancelled,
+    TooLarge,
+    Unsafe(String),
+}
+
+/// Reads the archive's payload region once: hashes it, writes it to the
+/// private stage, and hands the same bytes to the pre-scan.
+struct HashingTee<'a> {
+    input: io::Take<&'a mut File>,
+    hasher: Sha256,
+    output: &'a mut File,
+    cancellation: &'a Cancellation,
+}
+
+impl Read for HashingTee<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.cancellation.cancelled() {
+            return Err(io::Error::other("cancelled"));
+        }
+        let count = self.input.read(buffer)?;
+        self.hasher.update(&buffer[..count]);
+        self.output.write_all(&buffer[..count])?;
+        Ok(count)
+    }
+}
+
+/// Stops decompression as soon as the stream passes its byte budget, so a
+/// small highly compressed payload cannot expand without bound.
+struct CountingReader<R> {
+    inner: R,
+    count: u64,
+    limit: u64,
+    exceeded: bool,
+}
+
+impl<R: Read> Read for CountingReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        self.count += count as u64;
+        if self.count > self.limit {
+            self.exceeded = true;
+            return Err(io::Error::other("unpacked size limit"));
+        }
+        Ok(count)
+    }
+}
+
+/// Stream a zstd-compressed tar through the caps: only regular, sparse and
+/// directory entries with relative, normal paths; no PAX or long link
+/// headers; bounded entry count, decompressed size and sparse logical size.
+fn scan_snapshot_archive(
+    reader: impl Read,
+    limits: ScanLimits,
+    cancellation: &Cancellation,
+) -> Result<PayloadScan, ScanFailure> {
+    let decoder = zstd::stream::read::Decoder::new(reader).map_err(|error| {
+        ScanFailure::Unsafe(format!("it is not a zstd stream ({error})"))
+    })?;
+    let counting = CountingReader {
+        inner: decoder,
+        count: 0,
+        limit: limits.max_unpacked_bytes,
+        exceeded: false,
+    };
+    let mut archive = tar::Archive::new(counting);
+    let mut entries_seen = 0_u64;
+    let outcome = (|| -> Result<(), ScanFailure> {
+        let entries = archive
+            .entries()
+            .map_err(|error| ScanFailure::Unsafe(error.to_string()))?;
+        for entry in entries {
+            if cancellation.cancelled() {
+                return Err(ScanFailure::Cancelled);
+            }
+            let mut entry = entry.map_err(|error| ScanFailure::Unsafe(error.to_string()))?;
+            entries_seen += 1;
+            if entries_seen > limits.max_entries {
+                return Err(ScanFailure::Unsafe(format!(
+                    "it has more than {} entries",
+                    limits.max_entries
+                )));
+            }
+            let kind = entry.header().entry_type();
+            if !(kind.is_file() || kind.is_contiguous() || kind.is_gnu_sparse() || kind.is_dir())
+            {
+                return Err(ScanFailure::Unsafe(
+                    "it contains a link, device or other special entry".into(),
+                ));
+            }
+            if entry
+                .pax_extensions()
+                .map_err(|error| ScanFailure::Unsafe(error.to_string()))?
+                .is_some()
+                || entry.link_name_bytes().is_some_and(|name| !name.is_empty())
+            {
+                return Err(ScanFailure::Unsafe(
+                    "it contains extended or link headers".into(),
+                ));
+            }
+            let path = entry
+                .path()
+                .map_err(|error| ScanFailure::Unsafe(error.to_string()))?
+                .into_owned();
+            if path.as_os_str().is_empty()
+                || path.to_str().is_none()
+                || !path
+                    .components()
+                    .all(|component| matches!(component, std::path::Component::Normal(_)))
+            {
+                return Err(ScanFailure::Unsafe(format!(
+                    "it contains the unsafe path {}",
+                    path.display()
+                )));
+            }
+            if kind.is_gnu_sparse() && entry.size() > limits.max_sparse_bytes {
+                return Err(ScanFailure::Unsafe(format!(
+                    "{} is larger than any disk this sandbox declares",
+                    path.display()
+                )));
+            }
+            if kind.is_dir() && entry.header().entry_size().unwrap_or(1) != 0 {
+                return Err(ScanFailure::Unsafe(
+                    "a directory entry carries data".into(),
+                ));
+            }
+            // The iterator skips the entry's stored bytes by reading them
+            // from the counted stream. Reading through `entry` would also
+            // synthesize a sparse file's holes, which the budget must not pay for.
+        }
+        Ok(())
+    })();
+    let counting = archive.into_inner();
+    if cancellation.cancelled() {
+        return Err(ScanFailure::Cancelled);
+    }
+    if counting.exceeded {
+        return Err(ScanFailure::TooLarge);
+    }
+    outcome?;
+    Ok(PayloadScan {
+        entries: entries_seen,
+        unpacked_bytes: counting.count,
+    })
+}
+
+/// Hash, extract and pre-scan the selected payload in one read.
+fn extract_scanned_payload(
+    archive: &mut File,
+    size: u64,
+    expected_sha256: &str,
+    destination: PathBuf,
+    label: &str,
+    limits: ScanLimits,
+    cancellation: &Cancellation,
+) -> Result<(PathBuf, PayloadScan), BackupError> {
+    check_cancelled(cancellation)?;
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination)?;
+    let mut tee = HashingTee {
+        input: archive.take(size),
+        hasher: Sha256::new(),
+        output: &mut output,
+        cancellation,
+    };
+    let scanned = scan_snapshot_archive(&mut tee, limits, cancellation);
+    let scan = match scanned {
+        Ok(scan) => scan,
+        Err(ScanFailure::Cancelled) => return Err(BackupError::Cancelled),
+        Err(ScanFailure::TooLarge) => {
+            return Err(BackupError::InvalidArchive(format!(
+                "the {label} unpacks to more than {}, the most this computer can hold for it",
+                format_bytes(limits.max_unpacked_bytes)
+            )));
+        }
+        Err(ScanFailure::Unsafe(detail)) => {
+            return Err(BackupError::InvalidArchive(format!(
+                "the {label} is not a safe snapshot archive: {detail}"
+            )));
+        }
+    };
+    // Hash and keep whatever follows the tar end marker too.
+    io::copy(&mut tee, &mut io::sink()).map_err(|error| {
+        if cancellation.cancelled() {
+            BackupError::Cancelled
+        } else {
+            BackupError::Io(error)
+        }
+    })?;
+    let remaining = tee.input.limit();
+    let digest = format!("sha256:{:x}", tee.hasher.finalize());
+    if remaining != 0 {
+        return Err(BackupError::InvalidArchive(format!("the {label} is incomplete")));
+    }
+    if digest != expected_sha256 {
+        return Err(BackupError::InvalidArchive(format!(
+            "the {label} failed its integrity check"
+        )));
+    }
+    output.sync_all()?;
+    Ok((destination, scan))
+}
+
+/// `statvfs` of the nearest existing ancestor: space available to this
+/// account (f_bavail), so a path that is not created yet still resolves.
+fn available_bytes(path: &Path) -> io::Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let existing = path
+        .ancestors()
+        .find(|candidate| candidate.exists())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no existing parent folder"))?;
+    let encoded = std::ffi::CString::new(existing.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid path"))?;
+    // SAFETY: statvfs is plain data; zeroed is a valid initial value.
+    let mut statistics: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: encoded is NUL terminated and statistics is a valid exclusive output pointer.
+    if unsafe { libc::statvfs(encoded.as_ptr(), &mut statistics) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    #[allow(clippy::unnecessary_cast)] // The field widths differ between platforms.
+    (statistics.f_bavail as u64)
+        .checked_mul(statistics.f_frsize as u64)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid volume capacity"))
+}
+
+/// Binary units, labelled as such.
+fn format_bytes(bytes: u64) -> String {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    if bytes >= GIB {
+        format!("{:.1} GiB", bytes as f64 / GIB as f64)
+    } else {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
 fn extract_verified_payload(
     archive: &mut File,
     size: u64,
@@ -2197,6 +2509,41 @@ mod tests {
     use std::os::unix::process::ExitStatusExt;
     use std::sync::Mutex;
 
+    fn tar_header(path: &str, kind: tar::EntryType, size: u64) -> tar::Header {
+        let mut header = tar::Header::new_gnu();
+        header.set_path(path).unwrap();
+        header.set_entry_type(kind);
+        header.set_size(size);
+        header.set_mode(0o644);
+        header.set_cksum();
+        header
+    }
+
+    fn zstd_tar(build: impl FnOnce(&mut tar::Builder<Vec<u8>>)) -> Vec<u8> {
+        let mut builder = tar::Builder::new(Vec::new());
+        build(&mut builder);
+        zstd::encode_all(builder.into_inner().unwrap().as_slice(), 3).unwrap()
+    }
+
+    /// The shape of a real `msb snapshot save` archive, in miniature.
+    fn fake_snapshot_archive() -> Vec<u8> {
+        zstd_tar(|builder| {
+            builder
+                .append(&tar_header("snapshots", tar::EntryType::Directory, 0), io::empty())
+                .unwrap();
+            builder
+                .append(
+                    &tar_header(
+                        "snapshots/snap_11111111111111111111111111111111/snapshot.json",
+                        tar::EntryType::Regular,
+                        2,
+                    ),
+                    &b"{}"[..],
+                )
+                .unwrap();
+        })
+    }
+
     #[derive(Default)]
     struct FakeRunner {
         calls: Mutex<Vec<Vec<String>>>,
@@ -2206,6 +2553,8 @@ mod tests {
         existing_members: Mutex<Vec<(String, String)>>,
         /// `group:member` selectors removed through `snapshot remove`.
         removed: Mutex<Vec<String>>,
+        /// Crafted `.tar.zst` written by `snapshot save` instead of a valid one.
+        saved_payload: Mutex<Option<Vec<u8>>>,
         fail_load: AtomicBool,
         fail_save: AtomicBool,
         fail_import_verify: AtomicBool,
@@ -2269,7 +2618,13 @@ mod tests {
                             ..success()
                         });
                     }
-                    fs::write(output, b"\x28\xb5\x2f\xfdself-contained snapshot")?;
+                    let payload = self
+                        .saved_payload
+                        .lock()
+                        .unwrap()
+                        .clone()
+                        .unwrap_or_else(fake_snapshot_archive);
+                    fs::write(output, payload)?;
                     Ok(success())
                 }
                 ["snapshot", "load", _, "--group", group] => {
@@ -3501,6 +3856,172 @@ mod tests {
         )
         .unwrap();
         assert_eq!(written.manifest.sandboxes[0].payload_sha256, expected);
+    }
+
+    /// Export an archive whose snapshot payload is `payload`, then try to import it.
+    fn import_crafted(
+        payload: Vec<u8>,
+        free_space: Option<fn(&Path) -> io::Result<u64>>,
+    ) -> (Result<PreparedRestore, BackupError>, Vec<Vec<String>>) {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("crafted.silo-backup");
+        let runner = FakeRunner::default();
+        *runner.saved_payload.lock().unwrap() = Some(payload);
+        let mut service = service(&temp, runner);
+        if let Some(free_space) = free_space {
+            service.free_space = free_space;
+        }
+        create_one(&service, destination.clone(), false).unwrap();
+        let result = service.prepare_restore(restore_request(destination), &Cancellation::default());
+        let calls = service.runner.calls.lock().unwrap().clone();
+        (result, calls)
+    }
+
+    fn loaded(calls: &[Vec<String>]) -> bool {
+        calls
+            .iter()
+            .any(|args| args.get(1).is_some_and(|arg| arg == "load"))
+    }
+
+    fn scan_error(result: Result<PreparedRestore, BackupError>) -> String {
+        match result {
+            Err(BackupError::InvalidArchive(detail)) => detail,
+            Err(other) => panic!("expected an invalid archive, got {other}"),
+            Ok(_) => panic!("the crafted archive was accepted"),
+        }
+    }
+
+    #[test]
+    fn prescan_refuses_links_before_the_runtime_loads_anything() {
+        let payload = zstd_tar(|builder| {
+            let mut header = tar_header("snapshots/escape", tar::EntryType::Symlink, 0);
+            header.set_link_name("/etc/passwd").unwrap();
+            header.set_cksum();
+            builder.append(&header, io::empty()).unwrap();
+        });
+        let (result, calls) = import_crafted(payload, None);
+        assert!(scan_error(result).contains("link, device or other special entry"));
+        assert!(!loaded(&calls));
+    }
+
+    #[test]
+    fn prescan_refuses_parent_directory_paths() {
+        let payload = zstd_tar(|builder| {
+            let mut header = tar_header("snapshots/placeholder", tar::EntryType::Regular, 4);
+            // tar::Header::set_path refuses `..`, so write the raw name field.
+            let name = b"../escape";
+            let old = header.as_old_mut();
+            old.name = [0; 100];
+            old.name[..name.len()].copy_from_slice(name);
+            header.set_cksum();
+            builder.append(&header, &b"evil"[..]).unwrap();
+        });
+        let (result, calls) = import_crafted(payload, None);
+        assert!(scan_error(result).contains("unsafe path"));
+        assert!(!loaded(&calls));
+    }
+
+    #[test]
+    fn prescan_refuses_pax_headers() {
+        let payload = zstd_tar(|builder| {
+            let record = b"20 path=snapshots/a\n";
+            builder
+                .append(
+                    &tar_header("PaxHeader/a", tar::EntryType::XHeader, record.len() as u64),
+                    &record[..],
+                )
+                .unwrap();
+            builder
+                .append(&tar_header("snapshots/b", tar::EntryType::Regular, 2), &b"{}"[..])
+                .unwrap();
+        });
+        let (result, calls) = import_crafted(payload, None);
+        assert!(scan_error(result).contains("extended or link headers"));
+        assert!(!loaded(&calls));
+    }
+
+    #[test]
+    fn prescan_stops_a_compression_bomb_at_the_free_space_budget() {
+        // 64 MiB of zeros compresses to a few KiB; only 8 MiB may be unpacked.
+        let zeros = vec![0_u8; 64 * 1024 * 1024];
+        let payload = zstd_tar(|builder| {
+            builder
+                .append(
+                    &tar_header("layers/zeros.raw", tar::EntryType::Regular, zeros.len() as u64),
+                    zeros.as_slice(),
+                )
+                .unwrap();
+        });
+        assert!(payload.len() < 1024 * 1024);
+        let (result, calls) = import_crafted(payload, Some(|_| Ok(FREE_SPACE_RESERVE + 8 * 1024 * 1024)));
+        let detail = scan_error(result);
+        assert!(detail.contains("unpacks to more than 8.0 MiB"), "{detail}");
+        assert!(!loaded(&calls));
+    }
+
+    #[test]
+    fn prescan_caps_entry_count_and_sparse_logical_size() {
+        let limits = ScanLimits {
+            max_unpacked_bytes: 1024 * 1024,
+            max_entries: 2,
+            max_sparse_bytes: 1024 * 1024,
+        };
+        let three = zstd_tar(|builder| {
+            for name in ["a", "b", "c"] {
+                builder
+                    .append(&tar_header(&format!("snapshots/{name}"), tar::EntryType::Regular, 1), &b"x"[..])
+                    .unwrap();
+            }
+        });
+        assert!(matches!(
+            scan_snapshot_archive(three.as_slice(), limits, &Cancellation::default()),
+            Err(ScanFailure::Unsafe(detail)) if detail.contains("more than 2 entries")
+        ));
+
+        // A GNU sparse entry: 512 stored bytes describing a 2 GiB disk layer.
+        let sparse = zstd_tar(|builder| {
+            let mut header = tar_header("layers/layer_1.raw", tar::EntryType::GNUSparse, 512);
+            let gnu = header.as_gnu_mut().unwrap();
+            let logical = 2_u64 << 30;
+            gnu.sparse[0].offset.copy_from_slice(format!("{:011o}\0", 0).as_bytes());
+            gnu.sparse[0].numbytes.copy_from_slice(format!("{:011o}\0", 512).as_bytes());
+            gnu.sparse[1].offset.copy_from_slice(format!("{logical:011o}\0").as_bytes());
+            gnu.sparse[1].numbytes.copy_from_slice(format!("{:011o}\0", 0).as_bytes());
+            gnu.realsize.copy_from_slice(format!("{logical:011o}\0").as_bytes());
+            header.set_cksum();
+            builder.append(&header, &[7_u8; 512][..]).unwrap();
+        });
+        assert!(matches!(
+            scan_snapshot_archive(sparse.as_slice(), limits, &Cancellation::default()),
+            Err(ScanFailure::Unsafe(detail)) if detail.contains("larger than any disk")
+        ));
+        let roomy = ScanLimits { max_sparse_bytes: 4 << 30, ..limits };
+        let scan = scan_snapshot_archive(sparse.as_slice(), roomy, &Cancellation::default())
+            .ok()
+            .unwrap();
+        // Only the stored bytes count toward the budget, not the holes.
+        assert_eq!(scan.entries, 1);
+        assert!(scan.unpacked_bytes < 4096);
+    }
+
+    #[test]
+    fn prescan_accepts_a_runtime_archive_and_counts_it() {
+        let scan = scan_snapshot_archive(
+            fake_snapshot_archive().as_slice(),
+            ScanLimits {
+                max_unpacked_bytes: 1024 * 1024,
+                max_entries: 16,
+                max_sparse_bytes: 0,
+            },
+            &Cancellation::default(),
+        )
+        .ok()
+        .unwrap();
+        assert_eq!(scan.entries, 2);
+        assert!(scan.unpacked_bytes >= 3 * 512);
+        let (result, calls) = import_crafted(b"\x28\xb5\x2f\xfdnot really zstd".to_vec(), None);
+        assert!(scan_error(result).contains("not a safe snapshot archive"));
+        assert!(!loaded(&calls));
     }
 
     #[test]

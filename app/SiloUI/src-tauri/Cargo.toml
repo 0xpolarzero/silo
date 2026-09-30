@@ -28,6 +28,8 @@ microsandbox-utils = { git = "https://github.com/superradcompany/microsandbox", 
 sha2 = "0.10"
 flate2 = "1"
 tar = "0.4"
+# Already locked through microsandbox-image; used to pre-scan imported snapshot archives.
+zstd = { version = "0.14", default-features = false }
 time = { version = "0.3", features = ["parsing", "formatting"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 keyring = { version = "3.6", features = ["apple-native", "sync-secret-service", "crypto-rust"] }

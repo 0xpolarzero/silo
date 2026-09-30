@@ -4546,6 +4546,7 @@ dependencies = [
  "time",
  "tokio",
  "uuid",
+ "zstd",
 ]
 
 [[package]]
