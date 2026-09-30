@@ -1466,6 +1466,7 @@ fn narrow_checked(
 pub(crate) struct HostPushCredential {
     token: String,
     repository: String,
+    expires_at: Option<u64>,
     retire: Option<(tauri::AppHandle, String)>,
 }
 impl HostPushCredential {
@@ -1475,6 +1476,10 @@ impl HostPushCredential {
     /// GitHub's canonical `owner/name` for the authorized repository.
     pub(crate) fn repository(&self) -> &str {
         &self.repository
+    }
+    /// Unix time after which GitHub rejects Silo's token; `None` for a personal token.
+    pub(crate) fn expires_at(&self) -> Option<u64> {
+        self.expires_at
     }
 }
 impl Drop for HostPushCredential {
@@ -1504,6 +1509,27 @@ fn retire_host_push_token(
         }
     }
 }
+/// Scoped tokens end with the account credential. Renew an account credential
+/// that would expire within this time so a long push keeps a working token.
+const HOST_PUSH_LIFETIME: u64 = 30 * 60;
+fn host_push_account_credential() -> Result<Credential, String> {
+    let current = credential()?.ok_or("Connect GitHub first.")?;
+    let mut pending = PENDING_REFRESH
+        .lock()
+        .map_err(|_| "GitHub credential state is unavailable.")?;
+    refresh_credential_with(
+        current,
+        &mut pending,
+        now() + HOST_PUSH_LIFETIME,
+        |refresh| {
+            from_response(token_operation(
+                Operation::Refresh,
+                json!({"refreshToken":refresh}),
+            )?)
+        },
+        store,
+    )
+}
 /// `contents: write` and `metadata: read` for exactly one repository.
 fn host_push_scope(access_token: &str, owner: u64, repository_id: u64) -> Value {
     json!({"accessToken":access_token,"ownerId":owner,"repositoryIds":[repository_id],"allowChanges":true,"purpose":"hostPush"})
@@ -1532,10 +1558,11 @@ pub(crate) fn host_push_credential(
         return Ok(HostPushCredential {
             token: personal_token::value()?,
             repository: repository.into(),
+            expires_at: None,
             retire: None,
         });
     }
-    let c = active_credential()?;
+    let c = host_push_account_credential()?;
     let catalog = catalog(&c)?;
     let repo = catalog
         .iter()
@@ -1562,12 +1589,13 @@ pub(crate) fn host_push_credential(
         .ok_or("GitHub returned no restricted push credential.")?
         .to_owned();
     // From here on, dropping the credential revokes the token.
-    let credential = HostPushCredential {
+    let mut credential = HostPushCredential {
         token,
         repository: name,
+        expires_at: None,
         retire: Some((app.clone(), workspace.into())),
     };
-    token_expiry(&response)?;
+    credential.expires_at = Some(token_expiry(&response)?);
     Ok(credential)
 }
 

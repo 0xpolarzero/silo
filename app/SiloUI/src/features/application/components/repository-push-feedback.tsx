@@ -7,6 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { commitLabel, pushTarget, shortCommit } from "@/features/application/model/repository-push"
 import type { ApplicationRepository, RepositoryPushOperation, RepositoryPushTarget } from "@/features/application/model/application-source"
 import type { NoticeSandbox } from "@/desktop/notices"
+import type { OperationQueue } from "@/features/application/model/operation-queue"
 import { dismissOperationToast, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 
 const pushToastId = (operation: RepositoryPushOperation) => `repository-push:${operation.workspace}:${operation.repositoryPath}`
@@ -44,35 +45,50 @@ export function RepositoryPushButton({ repository, disabled = false, label, onPu
 }
 
 /**
- * Announces backend-driven push transitions as notifications: loading, then a success that stays until closed
- * (the finished operation is then cleared) or a failure with Retry. Operations already finished when first
- * seen are not announced.
+ * Announces backend-driven push transitions as notifications: loading (with Cancel once the host accepts it),
+ * then a success that stays until closed (the finished operation is then cleared) or a failure with Retry.
+ * Operations already finished when first seen are not announced.
  */
 export function useRepositoryPushToasts(
   operations: RepositoryPushOperation[],
-  { onPush, onDismiss, resolveSandbox }: {
+  { onPush, onDismiss, resolveSandbox, queue, onCancel }: {
     /** Retries a failed push of the same confirmed target. */
     onPush: PushRepository
     onDismiss: (workspace: string, repositoryPath: string) => void
     /** Resolves the sandbox a push target belongs to, for the system notification. */
     resolveSandbox?: (workspace: string) => NoticeSandbox | undefined
+    /** This computer's operation queue; a running push that accepts cancellation gets a Cancel button. */
+    queue?: OperationQueue
+    onCancel?: (operationId: number) => void
   },
 ) {
-  const seen = useRef<Map<string, RepositoryPushOperation["status"]> | null>(null)
-  const callbacks = useRef({ onPush, onDismiss, resolveSandbox })
-  callbacks.current = { onPush, onDismiss, resolveSandbox }
+  const seen = useRef<Map<string, string> | null>(null)
+  const callbacks = useRef({ onPush, onDismiss, resolveSandbox, onCancel })
+  callbacks.current = { onPush, onDismiss, resolveSandbox, onCancel }
   useEffect(() => {
     const initial = seen.current === null
-    const previous = seen.current ?? new Map<string, RepositoryPushOperation["status"]>()
-    const next = new Map<string, RepositoryPushOperation["status"]>()
+    const previous = seen.current ?? new Map<string, string>()
+    const next = new Map<string, string>()
     for (const operation of operations) {
       const id = pushToastId(operation)
-      next.set(id, operation.status)
+      const cancelId = operation.status === "pushing" && onCancel
+        ? queue?.running.find((entry) => entry.kind === "push" && entry.cancellable && entry.vmName === operation.workspace)?.id
+        : undefined
+      const state = cancelId === undefined ? operation.status : `${operation.status}:${cancelId}`
+      next.set(id, state)
       const before = previous.get(id)
-      if (before === operation.status) continue
+      if (before === state) continue
       const name = repositoryName(operation.repositoryPath)
       if (operation.status === "pushing") {
-        showOperationProgress(id, { title: `Pushing ${commitLabel(operation.commitCount)}`, step: operation.message ? `${name} · ${operation.message}` : name, sandbox: operation.workspace })
+        showOperationProgress(id, {
+          title: `Pushing ${commitLabel(operation.commitCount)}`,
+          step: operation.message ? `${name} · ${operation.message}` : name,
+          sandbox: operation.workspace,
+          cancel: cancelId === undefined ? undefined : {
+            confirm: { prompt: "Stop this push? If GitHub is already receiving it, the branch may still change.", confirmLabel: "Stop push", keepLabel: "Keep pushing" },
+            onCancel: () => callbacks.current.onCancel?.(cancelId),
+          },
+        })
       } else if (operation.status === "succeeded") {
         // Nothing stays inline for a finished push, so clear it; only announce one that finished while watching.
         if (!initial) showOperationSuccess(id, `Pushed ${commitLabel(operation.commitCount)} · ${name}`, { sandbox: operation.workspace, persist: true, noticeSandbox: callbacks.current.resolveSandbox?.(operation.workspace) })
@@ -91,9 +107,9 @@ export function useRepositoryPushToasts(
         dismissOperationToast(id)
       }
     }
-    for (const [id, status] of previous) if (status === "pushing" && !next.has(id)) dismissOperationToast(id)
+    for (const [id, state] of previous) if (state.startsWith("pushing") && !next.has(id)) dismissOperationToast(id)
     seen.current = next
-  }, [operations])
+  }, [operations, queue, onCancel])
 }
 
 /** Compact in-row state for a push. Results are announced by notifications; only states that need attention or a decision stay. */

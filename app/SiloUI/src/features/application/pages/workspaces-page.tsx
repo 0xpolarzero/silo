@@ -16,6 +16,7 @@ import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible"
 import { Progress } from "@/components/ui/progress"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { RepositoryPushButton, RepositoryPushFeedback, useRepositoryPushToasts, type PushRepository } from "@/features/application/components/repository-push-feedback"
+import type { OperationQueue } from "@/features/application/model/operation-queue"
 import { WorkspaceBadge } from "@/features/application/components/application-ui"
 import type { ApplicationActions, ApplicationSource, ApplicationActivity, ApplicationActivityCategory, ApplicationWorkspace, RepositoryPushOperation, RepositoryPushTarget, WorkspaceDetailSection } from "@/features/application/model/application-source"
 import { commitLabel } from "@/features/application/model/repository-push"
@@ -328,6 +329,7 @@ export function WorkspacesPage({
   onLogQueryChange,
   onPushRepository,
   onDismissRepositoryPush,
+  operationQueue,
 }: {
   onSectionChange: (section: WorkspaceDetailSection) => void
   network?: ApplicationSource["network"]
@@ -348,11 +350,15 @@ export function WorkspacesPage({
   onLogQueryChange: (query: string) => void
   onPushRepository: PushRepository
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
+  /** Lets a running push be cancelled from its notification. */
+  operationQueue?: OperationQueue
 }) {
   const [logWindow, setLogWindow] = useState<LogWindow>()
   useRepositoryPushToasts(repositoryPushOperations, {
     onPush: onPushRepository,
     onDismiss: onDismissRepositoryPush,
+    queue: operationQueue,
+    onCancel: networkActions.cancelOperation,
     resolveSandbox: (target) => {
       const machine = workspaces.find((workspace) => workspaceTarget(workspace) === target)?.machine
       return machine ? { id: machine.id, name: machine.name } : undefined

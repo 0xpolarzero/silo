@@ -50,6 +50,25 @@ describe("repository push notifications", () => {
     expect(within(document.body).queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
   })
 
+  it("offers Cancel once the host accepts cancelling the running push", async () => {
+    const onCancel = vi.fn()
+    const pushing = [{ ...base, status: "pushing" as const }]
+    const entry = { id: 7, label: "Pushing from dev", kind: "push" as const, vmId: "vm", vmName: "dev", sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }
+    function CancelHarness({ cancellable }: { cancellable: boolean }) {
+      useRepositoryPushToasts(pushing, { onPush: vi.fn(), onDismiss: vi.fn(), queue: { running: [{ ...entry, cancellable }], waiting: [] }, onCancel })
+      return <Toaster />
+    }
+    const view = render(<CancelHarness cancellable={false} />)
+    expect(await within(document.body).findByText("Pushing 2 commits")).toBeInTheDocument()
+    expect(within(document.body).queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
+    view.rerender(<CancelHarness cancellable />)
+    const user = userEvent.setup()
+    await user.click(await within(document.body).findByRole("button", { name: "Cancel" }))
+    expect(onCancel).not.toHaveBeenCalled()
+    await user.click(within(document.body).getByRole("button", { name: "Stop push" }))
+    expect(onCancel).toHaveBeenCalledExactlyOnceWith(7)
+  })
+
   it("does not announce operations that were already finished at load", () => {
     const { onDismiss } = setup([{ ...base, status: "succeeded" }, { ...base, repositoryPath: "acme/other", status: "failed", message: "Old failure" }])
     expect(screen.queryByText(/Pushed|Push failed|Old failure/)).not.toBeInTheDocument()

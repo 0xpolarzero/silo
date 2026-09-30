@@ -321,6 +321,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
             onWorkspaceFilterChange={setSelectedWorkspaceIds}
             onLogQueryChange={setLogQuery}
             onPushRepository={pushRepository}
+            operationQueue={source.operationQueue}
             onDismissRepositoryPush={dismissRepositoryPush}
           />
         )}

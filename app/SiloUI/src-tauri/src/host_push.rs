@@ -254,6 +254,23 @@ struct HostGit {
     support: PathBuf,
     ssh_command: Option<String>,
     cache_lock_fd: Option<std::os::fd::RawFd>,
+    /// When the push's GitHub credential stops working; no step runs past it.
+    deadline: Option<Instant>,
+}
+const CANCELLED: &str = "Push cancelled. The branch was not updated.";
+const CREDENTIAL_EXPIRED: &str =
+    "The push took longer than its GitHub credential allows. Push again to continue.";
+const STEP_TIMED_OUT: &str = "Git operation timed out. Check the remote before retrying.";
+/// Reported as an unknown result: GitHub may or may not have updated the branch.
+const PUBLICATION_UNKNOWN: &str =
+    "The push stopped while GitHub was receiving it. Check this branch on GitHub before pushing again.";
+/// A final push that Silo stopped (cancel or time limit) may already have
+/// updated the branch; any other failure means it did not.
+fn final_push_error(error: String) -> String {
+    match error.lines().next() {
+        Some(CANCELLED | CREDENTIAL_EXPIRED | STEP_TIMED_OUT) => PUBLICATION_UNKNOWN.into(),
+        _ => error,
+    }
 }
 /// Git and Git LFS read the GitHub token from this inherited pipe through the
 /// standard credential-helper protocol. The token never appears in arguments,
@@ -419,14 +436,22 @@ impl HostGit {
             .ok_or("Cannot capture Git diagnostics.")?;
         let output_reader = thread::spawn(move || read_bounded(stdout, 1024 * 1024));
         let diagnostic_reader = thread::spawn(move || read_bounded(stderr, 16_384));
-        let deadline = Instant::now() + Duration::from_secs(1800);
+        let step_deadline = Instant::now() + Duration::from_secs(1800);
+        let deadline = self
+            .deadline
+            .map_or(step_deadline, |end| end.min(step_deadline));
         let mut space_check = Instant::now();
         let outcome = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
                 Err(_) => break Err("Cannot read Git process status."),
+                Ok(None) if runtime::operation_gate::cancel_requested() => break Err(CANCELLED),
                 Ok(None) if Instant::now() >= deadline => {
-                    break Err("Git operation timed out. Check the remote before retrying.");
+                    break Err(if deadline < step_deadline {
+                        CREDENTIAL_EXPIRED
+                    } else {
+                        STEP_TIMED_OUT
+                    });
                 }
                 Ok(None) => {
                     if space_check.elapsed() >= Duration::from_secs(1) {
@@ -622,28 +647,50 @@ fn perform(
     }
     // Revoked when this function returns, whatever the outcome.
     let credential = crate::github::host_push_credential(app, workspace, &target.repository)?;
-    let _guard = runtime::OPERATIONS
+    let guard = runtime::OPERATIONS
         .kind(runtime::operation_gate::OperationKind::Push)
         .vm(&vm_id, workspace, &format!("Pushing from {workspace}"))
         .map_err(|e| e.to_string())?;
-    runtime::shutdown::ensure_accepting_operations()?;
-    require_running(&paths, workspace)?;
-    let executable = crate::bundled_tools::directory(app)?.join("git");
-    let support = app
-        .path()
-        .resource_dir()
-        .map_err(|_| "Cannot locate Git support.")?
-        .join("git-support");
-    push_target(
-        &paths,
-        workspace,
-        path,
-        target,
-        credential.repository(),
-        credential.token(),
-        &executable,
-        &support,
-    )
+    // A push can run for a long time; the user may stop it (and Quit may cancel it).
+    guard.allow_cancel();
+    let result = (|| {
+        runtime::shutdown::ensure_accepting_operations()?;
+        require_running(&paths, workspace)?;
+        let executable = crate::bundled_tools::directory(app)?.join("git");
+        let support = app
+            .path()
+            .resource_dir()
+            .map_err(|_| "Cannot locate Git support.")?
+            .join("git-support");
+        push_target(
+            &paths,
+            workspace,
+            path,
+            target,
+            credential.repository(),
+            credential.token(),
+            credential_deadline(credential.expires_at()),
+            &executable,
+            &support,
+        )
+    })();
+    // A cancelled step reports its own failure; say what happened instead.
+    result.map_err(|error| {
+        if error != PUBLICATION_UNKNOWN && runtime::operation_gate::cancel_requested() {
+            CANCELLED.into()
+        } else {
+            error
+        }
+    })
+}
+/// Stop a minute before GitHub rejects the credential.
+fn credential_deadline(expires_at: Option<u64>) -> Option<Instant> {
+    let expires_at = expires_at?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    Some(Instant::now() + Duration::from_secs(expires_at.saturating_sub(now).saturating_sub(60)))
 }
 
 // The host owns all configuration and credentials. The source remote supplies
@@ -777,6 +824,12 @@ fn publish_committed_tracking(
         "",
     );
     if let Err(first_push) = git.run(&["lfs", "push", "origin", "refs/silo/push"], token, remote) {
+        if matches!(
+            first_push.lines().next(),
+            Some(CANCELLED | CREDENTIAL_EXPIRED)
+        ) {
+            return Err(first_push);
+        }
         // Standard LFS fetch fills pruned historical data from the destination.
         // Content-addressed LFS uploads can safely be retried before any Git ref
         // update. Never enable allowincompletepush or parse a human transfer plan.
@@ -803,7 +856,8 @@ fn publish_committed_tracking(
         ],
         token,
         remote,
-    )?;
+    )
+    .map_err(final_push_error)?;
     Ok(count)
 }
 
@@ -833,7 +887,7 @@ pub(crate) fn push_committed(
     };
     target.validate()?;
     push_target(
-        paths, workspace, path, &target, repo, token, executable, support,
+        paths, workspace, path, &target, repo, token, None, executable, support,
     )
 }
 
@@ -847,6 +901,7 @@ fn push_target(
     target: &PushTarget,
     repo: &str,
     token: &str,
+    deadline: Option<Instant>,
     executable: &Path,
     support: &Path,
 ) -> Result<u64, String> {
@@ -894,6 +949,7 @@ printf '%s\n' "$commit"
             support: support.to_path_buf(),
             ssh_command: Some(transport.ssh_command.clone()),
             cache_lock_fd: Some(cache.lock_fd()),
+            deadline,
         };
         fs::create_dir_all(&git.directory)
             .and_then(|_| fs::create_dir_all(git.home.join("empty-templates")))
@@ -920,12 +976,14 @@ printf '%s\n' "$commit"
         let count = publication?;
         // Tracking metadata describes the commit actually published, even if
         // the sandbox branch advanced while this operation was running.
-        let _ = guest(
-            paths,
-            workspace,
-            "git -C \"$1\" update-ref \"$2\" \"$3\"",
-            &[path, &format!("refs/remotes/origin/{branch}"), commit],
-        );
+        let _ = runtime::operation_gate::uncancellable(|| {
+            guest(
+                paths,
+                workspace,
+                "git -C \"$1\" update-ref \"$2\" \"$3\"",
+                &[path, &format!("refs/remotes/origin/{branch}"), commit],
+            )
+        });
         if let Some(cache) = DISCOVERIES.get() {
             if let Ok(mut cache) = cache.lock() {
                 cache.remove(&format!("{}:{workspace}", paths.home.display()));
@@ -933,12 +991,15 @@ printf '%s\n' "$commit"
         }
         Ok(count)
     })();
-    let _ = guest(
-        paths,
-        workspace,
-        "git -C \"$1\" update-ref -d \"$3\"; rm -rf -- \"$2\"",
-        &[path, &export, &export_ref],
-    );
+    // Clean up the export even after a cancel.
+    let _ = runtime::operation_gate::uncancellable(|| {
+        guest(
+            paths,
+            workspace,
+            "git -C \"$1\" update-ref -d \"$3\"; rm -rf -- \"$2\"",
+            &[path, &export, &export_ref],
+        )
+    });
     result
 }
 /// Push a local sandbox repository. Remote computers run this through their
@@ -1015,6 +1076,14 @@ fn finished_result(
             "repositoryPath": repository_path,
             "commitCount": count,
             "status": "succeeded",
+            "target": target,
+        }),
+        Err(message) if message == PUBLICATION_UNKNOWN => json!({
+            "workspace": workspace,
+            "repositoryPath": repository_path,
+            "commitCount": 0,
+            "status": "unknown",
+            "message": message,
             "target": target,
         }),
         Err(message) => {
@@ -1255,6 +1324,69 @@ mod tests {
         );
     }
 
+    fn sleeping_git(directory: &Path) -> HostGit {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = directory.join("git");
+        fs::write(&executable, "#!/bin/sh\nexec /bin/sleep 30\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        HostGit {
+            executable,
+            directory: directory.into(),
+            home: directory.into(),
+            support: directory.into(),
+            ssh_command: None,
+            cache_lock_fd: None,
+            deadline: None,
+        }
+    }
+
+    #[test]
+    fn cancelling_a_push_stops_the_running_git_process() {
+        let directory = tempfile::tempdir().unwrap();
+        let git = sleeping_git(directory.path());
+        let gate: &'static runtime::operation_gate::OperationGate =
+            Box::leak(Box::new(runtime::operation_gate::OperationGate::new()));
+        let guard = gate.vm("vm", "dev", "Pushing from dev").unwrap();
+        guard.allow_cancel();
+        let token = guard.cancel_token();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(300));
+            token.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        let started = Instant::now();
+        let error = git.run(&["push"], None, "").unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(error.lines().next(), Some(CANCELLED));
+    }
+
+    #[test]
+    fn a_push_never_outlives_its_credential() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut git = sleeping_git(directory.path());
+        git.deadline = Some(Instant::now() + Duration::from_millis(300));
+        let started = Instant::now();
+        let error = git.run(&["push"], None, "").unwrap_err();
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert_eq!(error.lines().next(), Some(CREDENTIAL_EXPIRED));
+        // A push stopped while GitHub was receiving it has an unknown outcome.
+        assert_eq!(final_push_error(error), PUBLICATION_UNKNOWN);
+        assert_eq!(
+            final_push_error("Git push failed (exit status: 1).\nrejected".into()),
+            "Git push failed (exit status: 1).\nrejected"
+        );
+        let unknown = finished_result(
+            "dev",
+            "/workspace/repo",
+            &PushTarget {
+                repository: "owner/repo".into(),
+                branch: "main".into(),
+                commit: "d".repeat(40),
+            },
+            Err(PUBLICATION_UNKNOWN.into()),
+        );
+        assert_eq!(unknown["status"], "unknown");
+    }
+
     #[test]
     fn host_git_rejects_oversized_output_without_spooling_to_disk() {
         use std::os::unix::fs::PermissionsExt;
@@ -1273,6 +1405,7 @@ mod tests {
             support: directory.path().into(),
             ssh_command: None,
             cache_lock_fd: None,
+            deadline: None,
         };
         assert!(git.run(&[], None, "").is_err());
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
@@ -1295,6 +1428,7 @@ mod tests {
             support: directory.path().into(),
             ssh_command: None,
             cache_lock_fd: None,
+            deadline: None,
         };
         let token = "ghu_fixtureToken123";
         git.run(

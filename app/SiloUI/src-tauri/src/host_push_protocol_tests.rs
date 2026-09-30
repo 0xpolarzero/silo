@@ -39,6 +39,7 @@ impl Fixture {
             support: self._root.path().into(),
             ssh_command: None,
             cache_lock_fd: None,
+            deadline: None,
         };
         if initialize {
             if bare {
