@@ -246,7 +246,7 @@ it("shows who uses a pinned checkpoint and keeps its Delete unavailable with the
   const user = userEvent.setup()
   render(<CheckpointPanel workspace={workspace} target="dev" actions={{ deleteCheckpoint, readCheckpointUsage: vi.fn().mockResolvedValue(usage) } as unknown as ApplicationActions} disabled={false} />)
   const row = within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!)
-  expect(await row.findByText(/Used by experiment/)).toBeVisible()
+  expect(await row.findByText("Used by experiment. experiment was started from this checkpoint and still builds on it.")).toBeVisible()
   await user.click(row.getByRole("button", { name: "Checkpoint actions for Before refactor" }))
   const item = screen.getByRole("menuitem", { name: "Delete Before refactor" })
   expect(item).toHaveAttribute("data-disabled")

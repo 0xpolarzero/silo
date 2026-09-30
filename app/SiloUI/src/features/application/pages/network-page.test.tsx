@@ -24,7 +24,7 @@ describe("Network", () => {
     expect(screen.getByText("127.0.0.1:45432")).toBeVisible()
     expect(screen.queryByRole("button",{name:/Open .*45432/})).not.toBeInTheDocument()
     expect(screen.getByText("Not forwarded")).toBeVisible()
-    await user.click(screen.getByRole("button",{name:"Open http://127.0.0.1:43000 in Firefox"}))
+    await user.click(screen.getByRole("button",{name:"Open port 3000 in browser"}))
     expect(actions.openNetworkPort).toHaveBeenCalledWith("dev",3000)
     expect(screen.queryByText(/silo.test/)).not.toBeInTheDocument()
   })
@@ -39,7 +39,7 @@ describe("Network", () => {
     expect(await navigator.clipboard.readText()).toBe("http://dev-1a2b3c4d.localhost:43000")
     await user.click(screen.getByRole("button",{name:"Copy http://127.0.0.1:43000"}))
     expect(await navigator.clipboard.readText()).toBe("http://127.0.0.1:43000")
-    await user.click(screen.getByRole("button",{name:"Open http://dev-1a2b3c4d.localhost:43000 in Firefox"}))
+    await user.click(screen.getByRole("button",{name:"Open port 3000 in browser"}))
     expect(actions.openNetworkPort).toHaveBeenCalledWith("dev",3000)
   })
   it("adds an explicit mapping with automatic local port and preserves errors", async () => {

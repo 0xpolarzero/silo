@@ -110,7 +110,7 @@ export function validateMachineResources(machine: SetupVirtualMachineConfigurati
     if (!errors.maxCPUs && machine.maxCPUs > cpus) errors.maxCPUs = `${computerName} has ${number(cpus)} CPUs. Choose ${number(cpus)} or fewer.`
     if (!errors.maxMemoryGiB && machine.maxMemoryGiB > memoryGiB) errors.maxMemoryGiB = `${computerName} has ${number(memoryGiB)} GiB of memory. Choose ${number(memoryGiB)} GiB or fewer.`
   }
-  if (!errors.cpus && !errors.maxCPUs && machine.cpus > machine.maxCPUs) errors.cpus = "CPUs limit cannot exceed its ceiling."
+  if (!errors.cpus && !errors.maxCPUs && machine.cpus > machine.maxCPUs) errors.cpus = "CPU limit cannot exceed its ceiling."
   if (!errors.memoryGiB && !errors.maxMemoryGiB && machine.memoryGiB > machine.maxMemoryGiB) errors.memoryGiB = "Memory limit cannot exceed its ceiling."
   if (!errors.workspaceStorageGiB && !errors.runtimeStorageGiB && machine.workspaceStorageGiB + machine.runtimeStorageGiB > runtimeLimits.storageGiB) {
     errors.workspaceStorageGiB = `Workspace and runtime storage together can't exceed ${number(runtimeLimits.storageGiB)} GiB.`

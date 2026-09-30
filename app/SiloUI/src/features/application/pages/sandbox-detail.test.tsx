@@ -140,7 +140,7 @@ it("commits an in-place edit with a baseline and returns to the overview tab", a
 
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
   await user.click(screen.getByRole("button", { name: "Edit" }))
-  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs limit" }), "4")
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   // The sandbox is running, so saving asks to stop it first.
   await user.click(screen.getByRole("button", { name: "Stop and save…" }))
   await user.click(screen.getByRole("button", { name: "Stop and save" }))
@@ -181,7 +181,7 @@ it("shows the stale-edit conflict review in place when a save is rejected", asyn
 
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
   await user.click(screen.getByRole("button", { name: "Edit" }))
-  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs limit" }), "4")
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
   // The sandbox is running, so saving asks to stop it first.
   await user.click(screen.getByRole("button", { name: "Stop and save…" }))
   await user.click(screen.getByRole("button", { name: "Stop and save" }))
@@ -274,7 +274,7 @@ it("reflects live network data and opens a reachable port from the Overview tab"
   const { user } = await openDetail(source, { openNetworkPort, saveNetworkPort: vi.fn(), removeNetworkPort: vi.fn(), refreshNetwork: vi.fn(async () => {}) })
 
   expect(screen.getByText("3000 → http://127.0.0.1:43000")).toBeVisible()
-  await user.click(screen.getByRole("button", { name: `Open http://127.0.0.1:43000 in ${source.preferences.browser}` }))
+  await user.click(screen.getByRole("button", { name: `Open port 3000 in browser` }))
   expect(openNetworkPort).toHaveBeenCalledWith(workspaceTarget(workspace), 3000)
 })
 

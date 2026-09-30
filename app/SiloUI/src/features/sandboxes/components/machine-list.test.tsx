@@ -89,3 +89,14 @@ it("keeps the sandbox name field free of auto-capitalization and autocorrect", a
   expect(name).toHaveAttribute("autocorrect", "off")
   expect(name).toHaveAttribute("spellcheck", "false")
 })
+
+
+it("counts SSH hosts separately from local and remote sandboxes", () => {
+  const local = productionMachineDefaults[0]
+  const remote = { ...local, id: "00000000-0000-4000-8000-00000000000b", name: "remote" }
+  const ssh = { kind: "ssh" as const, id: "00000000-0000-4000-8000-00000000000c", name: "server", host: "server.example", user: "dev", port: 22 }
+  render(<TooltipProvider><MachineList machines={[local, remote, ssh]} onMachinesChange={vi.fn()}
+    getComputerId={machine => machine.id === remote.id ? "office" : undefined} /></TooltipProvider>)
+  expect(screen.getByText("2 sandboxes · 1 on this computer · 1 on other computers · 1 SSH host")).toBeVisible()
+  expect(screen.getByText("SSH host")).toBeVisible()
+})

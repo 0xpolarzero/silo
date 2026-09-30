@@ -209,7 +209,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
       <div className="flex min-w-0 items-center gap-2">
         {draft.kind === "vm" ? <Monitor className="size-4 shrink-0" aria-hidden="true" /> : <Server className="size-4 shrink-0" aria-hidden="true" />}
         <span className="min-w-0 flex-1 text-xs font-semibold">{draft.kind === "vm" ? "Sandbox details" : "SSH host details"}</span>
-        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{draft.kind}</span>
+        <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] uppercase text-muted-foreground">{draft.kind === "ssh" ? "SSH host" : draft.kind}</span>
       </div>
 
       {editorHeader}
@@ -260,10 +260,10 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
 
       {draft.kind === "vm" ? (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
-          <p className="col-span-full text-[11px] text-muted-foreground">Limits set the CPUs and Memory available at startup; ceilings set the most the sandbox can use. The Workspace disk holds /workspace; the Runtime disk holds the operating system and installed applications.</p>
-          <SelectField custom label="CPUs limit" value={draft.cpus} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
+          <p className="col-span-full text-[11px] text-muted-foreground">CPUs and Memory set the startup allocation; ceilings set the maximum. The Workspace disk holds /workspace; the Runtime disk holds the operating system and installed applications.</p>
+          <SelectField custom label="CPUs" value={draft.cpus} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
           <SelectField custom label="CPUs ceiling" value={draft.maxCPUs} values={cpuPresets} max={maximums.cpus} suffix="CPUs" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory limit" value={draft.memoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory" value={draft.memoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
           <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GiB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
           <SelectField custom readOnly={created} label="Workspace disk" value={draft.workspaceStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GiB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
           <SelectField custom readOnly={created} label="Runtime disk" value={draft.runtimeStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GiB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />

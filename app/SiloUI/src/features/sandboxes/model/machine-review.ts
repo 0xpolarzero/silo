@@ -19,9 +19,9 @@ export interface MachineReview {
 
 const fieldLabels: Record<string, string> = {
   name: "Name",
-  cpus: "CPUs limit",
+  cpus: "CPUs",
   maxCPUs: "CPUs ceiling",
-  memoryGiB: "Memory limit",
+  memoryGiB: "Memory",
   maxMemoryGiB: "Memory ceiling",
   workspaceStorageGiB: "Workspace disk",
   runtimeStorageGiB: "Runtime disk",

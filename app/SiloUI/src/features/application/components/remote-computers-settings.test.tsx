@@ -78,3 +78,13 @@ describe("RemoteComputersSettings", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 })
+
+
+it("explains connection removal before it is selected", async () => {
+  const removeComputer = vi.fn().mockResolvedValue(undefined)
+  const remote = { id: "office", name: "Office", address: "office.example", connected: false, busy: false }
+  render(<RemoteComputersSettings source={{ ...source(undefined), remoteComputers: [remote] }} actions={actions({ removeComputer })} />)
+  expect(screen.getByText("Removing the connection leaves sandboxes on Office unchanged.")).toBeVisible()
+  fireEvent.click(screen.getByRole("button", { name: "Remove connection to Office" }))
+  await waitFor(() => expect(removeComputer).toHaveBeenCalledExactlyOnceWith("office"))
+})

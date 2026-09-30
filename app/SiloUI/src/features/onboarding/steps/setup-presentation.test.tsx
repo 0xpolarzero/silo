@@ -84,7 +84,7 @@ describe("setup progress and review presentation", () => {
     expect(sandboxes[1]).toHaveTextContent("In progress")
     expect(sandboxes[1]).toHaveAttribute("aria-busy", "true")
     expect(sandboxes[2]).toHaveTextContent("Waiting")
-    expect(sandboxes[0]).toHaveTextContent("8 CPU · 32 GiB RAM · 120 GiB workspace")
+    expect(sandboxes[0]).toHaveTextContent("CPUs: 8 · Memory: 32 GiB · Disk: 120 GiB")
     expect(screen.getByText("2 repositories selected")).toBeVisible()
     expect(screen.getByText("Alex · alex@example.com")).toBeVisible()
   })
@@ -137,7 +137,7 @@ describe("setup progress and review presentation", () => {
   it("keeps recovery visible while technical evidence stays optional", async () => {
     const user = userEvent.setup()
     const repair = vi.fn()
-    render(<SetupNotice title="Setup couldn’t finish" detail="The helper is unavailable." recovery="Repair the installation to continue." technicalDetails="Helper connection timed out after 30 seconds." action={<Button onClick={repair}>Repair</Button>} />)
+    render(<SetupNotice title="Setup could not finish" detail="The helper is unavailable." recovery="Repair the installation to continue." technicalDetails="Helper connection timed out after 30 seconds." action={<Button onClick={repair}>Repair</Button>} />)
     expect(screen.getByRole("alert")).toHaveTextContent("Repair the installation to continue.")
     expect(screen.queryByText("Helper connection timed out after 30 seconds.")).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "Show technical details" }))

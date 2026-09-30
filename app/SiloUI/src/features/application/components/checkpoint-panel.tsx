@@ -233,6 +233,7 @@ export function CheckpointPanel({ workspace, target, actions, disabled, onExport
             return <ListRow
               key={checkpoint.id}
               data-checkpoint-name={checkpoint.name}
+              detailClassName="whitespace-normal"
               icon={<ListRowIcon aria-hidden="true"><Icon className="size-3.5" /></ListRowIcon>}
               title={<span className="truncate" title={checkpoint.name}>{checkpoint.name}</span>}
               detail={<>

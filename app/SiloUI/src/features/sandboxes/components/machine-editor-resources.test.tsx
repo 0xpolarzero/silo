@@ -48,7 +48,7 @@ describe("machine editor resource fields", () => {
 
   it("explains memory and storage ranges in the same words", async () => {
     const { user, onMachinesChange } = await openNewSandbox()
-    const memory = await enterCustom(user, "Memory limit", "GiB", "0")
+    const memory = await enterCustom(user, "Memory", "GiB", "0")
     const storage = await enterCustom(user, "Workspace disk", "GiB", "2.5")
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(onMachinesChange).not.toHaveBeenCalled()

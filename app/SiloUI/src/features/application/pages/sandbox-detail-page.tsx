@@ -21,7 +21,7 @@ import { StatusSeparator, WorkspaceStatus } from "@/features/application/compone
 import { DisabledReason } from "@/features/application/components/disabled-reason"
 import { LifecycleControl } from "@/features/application/components/lifecycle-control"
 import type { LifecycleGuard } from "@/features/application/model/lifecycle-guard"
-import type { ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
+import type { NetworkPort, ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
 import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { SshAccessBadges, SshAccessRow } from "@/features/application/pages/ssh-access-panel"
@@ -237,14 +237,21 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
             />
         : fallbackPorts.length > 0
           ? <div className="divide-y divide-border">{fallbackPorts.map(port => {
-              const url = `${port.scheme ? `${port.scheme}://` : ""}127.0.0.1:${port.hostPort ?? port.port}`
+              const cachedPort: NetworkPort = {
+                ...port, hostPort: port.hostPort ?? null, scheme: port.scheme ?? null,
+                configured: port.configured ?? false,
+                state: port.hostPort == null || port.configured === false ? "unpublished" : port.listening === true ? "reachable" : port.listening === false ? "waiting" : "unknown",
+              }
+              const address = networkAddress(cachedPort)
+              const stateText = networkPortState(workspace, cachedPort)
+              const title = address ?? `Port ${port.port}`
               return <ListRow
                 key={port.port}
                 icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
-                title={<span className="truncate" title={url}>{url}</span>}
+                title={<span className="truncate" title={title}>{title}</span>}
                 detail={<span className="inline-flex items-center gap-1.5">
-                  <span className={cn("size-1.5 rounded-full", port.listening === true ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />
-                  {portWorkspace.state !== "running" ? networkPortState(portWorkspace, { port: port.port, hostPort: port.hostPort ?? null, scheme: port.scheme ?? null, configured: port.configured ?? false, state: "unknown" }) : portWorkspace.freshness === "stale" ? "Unknown" : port.configured === false || port.hostPort == null ? "Not forwarded" : port.listening === true ? "Reachable" : port.listening === false ? "Waiting for service" : "Unknown"}
+                  <span className={cn("size-1.5 rounded-full", stateText === "Reachable" ? "bg-emerald-500" : "bg-muted-foreground/50")} aria-hidden="true" />
+                  {stateText}
                 </span>}
               />
             })}</div>
@@ -428,6 +435,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
                 saving={editing.committing}
                 blockedReason={editing.saveBlockedReason}
                 capacity={editing.computerId ? undefined : hostCapacityFrom(source.hostCapacity)}
+                computerName={workspace.computer?.name}
                 editorHeader={editingContext?.computers && editing.editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={editing.computerId} disabled={Boolean(editing.editor.originalID) || editing.committing} onChange={event => editing.setComputerId(event.target.value)}><option value="">This computer</option>{editingContext.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (offline)" : ""}</option>)}</select></label> : undefined}
                 focusRequest={editing.editorFocusRequest}
                 created={Boolean(editing.editor.originalID && editingContext?.isMachineCreated?.(machine))}

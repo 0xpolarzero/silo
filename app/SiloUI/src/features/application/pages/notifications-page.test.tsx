@@ -15,7 +15,7 @@ function page() {
 it("describes the three categories and when notifications appear", async () => {
   render(page().ui)
   expect(await screen.findByText("Silo sends system notifications while its window is in the background. While you're using Silo, results appear in the app.")).toBeInTheDocument()
-  expect(screen.getByText("Actions and background work that fail, such as start, push, export, or import.")).toBeInTheDocument()
+  expect(screen.getByText("Actions and background work that fail, such as start, push, sandbox export, or sandbox import.")).toBeInTheDocument()
   expect(screen.getByText("A sandbox stops, fails, or recovers without you asking.")).toBeInTheDocument()
   expect(screen.getByText("Work that took more than a few seconds finishes while Silo is in the background.")).toBeInTheDocument()
   for (const name of ["Failures", "Unexpected sandbox changes", "Long tasks finished"]) expect(screen.getByRole("switch", { name })).toBeChecked()

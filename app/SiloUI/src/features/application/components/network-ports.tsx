@@ -50,7 +50,7 @@ export function NetworkPortForm({ controller, fieldID, hideSandbox = false, clas
 
 /** The per-port action cluster (Open/Copy/Edit/Remove/Connect) with inline removal confirmation,
  * shared so the Network page and a sandbox's Ports section apply identical behaviour. */
-export function NetworkPortRowActions({ controller, workspace, port, state, browser, host }: {
+export function NetworkPortRowActions({ controller, workspace, port, state, host }: {
   controller: NetworkPortsController
   workspace: ApplicationWorkspace
   port: NetworkPort

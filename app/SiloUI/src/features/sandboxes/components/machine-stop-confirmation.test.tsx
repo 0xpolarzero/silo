@@ -19,7 +19,7 @@ function renderRunningEditor(running = true) {
 describe("saving changes that stop a running sandbox", () => {
   it("confirms the stop inline before saving", async () => {
     const { onMachinesChange, user } = renderRunningEditor()
-    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs limit" }), "4")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
     await user.click(screen.getByRole("button", { name: "Stop and save…" }))
     expect(onMachinesChange).not.toHaveBeenCalled()
     const confirmation = screen.getByRole("group", { name: `Stop ${machine.name} and save?` })

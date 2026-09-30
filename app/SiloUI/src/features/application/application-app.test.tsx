@@ -194,7 +194,7 @@ describe("application", () => {
     expect(appNavigation()).toHaveAttribute("data-collapsed", "true")
     expect(navigation.queryByRole("button", { name: "Collapse Sandboxes menu" })).not.toBeInTheDocument()
     expect(navigation.queryByRole("group", { name: "Settings sections" })).not.toBeInTheDocument()
-    for (const label of ["Overview", "Files", "Logs", "Network", "Activity", "GitHub", "Secrets", "Settings"]) {
+    for (const label of ["All sandboxes", "Files", "Logs", "Network", "Activity", "GitHub", "Secrets", "Settings"]) {
       const button = navigation.getByRole("button", { name: label })
       expect(button.querySelector("svg")).toBeInTheDocument()
       expect(button).toHaveAccessibleName(label)
@@ -404,7 +404,7 @@ describe("application", () => {
 
     expect(within(navigation).getByRole("button", { name: "Sandboxes" })).toHaveAttribute("aria-current", "page")
     const sandboxSections = within(navigation).getByRole("group", { name: "Sandbox sections" })
-    expect(within(sandboxSections).getAllByRole("button")).toEqual(["Overview", "Files", "Logs", "Network", "Activity"].map(name => within(sandboxSections).getByRole("button", { name })))
+    expect(within(sandboxSections).getAllByRole("button")).toEqual(["All sandboxes", "Files", "Logs", "Network", "Activity"].map(name => within(sandboxSections).getByRole("button", { name })))
     expect(within(sandboxSections).getByRole("button", { name: "All sandboxes" })).toHaveAttribute("aria-current", "page")
     expect(sandboxSections).toHaveClass("sidebar-subnav")
 
@@ -412,7 +412,7 @@ describe("application", () => {
     expect(overview.queryByRole("heading", { name: "All sandboxes" })).not.toBeInTheDocument()
     expect(overview.queryByText(/Updated just now/)).not.toBeInTheDocument()
     expect(overview.getByRole("heading", { name: "Sandboxes" })).toBeVisible()
-    expect(overview.getByText("3 sandboxes · 3 on this computer · 0 remote")).toBeVisible()
+    expect(overview.getByText("3 sandboxes · 3 on this computer · 0 on other computers · 0 SSH hosts")).toBeVisible()
     expect(overview.getByRole("button", { name: "Add" })).toBeVisible()
     const sandboxList = overview.getByRole("list", { name: "Configured sandboxes" })
     expect(sandboxList).toBeVisible()
@@ -429,7 +429,7 @@ describe("application", () => {
   ] as const)("counts %s sandboxes next to Overview", (mode, label, count) => {
     renderApplication("running", applicationSourceForScenario("running", undefined, mode))
 
-    const overview = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
+    const overview = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /All sandboxes/ })
     expect(within(overview).getByRole("status", { name: label })).toHaveTextContent(count)
   })
 
@@ -439,14 +439,14 @@ describe("application", () => {
       source: ApplicationSource
       section?: "workspace"
     }> = [
-      { label: "Overview", source: applicationSourceForScenario("running", undefined, "starting"), section: "workspace" },
-      { label: "Overview", source: applicationSourceForScenario("running", undefined, undefined, "add-verifying"), section: "workspace" },
+      { label: "All sandboxes", source: applicationSourceForScenario("running", undefined, "starting"), section: "workspace" },
+      { label: "All sandboxes", source: applicationSourceForScenario("running", undefined, undefined, "add-verifying"), section: "workspace" },
       { label: "Files", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, "pushing"), section: "workspace" },
       { label: "Files", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "git-live"), section: "workspace" },
       { label: "GitHub", source: applicationSourceForScenario("running", "connecting") },
       { label: "GitHub", source: applicationSourceForScenario("running", "connected", undefined, undefined, undefined, undefined, undefined, 0, "applying") },
       { label: "Secrets", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "secrets-live") },
-      { label: "Overview", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "backup-live"), section: "workspace" },
+      { label: "All sandboxes", source: applicationSourceForScenario("running", undefined, undefined, undefined, undefined, undefined, "backup-live"), section: "workspace" },
       { label: "System issue", source: applicationSourceForScenario("running", undefined, undefined, undefined, "checking") },
     ]
 
@@ -480,7 +480,7 @@ describe("application", () => {
     const navigation = within(appNavigation())
     const sandboxSections = within(navigation.getByRole("group", { name: "Sandbox sections" }))
 
-    for (const label of ["Overview", "Files", "Logs", "Network", "Activity"]) {
+    for (const label of ["All sandboxes", "Files", "Logs", "Network", "Activity"]) {
       expect(sandboxSections.getByRole("button", { name: label })).not.toHaveAttribute("aria-busy")
     }
     for (const label of ["GitHub", "Secrets", "Settings"]) {
@@ -525,7 +525,7 @@ describe("application", () => {
     await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
     expect(panel.getByRole("combobox", { name: "CPUs ceiling" })).toHaveValue("8")
     expect(panel.getByRole("combobox", { name: "Memory ceiling" })).toHaveValue("16")
-    expect(panel.getByRole("combobox", { name: "CPUs limit" })).toHaveValue("4")
+    expect(panel.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
   })
 
   it("keeps an unsaved sandbox edit while visiting another section (I-37)", async () => {
@@ -533,11 +533,11 @@ describe("application", () => {
     const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
     await user.click(screen.getByRole("button", { name: "More actions for dev" }))
     await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
-    await user.selectOptions(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs limit" }), "4")
+    await user.selectOptions(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs" }), "4")
     await user.click(sandboxSections.getByRole("button", { name: "Files" }))
-    expect(within(appPanel("Sandboxes")).queryByRole("combobox", { name: "CPUs limit" })).not.toBeInTheDocument()
+    expect(within(appPanel("Sandboxes")).queryByRole("combobox", { name: "CPUs" })).not.toBeInTheDocument()
     await user.click(sandboxSections.getByRole("button", { name: "All sandboxes" }))
-    expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs limit" })).toHaveValue("4")
+    expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
   })
 
   it("uses one global sandbox filter across Files, Logs, Network, and Activity", async () => {
@@ -810,12 +810,12 @@ describe("application", () => {
     expect(within(rows[1]).getByText("Waiting for service")).toBeVisible()
 
     expect(rows[0]).toHaveClass("hover:bg-muted/55", "focus-within:bg-muted/55")
-    const open = within(rows[0]).getByRole("button", { name: "Open http://127.0.0.1:3000 in Firefox" })
+    const open = within(rows[0]).getByRole("button", { name: "Open port 3000 in browser" })
     const actions = open.closest('[role="cell"]') as HTMLElement
     expect(actions).not.toHaveClass("opacity-0", "group-hover/network-row:opacity-100", "group-focus-within/network-row:opacity-100")
     expect(within(rows[1]).getByRole("button", { name: "Copy http://127.0.0.1:5173" })).toBeVisible()
     await application.user.hover(open)
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("Open in Firefox")
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Open in browser")
     await application.user.unhover(open)
 
     const copy = vi.spyOn(navigator.clipboard, "writeText")
@@ -1005,7 +1005,7 @@ describe("application", () => {
     expect(rows[2].querySelector("[data-sandbox-icon-state='normal']")).toBeVisible()
     expect(within(rows[0]).getByRole("img", { name: "error status" })).toBeVisible()
     expect(within(rows[1]).getByRole("img", { name: "warning status" })).toBeVisible()
-    expect(rows[1]).toHaveTextContent("ssh")
+    expect(rows[1]).toHaveTextContent("SSH host")
     expect(rows[0]).toHaveTextContent("Failed")
     expect(rows[1]).toHaveTextContent("Stopped")
     expect(rows[2]).toHaveTextContent("Running")
@@ -1017,12 +1017,12 @@ describe("application", () => {
     expect(overview.queryByLabelText("Sandbox attention")).not.toBeInTheDocument()
     expect(overview.queryByText(/needs attention/i)).not.toBeInTheDocument()
 
-    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
+    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /All sandboxes/ })
     expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
     expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has a warning" })).toHaveTextContent("1")
 
     await user.click(screen.getByRole("button", { name: "More actions for error" }))
-    await user.click(screen.getByRole("menuitem", { name: "Duplicate error" }))
+    await user.click(screen.getByRole("menuitem", { name: "Duplicate settings for error" }))
     expect(within(list).getAllByRole("listitem").map((row) => row.getAttribute("data-sandbox-name"))).toEqual(["error", "error-copy", "warning", "normal"])
     await user.click(overview.getByRole("button", { name: "Cancel" }))
 
@@ -1107,7 +1107,7 @@ describe("application", () => {
     renderApplication("running", applicationSourceForScenario("running", undefined, undefined, fixture))
     const overview = within(appPanel("Sandboxes"))
     const row = overview.getByText(workspace).closest("li") as HTMLElement
-    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
+    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /All sandboxes/ })
 
     const existing = overview.getByText("dev").closest("li") as HTMLElement
     expect(existing).not.toHaveAttribute("aria-busy")
@@ -1152,7 +1152,7 @@ describe("application", () => {
     expect(actions.retryMachineConfiguration).toHaveBeenCalledWith("scratch")
     expect(overview.queryByText(/needs attention/i)).not.toBeInTheDocument()
 
-    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /Overview/ })
+    const overviewNavigation = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: /All sandboxes/ })
     expect(within(overviewNavigation).getByRole("status", { name: "1 sandbox has an error" })).toHaveTextContent("1")
     expect(within(overviewNavigation).getByRole("status", { name: "3 sandboxes have warnings" })).toHaveTextContent("3")
   })
@@ -1166,7 +1166,7 @@ describe("application", () => {
 
     expect(within(devRow as HTMLElement).queryByLabelText("Manage dev")).not.toBeInTheDocument()
     await user.click(within(devRow as HTMLElement).getByRole("button", { name: "More actions for dev" }))
-    for (const action of ["Edit dev", "Duplicate dev", "Delete dev"]) expect(screen.getByRole("menuitem", { name: action })).toBeVisible()
+    for (const action of ["Edit dev", "Duplicate settings for dev", "Delete dev"]) expect(screen.getByRole("menuitem", { name: action })).toBeVisible()
     await user.keyboard("{Escape}")
     await user.hover(devRow as HTMLElement)
 
@@ -1198,12 +1198,12 @@ describe("application", () => {
     await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
     const name = overview.getByRole("textbox", { name: "Sandbox name" })
     expect(name).toHaveAttribute("readonly")
-    expect(overview.getByText("Existing sandboxes cannot be renamed or have their disks resized.")).toBeVisible()
+    expect(overview.getByText("Existing sandboxes cannot be renamed or have their disks resized. To use a different disk size, create a new sandbox and transfer your data.")).toBeVisible()
     expect(overview.getByRole("combobox", { name: "Workspace disk" })).toBeDisabled()
     expect(overview.getByRole("combobox", { name: "Runtime disk" })).toBeDisabled()
     await user.hover(overview.getByLabelText(/Workspace disk: .*read-only/))
-    expect(await screen.findByRole("tooltip")).toHaveTextContent("To use a different disk size, create a new sandbox and transfer your data.")
-    await user.selectOptions(overview.getByRole("combobox", { name: "CPUs limit" }), "4")
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("Disk size is read-only.")
+    await user.selectOptions(overview.getByRole("combobox", { name: "CPUs" }), "4")
     await user.click(overview.getByRole("button", { name: "Stop and save…" }))
     await user.click(overview.getByRole("button", { name: "Stop and save" }))
 
@@ -1832,7 +1832,7 @@ describe("application", () => {
 
     await application.user.click(github.getByRole("button", { name: "Disable access" }))
     next("failed", 3)
-    expect(await screen.findByText(/GitHub settings couldn’t be applied\./)).toBeVisible()
+    expect(await screen.findByText(/GitHub settings could not be applied\./)).toBeVisible()
     expect(screen.queryByText("GitHub settings applied")).not.toBeInTheDocument()
     expect(github.getByRole("button", { name: /GitHub settings not applied for dev/ })).toHaveTextContent("Not applied")
     await application.user.click(screen.getByRole("button", { name: "Retry" }))

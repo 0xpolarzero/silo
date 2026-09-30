@@ -37,7 +37,7 @@ export function WorkspacesStep({ onConnectComputer, machines, progress, onMachin
   const failed = progress.status === "failed"
   const running = progress.status === "running"
   const complete = progress.status === "succeeded"
-  const title = machines.length === 0 ? "Create sandboxes later" : failed ? "Sandbox setup couldn’t finish" : complete ? "Sandboxes are ready" : running ? "Creating your sandboxes" : "Sandboxes are waiting"
+  const title = machines.length === 0 ? "Create sandboxes later" : failed ? "Sandbox setup could not finish" : complete ? "Sandboxes are ready" : running ? "Creating your sandboxes" : "Sandboxes are waiting"
 
   return (
     <section aria-labelledby="workspaces-title" className="flex h-full min-h-[28rem] flex-col gap-4">

@@ -77,7 +77,7 @@ export function ReviewStep({ workspaceRetryable, queueItems, machines, workspace
       <h2 id="review-title" className="sr-only" data-visual-heading="hidden">Review setup</h2>
 
       {errorMessage && <SetupNotice
-        title="Setup couldn’t finish"
+        title="Setup could not finish"
         detail={errorMessage}
         recovery={errorRecovery}
         action={workspaceRetryable && <Button type="button" variant="outline" size="xs" onClick={onRetryWorkspaceSetup}><RotateCw aria-hidden="true" />Retry</Button>}

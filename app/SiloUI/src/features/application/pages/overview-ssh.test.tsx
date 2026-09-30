@@ -21,7 +21,7 @@ it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", asy
   expect(row.queryByRole("button", { name: /SSH access controls/ })).not.toBeInTheDocument()
 
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
-  await user.click(screen.getByRole("tab", { name: "SSH" }))
+  await user.click(screen.getByRole("tab", { name: "SSH access" }))
   expect(screen.getAllByRole("switch")).toHaveLength(2)
   expect(screen.getByText("ssh -p 2222 silo@127.0.0.1")).toBeVisible()
   expect(screen.getByText("ssh -p 2222 silo@192.168.1.42")).toBeVisible()
@@ -53,7 +53,7 @@ it("allows read-only SSH disclosure without refreshing, copying, or changing the
   expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Stop dev" })).toBeDisabled()
   await user.click(screen.getByRole("button", { name: "Open dev" }))
-  await user.click(screen.getByRole("tab", { name: "SSH" }))
+  await user.click(screen.getByRole("tab", { name: "SSH access" }))
   expect(screen.getByText("ssh -p 2222 silo@192.168.1.42")).toBeVisible()
   for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled()
   expect(screen.getByRole("button", { name: "Copy SSH address" })).toBeDisabled()

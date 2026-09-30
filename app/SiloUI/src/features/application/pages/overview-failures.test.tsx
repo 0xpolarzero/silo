@@ -103,7 +103,7 @@ it("keeps a known lifecycle action visible while its remote computer refreshes s
   delete workspace.lifecycleAction
   view.rerender(<><Toaster /><OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} /></>)
   expect(row.getByRole("status")).toHaveTextContent("Updating…")
-  expect(row.queryByText(/Updating…/)).not.toBeInTheDocument()
+  expect(row.getAllByText("Updating…")).toHaveLength(1)
 })
 
 it("shows a lifecycle progress notification only for actions slower than the debounce, then dismisses it", async () => {

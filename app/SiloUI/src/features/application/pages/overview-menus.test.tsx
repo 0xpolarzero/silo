@@ -41,7 +41,7 @@ it("builds the same ⋯ menu for a sandbox's row and its page", async () => {
   await user.click(within(screen.getByText("dev").closest("li")!).getByRole("button", { name: "Open dev" }))
   const detail = await menuItems(user)
   expect(detail).toEqual(row)
-  expect(row.map(({ name }) => name)).toEqual(expect.arrayContaining(["Checkpoints for dev", "Storage for dev", "Fork dev", "Export dev", "Edit dev", "Duplicate dev", "Add Linux desktop", "Delete dev"]))
+  expect(row.map(({ name }) => name)).toEqual(expect.arrayContaining(["Checkpoints for dev", "Storage for dev", "Fork dev", "Export dev", "Edit dev", "Duplicate settings for dev", "Add Linux desktop", "Delete dev"]))
 })
 
 it("disables the same mutating items in both menus while a remote computer refreshes", async () => {
@@ -53,7 +53,7 @@ it("disables the same mutating items in both menus while a remote computer refre
   const row = await menuItems(user)
   await user.click(within(screen.getByText("dev").closest("li")!).getByRole("button", { name: "Open dev" }))
   expect(await menuItems(user)).toEqual(row)
-  for (const name of ["Fork dev", "Edit dev", "Duplicate dev", "Delete dev on Office"]) expect(row.find(item => item.name === name)?.disabled).toBe(true)
+  for (const name of ["Fork dev", "Edit dev", "Duplicate settings for dev", "Delete dev on Office"]) expect(row.find(item => item.name === name)?.disabled).toBe(true)
   // Opening the Checkpoints tab is navigation, not a change.
   expect(row.find(({ name }) => name === "Checkpoints for dev")?.disabled).toBe(false)
 })

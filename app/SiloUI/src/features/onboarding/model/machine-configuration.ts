@@ -105,7 +105,7 @@ export function validateMachine(
   const nameError = validateSandboxName(machine.name)
   if (nameError) errors.name = nameError
   if (machine.kind === "vm") {
-    if (machine.cpus > machine.maxCPUs) errors.cpus = "CPUs limit cannot exceed its ceiling."
+    if (machine.cpus > machine.maxCPUs) errors.cpus = "CPU limit cannot exceed its ceiling."
     if (machine.memoryGiB > machine.maxMemoryGiB) errors.memoryGiB = "Memory limit cannot exceed its ceiling."
   } else {
     if (!machine.host.trim()) errors.host = "Enter an SSH host."

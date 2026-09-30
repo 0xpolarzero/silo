@@ -23,10 +23,10 @@ function blockedReason(workspace: ApplicationWorkspace, source: ApplicationSourc
   }
   if (workspace.lifecycleAction) return `${machine.name} is ${lifecycleProgress[workspace.lifecycleAction]}.`
   if (workspace.checkpointOperation?.status === "running") return "Wait for the checkpoint to finish."
-  if (computer?.busy) return `${computer.name} is refreshing its status.`
+  if (computer?.busy) return `${computer.name} is updating. Wait before changing this sandbox.`
   if (workspace.state === "starting") return `Wait for ${machine.name} to finish ${workspace.stateDetail === "Stopping" ? "stopping" : "starting"}.`
   if (source.activities.some((activity) => activity.category === "sandbox" && activity.workspace === workspaceTarget(workspace) && activity.status === "running")) return "Wait for the current operation to finish."
-  if (workspace.freshness === "stale") return computer && !computer.connected ? `${computer.name} is offline. Reconnect it to manage this sandbox.` : "Silo couldn’t refresh this sandbox’s status."
+  if (workspace.freshness === "stale") return computer && !computer.connected ? `${computer.name} is offline. Reconnect it to manage this sandbox.` : "Silo could not refresh this sandbox’s status."
   return undefined
 }
 
