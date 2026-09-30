@@ -2765,8 +2765,58 @@ fn extract_verified_payload(
     }
 }
 
-/// Atomic promotion on external filesystems, without requiring hard-link support.
+/// Publish `source` at `destination` without ever replacing a file there.
 fn rename_without_replacing(source: &Path, destination: &Path) -> io::Result<()> {
+    rename_without_replacing_with(source, destination, exclusive_rename, |source, destination| {
+        fs::hard_link(source, destination)
+    })
+}
+
+/// Some volumes (NFS, SMB, exFAT and other FUSE or network file systems)
+/// reject the exclusive-rename flag with EINVAL or ENOTSUP. Fall back to a
+/// hard link, which also fails if the name is taken, and when links are
+/// unsupported too, claim the name with an exclusively created empty file
+/// and rename over that placeholder only.
+fn rename_without_replacing_with(
+    source: &Path,
+    destination: &Path,
+    exclusive: impl Fn(&Path, &Path) -> io::Result<()>,
+    link: impl Fn(&Path, &Path) -> io::Result<()>,
+) -> io::Result<()> {
+    let unsupported = |error: &io::Error| {
+        matches!(
+            error.raw_os_error(),
+            Some(libc::EINVAL | libc::ENOTSUP | libc::EOPNOTSUPP | libc::ENOSYS)
+        )
+    };
+    match exclusive(source, destination) {
+        Err(error) if unsupported(&error) => {}
+        result => return result,
+    }
+    match link(source, destination) {
+        Ok(()) => {
+            // The archive is published; a leftover temporary name is only clutter.
+            let _ = fs::remove_file(source);
+            return Ok(());
+        }
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Err(error),
+        // No hard links here (exFAT/FAT report EPERM): use a placeholder.
+        Err(error)
+            if unsupported(&error)
+                || matches!(error.raw_os_error(), Some(libc::EPERM | libc::EMLINK)) => {}
+        Err(error) => return Err(error),
+    }
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)?;
+    fs::rename(source, destination).inspect_err(|_| {
+        let _ = fs::remove_file(destination);
+    })
+}
+
+/// The kernel's exclusive rename: atomic, and never replaces an existing file.
+fn exclusive_rename(source: &Path, destination: &Path) -> io::Result<()> {
     use std::{ffi::CString, os::unix::ffi::OsStrExt};
     let source = CString::new(source.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid source path"))?;
@@ -4969,6 +5019,45 @@ mod tests {
             service.data_timeout(500 * 1024 * 1024 * 1024),
             Duration::from_secs(60 + 500 * 1024 / 16)
         );
+    }
+
+    #[test]
+    fn publishing_falls_back_when_the_volume_rejects_exclusive_rename() {
+        let rejects = |_: &Path, _: &Path| Err(io::Error::from_raw_os_error(libc::EINVAL));
+        let no_links = |_: &Path, _: &Path| Err(io::Error::from_raw_os_error(libc::EPERM));
+        let temp = tempfile::tempdir().unwrap();
+        let fresh = |name: &str| {
+            let source = temp.path().join(format!(".{name}.tmp"));
+            fs::write(&source, name).unwrap();
+            (source, temp.path().join(format!("{name}.silo-backup")))
+        };
+        for (name, link) in [("linked", true), ("placeholder", false)] {
+            let (source, destination) = fresh(name);
+            if link {
+                rename_without_replacing_with(&source, &destination, rejects, |s, d| fs::hard_link(s, d))
+            } else {
+                rename_without_replacing_with(&source, &destination, rejects, no_links)
+            }
+            .unwrap();
+            assert_eq!(fs::read_to_string(&destination).unwrap(), name);
+            assert!(!source.exists(), "{name}");
+
+            // A taken name is never replaced by either fallback.
+            let (source, _) = fresh(&format!("{name}-again"));
+            let result = if link {
+                rename_without_replacing_with(&source, &destination, rejects, |s, d| fs::hard_link(s, d))
+            } else {
+                rename_without_replacing_with(&source, &destination, rejects, no_links)
+            };
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists, "{name}");
+            assert_eq!(fs::read_to_string(&destination).unwrap(), name);
+            assert!(source.exists());
+        }
+        // Other errors from the exclusive rename are not retried differently.
+        let (source, destination) = fresh("denied");
+        let denied = |_: &Path, _: &Path| Err(io::Error::from_raw_os_error(libc::EACCES));
+        assert!(rename_without_replacing_with(&source, &destination, denied, no_links).is_err());
+        assert!(!destination.exists());
     }
 
     #[test]
