@@ -344,8 +344,9 @@ pub(super) fn clear_restore_identity(controller: &Controller) -> Result<(), Stri
     })
 }
 /// Remove what an import wrote before its settings were saved: the new
-/// sandbox's checkpoint record. The loaded snapshot group stays in the
-/// runtime's store (logged here) until native cleanup removes it (E-23).
+/// sandbox's checkpoint record and the loaded snapshot group (E-23, E-24).
+/// The identity stays journaled until both are gone, so a failure here is
+/// retried on the next launch.
 pub(super) fn discard_uncommitted_import(
     paths: &runtime::RuntimePaths,
     controller: &Controller,
@@ -354,7 +355,10 @@ pub(super) fn discard_uncommitted_import(
 ) -> Result<(), String> {
     runtime::checkpoints::forget_removed(paths, identity).map_err(|e| e.to_string())?;
     if let Some(group) = import_group {
-        eprintln!("Retained imported snapshot group {group} after an import that did not finish.");
+        controller
+            .service
+            .discard_import_group(group)
+            .map_err(|error| format!("Silo could not remove the unfinished import {group}: {error}"))?;
     }
     clear_restore_identity(controller)
 }
@@ -527,13 +531,16 @@ pub(super) fn recover_at_paths(
         .map_err(|e| e.to_string())?;
     // A snapshot command from the previous process can outlive it while
     // writing into the working folder; let it finish before cleaning up.
-    let _command = backup::wait_for_interrupted_command(&paths.home, Duration::from_secs(60))
+    let command = backup::wait_for_interrupted_command(&paths.home, Duration::from_secs(60))
         .map_err(|e| e.to_string())?;
     controller
         .service
         .cleanup_interrupted_staging()
         .map_err(|e| format!("Could not clear interrupted working files: {e}"))?;
     cleanup_archive_partial(journal)?;
+    // The previous process's command has finished. Release the lock so the
+    // snapshot commands that remove an unfinished import can take it.
+    drop(command);
     let result = |archive: Archive, outcome: &'static str, title: &str, message: &str, detail: Option<&str>| {
         Operation::Result {
             operation: journal.kind(),
@@ -607,7 +614,9 @@ pub(super) fn recover_at_paths(
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{completed_archive, history_controller};
+    use super::super::tests::{
+        completed_archive, controller_with_scripted_msb, history_controller, scripted_calls,
+    };
     use super::*;
 
     /// Runtime paths in a temp dir whose `msb` does not exist: any runtime
@@ -754,7 +763,7 @@ mod tests {
     fn relaunch_forgets_an_import_that_was_never_saved() {
         let directory = tempfile::tempdir().unwrap();
         let paths = temp_paths(directory.path());
-        let controller = history_controller(directory.path().join("backup-history.json"));
+        let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
         let id = uuid::Uuid::new_v4().to_string();
         begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
         save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
@@ -769,8 +778,42 @@ mod tests {
         assert!(detail.unwrap().contains("No sandbox was added"));
         assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
         assert_eq!(runtime::read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+        // The journaled import group was removed from the runtime store,
+        // child first and root last, and nothing else was touched.
+        let removals = scripted_calls(directory.path())
+            .into_iter()
+            .filter(|call| call.starts_with("snapshot remove") || call.starts_with("snapshot head"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            removals,
+            [
+                format!("snapshot head {IMPORT_GROUP}:imported-parent"),
+                format!("snapshot remove --quiet {IMPORT_GROUP}:imported-member"),
+                format!("snapshot remove --quiet {IMPORT_GROUP}:imported-parent"),
+            ]
+        );
         complete(&controller, recovered);
         assert!(!pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn relaunch_keeps_the_import_identity_when_its_group_cannot_be_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
+        fs::write(directory.path().join("refuse-remove"), b"").unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        begin(&controller, Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
+        save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
+        let journal = load(&controller.history_path).unwrap().unwrap();
+        let error =
+            recover_at_paths(&paths, &controller, &journal, &backup::Cancellation::default()).unwrap_err();
+        assert!(error.contains(IMPORT_GROUP), "{error}");
+        // The next launch retries the cleanup.
+        assert!(matches!(
+            load(&controller.history_path).unwrap().unwrap().request,
+            Request::Restore { id: Some(ref saved), group: Some(ref group), .. } if *saved == id && group == IMPORT_GROUP
+        ));
     }
 
     #[test]

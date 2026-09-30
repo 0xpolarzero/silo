@@ -1905,6 +1905,62 @@ mod tests {
         }
     }
 
+    /// A controller whose backup runner uses a scripted `msb` in the runtime
+    /// home of `paths` with a two-member import `group`: `snapshot list` prints `snapshots.json` from the temp
+    /// dir, every call is appended to `calls`, and `snapshot remove` fails
+    /// while a `refuse-remove` file exists.
+    pub(super) fn controller_with_scripted_msb(
+        directory: &Path,
+        paths: &runtime::RuntimePaths,
+        group: &str,
+    ) -> Controller {
+        use std::os::unix::fs::PermissionsExt;
+        let script = directory.join("scripted-msb");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{calls}'\ncase \"$1 $2\" in\n  'snapshot list') cat '{list}' ;;\n  'snapshot remove') [ -e '{refuse}' ] && exit 1 ;;\nesac\nexit 0\n",
+                calls = directory.join("calls").display(),
+                list = directory.join("snapshots.json").display(),
+                refuse = directory.join("refuse-remove").display(),
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        let parent = format!("sha256:{}", "a".repeat(64));
+        fs::write(
+            directory.join("snapshots.json"),
+            serde_json::json!([
+                {"group": group, "name": "imported-parent", "snapshot_id": format!("snap_{}", "0".repeat(32)), "digest": parent, "parent_digest": null, "availability": "ready"},
+                {"group": group, "name": "imported-member", "snapshot_id": format!("snap_{}", "1".repeat(32)), "digest": format!("sha256:{}", "b".repeat(64)), "parent_digest": parent, "availability": "ready"},
+                {"group": "dev", "name": "kept", "snapshot_id": format!("snap_{}", "2".repeat(32)), "availability": "ready"}
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        Controller {
+            service: backup::BackupService::new(
+                backup::MsbCommand {
+                    metadata: paths.metadata.clone(),
+                    executable: script,
+                    home: paths.home.clone(),
+                    storage_home: None,
+                    library: paths.library.clone(),
+                },
+                directory.join("scratch"),
+            ),
+            ..history_controller(directory.join("backup-history.json"))
+        }
+    }
+
+    pub(super) fn scripted_calls(directory: &Path) -> Vec<String> {
+        fs::read_to_string(directory.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
     pub(super) fn completed_archive() -> Archive {
         Archive {
             name: "saved.silo-backup".into(),
@@ -2587,7 +2643,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let paths = import_paths(directory.path());
         fs::create_dir_all(paths.metadata.parent().unwrap()).unwrap();
-        let controller = history_controller(directory.path().join("backup-history.json"));
+        let controller = controller_with_scripted_msb(directory.path(), &paths, GROUP);
         recovery::begin(&controller, recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into()))).unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let original = runtime::read_metadata(&paths.metadata).unwrap();
@@ -2597,6 +2653,12 @@ mod tests {
         assert!(!paths.metadata.with_file_name("checkpoints").join(format!("{id}.json")).exists());
         let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
         assert!(!saved.contains(&id), "{saved}");
+        // The loaded snapshot group went with it (E-23).
+        let removed = scripted_calls(directory.path())
+            .into_iter()
+            .filter(|call| call.starts_with("snapshot remove"))
+            .count();
+        assert_eq!(removed, 2);
     }
 
     fn outcome_and_detail(operation: &Operation) -> (&'static str, String) {
