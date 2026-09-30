@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, path::Path};
 use tauri::{AppHandle, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
+pub(crate) mod launch;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -110,9 +111,7 @@ pub(crate) fn selected_editor(app: &AppHandle) -> Result<Application, String> {
         .ok_or_else(|| "The selected editor is unavailable. Choose another in Settings.".into())
 }
 
-pub(crate) fn editor_command(
-    application: &Application,
-) -> Result<(std::path::PathBuf, bool), String> {
+pub(crate) fn editor_command(application: &Application) -> Result<launch::EditorCommand, String> {
     platform::editor_command(application)
 }
 

@@ -45,7 +45,7 @@ struct Tunnel {
 }
 impl Tunnel {
     fn spawn(command: &Command, directory: Option<tempfile::TempDir>) -> std::io::Result<Self> {
-        let mut child = Command::new("/bin/sh")
+        let mut child = crate::applications::launch::sanitize_child(&mut Command::new("/bin/sh"))
             .arg("-c")
             .arg(WATCHDOG)
             .arg("silo-desktop-tunnel")

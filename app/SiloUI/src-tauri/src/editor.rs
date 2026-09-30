@@ -33,17 +33,16 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
         let path = path.unwrap_or("/workspace");
         let (alias, _) = prepare_remote(app, &host, &vm, path)?;
         let application = applications::selected_editor(app)?;
-        let (executable, zed) = applications::editor_command(&application)?;
+        let command = applications::editor_command(&application)?;
         let home = app.path().home_dir().map_err(|_| FAILED)?;
-        let mut launch = editor_launch(&executable, zed, &alias, path, &home)?;
-        return run(&mut launch, Duration::from_secs(10));
+        return launch_editor(editor_launch(&command, &alias, path, &home)?, EDITOR_EXIT_WINDOW);
     }
     require_openssh("open VM folders in your editor")?;
     runtime::validate_name(name).map_err(|error| error.to_string())?;
     let path = path.unwrap_or("/workspace");
     validate_path(path)?;
     let application = applications::selected_editor(app)?;
-    let (executable, zed) = applications::editor_command(&application)?;
+    let command = applications::editor_command(&application)?;
     let paths = runtime::runtime_paths(app)?;
     let metadata = runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string())?;
     if !metadata
@@ -92,10 +91,37 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
     run(&mut probe, Duration::from_secs(10)).map_err(|_| {
         "Could not connect to this VM over SSH. Retry after checking that it is running."
     })?;
-    let mut launch = editor_launch(&executable, zed, &alias, path, &user_home)?;
-    run(&mut launch, Duration::from_secs(10)).map_err(|_| {
-        "The editor could not be opened. Check its installation and Remote SSH support.".to_string()
-    })
+    launch_editor(editor_launch(&command, &alias, path, &user_home)?, EDITOR_EXIT_WINDOW)
+}
+
+/// How long an editor launcher may take to report a failure. Launchers that
+/// are still running then (an editor started without its CLI) are left
+/// running and reaped in the background, never killed (G-06).
+const EDITOR_EXIT_WINDOW: Duration = Duration::from_secs(10);
+
+fn launch_editor(mut launch: Command, window: Duration) -> Result<(), String> {
+    const FAILED_LAUNCH: &str =
+        "The editor could not be opened. Check its installation and Remote SSH support.";
+    let mut child = applications::launch::sanitize_child(&mut launch)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| FAILED_LAUNCH)?;
+    let deadline = Instant::now() + window;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) | Err(_) => return Err(FAILED_LAUNCH.into()),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Ok(());
+            }
+        }
+    }
 }
 
 /// Explains a missing system OpenSSH client instead of a generic failure.
@@ -145,14 +171,14 @@ const VSCODE_SETTINGS: [(&str, bool); 4] = [
 /// The editor command for a sandbox folder: Zed receives its SSH URI; VS Code
 /// opens the Silo profile with the folder's Silo workspace file.
 fn editor_launch(
-    executable: &Path,
-    zed: bool,
+    command: &applications::launch::EditorCommand,
     alias: &str,
     path: &str,
     user_home: &Path,
 ) -> Result<Command, String> {
-    let mut launch = Command::new(executable);
-    if zed {
+    let mut launch = Command::new(&command.program);
+    launch.args(&command.args);
+    if command.zed {
         launch.arg(remote_uri(alias, path, true)?);
     } else {
         launch
@@ -272,7 +298,7 @@ pub(crate) fn key(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn public_key(path: &Path) -> Result<String, String> {
-    let output = Command::new("/usr/bin/ssh-keygen")
+    let output = applications::launch::sanitize_child(&mut Command::new("/usr/bin/ssh-keygen"))
         .args(["-y", "-f"])
         .arg(path)
         .stdin(Stdio::null())
@@ -475,7 +501,7 @@ fn prepare_configuration(
 }
 
 fn run(command: &mut Command, timeout: Duration) -> Result<(), String> {
-    let mut child = command
+    let mut child = applications::launch::sanitize_child(command)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -654,6 +680,27 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), b"Host existing\n  User user\n");
     }
 
+    fn vscode(program: &str) -> applications::launch::EditorCommand {
+        applications::launch::EditorCommand { program: program.into(), args: Vec::new(), zed: false }
+    }
+
+    #[test]
+    fn an_editor_that_keeps_running_is_left_open_and_a_failed_launch_is_reported() {
+        let started = Instant::now();
+        let mut long = Command::new("/bin/sh");
+        long.args(["-c", "echo $$ > \"$0\"; exec sleep 30"]);
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("editor.pid");
+        long.arg(&pid_file);
+        launch_editor(long, Duration::from_millis(300)).unwrap();
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let pid: i32 = fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
+        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "the editor must not be killed");
+        unsafe { libc::kill(pid, libc::SIGTERM) };
+        assert!(launch_editor(Command::new("/usr/bin/false"), Duration::from_secs(5)).is_err());
+        assert!(launch_editor(Command::new("/usr/bin/true"), Duration::from_secs(5)).is_ok());
+    }
+
     fn launch_args(launch: &Command) -> Vec<String> {
         launch.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect()
     }
@@ -661,9 +708,9 @@ mod tests {
     #[test]
     fn vscode_opens_the_silo_profile_with_protective_workspace_settings() {
         let home = tempfile::tempdir().unwrap();
-        let code = Path::new("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code");
-        let launch = editor_launch(code, false, "silo-abc-dev", "/workspace/my repo", home.path()).unwrap();
-        assert_eq!(launch.get_program(), code);
+        let code = vscode("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code");
+        let launch = editor_launch(&code, "silo-abc-dev", "/workspace/my repo", home.path()).unwrap();
+        assert_eq!(launch.get_program(), code.program.as_os_str());
         let args = launch_args(&launch);
         assert_eq!(args[..2], ["--profile", "Silo"]);
         assert_eq!(args.len(), 3, "no --folder-uri: the workspace file names the folder");
@@ -688,7 +735,7 @@ mod tests {
             })
         );
         // Another folder of the same sandbox gets its own workspace file.
-        let other = editor_launch(code, false, "silo-abc-dev", "/workspace", home.path()).unwrap();
+        let other = editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap();
         assert_ne!(launch_args(&other)[2], args[2]);
         assert!(launch_args(&other)[2].ends_with("/workspace.code-workspace"));
     }
@@ -696,14 +743,14 @@ mod tests {
     #[test]
     fn user_workspace_settings_survive_while_silo_settings_are_restored() {
         let home = tempfile::tempdir().unwrap();
-        let code = Path::new("/usr/bin/code");
-        let args = launch_args(&editor_launch(code, false, "silo-abc-dev", "/workspace", home.path()).unwrap());
+        let code = vscode("/usr/bin/code");
+        let args = launch_args(&editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap());
         fs::write(
             &args[2],
             br#"{"folders":[{"uri":"file:///elsewhere"}],"settings":{"editor.fontSize":15,"remote.autoForwardPorts":true}}"#,
         )
         .unwrap();
-        editor_launch(code, false, "silo-abc-dev", "/workspace", home.path()).unwrap();
+        editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap();
         let document: serde_json::Value = serde_json::from_slice(&fs::read(&args[2]).unwrap()).unwrap();
         assert_eq!(document["settings"]["editor.fontSize"], 15);
         assert_eq!(document["settings"]["remote.autoForwardPorts"], false);
@@ -713,8 +760,9 @@ mod tests {
     #[test]
     fn zed_keeps_its_ssh_uri_and_no_workspace_file() {
         let home = tempfile::tempdir().unwrap();
-        let launch = editor_launch(Path::new("/usr/bin/zed"), true, "silo-abc-dev", "/workspace", home.path()).unwrap();
-        assert_eq!(launch_args(&launch), ["ssh://silo-abc-dev/workspace"]);
+        let zed = applications::launch::EditorCommand { program: "/usr/bin/flatpak".into(), args: vec!["run".into(), "dev.zed.Zed".into()], zed: true };
+        let launch = editor_launch(&zed, "silo-abc-dev", "/workspace", home.path()).unwrap();
+        assert_eq!(launch_args(&launch), ["run", "dev.zed.Zed", "ssh://silo-abc-dev/workspace"]);
         assert!(!home.path().join(".silo").exists());
     }
 

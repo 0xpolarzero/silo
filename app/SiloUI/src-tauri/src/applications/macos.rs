@@ -9,12 +9,12 @@ use objc2_app_kit::{
     NSGraphicsContext, NSImage, NSImageInterpolation, NSWorkspace,
 };
 use objc2_foundation::{
-    NSArray, NSBundle, NSCopying, NSData, NSDataBase64EncodingOptions, NSDictionary,
+    NSBundle, NSCopying, NSData, NSDataBase64EncodingOptions, NSDictionary,
     NSObjectProtocol, NSPoint, NSRect, NSSize, NSString, NSURL,
 };
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
-pub fn editor_command(application: &Application) -> Result<(std::path::PathBuf, bool), String> {
+pub fn editor_command(application: &Application) -> Result<super::launch::EditorCommand, String> {
     let root = Path::new(&application.path);
     // Reuse Launch Services bundle identity, not an arbitrary app display name.
     let id = autoreleasepool(|_| {
@@ -23,21 +23,17 @@ pub fn editor_command(application: &Application) -> Result<(std::path::PathBuf, 
             .and_then(|bundle| bundle.bundleIdentifier())
             .map(|id| id.to_string())
     });
-    let (relative, zed) = match id.as_deref() {
-        Some("dev.zed.Zed" | "dev.zed.Zed-Preview") => ("Contents/MacOS/cli", true),
-        Some("com.microsoft.VSCode" | "com.microsoft.VSCodeInsiders") => {
-            ("Contents/Resources/app/bin/code", false)
-        }
-        _ => return Err(
+    let Some((relative, zed)) = id.as_deref().and_then(editor_adapter) else {
+        return Err(
             "Remote folders currently support Zed and Visual Studio Code. Choose one in Settings."
                 .into(),
-        ),
+        );
     };
-    let path = root.join(relative);
-    if !path.is_file() {
+    let program = root.join(relative);
+    if !program.is_file() {
         return Err("The selected editor's command is unavailable.".into());
     }
-    Ok((path, zed))
+    Ok(super::launch::EditorCommand { program, args: Vec::new(), zed })
 }
 
 pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
@@ -61,28 +57,44 @@ pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
     }
 }
 
-// Launch Services also advertises editors for shell scripts. Only known terminal
-// applications enter that list; Choose… can select any valid application bundle.
+// Suggestions and defaults list only apps Silo can hand a sandbox to (G-07);
+// Choose… can still select any valid application bundle.
+// Terminals with a command launcher in `open_terminal`, in default order.
+// Launch Services also advertises editors for shell scripts.
 const TERMINAL_IDS: &[&str] = &[
     "com.apple.Terminal",
-    "com.googlecode.iterm2",
     "com.mitchellh.ghostty",
-    "dev.warp.Warp-Stable",
-    "dev.warp.Warp-Preview",
-    "org.alacritty",
-    "com.github.wez.wezterm",
+    "com.googlecode.iterm2",
 ];
 
+// Editors `editor_command` supports, in default order.
 const EDITOR_IDS: &[&str] = &[
     "com.microsoft.VSCode",
-    "com.microsoft.VSCodeInsiders",
-    "com.visualstudio.code.oss",
-    "com.todesktop.230313mzl4w4u92",
     "dev.zed.Zed",
+    "com.microsoft.VSCodeInsiders",
     "dev.zed.Zed-Preview",
     "dev.zed.Zed-Nightly",
     "dev.zed.Zed-Dev",
 ];
+
+/// The bundled CLI and whether it takes Zed's `ssh://` URI.
+fn editor_adapter(id: &str) -> Option<(&'static str, bool)> {
+    match id {
+        "dev.zed.Zed" | "dev.zed.Zed-Preview" | "dev.zed.Zed-Nightly" | "dev.zed.Zed-Dev" => {
+            Some(("Contents/MacOS/cli", true))
+        }
+        "com.microsoft.VSCode" | "com.microsoft.VSCodeInsiders" => {
+            Some(("Contents/Resources/app/bin/code", false))
+        }
+        _ => None,
+    }
+}
+
+/// Keeps a system default only when it is supported; otherwise the first
+/// installed supported app, in the lists' order, becomes the default.
+fn supported_default(system: Option<String>, installed_in_order: &[String]) -> Option<String> {
+    system.or_else(|| installed_in_order.first().cloned())
+}
 
 const BROWSER_IDS: &[&str] = &[
     "com.apple.Safari",
@@ -141,66 +153,6 @@ fn application_icon(path: &str) -> Option<String> {
         "data:image/png;base64,{}",
         png.base64EncodedStringWithOptions(NSDataBase64EncodingOptions::empty())
     ))
-}
-
-fn declares_source_editor(bundle: &NSBundle) -> bool {
-    let Some(types) =
-        bundle.objectForInfoDictionaryKey(&NSString::from_str("CFBundleDocumentTypes"))
-    else {
-        return false;
-    };
-    let Some(types) = types.downcast_ref::<NSArray>() else {
-        return false;
-    };
-    types.iter().any(|document| {
-        let Some(document) = document.downcast_ref::<NSDictionary>() else {
-            return false;
-        };
-        let role = document.objectForKey(&NSString::from_str("CFBundleTypeRole"));
-        if role.and_then(|role| nonempty_string(&role)).as_deref() != Some("Editor") {
-            return false;
-        }
-        // Generic text/data handlers include browsers and word processors.
-        // Require an explicit source type or extension when the editor is unknown.
-        [
-            (
-                "LSItemContentTypes",
-                &[
-                    "public.source-code",
-                    "public.swift-source",
-                    "public.c-source",
-                    "public.c-plus-plus-source",
-                    "public.objective-c-source",
-                    "public.objective-c-plus-plus-source",
-                    "com.sun.java-source",
-                    "public.script",
-                    "public.shell-script",
-                    "public.python-script",
-                    "com.netscape.javascript-source",
-                ][..],
-            ),
-            (
-                "CFBundleTypeExtensions",
-                &[
-                    "c", "h", "cc", "cpp", "hpp", "m", "mm", "swift", "rs", "go", "py", "rb", "js",
-                    "jsx", "tsx", "java", "kt", "sh", "lua", "ex", "exs", "cs", "php", "scala",
-                    "clj",
-                ][..],
-            ),
-        ]
-        .into_iter()
-        .any(|(key, source_types)| {
-            let Some(values) = document.objectForKey(&NSString::from_str(key)) else {
-                return false;
-            };
-            let Some(values) = values.downcast_ref::<NSArray>() else {
-                return false;
-            };
-            values.iter().any(|value| {
-                nonempty_string(&value).is_some_and(|value| source_types.contains(&value.as_str()))
-            })
-        })
-    })
 }
 
 fn nonempty_string(value: &AnyObject) -> Option<String> {
@@ -280,12 +232,10 @@ fn add_url(
         .is_some_and(|id| TERMINAL_IDS.contains(&id));
     let eligible = match filter {
         HandlerFilter::Terminal => is_terminal,
+        // Xcode and other source editors are not offered: the handoff
+        // supports only Zed and Visual Studio Code (G-07).
         HandlerFilter::Editor => {
-            !is_terminal
-                && (identifier
-                    .as_deref()
-                    .is_some_and(|id| EDITOR_IDS.contains(&id))
-                    || declares_source_editor(&bundle))
+            !is_terminal && identifier.as_deref().is_some_and(|id| EDITOR_IDS.contains(&id))
         }
         // Terminals, download managers and virtual-machine helpers also register
         // HTTPS, so a URL scheme alone does not establish browser relevance.
@@ -305,14 +255,20 @@ fn add_url(
     Some(path)
 }
 
-fn add_known(workspace: &NSWorkspace, applications: &mut Vec<Application>, identifiers: &[&str]) {
-    for identifier in identifiers {
-        if let Some(url) =
-            workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(identifier))
-        {
-            add_url(applications, &url, HandlerFilter::Any);
-        }
-    }
+/// Adds installed known apps and returns their paths in `identifiers` order.
+fn add_known(
+    workspace: &NSWorkspace,
+    applications: &mut Vec<Application>,
+    identifiers: &[&str],
+) -> Vec<String> {
+    identifiers
+        .iter()
+        .filter_map(|identifier| {
+            let url =
+                workspace.URLForApplicationWithBundleIdentifier(&NSString::from_str(identifier))?;
+            add_url(applications, &url, HandlerFilter::Any)
+        })
+        .collect()
 }
 
 fn add_default_handler(
@@ -383,8 +339,15 @@ pub fn discover() -> Result<ApplicationCatalog, String> {
                 }
             }
         }
-        add_known(&workspace, &mut catalog.terminal, TERMINAL_IDS);
-        add_known(&workspace, &mut catalog.editor, EDITOR_IDS);
+        for (kind, applications, identifiers) in [
+            ("terminal", &mut catalog.terminal, TERMINAL_IDS),
+            ("editor", &mut catalog.editor, EDITOR_IDS),
+        ] {
+            let installed = add_known(&workspace, applications, identifiers);
+            if let Some(path) = supported_default(catalog.defaults.remove(kind), &installed) {
+                catalog.defaults.insert(kind.into(), path);
+            }
+        }
         // Querying URL handlers does not open the URL or launch an application.
         let https = NSURL::URLWithString(&NSString::from_str("https://example.invalid"))
             .ok_or("macOS could not construct an HTTPS handler query")?;
@@ -586,66 +549,19 @@ mod tests {
     }
 
     #[test]
-    fn editor_discovery_rejects_generic_handlers_viewers_and_terminals() {
+    fn editor_suggestions_are_only_editors_the_handoff_can_open() {
         autoreleasepool(|_| {
             let directory = tempfile::tempdir().unwrap();
-            for (name, role, key, value, identifier, expected) in [
-                (
-                    "GenericText",
-                    "Editor",
-                    "LSItemContentTypes",
-                    "public.text",
-                    "org.silo.tests.GenericText",
-                    false,
-                ),
-                (
-                    "GenericData",
-                    "Editor",
-                    "LSItemContentTypes",
-                    "public.data",
-                    "org.silo.tests.GenericData",
-                    false,
-                ),
-                (
-                    "SourceViewer",
-                    "Viewer",
-                    "LSItemContentTypes",
-                    "public.source-code",
-                    "org.silo.tests.SourceViewer",
-                    false,
-                ),
-                (
-                    "VideoEditor",
-                    "Editor",
-                    "CFBundleTypeExtensions",
-                    "ts",
-                    "org.silo.tests.VideoEditor",
-                    false,
-                ),
-                (
-                    "SourceType",
-                    "Editor",
-                    "LSItemContentTypes",
-                    "public.source-code",
-                    "org.silo.tests.SourceType",
-                    true,
-                ),
-                (
-                    "SourceExtension",
-                    "Editor",
-                    "CFBundleTypeExtensions",
-                    "rs",
-                    "org.silo.tests.SourceExtension",
-                    true,
-                ),
-                (
-                    "Terminal",
-                    "Editor",
-                    "LSItemContentTypes",
-                    "public.source-code",
-                    "dev.warp.Warp-Stable",
-                    false,
-                ),
+            for (name, identifier, expected) in [
+                // Xcode is the usual .swift handler; it cannot open sandboxes.
+                ("Xcode", "com.apple.dt.Xcode", false),
+                ("SourceEditor", "org.silo.tests.SourceEditor", false),
+                ("Cursor", "com.todesktop.230313mzl4w4u92", false),
+                ("VSCodium", "com.visualstudio.code.oss", false),
+                ("Warp", "dev.warp.Warp-Stable", false),
+                ("Code", "com.microsoft.VSCode", true),
+                ("Zed", "dev.zed.Zed", true),
+                ("ZedNightly", "dev.zed.Zed-Nightly", true),
             ] {
                 let path = bundle(directory.path(), name, "APPL", true);
                 let info = path.join("Contents/Info.plist");
@@ -654,13 +570,11 @@ mod tests {
                     .replace(&format!("org.silo.tests.{name}"), identifier)
                     .replace(
                         "</dict></plist>",
-                        &format!(
-                            r#"
+                        r#"
                         <key>CFBundleDocumentTypes</key><array><dict>
-                        <key>CFBundleTypeRole</key><string>{role}</string>
-                        <key>{key}</key><array><string>{value}</string></array>
-                        </dict></array></dict></plist>"#
-                        ),
+                        <key>CFBundleTypeRole</key><string>Editor</string>
+                        <key>LSItemContentTypes</key><array><string>public.source-code</string></array>
+                        </dict></array></dict></plist>"#,
                     );
                 fs::write(info, contents).unwrap();
                 let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().unwrap()));
@@ -675,6 +589,69 @@ mod tests {
                 );
             }
         });
+    }
+
+    #[test]
+    fn every_suggested_editor_has_a_handoff() {
+        for identifier in EDITOR_IDS {
+            assert!(editor_adapter(identifier).is_some(), "{identifier}");
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = bundle(directory.path(), "Nightly", "APPL", true);
+        let info = path.join("Contents/Info.plist");
+        let contents = fs::read_to_string(&info)
+            .unwrap()
+            .replace("org.silo.tests.Nightly", "dev.zed.Zed-Nightly");
+        fs::write(info, contents).unwrap();
+        fs::write(path.join("Contents/MacOS/cli"), b"").unwrap();
+        let application = application_at(&path).unwrap();
+        let crate::applications::launch::EditorCommand { program: command, zed, .. } =
+            editor_command(&application).unwrap();
+        assert!(zed);
+        assert!(command.ends_with("Contents/MacOS/cli"));
+        assert!(editor_adapter("com.todesktop.230313mzl4w4u92").is_none());
+    }
+
+    #[test]
+    fn terminal_suggestions_are_only_terminals_with_a_launcher() {
+        autoreleasepool(|_| {
+            let directory = tempfile::tempdir().unwrap();
+            for (name, identifier, expected) in [
+                ("Terminal", "com.apple.Terminal", true),
+                ("Ghostty", "com.mitchellh.ghostty", true),
+                ("ITerm", "com.googlecode.iterm2", true),
+                ("Warp", "dev.warp.Warp-Stable", false),
+                ("Alacritty", "org.alacritty", false),
+                ("WezTerm", "com.github.wez.wezterm", false),
+            ] {
+                let path = bundle(directory.path(), name, "APPL", true);
+                let info = path.join("Contents/Info.plist");
+                let contents = fs::read_to_string(&info)
+                    .unwrap()
+                    .replace(&format!("org.silo.tests.{name}"), identifier);
+                fs::write(info, contents).unwrap();
+                let url = NSURL::fileURLWithPath(&NSString::from_str(path.to_str().unwrap()));
+                assert_eq!(
+                    add_url(&mut Vec::new(), &url, HandlerFilter::Terminal).is_some(),
+                    expected,
+                    "{name}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn an_unsupported_system_default_falls_back_to_a_supported_app() {
+        let installed = ["/Applications/Visual Studio Code.app".to_string(), "/Applications/Zed.app".to_string()];
+        assert_eq!(
+            supported_default(Some("/Applications/Zed.app".into()), &installed).as_deref(),
+            Some("/Applications/Zed.app")
+        );
+        assert_eq!(
+            supported_default(None, &installed).as_deref(),
+            Some("/Applications/Visual Studio Code.app")
+        );
+        assert_eq!(supported_default(None, &[]), None);
     }
 }
 

@@ -1,42 +1,86 @@
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use gio::prelude::*;
 use gio::{AppInfo, DesktopAppInfo};
 use gtk::prelude::IconThemeExt;
 
-use super::{Application, ApplicationCatalog};
+use super::{launch, Application, ApplicationCatalog};
 
-pub fn editor_command(application: &Application) -> Result<(std::path::PathBuf, bool), String> {
-    let info =
-        desktop_at(Path::new(&application.path)).ok_or("The selected editor is unavailable.")?;
-    let executable = info.executable();
-    let name = executable
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("");
-    let zed = match name {
-        "zed" | "zeditor" => true,
-        "code" | "code-insiders" => false,
-        _ => return Err(
-            "Remote folders currently support Zed and Visual Studio Code. Choose one in Settings."
-                .into(),
-        ),
-    };
-    Ok((executable, zed))
+fn find_program(name: &str) -> Option<PathBuf> {
+    gio::glib::find_program_in_path(name)
+}
+
+/// The entry's `Exec` tokens, parsed by GLib, without field codes.
+fn entry_argv(info: &DesktopAppInfo) -> Vec<String> {
+    info.commandline()
+        .and_then(|line| gio::glib::shell_parse_argv(line.as_os_str()).ok())
+        .map(|tokens| launch::exec_argv(tokens.into_iter().filter_map(|token| token.into_string().ok())))
+        .unwrap_or_default()
+}
+
+fn entry_editor(info: &DesktopAppInfo) -> Result<launch::EditorCommand, String> {
+    let flatpak = info.string("X-Flatpak");
+    launch::linux_editor_command(&entry_argv(info), flatpak.as_deref(), &find_program)
+}
+
+/// The resolved CLI for a chosen editor entry or executable (G-06, G-25).
+pub fn editor_command(application: &Application) -> Result<launch::EditorCommand, String> {
+    let path = Path::new(&application.path);
+    if path.extension().is_some_and(|extension| extension == "desktop") {
+        entry_editor(&desktop_at(path).ok_or("The selected editor is unavailable.")?)
+    } else {
+        launch::linux_editor_command(&[application.path.clone()], None, &find_program)
+    }
+}
+
+/// The program a terminal entry or executable runs. Flatpak terminals have no
+/// command launcher Silo supports.
+fn terminal_program(path: &Path) -> Option<PathBuf> {
+    if !path.extension().is_some_and(|extension| extension == "desktop") {
+        return Some(path.to_path_buf());
+    }
+    let info = desktop_at(path)?;
+    if info.string("X-Flatpak").is_some() {
+        return None;
+    }
+    let argv = entry_argv(&info);
+    match launch::exec_program(&argv) {
+        Some(token) if Path::new(token).is_absolute() => Some(PathBuf::from(token)),
+        Some(token) => find_program(token),
+        None => Some(info.executable()),
+    }
+}
+
+fn launchable_terminal(path: &Path) -> bool {
+    terminal_program(path).is_some_and(|program| crate::terminal::linux_arguments(&program).is_ok())
+}
+
+/// A launch context that gives the launched app the system environment
+/// instead of the AppImage's (G-24).
+fn launch_context() -> gio::AppLaunchContext {
+    let context = gio::AppLaunchContext::new();
+    for (name, value) in launch::child_environment() {
+        match value {
+            Some(value) => context.setenv(&name, &value),
+            None => context.unsetenv(&name),
+        }
+    }
+    context
 }
 
 pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
     // GIO parses desktop Exec field codes; never execute them through a shell.
+    let context = launch_context();
     let result = if let Some(path) = selection {
         let application = desktop_at(path)
             .ok_or("The selected browser is unavailable. Choose another in Settings.")?;
-        application.launch_uris(&[url], None::<&gio::AppLaunchContext>)
+        application.launch_uris(&[url], Some(&context))
     } else {
-        AppInfo::launch_default_for_uri(url, None::<&gio::AppLaunchContext>)
+        AppInfo::launch_default_for_uri(url, Some(&context))
     };
     result.map_err(|_| {
         "The browser could not be opened. Check your browser selection in Settings.".into()
@@ -62,6 +106,9 @@ pub fn discover() -> Result<ApplicationCatalog, String> {
             continue;
         }
         let [terminal, editor, browser] = roles(info.categories().as_deref().unwrap_or(""));
+        // Suggest only terminals and editors Silo can hand a sandbox to (G-07).
+        let terminal = terminal && launchable_terminal(&path);
+        let editor = editor && entry_editor(&info).is_ok();
         for (included, applications) in [
             (terminal, &mut catalog.terminal),
             (editor, &mut catalog.editor),
@@ -94,7 +141,6 @@ pub fn discover() -> Result<ApplicationCatalog, String> {
     ) {
         catalog.defaults.insert("editor".into(), path);
     }
-    // GAppInfo has no standard terminal-default association.
     for applications in [
         &mut catalog.terminal,
         &mut catalog.editor,
@@ -107,6 +153,25 @@ pub fn discover() -> Result<ApplicationCatalog, String> {
                 .then_with(|| left.path.cmp(&right.path))
         });
         applications.dedup_by(|left, right| left.path == right.path);
+    }
+    // The text/plain handler is usually a plain text editor.
+    if !catalog.defaults.contains_key("editor") {
+        if let Some(first) = catalog.editor.first() {
+            catalog.defaults.insert("editor".into(), first.path.clone());
+        }
+    }
+    // GAppInfo has no terminal association: use the system's terminal
+    // launcher, else the first listed terminal (G-07).
+    let listed: Vec<String> = catalog.terminal.iter().map(|application| application.path.clone()).collect();
+    if let Some(path) = launch::linux_terminal_default(&find_program, &listed) {
+        if !listed.contains(&path) {
+            if let Some(application) = application_at(Path::new(&path)) {
+                catalog.terminal.push(application);
+            }
+        }
+        if catalog.terminal.iter().any(|application| application.path == path) {
+            catalog.defaults.insert("terminal".into(), path);
+        }
     }
     Ok(catalog)
 }
@@ -495,6 +560,48 @@ mod tests {
         assert!(application_at(&path).is_none());
     }
 
+    fn entry(directory: &Path, name: &str, body: &str) -> std::path::PathBuf {
+        let path = directory.join(format!("{name}.desktop"));
+        fs::write(&path, format!("[Desktop Entry]\nType=Application\nName={name}\n{body}")).unwrap();
+        path
+    }
+
+    #[test]
+    fn editor_entries_resolve_to_their_cli_and_text_editors_are_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let electron = directory.path().join("code/code");
+        let cli = directory.path().join("code/bin/code");
+        for executable in [&electron, &cli] {
+            fs::create_dir_all(executable.parent().unwrap()).unwrap();
+            fs::write(executable, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let code = entry(directory.path(), "code", &format!("Exec={} %F\nCategories=TextEditor;\n", electron.display()));
+        let command = editor_command(&application_at(&code).unwrap()).unwrap();
+        assert_eq!((command.program, command.zed), (cli, false));
+        let text = entry(directory.path(), "text", "Exec=/bin/true %U\nCategories=TextEditor;\n");
+        assert!(editor_command(&application_at(&text).unwrap()).is_err());
+        assert!(entry_editor(&desktop_at(&text).unwrap()).is_err());
+    }
+
+    #[test]
+    fn only_terminals_with_a_launcher_are_offered() {
+        let directory = tempfile::tempdir().unwrap();
+        let bin = directory.path().join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        for name in ["ptyxis", "cool-retro-term"] {
+            let executable = bin.join(name);
+            fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let ptyxis = entry(directory.path(), "ptyxis", &format!("Exec={} --new-window\n", bin.join("ptyxis").display()));
+        let retro = entry(directory.path(), "retro", &format!("Exec={}\n", bin.join("cool-retro-term").display()));
+        let flatpak = entry(directory.path(), "flatpak", "Exec=/bin/true run org.example.Terminal\nX-Flatpak=org.example.Terminal\n");
+        assert!(launchable_terminal(&ptyxis));
+        assert!(!launchable_terminal(&retro));
+        assert!(!launchable_terminal(&flatpak));
+    }
+
     #[test]
     fn gio_applies_visibility_rules_while_hidden_entries_cannot_be_selected() {
         let directory = tempfile::tempdir().unwrap();
@@ -513,10 +620,8 @@ mod tests {
 }
 
 pub fn open_terminal(_app: &tauri::AppHandle, application: &Application, command: &str) -> Result<(), String> {
-    let path = Path::new(&application.path);
-    let executable = if path.extension().is_some_and(|s| s == "desktop") {
-        desktop_at(path).ok_or("The selected terminal is unavailable.")?.executable()
-    } else { path.to_path_buf() };
+    let executable = terminal_program(Path::new(&application.path))
+        .ok_or("The selected terminal is unavailable.")?;
     let mut launch = std::process::Command::new(&executable);
     launch.args(crate::terminal::linux_arguments(&executable)?).args(["/bin/sh", "-c", &format!("exec {command}")]);
     crate::terminal::launch(launch)
