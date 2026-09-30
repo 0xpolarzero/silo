@@ -1,4 +1,5 @@
-import type { ApplicationSource } from "@/features/application/model/application-source"
+import type { ApplicationSource, ApplicationWorkspace } from "@/features/application/model/application-source"
+import { cancelledActionLabel } from "@/features/application/model/operation-queue"
 import { parseRemoteWorkspaceTarget, workspaceTarget } from "@/features/application/model/remote-computers"
 
 /**
@@ -17,10 +18,22 @@ export function sandboxTargetLabel(target: string, source: Pick<ApplicationSourc
   return computer ? `a sandbox on ${computer.name}` : "a remote sandbox"
 }
 
+/**
+ * The outcome of a sandbox's last lifecycle action when it did not succeed: a failure (an
+ * error, even though the sandbox may simply read "Stopped") or a user cancellation (neutral).
+ */
+export function lifecycleOutcome(workspace: ApplicationWorkspace): { error: boolean; text: string } | undefined {
+  if (!workspace.lifecycleFailure) return undefined
+  const action = workspace.lifecycleFailureAction ?? "start"
+  if (workspace.lifecycleFailureCancelled) return { error: false, text: cancelledActionLabel(action) }
+  const verb = action === "restart" ? "Restart" : action === "stop" ? "Stop" : action === "dismiss-error" ? "Dismiss" : "Start"
+  return { error: true, text: `${verb} failed · ${workspace.lifecycleFailure}` }
+}
+
 export function statusBarHealth(source: ApplicationSource) {
   const repair = source.runtimeRepair
   if (repair) return { label: "System issue", tone: "error" } as const
-  if (source.workspaces.some((workspace) => workspace.state === "failed" || workspace.attention?.level === "error")
+  if (source.workspaces.some((workspace) => workspace.state === "failed" || workspace.attention?.level === "error" || lifecycleOutcome(workspace)?.error)
     || source.sandboxConfigurationOperation?.status === "failed"
     || source.repositoryPushOperations.some(({ status }) => status === "failed")) {
     return { label: "Sandbox error", tone: "error" } as const

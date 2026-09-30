@@ -18,7 +18,7 @@ import { SandboxAction, SandboxListItem, SandboxListRow } from "@/features/sandb
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
 import { cn } from "@/lib/utils"
-import { sandboxTargetLabel, statusBarHealth } from "./status-bar-model"
+import { lifecycleOutcome, sandboxTargetLabel, statusBarHealth } from "./status-bar-model"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import type { StatusBarActions } from "./status-bar-types"
 import { StatusFolderPicker } from "./status-folder-picker"
@@ -85,16 +85,18 @@ function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: Wor
   )
 }
 
-function OperationIssue({ title, detail, actionLabel, onReview, retry }: { title: string; detail: string; actionLabel: string; onReview: () => void; retry?: ReactNode }) {
+function OperationIssue({ title, detail, actionLabel, actionText = "Details", tone = "error", onReview, retry }: { title: string; detail: string; actionLabel: string; actionText?: string; tone?: "error" | "warning"; onReview: () => void; retry?: ReactNode }) {
   return (
-    <ListCard className="mb-2" role="alert" aria-label={title}>
+    <ListCard className="mb-2" role={tone === "error" ? "alert" : "status"} aria-label={title}>
       <ListRow
-        icon={<ListRowIcon className="bg-destructive/10 text-destructive"><CircleAlert className="size-3.5" aria-hidden="true" /></ListRowIcon>}
+        icon={tone === "error"
+          ? <ListRowIcon className="bg-destructive/10 text-destructive"><CircleAlert className="size-3.5" aria-hidden="true" /></ListRowIcon>
+          : <ListRowIcon className="bg-amber-500/10 text-amber-600 dark:text-amber-400"><TriangleAlert className="size-3.5" aria-hidden="true" /></ListRowIcon>}
         title={title}
         detail={detail}
         detailClassName="whitespace-normal break-words"
         actions={<div className="flex shrink-0 items-center gap-1">
-          <Button variant="outline" size="xs" aria-label={actionLabel} onClick={onReview}>Details</Button>
+          <Button variant="outline" size="xs" aria-label={actionLabel} onClick={onReview}>{actionText}</Button>
           {retry}
         </div>}
       />
@@ -157,6 +159,7 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
   const folders = source.workspaces.find(({ machine }) => machine.id === folderWorkspace)
   const failedPushes = source.repositoryPushOperations.filter((operation) => operation.status === "failed")
   const failedConfiguration = source.sandboxConfigurationOperation?.status === "failed" ? source.sandboxConfigurationOperation : null
+  const approval = source.sandboxConfigurationOperation?.status === "awaiting-approval" ? source.sandboxConfigurationOperation : null
 
   function openFolders(id: string) {
     setHasNavigated(true)
@@ -186,6 +189,14 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
           actionLabel="Review sandbox changes"
           onReview={() => actions.openSilo({ workspaceSection: "overview" })}
         />}
+        {approval && <OperationIssue
+          tone="warning"
+          title="Sandbox changes need approval"
+          detail={approval.result.message}
+          actionLabel="Review sandbox changes"
+          actionText="Review"
+          onReview={() => actions.openSilo({ workspaceSection: "overview" })}
+        />}
         {failedPushes.map((operation) => {
           const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === operation.workspace)
           const canRetry = workspace && workspace.repositories.some(({ path, ahead }) => path === operation.repositoryPath && ahead > 0) && workspaceAvailability(workspace, source).canOpen
@@ -211,14 +222,16 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
               const pendingSecrets = machine.kind === "vm" && !workspace.computer ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
               const activity = source.activities.find((item) => item.category === "sandbox" && item.workspace === target && item.status === "running")
               const review = workspace.state === "failed" || workspace.attention?.level === "error"
-              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.computer ? "Computer unavailable · Last known status" : "Last known status" : undefined)
+              // A failed Start leaves the sandbox "Stopped": show the failure instead of a neutral row.
+              const lifecycle = lifecycleOutcome(workspace)
+              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.computer ? "Computer unavailable · Last known status" : "Last known status" : lifecycle?.text)
               return <SandboxListItem key={machine.id} aria-label={machine.name} aria-busy={availability.busy || undefined}>
                 <SandboxListRow
                   name={machine.name}
                   kind={machine.kind}
                   kindBadge={workspace.computer ? <ComputerBadge computer={workspace.computer} /> : undefined}
-                  iconState={workspaceIconState(workspace)}
-                  tone={workspace.freshness === "stale" ? "warning" : workspaceRowTone(workspace)}
+                  iconState={lifecycle?.error ? "error" : workspaceIconState(workspace)}
+                  tone={workspace.freshness === "stale" ? "warning" : lifecycle?.error ? "error" : workspaceRowTone(workspace)}
                   icon={availability.busy ? <span className="relative shrink-0">
                     <ListRowIcon>{machine.kind === "vm" ? <Monitor className="size-3.5" /> : <Server className="size-3.5" />}</ListRowIcon>
                     <span className="absolute -top-1 -right-1 grid size-3.5 place-items-center rounded-full bg-background"><Loader2 className="size-2.5 animate-spin" aria-hidden="true" /></span>

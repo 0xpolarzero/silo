@@ -97,6 +97,36 @@ describe("status bar", () => {
     expect(actions.openSilo).toHaveBeenCalledWith({ workspace: target, workspaceSection: "files" })
   })
 
+  it("shows a failed start as an error instead of a neutral stopped sandbox", () => {
+    const source = applicationSourceForScenario("complete")
+    setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, state: "stopped" as const, lifecycleFailure: "Not enough memory to start dev.", lifecycleFailureAction: "start" as const })) })
+    expect(screen.getByRole("button", { name: "Silo status bar" })).toHaveAccessibleDescription("Sandbox error")
+    const row = screen.getByRole("listitem", { name: "dev" })
+    expect(row).toHaveTextContent("Start failed · Not enough memory to start dev.")
+    expect(row.querySelector("[data-sandbox-row-tone]")).toHaveAttribute("data-sandbox-row-tone", "error")
+    // Start stays available as the retry.
+    expect(within(row).getByRole("button", { name: "Start dev" })).toBeEnabled()
+  })
+
+  it("keeps a cancelled start neutral", () => {
+    const source = applicationSourceForScenario("complete")
+    setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, state: "stopped" as const, lifecycleFailure: "Start was cancelled.", lifecycleFailureAction: "start" as const, lifecycleFailureCancelled: true })) })
+    expect(screen.getByRole("button", { name: "Silo status bar" })).toHaveAccessibleDescription("All sandboxes stopped")
+    const row = screen.getByRole("listitem", { name: "dev" })
+    expect(row).toHaveTextContent("Start cancelled")
+    expect(row.querySelector("[data-sandbox-row-tone]")).not.toHaveAttribute("data-sandbox-row-tone", "error")
+  })
+
+  it("shows sandbox changes waiting for approval with a way to review them", async () => {
+    const operation = { id: "op", status: "awaiting-approval" as const, candidate: { schemaVersion: 1 as const, machines: [] }, progressEvents: [], error: null, result: { resumed: false, phase: "workspaces", requiresApproval: true, vmsStarted: false, message: "Approve the new sandbox to finish setting it up." } }
+    const { user, actions } = setup({ sandboxConfigurationOperation: operation })
+    expect(screen.getByRole("button", { name: "Silo status bar" })).toHaveAccessibleDescription("Approval needed")
+    const notice = screen.getByRole("status", { name: "Sandbox changes need approval" })
+    expect(notice).toHaveTextContent("Approve the new sandbox to finish setting it up.")
+    await user.click(within(notice).getByRole("button", { name: "Review sandbox changes" }))
+    expect(actions.openSilo).toHaveBeenCalledWith({ workspaceSection: "overview" })
+  })
+
   it("updates the menu bar icon from loading to warning, error, and ready", () => {
     const { source, actions, rerender } = setup()
     const trigger = screen.getByRole("button", { name: "Silo status bar" })
