@@ -591,9 +591,9 @@ impl<R: MsbRunner> BackupService<R> {
         for (index, source) in request.sources.iter().enumerate() {
             check_cancelled(cancellation)?;
             validate_sandbox_name(&source.name)?;
-            validate_snapshottable_config(&source.name, &source.runtime_config)?;
-            validate_machine_config(&source.name, &source.machine_config)?;
-            validate_volume_sources(&source.name, &source.runtime_config, &source.machine_config)?;
+            let mut runtime_config = source.runtime_config.clone();
+            let mut machine_config = source.machine_config.clone();
+            validate_export_configs(&source.name, &runtime_config, &machine_config)?;
             let snapshot_group = source.snapshot_group.clone();
             let flush = if source.was_running {
                 "required"
@@ -604,7 +604,18 @@ impl<R: MsbRunner> BackupService<R> {
                 // A checkpoint export reuses an already-captured, immutable member;
                 // a state export captures the sandbox's current disk first.
                 let snapshot = if let Some(member) = &source.existing_member {
-                    self.captured_snapshot_path(&snapshot_group, member, cancellation)?
+                    let snapshot =
+                        self.captured_snapshot_path(&snapshot_group, member, cancellation)?;
+                    // Describe the checkpoint as it was captured, not the
+                    // sandbox as it is now (E-29).
+                    apply_captured_layout(
+                        &source.name,
+                        &read_snapshot_descriptor(&snapshot)?,
+                        &mut runtime_config,
+                        &mut machine_config,
+                    )?;
+                    validate_export_configs(&source.name, &runtime_config, &machine_config)?;
+                    snapshot
                 } else {
                     let snapshot_name = format!("silo-backup-{index}-{}", unique_suffix());
                     self.require_success(
@@ -662,7 +673,7 @@ impl<R: MsbRunner> BackupService<R> {
                         "The selected VM snapshots exceed the export size safety limit.".into(),
                     )
                 })?;
-            payloads.push((source, payload, payload_size));
+            payloads.push((source, runtime_config, machine_config, payload, payload_size));
         }
 
         let mut manifest = PackageManifest {
@@ -676,10 +687,10 @@ impl<R: MsbRunner> BackupService<R> {
             },
             sandboxes: payloads
                 .iter()
-                .map(|(source, _, payload_size)| PackageSandbox {
+                .map(|(source, runtime_config, machine_config, _, payload_size)| PackageSandbox {
                     name: source.name.clone(),
-                    runtime_config: source.runtime_config.clone(),
-                    machine_config: source.machine_config.clone(),
+                    runtime_config: runtime_config.clone(),
+                    machine_config: machine_config.clone(),
                     payload_size: *payload_size,
                     // Filled in while the payload is copied into the archive.
                     payload_sha256: pending_digest(),
@@ -690,7 +701,7 @@ impl<R: MsbRunner> BackupService<R> {
         };
         let archive_payloads = payloads
             .into_iter()
-            .map(|(_, payload, _)| payload)
+            .map(|(_, _, _, payload, _)| payload)
             .collect::<Vec<_>>();
         let size_bytes = write_immutable_package(
             &request.destination,
@@ -1642,6 +1653,92 @@ fn validate_manifest(manifest: &PackageManifest) -> Result<(), BackupError> {
             .map_err(|error| BackupError::InvalidArchive(error.to_string()))?;
         validate_package_volumes(&sandbox.volumes)?;
         validate_volume_contract(&sandbox.runtime_config, &sandbox.machine_config)?;
+    }
+    Ok(())
+}
+
+fn validate_export_configs(
+    name: &str,
+    runtime_config: &Value,
+    machine_config: &Value,
+) -> Result<(), BackupError> {
+    validate_snapshottable_config(name, runtime_config)?;
+    validate_machine_config(name, machine_config)?;
+    validate_volume_sources(name, runtime_config, machine_config)
+}
+
+/// A checkpoint export packs the disk (and, for a full checkpoint, the VM
+/// geometry) as captured, while the sandbox may have been changed since.
+/// Take everything the checkpoint's descriptor records from it: the owned
+/// workspace capacity and, for a full checkpoint, CPUs and memory (with the
+/// default /tmp size that follows memory). The root disk size cannot change
+/// after creation, so it is kept.
+fn apply_captured_layout(
+    name: &str,
+    descriptor: &Value,
+    runtime_config: &mut Value,
+    machine_config: &mut Value,
+) -> Result<(), BackupError> {
+    let unsupported = |detail: &str| {
+        BackupError::UnsupportedStorage(format!(
+            "The checkpoint of {name} cannot be exported: {detail}."
+        ))
+    };
+    let workspace = descriptor
+        .pointer(&format!("/extensions/{OWNED_VOLUMES_EXTENSION}"))
+        .and_then(Value::as_array)
+        .and_then(|volumes| {
+            volumes
+                .iter()
+                .find(|volume| volume.pointer("/mount/guest").and_then(Value::as_str) == Some("/workspace"))
+        })
+        .ok_or_else(|| unsupported("it does not include the workspace disk"))?;
+    let capacity_mib = workspace
+        .pointer("/mount/storage/capacity_mib")
+        .and_then(Value::as_u64)
+        .filter(|mib| *mib > 0 && mib % 1024 == 0)
+        .ok_or_else(|| unsupported("its workspace disk size is not a whole number of GiB"))?;
+    if let Some(mount) = runtime_config
+        .get_mut("mounts")
+        .and_then(Value::as_array_mut)
+        .and_then(|mounts| {
+            mounts.iter_mut().find(|mount| {
+                mount["type"] == "Owned" && mount["guest"] == "/workspace"
+            })
+        })
+    {
+        mount["storage"]["capacity_mib"] = capacity_mib.into();
+    }
+    machine_config["workspaceStorageGiB"] = (capacity_mib / 1024).into();
+
+    if descriptor.pointer("/state/kind").and_then(Value::as_str) == Some("checkpoint") {
+        let captured = |field: &str| {
+            descriptor
+                .pointer(&format!("/state/requirements_summary/{field}"))
+                .and_then(Value::as_u64)
+                .ok_or_else(|| unsupported("its CPU and memory layout is not recorded"))
+        };
+        let (cpus, max_cpus) = (captured("vcpus")?, captured("max_vcpus")?);
+        let (memory_mib, max_memory_mib) = (captured("memory_mib")?, captured("max_memory_mib")?);
+        if memory_mib % 1024 != 0 || max_memory_mib % 1024 != 0 {
+            return Err(unsupported("its memory size is not a whole number of GiB"));
+        }
+        runtime_config["resources"]["cpus"] = cpus.into();
+        runtime_config["resources"]["max_cpus"] = max_cpus.into();
+        runtime_config["resources"]["memory_mib"] = memory_mib.into();
+        runtime_config["resources"]["max_memory_mib"] = max_memory_mib.into();
+        machine_config["cpus"] = cpus.into();
+        machine_config["maxCPUs"] = max_cpus.into();
+        machine_config["memoryGiB"] = (memory_mib / 1024).into();
+        machine_config["maxMemoryGiB"] = (max_memory_mib / 1024).into();
+        // Silo sizes the default /tmp from memory; keep that relation.
+        if let Some(tmpfs) = runtime_config
+            .get_mut("mounts")
+            .and_then(Value::as_array_mut)
+            .and_then(|mounts| mounts.iter_mut().find(|mount| mount["type"] == "Tmpfs"))
+        {
+            tmpfs["size_mib"] = (memory_mib / 4).clamp(1, 512).into();
+        }
     }
     Ok(())
 }
@@ -2864,6 +2961,8 @@ mod tests {
         saved_payload: Mutex<Option<Vec<u8>>>,
         /// Descriptor of the loaded head instead of one matching `managed_config("dev")`.
         loaded_descriptor: Mutex<Option<Value>>,
+        /// Descriptor of the pre-captured `existing_members`, same default.
+        member_descriptor: Mutex<Option<Value>>,
         fail_load: AtomicBool,
         fail_save: AtomicBool,
         fail_import_verify: AtomicBool,
@@ -2970,7 +3069,13 @@ mod tests {
                             .join(group)
                             .join("snap_00000000000000000000000000000000");
                         fs::create_dir_all(&snapshot)?;
-                        fs::write(snapshot.join("snapshot.json"), b"{}")?;
+                        let descriptor = self
+                            .member_descriptor
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .unwrap_or_else(|| loaded_descriptor_for(&managed_config("dev")));
+                        fs::write(snapshot.join("snapshot.json"), descriptor.to_string())?;
                         entries.push(serde_json::json!({
                             "group": group,
                             "name": member,
@@ -3475,6 +3580,96 @@ mod tests {
         assert!(calls
             .iter()
             .any(|args| args.ends_with(&["--with-parents".into(), "--with-image".into()])));
+    }
+
+    fn export_checkpoint(runner: FakeRunner) -> (tempfile::TempDir, Result<PackageManifest, BackupError>) {
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("checkpoint.silo-backup");
+        let member = "c0123456789abcdef0123456789abcde";
+        runner
+            .existing_members
+            .lock()
+            .unwrap()
+            .push(("dev".into(), member.into()));
+        let service = service(&temp, runner);
+        let result = service
+            .create_backup(
+                BackupRequest {
+                    destination: destination.clone(),
+                    sources: vec![BackupSource {
+                        name: "dev".into(),
+                        snapshot_group: "dev".into(),
+                        was_running: false,
+                        runtime_config: managed_config_with_default_tmpfs("dev"),
+                        machine_config: machine_config("dev"),
+                        existing_member: Some(member.into()),
+                    }],
+                },
+                &Cancellation::default(),
+            )
+            .map(|_| {
+                read_and_verify_package(
+                    &destination,
+                    DEFAULT_MAX_ARCHIVE_BYTES,
+                    &Cancellation::default(),
+                    PayloadMode::VerifyAll,
+                )
+                .unwrap()
+                .manifest
+            });
+        (temp, result)
+    }
+
+    #[test]
+    fn checkpoint_export_describes_the_checkpoint_as_captured() {
+        // Captured with 2 of 6 CPUs, 1 of 32 GiB memory and a 30 GiB
+        // workspace; the sandbox now has 4 CPUs, 16 GiB and 60 GiB.
+        let mut descriptor = loaded_descriptor_for(&managed_config("dev"));
+        descriptor["scope"] = "full".into();
+        descriptor["state"] = serde_json::json!({
+            "kind": "checkpoint",
+            "checkpoint_id": "ckpt",
+            "checkpoint_root": format!("sha256:{}", "d".repeat(64)),
+            "restore_intents": ["clone", "resume"],
+            "requirements_summary": {"vcpus": 2, "max_vcpus": 6, "memory_mib": 1024, "max_memory_mib": 32768}
+        });
+        descriptor["extensions"][OWNED_VOLUMES_EXTENSION][0]["mount"]["storage"]["capacity_mib"] =
+            30720.into();
+        let runner = FakeRunner::default();
+        *runner.member_descriptor.lock().unwrap() = Some(descriptor.clone());
+        let (_temp, manifest) = export_checkpoint(runner);
+        let manifest = manifest.unwrap();
+        let sandbox = &manifest.sandboxes[0];
+        assert_eq!(sandbox.machine_config["cpus"], 2);
+        assert_eq!(sandbox.machine_config["maxCPUs"], 6);
+        assert_eq!(sandbox.machine_config["memoryGiB"], 1);
+        assert_eq!(sandbox.machine_config["workspaceStorageGiB"], 30);
+        assert_eq!(sandbox.machine_config["runtimeStorageGiB"], 80);
+        assert_eq!(sandbox.runtime_config["resources"]["memory_mib"], 1024);
+        let tmpfs = sandbox.runtime_config["mounts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|mount| mount["type"] == "Tmpfs")
+            .unwrap();
+        assert_eq!(tmpfs["size_mib"], 256);
+        // The archive now passes the import-side comparison with that snapshot.
+        descriptor["extensions"][OWNED_VOLUMES_EXTENSION][0]["mount"]["storage"]["capacity_mib"] =
+            30720.into();
+        assert!(compare_loaded_descriptor(
+            &descriptor,
+            "snap_11111111111111111111111111111111",
+            &sandbox.runtime_config
+        )
+        .is_ok());
+
+        let runner = FakeRunner::default();
+        let mut without_workspace = loaded_descriptor_for(&managed_config("dev"));
+        without_workspace["extensions"] = serde_json::json!({});
+        without_workspace["requires"] = serde_json::json!([]);
+        *runner.member_descriptor.lock().unwrap() = Some(without_workspace);
+        let (_temp, manifest) = export_checkpoint(runner);
+        assert!(matches!(manifest, Err(BackupError::UnsupportedStorage(message)) if message.contains("workspace disk")));
     }
 
     #[test]
