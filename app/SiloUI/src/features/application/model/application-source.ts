@@ -266,6 +266,8 @@ export interface ApplicationSource {
     | { kind: "create-storage"; sandbox: string; requiredGB: number; availableGB: number; volume: string }
     | { kind: "start-memory"; sandbox: string; memoryGiB: number }
   vmOperationsUnavailable?: string
+  /** This computer's limits for sandbox CPU and memory ceilings (D-46); absent when unmeasured. */
+  hostCapacity?: { logicalCpus: number; physicalMemoryBytes: number; maxMemoryGib: number }
   preferences: ApplicationPreferenceSelection & {
     launchAtLogin: boolean
     startWorkspacesAtLaunch: boolean

@@ -37,6 +37,7 @@ import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/compo
 
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { sandboxBusyReason, workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
+import { hostCapacityFrom } from "@/features/sandboxes/model/machine-limits"
 
 /** A lifecycle action shows a progress notification only if it is still running after this long. */
 const LIFECYCLE_TOAST_DELAY_MS = 800
@@ -589,6 +590,8 @@ export function OverviewPage({ active = true, readOnly = false,
               isMachineRunning={isMachineRunning}
               getMachineBusyReason={machineBusyReason}
               editorDraftKey="sandbox-list"
+              // New sandboxes fit this computer; remote computers do not report capacity yet.
+              getHostCapacity={(computerId) => computerId ? undefined : hostCapacityFrom(source.hostCapacity)}
               onMachinesChange={changeMachines}
               interactionDisabled={configurationLocked}
               validateOperation={validateMachineOperation}

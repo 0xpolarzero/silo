@@ -21,6 +21,19 @@ export interface HostCapacity {
   memoryGiB: number
 }
 
+/**
+ * The editor's capacity for this computer from the application state's `hostCapacity`
+ * (`logicalCpus`, `maxMemoryGib`: the exact ceilings the runtime accepts). The native state
+ * passes unknown fields through unvalidated, so anything but positive whole numbers is
+ * treated as unknown.
+ */
+export function hostCapacityFrom(reported: unknown): HostCapacity | undefined {
+  if (!reported || typeof reported !== "object") return undefined
+  const { logicalCpus, maxMemoryGib } = reported as Record<string, unknown>
+  const valid = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 1
+  return valid(logicalCpus) && valid(maxMemoryGib) ? { logicalCPUs: logicalCpus, memoryGiB: maxMemoryGib } : undefined
+}
+
 type ResourceField = "cpus" | "maxCPUs" | "memoryGiB" | "maxMemoryGiB" | "workspaceStorageGiB" | "runtimeStorageGiB"
 export const resourceFields: readonly ResourceField[] = ["cpus", "maxCPUs", "memoryGiB", "maxMemoryGiB", "workspaceStorageGiB", "runtimeStorageGiB"]
 

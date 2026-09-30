@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import { productionMachineDefaults, supportedCPUs, supportedMemoryGiB } from "@/features/onboarding/model/machine-configuration"
-import { fitMachineToCapacity, presetsWithin, validateMachineResources } from "./machine-limits"
+import { fitMachineToCapacity, hostCapacityFrom, presetsWithin, validateMachineResources } from "./machine-limits"
 
 const template = productionMachineDefaults[0]!
 const small = { logicalCPUs: 8, memoryGiB: 16 }
@@ -23,6 +23,13 @@ describe("sandbox resource limits", () => {
     expect(presetsWithin(supportedCPUs, 10)).toEqual([1, 2, 4, 6, 8, 10])
     expect(presetsWithin(supportedMemoryGiB, 16)).toEqual([1, 2, 4, 8, 12, 16])
     expect(presetsWithin(supportedCPUs, undefined)).toEqual(supportedCPUs)
+  })
+
+  it("reads the capacity the application state reports and ignores anything malformed", () => {
+    expect(hostCapacityFrom({ logicalCpus: 8, physicalMemoryBytes: 17179869184, maxMemoryGib: 16 })).toEqual(small)
+    for (const reported of [undefined, null, "8", { logicalCpus: 0, maxMemoryGib: 16 }, { logicalCpus: 8 }, { logicalCpus: 8.5, maxMemoryGib: 16 }]) {
+      expect(hostCapacityFrom(reported)).toBeUndefined()
+    }
   })
 
   it("rejects ceilings above the computer in words that name it", () => {

@@ -517,6 +517,17 @@ describe("application", () => {
     expect(within(appPanel("Settings")).getByRole("heading", { name: "Notifications", level: 2 })).toBeVisible()
   })
 
+  it("fits a new sandbox to the capacity this computer reports (I-24)", async () => {
+    const source = { ...applicationSourceForScenario("running"), hostCapacity: { logicalCpus: 8, physicalMemoryBytes: 16 * 1024 ** 3, maxMemoryGib: 16 } }
+    const { user } = renderApplication("running", source)
+    const panel = within(appPanel("Sandboxes"))
+    await user.click(panel.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+    expect(panel.getByRole("combobox", { name: "CPU ceiling" })).toHaveValue("8")
+    expect(panel.getByRole("combobox", { name: "Memory ceiling" })).toHaveValue("16")
+    expect(panel.getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+  })
+
   it("keeps an unsaved sandbox edit while visiting another section (I-37)", async () => {
     const { user } = renderApplication()
     const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
