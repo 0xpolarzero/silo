@@ -14,9 +14,9 @@ const network: NetworkState = {workspaces:[{workspace:"dev",error:null,ports:[
   {port:5432,hostPort:45432,scheme:null,state:"reachable",configured:true},
   {port:8080,hostPort:null,scheme:null,state:"unpublished",configured:false},
 ]}]}
-function setup(overrides: Partial<ApplicationActions> = {}, state: NetworkState | undefined = network) {
+function setup(overrides: Partial<ApplicationActions> = {}, state: NetworkState | undefined = network, browser = "Firefox") {
   const actions = { refreshNetwork: vi.fn(async () => {}), saveNetworkPort: vi.fn(async () => {}), removeNetworkPort: vi.fn(async () => {}), openNetworkPort: vi.fn(async () => {}), ...overrides } as unknown as ApplicationActions
-  return {actions,user:userEvent.setup(),...render(<SettingsProvider initialSettings={{theme:"light"}}><Toaster /><NetworkPage workspaces={workspaces} browser="Firefox" network={state} actions={actions} active /></SettingsProvider>)}
+  return {actions,user:userEvent.setup(),...render(<SettingsProvider initialSettings={{theme:"light"}}><Toaster /><NetworkPage workspaces={workspaces} browser={browser} network={state} actions={actions} active /></SettingsProvider>)}
 }
 describe("Network", () => {
   it("uses actual forwarded addresses and opens only reachable web services", async () => {
@@ -28,9 +28,9 @@ describe("Network", () => {
     expect(actions.openNetworkPort).toHaveBeenCalledWith("dev",3000)
     expect(screen.queryByText(/silo.test/)).not.toBeInTheDocument()
   })
-  it("shows websites at the sandbox's own host name and offers the 127.0.0.1 address as a fallback", async () => {
+  it.each(["Safari", "Google Chrome", "Firefox", "Unknown browser"])("shows sandbox website names and the 127.0.0.1 fallback with %s", async (browser) => {
     const named: NetworkState = { workspaces: [{ ...network.workspaces[0], host: "dev-1a2b3c4d.localhost" }] }
-    const {user,actions} = setup({}, named)
+    const {user,actions} = setup({}, named, browser)
     expect(screen.getByText("http://dev-1a2b3c4d.localhost:43000")).toBeVisible()
     // Plain TCP services have no host name to separate; they stay at 127.0.0.1.
     expect(screen.getByText("127.0.0.1:45432")).toBeVisible()

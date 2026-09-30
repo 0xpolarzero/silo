@@ -6,7 +6,7 @@ import type { ApplicationActions, ApplicationWorkspace, NetworkPort, NetworkStat
 
 /** Where a forwarded port is reached on this computer. Websites use their sandbox's own
  * `*.localhost` name when the backend supplies one, so browsers keep each sandbox's cookies
- * apart from other local services; plain TCP ports and other browsers use 127.0.0.1. */
+ * apart from other local services in every browser; plain TCP ports use 127.0.0.1. */
 export function networkAddress(port: NetworkPort, host?: string | null) {
   if (port.hostPort === null) return null
   return port.scheme ? `${port.scheme}://${host ?? "127.0.0.1"}:${port.hostPort}` : `127.0.0.1:${port.hostPort}`

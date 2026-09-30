@@ -99,18 +99,6 @@ pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
     })
 }
 
-/// Desktop-entry id of the selected browser, or of the default HTTPS handler.
-pub fn browser_identity(selection: Option<&Path>) -> Option<String> {
-    let info: AppInfo = match selection {
-        Some(path) => desktop_at(path)?.upcast(),
-        None => AppInfo::default_for_uri_scheme("https")?,
-    };
-    // Entries loaded from a file path may have no id; their executable names the browser.
-    info.id()
-        .map(|id| id.to_string())
-        .or_else(|| info.executable().file_name()?.to_str().map(str::to_owned))
-}
-
 pub fn discover() -> Result<ApplicationCatalog, String> {
     let mut catalog = ApplicationCatalog::default();
     // GIO owns XDG precedence, hidden overrides, and desktop-entry parsing.

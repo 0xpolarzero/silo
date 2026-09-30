@@ -61,23 +61,6 @@ pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
     }
 }
 
-/// Bundle identifier of the selected browser, or of the system's HTTPS handler.
-pub fn browser_identity(selection: Option<&Path>) -> Option<String> {
-    autoreleasepool(|_| {
-        let application = match selection {
-            Some(path) => NSURL::fileURLWithPath(&NSString::from_str(path.to_str()?)),
-            None => {
-                // Querying the handler does not open the URL or launch an application.
-                let https = NSURL::URLWithString(&NSString::from_str("https://example.invalid"))?;
-                NSWorkspace::sharedWorkspace().URLForApplicationToOpenURL(&https)?
-            }
-        };
-        NSBundle::bundleWithURL(&application)
-            .and_then(|bundle| bundle.bundleIdentifier())
-            .map(|id| id.to_string())
-    })
-}
-
 // Suggestions and defaults list only apps Silo can hand a sandbox to (G-07);
 // Choose… can still select any valid application bundle.
 // Terminals with a command launcher in `open_terminal`, in default order.
