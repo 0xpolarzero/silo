@@ -59,7 +59,7 @@ it("keeps a sandbox that started while its export was running", async () => {
   running.workspaces.find(({ machine }) => machine.name === "dev")!.state = "running"
   rerender(view(running))
   complete(verified)
-  await waitFor(() => expect(screen.getByText("Couldn't delete dev")).toBeVisible())
+  await waitFor(() => expect(screen.getByText("Could not delete dev")).toBeVisible())
   expect(onMachinesChange).not.toHaveBeenCalled()
 })
 

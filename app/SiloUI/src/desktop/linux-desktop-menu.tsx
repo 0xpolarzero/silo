@@ -55,7 +55,7 @@ export function NativeDesktopActionsMenu({ busy, onSelect, onError }: DesktopMen
       // GTK popup returns before dismissal. Keep the resource alive until the
       // next opening or unmount, rather than destroying a menu still in use.
     } catch {
-      if (mounted.current) onError("Couldn't open desktop actions. Try again.")
+      if (mounted.current) onError("Could not open desktop actions. Try again.")
     } finally {
       opening.current = false
     }

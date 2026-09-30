@@ -88,7 +88,7 @@ it("reports native menu failure and allows retry", async () => {
   native.popup.mockRejectedValueOnce(new Error("Popup failed"))
   const { user } = setup()
   await user.click(screen.getByRole("button", { name: "Actions for dev" }))
-  expect(await screen.findByText("Couldn't open sandbox actions")).toBeInTheDocument()
+  expect(await screen.findByText("Could not open sandbox actions")).toBeInTheDocument()
   expect(screen.getByText("Popup failed")).toBeInTheDocument()
   expect(native.close).toHaveBeenCalledOnce()
   await user.click(screen.getByRole("button", { name: "Retry" }))

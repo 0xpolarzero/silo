@@ -52,7 +52,7 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
       await menu.popup(new LogicalPosition(bounds.left, bounds.bottom))
     } catch (error) {
       console.error("Silo status menu:", error)
-      showActionFailure("Couldn't open sandbox actions", error, () => { if (buttonRef.current) void open(buttonRef.current) }, { native: false })
+      showActionFailure("Could not open sandbox actions", error, () => { if (buttonRef.current) void open(buttonRef.current) }, { native: false })
     } finally {
       opening.current = false
       // On macOS popup resolves after native menu tracking ends.

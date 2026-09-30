@@ -398,7 +398,7 @@ describe("status bar", () => {
     await user.click(screen.getByRole("button", { name: "Actions for dev" }))
     screen.getByRole("menuitem", { name: "Open in browser" }).focus()
     await user.keyboard("{ArrowRight}{End}{Enter}")
-    expect(screen.getByRole("menuitem", { name: "Couldn't copy port 3000 address" })).toHaveTextContent("Copy failed")
+    expect(screen.getByRole("menuitem", { name: "Could not copy port 3000 address" })).toHaveTextContent("Copy failed")
     await user.keyboard("{Enter}")
     expect(writeText).toHaveBeenNthCalledWith(2, "http://127.0.0.1:3000")
     expect(screen.getByRole("menuitem", { name: "Port 3000 address copied" })).toHaveFocus()

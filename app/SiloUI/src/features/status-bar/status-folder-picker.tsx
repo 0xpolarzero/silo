@@ -93,7 +93,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
             {[60, 45, 70].map((width) => <div key={width} className="h-5 rounded bg-muted motion-safe:animate-pulse" style={{ width: `${width}%` }} />)}
           </div>}
           {snapshot.error && <div className="flex items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
-            <span role="alert">{snapshot.entries && snapshot.errorOperation === "refresh" ? "Couldn’t refresh. Showing previous folders." : snapshot.error}</span>
+            <span role="alert">{snapshot.entries && snapshot.errorOperation === "refresh" ? "Could not refresh. Showing previous folders." : snapshot.error}</span>
             <Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(target, path, snapshot.errorOperation === "more" ? { more: true } : { refresh: true })}>Retry</Button>
           </div>}
           {snapshot.nextOffset !== null && <Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(target, path, { more: true })}>Load more</Button>}

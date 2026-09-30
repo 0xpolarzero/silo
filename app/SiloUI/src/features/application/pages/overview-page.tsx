@@ -422,7 +422,7 @@ export function OverviewPage({ active = true, readOnly = false,
             try {
               if (!await exportSandbox(machine.name)) return false
             } catch (error) {
-              showActionFailure(`Couldn't export ${machine.name}`, error, undefined, { native: false })
+              showActionFailure(`Could not export ${machine.name}`, error, undefined, { native: false })
               return false
             }
             // Export can take minutes. A verified file does not authorize deleting a sandbox
@@ -430,7 +430,7 @@ export function OverviewPage({ active = true, readOnly = false,
             const current = latestDeleteState.current
             const fresh = current.source.workspaces.find(item => item.machine.id === machine.id && !item.computer)
             if (!fresh || current.readOnly || current.source.vmOperationsUnavailable || current.source.sandboxConfigurationOperation || workspaceAvailability(fresh, current.source).busy || fresh.state === "running" || fresh.freshness === "stale") {
-              showActionFailure(`Couldn't delete ${machine.name}`, "The sandbox changed while exporting. Review its current state before deleting it. Your export is saved.", undefined, { native: false })
+              showActionFailure(`Could not delete ${machine.name}`, "The sandbox changed while exporting. Review its current state before deleting it. Your export is saved.", undefined, { native: false })
               return false
             }
             return true
@@ -500,7 +500,7 @@ export function OverviewPage({ active = true, readOnly = false,
       if (action === "dismiss-error") continue
       const verb = action === "restart" ? "restart" : action === "stop" ? "stop" : "start"
       dismissOperationToast(id)
-      showOperationFailure(id, `Couldn't ${verb} ${name}`, { description: workspace.lifecycleFailure ? <ErrorDetails message={workspace.lifecycleFailure} diagnostic={workspace.lifecycleFailureDiagnostic} /> : undefined, retry: lifecycleRetry(workspace), sandbox: name, native: false })
+      showOperationFailure(id, `Could not ${verb} ${name}`, { description: workspace.lifecycleFailure ? <ErrorDetails message={workspace.lifecycleFailure} diagnostic={workspace.lifecycleFailureDiagnostic} /> : undefined, retry: lifecycleRetry(workspace), sandbox: name, native: false })
     }
   })
   useEffect(() => { lifecycleToasts(source.workspaces) }, [source.workspaces])

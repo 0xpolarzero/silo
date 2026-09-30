@@ -56,7 +56,7 @@ describe("status folder picker live directories", () => {
       await act(async () => {})
       expect(screen.getByRole("button", { name: "project" })).toBeVisible()
       await act(async () => vi.advanceTimersByTime(10_000))
-      expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t refresh. Showing previous folders.")
+      expect(await screen.findByRole("alert")).toHaveTextContent("Could not refresh. Showing previous folders.")
       const open = screen.getByRole("button", { name: "Open in Cursor" })
       expect(open).toBeEnabled()
       act(() => open.click())

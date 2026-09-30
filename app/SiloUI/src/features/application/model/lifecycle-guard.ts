@@ -97,7 +97,7 @@ export function lifecycleGuard(source: ApplicationSource, actions: LifecycleActi
     const availability = workspaceAvailability(workspace, source)
     const allowed = action === "start" ? availability.canStart : action === "stop" ? availability.canStop : availability.canRestart
     const reason = availability.reasons[action]
-    if (!allowed) return { kind: "unavailable", title: `Couldn't ${verbs[action]} ${sandboxName(workspace)}`, message: reason ?? "It is busy." }
+    if (!allowed) return { kind: "unavailable", title: `Could not ${verbs[action]} ${sandboxName(workspace)}`, message: reason ?? "It is busy." }
     return undefined
   }
   const guard: LifecycleGuard = {

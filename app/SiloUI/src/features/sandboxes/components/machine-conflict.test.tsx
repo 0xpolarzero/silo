@@ -82,7 +82,7 @@ it("reports a stale rejection of Add Linux desktop, which has no editor to show 
   const user = userEvent.setup()
   await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: "Add Linux desktop" }))
-  expect(await screen.findByText(`Couldn't save ${machine.name}`)).toBeVisible()
+  expect(await screen.findByText(`Could not save ${machine.name}`)).toBeVisible()
   expect(screen.getByText(staleError.message)).toBeVisible()
 })
 
@@ -98,7 +98,7 @@ it("reports a stale rejection after the editor closed on a local save", async ()
   await user.click(screen.getByRole("button", { name: "Save" }))
   expect(screen.queryByRole("button", { name: "Save" })).not.toBeInTheDocument()
   await act(async () => reject(staleError))
-  expect(await screen.findByText(`Couldn't save ${machine.name}`)).toBeVisible()
+  expect(await screen.findByText(`Could not save ${machine.name}`)).toBeVisible()
   expect(screen.getByText(staleError.message)).toBeVisible()
 })
 

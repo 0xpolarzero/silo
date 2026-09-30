@@ -64,7 +64,7 @@ function Directory({ workspace, path, label, store, expanded, toggle, register, 
       </li>}
       {snapshot.entries?.length === 0 && !snapshot.error && <li className="px-2 py-1 text-xs text-muted-foreground">Empty folder.</li>}
       {snapshot.error && <li className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
-        <span role="alert">{snapshot.errorOperation === "refresh" && snapshot.entries ? "Couldn’t refresh. Showing previous files." : snapshot.error}</span>
+        <span role="alert">{snapshot.errorOperation === "refresh" && snapshot.entries ? "Could not refresh. Showing previous files." : snapshot.error}</span>
         <Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(workspace, path, snapshot.errorOperation === "more" ? { more: true } : { refresh: true })}>Retry</Button>
       </li>}
       {snapshot.nextOffset !== null && <li><Button variant="ghost" size="xs" disabled={snapshot.loading} onClick={() => void store.load(workspace, path, { more: true })}>Load more</Button></li>}

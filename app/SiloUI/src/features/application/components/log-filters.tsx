@@ -49,7 +49,7 @@ export function LogFilters({ source, since, until, onChange }: LogFilterValues &
       const from = boundary(fromDate, fromTime, false)
       const to = boundary(toDate, toTime, true)
       if (!from && !to) throw new Error("Enter a start or end date, or choose a preset.")
-      if (from && to && from > to) throw new Error("The end must be after the start.")
+      if (from && to && from > to) throw new Error("The start date is after the end date. Change the date filter to see logs.")
       onChange({ source, since: from, until: to })
       setError(""); setOpen(false)
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }

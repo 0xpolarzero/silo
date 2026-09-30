@@ -135,3 +135,9 @@ native menu and the preview (`status-bar-popover.tsx`) with Radix, so both offer
 same items. Browser fixtures simulate lifecycle progress and host handoffs. In the desktop
 app, Rust commands perform terminal, editor, site, and Quit actions. Open Silo
 opens the main window and carries the selected sandbox.
+
+## User-facing copy
+
+Use the [owner-approved glossary](../../docs/research/codebase-review-2026-09-29.md#owner-decisions-settled-2026-09-29): sandbox, SSH host, computer, checkpoint, Restore, Fork, Duplicate settings, Export, Import, and export file. Reserve workspace for /workspace and its disk. Say “this computer” only for the local computer; name remote computers. Use Updating… and Offline · last known status for remote state.
+
+Use “Could not” in failure titles, sentence case, and a final period for complete messages and helper sentences. Action labels have no final period. Add an ellipsis only when a dialog or confirmation follows. Errors state what failed and the next action; put technical diagnostics behind Details. Use CPUs, Memory, and Disk for resources, and GiB/MiB for binary sizes. Keep essential explanations inline or behind a labelled disclosure; tooltips carry supplementary details.

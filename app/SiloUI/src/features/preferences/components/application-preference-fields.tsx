@@ -78,7 +78,7 @@ export function ApplicationPreferenceFields({
       if (application) onChange({ ...value, [kind]: application.name, [`${kind}Path`]: application.path, [`${kind}UseSystemDefault`]: false })
     } catch (error) {
       const detail = errorMessage(error).trim()
-      setFailures((current) => ({ ...current, [kind]: `Couldn't use the chosen ${applicationNoun[kind]}.${detail ? ` ${/[.!?]$/.test(detail) ? detail : `${detail}.`}` : ""}` }))
+      setFailures((current) => ({ ...current, [kind]: `Could not use the chosen ${applicationNoun[kind]}.${detail ? ` ${/[.!?]$/.test(detail) ? detail : `${detail}.`}` : ""}` }))
     }
   }
 
