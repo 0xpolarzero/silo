@@ -7,12 +7,12 @@
     <meta name="theme-color" content="#f7f7f4" />
     <meta
       name="description"
-      content="Run Linux VMs locally or remotely, with a desktop and computer use. Available on macOS and Linux."
+      content="Run Linux sandboxes locally or remotely, with a desktop and computer use. Available on macOS and Linux."
     />
     <meta property="og:title" content="Silo — Computers for your agents" />
     <meta
       property="og:description"
-      content="Run Linux VMs locally or remotely, with a desktop and computer use. Available on macOS and Linux."
+      content="Run Linux sandboxes locally or remotely, with a desktop and computer use. Available on macOS and Linux."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://silo.polarzero.xyz/" />
@@ -155,7 +155,7 @@
           </div>
           <h1 id="hero-title">Computers for your agents.</h1>
           <p class="hero-description">
-            Run Linux VMs locally or remotely,<br
+            Run Linux sandboxes locally or remotely,<br
               class="desktop-break"
             />
             with a desktop and computer use.
@@ -178,7 +178,7 @@
           <div>
             <h2>Isolated</h2>
             <p>
-              Give your projects their own Linux VM, with the CPU, memory, and
+              Give your projects their own Linux sandbox, with the CPU, memory, and
               storage you choose.
             </p>
           </div>
@@ -401,7 +401,7 @@
               <h2 id="access-title">Give each sandbox what it needs.</h2>
             </div>
             <p>
-              Repositories, credentials, and backups.<br
+              Repositories, credentials, and export files.<br
                 class="desktop-break"
               />
               Managed in the same place.
@@ -477,11 +477,11 @@
               <button
                 class="detail-media"
                 data-tour="42"
-                aria-label="Watch the backup demonstration"
+                aria-label="Watch the sandbox export and import demonstration"
               >
                 <picture><source data-dark-source media="(prefers-color-scheme: dark)" srcset="/media/backup-dark.png" /><img
                   src="/media/backup.png"
-                  alt="Silo’s backup page with create, restore, and recent backup options."
+                  alt="Sandbox export and import controls in Silo."
                   width="1280"
                   height="800"
                   loading="lazy"
@@ -497,12 +497,12 @@
                   >A way back
                 </h3>
                 <p>
-                  Save local sandboxes to an archive. Restore a backup as a new
-                  sandbox, ready to pick up again.
+                  Export a local sandbox to an export file. Import it as a new
+                  sandbox, ready to start again.
                 </p>
                 <a
                   href="https://github.com/0xpolarzero/silo/blob/main/docs/SiloUI-RUNTIME-BACKUP-FINDINGS.md#backup-and-restore"
-                  >About backups <span aria-hidden="true">→</span></a
+                  >About export and import <span aria-hidden="true">→</span></a
                 >
               </div>
             </article>
@@ -519,7 +519,7 @@
             </svg>
             <h2 id="download-title">Make room for your next idea.</h2>
             <p>
-              Get Silo. The VM runtime, Linux image, and Git tools come with it.
+              Get Silo. The sandbox runtime, Linux image, and Git tools come with it.
             </p>
             <a
               class="release-link"
@@ -567,7 +567,7 @@
                 >
               </div>
               <p class="requirements">
-                Ubuntu 24.04-compatible · KVM required for local VMs
+                Ubuntu 24.04-compatible · KVM required for local sandboxes
               </p>
               <a
                 id="linux-download"
@@ -626,9 +626,9 @@
               </summary>
               <p>
                 Install Silo on both computers. Enable SSH and Allow remote
-                management on the host, then connect from your computer. Keep
-                Silo running on the host. Manage its GitHub account, secrets,
-                and backups there.
+                management on the owning computer, then connect from your computer. Keep
+                Silo running on the owning computer. Manage its GitHub account, secrets,
+                exports, and imports there.
               </p>
               <a
                 href="https://github.com/0xpolarzero/silo/blob/main/docs/SiloUI-REMOTE-COMPUTERS.md"
@@ -643,7 +643,7 @@
               </summary>
               <p>
                 Your files survive stops, restarts, and app updates. Quitting
-                Silo stops its local VMs and preserves their files; VMs on other
+                Silo stops its local sandboxes and preserves their files; sandboxes on other
                 computers keep running.
               </p>
             </details>
@@ -711,7 +711,7 @@
         ><button data-chapter="21">SSH &amp; agents</button
         ><button data-chapter="32">GitHub</button
         ><button data-chapter="37">Secrets</button
-        ><button data-chapter="42">Backups</button
+        ><button data-chapter="42">Export and Import</button
         ><button data-chapter="47">Networking</button>
       </div>
       <p class="video-note">
