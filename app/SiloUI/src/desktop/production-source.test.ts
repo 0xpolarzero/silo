@@ -423,7 +423,7 @@ describe("production application bridge", () => {
     const before = store.getSnapshot().source?.workspaces
     toasts.showOperationFailure.mockClear()
     await store.applicationActions.openDesktop!("dev")
-    expect(toasts.showOperationFailure).toHaveBeenCalledWith("open-desktop:dev", "Could not open the desktop", { description: expect.stringContaining("Owning computer unavailable") })
+    expect(toasts.showOperationFailure).toHaveBeenCalledWith("open-desktop:dev", "Could not open the Linux desktop", { description: expect.stringContaining("Owning computer unavailable") })
     expect(store.getSnapshot().error).toBeNull()
     expect(store.getSnapshot().source?.workspaces).toEqual(before)
     store.dispose()

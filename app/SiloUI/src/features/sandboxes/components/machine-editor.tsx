@@ -295,7 +295,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
           <Switch aria-label="Start desktop with sandbox" checked={draft.desktop?.startWithSandbox ?? true} disabled={saving} onCheckedChange={startWithSandbox => update({ desktop: { startWithSandbox } })} />
         </label> : created ? <div className="flex items-center justify-between gap-3">
           <div className="text-xs">Linux desktop<p className="mt-1 text-[11px] text-muted-foreground">Use graphical applications in this sandbox.</p></div>
-          {draft.desktop ? <span className="text-xs text-muted-foreground">Installs when you save</span> : <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => update({ desktop: { startWithSandbox: true } })}>Add desktop</Button>}
+          {draft.desktop ? <span className="text-xs text-muted-foreground">Installs when you save</span> : <Button type="button" size="sm" variant="outline" disabled={saving} onClick={() => update({ desktop: { startWithSandbox: true } })}>Add Linux desktop</Button>}
         </div> : <label className="flex items-start gap-2 text-xs">
           <Checkbox aria-label="Linux desktop" checked={Boolean(draft.desktop)} disabled={saving} onCheckedChange={checked => update({ desktop: checked === true ? { startWithSandbox: true } : undefined })} />
           <span>Linux desktop<span className="mt-1 block text-[11px] text-muted-foreground">Run graphical applications. Starts with the sandbox.</span></span>

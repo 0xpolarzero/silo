@@ -1654,7 +1654,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     dismissWorkspaceError: (name) => workspaceAction("dismiss-error", name),
     openDesktop: async (workspace) => {
       try { await native.invoke("open_desktop", { workspace }) }
-      catch (cause) { reportActionFailure(`open-desktop:${workspace}`, "Could not open the desktop", errorMessage(cause)) }
+      catch (cause) { reportActionFailure(`open-desktop:${workspace}`, "Could not open the Linux desktop", errorMessage(cause)) }
     },
     openTerminal: (name) => workspaceAction("open-terminal", name),
     openEditor: (name, path) => workspaceAction("open-editor", name, path ? { path } : undefined),
