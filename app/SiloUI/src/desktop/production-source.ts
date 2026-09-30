@@ -442,7 +442,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (disposed || revision !== sshRevision) return
       sshAccessError = results[0].status === "rejected" ? "Could not check SSH access." : null
       sshAccess = { workspaces: results.flatMap((result, index) => {
-        if (index === 0) return result.status === "fulfilled" ? result.value.workspaces : unavailableSshRows("", remoteManagement?.name ?? "Silo host", "Could not check SSH access.")
+        if (index === 0) return result.status === "fulfilled" ? result.value.workspaces : unavailableSshRows("", remoteManagement?.name ?? "This computer", "Could not check SSH access.")
         const computer = computers[index - 1]
         const current = remoteComputers.find(item => item.id === computer.id)
         if (!current) return []
@@ -1038,7 +1038,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function workspaceAction(action: string, name: string, extras: Record<string, unknown> = {}) {
     const remote = parseRemoteWorkspaceTarget(name)
     if (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected) {
-      reportUnavailable("This computer is unavailable. Reconnect before changing its sandboxes.")
+      reportUnavailable(`${remoteComputers.find(computer => computer.id === remote.hostId)?.name ?? "The remote computer"} is offline. Reconnect to it before changing ${remoteDisplayName(name) ?? "the sandbox"}.`)
       return
     }
     const key = `${action}:${name}`

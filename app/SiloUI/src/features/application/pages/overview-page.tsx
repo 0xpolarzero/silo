@@ -354,7 +354,7 @@ export function OverviewPage({ active = true, readOnly = false,
   const deleteMachine = actions.deleteRemoteMachine ? async (machine: SetupMachineConfiguration, baseline?: SetupMachineConfiguration[]) => {
     const computer = workspaces.get(machine.id)?.computer
     if (computer) {
-      if (!computer.connected) throw new Error("This computer is unavailable. Reconnect before deleting its sandbox.")
+      if (!computer.connected) throw new Error(`${computer.name} is offline. Reconnect to it before deleting ${machine.name}.`)
       await actions.deleteRemoteMachine!(computer.id, machine)
     } else {
       const base = baseline ? localOnly(baseline) : localMachines
@@ -367,7 +367,7 @@ export function OverviewPage({ active = true, readOnly = false,
   }
   const validateMachineOperation = (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => {
     const computer = workspaces.get(machine.id)?.computer ?? source.remoteComputers?.find(computer => computer.id === computerId)
-    if (computer) return computer.busy ? "This computer is refreshing its VM status. Try again shortly." : computer.connected ? undefined : "This computer is unavailable. Reconnect before changing its sandboxes."
+    if (computer) return computer.busy ? `${computer.name} is updating. Wait before changing ${machine.name}.` : computer.connected ? undefined : `${computer.name} is offline. Reconnect to it before changing ${machine.name}.`
     if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
     const notice = source.resourceNotice
     if (!isNew || machine.kind !== "vm" || notice?.kind !== "create-storage" || machine.name !== notice.sandbox) return undefined
