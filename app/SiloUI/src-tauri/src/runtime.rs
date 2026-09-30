@@ -8519,7 +8519,7 @@ esac
     }
 
     fn missing_sandbox() -> Result<CommandOutput, RuntimeError> {
-        Err(RuntimeError::Failed { operation: "inspect dev".into(), detail: "exit code 1: sandbox not found".into() })
+        Err(RuntimeError::Failed { operation: "inspect dev".into(), exit_code: Some(1), detail: "sandbox not found".into() })
     }
 
     #[test]
