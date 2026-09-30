@@ -445,6 +445,10 @@ fn desktop_position(
     ))
 }
 
+/// Refuses the async clipboard API and page-driven copy in guest frames;
+/// behaviour is covered by `desktop/linux-desktop-guest-guard.test.ts`.
+const GUEST_CLIPBOARD_GUARD: &str = include_str!("desktop_viewer_guard.js");
+
 fn viewer_url(origin: &str) -> tauri::Url {
     // Native viewers use WebKit. Its user agent can omit "Safari", bypassing
     // KasmVNC's safeguard against clipboard reads opening Paste menus on clicks.
@@ -544,6 +548,8 @@ pub(crate) async fn desktop_viewer_attach(
         .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
         // Guest pages must never write to the host's Downloads folder (G-13).
         .on_download(|_, _| false)
+        // Nor use the host clipboard, from any frame (G-20).
+        .initialization_script_for_all_frames(GUEST_CLIPBOARD_GUARD)
         .on_navigation(move |url| {
             url.as_str() == "about:blank" || url.origin().ascii_serialization() == permitted
         });
