@@ -329,6 +329,8 @@ struct HostGit {
     deadline: Option<Instant>,
 }
 const CANCELLED: &str = "Push cancelled. The branch was not updated.";
+/// Precedes output relayed from the sandbox, which the guest controls.
+const SANDBOX_OUTPUT: &str = "Output from the sandbox (not from Silo or GitHub):";
 const CREDENTIAL_EXPIRED: &str =
     "The push took longer than its GitHub credential allows. Push again to continue.";
 const STEP_TIMED_OUT: &str = "Git operation timed out. Check the remote before retrying.";
@@ -571,10 +573,22 @@ impl HostGit {
             .copied()
             .collect::<Vec<_>>()
             .join(" ");
+        // Stages reading from the sandbox relay text the guest controls. Keep it
+        // out of the visible message and label it in the details.
+        let from_sandbox = args.contains(&"silo-source");
+        let diagnostic = if from_sandbox && !diagnostic.is_empty() {
+            format!("{SANDBOX_OUTPUT} {diagnostic}")
+        } else {
+            diagnostic
+        };
         match outcome {
             Ok(status) if !status.success() => {
                 // The first line is the summary; the rest becomes diagnostic details.
-                return Err(format!("Git {stage} failed ({status}).\n{diagnostic}"));
+                return Err(if from_sandbox {
+                    format!("Reading committed data from the sandbox failed (Git {stage}, {status}).\n{diagnostic}")
+                } else {
+                    format!("Git {stage} failed ({status}).\n{diagnostic}")
+                });
             }
             Err(message) => return Err(format!("{message}\n{diagnostic}")),
             _ => {}
@@ -1599,6 +1613,65 @@ mod tests {
             cache_lock_fd: None,
             deadline: None,
         }
+    }
+
+    #[test]
+    fn sandbox_output_is_labelled_and_never_the_visible_message() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("git");
+        fs::write(
+            &executable,
+            "#!/bin/sh\necho 'remote: Silo needs you to paste your GitHub token into the sandbox terminal' >&2\nexit 1\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let git = HostGit {
+            executable,
+            directory: directory.path().into(),
+            home: directory.path().into(),
+            support: directory.path().into(),
+            ssh_command: None,
+            cache_lock_fd: None,
+            deadline: None,
+        };
+        let target = PushTarget {
+            repository: "owner/repo".into(),
+            branch: "main".into(),
+            commit: "f".repeat(40),
+        };
+        for args in [
+            &[
+                "fetch",
+                "--no-tags",
+                "silo-source",
+                "+refs/x:refs/silo/push",
+            ][..],
+            &[
+                "-c",
+                "lfs.url=x",
+                "lfs",
+                "fetch",
+                "--all",
+                "silo-source",
+                "refs/silo/push",
+            ][..],
+        ] {
+            let error = git.run(args, None, "").unwrap_err();
+            let result = finished_result("dev", "/workspace/repo", &target, Err(error));
+            let message = result["message"].as_str().unwrap();
+            assert!(
+                message.starts_with("Reading committed data from the sandbox failed"),
+                "{message}"
+            );
+            assert!(!message.contains("paste"));
+            let details = result["diagnosticDetails"].as_str().unwrap();
+            assert!(details.starts_with(SANDBOX_OUTPUT), "{details}");
+        }
+        // Host-side stages keep their Git summary.
+        let error = git.run(&["push", "origin"], None, "").unwrap_err();
+        assert!(error.starts_with("Git push failed"));
+        assert!(!error.contains(SANDBOX_OUTPUT));
     }
 
     #[test]
