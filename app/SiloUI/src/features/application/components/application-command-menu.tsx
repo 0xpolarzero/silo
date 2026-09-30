@@ -10,6 +10,12 @@ import type { ApplicationCommand } from "./application-commands"
 
 const groups = ["Go to", "Sandboxes", "Actions"] as const
 
+/** Items are keyed by command id (same-named sandboxes stay distinct); the label is the first keyword. */
+function filterItem(_value: string, search: string, keywords: string[] = []) {
+  const [label = "", ...rest] = keywords
+  return filterCommand(label, search, rest)
+}
+
 function filterCommand(label: string, search: string, keywords: string[] = []) {
   const text = [label, ...keywords].join(" ").toLowerCase()
   const terms = search.toLowerCase().trim().split(/\s+/)
@@ -27,6 +33,8 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
     setConfirming(null)
   }
   const consumedOpenRequest = useRef(0)
+  // A command that opens a popover or picker keeps focus there instead of on the palette's trigger.
+  const keepFocus = useRef(false)
   const openRequested = useEffectEvent(() => {
     if (disabled) return
     const focusedDialog = document.activeElement?.closest('[role="dialog"], [role="alertdialog"]')
@@ -69,14 +77,17 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
     </Dialog.Trigger>
     <Dialog.Portal>
       <Dialog.Overlay className="fixed inset-0 z-50 bg-black/20" />
-      <Dialog.Content ref={contentRef} aria-describedby={undefined} onEscapeKeyDown={(event) => {
+      <Dialog.Content ref={contentRef} aria-describedby={undefined} onCloseAutoFocus={(event) => {
+        if (keepFocus.current) event.preventDefault()
+        keepFocus.current = false
+      }} onEscapeKeyDown={(event) => {
         // Escape leaves the question for the list first, then closes the palette.
         if (!confirming) return
         event.preventDefault()
         setConfirming(null)
       }} className="fixed top-[min(18dvh,8rem)] left-1/2 z-50 w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-2xl outline-none">
         <Dialog.Title className="sr-only">Commands</Dialog.Title>
-        {confirming?.confirm ? <CommandConfirmationPanel command={confirming} onCancel={() => setConfirming(null)} onConfirm={() => { if (disabled) return; setOpen(false); confirming.run() }} /> : <Command label="Search commands" filter={filterCommand} loop vimBindings={false}>
+        {confirming?.confirm ? <CommandConfirmationPanel command={confirming} onCancel={() => setConfirming(null)} onConfirm={() => { if (disabled) return; setOpen(false); confirming.run() }} /> : <Command label="Search commands" filter={filterItem} loop vimBindings={false}>
           <div className="flex items-center gap-3 border-b border-border px-4">
             <Search aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
             <Command.Input aria-label="Search commands" placeholder="Search pages, sandboxes, and actions…" autoComplete="off" spellCheck={false} className="h-12 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground" />
@@ -85,9 +96,10 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
           <Command.List className="max-h-[min(22rem,50dvh)] overflow-y-auto overscroll-contain scroll-py-2 p-1.5" label="Commands">
             <Command.Empty className="px-4 py-10 text-center text-xs text-muted-foreground">No commands found.</Command.Empty>
             {groups.map((group) => <Command.Group key={group} value={group.replaceAll(" ", "-")} heading={group} className="[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:pb-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground">
-              {commands.filter((command) => command.group === group).map((command) => <Command.Item key={command.id} value={command.label} keywords={command.keywords} onSelect={() => {
+              {commands.filter((command) => command.group === group).map((command) => <Command.Item key={command.id} value={command.id} keywords={[command.label, ...(command.keywords ?? [])]} onSelect={() => {
                 if (disabled) return
                 if (command.confirm) { setConfirming(command); return }
+                keepFocus.current = Boolean(command.opensPanel)
                 setOpen(false)
                 command.run()
               }} className="flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-xs outline-none select-none data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground">

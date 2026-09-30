@@ -5,6 +5,7 @@ import { SshAccessBadges } from "./ssh-access-panel"
 import { StatusFolderPicker } from "@/features/status-bar/status-folder-picker"
 import { workspaceAvailability, type WorkspaceAvailability } from "../model/workspace-availability"
 import { DisabledReason } from "../components/disabled-reason"
+import type { SandboxCommandRequest } from "../components/application-commands"
 import { LifecycleControl } from "../components/lifecycle-control"
 import { lifecycleGuard, type LifecycleAction, type LifecycleGuard } from "../model/lifecycle-guard"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
@@ -42,6 +43,13 @@ import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/compo
 
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
+
+/** A command palette request carried out on a sandbox's page. */
+export interface SandboxPageRequest {
+  token: number
+  workspaceId: string
+  request: SandboxCommandRequest
+}
 
 /** A lifecycle action shows a progress notification only if it is still running after this long. */
 const LIFECYCLE_TOAST_DELAY_MS = 800
@@ -227,6 +235,8 @@ export function OverviewPage({ active = true, readOnly = false,
   onMachinesChange,
   newSandboxRequest,
   onNewSandboxRequestHandled,
+  sandboxRequest,
+  onSandboxRequestHandled,
   onExportSandbox,
   onImportSandbox,
   importPopover,
@@ -241,6 +251,9 @@ export function OverviewPage({ active = true, readOnly = false,
   readOnly?: boolean
   newSandboxRequest?: number
   onNewSandboxRequestHandled?: (id: number) => void
+  /** A palette command for a sandbox's page: its folder picker, Fork or Delete popover. */
+  sandboxRequest?: SandboxPageRequest
+  onSandboxRequestHandled?: (token: number) => void
   /** Pick a folder and export a sandbox (or one of its checkpoints) as a background toast. */
   onExportSandbox?: (sandboxName: string, checkpoint?: { id: string; name: string }) => void
   /** Open the import review dialog after picking an export file. */
@@ -553,6 +566,25 @@ export function OverviewPage({ active = true, readOnly = false,
 
   const pickerRoute = `${active}:${selectedId ?? ""}:${activeSandboxTab}`
   const openFolderPicker = (workspaceId: string) => setFolderPicker({ workspaceId, route: pickerRoute })
+  // Palette requests open the sandbox's page (the app navigates there first) and then the
+  // same folder picker or ⋯ popover its own controls open.
+  const [menuRequest, setMenuRequest] = useState<{ token: number; workspaceId: string; panel: string }>()
+  const handledSandboxRequest = useRef(0)
+  const runSandboxRequest = useEffectEvent((request: SandboxPageRequest) => {
+    openSandbox(request.workspaceId)
+    if (request.request === "editor") setFolderPicker({ workspaceId: request.workspaceId, route: `${active}:${request.workspaceId}:${activeSandboxTab}` })
+    else setMenuRequest({ token: request.token, workspaceId: request.workspaceId, panel: request.request })
+    onSandboxRequestHandled?.(request.token)
+  })
+  useEffect(() => {
+    if (!sandboxRequest || handledSandboxRequest.current === sandboxRequest.token) return
+    handledSandboxRequest.current = sandboxRequest.token
+    runSandboxRequest(sandboxRequest)
+  }, [sandboxRequest])
+  // The request belongs to the page it was made for: leaving that page drops it, so the
+  // popover never reopens when the page is shown again later.
+  if (menuRequest && selectedId !== null && selectedId !== menuRequest.workspaceId) setMenuRequest(undefined)
+  if (menuRequest && selectedId === null && !sandboxRequest) setMenuRequest(undefined)
   const folderWorkspace = folderPicker && folderPicker.route === pickerRoute ? workspaces.get(folderPicker.workspaceId) : undefined
   const showFolderPicker = Boolean(folderWorkspace && workspaceAvailability(folderWorkspace, source).canOpen)
   // Adjusting state while rendering: the picker is dropped before it could reappear.
@@ -593,6 +625,7 @@ export function OverviewPage({ active = true, readOnly = false,
       configurationLocked,
       workspaceOperationBusy: availability.busy,
       changesBlocked: changesBlocked(workspace),
+      menuRequest: menuRequest?.workspaceId === workspace.machine.id ? menuRequest : undefined,
       deleteDetails: deleteDetails(workspace),
       canOpen: availability.canOpen && !readOnly,
       canStart: availability.canStart && !readOnly,

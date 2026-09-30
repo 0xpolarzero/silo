@@ -70,6 +70,8 @@ export interface SandboxDetailControls {
   lifecycleGuard: LifecycleGuard
   /** In-place Edit/Delete of this sandbox. Absent in read-only or standalone renders. */
   editing?: SandboxDetailEditing
+  /** Opens a ⋯ popover (Fork, Delete) without the menu, for a command palette request. */
+  menuRequest?: { token: number; panel: string }
   /** What the Delete dialog states (checkpoints, size) and offers, as from the list row. */
   deleteDetails?: DeleteSandboxDetails
   /** Duplicate opens the list editor for the new sandbox (it leaves the detail page). */
@@ -381,7 +383,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
       }}
     />,
   }
-  const menu = <ActionsMenu label={`More actions for ${machine.name}`} items={menuActions} popovers={menuPopovers} />
+  const menu = <ActionsMenu label={`More actions for ${machine.name}`} items={menuActions} popovers={menuPopovers} openPanel={controls.menuRequest} />
   const activeTab = visibleTabs.some(tab => tab.value === controls.activeTab) ? controls.activeTab : "overview"
 
   const reasons = controls.disabledReasons ?? {}

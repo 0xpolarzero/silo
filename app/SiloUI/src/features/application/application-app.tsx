@@ -13,7 +13,7 @@ import { ApplicationShell, type ApplicationNavigationLoading } from "@/features/
 import { ApplicationCommandMenu } from "@/features/application/components/application-command-menu"
 import { OperationQueueToast } from "@/features/application/components/operation-queue-panel"
 import { QuitRequestConfirmation, type ConnectQuitConfirmation } from "@/features/application/components/quit-request-confirmation"
-import { applicationCommands } from "@/features/application/components/application-commands"
+import { applicationCommands, type SandboxCommandRequest } from "@/features/application/components/application-commands"
 import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { defaultStartupWorkspaceIds } from "@/features/application/model/startup-workspaces"
@@ -21,7 +21,7 @@ import { RemoteComputersSettings } from "@/features/application/components/remot
 import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
 import { NotificationsPage } from "@/features/application/pages/notifications-page"
-import { OverviewPage } from "@/features/application/pages/overview-page"
+import { OverviewPage, type SandboxPageRequest } from "@/features/application/pages/overview-page"
 import { useSandboxTransfer } from "@/features/application/components/sandbox-transfer"
 import { SecretsPage } from "@/features/application/pages/secrets-page"
 import { SystemIssuePage } from "@/features/application/pages/system-issue-page"
@@ -77,6 +77,10 @@ function navigationLoadingState(source: ApplicationSource, githubBusy: boolean, 
   }
 }
 
+// Request tokens only need to be unique: each one is consumed once by the page it opens.
+let requestTokens = 0
+const nextRequestToken = () => ++requestTokens
+
 type ApplicationAppProps = {
   source: ApplicationSource
   actions: ApplicationActions
@@ -100,7 +104,8 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const installingUpdate = updates?.snapshot?.phase === "installing"
     || Boolean(updates?.pending && (updates.snapshot?.phase === "ready" || updates.snapshot?.retryAction === "install"))
   const [newSandboxRequest, setNewSandboxRequest] = useState(0)
-  const nextSandboxRequest = useRef(0)
+  // A palette command that opens something on a sandbox's page (folder picker, Fork, Delete).
+  const [sandboxRequest, setSandboxRequest] = useState<SandboxPageRequest>()
   const [searchRequest, setSearchRequest] = useState(0)
   const [sidebarRequest, setSidebarRequest] = useState(0)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
@@ -264,9 +269,17 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const canCreateSandbox = sandboxConfigurationOperation === null
   const canImport = !backupBusy
   const canCheckUpdates = Boolean(updates && !updates.pending && !["checking", "downloading", "installing"].includes(updates.snapshot?.phase ?? ""))
+  function requestNewSandbox() {
+    navigation.selectWorkspaceSection("overview")
+    setNewSandboxRequest(nextRequestToken())
+  }
+  function requestOnSandboxPage(workspaceId: string, request: SandboxCommandRequest) {
+    navigation.openSandbox(workspaceId)
+    setSandboxRequest({ token: nextRequestToken(), workspaceId, request })
+  }
+
   // The review popover anchors to the sandbox list's Add button, so show the list first.
   const openImport = () => { navigation.selectWorkspaceSection("overview"); navigation.closeSandbox(); void transfer.beginImport() }
-  const createSandbox = () => { navigation.selectWorkspaceSection("overview"); setNewSandboxRequest(++nextSandboxRequest.current) }
   const nativeMenu = useAppMenu({ ready: true, busy: installingUpdate,
     canGoBack: navigation.canGoBack, canGoForward: navigation.canGoForward,
     canCreateSandbox, canImport, canCheckUpdates, sidebarCollapsed,
@@ -279,7 +292,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         if (canCheckUpdates) updates?.check()
         break
       case "new-sandbox":
-        if (canCreateSandbox) createSandbox()
+        if (canCreateSandbox) requestNewSandbox()
         break
       case "import-sandbox":
         if (canImport) openImport()
@@ -318,7 +331,12 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       onGoBack={navigation.goBack}
       onGoForward={navigation.goForward}
       reduceMotion={reduceMotion}
-      commandMenu={<ApplicationCommandMenu nativeShortcuts={nativeMenu} openRequest={searchRequest} disabled={installingUpdate} commands={[...applicationCommands(applicationSource, actions, navigateCommand, canImport ? openImport : undefined), ...updateCommands(updates, () => navigation.selectSettingsSection("general"))]} />}
+      commandMenu={<ApplicationCommandMenu nativeShortcuts={nativeMenu} openRequest={searchRequest} disabled={installingUpdate} commands={[...applicationCommands(applicationSource, actions, navigateCommand, {
+        onImportSandbox: canImport ? openImport : undefined,
+        onNewSandbox: canCreateSandbox ? requestNewSandbox : undefined,
+        onExportSandbox: canImport ? (name) => { void transfer.exportSandbox(name) } : undefined,
+        onSandboxRequest: requestOnSandboxPage,
+      }), ...updateCommands(updates, () => navigation.selectSettingsSection("general"))]} />}
     >
       {/* One toast reflects VM-changing operations wherever the user is, so progress and
           Cancel never vanish while the work continues. It renders nothing inline. */}
@@ -326,7 +344,8 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       <QuitRequestConfirmation connect={connectQuitConfirmation} />
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)} onExportSandbox={transfer.exportSandbox} onImportSandbox={openImport} importPopover={transfer.importPopover} backup={backup} source={applicationSource}
+          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)}
+            sandboxRequest={sandboxRequest} onSandboxRequestHandled={(token) => setSandboxRequest(current => current?.token === token ? undefined : current)} onExportSandbox={transfer.exportSandbox} onImportSandbox={openImport} importPopover={transfer.importPopover} backup={backup} source={applicationSource}
             selectedSandboxId={navigation.workspace ? resolveSandboxId(navigation.workspace) : null}
             sandboxTab={navigation.sandboxTab}
             onOpenSandbox={(id, tab) => navigation.openSandbox(id, tab)}
@@ -360,7 +379,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
             onLogQueryChange={setLogQuery}
             onPushRepository={pushRepository}
             onDismissRepositoryPush={dismissRepositoryPush}
-            onCreateSandbox={canCreateSandbox && !installingUpdate ? createSandbox : undefined}
+            onCreateSandbox={canCreateSandbox && !installingUpdate ? requestNewSandbox : undefined}
           />
         )}
       </section>
