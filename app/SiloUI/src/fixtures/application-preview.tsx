@@ -66,7 +66,6 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
     source: fixture.source,
     previewMode: backupPreviewMode,
     onRestoreComplete: fixture.onRestoreComplete,
-    onRestartRequired: fixture.onRestartRequired,
   })
 
   return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><ApplicationApp

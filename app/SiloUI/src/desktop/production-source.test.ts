@@ -26,7 +26,7 @@ function native(overrides: Partial<ProductionBridge> = {}) {
   const invoke = vi.fn(async (command: string, _arguments_?: Record<string, unknown>): Promise<unknown> => {
     if (command === "read_application_state") return structuredClone(source)
     if (command === "read_backup_state") return structuredClone(backup)
-    if (command === "workspace_action" || command === "retry_workspace_start") return structuredClone(source)
+    if (command === "workspace_action") return structuredClone(source)
     return undefined
   })
   const listen = vi.fn(async (_name: string, handler: () => void) => { event = handler; return () => { event = null } })
@@ -1343,7 +1343,7 @@ describe("production application bridge", () => {
     await store.initialize()
     expect(await store.backupActions.chooseDestination()).toBe("/Volumes/Backups")
     await store.backupActions.chooseArchive()
-    expect(mock.invoke).toHaveBeenCalledWith("inspect_backup_archive", { archivePath: "/Volumes/Backups/dev.silo-backup" })
+    expect(mock.invoke).toHaveBeenCalledWith("inspect_backup_archive", { archivePath: "/Volumes/Backups/dev.silo-backup", requestId: expect.any(String) })
     store.backupActions.startRestore(backup.archives[0], "dev-restored")
     await vi.waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("start_restore", { archivePath: "/tmp/dev.silo-backup", newName: "dev-restored" }))
     store.dispose()
