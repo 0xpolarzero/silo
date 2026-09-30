@@ -681,23 +681,62 @@ fn client_key(paths: &RuntimePaths, id: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-// Only an explicit connection/export request reads private material. Ordinary
-// state responses and persisted settings contain public keys only.
-pub(crate) fn connection_material(paths: &RuntimePaths, vm_id: &str) -> Result<serde_json::Value, String> {
-    connection_material_for_client(paths, vm_id, None)
+/// The owner's managed client public key for one sandbox, if it exists. Never creates one.
+fn managed_public_key(paths: &RuntimePaths, id: &str) -> Option<String> {
+    uuid::Uuid::parse_str(id).ok()?;
+    let path = paths.home.join("ssh/managed-clients").join(id);
+    path.exists().then(|| editor::public_key(&path).ok()).flatten()
+}
+/// Comment marking a key another computer registered through `ssh.access.connection`,
+/// followed by that computer's Silo identity.
+const CONTROLLER_TAG: &str = "silo-controller:";
+fn is_controller_key(key: &str) -> bool {
+    key.split_whitespace().nth(2).is_some_and(|comment| comment.starts_with(CONTROLLER_TAG))
 }
 
-fn connection_material_for_client(paths: &RuntimePaths, vm_id: &str, request: Option<&serde_json::Value>) -> Result<serde_json::Value, String> {
+// Only an explicit local connection/export request reads the managed private key,
+// and it never leaves this computer. Ordinary state responses, persisted settings
+// and remote responses contain public keys only.
+pub(crate) fn connection_material(paths: &RuntimePaths, vm_id: &str) -> Result<serde_json::Value, String> {
     uuid::Uuid::parse_str(vm_id).map_err(|_| "Invalid sandbox identity.")?;
     let config = read(paths)?.into_iter().find(|c| c.machine_id == vm_id && c.enabled)
         .ok_or("Enable SSH access first.")?;
     let user = crate::working_account::inspect_user(paths, &config.workspace)?;
-    if let Some(request) = request { crate::working_account::require_client_protocol(user, request)?; }
     save_with(paths, Target::Id(vm_id), Settings { enabled: true, port: config.port,
         bind_address: config.bind_address.clone(), keys: config.keys })?;
     let key = client_key(paths, vm_id)?;
     let private = std::fs::read_to_string(key).map_err(|_| "Could not read the connection key.")?;
     Ok(serde_json::json!({"privateKey":private,"port":config.port,"address":config.bind_address,"user":user}))
+}
+
+/// Authorize another computer's own SSH key for one sandbox and tell it where to
+/// connect (C-15). The connecting computer generates and keeps its private key; only
+/// its public key crosses computers, tagged with that computer's Silo identity so a
+/// new key replaces its previous one. Turning SSH access off revokes every such key.
+fn authorize_controller(paths: &RuntimePaths, vm_id: &str, request: &serde_json::Value) -> Result<serde_json::Value, String> {
+    uuid::Uuid::parse_str(vm_id).map_err(|_| "Invalid sandbox identity.")?;
+    let config = read(paths)?.into_iter().find(|c| c.machine_id == vm_id && c.enabled)
+        .ok_or("Enable SSH access first.")?;
+    let user = crate::working_account::inspect_user(paths, &config.workspace)?;
+    crate::working_account::require_client_protocol(user, request)?;
+    let (Some(public), Some(controller)) = (request["publicKey"].as_str(), request["controllerId"].as_str()) else {
+        return Err("Update Silo on the connecting computer to connect over SSH.".into());
+    };
+    editor::validate_public_key(public)?;
+    uuid::Uuid::parse_str(controller).map_err(|_| "Invalid computer identity.")?;
+    let entry = format!("{public} {CONTROLLER_TAG}{controller}");
+    let mut keys = config.keys;
+    if !keys.contains(&entry) {
+        let tag = format!("{CONTROLLER_TAG}{controller}");
+        keys.retain(|key| {
+            key.split_whitespace().nth(2) != Some(tag.as_str())
+                && normalize_key(key).ok().as_deref() != Some(public)
+        });
+        keys.push(entry);
+    }
+    save_with(paths, Target::Id(vm_id), Settings { enabled: true, port: config.port,
+        bind_address: config.bind_address.clone(), keys })?;
+    Ok(serde_json::json!({"port":config.port,"address":config.bind_address,"user":user}))
 }
 
 fn save_with(
@@ -729,6 +768,17 @@ fn save_with(
         if !keys.iter().any(|key| normalize_key(key).ok().as_deref() == Some(public.trim())) {
             keys.push(public.trim().to_owned());
         }
+    } else {
+        // Turning access off revokes every key Silo manages: other computers'
+        // registered keys and this computer's managed key, which is replaced on the
+        // next enable (C-15). Keys the user added stay for next time.
+        let managed = managed_public_key(paths, machine.id());
+        keys.retain(|key| {
+            !is_controller_key(key)
+                && managed
+                    .as_deref()
+                    .is_none_or(|managed| normalize_key(key).ok().as_deref() != Some(managed.trim()))
+        });
     }
     let mut config = Configuration {
         workspace: workspace.clone(),
@@ -764,21 +814,35 @@ fn save_with(
     {
         return Err("Another sandbox already uses this SSH port. Choose a different port.".into());
     }
-    if configs.iter().any(|c| c == &config) {
-        reconcile(paths);
-        return state(paths);
+    if !configs.iter().any(|c| c == &config) {
+        configs.retain(|c| c.workspace != workspace);
+        configs.push(config);
+        let bytes = serde_json::to_vec(&configs).map_err(|_| FAILED)?;
+        if bytes.len() > 1024 * 1024 || configs.len() > 4096 {
+            return Err("SSH settings are too large. Remove unused client keys first.".into());
+        }
+        // Revoke live sessions before committing changed authorization.
+        close_workspace(&workspace);
+        editor::write_private(&path(&paths), &bytes)?;
     }
-    configs.retain(|c| c.workspace != workspace);
-    configs.push(config);
-    let bytes = serde_json::to_vec(&configs).map_err(|_| FAILED)?;
-    if bytes.len() > 1024 * 1024 || configs.len() > 4096 {
-        return Err("SSH settings are too large. Remove unused client keys first.".into());
+    if !enabled {
+        // The revoked managed key is no longer authorized; drop it and this
+        // computer's connection copy so the next enable creates a fresh one.
+        let managed = paths.home.join("ssh/managed-clients");
+        for key in [
+            managed.join(machine.id()),
+            managed.join(format!("{}.pub", machine.id())),
+            paths.home.join("ssh/connections").join(machine.id()),
+        ] {
+            if let Err(error) = std::fs::remove_file(&key) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    return Err("Could not remove the previous SSH connection key.".into());
+                }
+            }
+        }
     }
-    // Revoke live sessions before committing changed authorization.
-    close_workspace(&workspace);
-    editor::write_private(&path(&paths), &bytes)?;
-    reconcile(&paths);
-    state(&paths)
+    reconcile(paths);
+    state(paths)
 }
 
 #[derive(Deserialize)]
@@ -824,7 +888,7 @@ fn remote_with(
 ) -> Result<serde_json::Value, String> {
     if method == "ssh.access.connection" {
         let id = params["vmId"].as_str().ok_or("Missing sandbox identity.")?;
-        return connection_material_for_client(paths, id, Some(params));
+        return authorize_controller(paths, id, params);
     }
     let result = match method {
         "ssh.access.state" => {
@@ -1185,14 +1249,95 @@ sys.stdin.buffer.read()
         fs::write(&p.executable, script).unwrap();
         let c = config();
         editor::write_private(&path(&p), &serde_json::to_vec(&vec![c.clone()]).unwrap()).unwrap();
-        let request = serde_json::json!({"vmId":c.machine_id});
+        let (public, controller) = controller_identity(&dir, "laptop");
+        let request = serde_json::json!({"vmId":c.machine_id,"publicKey":public,"controllerId":controller});
         let error = remote_with(&p, "ssh.access.connection", &request).unwrap_err();
         assert!(error.contains("Update Silo on the connecting computer"));
         assert!(!p.home.join("ssh/managed-clients").exists());
-        let request = serde_json::json!({"vmId":c.machine_id,"accountProtocol":1});
-        let exported = remote_with(&p, "ssh.access.connection", &request).unwrap();
-        assert_eq!(exported["user"], "silo");
-        assert!(exported["privateKey"].as_str().unwrap().contains("BEGIN OPENSSH PRIVATE KEY"));
+        let request = serde_json::json!({"vmId":c.machine_id,"accountProtocol":1,"publicKey":public,"controllerId":controller});
+        let connection = remote_with(&p, "ssh.access.connection", &request).unwrap();
+        assert_eq!(connection["user"], "silo");
+        assert!(connection.get("privateKey").is_none());
+    }
+
+    /// A connecting computer's own key pair and identity. Only the public key is sent.
+    fn controller_identity(dir: &tempfile::TempDir, name: &str) -> (String, String) {
+        let key = dir.path().join(format!("controller-{name}"));
+        editor::key(&key).unwrap();
+        (editor::public_key(&key).unwrap(), uuid::Uuid::new_v4().to_string())
+    }
+    fn connect(p: &RuntimePaths, c: &Configuration, public: &str, controller: &str) -> Result<serde_json::Value, String> {
+        remote_with(p, "ssh.access.connection", &serde_json::json!({
+            "vmId":c.machine_id,"accountProtocol":1,"publicKey":public,"controllerId":controller
+        }))
+    }
+
+    #[test]
+    fn remote_connections_authorize_each_computers_own_key_and_never_send_a_private_key() {
+        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        remote_fixture(&p);
+        let mut c = config();
+        c.port = unused_port();
+        remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
+        let (laptop, laptop_id) = controller_identity(&dir, "laptop");
+        let connection = connect(&p, &c, &laptop, &laptop_id).unwrap();
+        assert!(!connection.to_string().contains("PRIVATE KEY"), "{connection}");
+        assert_eq!(connection["port"], c.port);
+        assert_eq!(connection["address"], "127.0.0.1");
+        let tagged = |public: &str, id: &str| format!("{public} {CONTROLLER_TAG}{id}");
+        assert!(read(&p).unwrap()[0].keys.contains(&tagged(&laptop, &laptop_id)));
+        // Asking again with the same key changes nothing.
+        let before = read(&p).unwrap();
+        connect(&p, &c, &laptop, &laptop_id).unwrap();
+        assert_eq!(read(&p).unwrap(), before);
+        // A second computer gets its own entry; a new key from the first replaces its old one.
+        let (desk, desk_id) = controller_identity(&dir, "desk");
+        connect(&p, &c, &desk, &desk_id).unwrap();
+        let (replacement, _) = controller_identity(&dir, "laptop-2");
+        connect(&p, &c, &replacement, &laptop_id).unwrap();
+        let keys = read(&p).unwrap()[0].keys.clone();
+        assert!(keys.contains(&tagged(&desk, &desk_id)));
+        assert!(keys.contains(&tagged(&replacement, &laptop_id)));
+        assert!(!keys.iter().any(|key| key.starts_with(&laptop)));
+        // The user's own key and the owner's managed key are untouched.
+        assert!(keys.contains(&c.keys[0]));
+        assert_eq!(keys.len(), 4);
+        for invalid in [
+            serde_json::json!({"vmId":c.machine_id,"accountProtocol":1}),
+            serde_json::json!({"vmId":c.machine_id,"accountProtocol":1,"publicKey":format!("{laptop} comment"),"controllerId":laptop_id}),
+            serde_json::json!({"vmId":c.machine_id,"accountProtocol":1,"publicKey":laptop,"controllerId":"laptop"}),
+        ] {
+            assert!(remote_with(&p, "ssh.access.connection", &invalid).is_err(), "{invalid}");
+        }
+        assert_eq!(read(&p).unwrap()[0].keys, keys);
+    }
+
+    #[test]
+    fn disabling_ssh_access_revokes_computer_keys_and_rotates_the_managed_key() {
+        let _guard = runtime::OPERATIONS.computer("Serialize SSH test").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        remote_fixture(&p);
+        let mut c = config();
+        c.port = unused_port();
+        remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
+        let (laptop, laptop_id) = controller_identity(&dir, "laptop");
+        connect(&p, &c, &laptop, &laptop_id).unwrap();
+        let managed = editor::public_key(&client_key(&p, &c.machine_id).unwrap()).unwrap();
+        connection_material(&p, &c.machine_id).unwrap();
+        // Disable with every key the state reported, as the app does.
+        let mut disabled = read(&p).unwrap()[0].clone();
+        disabled.enabled = false;
+        remote_with(&p, "ssh.access.save", &remote_request(&disabled)).unwrap();
+        assert_eq!(read(&p).unwrap()[0].keys, c.keys, "only the user's own keys survive");
+        assert!(!p.home.join("ssh/managed-clients").join(&c.machine_id).exists());
+        remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
+        let rotated = editor::public_key(&client_key(&p, &c.machine_id).unwrap()).unwrap();
+        assert_ne!(rotated, managed);
+        let keys = read(&p).unwrap()[0].keys.clone();
+        assert!(!keys.iter().any(|key| key.starts_with(&managed) || key.starts_with(&laptop)));
     }
 
     #[test]
@@ -1217,7 +1362,8 @@ sys.stdin.buffer.read()
         let second = remote_with(&p, "ssh.access.save", &request).unwrap();
         assert_eq!(first["workspaces"][0]["keys"], second["workspaces"][0]["keys"]);
         assert_eq!(first_key, fs::read(&key_path).unwrap());
-        let exported = remote_with(&p, "ssh.access.connection", &serde_json::json!({"vmId":c.machine_id,"accountProtocol":1})).unwrap();
+        // Only a local connection reads the managed private key; it never crosses computers.
+        let exported = connection_material(&p, &c.machine_id).unwrap();
         assert!(exported["privateKey"].as_str().unwrap().contains("BEGIN OPENSSH PRIVATE KEY"));
         assert_eq!(fs::read_to_string(internal).unwrap(), "internal sentinel");
         assert!(!p.home.join("running").exists());

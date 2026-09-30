@@ -20,6 +20,8 @@ listeners and stores the configuration.
    line using **Edit port** or **Edit address and port** in its menu to choose another port.
 3. The **Copy terminal command** action in each address’s menu prepares a private key file on the computer running the
    UI and copies a ready-to-run `ssh -i KEY_PATH -p PORT USER@ADDRESS` command.
+   For a sandbox on another computer, that key is this computer's own; only its
+   public key is sent to the owning computer.
    `USER` is `silo`. Older VMs require migration before SSH or editor access.
    The **Save key file** action in that menu opens a save dialog for clients that take a key file. Exported
    keys have mode 0600. The copied command's path belongs to this computer;
@@ -42,6 +44,9 @@ Disabling access, changing keys, changing the port or network address, stopping
 the VM, and quitting Silo on the owning computer disconnect existing managed SSH sessions. Changes restart the
 whole sandbox endpoint, including sessions authenticated with other client keys.
 Silo preserves previously authorized client keys; its generated connection key is always included when access is enabled.
+Turning access off revokes every key Silo manages for that sandbox: its generated
+connection key, which is replaced by a new one on the next enable, and the keys
+other computers registered. Keys added by hand stay authorized for next time.
 
 ## Managing a sandbox on another computer
 
@@ -78,8 +83,10 @@ connecting, closing the name-replacement race between parent inspection and
 child startup.
 
 Generated private connection keys live in `MSB_HOME/ssh/managed-clients/MACHINE_ID`,
-separately from the internal editor key. They remain stable across toggles and
-port changes. Export requires enabled access and a current sandbox identity.
+separately from the internal editor key. They remain stable across port and
+address changes and are deleted (and later regenerated) when access is turned
+off. Export requires enabled access and a current sandbox identity, and only the
+owning computer ever reads this private key.
 
 External authorized keys live in `MSB_HOME/ssh/managed-access/MACHINE_ID.authorized_keys`.
 Neither `MSB_HOME/ssh/authorized_keys` nor Silo's internal client private key is
@@ -131,13 +138,22 @@ commands share the runtime mutation lock with lifecycle changes.
 Requests pin the immutable owning-host ID and sandbox ID. The owner resolves the
 sandbox ID and reads or changes SSH settings under its runtime mutation lock,
 using the same persistence, validation, and reconciliation as local controls.
-Ordinary state and save responses contain public keys only. An explicit
-`ssh.access.connection` request transfers the isolated private connection key
-through the authenticated management bridge to the controlling Silo app. The
-private key never enters frontend state. The controller writes a mode-0600 key
-under `MSB_HOME/ssh/connections/` and returns a command, or exports it using a
-native save dialog. Remote management must be enabled and both immutable IDs
-must match. The controller creates no SSH listener process.
+State, save and connection responses contain public keys only. For an explicit
+`ssh.access.connection` request the controlling Silo app creates its own
+Ed25519 key under `MSB_HOME/ssh/remote-clients/HOST_ID-MACHINE_ID` (mode 0600)
+and sends only the public key with its own Silo identity. The owner authorizes
+it for that sandbox with the comment `silo-controller:CONTROLLER_ID`, replacing
+that controller's previous key, and returns the port, address and account. The
+controller then returns a command, or exports its own key using a native save
+dialog. The private key never enters frontend state or crosses computers.
+Removing the remote computer deletes the controller's keys for it; turning
+access off on the owner revokes every controller key. An owner or controller
+from before this change is refused with an "Update Silo" message instead
+of sharing the owner's key. Keys that older versions copied to controllers
+(`MSB_HOME/ssh/connections/HOST_ID-MACHINE_ID`) are deleted on the next
+connection; the owner stops accepting them once access is turned off once.
+Remote management must be enabled and both immutable IDs must match. The
+controller creates no SSH listener process.
 
 ## Verification
 

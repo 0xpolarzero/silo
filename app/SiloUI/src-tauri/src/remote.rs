@@ -150,7 +150,7 @@ pub fn remote_host_list() -> Result<Vec<RemoteHost>, String> {
     Ok(read_config()?.hosts)
 }
 #[tauri::command]
-pub fn remove_remote_host(host_id: String) -> Result<(), String> {
+pub fn remove_remote_host(app: AppHandle, host_id: String) -> Result<(), String> {
     let _guard = config_lock();
     let mut config = read_config()?;
     config.hosts.retain(|h| h.id != host_id);
@@ -158,6 +158,10 @@ pub fn remove_remote_host(host_id: String) -> Result<(), String> {
     drop(_guard);
     crate::remote_network::close_host(&host_id);
     crate::desktop_viewer::close_host(&host_id);
+    // This computer's SSH keys for that computer's sandboxes are no longer needed (C-15).
+    if let Ok(paths) = crate::runtime::runtime_paths(&app) {
+        let _ = crate::ssh_connection::forget_host(&paths.home, &host_id);
+    }
     Ok(())
 }
 fn validate_address(address: &str) -> Result<(), String> {
