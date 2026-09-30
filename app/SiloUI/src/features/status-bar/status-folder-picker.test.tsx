@@ -48,6 +48,31 @@ describe("status folder picker live directories", () => {
     expect(screen.getByText("No subfolders here")).toBeVisible()
     expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeEnabled()
   })
+  it("keeps opening the shown folder when only a background refresh fails", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      const loader = vi.fn().mockResolvedValueOnce(page(["project"])).mockRejectedValue(new Error("temporary"))
+      const { onOpen } = setup(loader)
+      await act(async () => {})
+      expect(screen.getByRole("button", { name: "project" })).toBeVisible()
+      await act(async () => vi.advanceTimersByTime(10_000))
+      expect(await screen.findByRole("alert")).toHaveTextContent("Couldn’t refresh. Showing previous folders.")
+      const open = screen.getByRole("button", { name: "Open in Cursor" })
+      expect(open).toBeEnabled()
+      act(() => open.click())
+      expect(onOpen).toHaveBeenCalledExactlyOnceWith("/workspace")
+    } finally { vi.useRealTimers() }
+  })
+  it("reveals hidden characters in folder names but opens the real path", async () => {
+    const spoofed = "photos\u202Egpj.exe"
+    const { user, onOpen, loader } = setup(vi.fn().mockResolvedValueOnce(page([spoofed])).mockResolvedValue(page([], `/workspace/${spoofed}`)))
+    const folder = await screen.findByRole("button", { name: "photos⟨U+202E⟩gpj.exe" })
+    await user.click(folder)
+    expect(loader).toHaveBeenLastCalledWith(workspace.machine.name, `/workspace/${spoofed}`, 0, undefined)
+    expect(screen.getByRole("navigation", { name: "Folder path" })).toHaveTextContent("photos⟨U+202E⟩gpj.exe")
+    await user.click(screen.getByRole("button", { name: "Open in Cursor" }))
+    expect(onOpen).toHaveBeenCalledExactlyOnceWith(`/workspace/${spoofed}`)
+  })
   it.each(["stopped", "stale"])("does not load or open a %s VM", (state) => {
     const loader = vi.fn()
     render(<StatusFolderPicker workspace={{ ...workspace, ...(state === "stopped" ? { state: "stopped" } : { freshness: "stale" }) }} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} />)

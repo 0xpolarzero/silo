@@ -1,7 +1,9 @@
 import { parseRemoteWorkspaceTarget } from "@/features/application/model/remote-computers"
-import { useEffect, useRef, useState, type ReactNode } from "react"
-import { Monitor, Server } from "lucide-react"
+import { useEffect, useId, useRef, useState, type ReactNode } from "react"
+import { Monitor, Server, Square } from "lucide-react"
 
+import { InlineConfirmation } from "@/components/inline-confirmation"
+import { restoreFocus } from "@/lib/focus"
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -18,12 +20,16 @@ import {
 } from "@/features/onboarding/model/machine-configuration"
 import { divergentMachineFields, sameMachineConfiguration } from "@/features/application/model/machine-change"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
+import { machineFieldLabel, type MachineReview } from "@/features/sandboxes/model/machine-review"
+import { parseWholeNumber, presetsWithin, resourceFields, resourceMaximums, runtimeLimits, validateMachineResources, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
 
-function SelectField({ label, value, values, suffix, error, readOnly = false, custom = false, onChange }: {
+function SelectField({ label, value, values, suffix, max, error, readOnly = false, custom = false, onChange }: {
   label: string
   value: number
   values: readonly number[]
   suffix: string
+  /** The largest custom value the runtime accepts for this field. */
+  max: number
   readOnly?: boolean
   custom?: boolean
   error?: string
@@ -31,32 +37,44 @@ function SelectField({ label, value, values, suffix, error, readOnly = false, cu
 }) {
   const [customSelected, setCustomSelected] = useState(!values.includes(value))
   const isCustom = custom && (customSelected || !values.includes(value))
+  // The custom input keeps the user's text ("1.5", "1e3", "") so it can be corrected;
+  // the draft only receives whole numbers, and anything else fails validation.
+  const [customText, setCustomText] = useState(value ? String(value) : "")
+  const errorId = useId()
+  const describedBy = error ? errorId : undefined
   const field = (
     <div className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
       {label}
       <select
         disabled={readOnly}
         aria-label={label}
-        aria-invalid={Boolean(error)}
+        // With a custom value, the number input holds it and takes focus on failed validation.
+        aria-invalid={Boolean(error) && !isCustom}
+        aria-describedby={describedBy}
         className="h-8 min-w-0 rounded-lg border border-input bg-background px-2 text-xs text-foreground disabled:cursor-default disabled:opacity-60 outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 aria-invalid:border-destructive"
         value={isCustom ? "custom" : value}
         onChange={(event) => {
           const selected = event.target.value
           setCustomSelected(selected === "custom")
-          if (selected !== "custom") onChange(Number(selected))
+          if (selected === "custom") setCustomText(value ? String(value) : "")
+          else onChange(Number(selected))
         }}
       >
         {values.map((option) => <option key={option} value={option}>{option} {suffix}</option>)}
         {custom && <option value="custom">Custom…</option>}
       </select>
       {isCustom && <Input technical
-        type="number" disabled={readOnly} min={1} max={label.includes("storage") ? 4_194_303 : 4_294_967_295} step={1}
+        type="number" inputMode="numeric" disabled={readOnly} min={1} max={max} step={1}
         aria-label={`${label} custom (${suffix === "CPU" ? "CPUs" : "GiB"})`}
         aria-invalid={Boolean(error)}
-        value={value || ""}
-        onChange={(event) => onChange(Number(event.target.value))}
+        aria-describedby={describedBy}
+        value={customText}
+        onChange={(event) => {
+          setCustomText(event.target.value)
+          onChange(parseWholeNumber(event.target.value))
+        }}
       />}
-      {error && <span className="text-destructive">{error}</span>}
+      {error && <span id={errorId} className="text-destructive">{error}</span>}
     </div>
   )
   return readOnly ? (
@@ -73,27 +91,36 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   firstField?: boolean
   inputRef?: React.RefObject<HTMLInputElement | null>
 } & Omit<React.ComponentProps<typeof Input>, "value" | "aria-label">) {
+  const errorId = useId()
   return (
     <label className="grid min-w-0 gap-1 text-[11px] font-medium text-muted-foreground">
       {label}
-      <Input technical ref={firstField ? inputRef : undefined} aria-label={label} aria-invalid={Boolean(error)} value={value} {...props} />
-      {error && <span className="text-destructive">{error}</span>}
+      <Input technical ref={firstField ? inputRef : undefined} aria-label={label} aria-invalid={Boolean(error)} aria-describedby={error ? errorId : undefined} value={value} {...props} />
+      {error && <span id={errorId} className="text-destructive">{error}</span>}
     </label>
   )
 }
 
-export function MachineEditor({ saving, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running }: {
+export function MachineEditor({ saving, blockedReason, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, review, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName }: {
   saving?: boolean
+  /** Why Save is unavailable right now (another change locks editing); the draft is kept. */
+  blockedReason?: string
   editorHeader?: ReactNode
   editor: MachineEditorDraft
   focusRequest: number
   created: boolean
   running: boolean
+  /** The CPUs and memory of the computer the sandbox runs on, when known. */
+  capacity?: HostCapacity
+  /** That computer's name for messages; defaults to "This computer". */
+  computerName?: string
   machines: readonly SetupMachineConfiguration[]
   /** The VM's saved configuration when this editor opened, for divergence detection. */
   baselineMachine?: SetupMachineConfiguration
   /** A save was rejected because the VM changed while the edit waited. */
   conflict?: boolean
+  /** After "Review changes": the draft was rebased onto the latest settings, with these differences. */
+  review?: MachineReview | null
   onCancel: () => void
   onSave: (machine: SetupMachineConfiguration) => void
   onDraftChange: (draft: SetupMachineConfiguration) => void
@@ -103,6 +130,11 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
   const [draft, setDraft] = useState(editor.draft)
   const [errors, setErrors] = useState<MachineValidationErrors>({})
   const firstField = useRef<HTMLInputElement>(null)
+  const container = useRef<HTMLDivElement>(null)
+  const portErrorId = useId()
+  const blockedReasonId = useId()
+  // Bumped by each failed Save so focus moves to the first invalid field once it renders.
+  const [failedValidation, setFailedValidation] = useState(0)
   const original = machines.find(machine => machine.id === editor.originalID)
   // Detect that the committed VM changed under the open editor. `baselineMachine` is only
   // supplied for edits backed by a live source (not onboarding drafts), so these notices
@@ -115,31 +147,65 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
     && JSON.stringify(original.desktop) !== JSON.stringify(draft.desktop)
     && JSON.stringify({ ...original, desktop: undefined }) === JSON.stringify({ ...draft, desktop: undefined })
   const requiresStop = running && !desktopOnlyChange
+  const [confirmingStop, setConfirmingStop] = useState(false)
+  // The confirmation disappears by itself if the sandbox stops elsewhere, a save starts, or
+  // Save becomes blocked while it is shown.
+  const stopPending = confirmingStop && requiresStop && !saving && !blockedReason && !deletedElsewhere
+  const stopTarget = `${draft.name}${computerName ? ` on ${computerName}` : ""}`
+  const cancelStop = useRef<HTMLButtonElement>(null)
+  const saveButton = useRef<HTMLButtonElement>(null)
+  const returnFocusToSave = useRef(false)
+  useEffect(() => {
+    if (stopPending) cancelStop.current?.focus()
+    else if (returnFocusToSave.current) { returnFocusToSave.current = false; restoreFocus(saveButton.current) }
+  }, [stopPending])
+  function dismissStop() {
+    returnFocusToSave.current = true
+    setConfirmingStop(false)
+  }
+  // Offer only what the computer can run; the runtime rejects ceilings above it.
+  const maximums = resourceMaximums(capacity)
+  const cpuPresets = presetsWithin(supportedCPUs, capacity?.logicalCPUs)
+  const memoryPresets = presetsWithin(supportedMemoryGiB, capacity?.memoryGiB)
 
   useEffect(() => {
     firstField.current?.focus()
     firstField.current?.scrollIntoView?.({ block: "nearest" })
   }, [focusRequest])
 
+  useEffect(() => {
+    if (!failedValidation) return
+    container.current?.querySelector<HTMLElement>("[aria-invalid='true']:not(:disabled)")?.focus()
+  }, [failedValidation])
+
   function update(changes: Partial<SetupMachineConfiguration>) {
     const next = { ...draft, ...changes } as SetupMachineConfiguration
     setDraft(next)
     onDraftChange(next)
     setErrors({})
+    setConfirmingStop(false)
   }
 
   function save() {
     const nativeId = (id: string) => parseRemoteWorkspaceTarget(id)?.vmId ?? id
     const nextErrors = validateMachine({ ...draft, id: nativeId(draft.id) }, machines.map(machine => ({ ...machine, id: nativeId(machine.id) })), editor.originalID ? nativeId(editor.originalID) : undefined)
+    if (draft.kind === "vm") {
+      // Resource fields get readable range messages instead of the contract schema's.
+      for (const field of resourceFields) delete nextErrors[field]
+      Object.assign(nextErrors, validateMachineResources(draft, capacity, computerName))
+    }
     if (!editor.originalID && machines.length >= maximumMachineCount) {
       nextErrors.form = `Configure no more than ${maximumMachineCount} sandboxes.`
     }
     setErrors(nextErrors)
-    if (Object.keys(nextErrors).length === 0) onSave(draft)
+    if (Object.keys(nextErrors).length > 0) setFailedValidation(count => count + 1)
+    // Stopping a running sandbox is always confirmed first (decision 8).
+    else if (requiresStop) setConfirmingStop(true)
+    else onSave(draft)
   }
 
   return (
-    <div className="grid min-w-0 gap-3 p-3" data-testid={`machine-editor-${draft.id}`}>
+    <div ref={container} className="grid min-w-0 gap-3 p-3" data-testid={`machine-editor-${draft.id}`}>
       <div className="flex min-w-0 items-center gap-2">
         {draft.kind === "vm" ? <Monitor className="size-4 shrink-0" aria-hidden="true" /> : <Server className="size-4 shrink-0" aria-hidden="true" />}
         <span className="min-w-0 flex-1 text-xs font-semibold">{draft.kind === "vm" ? "Virtual machine details" : "SSH machine details"}</span>
@@ -159,8 +225,20 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
         </div>
       ) : divergent ? (
         <p role="status" className="rounded-md border border-amber-500/30 bg-amber-500/[.07] px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-          This VM was changed elsewhere.{changedFields.length > 0 ? ` Updated: ${changedFields.join(", ")}.` : ""}
+          This VM was changed elsewhere.{changedFields.length > 0 ? ` Updated: ${changedFields.map(machineFieldLabel).join(", ")}.` : ""}
         </p>
+      ) : review ? (
+        <div role="status" aria-label="Review changes" className="grid gap-1 rounded-md border border-amber-500/30 bg-amber-500/[.07] px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
+          <p>Your edits are kept on top of the latest settings.</p>
+          {review.conflicts.length > 0 && <>
+            <p>Also changed elsewhere:</p>
+            <ul className="grid gap-0.5 pl-3">
+              {review.conflicts.map(conflict => <li key={conflict.field} className="list-disc">{conflict.label}: yours {conflict.mine}, elsewhere {conflict.theirs}</li>)}
+            </ul>
+          </>}
+          {review.adopted.length > 0 && <p>Updated from elsewhere: {review.adopted.join(", ")}.</p>}
+          <p>Save to apply your edits, or Cancel to keep the latest settings.</p>
+        </div>
       ) : null}
       {/* Lock every field while saving so edits typed after Save aren't silently discarded. */}
       <fieldset disabled={saving} className="m-0 grid min-w-0 gap-3 border-0 p-0">
@@ -181,12 +259,12 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
 
       {draft.kind === "vm" ? (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-2">
-          <SelectField custom label="CPU limit" value={draft.cpus} values={supportedCPUs} suffix="CPU" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="CPU ceiling" value={draft.maxCPUs} values={supportedCPUs} suffix="CPU" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory limit" value={draft.memoryGiB} values={supportedMemoryGiB} suffix="GB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={supportedMemoryGiB} suffix="GB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom readOnly={created} label="Workspace storage" value={draft.workspaceStorageGiB} values={supportedStorageGiB} suffix="GB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
-          <SelectField custom readOnly={created} label="Runtime storage" value={draft.runtimeStorageGiB} values={supportedStorageGiB} suffix="GB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="CPU limit" value={draft.cpus} values={cpuPresets} max={maximums.cpus} suffix="CPU" error={errors.cpus} onChange={(cpus) => update({ cpus } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="CPU ceiling" value={draft.maxCPUs} values={cpuPresets} max={maximums.cpus} suffix="CPU" error={errors.maxCPUs} onChange={(maxCPUs) => update({ maxCPUs } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory limit" value={draft.memoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GB" error={errors.memoryGiB} onChange={(memoryGiB) => update({ memoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom label="Memory ceiling" value={draft.maxMemoryGiB} values={memoryPresets} max={maximums.memoryGiB} suffix="GB" error={errors.maxMemoryGiB} onChange={(maxMemoryGiB) => update({ maxMemoryGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom readOnly={created} label="Workspace storage" value={draft.workspaceStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GB" error={errors.workspaceStorageGiB} onChange={(workspaceStorageGiB) => update({ workspaceStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
+          <SelectField custom readOnly={created} label="Runtime storage" value={draft.runtimeStorageGiB} values={supportedStorageGiB} max={runtimeLimits.storageGiB} suffix="GB" error={errors.runtimeStorageGiB} onChange={(runtimeStorageGiB) => update({ runtimeStorageGiB } as Partial<SetupVirtualMachineConfiguration>)} />
         </div>
       ) : (
         <div className="grid min-w-0 grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7rem]">
@@ -197,6 +275,7 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
             <Input technical
               aria-label="SSH port"
               aria-invalid={Boolean(errors.port)}
+              aria-describedby={errors.port ? portErrorId : undefined}
               type="number"
               inputMode="numeric"
               min={1}
@@ -204,7 +283,7 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
               value={draft.port}
               onChange={(event) => update({ port: Number(event.target.value) })}
             />
-            {errors.port && <span className="text-destructive">{errors.port}</span>}
+            {errors.port && <span id={portErrorId} className="text-destructive">{errors.port}</span>}
           </label>
         </div>
       )}
@@ -223,10 +302,19 @@ export function MachineEditor({ saving, editorHeader, editor, focusRequest, mach
       </section>}
       </fieldset>
 
-      <div className="flex justify-end gap-2">
+      {blockedReason && !saving && <p id={blockedReasonId} role="status" className="text-right text-[11px] text-muted-foreground">{blockedReason}</p>}
+      {stopPending ? <InlineConfirmation active onDismiss={dismissStop}>
+        <div role="group" aria-label={`Stop ${stopTarget} and save?`} className="grid gap-2 rounded-md border border-border px-3 py-2">
+          <p className="text-[11px] text-muted-foreground">Stop {stopTarget} and save? Running processes will be interrupted. The new settings apply when you start it again.</p>
+          <div className="flex justify-end gap-1.5">
+            <Button ref={cancelStop} type="button" variant="ghost" size="xs" onClick={dismissStop}>Cancel</Button>
+            <Button type="button" variant="destructive" size="xs" onClick={() => { setConfirmingStop(false); onSave(draft) }}><Square />Stop and save</Button>
+          </div>
+        </div>
+      </InlineConfirmation> : <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" disabled={saving} onClick={onCancel}>Cancel</Button>
-        <Button type="button" size="sm" disabled={saving || deletedElsewhere} onClick={save}>{saving ? "Saving…" : requiresStop ? "Stop VM and save" : "Save"}</Button>
-      </div>
+        <Button ref={saveButton} type="button" size="sm" disabled={saving || deletedElsewhere || Boolean(blockedReason)} aria-describedby={blockedReason && !saving ? blockedReasonId : undefined} onClick={save}>{saving ? "Saving…" : requiresStop ? "Stop and save…" : "Save"}</Button>
+      </div>}
       {errors.form && <p className="text-xs text-destructive" role="alert">{errors.form}</p>}
     </div>
   )

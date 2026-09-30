@@ -1,13 +1,16 @@
+import { useId, useState } from "react"
 import { Code2, Compass, SquareTerminal } from "lucide-react"
 
 import { ListRow, ListRowIcon } from "@/components/list-row"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 import { matchesApplication, useApplications, type ApplicationKind } from "@/features/preferences/application-catalog"
+import { errorMessage } from "@/lib/operation-toast"
 
 const chooseApplication = "__silo-choose-application__"
 const unavailableApplication = "__silo-unavailable-application__"
 const systemDefaultApplication = "__silo-system-default-application__"
+const applicationNoun: Record<ApplicationKind, string> = { terminal: "terminal", editor: "code editor", browser: "browser" }
 
 function ApplicationOptionLabel({ kind, name, icon }: { kind: ApplicationKind; name: string; icon?: string }) {
   const Fallback = kind === "terminal" ? SquareTerminal : kind === "editor" ? Code2 : Compass
@@ -21,12 +24,16 @@ function ApplicationPreferenceRow({
   icon: Icon,
   title,
   description,
+  error,
+  errorId,
   control,
   compact,
 }: {
   icon: typeof Compass
   title: string
   description: string
+  error?: string
+  errorId: string
   control: React.ReactNode
   compact: boolean
 }) {
@@ -35,7 +42,7 @@ function ApplicationPreferenceRow({
       className={compact ? "hover:bg-muted/35 focus-within:bg-muted/35" : "gap-3 px-0 py-3 first:pt-0 last:pb-0"}
       icon={compact ? <ListRowIcon aria-hidden="true"><Icon className="size-3.5" /></ListRowIcon> : <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
       title={<div className={compact ? undefined : "text-sm"}>{title}</div>}
-      detail={description}
+      detail={<>{description}{error && <span id={errorId} role="alert" className="mt-0.5 block text-destructive">{error}</span>}</>}
       detailClassName={compact ? "whitespace-normal" : "mt-0.5 whitespace-normal text-xs"}
       actions={<div className={compact ? "w-40 max-w-[45%] shrink-0" : "w-48 shrink-0"}>{control}</div>}
     />
@@ -52,8 +59,14 @@ export function ApplicationPreferenceFields({
   onChange: (value: ApplicationPreferenceSelection) => void
 }) {
   const { catalog, refresh, choose, available } = useApplications()
+  const errorIdPrefix = useId()
+  // A failed pick keeps the previous choice; say so beside the select rather than only
+  // in the console, and clear it on the next change of that application.
+  const [failures, setFailures] = useState<Partial<Record<ApplicationKind, string>>>({})
+  const errorId = (kind: ApplicationKind) => `${errorIdPrefix}-${kind}-error`
 
   async function update(kind: ApplicationKind, selection: string) {
+    setFailures(({ [kind]: _cleared, ...rest }) => rest)
     try {
       if (selection === systemDefaultApplication) {
         onChange({ ...value, [`${kind}UseSystemDefault`]: true })
@@ -64,7 +77,8 @@ export function ApplicationPreferenceFields({
         : catalog[kind].find(({ path }) => path === selection)
       if (application) onChange({ ...value, [kind]: application.name, [`${kind}Path`]: application.path, [`${kind}UseSystemDefault`]: false })
     } catch (error) {
-      console.error("Silo application selection:", error)
+      const detail = errorMessage(error).trim()
+      setFailures((current) => ({ ...current, [kind]: `Couldn't use the chosen ${applicationNoun[kind]}.${detail ? ` ${/[.!?]$/.test(detail) ? detail : `${detail}.`}` : ""}` }))
     }
   }
 
@@ -79,7 +93,7 @@ export function ApplicationPreferenceFields({
         onValueChange={(selection) => { void update(kind, selection) }}
         onOpenChange={(open) => { if (open) void refresh().catch((error: unknown) => console.error("Silo application discovery:", error)) }}
       >
-        <SelectTrigger className={compact ? "h-7 text-[11px]" : undefined} aria-label={label}>
+        <SelectTrigger className={compact ? "h-7 text-[11px]" : undefined} aria-label={label} aria-invalid={failures[kind] ? true : undefined} aria-describedby={failures[kind] ? errorId(kind) : undefined}>
           <SelectValue>{useSystemDefault ? <ApplicationOptionLabel kind={kind} name={systemDefault ? `${systemDefault.name} (default)` : "System default (not set)"} icon={systemDefault?.icon} /> : undefined}</SelectValue>
         </SelectTrigger>
         <SelectContent className="w-max min-w-[var(--radix-select-trigger-width)] max-w-[min(24rem,var(--radix-select-content-available-width))]">
@@ -98,6 +112,8 @@ export function ApplicationPreferenceFields({
         compact={compact}
         icon={SquareTerminal}
         title="Terminal"
+        error={failures.terminal}
+        errorId={errorId("terminal")}
         description="Used by sandbox terminal shortcuts."
         control={applicationSelect("terminal", "Terminal")}
       />
@@ -105,6 +121,8 @@ export function ApplicationPreferenceFields({
         compact={compact}
         icon={Code2}
         title="Code editor"
+        error={failures.editor}
+        errorId={errorId("editor")}
         description="Used when opening sandbox files."
         control={applicationSelect("editor", "Code editor")}
       />
@@ -112,6 +130,8 @@ export function ApplicationPreferenceFields({
         compact={compact}
         icon={Compass}
         title="Browser"
+        error={failures.browser}
+        errorId={errorId("browser")}
         description="Used when opening sandbox URLs."
         control={applicationSelect("browser", "Browser")}
       />

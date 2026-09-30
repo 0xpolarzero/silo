@@ -3,9 +3,10 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import type { ApplicationSource } from "@/features/application/model/application-source"
+import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { fixtureDirectoryLoader } from "@/fixtures/directory-loader"
-import { StatusBar } from "./status-bar"
+import { StatusBar } from "./status-bar-popover"
 import type { StatusBarActions } from "./status-bar-types"
 
 function setup(overrides: Partial<ApplicationSource> = {}) {
@@ -20,6 +21,70 @@ function setup(overrides: Partial<ApplicationSource> = {}) {
 }
 
 describe("status bar", () => {
+  it.each(["row", "menu"])("guards a memory-pressure Start from the %s (I-04)", async (surface) => {
+    const base = applicationSourceForScenario("complete")
+    const { user, actions } = setup({
+      workspaces: base.workspaces.map(workspace => ({ ...workspace, state: "stopped" })),
+      resourceNotice: { kind: "start-memory", sandbox: "dev", memoryGiB: 32 },
+    })
+    if (surface === "menu") {
+      await user.click(screen.getByRole("button", { name: "Actions for dev" }))
+      await user.click(screen.getByRole("menuitem", { name: "Start" }))
+    } else await user.click(screen.getByRole("button", { name: "Start dev" }))
+    expect(actions.startWorkspace).not.toHaveBeenCalled()
+    const prompt = screen.getByRole("group", { name: "Starting dev may slow this computer" })
+    expect(prompt).toHaveTextContent("32 GB")
+    await user.click(within(prompt).getByRole("button", { name: "Start anyway" }))
+    expect(actions.startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")
+  })
+
+  it("reports unavailable VM operations at the tray control (I-04)", async () => {
+    const base = applicationSourceForScenario("complete")
+    const { user, actions } = setup({
+      workspaces: base.workspaces.map(workspace => ({ ...workspace, state: "stopped" })),
+      vmOperationsUnavailable: "This build cannot run local VMs.",
+    })
+    await user.click(screen.getByRole("button", { name: "Start dev" }))
+    expect(actions.startWorkspace).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert", { name: "VM operation unavailable" })).toHaveTextContent("This build cannot run local VMs.")
+  })
+
+  it("rechecks current availability before Start anyway (I-04)", async () => {
+    const base = applicationSourceForScenario("complete")
+    const { user, actions, source, rerender } = setup({
+      workspaces: base.workspaces.map(workspace => ({ ...workspace, state: "stopped" })),
+      resourceNotice: { kind: "start-memory", sandbox: "dev", memoryGiB: 32 },
+    })
+    await user.click(screen.getByRole("button", { name: "Start dev" }))
+    rerender(<StatusBar source={{ ...source, workspaces: source.workspaces.map(workspace => ({ ...workspace, freshness: "stale" })) }} actions={actions} defaultOpen />)
+    expect(screen.getByRole("button", { name: "Start anyway" })).toBeDisabled()
+    expect(actions.startWorkspace).not.toHaveBeenCalled()
+  })
+
+  it.each(["Stop", "Restart"])("guards confirmed %s when local operations become unavailable (I-04)", async (action) => {
+    const { user, actions, source, rerender } = setup()
+    await user.click(screen.getByRole("button", { name: "Actions for dev" }))
+    await user.click(screen.getByRole("menuitem", { name: `${action}…` }))
+    rerender(<StatusBar source={{ ...source, vmOperationsUnavailable: "Local VMs unavailable." }} actions={actions} defaultOpen />)
+    await user.click(screen.getByRole("button", { name: action }))
+    expect(actions.stopWorkspace).not.toHaveBeenCalled()
+    expect(actions.restartWorkspace).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert", { name: "VM operation unavailable" })).toHaveTextContent("Local VMs unavailable.")
+  })
+
+  it("keeps a remote Start independent of same-named local guards (I-04)", async () => {
+    const base = applicationSourceForScenario("complete")
+    const computer = { id: "office", name: "office-mac", address: "office.local", connected: true, vmId: "vm-1" }
+    const { user, actions } = setup({
+      workspaces: [{ ...base.workspaces[0]!, computer, state: "stopped" }],
+      vmOperationsUnavailable: "Local VMs unavailable.",
+      resourceNotice: { kind: "start-memory", sandbox: "dev", memoryGiB: 32 },
+    })
+    await user.click(screen.getByRole("button", { name: "Start dev" }))
+    expect(actions.startWorkspace).toHaveBeenCalledExactlyOnceWith(remoteWorkspaceTarget("office", "vm-1"))
+    expect(screen.queryByRole("button", { name: "Start anyway" })).not.toBeInTheDocument()
+  })
+
   it("pushes the selected repository and shows source-confirmed progress and success", async () => {
     const { user, actions, source, rerender } = setup()
     const row = within(screen.getByRole("listitem", { name: "dev" }))
@@ -40,6 +105,20 @@ describe("status bar", () => {
     rerender(<StatusBar source={{ ...source, workspaces: source.workspaces.map((workspace) => ({ ...workspace, repositories: workspace.repositories.map((repository) => ({ ...repository, ahead: 0 })) })), repositoryPushOperations: [{ ...operation, status: "succeeded" }] }} actions={actions} defaultOpen />)
     expect(row.getByRole("status")).toHaveTextContent("Pushed 2 commits.")
     expect(row.queryByRole("button", { name: /^Push / })).not.toBeInTheDocument()
+  })
+
+  it("names a pushable repository by its full path with hidden characters revealed", async () => {
+    const source = applicationSourceForScenario("complete")
+    const spoofed = "acme/evil\u202Eolis"
+    const { user, actions } = setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, repositories: [{ ...workspace.repositories[0]!, path: spoofed, ahead: 1 }] })) })
+    const row = screen.getByRole("group", { name: "acme/evil⟨U+202E⟩olis in dev" })
+    expect(row).toHaveTextContent("acme/evil⟨U+202E⟩olis")
+    expect(row).not.toHaveTextContent("\u202E")
+    await user.click(within(row).getByRole("button", { name: "Push 1 commit for acme/evil⟨U+202E⟩olis in dev" }))
+    expect(actions.pushRepository).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "Push" }))
+    // The confirmed action still targets the repository's real path.
+    expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", spoofed, { repository: "acme/silo", branch: "main", commit: source.workspaces[0]!.repositories[0]!.head })
   })
 
   it("identifies multiple repositories and dispatches only the selected one", async () => {
@@ -88,6 +167,57 @@ describe("status bar", () => {
     await user.click(screen.getByRole("button", { name: "Push" }))
     expect(actions.pushRepository).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", { repository: "acme/silo", branch: "main", commit: "4f1c2d9e8b7a6c5d4e3f2a1b0c9d8e7f6a5b4c3d" })
     expect(screen.getByRole("dialog", { name: "Silo" })).toBeVisible()
+  })
+
+  it("names a remote sandbox's failed push by sandbox and computer, not its internal target", async () => {
+    const base = applicationSourceForScenario("complete")
+    const computer = { id: "office", name: "office-mac", address: "office.local", connected: true, vmId: "vm-1" }
+    const remote = { ...base.workspaces[0]!, computer }
+    const target = remoteWorkspaceTarget("office", "vm-1")
+    const { user, actions } = setup({
+      workspaces: [remote],
+      repositoryPushOperations: [
+        { workspace: target, repositoryPath: "acme/silo", commitCount: 2, status: "failed", message: "Remote unavailable." },
+        { workspace: remoteWorkspaceTarget("office", "gone"), repositoryPath: "acme/old", commitCount: 1, status: "failed", message: "Remote unavailable." },
+      ],
+      remoteComputers: [computer],
+    })
+    const issue = screen.getByRole("alert", { name: "Push failed · dev on office-mac" })
+    expect(issue).not.toHaveTextContent("silo-remote")
+    // A push whose sandbox is no longer listed still names its computer.
+    expect(screen.getByRole("alert", { name: "Push failed · a sandbox on office-mac" })).not.toHaveTextContent("silo-remote")
+    await user.click(within(issue).getByRole("button", { name: "Review push failure for dev on office-mac, acme/silo" }))
+    expect(actions.openSilo).toHaveBeenCalledWith({ workspace: target, workspaceSection: "files" })
+  })
+
+  it("shows a failed start as an error instead of a neutral stopped sandbox", () => {
+    const source = applicationSourceForScenario("complete")
+    setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, state: "stopped" as const, lifecycleFailure: "Not enough memory to start dev.", lifecycleFailureAction: "start" as const })) })
+    expect(screen.getByRole("button", { name: "Silo status bar" })).toHaveAccessibleDescription("Sandbox error")
+    const row = screen.getByRole("listitem", { name: "dev" })
+    expect(row).toHaveTextContent("Start failed · Not enough memory to start dev.")
+    expect(row.querySelector("[data-sandbox-row-tone]")).toHaveAttribute("data-sandbox-row-tone", "error")
+    // Start stays available as the retry.
+    expect(within(row).getByRole("button", { name: "Start dev" })).toBeEnabled()
+  })
+
+  it("keeps a cancelled start neutral", () => {
+    const source = applicationSourceForScenario("complete")
+    setup({ workspaces: source.workspaces.map((workspace) => ({ ...workspace, state: "stopped" as const, lifecycleFailure: "Start was cancelled.", lifecycleFailureAction: "start" as const, lifecycleFailureCancelled: true })) })
+    expect(screen.getByRole("button", { name: "Silo status bar" })).toHaveAccessibleDescription("All sandboxes stopped")
+    const row = screen.getByRole("listitem", { name: "dev" })
+    expect(row).toHaveTextContent("Start cancelled")
+    expect(row.querySelector("[data-sandbox-row-tone]")).not.toHaveAttribute("data-sandbox-row-tone", "error")
+  })
+
+  it("shows sandbox changes waiting for approval with a way to review them", async () => {
+    const operation = { id: "op", status: "awaiting-approval" as const, candidate: { schemaVersion: 1 as const, machines: [] }, progressEvents: [], error: null, result: { resumed: false, phase: "workspaces", requiresApproval: true, vmsStarted: false, message: "Approve the new sandbox to finish setting it up." } }
+    const { user, actions } = setup({ sandboxConfigurationOperation: operation })
+    expect(screen.getByRole("button", { name: "Silo status bar" })).toHaveAccessibleDescription("Approval needed")
+    const notice = screen.getByRole("status", { name: "Sandbox changes need approval" })
+    expect(notice).toHaveTextContent("Approve the new sandbox to finish setting it up.")
+    await user.click(within(notice).getByRole("button", { name: "Review sandbox changes" }))
+    expect(actions.openSilo).toHaveBeenCalledWith({ workspaceSection: "overview" })
   })
 
   it("updates the menu bar icon from loading to warning, error, and ready", () => {

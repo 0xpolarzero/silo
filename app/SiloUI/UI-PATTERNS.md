@@ -66,7 +66,10 @@ Pass the surface's reduced-motion preference to its outer `TooltipProvider`.
 Nested providers inherit it, and tooltip content receives it through
 [React context across portals](https://react.dev/reference/react-dom/createPortal).
 Tooltips disable entry and exit animations for either the app preference or
-the system's `prefers-reduced-motion` setting.
+the system's `prefers-reduced-motion` setting. Popovers, selects and menus also
+render in portals outside `.silo-window`; they read the same context through
+`components/ui/reduce-motion.ts`, carry the `silo-portal` class and
+`data-reduce-motion`, and `index.css` turns off their animations and transitions.
 
 ## Fixture preview
 
@@ -104,7 +107,7 @@ an empty list, or a long list. Repair and error notices and the footer remain
 visible while only the sandbox list scrolls.
 
 Repositories with outgoing commits add one compact line under their sandbox,
-with the repository name and a **Push N commits** action. Progress and the brief
+with the repository's full path (hidden characters revealed) and a **Push N commits** action. Progress and the brief
 success message reuse the Files page's push feedback. Failures remain pinned
 above the list with Details and Retry. Push actions require a fresh, running
 sandbox; the preview simulates completion and carries updated counts into Silo.
@@ -126,6 +129,9 @@ selection, Open Silo, and Quit. TypeScript components and tokens own the design.
 Freshness, busy state, and repair state gate quick actions. Repair appears once
 above the list. The editor picker browses sandbox folders, not host folders.
 
-Browser fixtures simulate lifecycle progress and host handoffs. In the desktop
+Each sandbox's "…" menu is built once as data
+(`features/status-bar/workspace-menu-items.ts`): the desktop panel renders it as a
+native menu and the preview (`status-bar-popover.tsx`) with Radix, so both offer the
+same items. Browser fixtures simulate lifecycle progress and host handoffs. In the desktop
 app, Rust commands perform terminal, editor, site, and Quit actions. Open Silo
 opens the main window and carries the selected sandbox.

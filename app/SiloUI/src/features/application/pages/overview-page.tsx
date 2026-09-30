@@ -42,7 +42,8 @@ import type { DeleteSandboxDetails } from "@/features/sandboxes/components/delet
 import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/components/sandbox-list"
 
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
-import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
+import { sandboxBusyReason, workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
+import { hostCapacityFrom } from "@/features/sandboxes/model/machine-limits"
 
 /** A command palette request carried out on a sandbox's page. */
 export interface SandboxPageRequest {
@@ -376,6 +377,7 @@ export function OverviewPage({ active = true, readOnly = false,
   const isMachineRunning = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.state === "running"
   const latestDeleteState = useRef({ source, readOnly })
   useEffect(() => { latestDeleteState.current = { source, readOnly } }, [source, readOnly])
+  const machineBusyReason = (machine: SetupMachineConfiguration) => sandboxBusyReason(workspaces.get(machine.id))
 
   function notifyOperationUnavailable() {
     showActionFailure("VM operation unavailable", source.vmOperationsUnavailable ?? "VM operations are unavailable.", undefined, { native: false })
@@ -697,6 +699,10 @@ export function OverviewPage({ active = true, readOnly = false,
               onDeleteMachine={deleteMachine}
               isMachineCreated={isMachineCreated}
               isMachineRunning={isMachineRunning}
+              getMachineBusyReason={machineBusyReason}
+              editorDraftKey="sandbox-list"
+              // New sandboxes fit this computer; remote computers do not report capacity yet.
+              getHostCapacity={(computerId) => computerId ? undefined : hostCapacityFrom(source.hostCapacity)}
               onMachinesChange={changeMachines}
               interactionDisabled={configurationLocked}
               validateOperation={validateMachineOperation}

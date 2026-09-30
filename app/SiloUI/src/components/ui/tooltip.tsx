@@ -5,14 +5,14 @@ import { Tooltip as TooltipPrimitive } from "radix-ui"
 
 import { isRestoringFocus } from "@/lib/focus"
 import { ShortcutBadge } from "@/components/shortcut-badge"
+import { ReduceMotionContext, useReduceMotion } from "@/components/ui/reduce-motion"
 import type { KeyboardShortcut } from "@/lib/shortcuts"
 import { cn } from "@/lib/utils"
 
 const Tooltip = TooltipPrimitive.Root
-const ReduceMotionContext = React.createContext(false)
 
 function TooltipProvider({ reduceMotion, ...props }: React.ComponentProps<typeof TooltipPrimitive.Provider> & { reduceMotion?: boolean }) {
-  const inheritedReduceMotion = React.useContext(ReduceMotionContext)
+  const inheritedReduceMotion = useReduceMotion()
   return <ReduceMotionContext value={reduceMotion ?? inheritedReduceMotion}>
     <TooltipPrimitive.Provider {...props} />
   </ReduceMotionContext>
@@ -34,7 +34,7 @@ function TooltipContent({
   shortcut,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content> & { shortcut?: KeyboardShortcut }) {
-  const reduceMotion = React.useContext(ReduceMotionContext)
+  const reduceMotion = useReduceMotion()
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content

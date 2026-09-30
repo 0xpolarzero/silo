@@ -6,6 +6,7 @@ import { ListCard } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { FolderBreadcrumbs } from "@/components/folder-breadcrumbs"
+import { visibleText } from "@/lib/visible-text"
 import type { ApplicationWorkspace } from "@/features/application/model/application-source"
 
 import { createDirectoryStore, directoryKey, type DirectoryLoader } from "@/features/application/model/directory-store"
@@ -82,7 +83,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
               <li key={entry.name}>
                 <button type="button" className="flex min-h-9 w-full items-center gap-2 px-2.5 text-left text-xs hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={() => navigate([...segments, entry.name])}>
                   <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                  <span className="min-w-0 flex-1 truncate">{visibleText(entry.name)}</span>
                   <ChevronRight className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
                 </button>
               </li>
@@ -99,8 +100,10 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
           </>}
         </ListCard>
       </div>
+      {/* A failed background refresh keeps the previous folders on screen; the path is still
+          valid to open. Only a folder that never loaded blocks opening. */}
       <footer className="flex shrink-0 items-center justify-end border-t px-3 py-2.5">
-        <Button variant="outline" size="sm" disabled={!available || snapshot.entries === null || Boolean(snapshot.error)} onClick={() => onOpen(path)}><Code data-icon="inline-start" /> Open in {editor}</Button>
+        <Button variant="outline" size="sm" disabled={!available || snapshot.entries === null} onClick={() => onOpen(path)}><Code data-icon="inline-start" /> Open in {editor}</Button>
       </footer>
     </>
   )

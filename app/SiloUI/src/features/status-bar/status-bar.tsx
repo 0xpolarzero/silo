@@ -1,15 +1,12 @@
+import { lifecycleGuard, type LifecyclePrompt } from "@/features/application/model/lifecycle-guard"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react"
-import { ChevronRight, CircleAlert, Code, ExternalLink, GitBranch, Globe, Loader2, LoaderCircle, Monitor, MoreHorizontal, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
-import { DropdownMenu } from "radix-ui"
+import { CircleAlert, Code, GitBranch, Loader2, Monitor, Play, Power, RotateCw, Server, Square, Terminal, TriangleAlert } from "lucide-react"
 
-import { CopyButton } from "@/components/copy-button"
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
 import { SiloMark } from "@/components/silo-mark"
 import { Button } from "@/components/ui/button"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { TooltipProvider } from "@/components/ui/tooltip"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import { RepositoryPushButton, RepositoryPushFeedback } from "@/features/application/components/repository-push-feedback"
 import type { ApplicationSource, ApplicationWorkspace } from "@/features/application/model/application-source"
@@ -18,83 +15,27 @@ import { SandboxAction, SandboxListItem, SandboxListRow } from "@/features/sandb
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
 import { cn } from "@/lib/utils"
-import { statusBarHealth } from "./status-bar-model"
+import { visibleText } from "@/lib/visible-text"
+import { lifecycleOutcome, sandboxTargetLabel } from "./status-bar-model"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
-import type { StatusBarActions } from "./status-bar-types"
+import type { StatusBarActions, WorkspaceMenuProps } from "./status-bar-types"
+import { WorkspaceMenu } from "./workspace-menu"
 import { StatusFolderPicker } from "./status-folder-picker"
 import { QuitConfirmation } from "./quit-confirmation"
 import { sandboxesStoppedByQuit } from "./quit-confirmation-model"
 
-const menuClass = "silo-window z-50 min-w-48 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95"
-const menuItemClass = "flex min-h-8 select-none items-center gap-2 rounded-sm px-2 text-xs outline-none data-[highlighted]:bg-accent data-[disabled]:pointer-events-none data-[disabled]:opacity-40 [&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
-
-function MenuItem({ children, icon, onSelect, disabled }: { children: ReactNode; icon: ReactNode; onSelect: () => void; disabled?: boolean }) {
-  return <DropdownMenu.Item className={menuItemClass} disabled={disabled} onSelect={onSelect}>{icon}{children}</DropdownMenu.Item>
-}
-
-export interface WorkspaceMenuProps {
-  workspace: ApplicationWorkspace
-  source: ApplicationSource
-  actions: StatusBarActions
-  onFolders: () => void
-  onConfirm: (action: "stop" | "restart") => void
-}
-
-function WorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: WorkspaceMenuProps) {
-  const { machine } = workspace
-  const target = workspaceTarget(workspace)
-  const { canOpen, canStart, canStop, canRestart } = workspaceAvailability(workspace, source)
-  const sites = workspace.ports.filter(({ listening, configured, scheme, hostPort }) => listening === true && configured === true && scheme != null && hostPort != null).sort((a, b) => a.port - b.port)
+function OperationIssue({ title, detail, actionLabel, actionText = "Details", tone = "error", onReview, retry }: { title: string; detail: string; actionLabel: string; actionText?: string; tone?: "error" | "warning"; onReview: () => void; retry?: ReactNode }) {
   return (
-    <DropdownMenu.Root modal={false}>
-      <DropdownMenu.Trigger asChild>
-        <Button variant="ghost" size="icon-xs" aria-label={`Actions for ${machine.name}`}><MoreHorizontal /></Button>
-      </DropdownMenu.Trigger>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content className={menuClass} data-reduce-motion={source.preferences.reduceMotion} align="end" sideOffset={4} collisionPadding={10} aria-label={`Actions for ${machine.name}`}>
-          {workspace.state === "stopped" && <MenuItem icon={<Play />} disabled={!canStart} onSelect={() => actions.startWorkspace(target)}>Start</MenuItem>}
-          {workspace.state !== "stopped" && <>
-            <MenuItem icon={<Square />} disabled={!canStop} onSelect={() => onConfirm("stop")}>Stop…</MenuItem>
-            <MenuItem icon={<RotateCw />} disabled={!canRestart} onSelect={() => onConfirm("restart")}>Restart…</MenuItem>
-          </>}
-          <DropdownMenu.Separator className="my-1 border-t" />
-          <MenuItem icon={<Terminal />} disabled={!canOpen} onSelect={() => actions.openTerminal(target)}>Open in {source.preferences.terminal}</MenuItem>
-          <MenuItem icon={<Code />} disabled={!canOpen} onSelect={onFolders}>Open in {source.preferences.editor}…</MenuItem>
-          <DropdownMenu.Sub>
-            <DropdownMenu.SubTrigger className={menuItemClass} disabled={!canOpen}><Globe /> Open site <ChevronRight className="ml-auto" /></DropdownMenu.SubTrigger>
-            <DropdownMenu.Portal>
-              <DropdownMenu.SubContent className={menuClass} data-reduce-motion={source.preferences.reduceMotion} sideOffset={4} collisionPadding={10}>
-                {sites.length ? sites.map(({ port }) => <MenuItem key={port} icon={<ExternalLink />} onSelect={() => actions.openSite(target, port)}>Port {port}</MenuItem>) : <DropdownMenu.Item disabled className={menuItemClass}>No active sites</DropdownMenu.Item>}
-                {sites.length > 0 && <DropdownMenu.Separator className="my-1 border-t" />}
-                {sites.map(site => <DropdownMenu.Item key={`copy:${site.port}`} asChild onSelect={(event) => event.preventDefault()}>
-                  <CopyButton
-                    value={`${site.scheme}://127.0.0.1:${site.hostPort}`}
-                    labels={{ idle: `Copy port ${site.port} address`, copied: `Port ${site.port} address copied`, failed: `Couldn't copy port ${site.port} address` }}
-                    text={{ idle: `Copy port ${site.port} address`, copied: "Copied", failed: "Copy failed" }}
-                    variant="ghost"
-                    size="sm"
-                    className={cn(menuItemClass, "w-full justify-start font-normal")}
-                  />
-                </DropdownMenu.Item>)}
-              </DropdownMenu.SubContent>
-            </DropdownMenu.Portal>
-          </DropdownMenu.Sub>
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
-  )
-}
-
-function OperationIssue({ title, detail, actionLabel, onReview, retry }: { title: string; detail: string; actionLabel: string; onReview: () => void; retry?: ReactNode }) {
-  return (
-    <ListCard className="mb-2" role="alert" aria-label={title}>
+    <ListCard className="mb-2" role={tone === "error" ? "alert" : "status"} aria-label={title}>
       <ListRow
-        icon={<ListRowIcon className="bg-destructive/10 text-destructive"><CircleAlert className="size-3.5" aria-hidden="true" /></ListRowIcon>}
+        icon={tone === "error"
+          ? <ListRowIcon className="bg-destructive/10 text-destructive"><CircleAlert className="size-3.5" aria-hidden="true" /></ListRowIcon>
+          : <ListRowIcon className="bg-amber-500/10 text-amber-600 dark:text-amber-400"><TriangleAlert className="size-3.5" aria-hidden="true" /></ListRowIcon>}
         title={title}
         detail={detail}
         detailClassName="whitespace-normal break-words"
         actions={<div className="flex shrink-0 items-center gap-1">
-          <Button variant="outline" size="xs" aria-label={actionLabel} onClick={onReview}>Details</Button>
+          <Button variant="outline" size="xs" aria-label={actionLabel} onClick={onReview}>{actionText}</Button>
           {retry}
         </div>}
       />
@@ -111,11 +52,14 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
   const canPush = workspaceAvailability(workspace, source).canOpen
   return (
     <div className="grid gap-1 px-2 pb-2">
-      {repositories.map(({ repository, operation }) => (
-        <div key={repository.path} className="flex min-h-6 min-w-0 items-center gap-2" role="group" aria-label={`${repository.path} in ${workspace.machine.name}`}>
-          <span className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-muted-foreground" title={repository.path}>
+      {repositories.map(({ repository, operation }) => {
+        // The row authorizes a push, so name the repository by its full path with any
+        // invisible or bidirectional characters revealed: a basename could imitate another.
+        const path = visibleText(repository.path)
+        return <div key={repository.path} className="flex min-h-6 min-w-0 items-center gap-2" role="group" aria-label={`${path} in ${workspace.machine.name}`}>
+          <span className="flex min-w-0 flex-1 items-center gap-1 text-[11px] text-muted-foreground" title={path}>
             <GitBranch className="size-3 shrink-0" aria-hidden="true" />
-            <span className="truncate">{repository.path.split("/").filter(Boolean).at(-1) ?? repository.path}</span>
+            <span className="truncate">{path}</span>
           </span>
           {operation ? <RepositoryPushFeedback
             operation={operation}
@@ -125,11 +69,11 @@ function RepositoryPushes({ workspace, source, actions }: { workspace: Applicati
             onPush={(target) => actions.pushRepository(workspaceTarget(workspace), repository.path, target)}
             onDismiss={actions.dismissRepositoryPush}
             showSuccess
-          /> : <RepositoryPushButton repository={repository} disabled={!canPush} label={`Push ${commitLabel(repository.ahead)} for ${repository.path} in ${workspace.machine.name}`} onPush={(target) => { if (canPush) actions.pushRepository(workspaceTarget(workspace), repository.path, target) }}>
+          /> : <RepositoryPushButton repository={repository} disabled={!canPush} label={`Push ${commitLabel(repository.ahead)} for ${path} in ${workspace.machine.name}`} onPush={(target) => { if (canPush) actions.pushRepository(workspaceTarget(workspace), repository.path, target) }}>
             Push {commitLabel(repository.ahead)}
           </RepositoryPushButton>}
         </div>
-      ))}
+      })}
     </div>
   )
 }
@@ -154,10 +98,35 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
   const [hasNavigated, setHasNavigated] = useState(false)
   const [folderWorkspace, setFolderWorkspace] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<{ workspace: string; action: "stop" | "restart" } | null>(null)
+  const [startPrompt, setStartPrompt] = useState<{ target: string; prompt: LifecyclePrompt } | null>(null)
+  const [lifecycleIssue, setLifecycleIssue] = useState<{ title: string; message: string } | null>(null)
+  const guarded = lifecycleGuard(source, actions, {
+    notify: (title, message) => setLifecycleIssue({ title, message }),
+    prompt: (prompt, _confirm, workspace) => {
+      // Store the target, then confirm against the latest source after any refresh.
+      setStartPrompt({ target: workspaceTarget(workspace), prompt })
+    },
+  })
+  const guardedActions: StatusBarActions = {
+    ...actions,
+    startWorkspace: (target) => {
+      const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === target)
+      if (workspace) { setLifecycleIssue(null); guarded.request(workspace, "start") }
+    },
+    stopWorkspace: (target) => {
+      const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === target)
+      if (workspace) guarded.confirm(workspace, "stop")
+    },
+    restartWorkspace: (target) => {
+      const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === target)
+      if (workspace) guarded.confirm(workspace, "restart")
+    },
+  }
   const repair = source.runtimeRepair
   const folders = source.workspaces.find(({ machine }) => machine.id === folderWorkspace)
   const failedPushes = source.repositoryPushOperations.filter((operation) => operation.status === "failed")
   const failedConfiguration = source.sandboxConfigurationOperation?.status === "failed" ? source.sandboxConfigurationOperation : null
+  const approval = source.sandboxConfigurationOperation?.status === "awaiting-approval" ? source.sandboxConfigurationOperation : null
 
   function openFolders(id: string) {
     setHasNavigated(true)
@@ -173,6 +142,12 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
   return (
     <div key="sandboxes" className={cn("status-page flex max-h-[518px] shrink-0 flex-col overflow-hidden", hasNavigated && "status-page-back")}>
       <div className="shrink-0 px-2 pt-2">
+        {lifecycleIssue && <OperationIssue
+          title={lifecycleIssue.title}
+          detail={lifecycleIssue.message}
+          actionLabel="Review VM operation availability"
+          onReview={() => actions.openSilo({ workspaceSection: "overview" })}
+        />}
         {repair && <ListCard className="mb-2">
           <ListRow
             icon={<ListRowIcon className="bg-destructive/10 text-destructive"><CircleAlert className="size-3.5" /></ListRowIcon>}
@@ -187,19 +162,29 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
           actionLabel="Review sandbox changes"
           onReview={() => actions.openSilo({ workspaceSection: "overview" })}
         />}
+        {approval && <OperationIssue
+          tone="warning"
+          title="Sandbox changes need approval"
+          detail={approval.result.message}
+          actionLabel="Review sandbox changes"
+          actionText="Review"
+          onReview={() => actions.openSilo({ workspaceSection: "overview" })}
+        />}
         {failedPushes.map((operation) => {
           const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === operation.workspace)
           const repository = workspace?.repositories.find(({ path, ahead }) => path === operation.repositoryPath && ahead > 0)
           const canRetry = workspace && repository && workspaceAvailability(workspace, source).canOpen
+          const sandbox = sandboxTargetLabel(operation.workspace, source)
+          const path = visibleText(operation.repositoryPath)
           return <OperationIssue
             key={`${operation.workspace}:${operation.repositoryPath}`}
-            title={`Push failed · ${operation.workspace}`}
-            detail={`${operation.repositoryPath} · ${operation.message}`}
-            actionLabel={`Review push failure for ${operation.workspace}, ${operation.repositoryPath}`}
+            title={`Push failed · ${sandbox}`}
+            detail={`${path} · ${operation.message}`}
+            actionLabel={`Review push failure for ${sandbox}, ${path}`}
             onReview={() => actions.openSilo({ workspace: operation.workspace, workspaceSection: "files" })}
             retry={repository
-              ? <RepositoryPushButton repository={repository} disabled={!canRetry} label={`Retry push for ${operation.repositoryPath}`} onPush={(target) => { if (canRetry) actions.pushRepository(operation.workspace, operation.repositoryPath, target) }}><RotateCw />Retry</RepositoryPushButton>
-              : <Button variant="outline" size="xs" aria-label={`Retry push for ${operation.repositoryPath}`} disabled><RotateCw />Retry</Button>}
+              ? <RepositoryPushButton repository={repository} disabled={!canRetry} label={`Retry push for ${path}`} onPush={(target) => { if (canRetry) actions.pushRepository(operation.workspace, operation.repositoryPath, target) }}><RotateCw />Retry</RepositoryPushButton>
+              : <Button variant="outline" size="xs" aria-label={`Retry push for ${path}`} disabled><RotateCw />Retry</Button>}
           />
         })}
       </div>
@@ -214,14 +199,16 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
               const pendingSecrets = machine.kind === "vm" && !workspace.computer ? source.secrets.filter((secret) => secret.state === "restart-required" && secret.workspaces.includes(machine.name)).map(({ name }) => name) : []
               const activity = source.activities.find((item) => item.category === "sandbox" && item.workspace === target && item.status === "running")
               const review = workspace.state === "failed" || workspace.attention?.level === "error"
-              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.computer ? "Computer unavailable · Last known status" : "Last known status" : undefined)
+              // A failed Start leaves the sandbox "Stopped": show the failure instead of a neutral row.
+              const lifecycle = lifecycleOutcome(workspace)
+              const detail = workspace.attention?.message ?? (workspace.state === "failed" ? workspace.stateDetail : workspace.freshness === "stale" ? workspace.computer ? "Computer unavailable · Last known status" : "Last known status" : lifecycle?.text)
               return <SandboxListItem key={machine.id} aria-label={machine.name} aria-busy={availability.busy || undefined}>
                 <SandboxListRow
                   name={machine.name}
                   kind={machine.kind}
                   kindBadge={workspace.computer ? <ComputerBadge computer={workspace.computer} /> : undefined}
-                  iconState={workspaceIconState(workspace)}
-                  tone={workspace.freshness === "stale" ? "warning" : workspaceRowTone(workspace)}
+                  iconState={lifecycle?.error ? "error" : workspaceIconState(workspace)}
+                  tone={workspace.freshness === "stale" ? "warning" : lifecycle?.error ? "error" : workspaceRowTone(workspace)}
                   icon={availability.busy ? <span className="relative shrink-0">
                     <ListRowIcon>{machine.kind === "vm" ? <Monitor className="size-3.5" /> : <Server className="size-3.5" />}</ListRowIcon>
                     <span className="absolute -top-1 -right-1 grid size-3.5 place-items-center rounded-full bg-background"><Loader2 className="size-2.5 animate-spin" aria-hidden="true" /></span>
@@ -240,12 +227,23 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
                         : availability.canOpen ? <>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} onClick={() => actions.openTerminal(target)}><Terminal /></SandboxAction>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} onClick={() => openFolders(machine.id)}><Code /></SandboxAction>
-                        </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => actions.startWorkspace(target)}><Play /></SandboxAction>
+                        </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => guardedActions.startWorkspace(target)}><Play /></SandboxAction>
                           : <SandboxAction label={`Open ${machine.name} in Silo`} onClick={() => actions.openSilo({ workspace: target })}><SiloMark /></SandboxAction>)}
-                    <WorkspaceActions workspace={workspace} source={source} actions={actions} onFolders={() => openFolders(machine.id)} onConfirm={(action) => setConfirmation({ workspace: target, action })} />
+                    <WorkspaceActions workspace={workspace} source={source} actions={guardedActions} onFolders={() => openFolders(machine.id)} onConfirm={(action) => setConfirmation({ workspace: target, action })} />
                   </>}
                 />
                 <RepositoryPushes workspace={workspace} source={source} actions={actions} />
+                {startPrompt?.target === target && <ListRowDetails label={startPrompt.prompt.title} className="gap-2 pl-0">
+                  <p className="text-[11px] font-medium">{startPrompt.prompt.title}</p>
+                  <p className="text-[11px] text-muted-foreground">{startPrompt.prompt.description}</p>
+                  <div className="flex justify-end gap-1.5">
+                    <Button variant="ghost" size="xs" onClick={() => setStartPrompt(null)}>Cancel</Button>
+                    <Button size="xs" disabled={!availability.canStart} onClick={() => {
+                      setStartPrompt(null)
+                      guarded.confirm(workspace, "start")
+                    }}>Start anyway</Button>
+                  </div>
+                </ListRowDetails>}
                 {pending && <ListRowDetails label={`${pending.action === "stop" ? "Stop" : "Restart"} ${machine.name}?`} className="gap-2 pl-0">
                   <p className="text-[11px] text-muted-foreground">{pending.action === "stop" ? "Stop" : "Restart"} {machine.name}{workspace.computer ? ` on ${workspace.computer.name}` : ""}? Running processes will be interrupted.</p>
                   <div className="flex justify-end gap-1.5">
@@ -253,8 +251,8 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
                     <Button variant="destructive" size="xs" disabled={pending.action === "stop" ? !availability.canStop : !availability.canRestart} onClick={() => {
                       if (pending.action === "stop" ? !availability.canStop : !availability.canRestart) return
                       setConfirmation(null)
-                      if (pending.action === "stop") actions.stopWorkspace(target)
-                      else actions.restartWorkspace(target)
+                      if (pending.action === "stop") guardedActions.stopWorkspace(target)
+                      else guardedActions.restartWorkspace(target)
                     }}>{pending.action === "stop" ? <Square /> : <RotateCw />}{pending.action === "stop" ? "Stop" : "Restart"}</Button>
                   </div>
                 </ListRowDetails>}
@@ -276,58 +274,5 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
           </>}
       </footer>
     </div>
-  )
-}
-
-function StatusBarIcon({ tone, reduceMotion }: { tone: ReturnType<typeof statusBarHealth>["tone"]; reduceMotion: boolean }) {
-  const color = tone === "error" ? "text-destructive"
-    : tone === "warning" || tone === "busy" ? "text-amber-700 dark:text-amber-400"
-      : tone === "neutral" ? "text-muted-foreground" : "text-foreground"
-  const Indicator = tone === "busy" ? LoaderCircle : tone === "error" ? CircleAlert : tone === "warning" ? TriangleAlert : null
-  return (
-    <span className={cn("relative size-4", color)} aria-hidden="true">
-      <SiloMark className={cn("size-4", color, tone !== "success" && "[&_path]:stroke-current")} />
-      {Indicator && <span className="absolute -top-1 -right-1 grid size-3 place-items-center rounded-full bg-background ring-1 ring-background">
-        <Indicator strokeWidth={2.5} className={cn("size-2.5", tone === "busy" && !reduceMotion && "animate-spin motion-reduce:animate-none")} />
-      </span>}
-    </span>
-  )
-}
-
-export function StatusBar({ source, actions, defaultOpen = false }: { source: ApplicationSource; actions: StatusBarActions; defaultOpen?: boolean }) {
-  const [open, setOpen] = useState(defaultOpen)
-  const content = useRef<HTMLDivElement>(null)
-  const health = statusBarHealth(source)
-  function dismissThen(action: () => void) { setOpen(false); action() }
-  const dismissingActions: StatusBarActions = {
-    ...actions,
-    openSilo: (route) => dismissThen(() => actions.openSilo(route)),
-    quit: () => dismissThen(actions.quit),
-    openTerminal: (name) => dismissThen(() => actions.openTerminal(name)),
-    openEditor: (name, path) => dismissThen(() => actions.openEditor(name, path)),
-    openSite: (name, port) => dismissThen(() => actions.openSite(name, port)),
-  }
-  return (
-    <TooltipProvider delayDuration={150} reduceMotion={source.preferences.reduceMotion}>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button variant="ghost" size="icon-sm" className="relative rounded-md" aria-label="Silo status bar" aria-description={health.label} title={`Silo · ${health.label}`}>
-            <StatusBarIcon tone={health.tone} reduceMotion={source.preferences.reduceMotion} />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent
-          ref={content}
-          aria-label="Silo"
-          align="end"
-          sideOffset={8}
-          collisionPadding={10}
-          className="silo-window flex max-h-[min(520px,var(--radix-popover-content-available-height))] w-[380px] max-w-[calc(100vw-20px)] flex-col overflow-hidden rounded-xl p-0 shadow-lg"
-          data-reduce-motion={source.preferences.reduceMotion}
-          onOpenAutoFocus={(event) => { event.preventDefault(); content.current?.focus() }}
-        >
-          <StatusBarContent source={source} actions={dismissingActions} focusContent={() => content.current?.focus()} />
-        </PopoverContent>
-      </Popover>
-    </TooltipProvider>
   )
 }

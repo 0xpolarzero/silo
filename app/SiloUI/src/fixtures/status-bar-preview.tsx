@@ -4,7 +4,7 @@ import { isTauri } from "@tauri-apps/api/core"
 import { Button } from "@/components/ui/button"
 import { WindowTitleBar } from "@/components/window-toolbar"
 import type { ApplicationSource } from "@/features/application/model/application-source"
-import { StatusBar } from "@/features/status-bar/status-bar"
+import { StatusBar } from "@/features/status-bar/status-bar-popover"
 import type { StatusBarRoute } from "@/features/status-bar/status-bar-types"
 import { type StatusBarFixtureMode } from "@/fixtures/status-bar-scenarios"
 

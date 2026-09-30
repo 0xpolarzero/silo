@@ -200,15 +200,18 @@ describe("application preference choices", () => {
     await user.click(screen.getByRole("option", { name: "Choose…" }))
     expect(onChange).not.toHaveBeenCalled()
     expect(screen.getByRole("combobox", { name: "Browser" })).toHaveTextContent("Firefox")
-    const error = vi.spyOn(console, "error").mockImplementation(() => {})
-    try {
-      source.choose.mockRejectedValueOnce(new Error("Picker failed"))
-      await user.click(screen.getByRole("combobox", { name: "Browser" }))
-      await user.click(screen.getByRole("option", { name: "Choose…" }))
-      expect(error).toHaveBeenCalledOnce()
-      expect(onChange).not.toHaveBeenCalled()
-      expect(screen.getByRole("combobox", { name: "Browser" })).toHaveTextContent("Firefox")
-    } finally { error.mockRestore() }
+    source.choose.mockRejectedValueOnce("The selected item is not an available application")
+    await user.click(screen.getByRole("combobox", { name: "Browser" }))
+    await user.click(screen.getByRole("option", { name: "Choose…" }))
+    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.getByRole("combobox", { name: "Browser" })).toHaveTextContent("Firefox")
+    // The failure is explained beside the select instead of only in the console.
+    const alert = screen.getByRole("alert")
+    expect(alert).toHaveTextContent("Couldn't use the chosen browser. The selected item is not an available application.")
+    expect(screen.getByRole("combobox", { name: "Browser" })).toHaveAccessibleDescription(alert.textContent!)
+    await user.click(screen.getByRole("combobox", { name: "Browser" }))
+    await user.click(screen.getByRole("option", { name: "System default (Firefox)" }))
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 
   it("disables the native chooser in browser fixtures while preserving fixture options", async () => {

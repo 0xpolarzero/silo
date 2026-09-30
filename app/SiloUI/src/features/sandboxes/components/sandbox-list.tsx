@@ -119,12 +119,12 @@ export function SandboxListRow({
           <div
             className="sandbox-hover-actions flex shrink-0 items-center gap-0.5 transition-opacity"
             aria-label={`Manage ${name}`}
-            data-sandbox-hover-actions=""
+            data-slot="sandbox-hover-actions"
           >
             {hoverActions}
           </div>
         )}
-        {actions && <div className={cn("flex shrink-0 items-center gap-0.5", actionsClassName)} aria-label={`Controls for ${name}`}>{actions}</div>}
+        {actions && <div data-slot="sandbox-row-actions" className={cn("flex shrink-0 items-center gap-0.5", actionsClassName)} aria-label={`Controls for ${name}`}>{actions}</div>}
       </>}
     />
   )

@@ -10,6 +10,7 @@ import { useCallback, useEffect, useEffectEvent, useLayoutEffect, useRef, useSta
 import type { BackupController } from "@/features/application/model/backup-source"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { ApplicationShell, type ApplicationNavigationLoading } from "@/features/application/components/application-shell"
+import { MachineEditorDraftsProvider } from "@/features/sandboxes/model/editor-drafts"
 import { ApplicationCommandMenu } from "@/features/application/components/application-command-menu"
 import { OperationQueueToast } from "@/features/application/components/operation-queue-panel"
 import { QuitRequestConfirmation, type ConnectQuitConfirmation } from "@/features/application/components/quit-request-confirmation"
@@ -312,6 +313,8 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   })
 
   return (
+    // Keeps unsaved sandbox edits while navigating between sections (I-37).
+    <MachineEditorDraftsProvider>
     <ApplicationShell
       toggleSidebarRequest={sidebarRequest}
       onSidebarCollapsedChange={setSidebarCollapsed}
@@ -401,5 +404,6 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         <div hidden={settingsSection !== "notifications"}><NotificationsPage /></div>
       </section>
     </ApplicationShell>
+    </MachineEditorDraftsProvider>
   )
 }

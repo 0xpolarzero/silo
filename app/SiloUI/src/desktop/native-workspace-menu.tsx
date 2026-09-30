@@ -4,9 +4,28 @@ import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { MoreHorizontal } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { showActionFailure, showQuickConfirmation } from "@/lib/operation-toast"
-import { workspaceAvailability } from "@/features/application/model/workspace-availability"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
-import type { WorkspaceMenuProps } from "@/features/status-bar/status-bar"
+import type { WorkspaceMenuProps } from "@/features/status-bar/status-bar-types"
+import { workspaceMenuItems, type WorkspaceMenuItem } from "@/features/status-bar/workspace-menu-items"
+
+type NativeItems = NonNullable<MenuOptions["items"]>
+
+// The same items as the browser preview's Radix menu, as native menu entries.
+function nativeItems(items: WorkspaceMenuItem[]): NativeItems {
+  return items.map((item): NativeItems[number] => {
+    if (item.kind === "separator") return { item: "Separator" }
+    if (item.kind === "submenu") return { text: item.label, enabled: item.enabled, items: nativeItems(item.items) }
+    if (item.kind === "copy") {
+      return { text: item.label, action: () => {
+        void navigator.clipboard.writeText(item.value).then(
+          () => showQuickConfirmation(item.copied),
+          (error) => showActionFailure(item.failed, error, undefined, { native: false }),
+        )
+      } }
+    }
+    return { text: item.label, enabled: item.enabled, action: item.run }
+  })
+}
 
 // HTML portals cannot draw outside the status webview. Let the OS own the
 // popup and its submenus, including screen-edge placement and keyboard tracking.
@@ -20,33 +39,13 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
     if (opening.current) return
     opening.current = true
     const bounds = button.getBoundingClientRect()
-    const { canOpen, canStart, canStop, canRestart } = workspaceAvailability(workspace, source)
-    const sites = workspace.ports.filter(({ listening, configured, scheme, hostPort }) => listening === true && configured === true && scheme != null && hostPort != null).sort((a, b) => a.port - b.port)
-    const items: MenuOptions["items"] = [
-      ...(workspace.state === "stopped"
-        ? [{ text: "Start", enabled: canStart, action: () => actions.startWorkspace(target) }]
-        : [
-          { text: "Stop…", enabled: canStop, action: () => onConfirm("stop") },
-          { text: "Restart…", enabled: canRestart, action: () => onConfirm("restart") },
-        ]),
-      { item: "Separator" },
-      { text: `Open in ${source.preferences.terminal}`, enabled: canOpen, action: () => actions.openTerminal(target) },
-      { text: `Open in ${source.preferences.editor}…`, enabled: canOpen, action: onFolders },
-      {
-        text: "Open site", enabled: canOpen && Boolean(workspace.host), items: [
-          ...(sites.length
-            ? sites.map(({ port }) => ({ text: `Port ${port}`, action: () => actions.openSite(target, port) }))
-            : [{ text: "No active sites", enabled: false }]),
-          { item: "Separator" },
-          { text: "Copy base URL", action: () => {
-            void navigator.clipboard.writeText(`http://${workspace.host}`).then(
-              () => showQuickConfirmation("Base URL copied"),
-              (error) => showActionFailure("Couldn't copy base URL", error, undefined, { native: false }),
-            )
-          } },
-        ],
-      },
-    ]
+    const items = nativeItems(workspaceMenuItems(workspace, source, {
+      start: () => actions.startWorkspace(target),
+      confirm: onConfirm,
+      openTerminal: () => actions.openTerminal(target),
+      chooseFolder: onFolders,
+      openSite: (port) => actions.openSite(target, port),
+    }))
     let menu: Menu | undefined
     try {
       menu = await Menu.new({ items })

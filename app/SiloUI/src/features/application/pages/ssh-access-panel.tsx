@@ -1,3 +1,4 @@
+import "./ssh-access-panel.css"
 import { ConnectionIcon } from "@/components/connection-icon"
 import { ActionsMenu } from "@/components/actions-menu"
 import { ConfirmPopover } from "@/components/confirm-popover"

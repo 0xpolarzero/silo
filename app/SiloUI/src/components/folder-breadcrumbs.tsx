@@ -2,6 +2,9 @@ import { useLayoutEffect, useRef, useState } from "react"
 import { ChevronRight, MoreHorizontal } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
+import { useReduceMotion } from "@/components/ui/reduce-motion"
+import { visibleText } from "@/lib/visible-text"
+
 const crumbClass = "min-w-0 truncate rounded px-1 py-1 text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
 
 export function FolderBreadcrumbs({ segments, onNavigate }: {
@@ -11,8 +14,10 @@ export function FolderBreadcrumbs({ segments, onNavigate }: {
   const container = useRef<HTMLElement>(null)
   const measurement = useRef<HTMLDivElement>(null)
   const selectedAncestor = useRef(false)
+  const reduceMotion = useReduceMotion()
   const [layout, setLayout] = useState({ collapsed: false, rootVisible: true })
-  const labels = ["/workspace", ...segments]
+  // Folder names come from the guest: reveal invisible and bidirectional characters.
+  const labels = ["/workspace", ...segments.map(visibleText)]
   const path = labels.join("/")
 
   useLayoutEffect(() => {
@@ -61,6 +66,7 @@ export function FolderBreadcrumbs({ segments, onNavigate }: {
                   if (selectedAncestor.current) event.preventDefault()
                   selectedAncestor.current = false
                 }}
+                data-reduce-motion={reduceMotion || undefined}
                 className="silo-window z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] max-w-[calc(100vw-16px)] overflow-y-auto overflow-x-hidden rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
                 {hidden.map((label, offset) => {
                   const index = offset + (layout.rootVisible ? 1 : 0)

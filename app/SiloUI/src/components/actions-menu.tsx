@@ -3,6 +3,7 @@ import { DropdownMenu } from "radix-ui"
 import { Ellipsis, type LucideIcon } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
+import { useReduceMotion } from "@/components/ui/reduce-motion"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 
 export interface MenuAction {
@@ -53,12 +54,13 @@ export function ActionsMenu({ label, items, onClose, disabled = false, ref, popo
     // oxlint-disable-next-line react/set-state-in-effect
     setPanel(openPanel.panel)
   }, [openPanel])
+  const reduceMotion = useReduceMotion()
   const close = () => setPanel(null)
   const render = panel ? popovers?.[panel] : undefined
   return <Popover open={Boolean(render)} onOpenChange={open => { if (!open) close() }}>
     <DropdownMenu.Root onOpenChange={open => { if (!open) onClose?.() }}>
     <Tooltip><TooltipTrigger asChild><DropdownMenu.Trigger asChild><PopoverAnchor asChild><Button ref={node => { trigger.current = node; if (typeof ref === "function") ref(node); else if (ref) ref.current = node }} variant="ghost" size="icon-xs" aria-label={label} disabled={disabled}><Ellipsis /></Button></PopoverAnchor></DropdownMenu.Trigger></TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>
-    <DropdownMenu.Portal><DropdownMenu.Content align="end" sideOffset={4} onCloseAutoFocus={event => { if (opensPopover.current) { event.preventDefault(); opensPopover.current = false } }} className="z-50 min-w-40 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+    <DropdownMenu.Portal><DropdownMenu.Content align="end" sideOffset={4} onCloseAutoFocus={event => { if (opensPopover.current) { event.preventDefault(); opensPopover.current = false } }} data-reduce-motion={reduceMotion || undefined} className="silo-portal z-50 min-w-40 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
       {items.map(item => {
         const itemDisabled = disabled || item.disabled
         const entry = <DropdownMenu.Item aria-label={item.accessibleLabel} disabled={itemDisabled} onSelect={event => { if (item.keepOpen) event.preventDefault(); opensPopover.current = Boolean(item.opensPopover || item.popover); item.onSelect?.(); if (item.popover) setPanel(item.popover) }} className={`flex items-center gap-2 cursor-default rounded-sm px-2 py-1.5 text-xs outline-none focus:bg-accent data-[disabled]:pointer-events-none data-[disabled]:opacity-50 ${item.destructive ? "text-destructive" : ""}`}>{item.icon && <item.icon aria-hidden="true" className="size-3.5 shrink-0" />}{item.label}</DropdownMenu.Item>

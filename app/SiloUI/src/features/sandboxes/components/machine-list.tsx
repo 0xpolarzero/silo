@@ -15,6 +15,7 @@ import { machineSummary } from "@/features/sandboxes/model/machine-summary"
 import { deleteSandboxDescription, deleteSandboxTitle } from "@/features/sandboxes/model/delete-sandbox-copy"
 import { DeleteSandboxBody, type DeleteSandboxDetails } from "@/features/sandboxes/components/delete-sandbox-confirmation"
 import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
+import type { HostCapacity } from "@/features/sandboxes/model/machine-limits"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
 export interface MachineRowPresentation {
@@ -69,20 +70,27 @@ interface MachineListProps {
   isMachineCreated?: (machine: SetupMachineConfiguration) => boolean
   isMachineRunning?: (machine: SetupMachineConfiguration) => boolean
   validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
+  /** The CPUs and memory of a computer ("" is this one), when known: fits new-sandbox defaults and presets, and rejects ceilings above it. */
+  getHostCapacity?: (computerId: string) => HostCapacity | undefined
+  /** Why a sandbox cannot be edited or deleted now (it is starting or stopping), if so. */
+  getMachineBusyReason?: (machine: SetupMachineConfiguration) => string | undefined
+  /** Keeps an open editor across navigation within a `MachineEditorDraftsProvider`. */
+  editorDraftKey?: string
 }
 
-export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning }: MachineListProps) {
+export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning, getHostCapacity, getMachineBusyReason, editorDraftKey }: MachineListProps) {
   const {
     computerId, setComputerId,
     committing,
     interactionDisabled,
+    saveBlockedReason,
     editor, setEditor,
-    editorBaseline, editorConflict, editorResetToken,
+    editorBaseline, editorConflict, editorReview, editorResetToken,
     editorFocusRequest, setEditorFocusRequest,
     baselineRef,
     captureBaseline, beginOperation, dispatchChange,
     startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteWithNotice,
-  } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp })
+  } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp, getHostCapacity, getMachineBusyReason, draftKey: editorDraftKey })
 
   const [addOpen, setAddOpen] = useState(false)
   const [draggedID, setDraggedID] = useState<string | null>(null)
@@ -136,27 +144,35 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     runMachineAction(machineActionRequest)
   }, [machineActionRequest])
 
+  // Only this computer's order persists (remote computers keep their own), so remote rows
+  // are neither draggable nor drop targets, and positions count local rows only.
+  const isRemote = (machine: SetupMachineConfiguration) => Boolean(getComputerId?.(machine))
+  const orderable = displayMachines.filter((machine) => !isRemote(machine) && machines.some(({ id }) => id === machine.id))
+  // A keyboard move waits for the source to publish the previous one, so rapid presses
+  // never recompute from the stale `machines` the first move started from.
+  const reorderPending = useRef(false)
+  useEffect(() => { reorderPending.current = false }, [machines])
+
   function reorder(id: string, targetIndex: number) {
-    if (interactionDisabled) return
+    if (interactionDisabled || reorderPending.current) return
     // Reorder against the order captured when the drag/keyboard move began, so the change
     // carries that order as `expectedOrder` and does not fold in concurrent edits.
-    const base = baselineRef.current ?? [...machines]
-    const reorderBaseline = baselineRef.current ? (getComputerId ? base.filter(machine => !getComputerId(machine)) : base) : undefined
-    const displayed = displayMachines.filter((machine) => machines.some(({ id: configuredID }) => configuredID === machine.id))
-    const from = displayed.findIndex((machine) => machine.id === id)
-    const boundedTarget = Math.max(0, Math.min(targetIndex, displayed.length - 1))
+    const base = (baselineRef.current ?? [...machines]).filter((machine) => !isRemote(machine))
+    const reorderBaseline = baselineRef.current ? base : undefined
+    const from = orderable.findIndex((machine) => machine.id === id)
+    const boundedTarget = Math.max(0, Math.min(targetIndex, orderable.length - 1))
     if (from < 0 || from === boundedTarget) return
     beginOperation()
-    const moved = displayed[from]
+    const moved = orderable[from]
+    const target = orderable[boundedTarget]
+    let updated: SetupMachineConfiguration[]
 
     if (sortPriority) {
-      const target = displayed[boundedTarget]
       const priority = sortPriority(moved)
       if (sortPriority(target) !== priority) {
         setAnnouncement(`${moved.name} can only be reordered within its status group.`)
         return
       }
-
       const bucket = base.filter((machine) => sortPriority(machine) === priority)
       const bucketFrom = bucket.findIndex((machine) => machine.id === moved.id)
       const bucketTarget = bucket.findIndex((machine) => machine.id === target.id)
@@ -164,35 +180,41 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
       const [bucketMoved] = bucket.splice(bucketFrom, 1)
       bucket.splice(bucketTarget, 0, bucketMoved)
       let bucketIndex = 0
-      const updated = base.map((machine) => sortPriority(machine) === priority ? bucket[bucketIndex++] : machine)
-      dispatchChange(configurationRequestMachines(updated, getComputerId), reorderBaseline)
-      setAnnouncement(`${moved.name} moved to position ${boundedTarget + 1} of ${displayed.length}.`)
-      return
+      updated = base.map((machine) => sortPriority(machine) === priority ? bucket[bucketIndex++] : machine)
+    } else {
+      updated = [...base]
+      const configuredFrom = updated.findIndex((machine) => machine.id === id)
+      const configuredTarget = updated.findIndex((machine) => machine.id === target.id)
+      if (configuredFrom < 0 || configuredTarget < 0) return
+      const [configuredMoved] = updated.splice(configuredFrom, 1)
+      updated.splice(configuredTarget, 0, configuredMoved)
     }
 
-    const updated = [...base]
-    const configuredFrom = updated.findIndex((machine) => machine.id === id)
-    if (configuredFrom < 0) return
-    const [configuredMoved] = updated.splice(configuredFrom, 1)
-    updated.splice(boundedTarget, 0, configuredMoved)
-    dispatchChange(configurationRequestMachines(updated, getComputerId), reorderBaseline)
-    setAnnouncement(`${moved.name} moved to position ${boundedTarget + 1} of ${displayed.length}.`)
+    const pending = dispatchChange(configurationRequest(updated).machines, reorderBaseline)
+    if (pending) {
+      reorderPending.current = true
+      void pending.finally(() => { reorderPending.current = false })
+    }
+    setAnnouncement(`${moved.name} moved to position ${boundedTarget + 1} of ${orderable.length}.`)
   }
 
-  function handleReorderKey(event: KeyboardEvent<HTMLElement>, machine: SetupMachineConfiguration, index: number) {
+  function handleReorderKey(event: KeyboardEvent<HTMLElement>, machine: SetupMachineConfiguration) {
     if (interactionDisabled) return
     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return
     event.preventDefault()
+    if (reorderPending.current) return
     captureBaseline()
-    reorder(machine.id, index + (event.key === "ArrowUp" ? -1 : 1))
+    const from = orderable.findIndex(({ id }) => id === machine.id)
+    reorder(machine.id, from + (event.key === "ArrowUp" ? -1 : 1))
   }
 
-  function drop(event: DragEvent, targetIndex: number, rowDisabled = false) {
+  function drop(event: DragEvent, target: SetupMachineConfiguration, rowDisabled = false) {
     event.preventDefault()
-    if (interactionDisabled || rowDisabled) return
+    const targetIndex = orderable.findIndex(({ id }) => id === target.id)
     const id = draggedID || event.dataTransfer.getData("text/plain")
-    if (id) reorder(id, targetIndex)
     setDraggedID(null)
+    if (interactionDisabled || rowDisabled || targetIndex < 0 || !id) return
+    reorder(id, targetIndex)
   }
 
   const remoteCount = machines.filter(machine => getComputerId?.(machine) || machine.kind === "ssh").length
@@ -218,10 +240,12 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
         />
 
         <SandboxList label="Configured sandboxes" className="max-h-full min-h-0" data-testid="machine-list">
-            {displayMachines.map((machine, index) => {
+            {displayMachines.map((machine) => {
               const isEditing = editor?.draft.id === machine.id
               const runningVM = machine.kind === "vm" && Boolean(isMachineRunning?.(machine))
-              const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : undefined
+              // Starting or stopping VMs can be neither edited nor deleted until they settle.
+              const busyReason = getMachineBusyReason?.(machine)
+              const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : busyReason
               const presentation = getRowPresentation?.(machine)
               const rowInteractionsDisabled = interactionDisabled || Boolean(presentation?.suppressInteractions)
               const computerName = computers?.find(computer => computer.id === getComputerId?.(machine))?.name
@@ -234,10 +258,10 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                   aria-busy={presentation?.busy || undefined}
                   className="min-w-0 bg-background"
                   onDragOver={(event) => event.preventDefault()}
-                  onDrop={(event) => drop(event, index, Boolean(presentation?.suppressInteractions))}
+                  onDrop={(event) => drop(event, machine, Boolean(presentation?.suppressInteractions))}
                 >
                   {isEditing && editor ? (
-                    <MachineEditor key={`${editor.draft.id}:${editorResetToken}`} saving={committing} editorHeader={computers && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={computerId} disabled={Boolean(editor.originalID) || committing} onChange={event => setComputerId(event.target.value)}><option value="">This computer</option>{computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} baselineMachine={editorBaseline ?? undefined} conflict={editorConflict} machines={getComputerId ? machines.filter(machine => (getComputerId(machine) ?? "") === computerId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} onReview={reviewConflict} onDiscard={() => setEditor(null)} />
+                    <MachineEditor key={`${editor.draft.id}:${editorResetToken}`} saving={committing} blockedReason={saveBlockedReason} editorHeader={computers && editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={computerId} disabled={Boolean(editor.originalID) || committing} onChange={event => setComputerId(event.target.value)}><option value="">This computer</option>{computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined} focusRequest={editorFocusRequest} capacity={getHostCapacity?.(computerId)} computerName={computers?.find(computer => computer.id === computerId)?.name} created={Boolean(editor.originalID && isMachineCreated?.(machine))} running={Boolean(editor.originalID && machine.kind === "vm" && isMachineRunning?.(machine))} editor={editor} baselineMachine={editorBaseline ?? undefined} conflict={editorConflict} review={editorReview} machines={getComputerId ? machines.filter(machine => (getComputerId(machine) ?? "") === computerId) : machines} onCancel={() => setEditor(null)} onSave={save} onDraftChange={(draft) => setEditor({ ...editor, draft })} onReview={reviewConflict} onDiscard={() => setEditor(null)} />
                   ) : (
                     <SandboxListRow
                       name={machine.name}
@@ -251,14 +275,14 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       tone={presentation?.tone}
                       detail={presentation?.detail ?? machineSummary(machine)}
                       detailClassName={presentation?.detailClassName}
-                      leading={<span
+                      leading={isRemote(machine) ? <span aria-hidden="true" className="size-7 shrink-0" /> : <span
                         role="button"
                         tabIndex={rowInteractionsDisabled ? -1 : 0}
                         draggable={!editor && !rowInteractionsDisabled}
                         aria-label={`Reorder ${machine.name}`}
                         aria-disabled={rowInteractionsDisabled || undefined}
                         className="grid size-7 shrink-0 cursor-grab place-items-center rounded-md text-muted-foreground outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:cursor-grabbing aria-disabled:cursor-default aria-disabled:opacity-40"
-                        onKeyDown={(event) => { if (!rowInteractionsDisabled) handleReorderKey(event, machine, index) }}
+                        onKeyDown={(event) => { if (!rowInteractionsDisabled) handleReorderKey(event, machine) }}
                         onDragStart={(event) => {
                           if (rowInteractionsDisabled) { event.preventDefault(); return }
                           beginOperation()
@@ -288,6 +312,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                           machine,
                           displayName: deletionName,
                           disabled: rowInteractionsDisabled,
+                          busyReason,
                           created: Boolean(isMachineCreated?.(machine)),
                           running: runningVM,
                           separatorBefore: presentation.menuActions.length > 0,
@@ -302,12 +327,12 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       ]} />}</> : undefined}
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
-                        <SandboxAction label={`Edit ${machine.name}`} disabled={interactionDisabled} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
+                        <SandboxAction label={`Edit ${machine.name}`} tooltip={busyReason} disabled={interactionDisabled || Boolean(busyReason)} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
                         <SandboxAction tooltip={machine.kind === "vm" ? "Create a new VM with these settings" : "Create a new SSH configuration with these settings."} label={`Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
                           <CopyPlus />
                         </SandboxAction>
                         <ConfirmPopover align="end" tone="destructive" title={deleteSandboxTitle(deletionName)} description={deleteSandboxDescription(machine.kind)} confirmLabel="Delete permanently" tooltip={deleteTooltip ?? `Delete ${deletionName}`} onConfirm={() => remove(machine)}>
-                          <Button type="button" variant="ghost" size="icon-xs" aria-label={`Delete ${deletionName}`} disabled={interactionDisabled || runningVM}>
+                          <Button type="button" variant="ghost" size="icon-xs" aria-label={`Delete ${deletionName}`} disabled={interactionDisabled || runningVM || Boolean(busyReason)}>
                             <Trash2 />
                           </Button>
                         </ConfirmPopover>
@@ -324,9 +349,4 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
       </div>
     </>
   )
-}
-
-// Reorder helpers build the same local-only configuration list the hook's saves derive.
-function configurationRequestMachines(machines: SetupMachineConfiguration[], getComputerId?: (machine: SetupMachineConfiguration) => string | undefined) {
-  return configurationRequest(getComputerId ? machines.filter(machine => !getComputerId(machine)) : machines).machines
 }

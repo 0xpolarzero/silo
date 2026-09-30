@@ -11,6 +11,8 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
+import { sandboxBusyReason } from "@/features/sandboxes/model/workspace-presentation"
+import { hostCapacityFrom } from "@/features/sandboxes/model/machine-limits"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { DeleteSandboxBody, type DeleteSandboxDetails } from "@/features/sandboxes/components/delete-sandbox-confirmation"
 import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
@@ -317,6 +319,8 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const target = workspaceTarget(workspace)
   const state = workspace.state
   const canStop = state === "running" || state === "starting"
+  // A starting or stopping VM can be neither edited nor deleted until it settles.
+  const busyReason = sandboxBusyReason(workspace)
 
   // The detail page edits and deletes this sandbox in place using the same flow as the list.
   const editingContext = controls.editing
@@ -329,8 +333,11 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     validateOperation: editingContext?.validateOperation,
     isMachineRunning: editingContext?.isMachineRunning,
     interactionDisabled: controls.configurationLocked,
+    getMachineBusyReason: (item) => item.id === machine.id ? busyReason : undefined,
+    // Leaving the page (⌘1–7, ⌘[, the breadcrumb) and returning restores an unsaved edit.
+    draftKey: `sandbox-detail:${machine.id}`,
   })
-  const canEdit = Boolean(editingContext) && !controls.configurationLocked
+  const canEdit = Boolean(editingContext) && !controls.configurationLocked && !busyReason
   const isEditing = Boolean(editing.editor)
   const editComputerMachines = editingContext?.getComputerId
     ? (editingContext.machines).filter(item => (editingContext.getComputerId!(item) ?? "") === editing.computerId)
@@ -341,6 +348,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     machine,
     displayName,
     disabled: controls.configurationLocked || editing.interactionDisabled || Boolean(controls.changesBlocked),
+    busyReason,
     created: Boolean(editingContext.isMachineCreated?.(machine)),
     running: state === "running",
     separatorBefore: controls.menuActions.length > 0,
@@ -418,6 +426,8 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
               <MachineEditor
                 key={`${editing.editor.draft.id}:${editing.editorResetToken}`}
                 saving={editing.committing}
+                blockedReason={editing.saveBlockedReason}
+                capacity={editing.computerId ? undefined : hostCapacityFrom(source.hostCapacity)}
                 editorHeader={editingContext?.computers && editing.editor.draft.kind === "vm" ? <label className="grid gap-1 text-[11px] text-muted-foreground">Run on<select aria-label="Run on" className="h-8 rounded-lg border border-input bg-background px-2 text-xs text-foreground" value={editing.computerId} disabled={Boolean(editing.editor.originalID) || editing.committing} onChange={event => editing.setComputerId(event.target.value)}><option value="">This computer</option>{editingContext.computers.map(computer => <option key={computer.id} value={computer.id} disabled={!computer.connected}>{computer.name}{!computer.connected ? " (unavailable)" : ""}</option>)}</select></label> : undefined}
                 focusRequest={editing.editorFocusRequest}
                 created={Boolean(editing.editor.originalID && editingContext?.isMachineCreated?.(machine))}
@@ -425,6 +435,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
                 editor={editing.editor}
                 baselineMachine={editing.editorBaseline ?? undefined}
                 conflict={editing.editorConflict}
+                review={editing.editorReview}
                 machines={editComputerMachines}
                 onCancel={() => editing.setEditor(null)}
                 onSave={editing.save}

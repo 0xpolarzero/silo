@@ -141,7 +141,9 @@ it("commits an in-place edit with a baseline and returns to the overview tab", a
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
   await user.click(screen.getByRole("button", { name: "Edit" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
-  await user.click(screen.getByRole("button", { name: /save/i }))
+  // The sandbox is running, so saving asks to stop it first.
+  await user.click(screen.getByRole("button", { name: "Stop and save…" }))
+  await user.click(screen.getByRole("button", { name: "Stop and save" }))
 
   // The commit carries a baseline (targeted change), the editor closes, and the detail page
   // stays open on the same sandbox rather than returning to the list.
@@ -180,7 +182,9 @@ it("shows the stale-edit conflict review in place when a save is rejected", asyn
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
   await user.click(screen.getByRole("button", { name: "Edit" }))
   await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
-  await user.click(screen.getByRole("button", { name: /save/i }))
+  // The sandbox is running, so saving asks to stop it first.
+  await user.click(screen.getByRole("button", { name: "Stop and save…" }))
+  await user.click(screen.getByRole("button", { name: "Stop and save" }))
 
   expect(await screen.findByText("This VM changed since you opened it.")).toBeVisible()
   expect(screen.getByRole("button", { name: "Review changes" })).toBeVisible()

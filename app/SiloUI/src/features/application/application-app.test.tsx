@@ -517,6 +517,29 @@ describe("application", () => {
     expect(within(appPanel("Settings")).getByRole("heading", { name: "Notifications", level: 2 })).toBeVisible()
   })
 
+  it("fits a new sandbox to the capacity this computer reports (I-24)", async () => {
+    const source = { ...applicationSourceForScenario("running"), hostCapacity: { logicalCpus: 8, physicalMemoryBytes: 16 * 1024 ** 3, maxMemoryGib: 16 } }
+    const { user } = renderApplication("running", source)
+    const panel = within(appPanel("Sandboxes"))
+    await user.click(panel.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+    expect(panel.getByRole("combobox", { name: "CPU ceiling" })).toHaveValue("8")
+    expect(panel.getByRole("combobox", { name: "Memory ceiling" })).toHaveValue("16")
+    expect(panel.getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+  })
+
+  it("keeps an unsaved sandbox edit while visiting another section (I-37)", async () => {
+    const { user } = renderApplication()
+    const sandboxSections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+    await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+    await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
+    await user.selectOptions(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPU limit" }), "4")
+    await user.click(sandboxSections.getByRole("button", { name: "Files" }))
+    expect(within(appPanel("Sandboxes")).queryByRole("combobox", { name: "CPU limit" })).not.toBeInTheDocument()
+    await user.click(sandboxSections.getByRole("button", { name: "Overview" }))
+    expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPU limit" })).toHaveValue("4")
+  })
+
   it("uses one global sandbox filter across Files, Logs, Network, and Activity", async () => {
     const { actions, user } = renderApplication()
     const navigation = within(appNavigation())
@@ -1181,7 +1204,8 @@ describe("application", () => {
     await user.hover(overview.getByLabelText(/Workspace storage: .*read-only/))
     expect(await screen.findByRole("tooltip")).toHaveTextContent("To use a different disk size, create a new VM and transfer your data.")
     await user.selectOptions(overview.getByRole("combobox", { name: "CPU limit" }), "4")
-    await user.click(overview.getByRole("button", { name: "Stop VM and save" }))
+    await user.click(overview.getByRole("button", { name: "Stop and save…" }))
+    await user.click(overview.getByRole("button", { name: "Stop and save" }))
 
     const developmentRow = overview.getByText("dev").closest("li") as HTMLElement
     expect(developmentRow).toHaveAttribute("aria-busy", "true")

@@ -101,6 +101,6 @@ describe("optional Linux desktop", () => {
     const user = userEvent.setup()
     editor({ ...machine, desktop: { startWithSandbox: true } }, true)
     await user.selectOptions(screen.getByRole("combobox", { name: "CPU limit" }), "4")
-    expect(screen.getByRole("button", { name: "Stop VM and save" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Stop and save…" })).toBeVisible()
   })
 })
