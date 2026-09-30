@@ -1549,7 +1549,7 @@ describe("application", () => {
     }))
   })
 
-  it("allows repository selection without inventing a missing Git author", async () => {
+  it("allows repository selection without inventing a missing Git identity", async () => {
     const source = applicationSourceForScenario("running")
     source.github.workspaces = []
     source.github.hostIdentity = null

@@ -102,7 +102,7 @@ describe("setup progress and review presentation", () => {
       { id: "identityRun", label: "Save Git identities", status: "succeeded" },
       { id: "identityVerify", label: "Verify Git identities", status, failure: status === "failed" ? "Git identity could not be verified." : undefined },
     ]} workspaceRetryable={false} identitySummary="Alex · alex@example.com" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
-    const author = screen.getByRole("group", { name: "Git author" })
+    const author = screen.getByRole("group", { name: "Git identity" })
     expect(author).toHaveTextContent(label)
     expect(screen.getByRole("group", { name: "GitHub access" })).toHaveTextContent(label)
     expect(author).toHaveTextContent("Alex · alex@example.com")
@@ -115,7 +115,7 @@ describe("setup progress and review presentation", () => {
   it("keeps sandbox failures on the affected sandbox and never validates missing results", () => {
     render(<ReviewStep machines={fixtureMachineDefaults} workspaces={[
       { name: "dev", status: "failed", detail: "Sandbox could not be verified." },
-    ]} queueItems={[]} workspaceRetryable={false} identitySummary="No Git author" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
+    ]} queueItems={[]} workspaceRetryable={false} identitySummary="No Git identity" githubSummary="GitHub not connected" onRetryWorkspaceSetup={vi.fn()} />)
     const sandboxes = within(screen.getByRole("list", { name: "Sandboxes" })).getAllByRole("listitem")
     expect(sandboxes[0]).toHaveTextContent("Failed")
     expect(sandboxes[0]).toHaveTextContent("Sandbox could not be verified.")
@@ -131,7 +131,7 @@ describe("setup progress and review presentation", () => {
     await user.click(screen.getByRole("button", { name: "Edit GitHub and Git identity" }))
     expect(edit).toHaveBeenLastCalledWith("github")
     expect(screen.queryByRole("button", { name: "Edit GitHub access" })).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: "Edit Git author" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Edit Git identity" })).not.toBeInTheDocument()
   })
 
   it("keeps recovery visible while technical evidence stays optional", async () => {
