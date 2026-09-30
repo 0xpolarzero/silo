@@ -1106,6 +1106,23 @@ struct RuntimeLaunch<'a> {
 
 fn ignore_progress(_: Value) {}
 
+/// Asks the bundled runtime (Silo's secret-values patch) to read secret source values
+/// from standard input instead of its environment.
+const SECRET_VALUES_STDIN_FLAG: &str = "MSB_SECRET_VALUES_STDIN";
+
+/// The secret source values one runtime child may resolve, as the JSON object it reads
+/// on standard input: the GitHub access profile under `SILO_GITHUB` and each general
+/// secret under its name (validated names never collide with `SILO_GITHUB`).
+fn secret_values_document(material: &secrets_runtime::Material, github_profile: &str) -> Result<Vec<u8>, RuntimeError> {
+    let mut values = serde_json::Map::new();
+    values.insert("SILO_GITHUB".into(), github_profile.into());
+    for (name, value, _) in material {
+        values.insert(name.clone(), value.as_str().into());
+    }
+    serde_json::to_vec(&Value::Object(values))
+        .map_err(|_| RuntimeError::Invalid("Silo could not prepare the sandbox's secrets.".into()))
+}
+
 /// Commands that change runtime state hold the worker lock for the child's lifetime,
 /// so they never overlap another Silo process's runtime mutation.
 fn takes_worker_lock(args: &[String]) -> bool {
@@ -1139,13 +1156,17 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
             Ok(())
         }); }
     }
+    // Secret values never enter the runtime's environment (readable by other processes
+    // of this user, and where a secret named like a host variable could change the
+    // runtime's behaviour). The runtime reads them from standard input instead, and
+    // then resolves secret sources only from them (D-45, B-28).
+    let secret_values = secret_values_document(material, github_profile)?;
     command.args(args)
-        .envs(material.iter().map(|(name,value,_)| (name,value)))
         .env("MSB_HOME", &paths.home)
         .env("MSB_PATH", &paths.executable)
         .env("MSB_LIBKRUNFW_PATH", &paths.library)
-        .env("SILO_GITHUB", github_profile)
-        .stdin(Stdio::null());
+        .env(SECRET_VALUES_STDIN_FLAG, "1")
+        .stdin(Stdio::piped());
     if let Some((stdout, stderr)) = &captures {
         command
             .stdout(Stdio::from(stdout.as_file().try_clone().map_err(|error| {
@@ -1160,6 +1181,13 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
     let mut child = command.spawn().map_err(|error| {
         RuntimeError::Launch(format!("Silo could not start its bundled runtime: {error}"))
     })?;
+    // The runtime reads the whole document before anything else; a separate writer
+    // never blocks this thread, even if the child exits without reading it.
+    if let Some(mut stdin) = child.stdin.take() {
+        thread::spawn(move || {
+            let _ = stdin.write_all(&secret_values);
+        });
+    }
     // Spawn succeeded with pre_exec clearing close-on-exec for this lock only.
     // A surviving child must keep the flock if Silo exits before it does.
     if let Some(lock) = worker_lock.as_mut() {
@@ -1879,8 +1907,9 @@ pub(crate) fn github_policy_is_cached(app: &AppHandle, workspace: &str, profile:
         .get(&(paths.home, workspace.into())) == Some(&serialized))
 }
 
-/// A managed VM receives credentials through a host-only environment reference.
-/// The JSON profile is never a command argument, a config value or captured log.
+/// A managed VM receives credentials through a host-only secret source reference.
+/// The JSON profile reaches the runtime on standard input only: never as a command
+/// argument, an environment variable, a config value or captured log.
 pub(crate) fn apply_github_policy(
     app: &AppHandle,
     workspace: &str,
@@ -5641,7 +5670,7 @@ esac
     }
 
     /// A fake runtime for GitHub access updates. `modify` records its arguments, the
-    /// GitHub profile and one general secret it received, then blocks while
+    /// secret values it read on standard input and its environment, then blocks while
     /// `modify-block` exists and fails when `modify-fail` exists.
     fn fake_github_msb(paths: &RuntimePaths) {
         use std::os::unix::fs::PermissionsExt;
@@ -5653,11 +5682,11 @@ case "$1" in
   inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
   modify)
     printf '%s\n' "$*" >> "$MSB_HOME/modify-args"
-    printf '%s' "$SILO_GITHUB" > "$MSB_HOME/modify-profile"
-    printf '%s' "${API_TOKEN-unset}" > "$MSB_HOME/modify-secret"
+    cat > "$MSB_HOME/modify-values"
+    env > "$MSB_HOME/modify-env"
     echo $$ > "$MSB_HOME/modify.pid"
     while [ -f "$MSB_HOME/modify-block" ]; do sleep 0.05; done
-    if [ -f "$MSB_HOME/modify-fail" ]; then echo "rejected $SILO_GITHUB" >&2; exit 3; fi ;;
+    if [ -f "$MSB_HOME/modify-fail" ]; then echo "rejected $(cat "$MSB_HOME/modify-values")" >&2; exit 3; fi ;;
 esac
 "#).unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
@@ -5687,7 +5716,7 @@ esac
     }
 
     #[test]
-    fn github_update_passes_profile_and_secrets_only_through_the_environment() {
+    fn github_update_passes_profile_and_secrets_only_on_standard_input() {
         let directory = tempfile::tempdir().unwrap();
         let paths = paths(&directory);
         fake_github_msb(&paths);
@@ -5703,10 +5732,22 @@ esac
         let args = fs::read_to_string(paths.home.join("modify-args")).unwrap();
         assert_eq!(args.trim(), format!("modify dev --secret {} --format json", secrets_runtime::SILO_GITHUB_SECRET_SPEC));
         assert!(!args.contains("ghs_scoped") && !args.contains("secret-value"));
-        assert_eq!(fs::read_to_string(paths.home.join("modify-profile")).unwrap(), profile.to_string());
-        assert_eq!(fs::read_to_string(paths.home.join("modify-secret")).unwrap(), "secret-value");
+        let values: Value = serde_json::from_str(&fs::read_to_string(paths.home.join("modify-values")).unwrap()).unwrap();
+        assert_eq!(values, json!({"SILO_GITHUB": profile.to_string(), "API_TOKEN": "secret-value"}));
+        // Neither the profile nor a secret, nor any secret-named variable, is in the environment.
+        let environment = fs::read_to_string(paths.home.join("modify-env")).unwrap();
+        assert!(environment.lines().any(|line| line == "MSB_SECRET_VALUES_STDIN=1"));
+        assert!(!environment.contains("ghs_scoped") && !environment.contains("secret-value"));
+        assert!(!environment.lines().any(|line| line.starts_with("SILO_GITHUB=") || line.starts_with("API_TOKEN=")));
         assert_eq!(cached_github_profile(&paths), Some(profile.to_string()));
         forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn secret_values_document_carries_the_profile_and_each_secret_by_source_name() {
+        let material = vec![("API_KEY".to_string(), "value \"quoted\"".to_string(), vec!["api.example.com".to_string()])];
+        let document: Value = serde_json::from_slice(&secret_values_document(&material, DISABLED_GITHUB_PROFILE).unwrap()).unwrap();
+        assert_eq!(document, json!({"SILO_GITHUB": DISABLED_GITHUB_PROFILE, "API_KEY": "value \"quoted\""}));
     }
 
     #[test]
@@ -8618,6 +8659,11 @@ fn vm_holds_no_secret_material(runner: &dyn RuntimeRunner, paths: &RuntimePaths,
         }
         Err(_) => false,
     }
+}
+
+#[cfg(test)]
+pub(crate) fn validate_secret_material_for_tests(material: &[(String, String, Vec<String>)]) -> Result<(), String> {
+    secrets_runtime::validate_material(&material.to_vec())
 }
 
 pub(crate) fn validate_secret_workspaces(app: &AppHandle, workspaces: &[String]) -> Result<(),String> {

@@ -95,6 +95,10 @@
     {
       "path": "patches/microsandbox-preserve-basic-auth-0.7.2.patch",
       "sha256": "e1957e2bc8adb2552140a9309d1d26d2721a38113f375328b9def408f5b1b5aa"
+    },
+    {
+      "path": "patches/microsandbox-secret-values-stdin-0.7.2.patch",
+      "sha256": "a4190f14836bf457ae2f57254ebd23d6fd2c221572af85d6e5b5230c400abbe5"
     }
   ]
 }

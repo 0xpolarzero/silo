@@ -328,6 +328,33 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
         Ok(())
     })
 }
+#[derive(Deserialize)]
+struct ReservedSecretNames {
+    names: Vec<String>,
+    prefixes: Vec<String>,
+}
+
+/// The one list of names a secret may not use, shared with the UI's validation
+/// (`features/application/model/reserved-secret-names.json`).
+fn reserved_secret_names() -> &'static ReservedSecretNames {
+    static RESERVED: OnceLock<ReservedSecretNames> = OnceLock::new();
+    RESERVED.get_or_init(|| {
+        serde_json::from_str(include_str!(
+            "../../src/features/application/model/reserved-secret-names.json"
+        ))
+        .expect("the bundled reserved secret names are valid JSON")
+    })
+}
+
+/// True when a secret must not use `name` (compared case-insensitively): it would
+/// override guest shell, proxy, TLS or loader settings, or a Silo or runtime variable.
+pub(crate) fn reserved_secret_name(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    let reserved = reserved_secret_names();
+    reserved.names.iter().any(|reserved| *reserved == upper)
+        || reserved.prefixes.iter().any(|prefix| upper.starts_with(prefix.as_str()))
+}
+
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 128
@@ -335,40 +362,7 @@ fn valid_name(name: &str) -> bool {
             .bytes()
             .enumerate()
             .all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
-        && ![
-            "GH_TOKEN",
-            "GITHUB_TOKEN",
-            "PATH",
-            "HOME",
-            "SHELL",
-            "USER",
-            "LOGNAME",
-            "TMPDIR",
-            "TMP",
-            "TEMP",
-            "BASH_ENV",
-            "ENV",
-            "SHELLOPTS",
-            "BASHOPTS",
-            "IFS",
-            "CDPATH",
-            "GLOBIGNORE",
-            "HOSTNAME",
-            "HOSTALIASES",
-            "SSL_CERT_FILE",
-            "SSL_CERT_DIR",
-            "CURL_CA_BUNDLE",
-            "GIT_SSL_CAINFO",
-            "GIT_CONFIG_NOSYSTEM",
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "NO_PROXY",
-        ]
-        .contains(&name.to_ascii_uppercase().as_str())
-        && !["DYLD_", "LD_", "SILO_", "MSB_", "RUST_"]
-            .iter()
-            .any(|prefix| name.to_ascii_uppercase().starts_with(prefix))
+        && !reserved_secret_name(name)
 }
 fn valid_domain(domain: &str) -> bool {
     if domain == "*" {
@@ -798,6 +792,17 @@ mod tests {
             assert!(validate(&r, &Document::default()).is_err(), "{name}");
         }
         assert!(validate(&request(), &Document::default()).is_ok());
+    }
+    #[test]
+    fn saving_and_applying_secrets_share_one_reserved_name_list() {
+        assert!(!reserved_secret_names().names.is_empty() && !reserved_secret_names().prefixes.is_empty());
+        for name in ["no_proxy", "Path", "silo_anything", "RUST_LOG"] {
+            assert!(reserved_secret_name(name), "{name}");
+            // The runtime refuses the same names even if a saved document contained them.
+            let material = vec![(name.to_string(), "value".to_string(), vec!["api.example.com".to_string()])];
+            assert!(crate::runtime::validate_secret_material_for_tests(&material).is_err(), "{name}");
+        }
+        assert!(!reserved_secret_name("API_KEY"));
     }
     #[test]
     fn values_and_domain_constraints_are_validated_on_host() {

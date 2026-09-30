@@ -29,7 +29,7 @@ export function preflight(root = appRoot) {
   for (const key of ["sourceCommit", "libkrunfwCommit"]) matches(inputs[key], revision, key)
   for (const key of ["sourceArchiveSha256"]) matches(inputs[key], digest, key)
   requireValue(inputs.features === "net,ssh,embed-binaries", "features (required net,ssh,embed-binaries capability set)")
-  const patchNames = ["microsandbox-silo-network", "microsandbox-restore-policy", "microsandbox-create-stopped", "microsandbox-adopt-owned-disk", "microsandbox-log-retention-desktop-start", "microsandbox-restore-root-capacity", "microsandbox-portable-image-cache", "microsandbox-live-public-ports", "microsandbox-preserve-basic-auth"]
+  const patchNames = ["microsandbox-silo-network", "microsandbox-restore-policy", "microsandbox-create-stopped", "microsandbox-adopt-owned-disk", "microsandbox-log-retention-desktop-start", "microsandbox-restore-root-capacity", "microsandbox-portable-image-cache", "microsandbox-live-public-ports", "microsandbox-preserve-basic-auth", "microsandbox-secret-values-stdin"]
   requireValue(Array.isArray(inputs.patches) && inputs.patches.length === patchNames.length, "patches")
   for (const [index, patchInput] of inputs.patches.entries()) {
     keys(patchInput, ["path", "sha256"], `patches[${index}]`)

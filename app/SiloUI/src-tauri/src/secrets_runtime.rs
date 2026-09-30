@@ -72,41 +72,7 @@ fn names(config: &Value) -> HashSet<String> {
 pub(crate) fn validate_material(material: &Material) -> Result<(), String> {
     let mut seen = HashSet::new();
     for (name, value, domains) in material {
-        let upper = name.to_ascii_uppercase();
-        let reserved = ["SILO_", "MSB_", "LD_", "DYLD_", "RUST_"]
-            .iter()
-            .any(|prefix| upper.starts_with(prefix))
-            || [
-                "GH_TOKEN",
-                "GITHUB_TOKEN",
-                "PATH",
-                "HOME",
-                "SHELL",
-                "USER",
-                "LOGNAME",
-                "TMPDIR",
-                "TMP",
-                "TEMP",
-                "BASH_ENV",
-                "ENV",
-                "SHELLOPTS",
-                "BASHOPTS",
-                "IFS",
-                "CDPATH",
-                "GLOBIGNORE",
-                "HOSTNAME",
-                "HOSTALIASES",
-                "SSL_CERT_FILE",
-                "SSL_CERT_DIR",
-                "CURL_CA_BUNDLE",
-                "GIT_SSL_CAINFO",
-                "GIT_CONFIG_NOSYSTEM",
-                "HTTP_PROXY",
-                "HTTPS_PROXY",
-                "ALL_PROXY",
-                "NO_PROXY",
-            ]
-            .contains(&upper.as_str());
+        let reserved = crate::secrets::reserved_secret_name(name);
         if name.is_empty()
             || reserved
             || !name
