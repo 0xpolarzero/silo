@@ -1295,3 +1295,62 @@ mod tests {
         assert_eq!(parse_listeners(input).unwrap().get(&3000), Some(&false));
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    #[test]
+    fn network_state_matches_wire_contract() {
+        let mapping = Mapping {
+            workspace: "dev".into(),
+            port: 3000,
+            host_port: Some(13000),
+            scheme: Some("http".into()),
+            enabled: true,
+        };
+        let states = vec![
+            State {
+                workspaces: vec![Workspace {
+                    workspace: "dev".into(),
+                    host: Some(sandbox_host("dev", "00000000-0000-4000-8000-000000000001")),
+                    error: None,
+                    ports: vec![
+                        Port {
+                            configured_host_port: None,
+                            port: 443,
+                            host_port: Some(14443),
+                            scheme: Some("https".into()),
+                            state: "reachable",
+                            configured: true,
+                            message: None,
+                        },
+                        pending(&mapping, None, "waiting"),
+                        Port {
+                            configured_host_port: None,
+                            port: 8080,
+                            host_port: None,
+                            scheme: None,
+                            state: "unpublished",
+                            configured: false,
+                            message: None,
+                        },
+                    ],
+                }],
+            },
+            State {
+                workspaces: vec![Workspace {
+                    workspace: "dev".into(),
+                    host: None,
+                    error: Some("Network state could not be read.".into()),
+                    ports: vec![pending(
+                        &mapping,
+                        Some("Port state could not be read.".into()),
+                        "unknown",
+                    )],
+                }],
+            },
+        ];
+        crate::runtime::contract_tests::assert_fixture("network-state.json", states);
+    }
+}

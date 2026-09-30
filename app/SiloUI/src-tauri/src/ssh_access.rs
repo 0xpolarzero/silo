@@ -1562,3 +1562,39 @@ sys.stdin.buffer.read()
         assert!(!path(&p).exists());
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    #[test]
+    fn ssh_access_matches_wire_contract() {
+        let states: Vec<State> = ["disabled", "waiting", "listening", "error"]
+            .into_iter()
+            .map(|status| State {
+                workspaces: vec![Workspace {
+                    workspace: "dev".into(),
+                    vm_id: "00000000-0000-4000-8000-000000000001".into(),
+                    enabled: status != "disabled",
+                    port: 2222,
+                    bind_address: "127.0.0.1".into(),
+                    keys: if status == "disabled" {
+                        vec![]
+                    } else {
+                        vec![
+                            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeContractPublicKeyOnly".into(),
+                        ]
+                    },
+                    state: status,
+                    message: (status == "error").then(|| "SSH listener could not start.".into()),
+                    fingerprint: (status == "listening")
+                        .then(|| "SHA256:contract-public-fingerprint".into()),
+                    computer_name: "Contract computer".into(),
+                    addresses: vec!["192.0.2.10".into()],
+                    user: "silo",
+                }],
+            })
+            .collect();
+        crate::runtime::contract_tests::assert_fixture("ssh-access-state.json", states);
+    }
+}

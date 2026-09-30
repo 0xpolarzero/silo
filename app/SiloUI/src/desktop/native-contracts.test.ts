@@ -1,0 +1,101 @@
+import { readFileSync } from "node:fs"
+import { dirname, resolve } from "node:path"
+import { fileURLToPath } from "node:url"
+import { describe, expect, it } from "vitest"
+
+import { operationKinds, operationQueueSchema } from "@/features/application/model/operation-queue"
+import {
+  parseApplicationSource,
+  parseNetworkState,
+  parseRemoteApplicationSource,
+  parseSshAccessState,
+} from "./production-source"
+
+function fixture(name: string): unknown[] {
+  return JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), `../test/contracts/${name}.json`), "utf8")) as unknown[]
+}
+
+describe("Rust-emitted native wire contracts", () => {
+  for (const [name, parse] of [
+    ["application-state", parseApplicationSource],
+    ["remote-host-snapshot", parseRemoteApplicationSource],
+  ] as const) {
+    it(`preserves native workspace, checkpoint, and activity data from ${name}`, () => {
+      const raw = fixture(name)
+      const states = raw.map(parse)
+      // Check every native field, allowing presentation defaults and the intended
+      // checkpoint boundary conversion. nativeId belongs to runtime storage.
+      raw.forEach((value, index) => {
+        const expected = structuredClone(value) as { workspaces: Array<{ checkpoints?: Array<Record<string, unknown>> }> }
+        for (const workspace of expected.workspaces) {
+          if (!workspace.checkpoints) continue
+          workspace.checkpoints = workspace.checkpoints.map(checkpoint => {
+            const publicFields = Object.fromEntries(Object.entries(checkpoint).filter(([key]) => key !== "nativeId"))
+            return { ...publicFields, createdAt: new Date(Number(checkpoint.createdAt)).toISOString() }
+          })
+        }
+        expect(states[index]).toMatchObject(expected)
+      })
+      expect(states.map(state => state.workspaces[0].state)).toEqual(["running", "starting", "stopped", "failed"])
+      for (const state of states) {
+        expect(state.workspaces).toHaveLength(2)
+        const workspace = state.workspaces[0]
+        expect(workspace.machine.id).toBe("00000000-0000-4000-8000-000000000001")
+        expect(workspace.checkpoints).toEqual([expect.objectContaining({
+          id: "point-1", name: "Before change", createdAt: "2026-01-01T00:00:00.000Z", scope: "full", reason: "manual",
+        })])
+        expect(workspace.checkpointOperation).toEqual({
+          kind: "capture", status: "failed", stage: "Saving checkpoint", error: "Checkpoint storage is unavailable.",
+        })
+        expect(workspace.pendingCheckpointRestore).toEqual({ checkpointId: "native-1", sourceWorkspace: "dev", state: "full" })
+        expect(workspace.unfinishedRestore).toEqual({ checkpointId: "point-1", checkpointName: "Before change", phase: "secured" })
+        expect(workspace.lifecycleFailure).toBe("Start failed: The sandbox could not start.")
+        expect(workspace.lifecycleFailureDiagnostic).toBe("Runtime startup failed.")
+        expect(state.activities).toHaveLength(1)
+        expect(state.activities[0]).toMatchObject({
+          id: "contract-lifecycle-1", category: "sandbox", status: "completed", tone: "danger",
+          diagnostic: "Runtime startup failed.", workspace: "dev",
+        })
+        expect(state.workspaces[1]).toMatchObject({ machine: { kind: "ssh" }, freshness: "stale", attention: { level: "warning" } })
+        expect(state.runtimeRepair).toBeNull()
+        expect(state.sandboxConfigurationOperation).toBeNull()
+      }
+    })
+  }
+
+  it("preserves each native SSH listener state and nullable fields", () => {
+    const raw = fixture("ssh-access-state") as Array<{ workspaces: Array<Record<string, unknown>> }>
+    const states = raw.map(parseSshAccessState)
+    // vmId is native listener ownership; every UI field must survive parsing.
+    expect(states).toEqual(raw.map(state => ({ workspaces: state.workspaces.map(workspace =>
+      Object.fromEntries(Object.entries(workspace).filter(([key]) => key !== "vmId")),
+    ) })))
+    expect(states.map(state => state.workspaces[0].state)).toEqual(["disabled", "waiting", "listening", "error"])
+    expect(states.map(state => state.workspaces[0].enabled)).toEqual([false, true, true, true])
+    expect(states.map(state => state.workspaces[0].fingerprint)).toEqual([null, null, "SHA256:contract-public-fingerprint", null])
+    expect(states.map(state => state.workspaces[0].message)).toEqual([null, null, null, "SSH listener could not start."])
+    for (const state of states) {
+      expect(state.workspaces[0]).toMatchObject({ workspace: "dev", port: 2222, bindAddress: "127.0.0.1", computerName: "Contract computer", addresses: ["192.0.2.10"], user: "silo" })
+    }
+  })
+
+  it("preserves every native network port state, configuration, and failure", () => {
+    const raw = fixture("network-state")
+    const states = raw.map(parseNetworkState)
+    expect(states).toEqual(raw)
+    expect(states.flatMap(state => state.workspaces.flatMap(workspace => workspace.ports.map(port => port.state))))
+      .toEqual(["reachable", "waiting", "unpublished", "unknown"])
+    expect(states[0].workspaces[0].host).toBe("dev-00000000.localhost")
+    expect(states[1].workspaces[0].error).toBe("Network state could not be read.")
+  })
+
+  it("preserves queue scopes, cancellation, hidden blockers, and every native operation kind", () => {
+    const raw = fixture("operation-queue")
+    const queues = raw.map(value => operationQueueSchema.parse(value))
+    expect(queues).toEqual(raw)
+    expect(queues[0]).toEqual({ running: [], waiting: [] })
+    expect(queues[1].running.map(operation => operation.kind)).toEqual(operationKinds)
+    expect(queues[1].running.find(operation => operation.kind === "shutdown")).toMatchObject({ vmId: null, vmName: null })
+    expect(queues[1].waiting[0]).toMatchObject({ cancellable: true, expectedMs: null, blockedByHidden: true })
+  })
+})

@@ -1,3 +1,5 @@
+#[cfg(test)]
+pub(crate) mod contract_tests;
 pub(crate) mod remote_ops;
 pub(crate) mod operation_gate;
 pub(crate) mod shutdown;

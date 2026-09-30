@@ -31,7 +31,7 @@ const bridge: ProductionBridge = {
 }
 
 const sshAccessShape = z.object({ workspaces: z.array(z.object({
-  workspace: z.string(), enabled: z.boolean(), port: z.number().int(), bindAddress: z.string(), keys: z.array(z.string()),
+  workspace: z.string(), user: z.string().optional(), enabled: z.boolean(), port: z.number().int(), bindAddress: z.string(), keys: z.array(z.string()),
   state: z.enum(["disabled", "waiting", "listening", "error"]), message: z.string().nullable(), fingerprint: z.string().nullable(), computerName: z.string(), addresses: z.array(z.string()),
 })) })
 
@@ -255,6 +255,14 @@ const networkStateShape = z.object({ workspaces: z.array(z.object({
   })),
 })) })
 
+export function parseSshAccessState(input: unknown): SshAccessState {
+  return sshAccessShape.parse(input)
+}
+
+export function parseNetworkState(input: unknown): NetworkState {
+  return networkStateShape.parse(input)
+}
+
 export function parseApplicationSource(input: unknown): ApplicationSource {
   return applicationSourceShape.parse(input) as ApplicationSource
 }
@@ -428,13 +436,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     sshRequest = (async () => {
       const results = await Promise.allSettled([
         native.invoke("read_ssh_access_state").then(value => {
-          const state = sshAccessShape.parse(value)
+          const state = parseSshAccessState(value)
           if (state.workspaces.some(row => sshOwner(row.workspace) !== "")) throw new Error("SSH response belongs to another computer.")
           return state
         }),
         ...computers.map(async computer => {
           if (!computer.connected) throw new Error("Computer is offline.")
-          const state = sshAccessShape.parse(await native.invoke("remote_ssh_access_state", { hostId: computer.id }))
+          const state = parseSshAccessState(await native.invoke("remote_ssh_access_state", { hostId: computer.id }))
           if (state.workspaces.some(row => sshOwner(row.workspace) !== computer.id)) throw new Error("SSH response belongs to another computer.")
           return state
         }),
@@ -466,12 +474,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       networkDirty = false
       const revision = networkRevision
       try {
-        const local = networkStateShape.parse(await native.invoke("read_network_state"))
+        const local = parseNetworkState(await native.invoke("read_network_state"))
         const remotes = await Promise.all(remoteComputers.map(async computer => {
           const unavailable = (error: string) => (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error }))
           // An offline computer would only cost a connection timeout on every poll.
           if (!computer.connected) return unavailable(`${computer.name} is unavailable. Reconnect to see network services.`)
-          try { return networkStateShape.parse(await native.invoke("remote_network_state", { hostId: computer.id })).workspaces }
+          try { return parseNetworkState(await native.invoke("remote_network_state", { hostId: computer.id })).workspaces }
           catch (cause) {
             return unavailable(isUnsupportedRemote(cause) ? `Update Silo on ${computer.name} to see network services.` : errorMessage(cause))
           }
@@ -507,7 +515,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const revision = ++networkRevision
     const remote = typeof arguments_.workspace === "string" ? parseRemoteWorkspaceTarget(arguments_.workspace) : undefined
     const { workspace: _workspace, ...rest } = arguments_
-    const result = networkStateShape.parse(await native.invoke(remote ? `remote_${command}` : command, remote ? { ...rest, ...remote } : arguments_))
+    const result = parseNetworkState(await native.invoke(remote ? `remote_${command}` : command, remote ? { ...rest, ...remote } : arguments_))
     if (revision !== networkRevision || disposed) return
     const retained = network?.workspaces.filter(row => remote ? !row.workspace.startsWith(`silo-remote:${remote.hostId}:`) : row.workspace.startsWith("silo-remote:")) ?? []
     network = { workspaces: [...retained, ...result.workspaces] }; networkError = null
@@ -1528,7 +1536,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const revision = ++sshRevision
       sshSaveRevisions.set(owner, revision)
       const { workspace: _workspace, ...settings } = request
-      const result = sshAccessShape.parse(await native.invoke(remote ? "remote_save_ssh_access" : "save_ssh_access", remote ? { ...remote, ...settings } : { ...request }))
+      const result = parseSshAccessState(await native.invoke(remote ? "remote_save_ssh_access" : "save_ssh_access", remote ? { ...remote, ...settings } : { ...request }))
       if (result.workspaces.some(row => sshOwner(row.workspace) !== owner)) throw new Error("SSH response belongs to another computer.")
       if (disposed || sshSaveRevisions.get(owner) !== revision) return
       if (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected) return

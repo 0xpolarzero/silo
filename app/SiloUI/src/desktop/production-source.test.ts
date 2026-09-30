@@ -1,12 +1,16 @@
 import { readFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { BackupState } from "@/features/application/model/backup-source"
 import { createProductionSource, isUpdateInProgress, parseApplicationSource, parseBackupState, type ProductionBridge } from "./production-source"
 import { siloProgressEventSchema } from "@/contracts/silo"
+
+import { assertNativeBridgeMocksHandled, nativeBridgeMock, type NativeCommandHandlers } from "@/test/native-bridge-mock"
+
+afterEach(assertNativeBridgeMocksHandled)
 
 const pushTarget = { repository: "owner/repo", branch: "main", commit: "a".repeat(40) }
 
@@ -23,13 +27,25 @@ const backup: BackupState = {
   operation: null,
 }
 
-function native(overrides: Partial<ProductionBridge> = {}) {
+function initializationHandlers() {
+  return {
+    read_setup_activity: () => [],
+    read_network_state: () => ({ workspaces: [] }),
+    remote_network_state: () => ({ workspaces: [] }),
+    remote_host_list: () => [],
+    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "developer@laptop" }),
+    read_operation_queue: () => ({ running: [], waiting: [] }),
+  }
+}
+
+function native(overrides: Partial<ProductionBridge> = {}, handlers: NativeCommandHandlers = {}) {
   let event: (() => void) | null = null
-  const invoke = vi.fn(async (command: string, _arguments_?: Record<string, unknown>): Promise<unknown> => {
-    if (command === "read_application_state") return structuredClone(source)
-    if (command === "read_backup_state") return structuredClone(backup)
-    if (command === "workspace_action") return structuredClone(source)
-    return undefined
+  const invoke = nativeBridgeMock({
+    ...initializationHandlers(),
+    read_application_state: () => structuredClone(source),
+    read_backup_state: () => structuredClone(backup),
+    workspace_action: () => structuredClone(source),
+    ...handlers,
   })
   const listen = vi.fn(async (_name: string, handler: () => void) => { event = handler; return () => { event = null } })
   return { bridge: { invoke, listen, ...overrides } as ProductionBridge, invoke, emit: () => event?.() }
@@ -213,7 +229,7 @@ describe("production application bridge", () => {
   })
 
   it("routes checkpoint actions through the owning remote computer", async () => {
-    const mock = native()
+    const mock = native({}, { remote_checkpoint_action: () => undefined })
     const store = createProductionSource(mock.bridge)
     await store.applicationActions.createCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point")
     await store.applicationActions.forkCheckpoint!("silo-remote:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222", "point-id", "branch")
@@ -404,7 +420,7 @@ describe("production application bridge", () => {
   })
 
   it.each(["dev", "silo-remote:00000000-0000-4000-8000-000000000010:00000000-0000-4000-8000-000000000011"])("opens the desktop for the exact selected target %s", async workspace => {
-    const mock = native()
+    const mock = native({}, { open_desktop: () => undefined })
     const store = createProductionSource(mock.bridge)
     await store.applicationActions.openDesktop!(workspace)
     expect(mock.invoke).toHaveBeenCalledWith("open_desktop", { workspace })
@@ -483,7 +499,7 @@ describe("production application bridge", () => {
   })
 
   it("passes status destinations and dismisses completed push results natively", async () => {
-    const mock = native()
+    const mock = native({}, { open_main: () => undefined, dismiss_repository_push: () => undefined })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.statusActions.openSilo({ workspace: "dev", workspaceSection: "logs" })
@@ -493,7 +509,7 @@ describe("production application bridge", () => {
     store.dispose()
   })
   it("keeps network mappings across application refresh and shares only reachable sites", async () => {
-    const mock = native()
+    const mock = native({}, { open_network_port: () => undefined, remote_open_network_port: () => undefined })
     const state = { workspaces: [{ workspace: "dev", error: null, host: "dev-1a2b3c4d.localhost", ports: [{port:3000,hostPort:43000,scheme:"http",state:"reachable",configured:true}] }] }
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => command === "read_network_state" || command === "save_network_port" ? state : mock.invoke(command,args))
     const store = createProductionSource({...mock.bridge,invoke} as ProductionBridge)
@@ -675,8 +691,8 @@ describe("production application bridge", () => {
 
   it("publishes saved sandbox configuration before requesting live state", async () => {
     const machines = source.workspaces.map(({ machine }) => structuredClone(machine))
-    const invoke = vi.fn().mockResolvedValue({ schemaVersion: 1, machines })
-    const mock = native({ invoke })
+    const invoke = nativeBridgeMock({ read_machine_configuration: () => ({ schemaVersion: 1, machines }) })
+    const mock = native({ invoke: invoke as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     const changed = vi.fn()
     store.subscribe(changed)
@@ -690,7 +706,7 @@ describe("production application bridge", () => {
   })
 
   it("accepts an empty saved configuration for a fresh install", async () => {
-    const mock = native({ invoke: vi.fn().mockResolvedValue({ schemaVersion: 1, machines: [] }) })
+    const mock = native({ invoke: nativeBridgeMock({ read_machine_configuration: () => ({ schemaVersion: 1, machines: [] }) }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
 
     await store.loadConfiguration()
@@ -706,7 +722,7 @@ describe("production application bridge", () => {
     { schemaVersion: 1, machines: "unreadable" },
     null,
   ])("publishes no sandbox rows for malformed saved configuration, without failing startup: %j", async (configuration) => {
-    const mock = native({ invoke: vi.fn().mockResolvedValue(configuration) })
+    const mock = native({ invoke: nativeBridgeMock({ read_machine_configuration: () => configuration }) as ProductionBridge["invoke"] })
     vi.spyOn(console, "error").mockImplementation(() => {})
     const store = createProductionSource(mock.bridge)
 
@@ -761,7 +777,7 @@ describe("production application bridge", () => {
   })
 
   it("reports a failed account connection once without inventing sandbox failures", async () => {
-    const mock = native()
+    const mock = native({}, { read_github_state: () => structuredClone(source.github) })
     const original = mock.invoke.getMockImplementation()!
     mock.invoke.mockImplementation((command, args) => command === "connect_github" ? Promise.reject(new Error("GitHub is not configured in this build")) : original(command, args))
     const store = createProductionSource(mock.bridge)
@@ -778,11 +794,11 @@ describe("production application bridge", () => {
     const events = new Map<string, () => void>()
     let liveState = { ...source, github: { ...source.github, state: "disconnected" as const, account: undefined } } as typeof source
     let finishLogin!: (value: unknown) => void
-    const invoke = vi.fn(async (command: string) => {
-      if (command === "read_application_state") return structuredClone(liveState)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "connect_github") return new Promise((resolve) => { finishLogin = resolve })
-      return []
+    const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(liveState),
+      read_backup_state: () => structuredClone(backup),
+      connect_github: () => new Promise((resolve) => { finishLogin = resolve }),
     })
     const store = createProductionSource({ invoke, listen: async (event, handler) => { events.set(event, handler); return () => events.delete(event) } } as ProductionBridge)
     await store.initialize()
@@ -823,7 +839,7 @@ describe("production application bridge", () => {
   })
 
   it("loads newly authorized repositories once when returning from GitHub", async () => {
-    const mock = native()
+    const mock = native({}, { manage_github_repositories: () => undefined })
     const updatedGitHub = { ...source.github, state: "connected", repositoryCatalog: ["acme/new-repository"] }
     const invoke = vi.fn(async (command: string, args?: Record<string, unknown>) => {
       if (command === "refresh_github_repositories") return updatedGitHub
@@ -937,12 +953,12 @@ describe("production application bridge", () => {
     const events = new Map<string, () => void>()
     let github = { ...source.github, policyRevision: 11, workspaceOperations: [{ workspace: "dev", status: "applying" as const, message: "Applying access" }] } as typeof source.github
     const store = createProductionSource({
-      invoke: async (command: string) => {
-        if (command === "read_application_state") return { ...source, github }
-        if (command === "read_backup_state") return backup
-        if (command === "save_github_configuration") return github
-        return []
-      },
+      invoke: nativeBridgeMock({
+        ...initializationHandlers(),
+        read_application_state: () => ({ ...source, github }),
+        read_backup_state: () => backup,
+        save_github_configuration: () => github,
+      }),
       listen: async (event, handler) => { events.set(event, handler); return () => events.delete(event) },
     } as ProductionBridge)
     await store.initialize()
@@ -1012,11 +1028,12 @@ describe("production application bridge", () => {
     let currentIdentity: typeof hostIdentity | undefined = hostIdentity
     const machineResult = structuredClone(source)
     delete machineResult.github.hostIdentity
-    const mock = native({ invoke: vi.fn(async (command) => {
-      if (command === "read_application_state") return { ...structuredClone(source), github: { ...source.github, hostIdentity: currentIdentity } }
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "read_setup_activity") return []
-      if (command === "change_machine_configuration") return machineResult
+    const mock = native({ invoke: nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => ({ ...structuredClone(source), github: { ...source.github, hostIdentity: currentIdentity } }),
+      read_backup_state: () => structuredClone(backup),
+      read_setup_activity: () => [],
+      change_machine_configuration: () => machineResult,
     }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
@@ -1039,15 +1056,16 @@ describe("production application bridge", () => {
     const mutation = structuredClone(initial)
     mutation.workspaces[0].logs = []
     let reads = 0
-    const invoke = vi.fn(async (command: string) => {
-      if (command === "read_application_state") {
+    const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: async () => {
         const result = structuredClone(initial)
         if (++reads > 1) result.workspaces[0].logs = [oldLog, newLog]
         return result
-      }
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "read_setup_activity") return []
-      if (command === "change_machine_configuration") return mutation
+      },
+      read_backup_state: () => structuredClone(backup),
+      read_setup_activity: () => [],
+      change_machine_configuration: () => mutation,
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
@@ -1064,11 +1082,12 @@ describe("production application bridge", () => {
   })
 
   it("retains an unscoped preflight error and lets dismissal unlock the committed configuration", async () => {
-    const invoke = vi.fn(async (command: string) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "read_setup_activity") return []
-      if (command === "change_machine_configuration") throw new Error("Stop sandbox 'dev' before removing it.")
+    const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
+      read_setup_activity: () => [],
+      change_machine_configuration: async () => { throw new Error("Stop sandbox 'dev' before removing it.") },
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
@@ -1084,15 +1103,16 @@ describe("production application bridge", () => {
 
   it("retries verification only for the requested sandbox without resending the list", async () => {
     let attempts = 0
-    const invoke = vi.fn(async (command: string, _args?: Record<string, unknown>) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "read_setup_activity") return []
-      if (command === "change_machine_configuration") {
+    const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
+      read_setup_activity: () => [],
+      change_machine_configuration: async () => {
         if (++attempts === 1) throw new Error("Verification failed")
         return structuredClone(source)
-      }
-      if (command === "retry_machine_configuration") return structuredClone(source)
+      },
+      retry_machine_configuration: () => structuredClone(source),
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
@@ -1111,11 +1131,12 @@ describe("production application bridge", () => {
   })
 
   it("routes an edit to a targeted change carrying the committed configuration as expected", async () => {
-    const invoke = vi.fn(async (command: string) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "read_setup_activity") return []
-      if (command === "change_machine_configuration") return structuredClone(source)
+    const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
+      read_setup_activity: () => [],
+      change_machine_configuration: () => structuredClone(source),
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
@@ -1133,11 +1154,12 @@ describe("production application bridge", () => {
   })
 
   it("carries the editing baseline as expected even when the committed snapshot has moved on", async () => {
-    const invoke = vi.fn(async (command: string) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "read_setup_activity") return []
-      if (command === "change_machine_configuration") return structuredClone(source)
+    const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
+      read_setup_activity: () => [],
+      change_machine_configuration: () => structuredClone(source),
     })
     const store = createProductionSource(native({ invoke: invoke as ProductionBridge["invoke"] }).bridge)
     await store.initialize()
@@ -1158,10 +1180,11 @@ describe("production application bridge", () => {
   })
 
   it("reports unreadable activity without replacing it with success or raw diagnostics", async () => {
-    const mock = native({ invoke: vi.fn(async (command) => {
-      if (command === "read_setup_activity") throw new Error("private path and token")
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
+    const mock = native({ invoke: nativeBridgeMock({
+      ...initializationHandlers(),
+      read_setup_activity: async () => { throw new Error("private path and token") },
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
     }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
@@ -1174,15 +1197,15 @@ describe("production application bridge", () => {
   it("coalesces duplicate in-flight workspace actions", async () => {
     let finish: (() => void) | undefined
     const mock = native()
-    mock.invoke.mockImplementation(async (command: string): Promise<unknown> => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "workspace_action") {
+    mock.invoke.mockImplementation(nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
+      workspace_action: async () => {
         await new Promise<void>((resolve) => { finish = resolve })
         return structuredClone(source)
-      }
-      return undefined
-    })
+      },
+    }))
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.applicationActions.stopWorkspace("dev")
@@ -1195,15 +1218,15 @@ describe("production application bridge", () => {
   it("keeps a sandbox action failure through refresh and clears it after a successful retry", async () => {
     const mock = native()
     let refuse = true
-    mock.invoke.mockImplementation(async (command: string) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "workspace_action") {
+    mock.invoke.mockImplementation(nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
+      workspace_action: async () => {
         if (refuse) throw new Error("runtime refused stop")
         return structuredClone(source)
-      }
-      return undefined
-    })
+      },
+    }))
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.applicationActions.stopWorkspace("dev")
@@ -1227,11 +1250,11 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     expect(store.getSnapshot().source?.workspaces[0].machine.name).toBe("dev")
-    mock.invoke.mockImplementation(async (command: string) => {
-      if (command === "read_application_state") throw new Error("runtime state unavailable")
-      if (command === "read_backup_state") return structuredClone(backup)
-      return undefined
-    })
+    mock.invoke.mockImplementation(nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: async () => { throw new Error("runtime state unavailable") },
+      read_backup_state: () => structuredClone(backup),
+    }))
     await store.refresh()
     const message = "Silo could not read application state: runtime state unavailable"
     expect(store.getSnapshot().source?.vmOperationsUnavailable).toBe(message)
@@ -1245,19 +1268,21 @@ describe("production application bridge", () => {
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     const updating = { ...backup, operation: { kind: "running", operation: "restore", archive: backup.archives[0], runningNames: [], targetName: "copy", progress: 0, indeterminate: true, phases: [{ title: "Creating restored sandbox", detail: "", tone: "running" }] } }
-    mock.invoke.mockImplementation(async (command) => {
-      if (command === "read_application_state") throw new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS")
-      if (command === "read_backup_state") return updating
-    })
+    mock.invoke.mockImplementation(nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: async () => { throw new Error("SILO_SANDBOX_UPDATE_IN_PROGRESS") },
+      read_backup_state: () => updating,
+    }))
     await store.refresh()
     expect(store.getSnapshot().source?.workspaces[0].machine.name).toBe("dev")
     expect(store.getSnapshot().error).toBeNull()
     expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "running", phases: [{ title: "Creating restored sandbox" }] })
     // A later authoritative snapshot remains responsible for reporting success.
-    mock.invoke.mockImplementation(async (command) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return { ...backup, operation: { kind: "result", operation: "restore", archive: backup.archives[0], runningNames: [], outcome: "success", title: "Restored", message: "Sandbox restored successfully." } }
-    })
+    mock.invoke.mockImplementation(nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => ({ ...backup, operation: { kind: "result", operation: "restore", archive: backup.archives[0], runningNames: [], outcome: "success", title: "Restored", message: "Sandbox restored successfully." } }),
+    }))
     await store.refresh()
     expect(store.getSnapshot().source).not.toBeNull()
     expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result", outcome: "success" })
@@ -1267,12 +1292,12 @@ describe("production application bridge", () => {
   it("keeps the requested restore running and reports malformed native operation state (H-35)", async () => {
     let broken = false
     const mock = native()
-    mock.invoke.mockImplementation(async (command: string) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "start_restore") { broken = true; return undefined }
-      if (command === "read_backup_state") return broken ? { ...backup, operation: { kind: "running", running_names: [] } } : structuredClone(backup)
-      return undefined
-    })
+    mock.invoke.mockImplementation(nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      start_restore: async () => { broken = true; return undefined },
+      read_backup_state: () => broken ? { ...backup, operation: { kind: "running", running_names: [] } } : structuredClone(backup),
+    }))
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.backupActions.startRestore(backup.archives[0], "restored", "dev")
@@ -1286,15 +1311,16 @@ describe("production application bridge", () => {
     const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Backup complete", message: "Backup completed successfully." }
     let release: (() => void) | undefined
     let current = { ...structuredClone(backup), operation: completed, operationId: "first-operation" } as BackupState
-    const mock = native({ invoke: vi.fn(async (command: string) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(current)
-      if (command === "start_restore") await new Promise<void>(resolve => { release = resolve })
-      if (command === "dismiss_backup_operation") {
+    const mock = native({ invoke: nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(current),
+      start_restore: async () => { await new Promise<void>(resolve => { release = resolve }) },
+      dismiss_backup_operation: async () => {
         if (current.operation?.kind !== "result") return false
         current = { ...current, operation: null }
         return true
-      }
+      },
     }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
@@ -1323,10 +1349,12 @@ describe("production application bridge", () => {
 
   it("keeps a submission failure visible across refreshes until dismissed", async () => {
     const completed = { operation: "backup" as const, archive: backup.archives[0], runningNames: [], kind: "result" as const, outcome: "success" as const, title: "Backup complete", message: "Backup completed successfully." }
-    const mock = native({ invoke: vi.fn(async (command: string) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return { ...backup, operation: completed }
-      if (command === "start_restore") throw new Error("Sandbox name already exists")
+    const mock = native({ invoke: nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => ({ ...backup, operation: completed }),
+      start_restore: async () => { throw new Error("Sandbox name already exists") },
+      dismiss_backup_operation: () => false,
     }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
@@ -1342,14 +1370,15 @@ describe("production application bridge", () => {
 
   it("announces archive selection before waiting for validation", async () => {
     let release: (() => void) | undefined
-    const mock = native({ invoke: vi.fn(async (command: string) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "choose_backup_archive") return "/tmp/dev.silo-backup"
-      if (command === "inspect_backup_archive") {
+    const mock = native({ invoke: nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
+      choose_backup_archive: () => "/tmp/dev.silo-backup",
+      inspect_backup_archive: async () => {
         await new Promise<void>(resolve => { release = resolve })
         return { archive: backup.archives[0], valid: true }
-      }
+      },
     }) as ProductionBridge["invoke"] })
     const store = createProductionSource(mock.bridge)
     await store.initialize()
@@ -1364,12 +1393,12 @@ describe("production application bridge", () => {
   it("coalesces duplicate in-flight backup starts", async () => {
     let finish: (() => void) | undefined
     const mock = native()
-    mock.invoke.mockImplementation(async (command: string): Promise<unknown> => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "start_backup") await new Promise<void>((resolve) => { finish = resolve })
-      return undefined
-    })
+    mock.invoke.mockImplementation(nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
+      start_backup: async () => { await new Promise<void>((resolve) => { finish = resolve }) },
+    }))
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     store.backupActions.startBackup("/Volumes/Backups", ["dev"])
@@ -1381,14 +1410,15 @@ describe("production application bridge", () => {
 
   it("uses native archive paths and destination pickers", async () => {
     const mock = native()
-    mock.invoke.mockImplementation(async (command: string, _arguments_?: Record<string, unknown>) => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "choose_backup_destination") return "/Volumes/Backups"
-      if (command === "choose_backup_archive") return "/Volumes/Backups/dev.silo-backup"
-      if (command === "inspect_backup_archive") return { archive: backup.archives[0], valid: true }
-      return undefined
-    })
+    mock.invoke.mockImplementation(nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
+      choose_backup_destination: () => "/Volumes/Backups",
+      choose_backup_archive: () => "/Volumes/Backups/dev.silo-backup",
+      inspect_backup_archive: () => ({ archive: backup.archives[0], valid: true }),
+      start_restore: () => undefined,
+    }))
     const store = createProductionSource(mock.bridge)
     await store.initialize()
     expect(await store.backupActions.chooseDestination()).toBe("/Volumes/Backups")
@@ -1506,7 +1536,7 @@ describe("remote SSH access", () => {
 describe("retained log bridge", () => {
   it("passes opaque computer and sandbox identities and rejects malformed pages", async () => {
     const mock = native()
-    const invoke = vi.fn(async () => ({ entries: "not a log page" }))
+    const invoke = nativeBridgeMock({ query_sandbox_logs: () => ({ entries: "not a log page" }) })
     const store = createProductionSource({ ...mock.bridge, invoke } as unknown as ProductionBridge)
     const request = { sandboxId: "sandbox-id", computerId: "office-id", query: "old failure", limit: 200 }
     await expect(store.applicationActions.queryLogs!(request)).rejects.toThrow()
@@ -1515,7 +1545,7 @@ describe("retained log bridge", () => {
   })
   it("distinguishes a canceled native export from a saved export and validates the reply", async () => {
     const mock = native()
-    const invoke = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true).mockResolvedValueOnce("yes")
+    const invoke = nativeBridgeMock({ export_workspace_logs: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true).mockResolvedValueOnce("yes") })
     const store = createProductionSource({ ...mock.bridge, invoke } as ProductionBridge)
     const requests = [{ sandboxId: "sandbox-id", query: "failure" }]
     expect(await store.applicationActions.exportLogs!(requests)).toBe(false)
@@ -1530,11 +1560,11 @@ describe("operation queue bridge", () => {
   function queueBridge() {
     const handlers = new Map<string, () => void>()
     let queue: unknown = { running: [], waiting: [] }
-    const invoke = vi.fn(async (command: string): Promise<unknown> => {
-      if (command === "read_application_state") return structuredClone(source)
-      if (command === "read_backup_state") return structuredClone(backup)
-      if (command === "read_operation_queue") return structuredClone(queue)
-      return undefined
+    const invoke = nativeBridgeMock({
+      ...initializationHandlers(),
+      read_application_state: () => structuredClone(source),
+      read_backup_state: () => structuredClone(backup),
+      read_operation_queue: () => structuredClone(queue),
     })
     const listen = vi.fn(async (name: string, handler: () => void) => { handlers.set(name, handler); return () => handlers.delete(name) })
     return {

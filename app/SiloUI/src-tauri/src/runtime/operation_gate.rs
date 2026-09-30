@@ -1683,3 +1683,62 @@ mod tests {
         assert!(!unscoped);
     }
 }
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    #[test]
+    fn operation_queue_matches_wire_contract() {
+        use OperationKind::*;
+        let kinds = [
+            Lifecycle,
+            CheckpointCapture,
+            CheckpointRestore,
+            CheckpointFork,
+            CheckpointDelete,
+            Export,
+            Import,
+            StorageReclaim,
+            GithubApply,
+            Push,
+            PortPublish,
+            PortRemove,
+            Shutdown,
+            Other,
+        ];
+        let entries: Vec<_> = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(index, kind)| OperationEntry {
+                id: index as u64 + 1,
+                label: format!("Contract operation {}", index + 1),
+                kind,
+                vm_id: (kind != Shutdown).then(|| "00000000-0000-4000-8000-000000000001".into()),
+                vm_name: (kind != Shutdown).then(|| "dev".into()),
+                since_ms: 1767225600000,
+                cancellable: index % 2 == 0,
+                expected_ms: (index % 2 == 0).then_some(180000),
+                blocked_by_hidden: false,
+            })
+            .collect();
+        let queue = OperationQueue {
+            running: entries,
+            waiting: vec![OperationEntry {
+                id: 15,
+                label: "Waiting contract operation".into(),
+                kind: Lifecycle,
+                vm_id: Some("00000000-0000-4000-8000-000000000002".into()),
+                vm_name: Some("other".into()),
+                since_ms: 1767225601000,
+                cancellable: true,
+                expected_ms: None,
+                blocked_by_hidden: true,
+            }],
+        };
+        crate::runtime::contract_tests::assert_fixture(
+            "operation-queue.json",
+            vec![OperationQueue::default(), queue],
+        );
+    }
+}
