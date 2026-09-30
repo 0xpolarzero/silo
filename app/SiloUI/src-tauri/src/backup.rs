@@ -572,7 +572,7 @@ impl<R: MsbRunner> BackupService<R> {
         request: BackupRequest,
         cancellation: &Cancellation,
     ) -> Result<BackupResult, BackupError> {
-        self.create_backup_with_token(request, cancellation, None)
+        self.create_backup_with_token(request, cancellation, None, &|_, _| Ok(()))
     }
 
     pub(crate) fn create_backup_with_token(
@@ -580,6 +580,7 @@ impl<R: MsbRunner> BackupService<R> {
         request: BackupRequest,
         cancellation: &Cancellation,
         token: Option<&str>,
+        capture_intent: &dyn Fn(&BackupSource, Option<&str>) -> Result<(), BackupError>,
     ) -> Result<BackupResult, BackupError> {
         if let Some(token) = token {
             uuid::Uuid::parse_str(token).map_err(|_| {
@@ -640,6 +641,7 @@ impl<R: MsbRunner> BackupService<R> {
                         )));
                     }
                     let snapshot_name = format!("silo-backup-{index}-{}", unique_suffix());
+                    capture_intent(source, Some(&snapshot_name))?;
                     self.require_success_with(
                         "Capturing VM disk",
                         &[
@@ -672,6 +674,11 @@ impl<R: MsbRunner> BackupService<R> {
                     data_timeout,
                     cancellation,
                 )?;
+                // Once verified, this complete capture becomes the sandbox's lineage
+                // parent. Keep it until its last dependent is deleted.
+                if source.existing_member.is_none() {
+                    capture_intent(source, None)?;
+                }
                 let payload_path = stage.path().join(format!("{index}.msb"));
                 self.require_success_with(
                     "Writing self-contained VM snapshot",
@@ -1090,6 +1097,27 @@ impl<R: MsbRunner> BackupService<R> {
             ))
         })?;
         Ok(snapshot_member)
+    }
+
+    /// A crash can interrupt Silo after the runtime finished capture but before
+    /// its journal was cleared. Verify that complete member before keeping it as
+    /// a live sandbox's lineage parent; incomplete members must be removed.
+    pub(crate) fn export_capture_ready(&self, group: &str, member: &str) -> Result<bool, BackupError> {
+        let cleanup = Cancellation::default();
+        let entries = self.snapshot_index("Checking interrupted export capture", &cleanup)?;
+        if !entries.iter().any(|entry| {
+            entry["group"] == group && entry["name"] == member && entry["availability"] == "ready"
+        }) {
+            return Ok(false);
+        }
+        let path = self.captured_snapshot_path(group, member, &cleanup)?;
+        self.require_success_with(
+            "Verifying interrupted export capture",
+            &["snapshot".into(), "verify".into(), path.to_string_lossy().into_owned()],
+            self.command_timeout.min(CLEANUP_COMMAND_TIMEOUT),
+            &cleanup,
+        )?;
+        Ok(true)
     }
 
     /// Remove a Silo import group that no sandbox uses: after a failed import,
@@ -4001,6 +4029,48 @@ mod tests {
             args.first()
                 .is_some_and(|arg| arg == "stop" || arg == "start")
         }));
+    }
+
+    #[test]
+    fn export_journals_capture_before_create_and_clears_only_after_verification() {
+        for cancelled in [false, true] {
+            let temp = tempfile::tempdir().unwrap();
+            let runner = FakeRunner::default();
+            runner.cancel_after_snapshot.store(cancelled, Ordering::Release);
+            let service = service(&temp, runner);
+            let intents = Mutex::new(Vec::new());
+            let result = service.create_backup_with_token(
+                BackupRequest {
+                    destination: temp.path().join("dev.silo-backup"),
+                    sources: vec![BackupSource {
+                        name: "dev".into(), snapshot_group: "dev".into(), was_running: false,
+                        runtime_config: managed_config("dev"), machine_config: machine_config("dev"),
+                        existing_member: None,
+                    }],
+                },
+                &Cancellation::default(), None,
+                &|_, member| {
+                    let calls = service.runner.calls.lock().unwrap();
+                    if member.is_some() {
+                        assert!(!calls.iter().any(|args| args.get(1).is_some_and(|arg| arg == "create")));
+                    } else {
+                        assert!(calls.iter().any(|args| args.get(1).is_some_and(|arg| arg == "verify")));
+                    }
+                    intents.lock().unwrap().push(member.map(str::to_owned));
+                    Ok(())
+                },
+            );
+            let intents = intents.into_inner().unwrap();
+            assert!(intents[0].as_ref().unwrap().starts_with("silo-backup-"));
+            if cancelled {
+                assert!(matches!(result, Err(BackupError::Cancelled)));
+                assert_eq!(intents.len(), 1, "the partial member stays journaled for cleanup");
+            } else {
+                result.unwrap();
+                assert_eq!(intents.len(), 2);
+                assert!(intents[1].is_none());
+            }
+        }
     }
 
     #[test]

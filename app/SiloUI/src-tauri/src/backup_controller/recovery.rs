@@ -29,6 +29,9 @@ enum Request {
         /// sandbox's current state. Absent in journals written before this field.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checkpoint_id: Option<String>,
+        /// Saved before snapshot create; cleared after capture verification.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pending_capture: Option<ExportCapture>,
     },
     Restore {
         name: String,
@@ -41,6 +44,14 @@ enum Request {
         group: Option<String>,
     },
 }
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ExportCapture {
+    workspace_id: String,
+    group: String,
+    member: String,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Terminal {
@@ -71,6 +82,7 @@ impl Journal {
                 machines: vec![],
                 running: vec![],
                 checkpoint_id,
+                pending_capture: None,
             },
             cancelled: false,
             terminal: None,
@@ -192,6 +204,7 @@ fn validate(journal: &Journal) -> Result<(), String> {
             names,
             machines,
             running,
+            pending_capture,
             ..
         } => {
             for name in names
@@ -200,6 +213,9 @@ fn validate(journal: &Journal) -> Result<(), String> {
                 .chain(running.iter().map(|(name, _)| name))
             {
                 runtime::validate_name(name).map_err(|e| e.to_string())?;
+            }
+            if let Some(capture) = pending_capture {
+                validate_export_capture(capture)?;
             }
         }
         Request::Restore {
@@ -235,6 +251,62 @@ fn validate_import_group(group: &str) -> Result<(), String> {
         Err("Invalid saved import snapshot group.".into())
     }
 }
+fn validate_export_capture(capture: &ExportCapture) -> Result<(), String> {
+    uuid::Uuid::parse_str(&capture.workspace_id).map_err(|_| "Invalid export capture identity.")?;
+    runtime::validate_name(&capture.group).map_err(|error| error.to_string())
+        .or_else(|_| validate_import_group(&capture.group))?;
+    let parts: Vec<_> = capture.member.strip_prefix("silo-backup-").unwrap_or_default().split('-').collect();
+    if parts.len() != 3 || parts.iter().any(|part| part.is_empty() || !part.bytes().all(|byte| byte.is_ascii_digit())) {
+        return Err("Invalid saved export capture member.".into());
+    }
+    Ok(())
+}
+
+/// Save intent in the existing operation journal before an export capture writes
+/// native data. A verified complete capture clears that intent.
+pub(super) fn export_capture_intent(
+    controller: &Controller,
+    source: &backup::BackupSource,
+    member: Option<&str>,
+) -> Result<(), backup::BackupError> {
+    let capture = member.map(|member| ExportCapture {
+        workspace_id: source.machine_config["id"].as_str().unwrap_or_default().into(),
+        group: source.snapshot_group.clone(),
+        member: member.into(),
+    });
+    if let Some(capture) = &capture {
+        validate_export_capture(capture).map_err(backup::BackupError::InvalidRequest)?;
+    }
+    update(controller, |journal| {
+        if let Request::Backup { pending_capture, .. } = &mut journal.request {
+            *pending_capture = capture;
+        }
+    }).map_err(backup::BackupError::InvalidRequest)
+}
+
+pub(super) fn settle_export_capture(
+    runner: &dyn runtime::RuntimeRunner,
+    paths: &runtime::RuntimePaths,
+    controller: &Controller,
+) -> Result<(), String> {
+    let capture = controller.journal.lock().map_err(|_| "Saved operation unavailable.")?
+        .as_ref().and_then(|journal| match &journal.request {
+            Request::Backup { pending_capture, .. } => pending_capture.clone(),
+            _ => None,
+        });
+    let Some(capture) = capture else { return Ok(()) };
+    if !runtime::checkpoints::discard_failed_capture(
+        runner, paths, &capture.workspace_id, (capture.group.clone(), capture.member.clone()),
+    ) && !controller.service.export_capture_ready(&capture.group, &capture.member).map_err(|error| error.to_string())? {
+        return Err(format!("The incomplete export capture {}:{} could not be removed. Its cleanup progress was kept.", capture.group, capture.member));
+    }
+    update(controller, |journal| {
+        if let Request::Backup { pending_capture, .. } = &mut journal.request {
+            *pending_capture = None;
+        }
+    })
+}
+
 pub(super) fn begin(controller: &Controller, journal: Journal) -> Result<(), String> {
     if let Some(error) = &controller
         .view
@@ -408,7 +480,9 @@ pub(super) fn complete(controller: &Controller, mut operation: Operation) -> Ope
         .and_then(|journal| {
             journal
                 .as_ref()
-                .map(|j| matches!(&j.request, Request::Restore { id: Some(_), .. }))
+                .map(|j| matches!(&j.request,
+                    Request::Restore { id: Some(_), .. } | Request::Backup { pending_capture: Some(_), .. }
+                ))
         })
         .unwrap_or(false);
     if cleanup_pending {
@@ -541,6 +615,7 @@ pub(super) fn recover_at_paths(
     // The previous process's command has finished. Release the lock so the
     // snapshot commands that remove an unfinished import can take it.
     drop(command);
+    settle_export_capture(&runtime::ProcessRunner, paths, controller)?;
     let result = |archive: Archive, outcome: &'static str, title: &str, message: &str, detail: Option<&str>| {
         Operation::Result {
             operation: journal.kind(),
@@ -731,6 +806,115 @@ mod tests {
                     .unwrap();
             assert_eq!(result_of(&recovered).0, "failed");
         }
+    }
+
+    fn export_source(id: &str) -> backup::BackupSource {
+        backup::BackupSource {
+            name: "dev".into(), snapshot_group: "dev".into(), was_running: false,
+            runtime_config: Value::Null, machine_config: serde_json::json!({"id":id}),
+            existing_member: None,
+        }
+    }
+
+    struct PartialCaptureRuntime {
+        calls: Mutex<Vec<Vec<String>>>,
+        fail_remove: bool,
+        live_parent: bool,
+    }
+    impl runtime::RuntimeRunner for PartialCaptureRuntime {
+        fn run(&self, _: &runtime::RuntimePaths, arguments: &[String], _: Duration) -> Result<runtime::CommandOutput, runtime::RuntimeError> {
+            self.calls.lock().unwrap().push(arguments.to_vec());
+            let stdout = match arguments.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+                ["snapshot", "list", "--format", "json"] => serde_json::json!([
+                    {"snapshot_id":"snap_00000000000000000000000000000000", "group":"dev", "name":"silo-backup-0-1-2"},
+                    {"snapshot_id":"snap_11111111111111111111111111111111", "group":"other", "name":"silo-backup-0-3-4"}
+                ]).to_string(),
+                ["list", "--format", "json"] => if self.live_parent { r#"[{"name":"dev","status":"Stopped"}]"#.into() } else { "[]".into() },
+                ["inspect", "dev", "--format", "json"] => serde_json::json!({"name":"dev","status":"Stopped","config":{"snapshot_parent":"snap_00000000000000000000000000000000"}}).to_string(),
+                ["snapshot", "head", "dev", "--format", "json"] => serde_json::json!({"head":"snap_00000000000000000000000000000000"}).to_string(),
+                ["snapshot", "remove", "dev:silo-backup-0-1-2", "--quiet"] if self.fail_remove => {
+                    return Err(runtime::RuntimeError::Invalid("test removal refused".into()));
+                }
+                ["snapshot", "remove", "dev:silo-backup-0-1-2", "--quiet"] => String::new(),
+                _ => panic!("unexpected cleanup command: {arguments:?}"),
+            };
+            Ok(runtime::CommandOutput { stdout, stderr: String::new() })
+        }
+    }
+
+    #[test]
+    fn failed_export_removes_only_its_journaled_capture_and_clears_intent_afterward() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        begin(&controller, Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
+        let source = export_source(&uuid::Uuid::new_v4().to_string());
+        export_capture_intent(&controller, &source, Some("silo-backup-0-1-2")).unwrap();
+        assert!(matches!(load(&controller.history_path).unwrap().unwrap().request,
+            Request::Backup { pending_capture: Some(_), .. }));
+        let runner = PartialCaptureRuntime { calls: Mutex::new(Vec::new()), fail_remove: false, live_parent: false };
+        settle_export_capture(&runner, &paths, &controller).unwrap();
+        assert_eq!(runner.calls.lock().unwrap().iter().filter(|args| args.get(1).is_some_and(|arg| arg == "remove"))
+            .cloned().collect::<Vec<_>>(), vec![vec!["snapshot", "remove", "dev:silo-backup-0-1-2", "--quiet"]]);
+        assert!(matches!(load(&controller.history_path).unwrap().unwrap().request,
+            Request::Backup { pending_capture: None, .. }));
+    }
+
+    #[test]
+    fn failed_capture_cleanup_keeps_its_journal_for_next_launch() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
+        begin(&controller, Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
+        export_capture_intent(&controller, &export_source(&uuid::Uuid::new_v4().to_string()), Some("silo-backup-0-1-2")).unwrap();
+        let runner = PartialCaptureRuntime { calls: Mutex::new(Vec::new()), fail_remove: true, live_parent: false };
+        assert!(settle_export_capture(&runner, &paths, &controller).is_err());
+        complete(&controller, Operation::Result {
+            operation: "backup", archive: completed_archive(), running_names: vec![], target_name: None,
+            outcome: "failed", title: "Export failed".into(), message: "Interrupted capture".into(), detail: None,
+        });
+        let saved = load(&controller.history_path).unwrap().unwrap();
+        assert!(saved.terminal.is_none());
+        assert!(matches!(saved.request, Request::Backup { pending_capture: Some(_), .. }));
+    }
+
+    #[test]
+    fn crash_after_verified_capture_keeps_the_live_lineage_parent_and_clears_intent() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = temp_paths(directory.path());
+        let controller = controller_with_scripted_msb(directory.path(), &paths, IMPORT_GROUP);
+        let artifact = paths.home.join("snapshots/dev/snap_00000000000000000000000000000000");
+        fs::create_dir_all(&artifact).unwrap();
+        fs::write(directory.path().join("snapshots.json"), serde_json::json!([
+            {"snapshot_id":"snap_00000000000000000000000000000000", "group":"dev", "name":"silo-backup-0-1-2", "availability":"ready", "artifact_path":artifact}
+        ]).to_string()).unwrap();
+        begin(&controller, Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
+        export_capture_intent(&controller, &export_source(&uuid::Uuid::new_v4().to_string()), Some("silo-backup-0-1-2")).unwrap();
+        let runner = PartialCaptureRuntime { calls: Mutex::new(Vec::new()), fail_remove: false, live_parent: true };
+        settle_export_capture(&runner, &paths, &controller).unwrap();
+        assert!(!runner.calls.lock().unwrap().iter().any(|args| args.get(1).is_some_and(|arg| arg == "remove")));
+        assert!(scripted_calls(directory.path()).iter().any(|call| call.starts_with("snapshot verify")));
+        assert!(matches!(load(&controller.history_path).unwrap().unwrap().request,
+            Request::Backup { pending_capture: None, .. }));
+    }
+
+    #[test]
+    fn capture_journal_rejects_unowned_members_and_invalid_identities() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        begin(&controller, Journal::backup(completed_archive(), vec!["dev".into()], None)).unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        for (id, group, member) in [
+            ("invalid", "dev", "silo-backup-0-1-2"),
+            (id.as_str(), "../other", "silo-backup-0-1-2"),
+            (id.as_str(), "dev", "checkpoint-to-keep"),
+        ] {
+            let mut source = export_source(id);
+            source.snapshot_group = group.into();
+            assert!(export_capture_intent(&controller, &source, Some(member)).is_err());
+        }
+        assert!(matches!(load(&controller.history_path).unwrap().unwrap().request,
+            Request::Backup { pending_capture: None, .. }));
     }
 
     #[test]

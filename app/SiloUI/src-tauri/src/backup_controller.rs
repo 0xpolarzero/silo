@@ -1206,7 +1206,17 @@ fn backup_work(
         },
         cancellation,
         recovery::token(controller)?.as_deref(),
-    )?;
+        &|source, member| recovery::export_capture_intent(controller, source, member),
+    );
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            if let Err(cleanup) = recovery::settle_export_capture(&runtime::ProcessRunner, &paths, controller) {
+                return Err(format!("{error} {cleanup}").into());
+            }
+            return Err(error.into());
+        }
+    };
     // Exports capture running sandboxes in place; they never stop or restart one.
     let inspection = backup::ArchiveInspection {
         created_at_ms: result.created_at_ms,
