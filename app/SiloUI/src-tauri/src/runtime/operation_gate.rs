@@ -611,6 +611,22 @@ impl OperationGate {
         self.lock().free(&Scope::Vm { id: id.to_owned() })
     }
 
+    /// True when no visible operation other than the calling thread's own is running or
+    /// waiting for the VM with stable `id` (computer-wide work affects every VM). State
+    /// readers use this to decide whether a VM's reading is settled: hidden housekeeping
+    /// never makes a reading stale, and work reading state after its own change is not
+    /// waiting on itself.
+    pub(crate) fn is_vm_quiet(&self, id: &str) -> bool {
+        let scope = Scope::Vm { id: id.to_owned() };
+        let own = CURRENT.with(|current| current.borrow().clone());
+        let state = self.lock();
+        !state.running.iter().chain(state.waiting.iter()).any(|entry| {
+            !entry.hidden
+                && entry.scope.conflicts(&scope)
+                && !own.as_ref().is_some_and(|token| Arc::ptr_eq(token, &entry.cancel))
+        })
+    }
+
     /// The queue as the UI sees it. Hidden internal-housekeeping entries are excluded, but
     /// they still gate real work: a visible waiter held up only by a hidden entry is flagged
     /// with `blocked_by_hidden` so the UI can explain the wait generically.
@@ -1194,6 +1210,24 @@ mod tests {
         assert_ne!(gate.generation("id-a"), running);
         let settled = gate.generation("id-a");
         assert_eq!(gate.generation("id-a"), settled, "reading is stable while idle");
+    }
+
+    #[test]
+    fn a_vm_is_quiet_unless_visible_work_other_than_the_callers_own_touches_it() {
+        let gate = leak();
+        assert!(gate.is_vm_quiet("id-a"));
+        let hidden = gate.try_computer_hidden("Cleaning up expired logs").unwrap();
+        assert!(elsewhere(move || gate.is_vm_quiet("id-a")), "hidden housekeeping never settles a VM");
+        drop(hidden);
+        let own = gate.vm("id-a", "a", "Creating checkpoint").unwrap();
+        assert!(gate.is_vm_quiet("id-a"), "a thread reading after its own change");
+        assert!(!elsewhere(move || gate.is_vm_quiet("id-a")), "other readers see the VM busy");
+        assert!(elsewhere(move || gate.is_vm_quiet("id-b")), "other VMs stay quiet");
+        drop(own);
+        let change = gate.computer("Applying sandbox changes").unwrap();
+        assert!(gate.is_vm_quiet("id-b"));
+        assert!(!elsewhere(move || gate.is_vm_quiet("id-b")), "computer-wide work touches every VM");
+        drop(change);
     }
 
     #[test]

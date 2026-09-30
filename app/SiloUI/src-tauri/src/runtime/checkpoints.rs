@@ -738,6 +738,7 @@ pub(super) fn pending_workspace(
         lifecycle_failure: None,
         attention: None,
         freshness: Freshness::Fresh,
+        settling: false,
         host: "127.0.0.1".into(),
         repositories: Vec::new(),
         files: Vec::new(),
