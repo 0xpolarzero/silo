@@ -120,6 +120,8 @@ export const siloProgressEventSchema = z.object({
   totalBytes: z.number().int().nonnegative().optional(),
   failureCode: z.enum(["auth", "access", "disk", "permission", "network", "timeout", "integrity", "resources", "configuration", "unavailable", "runtime"]).optional(),
   exitCode: z.number().int().optional(),
+  /** `setup-failed` only: the runtime's own explanation for a Details disclosure; never part of `message`. */
+  diagnostic: z.string().optional(),
 }).strict()
 
 export const siloBootstrapResultSchema = z.object({

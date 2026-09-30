@@ -668,7 +668,7 @@ pub async fn remote_host_snapshot(app: AppHandle, host_id: String, refresh_repos
         let result = call_remote(&app, &host_id, "runtime.snapshot", json!({"refreshRepositories": refresh_repositories.unwrap_or(false)}));
         if result
             .as_ref()
-            .is_err_and(|error| error != "SILO_SANDBOX_UPDATE_IN_PROGRESS")
+            .is_err_and(|error| error != crate::runtime::SANDBOX_UPDATE_IN_PROGRESS)
         {
             crate::remote_network::close_host(&host_id);
     crate::desktop_viewer::close_host(&host_id);

@@ -203,7 +203,7 @@ fn modify(
 fn modify_error(error: RuntimeError) -> Attempt {
     match error {
         RuntimeError::Cancelled { .. } => Attempt::Cancelled("Saving secrets was cancelled.".into()),
-        RuntimeError::Failed { detail, .. } if detail.starts_with("exit code") => {
+        RuntimeError::Failed { exit_code: Some(_), .. } => {
             "The sandbox rejected the secret update. Retry after checking its state.".into()
         }
         RuntimeError::TimedOut { .. } | RuntimeError::Failed { .. } => Attempt::Transient(

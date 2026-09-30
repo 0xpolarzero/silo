@@ -188,19 +188,30 @@ pub(crate) enum RuntimeError {
     Busy,
     Invalid(String),
     Unavailable(String),
+    /// The bundled runtime process could not be started at this moment. Retrying may
+    /// succeed, unlike a missing or invalid installation (`Unavailable`).
+    Launch(String),
     TimedOut { operation: String },
     Cancelled { operation: String },
-    Failed { operation: String, detail: String },
+    /// The runtime ran and reported a failure. `exit_code` is its exit status when it
+    /// exited; `detail` is its own explanation with Silo's storage path hidden. The
+    /// detail is diagnostic only: `Display` and `failure_report` summaries never show
+    /// it, so raw runtime output is never the user-facing error.
+    Failed { operation: String, exit_code: Option<i32>, detail: String },
     Malformed(String),
+    /// A configuration batch failed with this error after some of its changes were
+    /// applied; the completed changes were kept.
+    Partial(Box<RuntimeError>),
 }
 
 impl std::fmt::Display for RuntimeError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Busy => formatter.write_str("Another sandbox operation is still running."),
-            Self::Invalid(message) | Self::Unavailable(message) | Self::Malformed(message) => {
-                formatter.write_str(message)
-            }
+            Self::Invalid(message)
+            | Self::Unavailable(message)
+            | Self::Launch(message)
+            | Self::Malformed(message) => formatter.write_str(message),
             Self::TimedOut { operation } => {
                 write!(
                     formatter,
@@ -210,10 +221,19 @@ impl std::fmt::Display for RuntimeError {
             Self::Cancelled { operation } => {
                 write!(formatter, "{operation} was cancelled.")
             }
-            Self::Failed { operation, detail } => write!(formatter, "{operation} failed: {detail}"),
+            Self::Failed { operation, detail, .. } => {
+                write!(formatter, "{operation}: {}", failure_reason(failure_category(detail)))
+            }
+            Self::Partial(error) => write!(formatter, "{error} {PARTIAL_CHANGES_KEPT}"),
         }
     }
 }
+
+const PARTIAL_CHANGES_KEPT: &str =
+    "Completed changes were kept; reload the sandbox list before retrying.";
+
+/// Returned instead of a snapshot while sandbox configuration changes, so readers retry.
+pub(crate) const SANDBOX_UPDATE_IN_PROGRESS: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
 
 impl From<operation_gate::GateError> for RuntimeError {
     fn from(error: operation_gate::GateError) -> Self {
@@ -523,8 +543,10 @@ struct ApplicationWorkspace {
     state: WorkspaceState,
     state_detail: String,
     can_dismiss_error: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    lifecycle_failure: Option<String>,
+    /// Serialized as `lifecycleFailure` (one line) and `lifecycleFailureDiagnostic`
+    /// (the runtime's explanation, for a Details disclosure); both omitted when none.
+    #[serde(flatten)]
+    lifecycle_failure: Option<runtime_activity::LifecycleFailureView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     attention: Option<WorkspaceAttention>,
     freshness: Freshness,
@@ -1136,7 +1158,7 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
         command.stdout(Stdio::null()).stderr(Stdio::null());
     }
     let mut child = command.spawn().map_err(|error| {
-        RuntimeError::Unavailable(format!("Silo could not start its bundled runtime: {error}"))
+        RuntimeError::Launch(format!("Silo could not start its bundled runtime: {error}"))
     })?;
     // Spawn succeeded with pre_exec clearing close-on-exec for this lock only.
     // A surviving child must keep the flock if Silo exits before it does.
@@ -1205,6 +1227,7 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
                 stop_child(&mut child);
                 return Err(RuntimeError::Failed {
                     operation: operation_name(args),
+                    exit_code: None,
                     detail: "the runtime returned too much output".into(),
                 });
             }
@@ -1235,6 +1258,7 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
                 stop_child(&mut child);
                 return Err(RuntimeError::Failed {
                     operation: operation_name(args),
+                    exit_code: None,
                     detail: format!("the process could not be observed: {error}"),
                 });
             }
@@ -1255,11 +1279,9 @@ fn spawn_runtime(paths: &RuntimePaths, launch: RuntimeLaunch<'_>) -> Result<Comm
         };
         return Err(RuntimeError::Failed {
             operation: operation_name(args),
-            detail: format!(
-                "exit code {}: {}",
-                status.code().unwrap_or(-1),
-                clean_detail(raw_detail, &paths.home)
-            ),
+            // A child ended by a signal has no exit status; report it as -1.
+            exit_code: Some(status.code().unwrap_or(-1)),
+            detail: clean_detail(raw_detail, &paths.home),
         });
     }
     Ok(CommandOutput { stdout, stderr })
@@ -1502,7 +1524,7 @@ pub async fn verify_workspace_identities(
             .map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| format!("Git identity verification worker failed: {error}"))?
+    .map_err(|_| internal_failure("checking Git identities"))?
 }
 
 /// Holds one VM's lane while its Git identity is checked or written. Returns `None` when
@@ -1609,7 +1631,7 @@ pub async fn configure_workspace_identities(
         result.map_err(|error| error.to_string())
     })
     .await
-    .map_err(|error| format!("Git identity worker failed: {error}"))
+    .map_err(|_| internal_failure("saving Git identities"))
     .and_then(|result| result);
     if let Err(message) = &result {
         crate::notifications::notify_native(&notify_app, git_identity_notice(&names, message));
@@ -2093,7 +2115,7 @@ pub async fn read_application_state(app: AppHandle, refresh_repositories: Option
         Ok(source)
     })
     .await
-    .map_err(|error| format!("Sandbox state worker failed: {error}"))?
+    .map_err(|_| internal_failure("reading sandbox state"))?
 }
 
 /// Expired logs of a stopped VM are cleaned at most this often, off the state-read path.
@@ -2279,7 +2301,7 @@ fn read_application_snapshot(
     paths: &RuntimePaths,
     gate: &operation_gate::OperationGate,
 ) -> Result<ApplicationSource, String> {
-    const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
+    const UPDATING: &str = SANDBOX_UPDATE_IN_PROGRESS;
     const MAX_ATTEMPTS: usize = 2;
     const RETRY_DELAY: Duration = Duration::from_millis(100);
     for attempt in 0..MAX_ATTEMPTS {
@@ -2311,7 +2333,7 @@ fn read_application_snapshot_once(
     paths: &RuntimePaths,
     gate: &operation_gate::OperationGate,
 ) -> Result<ApplicationSource, String> {
-    const UPDATING: &str = "SILO_SANDBOX_UPDATE_IN_PROGRESS";
+    const UPDATING: &str = SANDBOX_UPDATE_IN_PROGRESS;
     // Runtime creation and metadata publication are separate steps. Discard
     // observations overlapping a mutation, without blocking progress updates.
     if configuration_recovery::pending(paths)? { return Err(UPDATING.into()); }
@@ -2446,11 +2468,7 @@ const AUTO_RETRY_DELAYS: [Duration; 2] = [Duration::from_secs(2), Duration::from
 /// runtime that could not be spawned at that moment. Deliberately excludes `Busy`,
 /// `Cancelled`, and validation/configuration errors, which retrying cannot fix.
 pub(crate) fn transient_runtime_error(error: &RuntimeError) -> bool {
-    match error {
-        RuntimeError::TimedOut { .. } => true,
-        RuntimeError::Unavailable(message) => message.contains("could not start its bundled runtime"),
-        _ => false,
-    }
+    matches!(error, RuntimeError::TimedOut { .. } | RuntimeError::Launch(_))
 }
 
 /// Run a gated operation with automatic retries for transient failures.
@@ -2687,10 +2705,10 @@ pub async fn workspace_action(
             Err(error) => Err((
                 Some(vm_id),
                 lifecycle_failure(&error),
-                runtime_activity::failure_message(&error),
+                safe_activity_error(&error),
             )),
         }
-    }).await.map_err(|_| "Sandbox action worker failed.".to_string())?;
+    }).await.map_err(|_| internal_failure("running the sandbox action"))?;
     let elapsed = started.elapsed();
     let notify = |vm_id: Option<String>, outcome: crate::notifications::Outcome<'_>| {
         let sandbox = vm_id.map(|id| crate::notifications::NoticeSandbox { id, name: notice_name.clone() });
@@ -2781,6 +2799,10 @@ pub struct MachineConfigurationProgress {
     failure_code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     exit_code: Option<i32>,
+    /// For `setup-failed` only: the runtime's own explanation, filtered like Logs and
+    /// bounded, for a Details disclosure. Never part of `message`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    diagnostic: Option<String>,
 }
 
 fn machine_progress(
@@ -2833,6 +2855,7 @@ fn machine_progress(
         total_bytes: None,
         failure_code: None,
         exit_code: None,
+        diagnostic: None,
     }
 }
 
@@ -2848,27 +2871,36 @@ fn activity_path(paths: &RuntimePaths) -> PathBuf {
     paths.metadata.with_file_name("setup-activity.json")
 }
 
-fn failure_code(error: &RuntimeError) -> &'static str {
-    let lower = error.to_string().to_lowercase();
+/// The one classification of runtime failures (D-17). Its category decides both the
+/// setup activity code and the reason shown to the user, so the two cannot disagree.
+fn failure_category(text: &str) -> &'static str {
+    let lower = text.to_lowercase();
     if lower.contains("unauthorized")
         || lower.contains("authentication")
         || mentions_http_status(&lower, "401")
     {
         "auth"
-    } else if lower.contains("forbidden") || mentions_http_status(&lower, "403") {
+    } else if lower.contains("forbidden")
+        || lower.contains("denied access")
+        || mentions_http_status(&lower, "403")
+    {
         "access"
-    } else if lower.contains("no space left") {
+    } else if lower.contains("no space left") || lower.contains("free disk space") {
         "disk"
     } else if lower.contains("permission denied") || lower.contains("permission was denied") {
         "permission"
     } else if lower.contains("connection")
         || lower.contains("dns")
         || lower.contains("error sending request")
+        || lower.contains("could not be reached")
     {
         "network"
     } else if lower.contains("timeout") || lower.contains("timed out") {
         "timeout"
-    } else if lower.contains("digest") || lower.contains("checksum") {
+    } else if lower.contains("digest")
+        || lower.contains("checksum")
+        || lower.contains("integrity check")
+    {
         "integrity"
     } else if lower.contains("cpu")
         || lower.contains("memory")
@@ -2876,20 +2908,14 @@ fn failure_code(error: &RuntimeError) -> &'static str {
         || lower.contains("resource")
     {
         "resources"
-    } else if matches!(
-        error,
-        RuntimeError::Invalid(_) | RuntimeError::Malformed(_) | RuntimeError::Busy
-    ) {
-        "configuration"
-    } else if matches!(error, RuntimeError::Unavailable(_)) {
-        "unavailable"
     } else {
         "runtime"
     }
 }
 
-fn failure_message(code: &str, exit_code: Option<i32>) -> Option<String> {
-    let reason = match code {
+/// What happened and what to do next, for one failure category.
+fn failure_reason(code: &str) -> &'static str {
+    match code {
         "auth" => "The image registry rejected authentication. Check registry access and retry.",
         "access" => "The image registry denied access. Check registry access and retry.",
         "disk" => "Not enough free disk space. Free some space and retry.",
@@ -2899,80 +2925,100 @@ fn failure_message(code: &str, exit_code: Option<i32>) -> Option<String> {
         "integrity" => "The downloaded image failed its integrity check. Retry the download.",
         "resources" => "Sandbox CPU, memory, or storage limits could not be validated. Review the sandbox resources against this computer's limits and retry.",
         "configuration" => "The sandbox configuration could not be applied or verified. Review its settings and current state before retrying.",
-        "unavailable" => "A required runtime or host resource is unavailable. Check Silo's Dependencies screen before retrying.",
-        "runtime" => "The runtime did not complete the operation. Check the sandbox state and retry.",
-        _ => return None,
-    };
-    Some(match exit_code {
-        Some(code) => format!("Sandbox setup failed (exit code {code}): {reason}"),
-        None => format!("Sandbox setup failed: {reason}"),
+        "unavailable" => "A required runtime or host resource is unavailable. Quit and reopen Silo to check it again, then retry.",
+        _ => "The runtime did not complete the operation. Check the sandbox state and retry.",
+    }
+}
+
+/// The persisted setup-failure message for a category. Unknown categories are rejected
+/// so a modified history cannot inject text.
+fn setup_failure_message(code: &str) -> Option<String> {
+    matches!(
+        code,
+        "auth" | "access" | "disk" | "permission" | "network" | "timeout" | "integrity"
+            | "resources" | "configuration" | "unavailable" | "runtime"
+    )
+    .then(|| format!("Sandbox setup failed: {}", failure_reason(code)))
+}
+
+/// Longest diagnostic kept for one failure, in characters.
+const MAX_DIAGNOSTIC_CHARS: usize = 8_192;
+
+/// Runtime output prepared for a Details disclosure: sensitive lines hidden like Logs,
+/// control sequences removed, and bounded.
+fn diagnostic_text(text: &str) -> Option<String> {
+    let filtered = runtime_activity::log_text(text);
+    let filtered = filtered.trim();
+    if filtered.is_empty() {
+        return None;
+    }
+    let bounded: String = filtered.chars().take(MAX_DIAGNOSTIC_CHARS).collect();
+    Some(if bounded.len() < filtered.len() {
+        format!("{bounded}\n[Diagnostic truncated]")
+    } else {
+        bounded
     })
 }
 
-fn runtime_exit_code(error: &RuntimeError) -> Option<i32> {
-    let RuntimeError::Failed { detail, .. } = error else {
-        return None;
-    };
-    detail
-        .split("exit code ")
-        .nth(1)?
-        .split(|ch: char| ch != '-' && !ch.is_ascii_digit())
-        .next()?
-        .parse()
-        .ok()
+/// A diagnostic read back from Silo's own history: filtered again and bounded, since
+/// the file could have been modified.
+fn stored_diagnostic(text: &str) -> Option<String> {
+    let filtered = runtime_activity::log_text(text);
+    let filtered = filtered.trim();
+    (!filtered.is_empty()).then(|| filtered.chars().take(MAX_DIAGNOSTIC_CHARS + 64).collect())
 }
 
-fn safe_activity_error(error: &RuntimeError) -> String {
+/// A failure as the user sees it (D-39): a stable category, one line saying what
+/// happened and what to do next (never raw runtime output or an exit code), and the
+/// runtime's own explanation separately, for a Details disclosure.
+pub(crate) struct FailureReport {
+    pub(crate) code: &'static str,
+    pub(crate) summary: String,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) diagnostic: Option<String>,
+}
+
+pub(crate) fn failure_report(error: &RuntimeError) -> FailureReport {
     match error {
-        RuntimeError::Failed { operation, detail } => {
-            let lower = detail.to_lowercase();
-            let reason = if lower.contains("unauthorized")
-                || lower.contains("authentication")
-                || mentions_http_status(&lower, "401")
-            {
-                "The image registry rejected authentication. Check registry access and retry."
-            } else if mentions_http_status(&lower, "403")
-                || lower.contains("forbidden")
-                || lower.contains("denied access")
-            {
-                "The image registry denied access. Check registry access and retry."
-            } else if lower.contains("no space left") || lower.contains("free disk space") {
-                "Not enough free disk space. Free some space and retry."
-            } else if lower.contains("permission denied") {
-                "Permission was denied. Check access to Silo's storage and retry."
-            } else if lower.contains("connection")
-                || lower.contains("dns")
-                || lower.contains("error sending request")
-                || lower.contains("could not be reached")
-            {
-                "The image registry could not be reached. Check your internet connection and retry."
-            } else if lower.contains("timeout") || lower.contains("timed out") {
-                "The operation timed out. Check the sandbox state and retry."
-            } else if lower.contains("digest")
-                || lower.contains("checksum")
-                || lower.contains("integrity check")
-            {
-                "The downloaded image failed its integrity check. Retry the download."
-            } else {
-                "The runtime did not complete the operation. Check the sandbox state and retry."
-            };
-            let exit_code = detail
-                .strip_prefix("exit code ")
-                .and_then(|value| value.split(':').next())
-                .and_then(|value| value.parse::<i32>().ok());
-            if let Some(code) = exit_code {
-                format!("{operation} (exit code {code}): {reason}")
-            } else {
-                format!("{operation}: {reason}")
+        RuntimeError::Failed { exit_code, detail, .. } => {
+            let mut diagnostic = exit_code.map(|code| format!("Exit code {code}")).unwrap_or_default();
+            if let Some(text) = diagnostic_text(detail) {
+                if !diagnostic.is_empty() {
+                    diagnostic.push('\n');
+                }
+                diagnostic.push_str(&text);
+            }
+            FailureReport {
+                code: failure_category(detail),
+                summary: error.to_string(),
+                exit_code: *exit_code,
+                diagnostic: (!diagnostic.is_empty()).then_some(diagnostic),
             }
         }
-        RuntimeError::Busy | RuntimeError::TimedOut { .. } | RuntimeError::Cancelled { .. } => {
-            error.to_string()
+        RuntimeError::Partial(inner) => {
+            let inner = failure_report(inner);
+            FailureReport { summary: format!("{} {PARTIAL_CHANGES_KEPT}", inner.summary), ..inner }
         }
-        // These errors are generated by Silo, but may contain OS paths or process details.
-        _ => {
-            let text = error.to_string();
-            text.split_whitespace()
+        RuntimeError::Busy | RuntimeError::TimedOut { .. } | RuntimeError::Cancelled { .. } => {
+            let summary = error.to_string();
+            let code = match (failure_category(&summary), error) {
+                (_, RuntimeError::Busy) => "configuration",
+                (code, _) => code,
+            };
+            FailureReport { code, summary, exit_code: None, diagnostic: None }
+        }
+        RuntimeError::Invalid(message)
+        | RuntimeError::Malformed(message)
+        | RuntimeError::Unavailable(message)
+        | RuntimeError::Launch(message) => {
+            let code = match (failure_category(message), error) {
+                ("runtime", RuntimeError::Invalid(_) | RuntimeError::Malformed(_)) => "configuration",
+                ("runtime", _) => "unavailable",
+                (code, _) => code,
+            };
+            // Silo writes these messages, but they may name OS paths or process details.
+            let summary = message
+                .split_whitespace()
                 .map(|word| {
                     if word.contains('/')
                         || word.contains('@')
@@ -2988,7 +3034,8 @@ fn safe_activity_error(error: &RuntimeError) -> String {
                 .join(" ")
                 .chars()
                 .take(800)
-                .collect()
+                .collect();
+            FailureReport { code, summary, exit_code: None, diagnostic: None }
         }
     }
 }
@@ -3042,6 +3089,16 @@ fn persist_activity(path: &Path, events: &impl Serialize) -> Result<(), String> 
         .map_err(|_| "Silo could not save setup activity.")?;
     Ok(())
 }
+
+/// The one-line, user-facing text for a runtime error. See `failure_report`.
+fn safe_activity_error(error: &RuntimeError) -> String {
+    failure_report(error).summary
+}
+
+/// A background task of a command ended unexpectedly (a panic). The message says what
+/// Silo was doing and what to try, without naming internals.
+fn internal_failure(activity: &str) -> String {
+    format!("Silo ran into an internal error while {activity}. Retry; if it keeps happening, quit and reopen Silo.")}
 
 struct ActivityJournal {
     path: PathBuf,
@@ -3174,9 +3231,15 @@ fn read_activity(
             "runtime-waiting" => format!("{}: Waiting for the runtime to finish preparing the VM…", event.workspace),
             "host-memory-warning" => "Silo could not measure host memory. Setup can continue, but available memory could not be checked.".into(),
             "activity-storage-warning" => "Silo could not retain its activity history. Copy the activity before closing Silo.".into(),
-            "setup-failed" => failure_message(event.failure_code.as_deref().unwrap_or("runtime"), event.exit_code).ok_or("Silo's setup activity history contains an unknown failure.")?,
+            "setup-failed" => setup_failure_message(event.failure_code.as_deref().unwrap_or("runtime")).ok_or("Silo's setup activity history contains an unknown failure.")?,
             _ => return Err("Silo's setup activity history contains an unknown operation.".into()),
         };
+        // A stored diagnostic is filtered again, like the message is re-derived above.
+        event.diagnostic = event
+            .diagnostic
+            .take()
+            .filter(|_| event.step == "setup-failed")
+            .and_then(|text| stored_diagnostic(&text));
     }
     if recover_interrupted
         && events
@@ -3314,8 +3377,10 @@ fn apply_configuration_with_progress(
     );
     if let Err(error) = &result {
         outcome.level = "error".into();
-        outcome.failure_code = Some(failure_code(error).into());
-        outcome.exit_code = runtime_exit_code(error);
+        let report = failure_report(error);
+        outcome.failure_code = Some(report.code.into());
+        outcome.exit_code = report.exit_code;
+        outcome.diagnostic = report.diagnostic;
         let last = journal
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -3325,10 +3390,7 @@ fn apply_configuration_with_progress(
         if let Some(last) = last {
             outcome.workspace = last.workspace;
         }
-        outcome.message = format!(
-            "Sandbox setup failed: {} Check the sandbox state before retrying.",
-            safe_activity_error(error)
-        );
+        outcome.message = format!("Sandbox setup failed: {}", report.summary);
     }
     publish(outcome);
     result.map_err(|error| safe_activity_error(&error))?;
@@ -3371,7 +3433,7 @@ pub async fn retry_machine_configuration(
         apply_configuration_with_progress(&app, &paths, request, &request_id, retry_workspace)
     })
     .await
-    .map_err(|error| format!("Sandbox configuration worker failed: {error}")).and_then(|result| result);
+    .map_err(|_| internal_failure("changing sandbox settings")).and_then(|result| result);
     if let Err(message) = &result {
         notify_configuration_failure(&notify_app, &failure_title, message);
     }
@@ -3420,7 +3482,7 @@ pub async fn change_machine_configuration(
         apply_configuration_with_progress(&app, &paths, request, &request_id, retry_workspace)
     })
     .await
-    .map_err(|error| format!("Sandbox configuration worker failed: {error}")).and_then(|result| result);
+    .map_err(|_| internal_failure("changing sandbox settings")).and_then(|result| result);
     match &result {
         Err(message) => notify_configuration_failure(&notify_app, &failure_title, message),
         // A deleted sandbox has nothing left to open: withdraw its delivered notices.
@@ -4319,7 +4381,8 @@ fn apply_whole_configuration_with_progress(
         configuration_recovery::finish(paths)
     })();
     result.map_err(|error| if changed {
-        RuntimeError::Failed { operation: "Applying the sandbox configuration".into(), detail: format!("Some sandbox changes were applied before this error: {error} Completed changes were kept; reload the sandbox list before retrying.") }
+        // Keep the typed error so its precise text and category survive (D-16).
+        RuntimeError::Partial(Box::new(error))
     } else { error })
 }
 
@@ -4649,6 +4712,7 @@ fn create_disk_volume(path: &Path, size_gib: u32) -> Result<(), RuntimeError> {
     )
     .map_err(|error| RuntimeError::Failed {
         operation: "Creating a managed disk".into(),
+        exit_code: None,
         detail: error.to_string(),
     })?;
     File::open(&staged)
@@ -4711,6 +4775,7 @@ fn with_cleanup_error(original: RuntimeError, cleanup: Result<(), RuntimeError>)
         Ok(()) => original,
         Err(cleanup) => RuntimeError::Failed {
             operation: "Applying the sandbox configuration".into(),
+            exit_code: None,
             detail: format!("{original} Cleanup also failed: {cleanup}"),
         },
     }
@@ -5122,6 +5187,7 @@ mod tests {
         );
         assert_eq!(lifecycle_failure(&RuntimeError::Failed {
             operation: "Starting dev".into(),
+            exit_code: Some(1),
             detail: "boot failed".into(),
         }), LifecycleFailure::Failed);
         assert_eq!(lifecycle_failure(&RuntimeError::TimedOut {
@@ -5213,6 +5279,7 @@ mod tests {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 Err(RuntimeError::Failed {
                     operation: "Starting retry-nontransient".into(),
+                    exit_code: Some(1),
                     detail: "the configuration is invalid".into(),
                 })
             },
@@ -5998,7 +6065,7 @@ esac
 
     #[test]
     fn activity_does_not_publish_private_runtime_error_details() {
-        let error = RuntimeError::Failed { operation: "Creating the sandbox".into(), detail: "error sending request https://user:SECRET@registry.test/image?token=SECRET /Users/alice/private".into() };
+        let error = RuntimeError::Failed { operation: "Creating the sandbox".into(), exit_code: None, detail: "error sending request https://user:SECRET@registry.test/image?token=SECRET /Users/alice/private".into() };
         let safe = safe_activity_error(&error);
         assert!(safe.contains("registry could not be reached"));
         for private in ["SECRET", "alice", "registry.test", "token"] {
@@ -6068,6 +6135,7 @@ esac
         ] {
             let safe = safe_activity_error(&RuntimeError::Failed {
                 operation: "Creating the sandbox".into(),
+                exit_code: Some(1),
                 detail: detail.into(),
             });
             assert!(safe.contains(expected));
@@ -6094,7 +6162,8 @@ esac
             (
                 RuntimeError::Failed {
                     operation: "Creating the sandbox".into(),
-                    detail: "exit code 17: 401 unauthorized SECRET".into(),
+                    exit_code: Some(17),
+                    detail: "401 unauthorized SECRET".into(),
                 },
                 "auth",
                 "authentication",
@@ -6103,7 +6172,8 @@ esac
             (
                 RuntimeError::Failed {
                     operation: "Creating the sandbox".into(),
-                    detail: "exit code 13: Permission denied /private/SECRET".into(),
+                    exit_code: Some(13),
+                    detail: "Permission denied /private/SECRET".into(),
                 },
                 "permission",
                 "Permission was denied",
@@ -6118,7 +6188,8 @@ esac
             (
                 RuntimeError::Failed {
                     operation: "Creating the sandbox".into(),
-                    detail: "exit code 29: unexpected SECRET".into(),
+                    exit_code: Some(29),
+                    detail: "unexpected SECRET".into(),
                 },
                 "runtime",
                 "did not complete",
@@ -6129,9 +6200,11 @@ esac
             let directory = tempfile::tempdir().unwrap();
             let paths = paths(&directory);
             let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
+            let report = failure_report(&error);
             let mut event = machine_progress("attempt", "setup-failed", "dev", 0);
-            event.failure_code = Some(failure_code(&error).into());
-            event.exit_code = runtime_exit_code(&error);
+            event.failure_code = Some(report.code.into());
+            event.exit_code = report.exit_code;
+            event.diagnostic = report.diagnostic;
             event.level = "error".into();
             event.message = "untrusted SECRET must never be shown".into();
             journal.append(event);
@@ -6141,9 +6214,61 @@ esac
             assert_eq!(event.exit_code, exit_code);
             assert!(event.message.contains(message));
             assert!(!event.message.contains("SECRET"));
+            // The one-line message never carries an exit code; the diagnostic does.
+            assert!(!event.message.contains("exit code"), "{}", event.message);
             if let Some(code) = exit_code {
-                assert!(event.message.contains(&format!("exit code {code}")));
+                assert!(event.diagnostic.as_deref().unwrap().starts_with(&format!("Exit code {code}")));
+            } else {
+                assert!(event.diagnostic.is_none());
             }
+        }
+        // A modified history cannot place a diagnostic on another kind of event, and
+        // a stored diagnostic is filtered again when read.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let mut journal = ActivityJournal::start(&paths, "attempt").unwrap();
+        let mut started = machine_progress("attempt", "setup-started", "", 0);
+        started.diagnostic = Some("planted".into());
+        journal.append(started);
+        let mut failed = machine_progress("attempt", "setup-failed", "dev", 0);
+        failed.failure_code = Some("runtime".into());
+        failed.diagnostic = Some("Exit code 1\nTOKEN=planted-secret\nkept line".into());
+        journal.append(failed);
+        let recovered = read_activity(&paths, false).unwrap();
+        assert!(recovered[0].diagnostic.is_none());
+        let diagnostic = recovered[1].diagnostic.as_deref().unwrap();
+        assert!(diagnostic.contains("kept line") && !diagnostic.contains("planted-secret"));
+    }
+
+    #[test]
+    fn partial_configuration_failure_keeps_the_precise_error_and_guidance() {
+        let precise = RuntimeError::Invalid("Sandbox 'second' is not owned by Silo. No sandbox operation was performed.".into());
+        let report = failure_report(&RuntimeError::Partial(Box::new(precise)));
+        assert_eq!(report.code, "configuration");
+        assert_eq!(report.summary, format!("Sandbox 'second' is not owned by Silo. No sandbox operation was performed. {PARTIAL_CHANGES_KEPT}"));
+        let runtime = RuntimeError::Partial(Box::new(RuntimeError::Failed {
+            operation: "Creating the sandbox".into(),
+            exit_code: Some(7),
+            detail: "no space left on device".into(),
+        }));
+        let report = failure_report(&runtime);
+        assert_eq!(report.code, "disk");
+        assert!(report.summary.contains("Not enough free disk space") && report.summary.ends_with(PARTIAL_CHANGES_KEPT));
+        assert_eq!(report.exit_code, Some(7));
+        assert_eq!(runtime.to_string(), report.summary);
+        // One classifier: a spawn failure is transient and is reported as unavailable.
+        let launch = RuntimeError::Launch("Silo could not start its bundled runtime: busy".into());
+        assert!(transient_runtime_error(&launch));
+        assert_eq!(failure_report(&launch).code, "unavailable");
+        assert!(!transient_runtime_error(&RuntimeError::Unavailable("Silo could not start its bundled runtime".into())));
+    }
+
+    #[test]
+    fn user_facing_failures_never_name_exit_codes_or_workers() {
+        let error = RuntimeError::Failed { operation: "Starting the sandbox".into(), exit_code: Some(3), detail: "boom".into() };
+        for text in [error.to_string(), safe_activity_error(&error), setup_failure_message("runtime").unwrap(), internal_failure("reading sandbox state")] {
+            let lower = text.to_lowercase();
+            assert!(!lower.contains("exit code") && !lower.contains("worker") && !text.contains('\n'), "{text}");
         }
     }
 
@@ -6174,18 +6299,22 @@ esac
             Duration::from_secs(2),
         )
         .unwrap_err();
-        assert_eq!(failure_code(&error), "network");
+        assert_eq!(failure_report(&error).code, "network");
+        assert_eq!(failure_report(&error).exit_code, Some(1));
         assert!(safe_activity_error(&error).contains("could not be reached"));
         assert!(!error.to_string().contains("40123"));
+        assert!(!error.to_string().contains("DNS lookup failed"));
         for detail in [
             "DNS failure for item40123",
             "downloaded 40399 bytes then DNS failure",
         ] {
             assert_eq!(
-                failure_code(&RuntimeError::Failed {
+                failure_report(&RuntimeError::Failed {
                     operation: "Creating".into(),
+                    exit_code: None,
                     detail: detail.into()
-                }),
+                })
+                .code,
                 "network"
             );
         }
@@ -6207,7 +6336,8 @@ esac
         failed.level = "error".into();
         failed.failure_code = Some("permission".into());
         failed.exit_code = Some(13);
-        failed.message = failure_message("permission", Some(13)).unwrap();
+        failed.message = setup_failure_message("permission").unwrap();
+        failed.diagnostic = Some("Exit code 13\nPermission denied".into());
         let events = vec![started, completed, failed];
         let fixture: Value =
             serde_json::from_str(include_str!("../../src/test/contracts/setup-activity.json"))
@@ -8326,6 +8456,7 @@ esac
             }),
             Err(RuntimeError::Failed {
                 operation: "Creating the sandbox".into(),
+                exit_code: Some(1),
                 detail: "image pull failed".into(),
             }),
             Ok(CommandOutput {
@@ -8346,7 +8477,9 @@ esac
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("image pull failed"));
+        assert!(matches!(error, RuntimeError::Partial(_)));
+        assert!(!error.to_string().contains("image pull failed"));
+        assert!(failure_report(&error).diagnostic.is_some_and(|text| text.contains("image pull failed")));
         assert!(!runner
             .calls
             .lock()

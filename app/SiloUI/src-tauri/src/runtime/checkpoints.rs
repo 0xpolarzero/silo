@@ -2353,7 +2353,7 @@ mod tests {
             *self.calls.lock().unwrap() += 1;
             assert_eq!(args[0], "inspect");
             if self.missing {
-                return Err(RuntimeError::Failed { operation: "Inspecting the sandbox".into(), detail: "exit code 1: sandbox 'dev' not found".into() });
+                return Err(RuntimeError::Failed { operation: "Inspecting the sandbox".into(), exit_code: Some(1), detail: "sandbox 'dev' not found".into() });
             }
             Ok(CommandOutput {
                 stdout: serde_json::json!({"name":"dev","status":self.status,"config":{"labels":{"silo.managed":"true","silo.machine-id":ID}}}).to_string(),
@@ -2491,7 +2491,7 @@ mod tests {
                     }}).to_string(),
                     "snapshot" => serde_json::json!([{"group":"dev","name":"c000000000000000000000000000000","scope":"full","availability":"ready"}]).to_string(),
                     "list" => serde_json::json!([{"name":"dev"}]).to_string(),
-                    "restore" => return Err(RuntimeError::Failed {operation:"restore".into(),detail:"synthetic failure".into()}),
+                    "restore" => return Err(RuntimeError::Failed {operation:"restore".into(),exit_code:None,detail:"synthetic failure".into()}),
                     _ => panic!("unexpected runtime command"),
                 };
                 Ok(CommandOutput {
@@ -2528,10 +2528,10 @@ mod tests {
         let runner = FailedRestore {
             calls: Mutex::new(Vec::new()),
         };
-        assert!(start_pending(&runner, &paths, &child)
-            .unwrap_err()
-            .to_string()
-            .contains("synthetic failure"));
+        // The runtime's own explanation is the failure's diagnostic, not its summary.
+        assert!(super::failure_report(&start_pending(&runner, &paths, &child).unwrap_err())
+            .diagnostic
+            .is_some_and(|text| text.contains("synthetic failure")));
         let stored = load(&paths, child_id).unwrap();
         assert!(stored.pending_checkpoint_restore.is_some());
         assert_eq!(stored.checkpoint_operation.unwrap().status, "failed");
