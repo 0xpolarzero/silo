@@ -25,12 +25,19 @@ pub(crate) fn generation() -> u64 {
 }
 pub(crate) fn cancel() {
     QUITTING.store(false, Ordering::SeqCst);
-    if let Ok(mut deadline) = MAINTENANCE_DEADLINE.lock() { *deadline = None; }
+    if let Ok(mut deadline) = MAINTENANCE_DEADLINE.lock() {
+        *deadline = None;
+    }
 }
 
 pub(super) fn maintenance_budget() -> Duration {
-    MAINTENANCE_DEADLINE.lock().map(|deadline| deadline
-        .map_or(storage::TRIM_BUDGET, |at| at.saturating_duration_since(Instant::now())))
+    MAINTENANCE_DEADLINE
+        .lock()
+        .map(|deadline| {
+            deadline.map_or(storage::TRIM_BUDGET, |at| {
+                at.saturating_duration_since(Instant::now())
+            })
+        })
         .unwrap_or(Duration::ZERO)
 }
 
@@ -130,9 +137,14 @@ fn stop_local_vms_with(
         // A VM that is already stopped with no saved action needs no stop and
         // no "Sandbox stopped" activity entry. Anything else goes through
         // perform, which verifies identity and settles transitions.
-        if committed_vm && !lifecycle_recovery::has_intent(paths, machine.id())
-            && inspect_workspace(runner, paths, machine.name()).is_ok_and(|vm| matches!(
-                vm.status.to_ascii_lowercase().as_str(), "stopped" | "created" | "crashed"))
+        if committed_vm
+            && !lifecycle_recovery::has_intent(paths, machine.id())
+            && inspect_workspace(runner, paths, machine.name()).is_ok_and(|vm| {
+                matches!(
+                    vm.status.to_ascii_lowercase().as_str(),
+                    "stopped" | "created" | "crashed"
+                )
+            })
         {
             continue;
         }
@@ -142,25 +154,43 @@ fn stop_local_vms_with(
         // One cross-process worker flock covers the entire shutdown transaction.
         // Separate flock acquisitions in the workers would serialize every stop.
         let worker_lock = configuration_recovery::command_lock(paths, STOP_TIMEOUT)?;
-        let locks = targets.iter().map(|_| worker_lock.duplicate_for_shutdown()).collect::<Result<Vec<_>, _>>()?;
+        let locks = targets
+            .iter()
+            .map(|_| worker_lock.duplicate_for_shutdown())
+            .collect::<Result<Vec<_>, _>>()?;
         let host = &host;
         thread::scope(|scope| {
             let mut workers = Vec::new();
             for (index, ((machine, committed_vm), lock)) in targets.iter().zip(locks).enumerate() {
                 progress(machine.name(), index + 1, targets.len());
-                workers.push((machine.name(), scope.spawn(move || with_shutdown_worker_lock(lock, || {
-                    // Every worker verifies ownership and immutable identity before
-                    // stopping, while the parent retains the computer operation gate.
-                    if *committed_vm {
-                        checkpoints::release_paused_restore(runner, paths, machine);
-                        lifecycle_recovery::perform(runner, paths, host, "stop", machine.name())
-                    } else {
-                        stop_uncommitted_vm(runner, paths, machine)
-                    }
-                }))));
+                workers.push((
+                    machine.name(),
+                    scope.spawn(move || {
+                        with_shutdown_worker_lock(lock, || {
+                            // Every worker verifies ownership and immutable identity before
+                            // stopping, while the parent retains the computer operation gate.
+                            if *committed_vm {
+                                checkpoints::release_paused_restore(runner, paths, machine);
+                                lifecycle_recovery::perform(
+                                    runner,
+                                    paths,
+                                    host,
+                                    "stop",
+                                    machine.name(),
+                                )
+                            } else {
+                                stop_uncommitted_vm(runner, paths, machine)
+                            }
+                        })
+                    }),
+                ));
             }
             for (name, worker) in workers {
-                let result = worker.join().unwrap_or_else(|_| Err(RuntimeError::Unavailable("The shutdown worker failed unexpectedly.".into())));
+                let result = worker.join().unwrap_or_else(|_| {
+                    Err(RuntimeError::Unavailable(
+                        "The shutdown worker failed unexpectedly.".into(),
+                    ))
+                });
                 if let Err(error) = result {
                     failures.push(format!("{name}: {}", safe_activity_error(&error)));
                 }
@@ -182,7 +212,9 @@ fn stop_local_vms_with(
 // runtime state, and no surviving command owns one of the bootstrap locks.
 fn runtime_never_initialized(paths: &RuntimePaths) -> bool {
     use std::os::{fd::AsRawFd, unix::fs::OpenOptionsExt};
-    let Some(storage) = paths.storage_home.as_deref() else { return false; };
+    let Some(storage) = paths.storage_home.as_deref() else {
+        return false;
+    };
     let mut locks = Vec::new();
     for path in [&paths.home, storage] {
         match fs::symlink_metadata(path) {
@@ -190,18 +222,34 @@ fn runtime_never_initialized(paths: &RuntimePaths) -> bool {
             Ok(metadata) if metadata.is_dir() => {}
             _ => return false,
         }
-        let Ok(entries) = fs::read_dir(path) else { return false; };
+        let Ok(entries) = fs::read_dir(path) else {
+            return false;
+        };
         for entry in entries {
-            let Ok(entry) = entry else { return false; };
-            if !matches!(entry.file_name().to_str(), Some(".silo-configuration-worker.lock" | ".silo-backup-worker.lock")) {
+            let Ok(entry) = entry else {
+                return false;
+            };
+            if !matches!(
+                entry.file_name().to_str(),
+                Some(".silo-configuration-worker.lock" | ".silo-backup-worker.lock")
+            ) {
                 return false;
             }
-            if !entry.file_type().is_ok_and(|kind| kind.is_file()) { return false; }
-            let Ok(file) = fs::OpenOptions::new().read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(entry.path()) else { return false; };
+            if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+                return false;
+            }
+            let Ok(file) = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(entry.path())
+            else {
+                return false;
+            };
             // SAFETY: the open file owns the descriptor. Keep every lock until
             // both directories have been checked, without waiting on children.
-            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 { return false; }
+            if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                return false;
+            }
             locks.push(file);
         }
     }
@@ -282,7 +330,9 @@ mod tests {
         ) -> Result<CommandOutput, RuntimeError> {
             self.calls.lock().unwrap().push(args.to_vec());
             if args[0] == "stop" {
-                if let Some(barrier) = &self.stop_barrier { barrier.wait(); }
+                if let Some(barrier) = &self.stop_barrier {
+                    barrier.wait();
+                }
             }
             let mut states = self.states.lock().unwrap();
             let stdout = match args[0].as_str() {
@@ -334,10 +384,15 @@ mod tests {
             Box::leak(Box::new(operation_gate::OperationGate::new()));
         let mut waiter = None;
         let result: Result<(), String> = while_quitting(gate, |_guard| {
-            waiter = Some(std::thread::spawn(move || gate.vm("id-a", "a", "Starting a").map(drop)));
+            waiter = Some(std::thread::spawn(move || {
+                gate.vm("id-a", "a", "Starting a").map(drop)
+            }));
             let deadline = Instant::now() + Duration::from_secs(5);
             while gate.snapshot().waiting.is_empty() {
-                assert!(Instant::now() < deadline, "the start never queued behind Quit");
+                assert!(
+                    Instant::now() < deadline,
+                    "the start never queued behind Quit"
+                );
                 thread::sleep(Duration::from_millis(2));
             }
             Err("Some local VMs could not stop.".into())
@@ -356,13 +411,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
-        runner.states.lock().unwrap().insert("first".into(), "Crashed".into());
+        runner
+            .states
+            .lock()
+            .unwrap()
+            .insert("first".into(), "Crashed".into());
         stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert_eq!(runner.states.lock().unwrap()["first"], "Crashed");
         assert_eq!(runner.states.lock().unwrap()["second"], "Stopped");
         let calls = runner.calls.lock().unwrap();
-        assert!(!calls.iter().any(|args| args[0] == "stop" && args[1] == "first"));
-        assert!(calls.iter().any(|args| args[0] == "stop" && args[1] == "second"));
+        assert!(!calls
+            .iter()
+            .any(|args| args[0] == "stop" && args[1] == "first"));
+        assert!(calls
+            .iter()
+            .any(|args| args[0] == "stop" && args[1] == "second"));
         assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 2);
     }
 
@@ -372,7 +435,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
-        runner.states.lock().unwrap().insert("first".into(), "Stopped".into());
+        runner
+            .states
+            .lock()
+            .unwrap()
+            .insert("first".into(), "Stopped".into());
         let seen = Mutex::new(Vec::new());
         stop_local_vms_with(&runner, &paths, &|name, index, total| {
             // Reported before the stop starts.
@@ -380,7 +447,10 @@ mod tests {
             seen.lock().unwrap().push((name.to_owned(), index, total));
         })
         .unwrap();
-        assert_eq!(seen.into_inner().unwrap(), vec![("second".to_owned(), 1, 1)]);
+        assert_eq!(
+            seen.into_inner().unwrap(),
+            vec![("second".to_owned(), 1, 1)]
+        );
     }
 
     #[test]
@@ -389,11 +459,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = setup(&dir);
         let runner = runner(None);
-        runner.states.lock().unwrap().insert("first".into(), "Stopped".into());
+        runner
+            .states
+            .lock()
+            .unwrap()
+            .insert("first".into(), "Stopped".into());
         stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert!(!calls.iter().any(|args| args[0] == "stop" && args[1] == "first"));
-        assert!(calls.iter().any(|args| args[0] == "stop" && args[1] == "second"));
+        assert!(!calls
+            .iter()
+            .any(|args| args[0] == "stop" && args[1] == "first"));
+        assert!(calls
+            .iter()
+            .any(|args| args[0] == "stop" && args[1] == "second"));
         let history = runtime_activity::read(&paths).unwrap();
         assert!(!history.iter().any(|event| event["workspace"] == "first"));
         assert!(history.iter().any(|event| event["workspace"] == "second"));
@@ -434,14 +512,22 @@ mod tests {
         let (done, received) = std::sync::mpsc::channel();
         let worker = thread::spawn(move || {
             let result = stop_local_vms_with(&runner, &paths, &|_, _, _| {});
-            done.send((result, runtime_activity::read(&paths).unwrap())).unwrap();
+            done.send((result, runtime_activity::read(&paths).unwrap()))
+                .unwrap();
         });
-        let (result, history) = received.recv_timeout(Duration::from_secs(5))
+        let (result, history) = received
+            .recv_timeout(Duration::from_secs(5))
             .expect("both stop commands must enter before either finishes");
         worker.join().unwrap();
         result.unwrap();
-        let first = history.iter().find(|event| event["workspace"] == "first").expect("first stop activity is retained");
-        let second = history.iter().find(|event| event["workspace"] == "second").expect("second stop activity is retained");
+        let first = history
+            .iter()
+            .find(|event| event["workspace"] == "first")
+            .expect("first stop activity is retained");
+        let second = history
+            .iter()
+            .find(|event| event["workspace"] == "second")
+            .expect("second stop activity is retained");
         assert_eq!(first["status"], "completed");
         assert_eq!(second["status"], "completed");
         assert_ne!(first["id"], second["id"]);
@@ -580,7 +666,10 @@ mod tests {
         let runner = runner(None);
         stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
         assert!(runner.calls.lock().unwrap().is_empty());
-        assert_eq!(configuration_recovery::shutdown_machines(&paths).unwrap(), pending.machines);
+        assert_eq!(
+            configuration_recovery::shutdown_machines(&paths).unwrap(),
+            pending.machines
+        );
     }
 
     #[test]
@@ -610,7 +699,10 @@ mod tests {
         fs::create_dir(&paths.home).unwrap();
         let lock_path = paths.home.join(".silo-configuration-worker.lock");
         let file = File::create(&lock_path).unwrap();
-        assert_eq!(unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        assert_eq!(
+            unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+            0
+        );
         assert!(!runtime_never_initialized(&paths));
         drop(file);
         assert!(runtime_never_initialized(&paths));

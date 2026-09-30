@@ -35,7 +35,9 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
             Ok(state)
         }
         "desktop.action" => crate::desktop::dispatch(app, method, params),
-        "ssh.access.state" | "ssh.access.save" | "ssh.access.connection" => crate::ssh_access::remote_dispatch(app, method, params),
+        "ssh.access.state" | "ssh.access.save" | "ssh.access.connection" => {
+            crate::ssh_access::remote_dispatch(app, method, params)
+        }
         "files.list" => {
             // A file listing observes one VM's guest without starting or changing it
             // (`--no-start`), so it takes no gate and stays available during operations.
@@ -101,13 +103,24 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
                 .and_then(|p| u16::try_from(p).ok())
                 .filter(|p| *p != 0)
                 .ok_or("Invalid port.")?;
-            tauri::async_runtime::block_on(crate::network::remove_network_port(app.clone(), name, port))?;
+            tauri::async_runtime::block_on(crate::network::remove_network_port(
+                app.clone(),
+                name,
+                port,
+            ))?;
             crate::remote_network::fresh_host_state(app)
         }
         // Pushes are bound to the repository, branch and commit the user confirmed;
         // the older unbound "repository.push" method is no longer served.
-        "repository.push.start" => crate::host_push_operations::start_remote(app, vm_name(app, params)?, params),
-        "repository.push.status" => crate::host_push_operations::status(app, &vm_name(app, params)?, string(params, "path")?, string(params, "operationId")?),
+        "repository.push.start" => {
+            crate::host_push_operations::start_remote(app, vm_name(app, params)?, params)
+        }
+        "repository.push.status" => crate::host_push_operations::status(
+            app,
+            &vm_name(app, params)?,
+            string(params, "path")?,
+            string(params, "operationId")?,
+        ),
         "repository.dismiss" => {
             let name = vm_name(app, params)?;
             tauri::async_runtime::block_on(crate::host_push::dismiss_repository_push(
@@ -123,27 +136,35 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
             let workspace_id = string(params, "vmId")?.to_owned();
             let _ = vm_name(app, params)?;
             let result = match method {
-                "checkpoint.create" => tauri::async_runtime::block_on(
-                    runtime::checkpoints::create_checkpoint(
-                        app.clone(), workspace_id, string(params, "name")?.to_owned(),
-                    ),
-                )?,
-                "checkpoint.fork" => tauri::async_runtime::block_on(
-                    runtime::checkpoints::fork_checkpoint(
+                "checkpoint.create" => {
+                    tauri::async_runtime::block_on(runtime::checkpoints::create_checkpoint(
                         app.clone(),
                         workspace_id,
-                        params.get("checkpointId").and_then(Value::as_str).map(str::to_owned),
+                        string(params, "name")?.to_owned(),
+                    ))?
+                }
+                "checkpoint.fork" => {
+                    tauri::async_runtime::block_on(runtime::checkpoints::fork_checkpoint(
+                        app.clone(),
+                        workspace_id,
+                        params
+                            .get("checkpointId")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned),
                         string(params, "newName")?.to_owned(),
-                    ),
-                )?,
-                "checkpoint.restore" => tauri::async_runtime::block_on(
-                    runtime::checkpoints::restore_checkpoint(
-                        app.clone(), workspace_id, string(params, "checkpointId")?.to_owned(),
-                    ),
-                )?,
+                    ))?
+                }
+                "checkpoint.restore" => {
+                    tauri::async_runtime::block_on(runtime::checkpoints::restore_checkpoint(
+                        app.clone(),
+                        workspace_id,
+                        string(params, "checkpointId")?.to_owned(),
+                    ))?
+                }
                 _ => unreachable!(),
             };
-            serde_json::to_value(result).map_err(|_| "Could not encode the remote checkpoint result.".into())
+            serde_json::to_value(result)
+                .map_err(|_| "Could not encode the remote checkpoint result.".into())
         }
         _ => Err("This Silo version does not support that remote operation.".into()),
     }
@@ -160,7 +181,10 @@ pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Res
     runtime::shutdown::ensure_accepting_operations()?;
     let paths = runtime::runtime_paths(app)?;
     let inspected = crate::terminal::running_vm(&paths, &name)?;
-    crate::working_account::require_runtime(&paths, crate::working_account::working_user(&inspected.config)?)?;
+    crate::working_account::require_runtime(
+        &paths,
+        crate::working_account::working_user(&inspected.config)?,
+    )?;
     Command::new(&paths.executable)
         .env("MSB_HOME", &paths.home)
         .env("MSB_PATH", &paths.executable)

@@ -53,7 +53,9 @@ fn cached_page(
     let snapshot = cache
         .get(id)
         .filter(|s| {
-            s.created.elapsed() < Duration::from_secs(120) && s.workspace == workspace && s.path == path
+            s.created.elapsed() < Duration::from_secs(120)
+                && s.workspace == workspace
+                && s.path == path
         })
         .ok_or(EXPIRED)?;
     page(&snapshot.entries, offset, id)
@@ -144,10 +146,16 @@ pub(crate) async fn list_workspace_directory(
     }
     tauri::async_runtime::spawn_blocking(move || {
         if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
-            let value = crate::remote::call_remote(&app, &host, "files.list", serde_json::json!({
-                "vmId": vm, "path": path, "offset": offset, "snapshotId": snapshot_id,
-            }))?;
-            return serde_json::from_value(value).map_err(|_| "The remote computer returned an invalid folder listing.".into());
+            let value = crate::remote::call_remote(
+                &app,
+                &host,
+                "files.list",
+                serde_json::json!({
+                    "vmId": vm, "path": path, "offset": offset, "snapshotId": snapshot_id,
+                }),
+            )?;
+            return serde_json::from_value(value)
+                .map_err(|_| "The remote computer returned an invalid folder listing.".into());
         }
         crate::runtime::validate_name(&workspace).map_err(|error| error.to_string())?;
         let paths = runtime_paths(&app).map_err(|_| FAILED.to_owned())?;
@@ -159,8 +167,12 @@ pub(crate) async fn list_workspace_directory(
         {
             return Err("Sandbox no longer exists.".into());
         }
-        let state = match crate::runtime::observe_vm(&ProcessRunner, &paths, &workspace).map_err(|_| FAILED.to_owned())? {
-            crate::runtime::VmRuntime::Absent => return Err("Start this VM to browse its files.".into()),
+        let state = match crate::runtime::observe_vm(&ProcessRunner, &paths, &workspace)
+            .map_err(|_| FAILED.to_owned())?
+        {
+            crate::runtime::VmRuntime::Absent => {
+                return Err("Start this VM to browse its files.".into())
+            }
             crate::runtime::VmRuntime::Present(state) => state,
         };
         ensure_managed(&state).map_err(|_| FAILED.to_owned())?;
@@ -178,9 +190,12 @@ pub(crate) async fn list_workspace_directory(
             &[
                 "exec".into(),
                 workspace.clone(),
-                "--user".into(), user.into(),
-                "--env".into(), format!("USER={user}"),
-                "--env".into(), format!("LOGNAME={user}"),
+                "--user".into(),
+                user.into(),
+                "--env".into(),
+                format!("USER={user}"),
+                "--env".into(),
+                format!("LOGNAME={user}"),
                 "--no-start".into(),
                 "--no-tty".into(),
                 "--quiet".into(),
@@ -287,7 +302,10 @@ mod tests {
     }
     #[test]
     fn the_guest_reports_oversized_folders_before_the_output_cap() {
-        assert_eq!(parse_listing("large\0", "/workspace").unwrap_err(), TOO_LARGE);
+        assert_eq!(
+            parse_listing("large\0", "/workspace").unwrap_err(),
+            TOO_LARGE
+        );
     }
     #[test]
     fn long_paths_cannot_expand_snapshot_memory_without_bound() {
@@ -305,17 +323,33 @@ mod tests {
             path: "/workspace".into(),
             created: Instant::now(),
             entries: (0..300)
-                .map(|i| Entry { name: format!("{name}{i}"), path: i.to_string(), kind: "file".into() })
+                .map(|i| Entry {
+                    name: format!("{name}{i}"),
+                    path: i.to_string(),
+                    kind: "file".into(),
+                })
                 .collect(),
         };
-        let cache = HashMap::from([("1".to_string(), snapshot("main")), ("2".to_string(), snapshot("status"))]);
+        let cache = HashMap::from([
+            ("1".to_string(), snapshot("main")),
+            ("2".to_string(), snapshot("status")),
+        ]);
         let main = cached_page(&cache, "dev", "/workspace", 200, Some("1")).unwrap();
         let status = cached_page(&cache, "dev", "/workspace", 200, Some("2")).unwrap();
         assert_eq!(main.entries[0].name, "main200");
         assert_eq!(status.entries[0].name, "status200");
-        assert_eq!(cached_page(&cache, "other", "/workspace", 200, Some("1")).unwrap_err(), EXPIRED);
-        assert_eq!(cached_page(&cache, "dev", "/workspace/x", 200, Some("1")).unwrap_err(), EXPIRED);
-        assert_eq!(cached_page(&cache, "dev", "/workspace", 200, None).unwrap_err(), EXPIRED);
+        assert_eq!(
+            cached_page(&cache, "other", "/workspace", 200, Some("1")).unwrap_err(),
+            EXPIRED
+        );
+        assert_eq!(
+            cached_page(&cache, "dev", "/workspace/x", 200, Some("1")).unwrap_err(),
+            EXPIRED
+        );
+        assert_eq!(
+            cached_page(&cache, "dev", "/workspace", 200, None).unwrap_err(),
+            EXPIRED
+        );
     }
     #[test]
     fn pagination_is_bounded_and_complete() {

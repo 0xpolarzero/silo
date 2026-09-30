@@ -47,7 +47,9 @@ fn events(paths: &RuntimePaths) -> Result<Vec<Event>, RuntimeError> {
         validate_name(&event.workspace).is_ok()
             && matches!(event.action.as_str(), "start" | "stop" | "restart")
     });
-    if events.len() > LIMIT { events.drain(..events.len() - LIMIT); }
+    if events.len() > LIMIT {
+        events.drain(..events.len() - LIMIT);
+    }
     Ok(events)
 }
 
@@ -56,7 +58,9 @@ static ACTIVITY_WRITES: Mutex<()> = Mutex::new(());
 fn store(paths: &RuntimePaths, event: &Event) -> Result<(), String> {
     // Shutdown stops several VMs concurrently. Keep each read-modify-write atomic
     // so one completed stop cannot erase another VM's activity entry.
-    let _write = ACTIVITY_WRITES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _write = ACTIVITY_WRITES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut entries = events(paths).map_err(|error| error.to_string())?;
     entries.retain(|old| old.id != event.id);
     entries.push(event.clone());
@@ -64,15 +68,20 @@ fn store(paths: &RuntimePaths, event: &Event) -> Result<(), String> {
         entries.remove(0);
     }
     // Detailed failures must not make the journal exceed its own read limit.
-    let sizes: Vec<usize> = entries.iter().map(|entry| serde_json::to_vec(entry).map(|bytes| bytes.len() + 1))
-        .collect::<Result<_, _>>().map_err(|_| "Sandbox activity could not be saved.")?;
+    let sizes: Vec<usize> = entries
+        .iter()
+        .map(|entry| serde_json::to_vec(entry).map(|bytes| bytes.len() + 1))
+        .collect::<Result<_, _>>()
+        .map_err(|_| "Sandbox activity could not be saved.")?;
     let mut bytes = 1 + sizes.iter().sum::<usize>();
     let mut drop_count = 0;
     while bytes > MAX_OUTPUT_BYTES as usize && drop_count + 1 < entries.len() {
         bytes -= sizes[drop_count];
         drop_count += 1;
     }
-    if bytes > MAX_OUTPUT_BYTES as usize { return Err("Sandbox activity is too large to save.".into()); }
+    if bytes > MAX_OUTPUT_BYTES as usize {
+        return Err("Sandbox activity is too large to save.".into());
+    }
     entries.drain(..drop_count);
     let target = path(paths);
     let parent = target
@@ -88,11 +97,17 @@ fn store(paths: &RuntimePaths, event: &Event) -> Result<(), String> {
         .map_err(|_| "Sandbox activity could not be saved.")?;
     file.persist(&target)
         .map_err(|_| "Sandbox activity could not be saved.")?;
-    File::open(parent).and_then(|file| file.sync_all())
+    File::open(parent)
+        .and_then(|file| file.sync_all())
         .map_err(|_| "Sandbox activity could not be synced.".to_string())
 }
 
-pub(super) fn begin(paths: &RuntimePaths, action: &str, workspace: &str, machine_id: &str) -> Result<Event, String> {
+pub(super) fn begin(
+    paths: &RuntimePaths,
+    action: &str,
+    workspace: &str,
+    machine_id: &str,
+) -> Result<Event, String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
     if !matches!(action, "start" | "stop" | "restart") {
         return Err("Unknown sandbox action.".into());
@@ -120,7 +135,11 @@ pub(super) fn matches(event: &Event, action: &str, workspace: &str) -> bool {
     event.action == action && event.workspace == workspace
 }
 
-pub(super) fn resume(paths: &RuntimePaths, event: &mut Event, machine_id: &str) -> Result<(), String> {
+pub(super) fn resume(
+    paths: &RuntimePaths,
+    event: &mut Event,
+    machine_id: &str,
+) -> Result<(), String> {
     event.machine_id = machine_id.into();
     event.process = std::process::id();
     event.completed = false;
@@ -138,7 +157,11 @@ pub(super) fn finish(
 ) -> Result<(), String> {
     event.completed = true;
     event.cancelled = matches!(result, Err(RuntimeError::Cancelled { .. }));
-    let report = result.as_ref().err().filter(|_| !event.cancelled).map(failure_report);
+    let report = result
+        .as_ref()
+        .err()
+        .filter(|_| !event.cancelled)
+        .map(failure_report);
     // The summary is the user-facing line; the runtime's explanation (filtered like
     // Logs and bounded) is kept separately for a Details disclosure.
     event.failure = report.as_ref().map(|report| report.summary.clone());
@@ -151,8 +174,10 @@ pub(super) fn finish(
 /// Retry) keeps its recorded outcome.
 pub(super) fn retire(paths: &RuntimePaths, event: &mut Event) -> Result<(), String> {
     // A saved action holds the entry as it was when saved; the journal has its outcome.
-    let journaled = events(paths).map_err(|error| error.to_string())?
-        .into_iter().find(|entry| entry.id == event.id);
+    let journaled = events(paths)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|entry| entry.id == event.id);
     if event.completed || journaled.is_some_and(|entry| entry.completed) {
         return Ok(());
     }
@@ -190,22 +215,46 @@ pub(crate) struct LifecycleFailureView {
     lifecycle_failure_diagnostic: Option<String>,
 }
 
-pub(super) fn failures(paths: &RuntimePaths) -> Result<HashMap<String, LifecycleFailureView>, RuntimeError> {
+pub(super) fn failures(
+    paths: &RuntimePaths,
+) -> Result<HashMap<String, LifecycleFailureView>, RuntimeError> {
     let mut latest = HashMap::new();
     for event in events(paths)? {
         // Legacy records remain in Activity, but cannot be attributed safely to
         // a current VM: names can be reused after deletion or restoration.
-        if !event.machine_id.is_empty() { latest.insert(event.machine_id.clone(), event); }
+        if !event.machine_id.is_empty() {
+            latest.insert(event.machine_id.clone(), event);
+        }
     }
-    Ok(latest.into_iter().filter_map(|(name, event)| {
-        let label = match event.action.as_str() { "start" => "Start", "stop" => "Stop", _ => "Restart" };
-        let (summary, diagnostic) = failure_parts(&event).filter(|_| !event.dismissed)?;
-        Some((name, LifecycleFailureView { lifecycle_failure: format!("{label} failed: {summary}"), lifecycle_failure_diagnostic: diagnostic }))
-    }).collect())
+    Ok(latest
+        .into_iter()
+        .filter_map(|(name, event)| {
+            let label = match event.action.as_str() {
+                "start" => "Start",
+                "stop" => "Stop",
+                _ => "Restart",
+            };
+            let (summary, diagnostic) = failure_parts(&event).filter(|_| !event.dismissed)?;
+            Some((
+                name,
+                LifecycleFailureView {
+                    lifecycle_failure: format!("{label} failed: {summary}"),
+                    lifecycle_failure_diagnostic: diagnostic,
+                },
+            ))
+        })
+        .collect())
 }
 
-pub(super) fn acknowledge_failure(paths: &RuntimePaths, machine_id: &str) -> Result<(), RuntimeError> {
-    if let Some(mut event) = events(paths)?.into_iter().rev().find(|event| event.machine_id == machine_id) {
+pub(super) fn acknowledge_failure(
+    paths: &RuntimePaths,
+    machine_id: &str,
+) -> Result<(), RuntimeError> {
+    if let Some(mut event) = events(paths)?
+        .into_iter()
+        .rev()
+        .find(|event| event.machine_id == machine_id)
+    {
         event.dismissed = true;
         store(paths, &event).map_err(RuntimeError::Unavailable)?;
     }
@@ -274,8 +323,13 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
 pub(super) fn strip_ansi(text: &str) -> String {
     fn skip_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) {
         while let Some(ch) = chars.next() {
-            if ch == '\u{7}' || ch == '\u{9c}' { break; }
-            if ch == '\u{1b}' && chars.peek() == Some(&'\\') { chars.next(); break; }
+            if ch == '\u{7}' || ch == '\u{9c}' {
+                break;
+            }
+            if ch == '\u{1b}' && chars.peek() == Some(&'\\') {
+                chars.next();
+                break;
+            }
         }
     }
     let mut chars = text.chars().peekable();
@@ -294,7 +348,13 @@ pub(super) fn strip_ansi(text: &str) -> String {
             ch => ch,
         };
         match introducer {
-            '\u{9b}' => { for ch in chars.by_ref() { if ('@'..='~').contains(&ch) { break; } } }
+            '\u{9b}' => {
+                for ch in chars.by_ref() {
+                    if ('@'..='~').contains(&ch) {
+                        break;
+                    }
+                }
+            }
             '\u{9d}' | '\u{90}' | '\u{98}' | '\u{9e}' | '\u{9f}' => skip_string(&mut chars),
             '\t' | '\n' => clean.push(introducer),
             ch if ch.is_control() => {}
@@ -308,38 +368,49 @@ pub(super) fn strip_ansi(text: &str) -> String {
 /// `credential` followed by optional word characters and quotes, then `:` or
 /// `=` (for example `AWS_SECRET_ACCESS_KEY=`, `api_key =`, `"password": `).
 fn sensitive_assignment(lower: &str) -> bool {
-    ["secret", "token", "key", "passw", "credential"].iter().any(|word| {
-        lower.match_indices(word).any(|(at, _)| {
-            let rest = lower[at + word.len()..].trim_start_matches(|ch: char| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-');
-            let rest = rest.trim_start_matches(['"', '\'']).trim_start();
-            rest.starts_with(':') || rest.starts_with('=')
+    ["secret", "token", "key", "passw", "credential"]
+        .iter()
+        .any(|word| {
+            lower.match_indices(word).any(|(at, _)| {
+                let rest = lower[at + word.len()..].trim_start_matches(|ch: char| {
+                    ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'
+                });
+                let rest = rest.trim_start_matches(['"', '\'']).trim_start();
+                rest.starts_with(':') || rest.starts_with('=')
+            })
         })
-    })
 }
 
 pub(super) fn log_text(body: &str) -> String {
     let mut in_pem = false;
-    strip_ansi(body).lines()
+    strip_ansi(body)
+        .lines()
         .map(|line| {
             let lower = line.to_ascii_lowercase();
             // Hide whole PEM blocks, not only their BEGIN line.
-            if lower.contains("-----begin") { in_pem = true; }
+            if lower.contains("-----begin") {
+                in_pem = true;
+            }
             let pem = in_pem;
-            if lower.contains("-----end") { in_pem = false; }
-            if pem || sensitive_assignment(&lower) || [
-                "authorization",
-                "bearer ",
-                "ghp_",
-                "ghs_",
-                "ghu_",
-                "ghr_",
-                "github_pat_",
-                "private key",
-                "environment:",
-                "\"env\"",
-            ]
-            .iter()
-            .any(|marker| lower.contains(marker))
+            if lower.contains("-----end") {
+                in_pem = false;
+            }
+            if pem
+                || sensitive_assignment(&lower)
+                || [
+                    "authorization",
+                    "bearer ",
+                    "ghp_",
+                    "ghs_",
+                    "ghu_",
+                    "ghr_",
+                    "github_pat_",
+                    "private key",
+                    "environment:",
+                    "\"env\"",
+                ]
+                .iter()
+                .any(|marker| lower.contains(marker))
             {
                 "[Sensitive runtime output hidden]".into()
             } else {
@@ -355,8 +426,19 @@ mod tests {
     use super::*;
     #[test]
     fn log_text_hides_common_secret_assignments_and_pem_blocks() {
-        for line in ["AWS_SECRET_ACCESS_KEY=abc", "api_key = abc", "Password: hunter2", "PASSWORD =x", "\"client_secret\": \"abc\"", "export GH_TOKEN=abc"] {
-            assert_eq!(log_text(line), "[Sensitive runtime output hidden]", "{line}");
+        for line in [
+            "AWS_SECRET_ACCESS_KEY=abc",
+            "api_key = abc",
+            "Password: hunter2",
+            "PASSWORD =x",
+            "\"client_secret\": \"abc\"",
+            "export GH_TOKEN=abc",
+        ] {
+            assert_eq!(
+                log_text(line),
+                "[Sensitive runtime output hidden]",
+                "{line}"
+            );
         }
         let pem = "before\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk\n-----END OPENSSH PRIVATE KEY-----\nafter";
         let text = log_text(pem);
@@ -370,14 +452,24 @@ mod tests {
         assert_eq!(strip_ansi("a\u{9b}31mb"), "ab");
         assert_eq!(strip_ansi("a\u{1b}P1;2|payload\u{1b}\\b"), "ab");
         assert_eq!(strip_ansi("a\u{1b}_apc\u{9c}b\u{1b}]0;title\u{7}c"), "abc");
-        assert_eq!(strip_ansi("safe\rhidden\u{8}\u{8}x\tt\nn"), "safehiddenx\tt\nn");
+        assert_eq!(
+            strip_ansi("safe\rhidden\u{8}\u{8}x\tt\nn"),
+            "safehiddenx\tt\nn"
+        );
     }
     #[test]
     fn cancelled_action_is_persisted_as_cancelled_not_failed() {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
-        finish(&paths, &mut event, &Err(RuntimeError::Cancelled { operation: "start dev".into() })).unwrap();
+        finish(
+            &paths,
+            &mut event,
+            &Err(RuntimeError::Cancelled {
+                operation: "start dev".into(),
+            }),
+        )
+        .unwrap();
         assert!(failures(&paths).unwrap().is_empty());
         let entry = &read(&paths).unwrap()[0];
         assert_eq!(entry["title"], "Start cancelled");
@@ -391,12 +483,17 @@ mod tests {
         let paths = super::super::tests::paths(&dir);
         let mut first = begin(&paths, "start", "dev", "vm-1").unwrap();
         finish(&paths, &mut first, &Ok(())).unwrap();
-        let mut entries: Vec<Value> = serde_json::from_slice(&fs::read(path(&paths)).unwrap()).unwrap();
+        let mut entries: Vec<Value> =
+            serde_json::from_slice(&fs::read(path(&paths)).unwrap()).unwrap();
         let mut unknown = entries[0].clone();
         unknown["action"] = "hibernate".into();
         unknown["id"] = "future".into();
         entries.push(unknown);
-        while entries.len() <= LIMIT + 5 { let mut copy = entries[0].clone(); copy["id"] = format!("old-{}", entries.len()).into(); entries.push(copy); }
+        while entries.len() <= LIMIT + 5 {
+            let mut copy = entries[0].clone();
+            copy["id"] = format!("old-{}", entries.len()).into();
+            entries.push(copy);
+        }
         fs::write(path(&paths), serde_json::to_vec(&entries).unwrap()).unwrap();
         let mut next = begin(&paths, "stop", "dev", "vm-1").unwrap();
         finish(&paths, &mut next, &Ok(())).unwrap();
@@ -425,13 +522,21 @@ mod tests {
         assert!(!diagnostic.contains("private-value"));
         assert!(!diagnostic.contains('\u{1b}'));
         let failure = serde_json::to_value(&failures(&paths).unwrap()["vm-1"]).unwrap();
-        assert_eq!(failure["lifecycleFailure"], format!("Start failed: {detail}"));
-        assert!(failure["lifecycleFailureDiagnostic"].as_str().unwrap().contains("different Team IDs"));
+        assert_eq!(
+            failure["lifecycleFailure"],
+            format!("Start failed: {detail}")
+        );
+        assert!(failure["lifecycleFailureDiagnostic"]
+            .as_str()
+            .unwrap()
+            .contains("different Team IDs"));
         assert!(!failures(&paths).unwrap().contains_key("replacement-vm"));
         let mut retry = begin(&paths, "start", "dev", "vm-1").unwrap();
         finish(&paths, &mut retry, &Ok(())).unwrap();
         assert!(!failures(&paths).unwrap().contains_key("vm-1"));
-        assert!(read(&paths).unwrap().iter().any(|entry| entry["diagnostic"].as_str().is_some_and(|text| text.contains("different Team IDs"))));
+        assert!(read(&paths).unwrap().iter().any(|entry| entry["diagnostic"]
+            .as_str()
+            .is_some_and(|text| text.contains("different Team IDs"))));
     }
 
     #[test]
@@ -443,7 +548,10 @@ mod tests {
         event.failure = Some("Stopping the sandbox (exit code 2): The runtime did not complete the operation.\nruntime said no".into());
         store(&paths, &event).unwrap();
         let failure = serde_json::to_value(&failures(&paths).unwrap()["vm-1"]).unwrap();
-        assert_eq!(failure["lifecycleFailure"], "Stop failed: The sandbox action did not finish. Check its state and retry.");
+        assert_eq!(
+            failure["lifecycleFailure"],
+            "Stop failed: The sandbox action did not finish. Check its state and retry."
+        );
         let diagnostic = failure["lifecycleFailureDiagnostic"].as_str().unwrap();
         assert!(diagnostic.contains("exit code 2") && diagnostic.contains("runtime said no"));
         assert_eq!(read(&paths).unwrap()[0]["diagnostic"], diagnostic);
@@ -489,7 +597,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
-        finish(&paths, &mut event, &Err(RuntimeError::Invalid("Boot failed".into()))).unwrap();
+        finish(
+            &paths,
+            &mut event,
+            &Err(RuntimeError::Invalid("Boot failed".into())),
+        )
+        .unwrap();
         acknowledge_failure(&paths, "replacement-vm").unwrap();
         assert!(failures(&paths).unwrap().contains_key("vm-1"));
         acknowledge_failure(&paths, "vm-1").unwrap();
@@ -504,15 +617,32 @@ mod tests {
         let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
         event.completed = true;
         event.failure = Some("failure detail ".repeat(500));
-        let entries: Vec<_> = (0..133).map(|index| { let mut entry = event.clone(); entry.id = index.to_string(); entry }).collect();
+        let entries: Vec<_> = (0..133)
+            .map(|index| {
+                let mut entry = event.clone();
+                entry.id = index.to_string();
+                entry
+            })
+            .collect();
         fs::write(path(&paths), serde_json::to_vec(&entries).unwrap()).unwrap();
-        finish(&paths, &mut event, &Err(RuntimeError::Failed {
-            operation: "Starting the sandbox".into(), exit_code: Some(1), detail: "💥".repeat(20_000),
-        })).unwrap();
+        finish(
+            &paths,
+            &mut event,
+            &Err(RuntimeError::Failed {
+                operation: "Starting the sandbox".into(),
+                exit_code: Some(1),
+                detail: "💥".repeat(20_000),
+            }),
+        )
+        .unwrap();
         assert!(fs::metadata(path(&paths)).unwrap().len() <= MAX_OUTPUT_BYTES);
         assert!(events(&paths).unwrap().len() < 134);
         let stored = events(&paths).unwrap().last().unwrap().clone();
         assert!(!stored.failure.as_ref().unwrap().contains('💥'));
-        assert!(stored.diagnostic.as_ref().unwrap().ends_with("[Diagnostic truncated]"));
+        assert!(stored
+            .diagnostic
+            .as_ref()
+            .unwrap()
+            .ends_with("[Diagnostic truncated]"));
     }
 }

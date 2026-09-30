@@ -170,7 +170,10 @@ fn dpkg_running(proc: &std::path::Path) -> bool {
         return false;
     };
     entries.flatten().any(|entry| {
-        entry.file_name().to_str().is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
+        entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.bytes().all(|byte| byte.is_ascii_digit()))
             && std::fs::read_to_string(entry.path().join("comm"))
                 .is_ok_and(|comm| comm.trim_end() == "dpkg")
     })
@@ -206,10 +209,22 @@ mod tests {
         let recent = Some(std::time::Duration::from_secs(60));
         let stale = Some(std::time::Duration::from_secs(2 * 60 * 60));
         assert!(package_update_notice(recent, true).contains("being updated"));
-        for (age, dpkg) in [(recent, false), (stale, true), (stale, false), (None, true), (None, false)] {
+        for (age, dpkg) in [
+            (recent, false),
+            (stale, true),
+            (stale, false),
+            (None, true),
+            (None, false),
+        ] {
             let notice = package_update_notice(age, dpkg);
-            assert!(notice.contains("sudo dpkg --configure -a"), "{age:?} {dpkg}");
-            assert!(!notice.contains('%'), "GTK dialogs must not see format directives");
+            assert!(
+                notice.contains("sudo dpkg --configure -a"),
+                "{age:?} {dpkg}"
+            );
+            assert!(
+                !notice.contains('%'),
+                "GTK dialogs must not see format directives"
+            );
         }
     }
 
@@ -218,7 +233,10 @@ mod tests {
         let config: serde_json::Value =
             serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         assert_eq!(config["productName"], NOTIFICATION_DESKTOP_ENTRY);
-        assert!(config["mainBinaryName"].is_null(), "the icon is named after the Cargo binary");
+        assert!(
+            config["mainBinaryName"].is_null(),
+            "the icon is named after the Cargo binary"
+        );
         assert_eq!(NOTIFICATION_ICON, "silo-ui");
     }
 

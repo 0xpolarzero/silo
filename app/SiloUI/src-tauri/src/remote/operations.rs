@@ -30,8 +30,10 @@ const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
 pub(super) const EXPIRED: &str = "This change did not start on the other computer before the request expired, so nothing changed. Try again.";
 pub(super) const REUSED: &str = "Remote request identity was reused for a different operation.";
 const UNCERTAIN: &str = "This operation was already accepted. Its result is uncertain; refresh the VM state before making another change.";
-const ALREADY_FINISHED: &str = "This change already finished on the other computer. Refresh to see its result.";
-const STILL_RUNNING: &str = "This change is still running on the other computer. Refresh to see its result.";
+const ALREADY_FINISHED: &str =
+    "This change already finished on the other computer. Refresh to see its result.";
+const STILL_RUNNING: &str =
+    "This change is still running on the other computer. Refresh to see its result.";
 
 /// Whether something is still true right now, such as a connection being open.
 pub(super) type Probe = Arc<dyn Fn() -> bool + Send + Sync>;
@@ -133,7 +135,9 @@ impl Registry {
             if operation.fingerprint != fingerprint {
                 return Err(REUSED.into());
             }
-            operation.connections.push((connection, submission.connection.clone()));
+            operation
+                .connections
+                .push((connection, submission.connection.clone()));
             operation.connected_at = now;
             return Ok(Role::Attach(connection));
         }
@@ -209,7 +213,11 @@ impl Registry {
     }
 
     fn finish(&self, submission: &Submission<'_>, marker: &Path, status: Status) {
-        let label = if matches!(status, Status::Expired) { "expired" } else { "finished" };
+        let label = if matches!(status, Status::Expired) {
+            "expired"
+        } else {
+            "finished"
+        };
         let mut state = self.lock();
         if let Some(operation) = state.operations.get_mut(submission.id) {
             operation.status = status;
@@ -224,7 +232,12 @@ impl Registry {
     }
 
     /// A retry waits for the change it names, while its own connection stays open.
-    fn attach(&self, id: &str, connection: u64, submission: &Submission<'_>) -> Result<Value, BridgeError> {
+    fn attach(
+        &self,
+        id: &str,
+        connection: u64,
+        submission: &Submission<'_>,
+    ) -> Result<Value, BridgeError> {
         let until = Instant::now() + submission.wait;
         let mut state = self.lock();
         let outcome = loop {
@@ -246,7 +259,9 @@ impl Registry {
                 .0;
         };
         if let Some(operation) = state.operations.get_mut(id) {
-            operation.connections.retain(|(other, _)| *other != connection);
+            operation
+                .connections
+                .retain(|(other, _)| *other != connection);
         }
         outcome
     }
@@ -271,7 +286,10 @@ impl State {
                 self.operations.remove(id);
             }
         }
-        if self.pruned_at.is_none_or(|at| now.duration_since(at) >= PRUNE_INTERVAL) {
+        if self
+            .pruned_at
+            .is_none_or(|at| now.duration_since(at) >= PRUNE_INTERVAL)
+        {
             self.pruned_at = Some(now);
             prune_markers(journal, SystemTime::now());
         }
@@ -380,12 +398,21 @@ mod tests {
         }
     }
     fn waiting_for(vm: &str) -> bool {
-        OPERATIONS.snapshot().waiting.iter().any(|entry| entry.vm_id.as_deref() == Some(vm))
+        OPERATIONS
+            .snapshot()
+            .waiting
+            .iter()
+            .any(|entry| entry.vm_id.as_deref() == Some(vm))
     }
     /// Runs like a remote change: takes the VM's gate on this thread, then works.
-    fn change_on(vm: String, runs: &'static AtomicUsize) -> impl FnOnce() -> Result<Value, BridgeError> {
+    fn change_on(
+        vm: String,
+        runs: &'static AtomicUsize,
+    ) -> impl FnOnce() -> Result<Value, BridgeError> {
         move || {
-            let _guard = OPERATIONS.vm(&vm, "vm", "Remote change").map_err(|e| e.to_string())?;
+            let _guard = OPERATIONS
+                .vm(&vm, "vm", "Remote change")
+                .map_err(|e| e.to_string())?;
             runs.fetch_add(1, Ordering::SeqCst);
             Ok(json!({"vm": vm}))
         }
@@ -404,7 +431,9 @@ mod tests {
                 let entered = entered.clone();
                 scope.spawn(move || {
                     registry.submit(fixture.submission(always(), always()), || {
-                        let _guard = OPERATIONS.vm(&fixture.vm(), "vm", "Remote change").map_err(|e| e.to_string())?;
+                        let _guard = OPERATIONS
+                            .vm(&fixture.vm(), "vm", "Remote change")
+                            .map_err(|e| e.to_string())?;
                         // Both changes hold their VM's turn at once, or this never returns.
                         entered.wait();
                         Ok(json!(fixture.vm()))
@@ -430,7 +459,9 @@ mod tests {
             let order_first = order.clone();
             let running = scope.spawn(move || {
                 registry.submit(first.submission(always(), always()), move || {
-                    let _guard = OPERATIONS.vm(vm, "vm", "First").map_err(|e| e.to_string())?;
+                    let _guard = OPERATIONS
+                        .vm(vm, "vm", "First")
+                        .map_err(|e| e.to_string())?;
                     order_first.lock().unwrap().push("first started");
                     hold.recv().unwrap();
                     order_first.lock().unwrap().push("first finished");
@@ -441,7 +472,9 @@ mod tests {
             let order_second = order.clone();
             let queued = scope.spawn(move || {
                 registry.submit(second.submission(always(), always()), move || {
-                    let _guard = OPERATIONS.vm(vm, "vm", "Second").map_err(|e| e.to_string())?;
+                    let _guard = OPERATIONS
+                        .vm(vm, "vm", "Second")
+                        .map_err(|e| e.to_string())?;
                     order_second.lock().unwrap().push("second started");
                     Ok(Value::Null)
                 })
@@ -451,7 +484,10 @@ mod tests {
             running.join().unwrap().unwrap();
             queued.join().unwrap().unwrap();
         });
-        assert_eq!(*order.lock().unwrap(), ["first started", "first finished", "second started"]);
+        assert_eq!(
+            *order.lock().unwrap(),
+            ["first started", "first finished", "second started"]
+        );
     }
 
     #[test]
@@ -480,7 +516,13 @@ mod tests {
         busy.0.join().unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 0);
         // A retry learns the change expired instead of running it.
-        assert_eq!(registry.submit(fixture.submission(always(), always()), change_on(fixture.vm(), runs)), Err(EXPIRED.into()));
+        assert_eq!(
+            registry.submit(
+                fixture.submission(always(), always()),
+                change_on(fixture.vm(), runs)
+            ),
+            Err(EXPIRED.into())
+        );
         assert_eq!(runs.load(Ordering::SeqCst), 0);
     }
 
@@ -505,16 +547,31 @@ mod tests {
             let runs = counter();
             let started = Instant::now();
             let result = thread::scope(|scope| {
-                let queued = scope.spawn(|| registry.submit(fixture.submission(connection, allowed), change_on(fixture.vm(), runs)));
+                let queued = scope.spawn(|| {
+                    registry.submit(
+                        fixture.submission(connection, allowed),
+                        change_on(fixture.vm(), runs),
+                    )
+                });
                 wait_for(|| waiting_for(&fixture.vm()));
-                if revoke_access { enabled.store(false, Ordering::SeqCst) } else { open.store(false, Ordering::SeqCst) }
+                if revoke_access {
+                    enabled.store(false, Ordering::SeqCst)
+                } else {
+                    open.store(false, Ordering::SeqCst)
+                }
                 queued.join().unwrap()
             });
             assert_eq!(result, Err(EXPIRED.into()));
             if revoke_access {
-                assert!(started.elapsed() < Duration::from_millis(300), "revoked access stops a change at once");
+                assert!(
+                    started.elapsed() < Duration::from_millis(300),
+                    "revoked access stops a change at once"
+                );
             } else {
-                assert!(started.elapsed() >= Duration::from_millis(300), "a dropped connection has time to reconnect");
+                assert!(
+                    started.elapsed() >= Duration::from_millis(300),
+                    "a dropped connection has time to reconnect"
+                );
             }
             release.0.send(()).unwrap();
             busy.join().unwrap();
@@ -540,11 +597,20 @@ mod tests {
         let runs = counter();
         let (first_open, first_connection) = flag(true);
         let (first, retry) = thread::scope(|scope| {
-            let first = scope.spawn(|| registry.submit(fixture.submission(first_connection, always()), change_on(fixture.vm(), runs)));
+            let first = scope.spawn(|| {
+                registry.submit(
+                    fixture.submission(first_connection, always()),
+                    change_on(fixture.vm(), runs),
+                )
+            });
             wait_for(|| waiting_for(&fixture.vm()));
             // The first connection is lost; the controller retries with the same identity.
             first_open.store(false, Ordering::SeqCst);
-            let retry = scope.spawn(|| registry.submit(fixture.submission(always(), always()), || panic!("a retry must not run the change again")));
+            let retry = scope.spawn(|| {
+                registry.submit(fixture.submission(always(), always()), || {
+                    panic!("a retry must not run the change again")
+                })
+            });
             thread::sleep(Duration::from_millis(100));
             release.0.send(()).unwrap();
             (first.join().unwrap(), retry.join().unwrap())
@@ -554,27 +620,62 @@ mod tests {
         assert_eq!(first, Ok(json!({"vm": fixture.vm()})));
         assert_eq!(retry, first);
         // A later retry is answered from the kept result.
-        assert_eq!(registry.submit(fixture.submission(always(), always()), || panic!("must not replay")), first);
+        assert_eq!(
+            registry.submit(fixture.submission(always(), always()), || panic!(
+                "must not replay"
+            )),
+            first
+        );
     }
 
     #[test]
     fn identities_are_bound_to_one_change_and_survive_a_restart_without_replaying() {
         let fixture = Fixture::new();
         let registry = registry();
-        registry.submit(fixture.submission(always(), always()), || Ok(json!(1))).unwrap();
+        registry
+            .submit(fixture.submission(always(), always()), || Ok(json!(1)))
+            .unwrap();
         let mut other = fixture.submission(always(), always());
         let changed = json!({"vmId": "other"});
         other.params = &changed;
-        assert_eq!(registry.submit(other, || panic!("must not run")), Err(REUSED.into()));
+        assert_eq!(
+            registry.submit(other, || panic!("must not run")),
+            Err(REUSED.into())
+        );
         // After a restart only the marker is left: the change is not run again.
         let restarted = self::registry();
-        assert_eq!(restarted.submit(fixture.submission(always(), always()), || panic!("must not replay")), Err(ALREADY_FINISHED.into()));
+        assert_eq!(
+            restarted.submit(fixture.submission(always(), always()), || panic!(
+                "must not replay"
+            )),
+            Err(ALREADY_FINISHED.into())
+        );
         let interrupted = Fixture::new();
-        write_marker(interrupted.journal.path(), &interrupted.journal.path().join(format!("{}.json", interrupted.id)), "runtime.action", "accepted").unwrap();
-        assert_eq!(restarted.submit(interrupted.submission(always(), always()), || panic!("must not replay")), Err(UNCERTAIN.into()));
+        write_marker(
+            interrupted.journal.path(),
+            &interrupted
+                .journal
+                .path()
+                .join(format!("{}.json", interrupted.id)),
+            "runtime.action",
+            "accepted",
+        )
+        .unwrap();
+        assert_eq!(
+            restarted.submit(interrupted.submission(always(), always()), || panic!(
+                "must not replay"
+            )),
+            Err(UNCERTAIN.into())
+        );
         // Markers hold no parameters or results.
-        let marker: Value = serde_json::from_slice(&fs::read(fixture.journal.path().join(format!("{}.json", fixture.id))).unwrap()).unwrap();
-        assert_eq!(marker, json!({"method": "runtime.action", "status": "finished"}));
+        let marker: Value = serde_json::from_slice(
+            &fs::read(fixture.journal.path().join(format!("{}.json", fixture.id))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            marker,
+            json!({"method": "runtime.action", "status": "finished"})
+        );
     }
 
     #[test]
@@ -582,9 +683,16 @@ mod tests {
         let journal = tempfile::tempdir().unwrap();
         let old = journal.path().join("old.json");
         let fresh = journal.path().join("fresh.json");
-        fs::write(&old, br#"{"request":{"params":{"secret":"x"}},"result":{"Ok":{}}}"#).unwrap();
+        fs::write(
+            &old,
+            br#"{"request":{"params":{"secret":"x"}},"result":{"Ok":{}}}"#,
+        )
+        .unwrap();
         fs::write(&fresh, b"{}").unwrap();
-        prune_markers(journal.path(), SystemTime::now() + RETENTION + Duration::from_secs(1));
+        prune_markers(
+            journal.path(),
+            SystemTime::now() + RETENTION + Duration::from_secs(1),
+        );
         assert!(!old.exists() && !fresh.exists());
         fs::write(&old, b"{}").unwrap();
         prune_markers(journal.path(), SystemTime::now());

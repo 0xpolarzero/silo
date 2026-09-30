@@ -5,9 +5,7 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::{
-        Condvar, Mutex, MutexGuard,
-    },
+    sync::{Condvar, Mutex, MutexGuard},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
@@ -326,9 +324,15 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
         Some("ssh") => &["id", "kind", "name", "host", "user", "port"][..],
         _ => return false,
     };
-    let optional = if machine["kind"] == "vm" { &["desktop"][..] } else { &[][..] };
+    let optional = if machine["kind"] == "vm" {
+        &["desktop"][..]
+    } else {
+        &[][..]
+    };
     if !only_fields(machine, fields, optional)
-        || machine.get("desktop").is_some_and(|desktop| serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone()).is_err())
+        || machine.get("desktop").is_some_and(|desktop| {
+            serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone()).is_err()
+        })
         || !valid_uuid(&machine["id"])
         || !(if unfinished {
             machine["name"].is_string()
@@ -339,21 +343,31 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
         return false;
     }
     if machine["kind"] == "vm" {
-        return ["cpus", "maxCPUs", "memoryGiB", "maxMemoryGiB", "workspaceStorageGiB", "runtimeStorageGiB"]
-            .iter()
-            .all(|key| {
-                if unfinished {
-                    machine[*key].as_f64().is_some_and(f64::is_finite)
-                } else {
-                    machine[*key].as_u64().is_some_and(|value| (1..=u64::from(u32::MAX)).contains(&value))
-                }
-            })
-            && (unfinished
-                || (machine["cpus"].as_u64() <= machine["maxCPUs"].as_u64()
-                    && machine["memoryGiB"].as_u64() <= machine["maxMemoryGiB"].as_u64()
-                    && machine["workspaceStorageGiB"].as_u64().unwrap_or(u64::MAX)
-                        .checked_add(machine["runtimeStorageGiB"].as_u64().unwrap_or(u64::MAX))
-                        .is_some_and(|total| total <= u64::from(u32::MAX) / 1024)));
+        return [
+            "cpus",
+            "maxCPUs",
+            "memoryGiB",
+            "maxMemoryGiB",
+            "workspaceStorageGiB",
+            "runtimeStorageGiB",
+        ]
+        .iter()
+        .all(|key| {
+            if unfinished {
+                machine[*key].as_f64().is_some_and(f64::is_finite)
+            } else {
+                machine[*key]
+                    .as_u64()
+                    .is_some_and(|value| (1..=u64::from(u32::MAX)).contains(&value))
+            }
+        }) && (unfinished
+            || (machine["cpus"].as_u64() <= machine["maxCPUs"].as_u64()
+                && machine["memoryGiB"].as_u64() <= machine["maxMemoryGiB"].as_u64()
+                && machine["workspaceStorageGiB"]
+                    .as_u64()
+                    .unwrap_or(u64::MAX)
+                    .checked_add(machine["runtimeStorageGiB"].as_u64().unwrap_or(u64::MAX))
+                    .is_some_and(|total| total <= u64::from(u32::MAX) / 1024)));
     }
 
     if unfinished {
@@ -550,21 +564,30 @@ impl ShutdownState {
     const FLUSHING: u8 = 4;
 
     #[cfg(test)]
-    fn request(&self) -> bool { self.request_generation().is_some() }
+    fn request(&self) -> bool {
+        self.request_generation().is_some()
+    }
     fn request_generation(&self) -> Option<u64> {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        if state.phase != 0 { return None; }
+        if state.phase != 0 {
+            return None;
+        }
         state.phase = Self::REQUESTED;
         state.generation += 1;
         Some(state.generation)
     }
     #[cfg(test)]
     fn generation(&self) -> u64 {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).generation
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .generation
     }
     fn begin_flush(&self) -> bool {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        if state.phase != Self::REQUESTED { return false; }
+        if state.phase != Self::REQUESTED {
+            return false;
+        }
         state.phase = Self::FLUSHING;
         true
     }
@@ -581,15 +604,25 @@ impl ShutdownState {
             state.phase == Self::REQUESTED
                 || (state.session_deadline.is_some() && state.phase == Self::FLUSHING)
         };
-        if !allowed || generation.is_some_and(|generation| generation != state.generation) { return false; }
+        if !allowed || generation.is_some_and(|generation| generation != state.generation) {
+            return false;
+        }
         state.phase = Self::FINISHING;
         true
     }
     fn active(&self) -> bool {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).phase != 0
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .phase
+            != 0
     }
     fn approved(&self) -> bool {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).phase == Self::APPROVED
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .phase
+            == Self::APPROVED
     }
     fn cancel(&self) {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
@@ -599,19 +632,35 @@ impl ShutdownState {
     /// Keep the earliest deadline when the session end is reported twice.
     fn begin_session_end(&self, deadline: Instant) {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        state.session_deadline = Some(state.session_deadline.map_or(deadline, |current| current.min(deadline)));
+        state.session_deadline = Some(
+            state
+                .session_deadline
+                .map_or(deadline, |current| current.min(deadline)),
+        );
     }
     fn session_deadline(&self) -> Option<Instant> {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).session_deadline
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .session_deadline
     }
     fn allow_exit(&self) {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).phase = Self::APPROVED;
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .phase = Self::APPROVED;
     }
     fn mark_restart(&self) {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).restarting = true;
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .restarting = true;
     }
     fn restarting(&self) -> bool {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).restarting
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .restarting
     }
 }
 
@@ -772,11 +821,16 @@ pub async fn flush_settings(app: AppHandle, window: WebviewWindow) -> Result<(),
     let result = flushed.clone();
     change(app, move |store| {
         store.snapshot.revision += 1;
-        *result.lock().map_err(|_| "Settings storage is unavailable.")? = store.flush();
+        *result
+            .lock()
+            .map_err(|_| "Settings storage is unavailable.")? = store.flush();
         Ok(store.snapshot())
     })
     .await?;
-    let result = flushed.lock().map_err(|_| "Settings storage is unavailable.")?.clone();
+    let result = flushed
+        .lock()
+        .map_err(|_| "Settings storage is unavailable.")?
+        .clone();
     result
 }
 
@@ -824,7 +878,10 @@ fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64
         eprintln!("Silo is exiting because the session ended: {error}");
     }
     // The frontend has drained its invoke queue. Wait for any native write already in progress.
-    let saved = app.state::<SettingsState>().store.lock()
+    let saved = app
+        .state::<SettingsState>()
+        .store
+        .lock()
         .map_err(|_| "Settings storage is unavailable.".to_string())
         .and_then(|mut initialized| match initialized.as_mut() {
             Some(current) => current.store.flush(),
@@ -875,7 +932,9 @@ pub fn prevent_exit_until_saved(app: &AppHandle, api: &tauri::ExitRequestApi, co
 fn begin_exit(app: &AppHandle) {
     let state = app.state::<ShutdownState>();
     crate::startup::cancel(app);
-    let Some(generation) = state.request_generation() else { return; };
+    let Some(generation) = state.request_generation() else {
+        return;
+    };
     crate::runtime::shutdown::begin();
     let _ = app.emit("silo://shutdown-state-changed", true);
     if app.get_webview_window("main").is_some() {
@@ -925,13 +984,16 @@ pub(crate) fn end_session(app: &AppHandle, budget: Duration) {
 /// Whether AppKit should wait for Silo's Quit path instead of terminating now.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub(crate) fn accepts_terminate_request(app: &AppHandle) -> bool {
-    app.try_state::<ShutdownState>().is_some_and(|state| !state.approved())
+    app.try_state::<ShutdownState>()
+        .is_some_and(|state| !state.approved())
 }
 
 /// `RunEvent::Exit` without the graceful path (for example AppKit terminated
 /// Silo without asking): stop local VMs within a bound before the process ends.
 pub(crate) fn exit_backstop(app: &AppHandle) {
-    let Some(state) = app.try_state::<ShutdownState>() else { return };
+    let Some(state) = app.try_state::<ShutdownState>() else {
+        return;
+    };
     if state.approved() || state.restarting() {
         return;
     }
@@ -953,7 +1015,11 @@ pub fn read_shutdown_state(app: AppHandle) -> bool {
 #[derive(Default)]
 struct QuitConfirmation(Mutex<QuitRequests>);
 #[derive(Default)]
-struct QuitRequests { enabled: bool, pending: Option<u64>, next: u64 }
+struct QuitRequests {
+    enabled: bool,
+    pending: Option<u64>,
+    next: u64,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -965,7 +1031,10 @@ struct QuitRequest {
 
 impl QuitConfirmation {
     fn enabled(&self) -> bool {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).enabled
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .enabled
     }
     /// `None` exits now: nothing runs, or no UI can answer.
     fn ask(&self, running: Result<Vec<String>, String>) -> Option<QuitRequest> {
@@ -989,11 +1058,17 @@ impl QuitConfirmation {
                 state.next
             }
         };
-        Some(QuitRequest { request_id, sandboxes })
+        Some(QuitRequest {
+            request_id,
+            sandboxes,
+        })
     }
     /// The session is ending: the open prompt no longer applies.
     fn close(&self) {
-        self.0.lock().unwrap_or_else(|error| error.into_inner()).pending = None;
+        self.0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .pending = None;
     }
     /// Returns whether Silo should exit.
     fn answer(&self, request_id: u64, confirmed: bool) -> Result<bool, String> {
@@ -1029,7 +1104,10 @@ pub(crate) fn request_quit(app: &AppHandle) {
             let _ = window.unminimize();
             let _ = window.set_focus();
         }
-        if app.emit_to("main", "silo://quit-requested", &request).is_err() {
+        if app
+            .emit_to("main", "silo://quit-requested", &request)
+            .is_err()
+        {
             let _ = confirmation.answer(request.request_id, true);
             app.exit(0);
         }
@@ -1039,7 +1117,11 @@ pub(crate) fn request_quit(app: &AppHandle) {
 #[tauri::command]
 pub fn enable_quit_confirmation(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
     require_main(window.label())?;
-    app.state::<QuitConfirmation>().0.lock().unwrap_or_else(|error| error.into_inner()).enabled = true;
+    app.state::<QuitConfirmation>()
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .enabled = true;
     Ok(())
 }
 
@@ -1051,7 +1133,10 @@ pub fn answer_quit_request(
     confirmed: bool,
 ) -> Result<(), String> {
     require_main(window.label())?;
-    if app.state::<QuitConfirmation>().answer(request_id, confirmed)? {
+    if app
+        .state::<QuitConfirmation>()
+        .answer(request_id, confirmed)?
+    {
         app.exit(0);
     } else {
         crate::system_shutdown::cancel(&app);
@@ -1108,18 +1193,18 @@ mod tests {
             ("light", Some(tauri::Theme::Light)),
             ("system", None),
         ] {
-            let snapshot = store.update(
-                json!({"theme": preference}).as_object().unwrap().clone(),
-            ).unwrap();
+            let snapshot = store
+                .update(json!({"theme": preference}).as_object().unwrap().clone())
+                .unwrap();
             assert_eq!(snapshot.native_theme(), native);
 
             // Reopening the app must use the saved appearance. Updating an
             // unrelated preference must not reset that appearance.
             store = SettingsStore::load(Some(path.clone()));
             assert_eq!(store.snapshot().native_theme(), native);
-            let snapshot = store.update(
-                json!({"reduceMotion": true}).as_object().unwrap().clone(),
-            ).unwrap();
+            let snapshot = store
+                .update(json!({"reduceMotion": true}).as_object().unwrap().clone())
+                .unwrap();
             assert_eq!(snapshot.native_theme(), native);
         }
     }
@@ -1131,8 +1216,13 @@ mod tests {
             store.import_theme("light".into()).unwrap().native_theme(),
             Some(tauri::Theme::Light),
         );
-        store.update(json!({"theme": "system"}).as_object().unwrap().clone()).unwrap();
-        assert_eq!(store.import_theme("dark".into()).unwrap().native_theme(), None);
+        store
+            .update(json!({"theme": "system"}).as_object().unwrap().clone())
+            .unwrap();
+        assert_eq!(
+            store.import_theme("dark".into()).unwrap().native_theme(),
+            None
+        );
     }
 
     #[test]
@@ -1265,10 +1355,19 @@ mod tests {
         let request = quit.ask(Ok(vec!["dev".into(), "api".into()])).unwrap();
         assert_eq!(request.sandboxes, vec!["dev", "api"]);
         let again = quit.ask(Ok(vec!["dev".into()])).unwrap();
-        assert_eq!(again.request_id, request.request_id, "a repeated Quit reuses the open prompt");
-        assert_eq!(quit.answer(request.request_id + 1, true), Err("This Quit request is no longer current.".into()));
+        assert_eq!(
+            again.request_id, request.request_id,
+            "a repeated Quit reuses the open prompt"
+        );
+        assert_eq!(
+            quit.answer(request.request_id + 1, true),
+            Err("This Quit request is no longer current.".into())
+        );
         assert_eq!(quit.answer(request.request_id, false), Ok(false));
-        assert!(quit.answer(request.request_id, true).is_err(), "an answered request is closed");
+        assert!(
+            quit.answer(request.request_id, true).is_err(),
+            "an answered request is closed"
+        );
         let unknown = quit.ask(Err("inspect failed".into())).unwrap();
         assert!(unknown.sandboxes.is_empty());
         assert_ne!(unknown.request_id, request.request_id);
@@ -1597,7 +1696,10 @@ mod tests {
             "workspaceStorageGiB":35,"runtimeStorageGiB":25,"desktop":{"startWithSandbox":false}
         });
         store.update_draft(draft.clone()).unwrap();
-        assert_eq!(SettingsStore::load(Some(path)).snapshot().onboarding_draft, draft);
+        assert_eq!(
+            SettingsStore::load(Some(path)).snapshot().onboarding_draft,
+            draft
+        );
         draft["unfinishedMachineEditor"]["draft"] = draft["machines"][0].clone();
         draft["unfinishedMachineEditor"]["draft"]["memoryGiB"] = json!(0);
         assert!(valid_draft(&draft));
@@ -1714,13 +1816,23 @@ mod tests {
         assert!(state.request());
         let generation = state.generation();
         assert!(state.begin_flush());
-        assert!(!state.claim_exit_for(false, Some(generation)), "a user Quit waits for the frontend");
+        assert!(
+            !state.claim_exit_for(false, Some(generation)),
+            "a user Quit waits for the frontend"
+        );
         let deadline = Instant::now() + Duration::from_secs(20);
         state.begin_session_end(deadline);
         state.begin_session_end(deadline + Duration::from_secs(5));
-        assert_eq!(state.session_deadline(), Some(deadline), "the earliest deadline wins");
+        assert_eq!(
+            state.session_deadline(),
+            Some(deadline),
+            "the earliest deadline wins"
+        );
         assert!(state.claim_exit_for(false, Some(generation)));
-        assert!(!state.claim_exit(true), "a late frontend completion cannot finish twice");
+        assert!(
+            !state.claim_exit(true),
+            "a late frontend completion cannot finish twice"
+        );
         assert!(!state.claim_exit_for(false, None));
     }
 
@@ -1728,7 +1840,10 @@ mod tests {
     fn session_end_can_start_before_any_quit_and_cancel_clears_it() {
         let state = ShutdownState::default();
         state.begin_session_end(Instant::now());
-        assert!(state.request(), "a session end starts the ordinary exit phases");
+        assert!(
+            state.request(),
+            "a session end starts the ordinary exit phases"
+        );
         assert!(state.session_deadline().is_some());
         state.cancel();
         assert_eq!(state.session_deadline(), None);
@@ -1739,13 +1854,19 @@ mod tests {
     fn bounded_stop_returns_the_result_or_gives_up_at_the_deadline() {
         let soon = Instant::now() + Duration::from_secs(5);
         assert_eq!(run_before(soon, || Ok(7)), Ok(7));
-        assert_eq!(run_before(soon, || Err::<(), _>("stop failed".to_string())), Err("stop failed".into()));
+        assert_eq!(
+            run_before(soon, || Err::<(), _>("stop failed".to_string())),
+            Err("stop failed".into())
+        );
         let started = Instant::now();
         let late = run_before(Instant::now() + Duration::from_millis(50), || {
             std::thread::sleep(Duration::from_secs(2));
             Ok(())
         });
-        assert_eq!(late, Err("Local VMs did not finish stopping in time.".into()));
+        assert_eq!(
+            late,
+            Err("Local VMs did not finish stopping in time.".into())
+        );
         assert!(started.elapsed() < Duration::from_secs(1));
     }
 
@@ -1755,14 +1876,26 @@ mod tests {
         quit.0.lock().unwrap().enabled = true;
         let request = quit.ask(Ok(vec!["dev".into()])).unwrap();
         quit.close();
-        assert!(quit.answer(request.request_id, false).is_err(), "a late Cancel cannot keep Silo open");
-        assert_ne!(quit.ask(Ok(vec!["dev".into()])).unwrap().request_id, request.request_id);
+        assert!(
+            quit.answer(request.request_id, false).is_err(),
+            "a late Cancel cannot keep Silo open"
+        );
+        assert_ne!(
+            quit.ask(Ok(vec!["dev".into()])).unwrap().request_id,
+            request.request_id
+        );
     }
 
     #[test]
     fn update_restart_does_not_start_the_quit_flow() {
-        assert_eq!(exit_request(Some(tauri::RESTART_EXIT_CODE), false), ExitRequest::Restart);
-        assert_eq!(exit_request(Some(tauri::RESTART_EXIT_CODE), true), ExitRequest::Restart);
+        assert_eq!(
+            exit_request(Some(tauri::RESTART_EXIT_CODE), false),
+            ExitRequest::Restart
+        );
+        assert_eq!(
+            exit_request(Some(tauri::RESTART_EXIT_CODE), true),
+            ExitRequest::Restart
+        );
         assert_eq!(exit_request(Some(0), true), ExitRequest::Approved);
         assert_eq!(exit_request(Some(0), false), ExitRequest::Gated);
         assert_eq!(exit_request(None, false), ExitRequest::Gated);
@@ -1788,7 +1921,12 @@ mod tests {
 /// snapshot before replacing the executable, independently of restart callbacks.
 pub(crate) fn flush_for_update(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<SettingsState>();
-    let mut initialized = state.store.lock().map_err(|_| "Settings could not be saved before updating.")?;
-    if let Some(current) = initialized.as_mut() { current.store.flush()?; }
+    let mut initialized = state
+        .store
+        .lock()
+        .map_err(|_| "Settings could not be saved before updating.")?;
+    if let Some(current) = initialized.as_mut() {
+        current.store.flush()?;
+    }
     Ok(())
 }

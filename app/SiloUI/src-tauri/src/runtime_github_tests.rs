@@ -36,9 +36,11 @@ fn restore_live_checkpoint_with_current_profile(
     } else {
         return Err("Checkpoint fixture source is not a VM.".into());
     }
-    let mut metadata = read_metadata(&paths.metadata).map_err(|_| "Could not prepare the checkpoint fixture.")?;
+    let mut metadata =
+        read_metadata(&paths.metadata).map_err(|_| "Could not prepare the checkpoint fixture.")?;
     metadata.machines.push(fork.clone());
-    write_metadata(&paths.metadata, &metadata).map_err(|_| "Could not prepare the checkpoint fixture.")?;
+    write_metadata(&paths.metadata, &metadata)
+        .map_err(|_| "Could not prepare the checkpoint fixture.")?;
     let observed = inspect_workspace(runner, paths, source.name())
         .map_err(|_| "Could not inspect the checkpoint source.")?;
     let policy = observed
@@ -73,18 +75,27 @@ fn cleanup_live_checkpoint_fork(
     paths: &RuntimePaths,
     fork: &MachineConfiguration,
 ) {
-    let _ = runner.run(paths, &["stop".into(), fork.name().into()], MUTATION_TIMEOUT);
+    let _ = runner.run(
+        paths,
+        &["stop".into(), fork.name().into()],
+        MUTATION_TIMEOUT,
+    );
     let _ = runner.run(
         paths,
         &["remove".into(), "--force".into(), fork.name().into()],
         MUTATION_TIMEOUT,
     );
     if let Ok(mut metadata) = read_metadata(&paths.metadata) {
-        metadata.machines.retain(|machine| machine.id() != fork.id());
+        metadata
+            .machines
+            .retain(|machine| machine.id() != fork.id());
         let _ = write_metadata(&paths.metadata, &metadata);
     }
     let _ = checkpoints::forget_removed(paths, fork.id());
-    if let Ok(mut profiles) = GITHUB_PROFILES.get_or_init(|| Mutex::new(HashMap::new())).lock() {
+    if let Ok(mut profiles) = GITHUB_PROFILES
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+    {
         profiles.remove(&(paths.home.clone(), fork.name().into()));
     }
 }
@@ -335,7 +346,10 @@ fn github_guest_bootstrap_and_live_identity() {
             .into_iter()
             .find(|machine| machine.name() == name)
             .ok_or("Synthetic checkpoint source metadata is missing.")?;
-        let fork_name = format!("github-restore-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let fork_name = format!(
+            "github-restore-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        );
         let fork = restore_live_checkpoint_with_current_profile(
             &runner,
             &paths,
@@ -603,7 +617,10 @@ if git push origin "HEAD:refs/heads/$4" >/dev/null 2>&1; then exit 1; fi
             .into_iter()
             .find(|machine| machine.name() == name)
             .ok_or("Checkpoint source metadata is missing.")?;
-        let fork_name = format!("github-restore-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+        let fork_name = format!(
+            "github-restore-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..8]
+        );
         let fork = restore_live_checkpoint_with_current_profile(
             &runner,
             &paths,
@@ -639,7 +656,10 @@ if git push origin "HEAD:refs/heads/$4" >/dev/null 2>&1; then exit 1; fi
         )
         .map_err(|_| "Could not verify the restored guest credential boundary.")?
         .stdout;
-        if secret_values.iter().any(|secret| restored_env.contains(secret)) {
+        if secret_values
+            .iter()
+            .any(|secret| restored_env.contains(secret))
+        {
             return Err("A historical credential was exposed in the restored guest.".into());
         }
         restored_guest(
@@ -661,7 +681,8 @@ if gh api graphql -f query='mutation($id:ID!){updateIssue(input:{id:$id,title:"u
         .map_err(|_| "Restored checkpoint did not use its current read-only assignment.")?;
         // Host Push uses its separately authorized scoped write token while the
         // VM remains read-only. Exercise the production binary/LFS transfer.
-        guest(r#"set -eu
+        guest(
+            r#"set -eu
 cd /workspace/silo-live/write
 head -c 1048576 /dev/urandom >silo-live.bin
 sha256sum silo-live.bin >/workspace/silo-live/host-expected.sha256
@@ -670,17 +691,30 @@ git commit -m 'Silo isolated host push LFS test' >/dev/null
 printf 'uncommitted local data' >uncommitted.txt
 printf '#!/bin/sh\nexit 99\n' >.git/hooks/pre-push
 chmod +x .git/hooks/pre-push
-"#).map_err(|_| "Host Push fixture preparation failed.")?;
-        let write_token = profile["owners"].as_array().unwrap().iter()
+"#,
+        )
+        .map_err(|_| "Host Push fixture preparation failed.")?;
+        let write_token = profile["owners"]
+            .as_array()
+            .unwrap()
+            .iter()
             .find_map(|owner| owner["writeToken"].as_str())
             .ok_or("Missing host push test token.")?;
         let count = crate::host_push::push_committed(
-            &paths, name, "/workspace/silo-live/write", &write_repo, write_token,
+            &paths,
+            name,
+            "/workspace/silo-live/write",
+            &write_repo,
+            write_token,
             std::path::Path::new(&required("SILO_TEST_GIT")),
             std::path::Path::new(&required("SILO_TEST_GIT_SUPPORT")),
-        ).map_err(|_| "Production Host Push failed against private GitHub fixture.")?;
-        if count != 2 { return Err("Host Push returned an incorrect commit count.".into()); }
-        guest(r#"set -eu
+        )
+        .map_err(|_| "Production Host Push failed against private GitHub fixture.")?;
+        if count != 2 {
+            return Err("Host Push returned an incorrect commit count.".into());
+        }
+        guest(
+            r#"set -eu
 cd /workspace/silo-live
 git clone --branch "$4" "https://github.com/$2.git" host-roundtrip >/dev/null 2>&1
 cd host-roundtrip
@@ -689,7 +723,9 @@ sha256sum -c /workspace/silo-live/host-expected.sha256 >/dev/null
 cd ../write
 [ -e uncommitted.txt ]
 rm .git/hooks/pre-push
-"#).map_err(|_| "Host Push LFS roundtrip or committed-only boundary failed.")?;
+"#,
+        )
+        .map_err(|_| "Host Push LFS roundtrip or committed-only boundary failed.")?;
         install(&json!({"version":1,"owners":[]}))?;
         guest(
             r#"set -eu

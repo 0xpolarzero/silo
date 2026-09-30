@@ -4,7 +4,9 @@ use std::time::Duration;
 use block2::RcBlock;
 use objc2::runtime::Bool;
 use objc2_app_kit::NSWorkspace;
-use objc2_foundation::{NSBundle, NSError, NSOperatingSystemVersion, NSProcessInfo, NSString, NSURL};
+use objc2_foundation::{
+    NSBundle, NSError, NSOperatingSystemVersion, NSProcessInfo, NSString, NSURL,
+};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 use objc2_user_notifications::{
     UNAuthorizationOptions, UNAuthorizationStatus, UNUserNotificationCenter,
@@ -26,7 +28,11 @@ fn macos_10_14_or_newer() -> bool {
 /// process runs as a bare executable, as `tauri dev` does. Treat notifications as
 /// unavailable there instead of crashing.
 fn notifications_supported() -> bool {
-    macos_10_14_or_newer() && NSBundle::mainBundle().bundlePath().to_string().ends_with(".app")
+    macos_10_14_or_newer()
+        && NSBundle::mainBundle()
+            .bundlePath()
+            .to_string()
+            .ends_with(".app")
 }
 
 fn macos_13_or_newer() -> bool {
@@ -276,7 +282,9 @@ pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(),
     let info = NSDictionary::from_retained_objects(&[&*NSString::from_str(ROUTE_KEY)], &[route]);
     // SAFETY: The dictionary holds only NSString keys and values, which are property-list types.
     unsafe {
-        content.setUserInfo(&Retained::cast_unchecked::<NSDictionary<AnyObject, AnyObject>>(info))
+        content.setUserInfo(&Retained::cast_unchecked::<
+            NSDictionary<AnyObject, AnyObject>,
+        >(info))
     };
     // The key is the identifier: a newer notice with the same key replaces the older one.
     let request = UNNotificationRequest::requestWithIdentifier_content_trigger(

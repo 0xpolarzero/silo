@@ -25,7 +25,8 @@ const FAILED: &str = "Could not prepare the editor connection.";
 /// panic while holding it leaves nothing inconsistent; recover instead of
 /// failing every editor connection until restart (G-23).
 fn files_lock() -> std::sync::MutexGuard<'static, ()> {
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<(), String> {
@@ -35,7 +36,10 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
         let application = applications::selected_editor(app)?;
         let command = applications::editor_command(&application)?;
         let home = app.path().home_dir().map_err(|_| FAILED)?;
-        return launch_editor(editor_launch(&command, &alias, path, &home)?, EDITOR_EXIT_WINDOW);
+        return launch_editor(
+            editor_launch(&command, &alias, path, &home)?,
+            EDITOR_EXIT_WINDOW,
+        );
     }
     require_openssh("open VM folders in your editor")?;
     runtime::validate_name(name).map_err(|error| error.to_string())?;
@@ -63,8 +67,10 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
             "--no-start".into(),
             "--user".into(),
             user.into(),
-            "--env".into(), format!("USER={user}"),
-            "--env".into(), format!("LOGNAME={user}"),
+            "--env".into(),
+            format!("USER={user}"),
+            "--env".into(),
+            format!("LOGNAME={user}"),
             "--no-tty".into(),
             "--quiet".into(),
             "--timeout".into(),
@@ -91,7 +97,10 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
     run(&mut probe, Duration::from_secs(10)).map_err(|_| {
         "Could not connect to this VM over SSH. Retry after checking that it is running."
     })?;
-    launch_editor(editor_launch(&command, &alias, path, &user_home)?, EDITOR_EXIT_WINDOW)
+    launch_editor(
+        editor_launch(&command, &alias, path, &user_home)?,
+        EDITOR_EXIT_WINDOW,
+    )
 }
 
 /// How long an editor launcher may take to report a failure. Launchers that
@@ -126,13 +135,19 @@ fn launch_editor(mut launch: Command, window: Duration) -> Result<(), String> {
 
 /// Explains a missing system OpenSSH client instead of a generic failure.
 pub(crate) fn require_openssh(purpose: &str) -> Result<(), String> {
-    require_openssh_at(Path::new("/usr/bin/ssh"), Path::new("/usr/bin/ssh-keygen"), purpose)
+    require_openssh_at(
+        Path::new("/usr/bin/ssh"),
+        Path::new("/usr/bin/ssh-keygen"),
+        purpose,
+    )
 }
 fn require_openssh_at(ssh: &Path, keygen: &Path, purpose: &str) -> Result<(), String> {
     if ssh.is_file() && keygen.is_file() {
         Ok(())
     } else {
-        Err(format!("OpenSSH is required to {purpose}. Install your system's OpenSSH client and retry."))
+        Err(format!(
+            "OpenSSH is required to {purpose}. Install your system's OpenSSH client and retry."
+        ))
     }
 }
 
@@ -193,7 +208,11 @@ fn editor_launch(
 fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
     validate_path(path)?;
-    if alias.is_empty() || !alias.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-') {
+    if alias.is_empty()
+        || !alias
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+    {
         return Err(FAILED.into());
     }
     runtime::prepare_private_directory(silo_root).map_err(|_| FAILED)?;
@@ -209,14 +228,22 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
         .unwrap_or_default()
         .chars()
         .map(|character| {
-            if character.is_alphanumeric() || " -_.".contains(character) { character } else { '_' }
+            if character.is_alphanumeric() || " -_.".contains(character) {
+                character
+            } else {
+                '_'
+            }
         })
         .take(64)
         .collect();
     let folder = folder.trim_start_matches('.').trim();
     let file = directory.join(format!(
         "{}.code-workspace",
-        if folder.is_empty() { "workspace" } else { folder }
+        if folder.is_empty() {
+            "workspace"
+        } else {
+            folder
+        }
     ));
     let mut document = serde_json::from_slice::<serde_json::Value>(&read_regular(&file)?)
         .ok()
@@ -344,7 +371,10 @@ fn prepare(
     let known_hosts = root.join(format!("{name}.known_hosts"));
     let alias = prepare_configuration(paths, name, &config, &known_hosts)?;
     let _guard = files_lock();
-    install_include(user_home, &format!("Include {}", ssh_quote(&root.join("*.conf"))?))?;
+    install_include(
+        user_home,
+        &format!("Include {}", ssh_quote(&root.join("*.conf"))?),
+    )?;
     Ok((alias, config))
 }
 
@@ -361,7 +391,9 @@ fn manual_include(config: &Path, include: &str) -> String {
 }
 
 fn has_line(contents: &[u8], line: &str) -> bool {
-    contents.split(|byte| *byte == b'\n').any(|current| current == line.as_bytes())
+    contents
+        .split(|byte| *byte == b'\n')
+        .any(|current| current == line.as_bytes())
 }
 
 /// Prepends Silo's `Include` to the user's SSH configuration once. Links from
@@ -404,7 +436,9 @@ fn install_include(user_home: &Path, include: &str) -> Result<(), String> {
         .parent()
         .and_then(|parent| fs::metadata(parent).ok())
         .is_some_and(|metadata| owned(&metadata));
-    if !parent_owned || !fs::metadata(&target).is_ok_and(|metadata| metadata.is_file() && owned(&metadata)) {
+    if !parent_owned
+        || !fs::metadata(&target).is_ok_and(|metadata| metadata.is_file() && owned(&metadata))
+    {
         return Err(manual());
     }
     let mut new = format!("{include}\n").into_bytes();
@@ -419,7 +453,8 @@ fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let mode = fs::metadata(path)?.mode() & 0o666;
     let parent = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
-    file.as_file().set_permissions(fs::Permissions::from_mode(mode))?;
+    file.as_file()
+        .set_permissions(fs::Permissions::from_mode(mode))?;
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
@@ -514,34 +549,70 @@ fn run(command: &mut Command, timeout: Duration) -> Result<(), String> {
 pub(crate) fn validate_public_key(public: &str) -> Result<(), String> {
     use base64::Engine;
     let mut parts = public.split(' ');
-    if parts.next() != Some("ssh-ed25519") { return Err("Expected an Ed25519 public key.".into()) }
+    if parts.next() != Some("ssh-ed25519") {
+        return Err("Expected an Ed25519 public key.".into());
+    }
     let encoded = parts.next().ok_or("Missing public key.")?;
-    if parts.next().is_some() || encoded.len() > 128 { return Err("Invalid public key.".into()) }
-    let data = base64::engine::general_purpose::STANDARD.decode(encoded).map_err(|_| "Invalid public key.")?;
+    if parts.next().is_some() || encoded.len() > 128 {
+        return Err("Invalid public key.".into());
+    }
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| "Invalid public key.")?;
     if data.len() != 51 || &data[..19] != b"\x00\x00\x00\x0bssh-ed25519\x00\x00\x00\x20" {
         return Err("Invalid Ed25519 public key.".into());
     }
     Ok(())
 }
 
-pub(crate) fn authorize_remote(paths: &RuntimePaths, name: &str, public: &str, path: &str) -> Result<String, String> {
+pub(crate) fn authorize_remote(
+    paths: &RuntimePaths,
+    name: &str,
+    public: &str,
+    path: &str,
+) -> Result<String, String> {
     crate::runtime::shutdown::ensure_accepting_operations()?;
     validate_public_key(public)?;
     validate_path(path)?;
     let inspected = crate::terminal::running_vm(paths, name)?;
     let user = crate::working_account::working_user(&inspected.config)?;
-    runtime::run_msb(paths, &[
-        "exec".into(), name.into(), "--no-start".into(), "--user".into(),
-        user.into(), "--env".into(), format!("USER={user}"), "--env".into(), format!("LOGNAME={user}"), "--no-tty".into(), "--quiet".into(),
-        "--timeout".into(), "5s".into(), "--".into(), "test".into(), "-d".into(), path.into(),
-    ], Duration::from_secs(8)).map_err(|_| "This folder is unavailable inside the VM.")?;
+    runtime::run_msb(
+        paths,
+        &[
+            "exec".into(),
+            name.into(),
+            "--no-start".into(),
+            "--user".into(),
+            user.into(),
+            "--env".into(),
+            format!("USER={user}"),
+            "--env".into(),
+            format!("LOGNAME={user}"),
+            "--no-tty".into(),
+            "--quiet".into(),
+            "--timeout".into(),
+            "5s".into(),
+            "--".into(),
+            "test".into(),
+            "-d".into(),
+            path.into(),
+        ],
+        Duration::from_secs(8),
+    )
+    .map_err(|_| "This folder is unavailable inside the VM.")?;
     let _guard = files_lock();
     let root = paths.home.join("ssh");
     private_directory(&root)?;
     let authorized = root.join("authorized_keys");
     let mut contents = read_regular(&authorized)?;
-    if !std::str::from_utf8(&contents).map_err(|_| FAILED)?.lines().any(|line| line == public) {
-        if !contents.is_empty() && !contents.ends_with(b"\n") { contents.push(b'\n'); }
+    if !std::str::from_utf8(&contents)
+        .map_err(|_| FAILED)?
+        .lines()
+        .any(|line| line == public)
+    {
+        if !contents.is_empty() && !contents.ends_with(b"\n") {
+            contents.push(b'\n');
+        }
         contents.extend_from_slice(format!("{public}\n").as_bytes());
         write_private(&authorized, &contents)?;
     }
@@ -553,7 +624,12 @@ pub(crate) fn authorize_remote(paths: &RuntimePaths, name: &str, public: &str, p
 }
 
 /// Prepare the pinned guest SSH identity without changing the user's SSH configuration.
-pub(crate) fn prepare_remote_private(app: &AppHandle, host: &str, vm: &str, path: &str) -> Result<(String, PathBuf), String> {
+pub(crate) fn prepare_remote_private(
+    app: &AppHandle,
+    host: &str,
+    vm: &str,
+    path: &str,
+) -> Result<(String, PathBuf), String> {
     validate_path(path)?;
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
     uuid::Uuid::parse_str(vm).map_err(|_| "Invalid VM identity.")?;
@@ -596,14 +672,22 @@ fn local_proxy(paths: &RuntimePaths, name: &str) -> Result<String, String> {
     let home = paths.home.to_str().ok_or(FAILED)?;
     if applications::launch::tools_are_temporary() {
         let silo = applications::launch::stable_executable()?;
-        return Ok(proxy_command(&[silo.to_str().ok_or(FAILED)?, TRANSPORT_MODE, home, name]));
+        return Ok(proxy_command(&[
+            silo.to_str().ok_or(FAILED)?,
+            TRANSPORT_MODE,
+            home,
+            name,
+        ]));
     }
     let executable = paths.executable.to_str().ok_or(FAILED)?;
     Ok(proxy_command(&[
         "/usr/bin/env",
         &format!("MSB_HOME={home}"),
         &format!("MSB_PATH={executable}"),
-        &format!("MSB_LIBKRUNFW_PATH={}", paths.library.to_str().ok_or(FAILED)?),
+        &format!(
+            "MSB_LIBKRUNFW_PATH={}",
+            paths.library.to_str().ok_or(FAILED)?
+        ),
         executable,
         "ssh",
         "serve",
@@ -619,7 +703,12 @@ fn remote_proxy(host: &str, vm: &str) -> Result<String, String> {
     uuid::Uuid::parse_str(host).map_err(|_| FAILED)?;
     uuid::Uuid::parse_str(vm).map_err(|_| FAILED)?;
     let silo = applications::launch::stable_executable()?;
-    Ok(proxy_command(&[silo.to_str().ok_or(FAILED)?, "--remote-guest", host, vm]))
+    Ok(proxy_command(&[
+        silo.to_str().ok_or(FAILED)?,
+        "--remote-guest",
+        host,
+        vm,
+    ]))
 }
 
 /// `silo --msb-ssh-serve <runtime home> <sandbox>`: the local editor transport
@@ -640,11 +729,23 @@ pub(crate) fn run_transport(args: &[String]) -> Result<(), String> {
     let executable = std::env::current_exe().map_err(|_| FAILED)?;
     let bundle = tauri::utils::platform::bundle_type();
     let appimage = std::env::var_os("APPDIR").map(PathBuf::from);
-    let msb = crate::bundled_tools::resolve(&executable, Path::new(""), bundle.clone(), appimage.as_deref())?
-        .join("msb");
+    let msb = crate::bundled_tools::resolve(
+        &executable,
+        Path::new(""),
+        bundle.clone(),
+        appimage.as_deref(),
+    )?
+    .join("msb");
     let library = runtime::bundled_runtime_library(&msb, Path::new(""), bundle);
     let error = Command::new(&msb)
-        .args(["ssh", "serve", name, "--stdio", "--no-start", "--no-inactivity-timeout"])
+        .args([
+            "ssh",
+            "serve",
+            name,
+            "--stdio",
+            "--no-start",
+            "--no-inactivity-timeout",
+        ])
         .env("MSB_HOME", home)
         .env("MSB_PATH", &msb)
         .env("MSB_LIBKRUNFW_PATH", &library)
@@ -672,18 +773,29 @@ fn with_proxy(contents: &str, proxy: &str) -> Option<String> {
 /// Rewrites the ProxyCommand of every `*.conf` Silo wrote in `root`, where
 /// `proxy_for` maps a file stem to its current command.
 fn refresh_configs(root: &Path, proxy_for: &dyn Fn(&str) -> Option<String>) {
-    let Ok(entries) = fs::read_dir(root) else { return };
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().is_none_or(|extension| extension != "conf") {
             continue;
         }
-        let Some(proxy) = path.file_stem().and_then(|stem| stem.to_str()).and_then(proxy_for) else {
+        let Some(proxy) = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(proxy_for)
+        else {
             continue;
         };
-        let Ok(bytes) = read_regular(&path) else { continue };
-        let Ok(contents) = String::from_utf8(bytes) else { continue };
-        if let Some(updated) = with_proxy(&contents, &proxy).filter(|updated| *updated != contents) {
+        let Ok(bytes) = read_regular(&path) else {
+            continue;
+        };
+        let Ok(contents) = String::from_utf8(bytes) else {
+            continue;
+        };
+        if let Some(updated) = with_proxy(&contents, &proxy).filter(|updated| *updated != contents)
+        {
             let _ = write_private(&path, updated.as_bytes());
         }
     }
@@ -700,7 +812,9 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
     std::thread::spawn(move || {
         let _guard = files_lock();
         if let Ok(paths) = runtime::runtime_paths(&app) {
-            refresh_configs(&paths.home.join("ssh"), &|name| local_proxy(&paths, name).ok());
+            refresh_configs(&paths.home.join("ssh"), &|name| {
+                local_proxy(&paths, name).ok()
+            });
         }
         if let Ok(home) = app.path().home_dir() {
             refresh_configs(&home.join(".silo/desktop-remote/ssh"), &|stem| {
@@ -712,12 +826,20 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
     });
 }
 
-pub(crate) fn prepare_remote(app: &AppHandle, host: &str, vm: &str, path: &str) -> Result<(String, PathBuf), String> {
+pub(crate) fn prepare_remote(
+    app: &AppHandle,
+    host: &str,
+    vm: &str,
+    path: &str,
+) -> Result<(String, PathBuf), String> {
     let (alias, config) = prepare_remote_private(app, host, vm, path)?;
     let root = config.parent().ok_or(FAILED)?;
     let home = app.path().home_dir().map_err(|_| FAILED)?;
     let _guard = files_lock();
-    install_include(&home, &format!("Include {}", ssh_quote(&root.join("*.conf"))?))?;
+    install_include(
+        &home,
+        &format!("Include {}", ssh_quote(&root.join("*.conf"))?),
+    )?;
     Ok((alias, config))
 }
 
@@ -758,7 +880,12 @@ mod tests {
         key(&path).unwrap();
         let public = public_key(&path).unwrap();
         validate_public_key(&public).unwrap();
-        for invalid in [format!("command=evil {public}"), format!("{public}\n{public}"), format!("{public} comment"), "ssh-ed25519 YQ==".into()] {
+        for invalid in [
+            format!("command=evil {public}"),
+            format!("{public}\n{public}"),
+            format!("{public} comment"),
+            "ssh-ed25519 YQ==".into(),
+        ] {
             assert!(validate_public_key(&invalid).is_err());
         }
     }
@@ -802,7 +929,12 @@ mod tests {
         fs::write(root.path().join("bad name.conf"), config).unwrap();
         refresh_configs(root.path(), &|name| {
             runtime::validate_name(name).ok()?;
-            Some(proxy_command(&["/home/me/Silo.AppImage", TRANSPORT_MODE, "/home/me/.silo/abc", name]))
+            Some(proxy_command(&[
+                "/home/me/Silo.AppImage",
+                TRANSPORT_MODE,
+                "/home/me/.silo/abc",
+                name,
+            ]))
         });
         let updated = fs::read_to_string(root.path().join("dev.conf")).unwrap();
         assert_eq!(
@@ -812,8 +944,14 @@ mod tests {
                 "'/home/me/Silo.AppImage' '--msb-ssh-serve' '/home/me/.silo/abc' 'dev'"
             )
         );
-        assert_eq!(fs::read_to_string(root.path().join("bad name.conf")).unwrap(), config);
-        assert_eq!(fs::read_to_string(root.path().join("dev.known_hosts")).unwrap(), "unchanged");
+        assert_eq!(
+            fs::read_to_string(root.path().join("bad name.conf")).unwrap(),
+            config
+        );
+        assert_eq!(
+            fs::read_to_string(root.path().join("dev.known_hosts")).unwrap(),
+            "unchanged"
+        );
         assert_eq!(with_proxy("Host x\n", "p"), None);
     }
 
@@ -842,7 +980,11 @@ mod tests {
     }
 
     fn vscode(program: &str) -> applications::launch::EditorCommand {
-        applications::launch::EditorCommand { program: program.into(), args: Vec::new(), zed: false }
+        applications::launch::EditorCommand {
+            program: program.into(),
+            args: Vec::new(),
+            zed: false,
+        }
     }
 
     #[test]
@@ -855,32 +997,59 @@ mod tests {
         long.arg(&pid_file);
         launch_editor(long, Duration::from_millis(300)).unwrap();
         assert!(started.elapsed() < Duration::from_secs(5));
-        let pid: i32 = fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
-        assert_eq!(unsafe { libc::kill(pid, 0) }, 0, "the editor must not be killed");
+        let pid: i32 = fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "the editor must not be killed"
+        );
         unsafe { libc::kill(pid, libc::SIGTERM) };
         assert!(launch_editor(Command::new("/usr/bin/false"), Duration::from_secs(5)).is_err());
         assert!(launch_editor(Command::new("/usr/bin/true"), Duration::from_secs(5)).is_ok());
     }
 
     fn launch_args(launch: &Command) -> Vec<String> {
-        launch.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect()
+        launch
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect()
     }
 
     #[test]
     fn vscode_opens_the_silo_profile_with_protective_workspace_settings() {
         let home = tempfile::tempdir().unwrap();
         let code = vscode("/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code");
-        let launch = editor_launch(&code, "silo-abc-dev", "/workspace/my repo", home.path()).unwrap();
+        let launch =
+            editor_launch(&code, "silo-abc-dev", "/workspace/my repo", home.path()).unwrap();
         assert_eq!(launch.get_program(), code.program.as_os_str());
         let args = launch_args(&launch);
         assert_eq!(args[..2], ["--profile", "Silo"]);
-        assert_eq!(args.len(), 3, "no --folder-uri: the workspace file names the folder");
+        assert_eq!(
+            args.len(),
+            3,
+            "no --folder-uri: the workspace file names the folder"
+        );
         let file = PathBuf::from(&args[2]);
         assert!(file.starts_with(home.path().join(".silo/editor/silo-abc-dev")));
         assert_eq!(file.file_name().unwrap(), "my repo.code-workspace");
-        assert_eq!(fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
-        assert_eq!(fs::metadata(file.parent().unwrap()).unwrap().permissions().mode() & 0o777, 0o700);
-        let document: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(file.parent().unwrap())
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+        let document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
         assert_eq!(
             document["folders"],
             serde_json::json!([{ "uri": "vscode-remote://ssh-remote+silo-abc-dev/workspace/my%20repo" }])
@@ -905,25 +1074,37 @@ mod tests {
     fn user_workspace_settings_survive_while_silo_settings_are_restored() {
         let home = tempfile::tempdir().unwrap();
         let code = vscode("/usr/bin/code");
-        let args = launch_args(&editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap());
+        let args =
+            launch_args(&editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap());
         fs::write(
             &args[2],
             br#"{"folders":[{"uri":"file:///elsewhere"}],"settings":{"editor.fontSize":15,"remote.autoForwardPorts":true}}"#,
         )
         .unwrap();
         editor_launch(&code, "silo-abc-dev", "/workspace", home.path()).unwrap();
-        let document: serde_json::Value = serde_json::from_slice(&fs::read(&args[2]).unwrap()).unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&fs::read(&args[2]).unwrap()).unwrap();
         assert_eq!(document["settings"]["editor.fontSize"], 15);
         assert_eq!(document["settings"]["remote.autoForwardPorts"], false);
-        assert_eq!(document["folders"][0]["uri"], "vscode-remote://ssh-remote+silo-abc-dev/workspace");
+        assert_eq!(
+            document["folders"][0]["uri"],
+            "vscode-remote://ssh-remote+silo-abc-dev/workspace"
+        );
     }
 
     #[test]
     fn zed_keeps_its_ssh_uri_and_no_workspace_file() {
         let home = tempfile::tempdir().unwrap();
-        let zed = applications::launch::EditorCommand { program: "/usr/bin/flatpak".into(), args: vec!["run".into(), "dev.zed.Zed".into()], zed: true };
+        let zed = applications::launch::EditorCommand {
+            program: "/usr/bin/flatpak".into(),
+            args: vec!["run".into(), "dev.zed.Zed".into()],
+            zed: true,
+        };
         let launch = editor_launch(&zed, "silo-abc-dev", "/workspace", home.path()).unwrap();
-        assert_eq!(launch_args(&launch), ["run", "dev.zed.Zed", "ssh://silo-abc-dev/workspace"]);
+        assert_eq!(
+            launch_args(&launch),
+            ["run", "dev.zed.Zed", "ssh://silo-abc-dev/workspace"]
+        );
         assert!(!home.path().join(".silo").exists());
     }
 
@@ -937,16 +1118,26 @@ mod tests {
         fs::write(dotfiles.join("config"), b"Host personal\n  User me\n").unwrap();
         fs::set_permissions(dotfiles.join("config"), fs::Permissions::from_mode(0o644)).unwrap();
         private_directory(&home.path().join(".ssh")).unwrap();
-        std::os::unix::fs::symlink("../dotfiles/ssh/config", home.path().join(".ssh/config")).unwrap();
+        std::os::unix::fs::symlink("../dotfiles/ssh/config", home.path().join(".ssh/config"))
+            .unwrap();
         install_include(home.path(), INCLUDE).unwrap();
         install_include(home.path(), INCLUDE).unwrap();
         let link = home.path().join(".ssh/config");
-        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link stays");
+        assert!(
+            fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the link stays"
+        );
         assert_eq!(
             fs::read(&link).unwrap(),
             format!("{INCLUDE}\nHost personal\n  User me\n").as_bytes()
         );
-        assert_eq!(fs::metadata(&link).unwrap().permissions().mode() & 0o777, 0o644);
+        assert_eq!(
+            fs::metadata(&link).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
     }
 
     #[test]
@@ -956,8 +1147,14 @@ mod tests {
         fs::create_dir_all(&dotfiles).unwrap();
         std::os::unix::fs::symlink(&dotfiles, home.path().join(".ssh")).unwrap();
         install_include(home.path(), INCLUDE).unwrap();
-        assert!(fs::symlink_metadata(home.path().join(".ssh")).unwrap().file_type().is_symlink());
-        assert_eq!(fs::read(dotfiles.join("config")).unwrap(), format!("{INCLUDE}\n").as_bytes());
+        assert!(fs::symlink_metadata(home.path().join(".ssh"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            fs::read(dotfiles.join("config")).unwrap(),
+            format!("{INCLUDE}\n").as_bytes()
+        );
     }
 
     #[test]
@@ -977,12 +1174,21 @@ mod tests {
                 std::os::unix::fs::chown(&store, Some(owner), None).unwrap();
                 std::os::unix::fs::chown(store.join("config"), Some(owner), None).unwrap();
             } else {
-                fs::set_permissions(&store, fs::Permissions::from_mode(if locked { 0o555 } else { 0o755 })).unwrap();
+                fs::set_permissions(
+                    &store,
+                    fs::Permissions::from_mode(if locked { 0o555 } else { 0o755 }),
+                )
+                .unwrap();
             }
         };
         lock(true);
         let error = install_include(home.path(), INCLUDE).unwrap_err();
-        assert!(error.ends_with(&format!("Add this line at the top of that file, then try again: {INCLUDE}")), "{error}");
+        assert!(
+            error.ends_with(&format!(
+                "Add this line at the top of that file, then try again: {INCLUDE}"
+            )),
+            "{error}"
+        );
         assert_eq!(fs::read(store.join("config")).unwrap(), b"Host managed\n");
         // Once the user adds the line, nothing needs to be written.
         lock(false);
@@ -996,9 +1202,15 @@ mod tests {
     fn a_dangling_config_link_is_not_replaced() {
         let home = tempfile::tempdir().unwrap();
         private_directory(&home.path().join(".ssh")).unwrap();
-        std::os::unix::fs::symlink("/silo-test-missing/config", home.path().join(".ssh/config")).unwrap();
-        assert!(install_include(home.path(), INCLUDE).unwrap_err().contains(INCLUDE));
-        assert!(fs::symlink_metadata(home.path().join(".ssh/config")).unwrap().file_type().is_symlink());
+        std::os::unix::fs::symlink("/silo-test-missing/config", home.path().join(".ssh/config"))
+            .unwrap();
+        assert!(install_include(home.path(), INCLUDE)
+            .unwrap_err()
+            .contains(INCLUDE));
+        assert!(fs::symlink_metadata(home.path().join(".ssh/config"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]

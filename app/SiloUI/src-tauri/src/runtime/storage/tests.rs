@@ -1,40 +1,99 @@
 use super::*;
 
-fn fixture() -> (tempfile::TempDir, RuntimePaths, MachineConfiguration, InspectedSandbox) {
+fn fixture() -> (
+    tempfile::TempDir,
+    RuntimePaths,
+    MachineConfiguration,
+    InspectedSandbox,
+) {
     let directory = tempfile::tempdir().unwrap();
     let paths = super::super::tests::paths(&directory);
     let machine = MachineConfiguration::Vm {
-        id: "00000000-0000-4000-8000-000000000001".into(), name: "dev".into(),
-        cpus: 1, max_cpus: 1, memory_gib: 1, max_memory_gib: 1,
-        workspace_storage_gib: 1, runtime_storage_gib: 1, desktop: None,
+        id: "00000000-0000-4000-8000-000000000001".into(),
+        name: "dev".into(),
+        cpus: 1,
+        max_cpus: 1,
+        memory_gib: 1,
+        max_memory_gib: 1,
+        workspace_storage_gib: 1,
+        runtime_storage_gib: 1,
+        desktop: None,
     };
-    write_metadata(&paths.metadata, &MachineConfigurationRequest { schema_version: 1, machines: vec![machine.clone()] }).unwrap();
+    write_metadata(
+        &paths.metadata,
+        &MachineConfigurationRequest {
+            schema_version: 1,
+            machines: vec![machine.clone()],
+        },
+    )
+    .unwrap();
     fs::create_dir_all(owned_disk(&paths, "dev").parent().unwrap()).unwrap();
     fs::write(owned_disk(&paths, "dev"), vec![7u8; 8192]).unwrap();
     let observed = serde_json::from_value(json!({"name":"dev", "status":"Running", "runtime_instance_id":"run-1", "config": {
         "labels":{"silo.managed":"true","silo.machine-id":machine.id()},
         "mounts":[{"type":"Owned","guest":"/workspace","storage":{"kind":"disk","capacity_mib":1024}}]
     }})).unwrap();
-    verified_starts().lock().unwrap().insert((paths.home.clone(), machine.id().into()), "run-1".into());
+    verified_starts()
+        .lock()
+        .unwrap()
+        .insert((paths.home.clone(), machine.id().into()), "run-1".into());
     (directory, paths, machine, observed)
 }
 fn owned_disk(paths: &RuntimePaths, name: &str) -> PathBuf {
-    paths.home.join("sandboxes").join(name).join("owned-volumes/workspace_c52ddf65/disk.raw")
+    paths
+        .home
+        .join("sandboxes")
+        .join(name)
+        .join("owned-volumes/workspace_c52ddf65/disk.raw")
 }
-struct Runner { calls: Mutex<Vec<Vec<String>>>, fail: bool, truncate: bool }
-impl Runner { fn new() -> Self { Self { calls: Mutex::new(vec![]), fail: false, truncate: false } } }
+struct Runner {
+    calls: Mutex<Vec<Vec<String>>>,
+    fail: bool,
+    truncate: bool,
+}
+impl Runner {
+    fn new() -> Self {
+        Self {
+            calls: Mutex::new(vec![]),
+            fail: false,
+            truncate: false,
+        }
+    }
+}
 impl RuntimeRunner for Runner {
-    fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+    fn run(
+        &self,
+        paths: &RuntimePaths,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<CommandOutput, RuntimeError> {
         self.calls.lock().unwrap().push(args.to_vec());
         if args[0] == "--silo-storage-protocol" {
-            return Ok(CommandOutput { stdout: "1\n".into(), stderr: String::new() });
+            return Ok(CommandOutput {
+                stdout: "1\n".into(),
+                stderr: String::new(),
+            });
         }
         assert_eq!(args[0], "exec");
         assert!(args.iter().any(|arg| arg == "--no-start"));
         assert!(timeout <= TRIM_BUDGET);
-        if self.truncate { fs::OpenOptions::new().write(true).open(owned_disk(paths,"dev")).unwrap().set_len(4096).unwrap(); }
-        if self.fail { return Err(RuntimeError::TimedOut { operation: "trim".into() }); }
-        Ok(CommandOutput { stdout: "4096 8192\n".into(), stderr: String::new() })
+        if self.truncate {
+            fs::OpenOptions::new()
+                .write(true)
+                .open(owned_disk(paths, "dev"))
+                .unwrap()
+                .set_len(4096)
+                .unwrap();
+        }
+        if self.fail {
+            return Err(RuntimeError::TimedOut {
+                operation: "trim".into(),
+            });
+        }
+        Ok(CommandOutput {
+            stdout: "4096 8192\n".into(),
+            stderr: String::new(),
+        })
     }
 }
 
@@ -42,13 +101,20 @@ impl RuntimeRunner for Runner {
 fn exact_intervals_and_clock_rollback() {
     let _test_state = crate::test_support::global_state();
     assert!(due(&Record::default(), 0, WEEK));
-    let record = Record { last_trim_at: Some(100), last_attempt_at: Some(100), ..Record::default() };
+    let record = Record {
+        last_trim_at: Some(100),
+        last_attempt_at: Some(100),
+        ..Record::default()
+    };
     assert!(!due(&record, 100 + DAY - 1, DAY));
     assert!(due(&record, 100 + DAY, DAY));
     assert!(!due(&record, 100 + WEEK - 1, WEEK));
     assert!(due(&record, 100 + WEEK, WEEK));
     assert!(!due(&record, 50, DAY));
-    let failed = Record { last_attempt_at: Some(100), ..Record::default() };
+    let failed = Record {
+        last_attempt_at: Some(100),
+        ..Record::default()
+    };
     assert!(!due(&failed, 100 + DAY - 1, WEEK));
     assert!(due(&failed, 100 + DAY, WEEK));
 }
@@ -64,13 +130,18 @@ fn manual_reclaim_bypasses_schedule_and_persists_actual_host_result() {
     assert_eq!(record.last_reclaimed_bytes, Some(0)); // Never use fstrim's logical byte count.
     assert!(record.last_error.is_none());
     assert_eq!(runner.calls.lock().unwrap().len(), 2);
-    assert!(runner.calls.lock().unwrap()[0].iter().any(|s| s.contains("timeout -k 1s")));
+    assert!(runner.calls.lock().unwrap()[0]
+        .iter()
+        .any(|s| s.contains("timeout -k 1s")));
 }
 #[test]
 fn failure_is_durable_and_does_not_count_as_success_or_block_stop() {
     let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
-    let runner = Runner { fail: true, ..Runner::new() };
+    let runner = Runner {
+        fail: true,
+        ..Runner::new()
+    };
     before_stop(&runner, &paths, &observed);
     let record = load(&paths, machine.id()).unwrap();
     assert!(record.last_trim_at.is_none());
@@ -104,7 +175,10 @@ fn stopped_usage_reports_allocated_blocks_without_starting_guest() {
     observed.status = "Stopped".into();
     let runner = Runner::new();
     let value = state(&runner, &paths, &machine, &observed).unwrap();
-    assert_eq!(value.workspace_host_bytes, Some(allocated(&owned_disk(&paths,"dev")).unwrap()));
+    assert_eq!(
+        value.workspace_host_bytes,
+        Some(allocated(&owned_disk(&paths, "dev")).unwrap())
+    );
     assert_eq!(value.workspace_used_bytes, None);
     assert!(runner.calls.lock().unwrap().is_empty());
 }
@@ -113,11 +187,20 @@ fn runtime_tail_truncation_is_repaired_and_reported_even_on_timeout() {
     let _test_state = crate::test_support::global_state();
     for fail in [false, true] {
         let (_dir, paths, machine, observed) = fixture();
-        let runner = Runner { fail, truncate: true, ..Runner::new() };
-        assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).unwrap_err().to_string().contains("original length was restored"));
-        let content = fs::read(owned_disk(&paths,"dev")).unwrap();
+        let runner = Runner {
+            fail,
+            truncate: true,
+            ..Runner::new()
+        };
+        assert!(
+            trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now())
+                .unwrap_err()
+                .to_string()
+                .contains("original length was restored")
+        );
+        let content = fs::read(owned_disk(&paths, "dev")).unwrap();
         assert_eq!(content.len(), 8192);
-        assert_eq!(&content[..4096], &[7;4096]);
+        assert_eq!(&content[..4096], &[7; 4096]);
         let record = load(&paths, machine.id()).unwrap();
         assert!(record.last_trim_at.is_none());
     }
@@ -127,9 +210,20 @@ fn expired_budget_does_not_enter_guest_or_record_attempt() {
     let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
     let runner = Runner::new();
-    assert!(trim(&runner, &paths, &machine, &observed, Duration::from_secs(3), now()).is_err());
+    assert!(trim(
+        &runner,
+        &paths,
+        &machine,
+        &observed,
+        Duration::from_secs(3),
+        now()
+    )
+    .is_err());
     assert!(runner.calls.lock().unwrap().is_empty());
-    assert!(load(&paths, machine.id()).unwrap().last_attempt_at.is_none());
+    assert!(load(&paths, machine.id())
+        .unwrap()
+        .last_attempt_at
+        .is_none());
 }
 #[test]
 fn malformed_measurements_and_history_are_not_silent_success() {
@@ -137,22 +231,34 @@ fn malformed_measurements_and_history_are_not_silent_success() {
     assert!(stats("999 100").is_err());
     assert!(stats("1 2 3").is_err());
     assert!(stats("-1 2").is_err());
-    assert_eq!(stats(" 123 456\n").unwrap(), (123,456));
+    assert_eq!(stats(" 123 456\n").unwrap(), (123, 456));
     let (_dir, paths, machine, observed) = fixture();
     fs::create_dir_all(record_path(&paths, machine.id()).parent().unwrap()).unwrap();
     fs::write(record_path(&paths, machine.id()), b"broken").unwrap();
     let runner = Runner::new();
     assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).is_err());
     assert!(runner.calls.lock().unwrap().is_empty());
-    assert_eq!(fs::read(record_path(&paths, machine.id())).unwrap(), b"broken");
+    assert_eq!(
+        fs::read(record_path(&paths, machine.id())).unwrap(),
+        b"broken"
+    );
 }
 
 #[test]
 fn normal_stop_completes_after_a_failed_trim_and_does_not_retry_it() {
     let _test_state = crate::test_support::global_state();
-    struct LifecycleRunner { running: Mutex<bool>, calls: Mutex<Vec<String>>, config: Value }
+    struct LifecycleRunner {
+        running: Mutex<bool>,
+        calls: Mutex<Vec<String>>,
+        config: Value,
+    }
     impl RuntimeRunner for LifecycleRunner {
-        fn run(&self, _: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+        fn run(
+            &self,
+            _: &RuntimePaths,
+            args: &[String],
+            _: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
             self.calls.lock().unwrap().push(args[0].clone());
             let stdout = match args[0].as_str() {
                 "inspect" => json!({"name":"dev", "runtime_instance_id":"run-1", "status": if *self.running.lock().unwrap() {"Running"} else {"Stopped"}, "config":self.config}).to_string(),
@@ -160,15 +266,28 @@ fn normal_stop_completes_after_a_failed_trim_and_does_not_retry_it() {
                 "stop" => { *self.running.lock().unwrap() = false; String::new() }
                 other => panic!("Unexpected command: {other}"),
             };
-            Ok(CommandOutput { stdout, stderr: String::new() })
+            Ok(CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
         }
     }
     let (_dir, paths, machine, observed) = fixture();
-    let runner = LifecycleRunner { running: Mutex::new(true), calls: Mutex::new(vec![]), config: observed.config };
-    let host = HostResources { logical_cpus: 0, physical_memory_bytes: None };
+    let runner = LifecycleRunner {
+        running: Mutex::new(true),
+        calls: Mutex::new(vec![]),
+        config: observed.config,
+    };
+    let host = HostResources {
+        logical_cpus: 0,
+        physical_memory_bytes: None,
+    };
     lifecycle_recovery::perform(&runner, &paths, &host, "stop", "dev").unwrap();
     assert!(!*runner.running.lock().unwrap());
-    assert_eq!(*runner.calls.lock().unwrap(), ["inspect", "exec", "stop", "inspect"]);
+    assert_eq!(
+        *runner.calls.lock().unwrap(),
+        ["inspect", "exec", "stop", "inspect"]
+    );
     assert!(load(&paths, machine.id()).unwrap().last_error.is_some());
 }
 
@@ -177,11 +296,23 @@ fn next_start_trims_once_and_recent_success_skips_automatic_work() {
     let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
     let runner = Runner::new();
-    verified_starts().lock().unwrap().remove(&(paths.home.clone(), machine.id().into()));
+    verified_starts()
+        .lock()
+        .unwrap()
+        .remove(&(paths.home.clone(), machine.id().into()));
     after_start(&runner, &paths, &observed);
     before_stop(&runner, &paths, &observed);
     after_start(&runner, &paths, &observed);
-    assert_eq!(runner.calls.lock().unwrap().iter().filter(|args| args[0] == "exec").count(), 1);
+    assert_eq!(
+        runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|args| args[0] == "exec")
+            .count(),
+        1
+    );
     assert!(load(&paths, machine.id()).unwrap().last_trim_at.is_some());
 }
 
@@ -191,7 +322,12 @@ fn old_or_replaced_worker_requires_restart_before_any_trim() {
     let (_dir, paths, machine, mut observed) = fixture();
     let runner = Runner::new();
     observed.runtime_instance_id = Some("different-run".into());
-    assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).unwrap_err().to_string().contains("Restart this VM"));
+    assert!(
+        trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now())
+            .unwrap_err()
+            .to_string()
+            .contains("Restart this VM")
+    );
     observed.runtime_instance_id = None;
     assert!(trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now()).is_err());
     assert!(runner.calls.lock().unwrap().is_empty());
@@ -200,9 +336,18 @@ fn old_or_replaced_worker_requires_restart_before_any_trim() {
 #[test]
 fn periodic_reclaims_due_running_vm_once_without_starting_any_vm() {
     let _test_state = crate::test_support::global_state();
-    struct PeriodicRunner { guest: Runner, config: Value, inspections: Mutex<usize> }
+    struct PeriodicRunner {
+        guest: Runner,
+        config: Value,
+        inspections: Mutex<usize>,
+    }
     impl RuntimeRunner for PeriodicRunner {
-        fn run(&self, paths: &RuntimePaths, args: &[String], timeout: Duration) -> Result<CommandOutput, RuntimeError> {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
             if args[0] == "inspect" {
                 *self.inspections.lock().unwrap() += 1;
                 return Ok(CommandOutput { stdout: json!({"name":"dev", "status":"Running", "runtime_instance_id":"run-1", "config":self.config}).to_string(), stderr: String::new() });
@@ -211,8 +356,21 @@ fn periodic_reclaims_due_running_vm_once_without_starting_any_vm() {
         }
     }
     let (_dir, paths, machine, observed) = fixture();
-    let runner = PeriodicRunner { guest: Runner::new(), config: observed.config, inspections: Mutex::new(0) };
-    save(&paths, machine.id(), &Record { last_trim_at: Some(now() - WEEK), last_attempt_at: Some(now() - WEEK), ..Record::default() }).unwrap();
+    let runner = PeriodicRunner {
+        guest: Runner::new(),
+        config: observed.config,
+        inspections: Mutex::new(0),
+    };
+    save(
+        &paths,
+        machine.id(),
+        &Record {
+            last_trim_at: Some(now() - WEEK),
+            last_attempt_at: Some(now() - WEEK),
+            ..Record::default()
+        },
+    )
+    .unwrap();
     assert!(periodic(&runner, &paths).unwrap());
     assert!(!periodic(&runner, &paths).unwrap());
     assert_eq!(*runner.inspections.lock().unwrap(), 1);
@@ -223,10 +381,24 @@ fn periodic_reclaims_due_running_vm_once_without_starting_any_vm() {
 fn unavailable_guest_stats_do_not_hide_a_maintenance_failure() {
     let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
-    let runner = Runner { fail: true, ..Runner::new() };
-    save(&paths, machine.id(), &Record { last_error: Some("Preserved maintenance failure".into()), ..Record::default() }).unwrap();
+    let runner = Runner {
+        fail: true,
+        ..Runner::new()
+    };
+    save(
+        &paths,
+        machine.id(),
+        &Record {
+            last_error: Some("Preserved maintenance failure".into()),
+            ..Record::default()
+        },
+    )
+    .unwrap();
     let value = state(&runner, &paths, &machine, &observed).unwrap();
-    assert_eq!(value.last_error.as_deref(), Some("Preserved maintenance failure"));
+    assert_eq!(
+        value.last_error.as_deref(),
+        Some("Preserved maintenance failure")
+    );
     assert_eq!(value.workspace_used_bytes, None);
 }
 
@@ -238,7 +410,10 @@ fn starting_vm_does_not_begin_maintenance_during_quit() {
     shutdown::begin();
     after_start(&runner, &paths, &observed);
     assert!(runner.calls.lock().unwrap().is_empty());
-    assert!(load(&paths, machine.id()).unwrap().last_attempt_at.is_none());
+    assert!(load(&paths, machine.id())
+        .unwrap()
+        .last_attempt_at
+        .is_none());
 }
 
 // Explicitly opt-in: boots and trims the named local VM, preserving its files.
@@ -248,54 +423,101 @@ fn starting_vm_does_not_begin_maintenance_during_quit() {
 fn live_reclaim_preserves_capacity_contents_and_reboots() {
     let _test_state = crate::test_support::global_state();
     crate::test_support::live::require_confirmation();
-    let executable = PathBuf::from(std::env::var("SILO_STORAGE_LIVE_RUNTIME").expect("explicit runtime path required"));
-    let home = PathBuf::from(std::env::var("SILO_STORAGE_LIVE_HOME").expect("explicit runtime home required"));
+    let executable = PathBuf::from(
+        std::env::var("SILO_STORAGE_LIVE_RUNTIME").expect("explicit runtime path required"),
+    );
+    let home = PathBuf::from(
+        std::env::var("SILO_STORAGE_LIVE_HOME").expect("explicit runtime home required"),
+    );
     let id = std::env::var("SILO_STORAGE_LIVE_ID").expect("explicit VM ID required");
-    let expected_hash = std::env::var("SILO_STORAGE_EXPECTED_SHA256").expect("pre-existing workspace checksum required");
-    let storage = fs::canonicalize(&home).unwrap().parent().unwrap().to_path_buf();
-    let library = executable.parent().unwrap().parent().unwrap().join("Frameworks/libkrunfw.5.dylib");
+    let expected_hash = std::env::var("SILO_STORAGE_EXPECTED_SHA256")
+        .expect("pre-existing workspace checksum required");
+    let storage = fs::canonicalize(&home)
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf();
+    let library = executable
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("Frameworks/libkrunfw.5.dylib");
     assert!(library.is_file());
-    let paths = RuntimePaths { executable, library, home, storage_home: None,
-        metadata: storage.join("machines.json"), volumes: storage.join("volumes"), guest_image: storage.join("unused-image") };
+    let paths = RuntimePaths {
+        executable,
+        library,
+        home,
+        storage_home: None,
+        metadata: storage.join("machines.json"),
+        volumes: storage.join("volumes"),
+        guest_image: storage.join("unused-image"),
+    };
     let _guard = OPERATIONS.computer("Live reclaim test").unwrap();
     let machine = machine(&paths, &id).unwrap();
     let runner = ProcessRunner;
     let initial = inspect_workspace(&runner, &paths, machine.name()).unwrap();
-    assert!(initial.status.eq_ignore_ascii_case("stopped"), "Do not interrupt an existing running VM");
+    assert!(
+        initial.status.eq_ignore_ascii_case("stopped"),
+        "Do not interrupt an existing running VM"
+    );
     let disk = owned_disk(&paths, machine.name());
     let length = fs::metadata(&disk).unwrap().len();
     let host = host_resources().unwrap();
-    let checksum = "set -eu; find /workspace -xdev -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum";
+    let checksum =
+        "set -eu; find /workspace -xdev -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum";
     let mut previous_instance = None;
     for _ in 0..2 {
         let result = (|| -> Result<(), RuntimeError> {
             lifecycle_recovery::perform(&runner, &paths, &host, "start", machine.name())?;
             let observed = inspect_workspace(&runner, &paths, machine.name())?;
-            if !verified_worker(&paths, &machine, &observed) || observed.runtime_instance_id == previous_instance {
-                return Err(failure("The newly started runtime instance was not verified."));
+            if !verified_worker(&paths, &machine, &observed)
+                || observed.runtime_instance_id == previous_instance
+            {
+                return Err(failure(
+                    "The newly started runtime instance was not verified.",
+                ));
             }
             previous_instance = observed.runtime_instance_id.clone();
-            let before = runner.run(&paths, &guest_args(machine.name(), 29, checksum), Duration::from_secs(30))?;
+            let before = runner.run(
+                &paths,
+                &guest_args(machine.name(), 29, checksum),
+                Duration::from_secs(30),
+            )?;
             if before.stdout.split_whitespace().next() != Some(expected_hash.as_str()) {
-                return Err(failure("Workspace checksum differs from the pre-existing baseline."));
+                return Err(failure(
+                    "Workspace checksum differs from the pre-existing baseline.",
+                ));
             }
             trim(&runner, &paths, &machine, &observed, TRIM_BUDGET, now())?;
-            let after = runner.run(&paths, &guest_args(machine.name(), 29, checksum), Duration::from_secs(30))?;
+            let after = runner.run(
+                &paths,
+                &guest_args(machine.name(), 29, checksum),
+                Duration::from_secs(30),
+            )?;
             if after.stdout != before.stdout || fs::metadata(&disk).unwrap().len() != length {
                 return Err(failure("Workspace contents or logical capacity changed."));
             }
             let measurements = state(&runner, &paths, &machine, &observed)?;
             if measurements.workspace_used_bytes.is_none() || measurements.last_error.is_some() {
-                return Err(failure("Live storage measurements or trim result were unavailable."));
+                return Err(failure(
+                    "Live storage measurements or trim result were unavailable.",
+                ));
             }
-            println!("Verified live storage: {}", serde_json::to_string(&measurements).unwrap());
+            println!(
+                "Verified live storage: {}",
+                serde_json::to_string(&measurements).unwrap()
+            );
             Ok(())
         })();
         let stopped = lifecycle_recovery::perform(&runner, &paths, &host, "stop", machine.name());
         result.unwrap();
         stopped.unwrap();
         assert_eq!(fs::metadata(&disk).unwrap().len(), length);
-        assert!(inspect_workspace(&runner, &paths, machine.name()).unwrap().status.eq_ignore_ascii_case("stopped"));
+        assert!(inspect_workspace(&runner, &paths, machine.name())
+            .unwrap()
+            .status
+            .eq_ignore_ascii_case("stopped"));
     }
 }
 
@@ -315,7 +537,8 @@ fn restored_layered_workspace_is_measured_and_a_missing_disk_is_unknown() {
     fs::write(directory.join("writable.qcow2"), vec![2u8; 8192]).unwrap();
     observed.status = "Stopped".into();
     let runner = Runner::new();
-    let expected = allocated(&directory.join("sealed-000.raw")).unwrap() + allocated(&directory.join("writable.qcow2")).unwrap();
+    let expected = allocated(&directory.join("sealed-000.raw")).unwrap()
+        + allocated(&directory.join("writable.qcow2")).unwrap();
     let value = state(&runner, &paths, &machine, &observed).unwrap();
     assert_eq!(value.workspace_host_bytes, Some(expected));
     assert!(expected > 0);
@@ -323,7 +546,10 @@ fn restored_layered_workspace_is_measured_and_a_missing_disk_is_unknown() {
 
     fs::remove_dir_all(&directory).unwrap();
     let value = state(&runner, &paths, &machine, &observed).unwrap();
-    assert_eq!(value.workspace_host_bytes, None, "a missing workspace disk is unknown, not 0 B");
+    assert_eq!(
+        value.workspace_host_bytes, None,
+        "a missing workspace disk is unknown, not 0 B"
+    );
     assert!(!workspace_mount(&paths, &machine, &observed));
 }
 
@@ -335,44 +561,88 @@ fn runtime_usage_counts_flat_roots_and_is_unknown_without_a_sandbox_directory() 
     let sandbox = paths.home.join("sandboxes/dev");
     fs::write(sandbox.join("rootfs.raw"), vec![3u8; 8192]).unwrap();
     fs::write(sandbox.join("upper.ext4"), vec![4u8; 8192]).unwrap();
-    let expected = allocated(&sandbox.join("rootfs.raw")).unwrap() + allocated(&sandbox.join("upper.ext4")).unwrap();
+    let expected = allocated(&sandbox.join("rootfs.raw")).unwrap()
+        + allocated(&sandbox.join("upper.ext4")).unwrap();
     let runner = Runner::new();
-    assert_eq!(state(&runner, &paths, &machine, &observed).unwrap().runtime_host_bytes, Some(expected));
+    assert_eq!(
+        state(&runner, &paths, &machine, &observed)
+            .unwrap()
+            .runtime_host_bytes,
+        Some(expected)
+    );
     fs::remove_dir_all(&sandbox).unwrap();
-    assert_eq!(state(&runner, &paths, &machine, &observed).unwrap().runtime_host_bytes, None);
+    assert_eq!(
+        state(&runner, &paths, &machine, &observed)
+            .unwrap()
+            .runtime_host_bytes,
+        None
+    );
 }
 
 #[test]
 fn layered_workspace_reclaim_measures_the_whole_chain_and_guards_every_layer_length() {
     let _test_state = crate::test_support::global_state();
-    struct LayerRunner { shrink: bool }
+    struct LayerRunner {
+        shrink: bool,
+    }
     impl RuntimeRunner for LayerRunner {
-        fn run(&self, paths: &RuntimePaths, args: &[String], _: Duration) -> Result<CommandOutput, RuntimeError> {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            _: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
             if args[0] == "--silo-storage-protocol" {
-                return Ok(CommandOutput { stdout: "1\n".into(), stderr: String::new() });
+                return Ok(CommandOutput {
+                    stdout: "1\n".into(),
+                    stderr: String::new(),
+                });
             }
             let head = workspace_dir(paths, "dev").join("writable.qcow2");
             let file = fs::OpenOptions::new().write(true).open(&head).unwrap();
             // Discard releases the head's blocks but keeps its logical length (hole punch),
             // unless this runner simulates the old truncating runtime.
             file.set_len(0).unwrap();
-            if !self.shrink { file.set_len(1024 * 1024).unwrap(); }
-            Ok(CommandOutput { stdout: String::new(), stderr: String::new() })
+            if !self.shrink {
+                file.set_len(1024 * 1024).unwrap();
+            }
+            Ok(CommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+            })
         }
     }
     for shrink in [false, true] {
         let (_dir, paths, machine, observed) = fixture();
         let head = workspace_dir(&paths, "dev").join("writable.qcow2");
         fs::write(&head, vec![5u8; 1024 * 1024]).unwrap();
-        let result = trim(&LayerRunner { shrink }, &paths, &machine, &observed, TRIM_BUDGET, now());
+        let result = trim(
+            &LayerRunner { shrink },
+            &paths,
+            &machine,
+            &observed,
+            TRIM_BUDGET,
+            now(),
+        );
         let record = load(&paths, machine.id()).unwrap();
-        assert_eq!(fs::metadata(&head).unwrap().len(), 1024 * 1024, "every layer keeps its logical length");
+        assert_eq!(
+            fs::metadata(&head).unwrap().len(),
+            1024 * 1024,
+            "every layer keeps its logical length"
+        );
         if shrink {
-            assert!(result.unwrap_err().to_string().contains("original length was restored"));
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("original length was restored"));
             assert!(record.last_trim_at.is_none());
         } else {
             result.unwrap();
-            assert!(record.last_reclaimed_bytes.unwrap() >= 1024 * 1024, "{:?}", record.last_reclaimed_bytes);
+            assert!(
+                record.last_reclaimed_bytes.unwrap() >= 1024 * 1024,
+                "{:?}",
+                record.last_reclaimed_bytes
+            );
         }
     }
 }
@@ -382,10 +652,31 @@ fn history_retains_latest_fifty_attempts_including_failures() {
     let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
     for at in 0..51 {
-        trim_triggered(&Runner::new(), &paths, &machine, &observed, TRIM_BUDGET, at, "scheduled").unwrap();
+        trim_triggered(
+            &Runner::new(),
+            &paths,
+            &machine,
+            &observed,
+            TRIM_BUDGET,
+            at,
+            "scheduled",
+        )
+        .unwrap();
     }
-    let failing = Runner { fail: true, ..Runner::new() };
-    assert!(trim_triggered(&failing, &paths, &machine, &observed, TRIM_BUDGET, 51, "manual").is_err());
+    let failing = Runner {
+        fail: true,
+        ..Runner::new()
+    };
+    assert!(trim_triggered(
+        &failing,
+        &paths,
+        &machine,
+        &observed,
+        TRIM_BUDGET,
+        51,
+        "manual"
+    )
+    .is_err());
     let record = load(&paths, machine.id()).unwrap();
     assert_eq!(record.history.len(), 50);
     assert_eq!(record.history[0].at, 51);
@@ -404,7 +695,11 @@ fn legacy_record_keeps_last_success_when_history_is_introduced() {
     let (_dir, paths, machine, _) = fixture();
     let path = record_path(&paths, machine.id());
     fs::create_dir_all(path.parent().unwrap()).unwrap();
-    fs::write(path, r#"{"lastTrimAt":100,"lastAttemptAt":100,"lastReclaimedBytes":2048,"lastError":null}"#).unwrap();
+    fs::write(
+        path,
+        r#"{"lastTrimAt":100,"lastAttemptAt":100,"lastReclaimedBytes":2048,"lastError":null}"#,
+    )
+    .unwrap();
     let record = load(&paths, machine.id()).unwrap();
     assert_eq!(record.history.len(), 1);
     assert_eq!(record.history[0].at, 100);

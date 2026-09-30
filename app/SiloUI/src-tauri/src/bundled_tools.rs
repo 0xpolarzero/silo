@@ -6,7 +6,9 @@ use tauri::{utils::config::BundleType, AppHandle, Manager};
 pub(crate) fn directory(app: &AppHandle) -> Result<PathBuf, String> {
     let executable = std::env::current_exe()
         .map_err(|_| "Silo could not locate its bundled tools.".to_string())?;
-    let resources = app.path().resource_dir()
+    let resources = app
+        .path()
+        .resource_dir()
         .map_err(|_| "Silo could not locate its bundled resources.".to_string())?;
     let appimage_root = std::env::var_os("APPDIR").map(PathBuf::from);
     resolve(
@@ -18,7 +20,10 @@ pub(crate) fn directory(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 pub(crate) fn is_packaged_linux(bundle: Option<BundleType>) -> bool {
-    matches!(bundle, Some(BundleType::AppImage | BundleType::Deb | BundleType::Rpm))
+    matches!(
+        bundle,
+        Some(BundleType::AppImage | BundleType::Deb | BundleType::Rpm)
+    )
 }
 
 pub(crate) fn resolve(
@@ -31,9 +36,7 @@ pub(crate) fn resolve(
         Some(BundleType::AppImage) => appimage_root
             .map(|root| root.join("usr/libexec/silo/tools"))
             .ok_or_else(|| "Silo could not locate its AppImage tools directory.".into()),
-        Some(BundleType::Deb | BundleType::Rpm) => {
-            Ok(PathBuf::from("/usr/libexec/silo/tools"))
-        }
+        Some(BundleType::Deb | BundleType::Rpm) => Ok(PathBuf::from("/usr/libexec/silo/tools")),
         _ => executable
             .parent()
             .map(Path::to_path_buf)
@@ -53,7 +56,13 @@ mod tests {
         std::fs::write(executable.with_file_name("git"), "unrelated system Git").unwrap();
         for bundle in [BundleType::AppImage, BundleType::Deb, BundleType::Rpm] {
             let appimage_root = Path::new("/tmp/Silo.AppDir");
-            let directory = resolve(&executable, &resources, Some(bundle.clone()), Some(appimage_root)).unwrap();
+            let directory = resolve(
+                &executable,
+                &resources,
+                Some(bundle.clone()),
+                Some(appimage_root),
+            )
+            .unwrap();
             let expected = if bundle == BundleType::AppImage {
                 appimage_root.join("usr/libexec/silo/tools")
             } else {
@@ -62,7 +71,10 @@ mod tests {
             assert_eq!(directory, expected);
             assert!(!directory.join("git").exists());
         }
-        assert_eq!(std::fs::read(executable.with_file_name("git")).unwrap(), b"unrelated system Git");
+        assert_eq!(
+            std::fs::read(executable.with_file_name("git")).unwrap(),
+            b"unrelated system Git"
+        );
     }
     #[test]
     fn appimage_macos_and_development_keep_their_existing_sibling_tools() {

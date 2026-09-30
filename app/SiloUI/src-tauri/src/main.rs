@@ -1,13 +1,11 @@
-#[cfg(target_os = "macos")]
-mod titlebar;
-#[cfg(target_os = "macos")]
-mod window_material;
-mod applications;
-mod bridge_error;
 mod app_menu;
+mod applications;
 mod backup;
-mod bundled_tools;
 mod backup_controller;
+mod bridge_error;
+mod bundled_tools;
+#[cfg(test)]
+mod command_permissions_tests;
 mod dependencies;
 mod desktop;
 mod desktop_proxy;
@@ -15,47 +13,49 @@ mod desktop_viewer;
 mod editor;
 mod files;
 mod github;
-mod github_http;
 #[cfg(test)]
 mod github_build_tests;
-#[cfg(test)]
-mod command_permissions_tests;
-#[cfg(test)]
-mod github_permissions_tests;
+mod github_http;
 #[cfg(test)]
 mod github_live_tests;
+#[cfg(test)]
+mod github_permissions_tests;
 mod github_tokens;
+mod health_watch;
 mod host_identity;
 mod host_push;
 mod host_push_cache;
-mod host_push_transport;
 mod host_push_operations;
-mod network;
-mod health_watch;
-mod notifications;
-mod runtime;
-mod runtime_migration;
+mod host_push_transport;
 mod log_export;
 mod log_retention;
+mod network;
+mod notifications;
 mod remote;
 mod remote_access;
 mod remote_network;
 mod remote_ssh_access;
+mod runtime;
+mod runtime_migration;
 mod secrets;
-mod ssh_access;
-mod ssh_connection;
 mod settings;
 mod single_instance;
+mod ssh_access;
+mod ssh_connection;
 mod startup;
 mod status_panel;
 mod sync;
-#[cfg(test)]
-mod test_support;
 mod system_integrations;
 mod system_shutdown;
-mod tray;
 mod terminal;
+#[cfg(test)]
+mod test_support;
+#[cfg(target_os = "macos")]
+mod titlebar;
+mod tray;
 mod updates;
+#[cfg(target_os = "macos")]
+mod window_material;
 mod working_account;
 
 use tauri::{Emitter, Manager, WindowEvent};
@@ -74,12 +74,17 @@ fn main() {
         Some("--remote-bridge") => Some(remote::run_bridge()),
         Some("--remote-guest") => Some(if args.len() == 4 {
             remote::run_remote_stream(&args[2], "guest.ssh", serde_json::json!({"vmId": args[3]}))
-        } else { Err("Expected a computer and VM identity.".into()) }),
+        } else {
+            Err("Expected a computer and VM identity.".into())
+        }),
         Some(editor::TRANSPORT_MODE) => Some(editor::run_transport(&args[2..])),
         _ => None,
     };
     if let Some(result) = bridge {
-        if let Err(error) = result { eprintln!("{error}"); std::process::exit(1); }
+        if let Err(error) = result {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
         return;
     }
     // Plugins initialize while the app is built, in registration order, and the
@@ -225,52 +230,54 @@ fn main() {
         .setup(|app| {
             // Tauri panics on a setup error. Explain the failure and exit instead.
             let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            settings::install(app.handle());
-            system_shutdown::install(app.handle());
-            let queue_app = app.handle().clone();
-            runtime::OPERATIONS.set_listener(move || {
-                let _ = queue_app.emit("silo://operation-queue-changed", ());
-            });
-            runtime_migration::install(app.handle())?;
-            remote::start(app.handle().clone());
-            secrets::install(app.handle())?;
-            github::install(app.handle());
-            backup_controller::install(app.handle())?;
-            runtime_migration::start_if_pending(app.handle())?;
-            status_panel::install(app.handle())?;
-            tray::install(app.handle())?;
-            app_menu::install(app.handle())?;
-            let window = app
-                .get_webview_window("main")
-                .expect("main window is configured");
-            #[cfg(target_os = "linux")]
-            window.set_decorations(false)?;
-            let handle = app.handle().clone();
-            window.on_window_event(move |event| {
-                if matches!(event, WindowEvent::Focused(true)) { updates::focused(&handle); }
-                if let WindowEvent::CloseRequested { api, .. } = event {
-                    api.prevent_close();
-                    if tray::available(&handle) {
-                        if let Some(window) = handle.get_webview_window("main") {
-                            status_panel::report(window.hide());
-                        }
-                    } else {
-                        settings::request_quit(&handle);
+                settings::install(app.handle());
+                system_shutdown::install(app.handle());
+                let queue_app = app.handle().clone();
+                runtime::OPERATIONS.set_listener(move || {
+                    let _ = queue_app.emit("silo://operation-queue-changed", ());
+                });
+                runtime_migration::install(app.handle())?;
+                remote::start(app.handle().clone());
+                secrets::install(app.handle())?;
+                github::install(app.handle());
+                backup_controller::install(app.handle())?;
+                runtime_migration::start_if_pending(app.handle())?;
+                status_panel::install(app.handle())?;
+                tray::install(app.handle())?;
+                app_menu::install(app.handle())?;
+                let window = app
+                    .get_webview_window("main")
+                    .expect("main window is configured");
+                #[cfg(target_os = "linux")]
+                window.set_decorations(false)?;
+                let handle = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if matches!(event, WindowEvent::Focused(true)) {
+                        updates::focused(&handle);
                     }
-                }
-            });
-            #[cfg(target_os = "macos")]
-            window_material::install(&window)?;
-            window.show()?;
-            #[cfg(target_os = "macos")]
-            titlebar::install(&window)?;
-            notifications::install(app.handle());
-            updates::install(app.handle())?;
-            ssh_access::start_monitor(app.handle());
-            editor::refresh_transports(app.handle());
-            runtime::storage::start_monitor(app.handle());
-            startup::install(app.handle());
-            Ok(())
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        if tray::available(&handle) {
+                            if let Some(window) = handle.get_webview_window("main") {
+                                status_panel::report(window.hide());
+                            }
+                        } else {
+                            settings::request_quit(&handle);
+                        }
+                    }
+                });
+                #[cfg(target_os = "macos")]
+                window_material::install(&window)?;
+                window.show()?;
+                #[cfg(target_os = "macos")]
+                titlebar::install(&window)?;
+                notifications::install(app.handle());
+                updates::install(app.handle())?;
+                ssh_access::start_monitor(app.handle());
+                editor::refresh_transports(app.handle());
+                runtime::storage::start_monitor(app.handle());
+                startup::install(app.handle());
+                Ok(())
             })();
             if let Err(error) = result {
                 startup_failed(app.handle(), &error.to_string());

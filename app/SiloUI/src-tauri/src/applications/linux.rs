@@ -18,7 +18,13 @@ fn find_program(name: &str) -> Option<PathBuf> {
 fn entry_argv(info: &DesktopAppInfo) -> Vec<String> {
     info.commandline()
         .and_then(|line| gio::glib::shell_parse_argv(line.as_os_str()).ok())
-        .map(|tokens| launch::exec_argv(tokens.into_iter().filter_map(|token| token.into_string().ok())))
+        .map(|tokens| {
+            launch::exec_argv(
+                tokens
+                    .into_iter()
+                    .filter_map(|token| token.into_string().ok()),
+            )
+        })
         .unwrap_or_default()
 }
 
@@ -30,7 +36,10 @@ fn entry_editor(info: &DesktopAppInfo) -> Result<launch::EditorCommand, String> 
 /// The resolved CLI for a chosen editor entry or executable (G-06, G-25).
 pub fn editor_command(application: &Application) -> Result<launch::EditorCommand, String> {
     let path = Path::new(&application.path);
-    if path.extension().is_some_and(|extension| extension == "desktop") {
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "desktop")
+    {
         entry_editor(&desktop_at(path).ok_or("The selected editor is unavailable.")?)
     } else {
         launch::linux_editor_command(&[application.path.clone()], None, &find_program)
@@ -40,7 +49,10 @@ pub fn editor_command(application: &Application) -> Result<launch::EditorCommand
 /// The program a terminal entry or executable runs. Flatpak terminals have no
 /// command launcher Silo supports.
 fn terminal_program(path: &Path) -> Option<PathBuf> {
-    if !path.extension().is_some_and(|extension| extension == "desktop") {
+    if !path
+        .extension()
+        .is_some_and(|extension| extension == "desktop")
+    {
         return Some(path.to_path_buf());
     }
     let info = desktop_at(path)?;
@@ -174,14 +186,22 @@ pub fn discover() -> Result<ApplicationCatalog, String> {
     }
     // GAppInfo has no terminal association: use the system's terminal
     // launcher, else the first listed terminal (G-07).
-    let listed: Vec<String> = catalog.terminal.iter().map(|application| application.path.clone()).collect();
+    let listed: Vec<String> = catalog
+        .terminal
+        .iter()
+        .map(|application| application.path.clone())
+        .collect();
     if let Some(path) = launch::linux_terminal_default(&find_program, &listed) {
         if !listed.contains(&path) {
             if let Some(application) = application_at(Path::new(&path)) {
                 catalog.terminal.push(application);
             }
         }
-        if catalog.terminal.iter().any(|application| application.path == path) {
+        if catalog
+            .terminal
+            .iter()
+            .any(|application| application.path == path)
+        {
             catalog.defaults.insert("terminal".into(), path);
         }
     }
@@ -574,7 +594,11 @@ mod tests {
 
     fn entry(directory: &Path, name: &str, body: &str) -> std::path::PathBuf {
         let path = directory.join(format!("{name}.desktop"));
-        fs::write(&path, format!("[Desktop Entry]\nType=Application\nName={name}\n{body}")).unwrap();
+        fs::write(
+            &path,
+            format!("[Desktop Entry]\nType=Application\nName={name}\n{body}"),
+        )
+        .unwrap();
         path
     }
 
@@ -588,10 +612,18 @@ mod tests {
             fs::write(executable, "#!/bin/sh\nexit 0\n").unwrap();
             fs::set_permissions(executable, fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let code = entry(directory.path(), "code", &format!("Exec={} %F\nCategories=TextEditor;\n", electron.display()));
+        let code = entry(
+            directory.path(),
+            "code",
+            &format!("Exec={} %F\nCategories=TextEditor;\n", electron.display()),
+        );
         let command = editor_command(&application_at(&code).unwrap()).unwrap();
         assert_eq!((command.program, command.zed), (cli, false));
-        let text = entry(directory.path(), "text", "Exec=/bin/true %U\nCategories=TextEditor;\n");
+        let text = entry(
+            directory.path(),
+            "text",
+            "Exec=/bin/true %U\nCategories=TextEditor;\n",
+        );
         assert!(editor_command(&application_at(&text).unwrap()).is_err());
         assert!(entry_editor(&desktop_at(&text).unwrap()).is_err());
     }
@@ -606,9 +638,21 @@ mod tests {
             fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
             fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
         }
-        let ptyxis = entry(directory.path(), "ptyxis", &format!("Exec={} --new-window\n", bin.join("ptyxis").display()));
-        let retro = entry(directory.path(), "retro", &format!("Exec={}\n", bin.join("cool-retro-term").display()));
-        let flatpak = entry(directory.path(), "flatpak", "Exec=/bin/true run org.example.Terminal\nX-Flatpak=org.example.Terminal\n");
+        let ptyxis = entry(
+            directory.path(),
+            "ptyxis",
+            &format!("Exec={} --new-window\n", bin.join("ptyxis").display()),
+        );
+        let retro = entry(
+            directory.path(),
+            "retro",
+            &format!("Exec={}\n", bin.join("cool-retro-term").display()),
+        );
+        let flatpak = entry(
+            directory.path(),
+            "flatpak",
+            "Exec=/bin/true run org.example.Terminal\nX-Flatpak=org.example.Terminal\n",
+        );
         assert!(launchable_terminal(&ptyxis));
         assert!(!launchable_terminal(&retro));
         assert!(!launchable_terminal(&flatpak));
@@ -631,10 +675,16 @@ mod tests {
     }
 }
 
-pub fn open_terminal(_app: &tauri::AppHandle, application: &Application, command: &str) -> Result<(), String> {
+pub fn open_terminal(
+    _app: &tauri::AppHandle,
+    application: &Application,
+    command: &str,
+) -> Result<(), String> {
     let executable = terminal_program(Path::new(&application.path))
         .ok_or("The selected terminal is unavailable.")?;
     let mut launch = std::process::Command::new(&executable);
-    launch.args(crate::terminal::linux_arguments(&executable)?).args(["/bin/sh", "-c", &format!("exec {command}")]);
+    launch
+        .args(crate::terminal::linux_arguments(&executable)?)
+        .args(["/bin/sh", "-c", &format!("exec {command}")]);
     crate::terminal::launch(launch)
 }

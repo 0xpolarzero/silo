@@ -57,7 +57,12 @@ impl Tunnel {
             .process_group(0)
             .spawn()?;
         let stdin = child.stdin.take();
-        Ok(Self { child, stdin, exited: false, _directory: directory })
+        Ok(Self {
+            child,
+            stdin,
+            exited: false,
+            _directory: directory,
+        })
     }
     fn running(&mut self) -> bool {
         if !self.exited && !matches!(self.child.try_wait(), Ok(None)) {
@@ -99,7 +104,13 @@ struct Viewer {
 }
 impl Viewer {
     fn new(workspace: String) -> Self {
-        Self { workspace, proxy: None, tunnel: None, generation: 0, connecting: false }
+        Self {
+            workspace,
+            proxy: None,
+            tunnel: None,
+            generation: 0,
+            connecting: false,
+        }
     }
     /// Takes the connection out so the caller can drop it after unlocking.
     fn disconnect(&mut self) -> (Option<Proxy>, Option<Tunnel>) {
@@ -108,8 +119,7 @@ impl Viewer {
         (self.proxy.take(), self.tunnel.take())
     }
     fn healthy(&mut self) -> bool {
-        self.proxy.is_some()
-            && self.tunnel.as_mut().is_some_and(Tunnel::running)
+        self.proxy.is_some() && self.tunnel.as_mut().is_some_and(Tunnel::running)
     }
 }
 /// What `desktop_viewer_attach` must do once the registry lock is released.
@@ -117,7 +127,10 @@ enum AttachPlan {
     /// The display is connected; only its bounds change.
     Resize,
     /// Connect a new display and install it only if `generation` still matches.
-    Connect { generation: u64, stale: (Option<Proxy>, Option<Tunnel>) },
+    Connect {
+        generation: u64,
+        stale: (Option<Proxy>, Option<Tunnel>),
+    },
 }
 /// Decides under the registry lock; every slow step runs after it is released.
 /// Holding the lock across `connect()` or `add_child()` deadlocks the main
@@ -140,7 +153,10 @@ fn begin_attach(
     }
     let stale = entry.disconnect();
     entry.connecting = true;
-    Ok(AttachPlan::Connect { generation: entry.generation, stale })
+    Ok(AttachPlan::Connect {
+        generation: entry.generation,
+        stale,
+    })
 }
 /// Installs a finished connection, or hands it back when the viewer closed or
 /// was reset meanwhile so the caller can discard it outside the lock.
@@ -180,7 +196,10 @@ enum ViewerClaim {
 }
 /// Reserves one viewer per workspace, so a concurrent second open finds the
 /// pending entry instead of creating a duplicate window and tunnel.
-fn claim_viewer(entries: &mut HashMap<String, Viewer>, workspace: &str) -> Result<ViewerClaim, String> {
+fn claim_viewer(
+    entries: &mut HashMap<String, Viewer>,
+    workspace: &str,
+) -> Result<ViewerClaim, String> {
     if let Some((label, _)) = entries.iter().find(|(_, v)| v.workspace == workspace) {
         return Ok(ViewerClaim::Existing(label.clone()));
     }
@@ -306,7 +325,10 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
         let directory = paths.home.join("ssh/desktop-viewer").join(workspace);
         editor::prepare_private_transport(&paths, workspace, &directory)?
     };
-    let home = app.path().home_dir().map_err(|_| "Could not prepare the desktop connection.")?;
+    let home = app
+        .path()
+        .home_dir()
+        .map_err(|_| "Could not prepare the desktop connection.")?;
     let directory = socket_directory(&home.join(".silo"))?;
     let socket: PathBuf = directory.path().join("desktop.sock");
     let command = forward_command(&config, &alias, &socket, guest)?;
@@ -567,9 +589,14 @@ pub(crate) async fn desktop_viewer_attach(
             return Err(abort("Could not authenticate desktop viewer."));
         }
         let rejected = match viewers().lock() {
-            Ok(mut entries) => {
-                finish_attach(&mut entries, window.label(), generation, Some(proxy), tunnel).err()
-            }
+            Ok(mut entries) => finish_attach(
+                &mut entries,
+                window.label(),
+                generation,
+                Some(proxy),
+                tunnel,
+            )
+            .err(),
             Err(_) => Some((Some(proxy), tunnel)),
         };
         if let Some(stale) = rejected {
@@ -713,27 +740,33 @@ mod transport_tests {
         )
         .unwrap();
         assert_eq!(command.get_program().to_string_lossy(), "/usr/bin/ssh");
-        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
-        assert_eq!(args, [
-            "-F",
-            "/tmp/silo-private-ssh.conf",
-            "-N",
-            "-o",
-            "ExitOnForwardFailure=yes",
-            "-o",
-            "ConnectTimeout=15",
-            "-o",
-            "StreamLocalBindUnlink=yes",
-            "-o",
-            "StreamLocalBindMask=0177",
-            "-o",
-            "ServerAliveInterval=15",
-            "-o",
-            "ServerAliveCountMax=3",
-            "-L",
-            "/home/user/.silo/desktop-abc/desktop.sock:127.0.0.1:6901",
-            "silo-remote-host-vm",
-        ]);
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-F",
+                "/tmp/silo-private-ssh.conf",
+                "-N",
+                "-o",
+                "ExitOnForwardFailure=yes",
+                "-o",
+                "ConnectTimeout=15",
+                "-o",
+                "StreamLocalBindUnlink=yes",
+                "-o",
+                "StreamLocalBindMask=0177",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3",
+                "-L",
+                "/home/user/.silo/desktop-abc/desktop.sock:127.0.0.1:6901",
+                "silo-remote-host-vm",
+            ]
+        );
         // No TCP listener: nothing binds a loopback port for the guest.
         assert!(!args.iter().any(|arg| arg.starts_with("127.0.0.1:")));
         // The system OpenSSH reads it as a Unix-socket forward.
@@ -752,7 +785,10 @@ mod transport_tests {
             .unwrap();
         assert!(parsed.status.success());
         let parsed = String::from_utf8(parsed.stdout).unwrap();
-        assert!(parsed.contains("localforward /tmp/silo-test/desktop.sock [127.0.0.1]:6901\n"), "{parsed}");
+        assert!(
+            parsed.contains("localforward /tmp/silo-test/desktop.sock [127.0.0.1]:6901\n"),
+            "{parsed}"
+        );
         assert!(parsed.contains("streamlocalbindmask 0177\n"));
     }
 
@@ -774,7 +810,12 @@ mod transport_tests {
         let path = directory.path().to_path_buf();
         for private in [&root, &path] {
             let metadata = fs::metadata(private).unwrap();
-            assert_eq!(metadata.permissions().mode() & 0o077, 0, "{}", private.display());
+            assert_eq!(
+                metadata.permissions().mode() & 0o077,
+                0,
+                "{}",
+                private.display()
+            );
             assert_eq!(metadata.uid(), unsafe { libc::geteuid() });
         }
         drop(Tunnel::spawn(Command::new("sleep").arg("30"), Some(directory)).unwrap());
@@ -786,7 +827,10 @@ mod transport_tests {
         let directory = tempfile::tempdir().unwrap();
         let socket = directory.path().join("desktop.sock");
         let uid = unsafe { libc::geteuid() };
-        assert!(!socket_ready(&socket, uid).unwrap(), "missing socket is not ready yet");
+        assert!(
+            !socket_ready(&socket, uid).unwrap(),
+            "missing socket is not ready yet"
+        );
         let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         assert!(socket_ready(&socket, uid).unwrap());
         // A socket another account created first is never used.
@@ -809,7 +853,10 @@ mod transport_tests {
     fn recorded_pid(file: &Path) -> i32 {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
-            if let Some(pid) = fs::read_to_string(file).ok().and_then(|text| text.trim().parse().ok()) {
+            if let Some(pid) = fs::read_to_string(file)
+                .ok()
+                .and_then(|text| text.trim().parse().ok())
+            {
                 return pid;
             }
             assert!(Instant::now() < deadline, "the forward never started");
@@ -858,10 +905,14 @@ mod transport_tests {
 
     #[test]
     fn a_forward_that_exits_ends_its_watchdog() {
-        let mut tunnel = Tunnel::spawn(Command::new("/bin/sh").args(["-c", "exit 3"]), None).unwrap();
+        let mut tunnel =
+            Tunnel::spawn(Command::new("/bin/sh").args(["-c", "exit 3"]), None).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while tunnel.running() {
-            assert!(Instant::now() < deadline, "a closed forward still looks connected");
+            assert!(
+                Instant::now() < deadline,
+                "a closed forward still looks connected"
+            );
             std::thread::sleep(Duration::from_millis(10));
         }
     }
@@ -875,9 +926,16 @@ mod transport_tests {
             6901,
         )
         .unwrap();
-        let args: Vec<_> = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
-        assert!(args.windows(2).any(|pair| pair == ["-o", "ServerAliveInterval=15"]));
-        assert!(args.windows(2).any(|pair| pair == ["-o", "ServerAliveCountMax=3"]));
+        let args: Vec<_> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-o", "ServerAliveInterval=15"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-o", "ServerAliveCountMax=3"]));
     }
 }
 
@@ -902,8 +960,9 @@ mod registry_tests {
         };
         // The lock is free while connecting: the Destroyed handler removes it.
         entries.remove("shell");
-        let (_, tunnel) = finish_attach(&mut entries, "shell", generation, None, Some(live_tunnel()))
-            .expect_err("closed viewer must not accept the connection");
+        let (_, tunnel) =
+            finish_attach(&mut entries, "shell", generation, None, Some(live_tunnel()))
+                .expect_err("closed viewer must not accept the connection");
         assert!(tunnel.is_some(), "the caller reaps the rejected tunnel");
     }
 
@@ -932,14 +991,19 @@ mod registry_tests {
         else {
             panic!("expected a connect plan");
         };
-        assert!(finish_attach(&mut entries, "shell", generation, None, Some(live_tunnel())).is_ok());
+        assert!(
+            finish_attach(&mut entries, "shell", generation, None, Some(live_tunnel())).is_ok()
+        );
         let entry = entries.get_mut("shell").unwrap();
         assert!(!entry.connecting);
         assert!(entry.tunnel.is_some());
         // Without a proxy the display is not healthy, so attach reconnects.
         assert!(matches!(
             begin_attach(&mut entries, "shell", "dev", true),
-            Ok(AttachPlan::Connect { stale: (_, Some(_)), .. })
+            Ok(AttachPlan::Connect {
+                stale: (_, Some(_)),
+                ..
+            })
         ));
         assert!(begin_attach(&mut entries, "shell", "other", true).is_err());
     }
@@ -956,7 +1020,10 @@ mod registry_tests {
         };
         assert_eq!(first, second);
         assert_eq!(entries.len(), 1);
-        assert!(matches!(claim_viewer(&mut entries, "other"), Ok(ViewerClaim::New(_))));
+        assert!(matches!(
+            claim_viewer(&mut entries, "other"),
+            Ok(ViewerClaim::New(_))
+        ));
         for index in 0..14 {
             claim_viewer(&mut entries, &format!("vm-{index}")).unwrap();
         }

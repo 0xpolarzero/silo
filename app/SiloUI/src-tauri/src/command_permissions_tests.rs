@@ -12,7 +12,9 @@ fn material_preview_theme_command_is_not_granted_to_production_windows() {
     );
     for capability in capabilities.as_object().unwrap().values() {
         assert!(
-            !capability["permissions"].as_array().unwrap()
+            !capability["permissions"]
+                .as_array()
+                .unwrap()
                 .contains(&Value::String("allow-set-preview-theme".into())),
             "Only the example harness can grant its theme command at runtime",
         );
@@ -68,8 +70,7 @@ fn reveal_backup_archive_is_allowlisted_for_the_main_window_only() {
     assert_eq!(preview["local"], serde_json::json!(true));
 
     assert_eq!(
-        manifests["__app-acl__"]["permissions"]["allow-reveal-backup-archive"]["commands"]
-            ["allow"],
+        manifests["__app-acl__"]["permissions"]["allow-reveal-backup-archive"]["commands"]["allow"],
         serde_json::json!(["reveal_backup_archive"]),
         "Tauri must generate a permission for reveal_backup_archive"
     );

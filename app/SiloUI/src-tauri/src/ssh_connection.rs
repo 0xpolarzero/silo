@@ -1,7 +1,10 @@
 //! Prepare a usable client command or explicitly export its isolated key.
 use crate::{editor, remote, runtime, ssh_access};
 use serde::Deserialize;
-use std::{path::{Path, PathBuf}, sync::Mutex};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 use tauri::{AppHandle, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
@@ -16,20 +19,37 @@ fn quote(value: &str) -> String {
 }
 fn command(path: &Path, endpoint: &Endpoint, user: &str) -> Result<String, String> {
     let user = crate::working_account::response_user(&serde_json::json!({"user":user}))?;
-    let address: std::net::Ipv4Addr = endpoint.address.parse().map_err(|_| "Invalid SSH address.")?;
-    if endpoint.port == 0 || address.is_unspecified() { return Err("Invalid SSH connection.".into()); }
-    Ok(format!("ssh -i {} -o IdentitiesOnly=yes -p {} {user}@{}", quote(path.to_str().ok_or("Invalid key path.")?), endpoint.port, address))
+    let address: std::net::Ipv4Addr = endpoint
+        .address
+        .parse()
+        .map_err(|_| "Invalid SSH address.")?;
+    if endpoint.port == 0 || address.is_unspecified() {
+        return Err("Invalid SSH connection.".into());
+    }
+    Ok(format!(
+        "ssh -i {} -o IdentitiesOnly=yes -p {} {user}@{}",
+        quote(path.to_str().ok_or("Invalid key path.")?),
+        endpoint.port,
+        address
+    ))
 }
 
-fn select_endpoint(endpoint: &mut Endpoint, network: Option<bool>, is_remote: bool, download: bool) -> Result<(), String> {
-        if network == Some(true) && endpoint.address == "127.0.0.1" && !download {
-            return Err("Enable SSH from other computers first.".into());
-        }
-        if network == Some(false) { endpoint.address = "127.0.0.1".into(); }
-        // A controller cannot dial the owner's loopback address.
-        if is_remote && !download && endpoint.address == "127.0.0.1" {
-            return Err("Enable access from other computers to connect to this remote sandbox.".into());
-        }
+fn select_endpoint(
+    endpoint: &mut Endpoint,
+    network: Option<bool>,
+    is_remote: bool,
+    download: bool,
+) -> Result<(), String> {
+    if network == Some(true) && endpoint.address == "127.0.0.1" && !download {
+        return Err("Enable SSH from other computers first.".into());
+    }
+    if network == Some(false) {
+        endpoint.address = "127.0.0.1".into();
+    }
+    // A controller cannot dial the owner's loopback address.
+    if is_remote && !download && endpoint.address == "127.0.0.1" {
+        return Err("Enable access from other computers to connect to this remote sandbox.".into());
+    }
     Ok(())
 }
 
@@ -49,7 +69,9 @@ fn remote_client_key(home: &Path, host: &str, vm: &str) -> Result<PathBuf, Strin
     static KEYS: Mutex<()> = Mutex::new(());
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
     uuid::Uuid::parse_str(vm).map_err(|_| "Invalid sandbox identity.")?;
-    let _guard = KEYS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = KEYS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let name = format!("{host}-{vm}");
     remove_if_present(&legacy_connection_root(home).join(&name))?;
     let root = remote_client_root(home);
@@ -75,9 +97,15 @@ pub(crate) fn forget_host(home: &Path, host: &str) -> Result<(), String> {
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
     let prefix = format!("{host}-");
     for root in [remote_client_root(home), legacy_connection_root(home)] {
-        let Ok(entries) = std::fs::read_dir(&root) else { continue };
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
         for entry in entries.flatten() {
-            if entry.file_name().to_str().is_some_and(|name| name.starts_with(&prefix)) {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(&prefix))
+            {
                 remove_if_present(&entry.path())?;
             }
         }
@@ -86,8 +114,18 @@ pub(crate) fn forget_host(home: &Path, host: &str) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub(crate) async fn ssh_connection(app: AppHandle, window: WebviewWindow, workspace: Option<String>, host_id: Option<String>, vm_id: Option<String>, download: bool, network: Option<bool>) -> Result<Option<String>, String> {
-    if window.label() != "main" { return Err("SSH keys can only be exported from the main window.".into()); }
+pub(crate) async fn ssh_connection(
+    app: AppHandle,
+    window: WebviewWindow,
+    workspace: Option<String>,
+    host_id: Option<String>,
+    vm_id: Option<String>,
+    download: bool,
+    network: Option<bool>,
+) -> Result<Option<String>, String> {
+    if window.label() != "main" {
+        return Err("SSH keys can only be exported from the main window.".into());
+    }
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime::runtime_paths(&app)?;
         let is_remote = host_id.is_some();
@@ -145,7 +183,10 @@ mod tests {
     use super::*;
     #[test]
     fn each_row_uses_its_endpoint_and_remote_loopback_is_not_presented_as_usable() {
-        let mut endpoint = Endpoint { port: 2222, address: "192.168.1.42".into() };
+        let mut endpoint = Endpoint {
+            port: 2222,
+            address: "192.168.1.42".into(),
+        };
         select_endpoint(&mut endpoint, Some(true), false, false).unwrap();
         assert_eq!(endpoint.address, "192.168.1.42");
         select_endpoint(&mut endpoint, Some(false), false, false).unwrap();
@@ -156,33 +197,57 @@ mod tests {
     }
     #[test]
     fn command_quotes_key_paths_and_uses_explicit_identity() {
-        let endpoint = Endpoint { port: 2223, address: "127.0.0.1".into() };
-        assert_eq!(command(std::path::Path::new("/a'b $(bad)/key"), &endpoint, "silo").unwrap(), "ssh -i '/a'\\''b $(bad)/key' -o IdentitiesOnly=yes -p 2223 silo@127.0.0.1");
-        assert!(command(std::path::Path::new("/key"), &endpoint, "silo").unwrap().ends_with("silo@127.0.0.1"));
+        let endpoint = Endpoint {
+            port: 2223,
+            address: "127.0.0.1".into(),
+        };
+        assert_eq!(
+            command(std::path::Path::new("/a'b $(bad)/key"), &endpoint, "silo").unwrap(),
+            "ssh -i '/a'\\''b $(bad)/key' -o IdentitiesOnly=yes -p 2223 silo@127.0.0.1"
+        );
+        assert!(command(std::path::Path::new("/key"), &endpoint, "silo")
+            .unwrap()
+            .ends_with("silo@127.0.0.1"));
         assert!(command(std::path::Path::new("/key"), &endpoint, "unknown").is_err());
     }
     #[test]
     fn each_computer_keeps_its_own_remote_key_and_drops_the_owners_copy() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
-        let (host, vm) = (uuid::Uuid::new_v4().to_string(), uuid::Uuid::new_v4().to_string());
+        let (host, vm) = (
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        );
         let legacy = legacy_connection_root(home).join(format!("{host}-{vm}"));
         std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
         std::fs::write(&legacy, "owner's private key from an earlier version").unwrap();
         let key = remote_client_key(home, &host, &vm).unwrap();
-        assert!(!legacy.exists(), "a copy of the owner's key must not be kept");
+        assert!(
+            !legacy.exists(),
+            "a copy of the owner's key must not be kept"
+        );
         let public = editor::public_key(&key).unwrap();
         // Stable across connections, so the owner's authorization keeps working.
-        assert_eq!(editor::public_key(&remote_client_key(home, &host, &vm).unwrap()).unwrap(), public);
+        assert_eq!(
+            editor::public_key(&remote_client_key(home, &host, &vm).unwrap()).unwrap(),
+            public
+        );
         use std::os::unix::fs::PermissionsExt;
-        assert_eq!(std::fs::metadata(&key).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            std::fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert!(remote_client_key(home, "../escape", &vm).is_err());
     }
     #[test]
     fn removing_a_computer_deletes_only_its_connection_keys() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path();
-        let (removed, kept, vm) = (uuid::Uuid::new_v4().to_string(), uuid::Uuid::new_v4().to_string(), uuid::Uuid::new_v4().to_string());
+        let (removed, kept, vm) = (
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        );
         let removed_key = remote_client_key(home, &removed, &vm).unwrap();
         let kept_key = remote_client_key(home, &kept, &vm).unwrap();
         let legacy = legacy_connection_root(home).join(format!("{removed}-{vm}"));

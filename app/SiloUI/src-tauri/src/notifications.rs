@@ -103,7 +103,11 @@ pub(crate) fn enabled(settings: &Map<String, Value>, category: Category) -> bool
     // Match the persisted settings defaults. OS authorization is checked separately.
     flag(settings, "notificationsEnabled", &[])
         && match category {
-            Category::Failures => flag(settings, "notifyFailures", &["notifyActions", "notifyBackup"]),
+            Category::Failures => flag(
+                settings,
+                "notifyFailures",
+                &["notifyActions", "notifyBackup"],
+            ),
             Category::Changes => flag(settings, "notifyChanges", &["notifyHealth"]),
             Category::Completions => flag(settings, "notifyCompletions", &[]),
         }
@@ -249,9 +253,10 @@ pub(crate) fn lifecycle_notice(
         "restart" => ("restart", format!("{name} restarted")),
         _ => return None,
     };
-    let key = sandbox
-        .as_ref()
-        .map_or_else(|| format!("lifecycle:{name}"), |s| format!("vm:{}:lifecycle", s.id));
+    let key = sandbox.as_ref().map_or_else(
+        || format!("lifecycle:{name}"),
+        |s| format!("vm:{}:lifecycle", s.id),
+    );
     match outcome {
         Outcome::Cancelled | Outcome::AlreadyQueued => None,
         Outcome::Failed(message) => Some(Notice {
@@ -286,9 +291,10 @@ pub(crate) fn transfer_notice(
         "restore" => ("import", "Imported"),
         _ => return None,
     };
-    let key = sandbox
-        .as_ref()
-        .map_or_else(|| "transfer".to_string(), |s| format!("vm:{}:transfer", s.id));
+    let key = sandbox.as_ref().map_or_else(
+        || "transfer".to_string(),
+        |s| format!("vm:{}:transfer", s.id),
+    );
     let (category, title, body) = match outcome {
         "failed" => (
             Category::Failures,
@@ -302,11 +308,22 @@ pub(crate) fn transfer_notice(
         ),
         _ => return None,
     };
-    Some(Notice { category, key, title, body, sandbox })
+    Some(Notice {
+        category,
+        key,
+        title,
+        body,
+        sandbox,
+    })
 }
 
 /// A failure notice with a bounded body.
-pub(crate) fn failure(key: &str, title: &str, message: &str, sandbox: Option<NoticeSandbox>) -> Notice {
+pub(crate) fn failure(
+    key: &str,
+    title: &str,
+    message: &str,
+    sandbox: Option<NoticeSandbox>,
+) -> Notice {
     Notice {
         category: Category::Failures,
         key: key.into(),
@@ -328,7 +345,10 @@ mod tests {
     fn master_and_each_category_preference_gate_delivery() {
         for category in ALL {
             assert!(enabled(&settings(json!({})), category));
-            assert!(!enabled(&settings(json!({"notificationsEnabled": false})), category));
+            assert!(!enabled(
+                &settings(json!({"notificationsEnabled": false})),
+                category
+            ));
         }
         let preferences = settings(
             json!({"notifyFailures": false, "notifyChanges": false, "notifyCompletions": false}),
@@ -336,12 +356,21 @@ mod tests {
         for category in ALL {
             assert!(!enabled(&preferences, category));
         }
-        assert!(enabled(&settings(json!({"notifyChanges": false})), Category::Failures));
+        assert!(enabled(
+            &settings(json!({"notifyChanges": false})),
+            Category::Failures
+        ));
     }
     #[test]
     fn legacy_switches_apply_until_new_keys_are_saved() {
-        assert!(!enabled(&settings(json!({"notifyHealth": false})), Category::Changes));
-        assert!(!enabled(&settings(json!({"notifyBackup": false})), Category::Failures));
+        assert!(!enabled(
+            &settings(json!({"notifyHealth": false})),
+            Category::Changes
+        ));
+        assert!(!enabled(
+            &settings(json!({"notifyBackup": false})),
+            Category::Failures
+        ));
         assert!(enabled(
             &settings(json!({"notifyBackup": false, "notifyFailures": true})),
             Category::Failures
@@ -354,7 +383,10 @@ mod tests {
             key: "vm:1:lifecycle".into(),
             title: "dev is running".into(),
             body: "".into(),
-            sandbox: Some(NoticeSandbox { id: "1".into(), name: "dev".into() }),
+            sandbox: Some(NoticeSandbox {
+                id: "1".into(),
+                name: "dev".into(),
+            }),
         };
         assert_eq!(
             serde_json::to_value(&notice).unwrap(),
@@ -362,21 +394,37 @@ mod tests {
         );
     }
     fn sandbox() -> Option<NoticeSandbox> {
-        Some(NoticeSandbox { id: "1".into(), name: "dev".into() })
+        Some(NoticeSandbox {
+            id: "1".into(),
+            name: "dev".into(),
+        })
     }
     const SHORT: Duration = Duration::from_secs(1);
     const LONG: Duration = LONG_OPERATION;
     #[test]
     fn body_is_one_bounded_line() {
-        assert_eq!(bounded_body("  first\n second\t line "), "first second line");
+        assert_eq!(
+            bounded_body("  first\n second\t line "),
+            "first second line"
+        );
         let body = bounded_body(&"x".repeat(500));
         assert_eq!(body.chars().count(), BODY_LIMIT);
         assert!(body.ends_with('\u{2026}'));
-        assert_eq!(bounded_body(&"y".repeat(BODY_LIMIT)).chars().count(), BODY_LIMIT);
+        assert_eq!(
+            bounded_body(&"y".repeat(BODY_LIMIT)).chars().count(),
+            BODY_LIMIT
+        );
     }
     #[test]
     fn lifecycle_failures_name_the_sandbox_and_share_a_key() {
-        let notice = lifecycle_notice("start", "dev", sandbox(), SHORT, Outcome::Failed("no memory\nleft")).unwrap();
+        let notice = lifecycle_notice(
+            "start",
+            "dev",
+            sandbox(),
+            SHORT,
+            Outcome::Failed("no memory\nleft"),
+        )
+        .unwrap();
         assert_eq!(notice.category, Category::Failures);
         assert_eq!(notice.title, "Couldn\u{2019}t start dev");
         assert_eq!(notice.body, "no memory left");
@@ -386,27 +434,57 @@ mod tests {
         assert_eq!(done.category, Category::Completions);
         assert_eq!(done.title, "dev stopped");
         assert_eq!(
-            lifecycle_notice("restart", "dev", sandbox(), LONG, Outcome::Succeeded).unwrap().title,
+            lifecycle_notice("restart", "dev", sandbox(), LONG, Outcome::Succeeded)
+                .unwrap()
+                .title,
             "dev restarted"
         );
         assert_eq!(
-            lifecycle_notice("start", "dev", sandbox(), LONG, Outcome::Succeeded).unwrap().title,
+            lifecycle_notice("start", "dev", sandbox(), LONG, Outcome::Succeeded)
+                .unwrap()
+                .title,
             "dev is running"
         );
     }
     #[test]
     fn lifecycle_successes_notify_only_after_the_long_threshold() {
         assert!(lifecycle_notice("start", "dev", sandbox(), SHORT, Outcome::Succeeded).is_none());
-        assert!(lifecycle_notice("start", "dev", sandbox(), LONG - Duration::from_millis(1), Outcome::Succeeded).is_none());
+        assert!(lifecycle_notice(
+            "start",
+            "dev",
+            sandbox(),
+            LONG - Duration::from_millis(1),
+            Outcome::Succeeded
+        )
+        .is_none());
         assert!(lifecycle_notice("start", "dev", sandbox(), LONG, Outcome::Succeeded).is_some());
     }
     #[test]
     fn cancellation_queue_dedupe_and_dismiss_never_notify() {
         for elapsed in [SHORT, LONG] {
-            assert!(lifecycle_notice("start", "dev", sandbox(), elapsed, Outcome::Cancelled).is_none());
-            assert!(lifecycle_notice("start", "dev", sandbox(), elapsed, Outcome::AlreadyQueued).is_none());
-            assert!(lifecycle_notice("dismiss-error", "dev", sandbox(), elapsed, Outcome::Succeeded).is_none());
-            assert!(lifecycle_notice("dismiss-error", "dev", sandbox(), elapsed, Outcome::Failed("x")).is_none());
+            assert!(
+                lifecycle_notice("start", "dev", sandbox(), elapsed, Outcome::Cancelled).is_none()
+            );
+            assert!(
+                lifecycle_notice("start", "dev", sandbox(), elapsed, Outcome::AlreadyQueued)
+                    .is_none()
+            );
+            assert!(lifecycle_notice(
+                "dismiss-error",
+                "dev",
+                sandbox(),
+                elapsed,
+                Outcome::Succeeded
+            )
+            .is_none());
+            assert!(lifecycle_notice(
+                "dismiss-error",
+                "dev",
+                sandbox(),
+                elapsed,
+                Outcome::Failed("x")
+            )
+            .is_none());
         }
     }
     #[test]
@@ -417,13 +495,29 @@ mod tests {
     }
     #[test]
     fn transfer_notices_follow_the_outcome() {
-        let failed = transfer_notice("backup", "dev", sandbox(), SHORT, "failed", "disk full").unwrap();
-        assert_eq!((failed.category, failed.title.as_str(), failed.key.as_str()), (Category::Failures, "Couldn\u{2019}t export dev", "vm:1:transfer"));
+        let failed =
+            transfer_notice("backup", "dev", sandbox(), SHORT, "failed", "disk full").unwrap();
+        assert_eq!(
+            (failed.category, failed.title.as_str(), failed.key.as_str()),
+            (
+                Category::Failures,
+                "Couldn\u{2019}t export dev",
+                "vm:1:transfer"
+            )
+        );
         assert_eq!(failed.body, "disk full");
         assert!(transfer_notice("restore", "dev", sandbox(), SHORT, "success", "").is_none());
         let long = transfer_notice("restore", "dev", sandbox(), LONG, "success", "").unwrap();
-        assert_eq!((long.category, long.title.as_str()), (Category::Completions, "Imported dev"));
-        assert_eq!(transfer_notice("backup", "3 sandboxes", None, LONG, "success", "").unwrap().key, "transfer");
+        assert_eq!(
+            (long.category, long.title.as_str()),
+            (Category::Completions, "Imported dev")
+        );
+        assert_eq!(
+            transfer_notice("backup", "3 sandboxes", None, LONG, "success", "")
+                .unwrap()
+                .key,
+            "transfer"
+        );
         for operation in ["backup", "restore"] {
             // Exports no longer stop sandboxes, so there is no restart outcome to report.
             for outcome in ["cancelled", "running", "restart-required"] {
@@ -434,7 +528,10 @@ mod tests {
     #[test]
     fn click_routes_open_the_sandbox_or_the_list() {
         let mut notice = failure("k", "t", "b", sandbox());
-        assert_eq!(notice.route(), json!({"tab": "workspaces", "workspace": "dev"}));
+        assert_eq!(
+            notice.route(),
+            json!({"tab": "workspaces", "workspace": "dev"})
+        );
         assert_eq!(notice.thread(), "1");
         notice.sandbox = None;
         assert_eq!(notice.route(), json!({"tab": "workspaces"}));
@@ -444,7 +541,10 @@ mod tests {
     fn delivered_index_tracks_and_clears_per_sandbox() {
         let mut index = DeliveredIndex::default();
         let notice = |id: &str, key: &str| Notice {
-            sandbox: Some(NoticeSandbox { id: id.into(), name: "n".into() }),
+            sandbox: Some(NoticeSandbox {
+                id: id.into(),
+                name: "n".into(),
+            }),
             ..failure(key, "t", "b", None)
         };
         index.record(&notice("1", "vm:1:lifecycle"));

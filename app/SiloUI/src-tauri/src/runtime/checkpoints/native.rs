@@ -37,15 +37,26 @@ impl Member {
 /// `(group, member name)`: the selector Silo records and `msb` accepts as `group:name`.
 pub(crate) type Key = (String, String);
 
-pub(crate) fn inventory(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<Vec<Member>, RuntimeError> {
+pub(crate) fn inventory(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+) -> Result<Vec<Member>, RuntimeError> {
     let output = runner.run(
         paths,
-        &["snapshot".into(), "list".into(), "--format".into(), "json".into()],
+        &[
+            "snapshot".into(),
+            "list".into(),
+            "--format".into(),
+            "json".into(),
+        ],
         READ_TIMEOUT,
     )?;
     let members: Vec<Member> = serde_json::from_str(&output.stdout)
         .map_err(|_| error("The runtime returned an invalid checkpoint list."))?;
-    Ok(members.into_iter().filter(|member| member.key().is_some() && !member.snapshot_id.is_empty()).collect())
+    Ok(members
+        .into_iter()
+        .filter(|member| member.key().is_some() && !member.snapshot_id.is_empty())
+        .collect())
 }
 
 /// What a Silo record uses a native member for.
@@ -70,7 +81,10 @@ pub(crate) struct Use {
 
 /// Every member one record references. Checkpoints live in the record's lineage group.
 pub(crate) fn record_uses(record: &Record, sandbox: &str) -> Vec<(Key, Purpose)> {
-    let group = record.snapshot_group.clone().unwrap_or_else(|| sandbox.to_owned());
+    let group = record
+        .snapshot_group
+        .clone()
+        .unwrap_or_else(|| sandbox.to_owned());
     let mut uses: Vec<(Key, Purpose)> = record
         .checkpoints
         .iter()
@@ -82,17 +96,26 @@ pub(crate) fn record_uses(record: &Record, sandbox: &str) -> Vec<(Key, Purpose)>
         })
         .collect();
     if let Some(inflight) = &record.inflight_checkpoint {
-        uses.push(((group.clone(), inflight.native_id().to_owned()), Purpose::Capturing));
+        uses.push((
+            (group.clone(), inflight.native_id().to_owned()),
+            Purpose::Capturing,
+        ));
     }
     if let Some(journal) = &record.restore_journal {
         uses.push((
-            (group.clone(), journal.recovery_checkpoint.native_id().to_owned()),
+            (
+                group.clone(),
+                journal.recovery_checkpoint.native_id().to_owned(),
+            ),
             Purpose::RestoreRecovery,
         ));
     }
     if let Some(pending) = &record.pending_checkpoint_restore {
         uses.push((
-            (pending.source_workspace.clone(), pending.checkpoint_id.clone()),
+            (
+                pending.source_workspace.clone(),
+                pending.checkpoint_id.clone(),
+            ),
             Purpose::PendingStart,
         ));
     }
@@ -143,12 +166,18 @@ pub(crate) fn lineage_positions(
         }
         // MicroSandbox's per-sandbox capture cursor. Read, never written; any snapshot id in
         // it is treated as a position so a format change keeps members rather than losing them.
-        let cursor = paths.home.join("sandboxes").join(&sandbox.name).join("snapshot-lineage.json");
+        let cursor = paths
+            .home
+            .join("sandboxes")
+            .join(&sandbox.name)
+            .join("snapshot-lineage.json");
         match fs::symlink_metadata(&cursor) {
             Ok(metadata) if metadata.is_file() && metadata.len() <= 4096 => {
-                let bytes = fs::read(&cursor).map_err(|_| error("A sandbox's checkpoint lineage could not be read."))?;
-                let value: Value = serde_json::from_slice(&bytes)
-                    .map_err(|_| error("A sandbox's checkpoint lineage is not in a known format."))?;
+                let bytes = fs::read(&cursor)
+                    .map_err(|_| error("A sandbox's checkpoint lineage could not be read."))?;
+                let value: Value = serde_json::from_slice(&bytes).map_err(|_| {
+                    error("A sandbox's checkpoint lineage is not in a known format.")
+                })?;
                 let mut ids = Vec::new();
                 snapshot_ids(&value, &mut ids);
                 for id in ids {
@@ -196,7 +225,10 @@ pub(crate) fn plan(
 ) -> Plan {
     let mut kept = Vec::new();
     let mut pending = Vec::new();
-    for member in inventory.iter().filter(|member| member.key().is_some_and(|key| candidates.contains(&key))) {
+    for member in inventory
+        .iter()
+        .filter(|member| member.key().is_some_and(|key| candidates.contains(&key)))
+    {
         let key = member.key().unwrap();
         if let Some(used) = uses.get(&key).filter(|used| !used.is_empty()) {
             kept.push((member.clone(), Blocker::Used(used.clone())));
@@ -206,7 +238,10 @@ pub(crate) fn plan(
             pending.push(member.clone());
         }
     }
-    let mut present: HashSet<&str> = inventory.iter().map(|member| member.snapshot_id.as_str()).collect();
+    let mut present: HashSet<&str> = inventory
+        .iter()
+        .map(|member| member.snapshot_id.as_str())
+        .collect();
     let mut remove = Vec::new();
     loop {
         let before = remove.len();
@@ -214,7 +249,8 @@ pub(crate) fn plan(
         while index < pending.len() {
             let id = pending[index].snapshot_id.clone();
             let has_children = inventory.iter().any(|child| {
-                child.parent_digest.as_deref() == Some(id.as_str()) && present.contains(child.snapshot_id.as_str())
+                child.parent_digest.as_deref() == Some(id.as_str())
+                    && present.contains(child.snapshot_id.as_str())
             });
             if has_children {
                 index += 1;
@@ -230,7 +266,10 @@ pub(crate) fn plan(
     for member in pending {
         let children = inventory
             .iter()
-            .filter(|child| child.parent_digest.as_deref() == Some(member.snapshot_id.as_str()) && present.contains(child.snapshot_id.as_str()))
+            .filter(|child| {
+                child.parent_digest.as_deref() == Some(member.snapshot_id.as_str())
+                    && present.contains(child.snapshot_id.as_str())
+            })
             .cloned()
             .collect();
         kept.push((member, Blocker::Children(children)));
@@ -252,9 +291,21 @@ pub(crate) fn execute(
     let mut removed: HashSet<String> = HashSet::new();
     let mut failures = Vec::new();
     for member in order {
-        let Some((group, name)) = member.key() else { continue };
+        let Some((group, name)) = member.key() else {
+            continue;
+        };
         let head = runner
-            .run(paths, &["snapshot".into(), "head".into(), group.clone(), "--format".into(), "json".into()], READ_TIMEOUT)
+            .run(
+                paths,
+                &[
+                    "snapshot".into(),
+                    "head".into(),
+                    group.clone(),
+                    "--format".into(),
+                    "json".into(),
+                ],
+                READ_TIMEOUT,
+            )
             .ok()
             .and_then(|output| serde_json::from_str::<Value>(&output.stdout).ok())
             .and_then(|value| value["head"].as_str().map(str::to_owned));
@@ -269,8 +320,16 @@ pub(crate) fn execute(
                         && !removed.contains(&other.snapshot_id)
                 })
                 .collect();
-            let queued = |other: &&&Member| order.iter().any(|entry| entry.snapshot_id == other.snapshot_id);
-            let staying: Vec<&Member> = others.iter().filter(|other| !queued(other)).copied().collect();
+            let queued = |other: &&&Member| {
+                order
+                    .iter()
+                    .any(|entry| entry.snapshot_id == other.snapshot_id)
+            };
+            let staying: Vec<&Member> = others
+                .iter()
+                .filter(|other| !queued(other))
+                .copied()
+                .collect();
             let pool = if staying.is_empty() { others } else { staying };
             let next = pool
                 .iter()
@@ -279,7 +338,13 @@ pub(crate) fn execute(
             if let Some(next) = next {
                 if let Err(failure) = runner.run(
                     paths,
-                    &["snapshot".into(), "head".into(), format!("{group}:{}", next.snapshot_id), "--format".into(), "json".into()],
+                    &[
+                        "snapshot".into(),
+                        "head".into(),
+                        format!("{group}:{}", next.snapshot_id),
+                        "--format".into(),
+                        "json".into(),
+                    ],
                     READ_TIMEOUT,
                 ) {
                     failures.push((member.clone(), failure));
@@ -289,7 +354,12 @@ pub(crate) fn execute(
         }
         match runner.run(
             paths,
-            &["snapshot".into(), "remove".into(), format!("{group}:{name}"), "--quiet".into()],
+            &[
+                "snapshot".into(),
+                "remove".into(),
+                format!("{group}:{name}"),
+                "--quiet".into(),
+            ],
             REMOVE_TIMEOUT,
         ) {
             Ok(_) => {
@@ -310,9 +380,14 @@ pub(crate) fn silo_member(key: &Key) -> bool {
     if is_checkpoint_native_id(name) {
         return true;
     }
-    let Some(suffix) = name.strip_prefix("silo-backup-") else { return false };
+    let Some(suffix) = name.strip_prefix("silo-backup-") else {
+        return false;
+    };
     let parts: Vec<_> = suffix.split('-').collect();
-    parts.len() == 3 && parts.iter().all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+    parts.len() == 3
+        && parts
+            .iter()
+            .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 /// Host allocation of a member's artifact directory, when it lies inside the runtime's

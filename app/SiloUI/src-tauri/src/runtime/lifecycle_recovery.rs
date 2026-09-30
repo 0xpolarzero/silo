@@ -163,9 +163,7 @@ fn advance(
         }
         let command = match intent.phase {
             Phase::StopPending if observed.status.eq_ignore_ascii_case("running") => "stop",
-            Phase::StartPending
-                if stopped(&observed) =>
-            {
+            Phase::StartPending if stopped(&observed) => {
                 validate_inspected_resources(&intent.name, &observed.config, host)?;
                 "start"
             }
@@ -178,7 +176,9 @@ fn advance(
         };
         // A surviving detached start can win the runtime's own transition guard.
         // Verify the desired state even when its duplicate command reports failure.
-        if command == "stop" { storage::before_stop(runner, paths, &observed); }
+        if command == "stop" {
+            storage::before_stop(runner, paths, &observed);
+        }
         let args = [command.into(), intent.name.clone(), "--quiet".into()];
         // Stop is not cancellable: a cancel during a restart's stop step is
         // honoured before the start step instead of killing `msb stop`.
@@ -204,7 +204,10 @@ fn advance(
             // report it as final rather than a transient error that is retried
             // with another full stop timeout and wait.
             if command == "stop" && matches!(result, Err(RuntimeError::TimedOut { .. })) {
-                return Err(error(format!("{} did not stop in time. Check its status and retry.", intent.name)));
+                return Err(error(format!(
+                    "{} did not stop in time. Check its status and retry.",
+                    intent.name
+                )));
             }
             result?;
             return Err(error(format!(
@@ -217,7 +220,9 @@ fn advance(
                 }
             )));
         }
-        if started_here { storage::after_start(runner, paths, &observed); }
+        if started_here {
+            storage::after_start(runner, paths, &observed);
+        }
     }
 }
 fn settle(
@@ -266,7 +271,9 @@ pub(super) fn perform(
     // one saved for a different identity or name, or an unreadable file (for example
     // from a newer Silo). Only an intact intent for this exact action is resumed.
     let (existing, superseded) = match load(&path(paths, machine.id())) {
-        Ok(Some(saved)) if saved.machine_id == machine.id() && saved.name == name && saved.action == action => {
+        Ok(Some(saved))
+            if saved.machine_id == machine.id() && saved.name == name && saved.action == action =>
+        {
             (Some(saved), None)
         }
         Ok(Some(saved)) if saved.machine_id == machine.id() => (None, Some(saved)),
@@ -314,14 +321,21 @@ pub(super) fn perform(
 }
 // The caller inspected this exact VM and confirmed Crashed while holding the
 // operation gate. Dismissal must not leave a failed start queued for recovery.
-pub(super) fn dismiss_crashed_intent(paths: &RuntimePaths, machine: &MachineConfiguration) -> Result<(), RuntimeError> {
+pub(super) fn dismiss_crashed_intent(
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+) -> Result<(), RuntimeError> {
     let target = path(paths, machine.id());
     if let Some(intent) = load(&target)? {
         if intent.machine_id != machine.id() || intent.name != machine.name() {
-            return Err(error("Saved sandbox action has a different identity; it was preserved."));
+            return Err(error(
+                "Saved sandbox action has a different identity; it was preserved.",
+            ));
         }
-        fs::remove_file(target).map_err(|_| error("The failed sandbox action could not be dismissed."))?;
-        File::open(directory(paths)).and_then(|f| f.sync_all())
+        fs::remove_file(target)
+            .map_err(|_| error("The failed sandbox action could not be dismissed."))?;
+        File::open(directory(paths))
+            .and_then(|f| f.sync_all())
             .map_err(|_| error("The dismissed action could not be synced."))?;
     }
     Ok(())
@@ -362,7 +376,10 @@ pub(super) fn forget_removed(
 /// start kept for Retry must not start its VM at the next launch (D-22). An
 /// unfinished activity entry is settled as cancelled; a finished one keeps its
 /// outcome. Unreadable files are left for startup recovery to report.
-pub(crate) fn retire_except(paths: &RuntimePaths, resuming: &HashSet<String>) -> Result<(), RuntimeError> {
+pub(crate) fn retire_except(
+    paths: &RuntimePaths,
+    resuming: &HashSet<String>,
+) -> Result<(), RuntimeError> {
     let entries = match fs::read_dir(directory(paths)) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -370,16 +387,21 @@ pub(crate) fn retire_except(paths: &RuntimePaths, resuming: &HashSet<String>) ->
     };
     let mut retired = false;
     for entry in entries {
-        let file = entry.map_err(|_| error("Saved sandbox actions could not be read."))?.path();
+        let file = entry
+            .map_err(|_| error("Saved sandbox actions could not be read."))?
+            .path();
         if file.extension().is_none_or(|extension| extension != "json") {
             continue;
         }
-        let Ok(Some(mut intent)) = load(&file) else { continue };
+        let Ok(Some(mut intent)) = load(&file) else {
+            continue;
+        };
         if file != path(paths, &intent.machine_id) || resuming.contains(&intent.machine_id) {
             continue;
         }
         runtime_activity::retire(paths, &mut intent.event).map_err(error)?;
-        fs::remove_file(&file).map_err(|_| error("A saved sandbox action could not be retired."))?;
+        fs::remove_file(&file)
+            .map_err(|_| error("A saved sandbox action could not be retired."))?;
         retired = true;
     }
     if retired {
@@ -426,7 +448,9 @@ fn recover_with(
     let mut unreadable = Vec::new();
     for entry in entries {
         let Ok(entry) = entry else {
-            recovered.failures.push("A saved sandbox action could not be read.".into());
+            recovered
+                .failures
+                .push("A saved sandbox action could not be read.".into());
             continue;
         };
         if entry
@@ -448,18 +472,19 @@ fn recover_with(
             }
         };
         if entry.path() != path(paths, &intent.machine_id) {
-            recovered.failures.push(format!("{}: Saved sandbox action identity is invalid.", intent.name));
+            recovered.failures.push(format!(
+                "{}: Saved sandbox action identity is invalid.",
+                intent.name
+            ));
             unreadable.push(entry.path());
             continue;
         }
         let result = inspect(runner, paths, &intent)
             .and_then(|initial| settle(runner, paths, host, &mut intent, initial));
         if let Err(failure) = &result {
-            recovered.failures.push(format!(
-                "{}: {}",
-                intent.name,
-                safe_activity_error(failure)
-            ));
+            recovered
+                .failures
+                .push(format!("{}: {}", intent.name, safe_activity_error(failure)));
         }
         // A resumed explicit stop, settled or not, wins over the launch selection.
         if intent.action == "stop" {
@@ -525,7 +550,9 @@ mod tests {
             let action = args[0].as_str();
             self.calls.lock().unwrap().push(action.into());
             if action == "start" && self.cancel_start {
-                return Err(RuntimeError::Cancelled { operation: "start dev".into() });
+                return Err(RuntimeError::Cancelled {
+                    operation: "start dev".into(),
+                });
             }
             if action == "start" {
                 if !self.fail_start || self.start_wins {
@@ -536,7 +563,9 @@ mod tests {
                 }
             }
             if action == "stop" && self.stop_times_out {
-                return Err(RuntimeError::TimedOut { operation: "Stopping dev".into() });
+                return Err(RuntimeError::TimedOut {
+                    operation: "Stopping dev".into(),
+                });
             }
             if action == "stop" {
                 *self.state.lock().unwrap() = "Stopped".into();
@@ -603,7 +632,7 @@ mod tests {
     }
     #[test]
     fn restart_recovers_each_checkpoint_without_repeating_a_finished_stop_or_restart() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         for (phase, state, commands) in [
             (Phase::StopPending, "Running", vec!["stop", "start"]),
             (Phase::StopPending, "Stopped", vec!["start"]),
@@ -614,7 +643,10 @@ mod tests {
             let original = pending(&paths, "restart", phase);
             let event_before = serde_json::to_value(&original.event).unwrap();
             let runner = Fake::new(state);
-            assert_eq!(recover_with(&runner, &paths, &host()).unwrap(), Recovered::default());
+            assert_eq!(
+                recover_with(&runner, &paths, &host()).unwrap(),
+                Recovered::default()
+            );
             assert_eq!(runner.mutations(), commands);
             assert!(!path(&paths, ID).exists());
             let history = runtime_activity::read(&paths).unwrap();
@@ -631,7 +663,7 @@ mod tests {
     }
     #[test]
     fn stop_is_resumed_and_crashed_is_already_stopped() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "stop", Phase::StopPending);
         let runner = Fake::new("Running");
@@ -647,20 +679,23 @@ mod tests {
     }
     #[test]
     fn dismissal_cancels_failed_start_recovery_and_preserves_activity() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, machine) = setup();
         pending(&paths, "start", Phase::StartPending);
         let history = runtime_activity::read(&paths).unwrap();
         dismiss_crashed_intent(&paths, &machine).unwrap();
         let crashed = Fake::new("Crashed");
-        assert_eq!(recover_with(&crashed, &paths, &host()).unwrap(), Recovered::default());
+        assert_eq!(
+            recover_with(&crashed, &paths, &host()).unwrap(),
+            Recovered::default()
+        );
         assert!(crashed.mutations().is_empty());
         assert_eq!(runtime_activity::read(&paths).unwrap(), history);
     }
 
     #[test]
     fn restart_of_crashed_vm_starts_without_attempting_a_stop() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         let runner = Fake::new("Crashed");
         perform(&runner, &paths, &host(), "restart", "dev").unwrap();
@@ -669,7 +704,7 @@ mod tests {
 
     #[test]
     fn failed_start_keeps_intent_and_same_session_retry_reuses_activity() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         let mut runner = Fake::new("Stopped");
         runner.fail_start = true;
@@ -684,7 +719,7 @@ mod tests {
     }
     #[test]
     fn cancelled_start_retires_its_intent_so_launch_does_not_resume_it() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         let mut runner = Fake::new("Stopped");
         runner.cancel_start = true;
@@ -694,12 +729,15 @@ mod tests {
         ));
         assert!(!path(&paths, ID).exists());
         let relaunch = Fake::new("Stopped");
-        assert_eq!(recover_with(&relaunch, &paths, &host()).unwrap(), Recovered::default());
+        assert_eq!(
+            recover_with(&relaunch, &paths, &host()).unwrap(),
+            Recovered::default()
+        );
         assert!(relaunch.mutations().is_empty());
     }
     #[test]
     fn one_invalid_intent_does_not_block_recovery_of_the_others() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "stop", Phase::StopPending);
         fs::write(directory(&paths).join("broken.json"), "{not json").unwrap();
@@ -714,7 +752,7 @@ mod tests {
     }
     #[test]
     fn an_unreadable_action_keeps_its_vm_out_of_launch_start_without_failing_recovery() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         // A future-version file, for example written by a newer Silo before a downgrade.
         fs::create_dir_all(directory(&paths)).unwrap();
@@ -724,11 +762,14 @@ mod tests {
         assert_eq!(recovered.failures.len(), 1);
         assert_eq!(recovered.keep_stopped, HashSet::from([ID.into()]));
         assert!(runner.mutations().is_empty());
-        assert!(path(&paths, ID).exists(), "the unreadable action is preserved");
+        assert!(
+            path(&paths, ID).exists(),
+            "the unreadable action is preserved"
+        );
     }
     #[test]
     fn an_explicit_stop_that_cannot_be_resumed_still_wins_over_launch_start() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "stop", Phase::StopPending);
         let mut runner = Fake::new("Running");
@@ -739,7 +780,7 @@ mod tests {
     }
     #[test]
     fn an_explicit_action_replaces_a_saved_action_it_cannot_continue() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         fs::create_dir_all(directory(&paths)).unwrap();
         fs::write(path(&paths, ID), br#"{"version":2}"#).unwrap();
@@ -748,14 +789,17 @@ mod tests {
         assert_eq!(runner.mutations(), vec!["start"]);
         assert!(!path(&paths, ID).exists());
         // A saved action for the VM under an earlier name is settled, not resumed.
-        store(&paths, &Intent {
-            version: 1,
-            machine_id: ID.into(),
-            name: "old-dev".into(),
-            action: "stop".into(),
-            phase: Phase::StopPending,
-            event: runtime_activity::begin(&paths, "stop", "old-dev", ID).unwrap(),
-        })
+        store(
+            &paths,
+            &Intent {
+                version: 1,
+                machine_id: ID.into(),
+                name: "old-dev".into(),
+                action: "stop".into(),
+                phase: Phase::StopPending,
+                event: runtime_activity::begin(&paths, "stop", "old-dev", ID).unwrap(),
+            },
+        )
         .unwrap();
         let runner = Fake::new("Running");
         perform(&runner, &paths, &host(), "stop", "dev").unwrap();
@@ -768,7 +812,7 @@ mod tests {
     }
     #[test]
     fn update_preparation_retires_actions_for_vms_it_will_not_resume() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         // A failed start kept for Retry: its activity already records the failure.
         let mut runner = Fake::new("Stopped");
@@ -781,10 +825,20 @@ mod tests {
         assert!(path(&paths, ID).exists());
         retire_except(&paths, &HashSet::new()).unwrap();
         assert!(!path(&paths, ID).exists());
-        assert_eq!(runtime_activity::read(&paths).unwrap(), failed, "a finished outcome is kept");
+        assert_eq!(
+            runtime_activity::read(&paths).unwrap(),
+            failed,
+            "a finished outcome is kept"
+        );
         let relaunch = Fake::new("Stopped");
-        assert_eq!(recover_with(&relaunch, &paths, &host()).unwrap(), Recovered::default());
-        assert!(relaunch.mutations().is_empty(), "the next launch does not start it");
+        assert_eq!(
+            recover_with(&relaunch, &paths, &host()).unwrap(),
+            Recovered::default()
+        );
+        assert!(
+            relaunch.mutations().is_empty(),
+            "the next launch does not start it"
+        );
         // An unfinished action is settled as cancelled; unreadable files stay for recovery.
         pending(&paths, "restart", Phase::StartPending);
         fs::write(directory(&paths).join("broken.json"), "{not json").unwrap();
@@ -792,11 +846,13 @@ mod tests {
         assert!(!path(&paths, ID).exists());
         assert!(directory(&paths).join("broken.json").exists());
         let history = runtime_activity::read(&paths).unwrap();
-        assert!(history.iter().any(|event| event["title"] == "Restart cancelled"));
+        assert!(history
+            .iter()
+            .any(|event| event["title"] == "Restart cancelled"));
     }
     #[test]
     fn timed_out_stop_that_never_settles_is_not_retried_as_transient() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         let mut runner = Fake::new("Running");
         runner.stop_times_out = true;
@@ -806,7 +862,7 @@ mod tests {
     }
     #[test]
     fn surviving_detached_start_can_win_without_being_restarted() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "start", Phase::StartPending);
         let mut runner = Fake::new("Stopped");
@@ -818,27 +874,38 @@ mod tests {
     }
     #[test]
     fn replacement_runtime_is_preserved_and_confirmed_deletion_retires_only_its_intent() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, machine) = setup();
         pending(&paths, "restart", Phase::StopPending);
         let mut runner = Fake::new("Running");
         runner.replaced = true;
-        assert_eq!(recover_with(&runner, &paths, &host()).unwrap().failures.len(), 1);
+        assert_eq!(
+            recover_with(&runner, &paths, &host())
+                .unwrap()
+                .failures
+                .len(),
+            1
+        );
         assert!(runner.mutations().is_empty());
         assert!(path(&paths, ID).exists());
         forget_removed(&paths, &machine).unwrap();
         assert!(!path(&paths, ID).exists());
-        assert_eq!(recover_with(&runner, &paths, &host()).unwrap(), Recovered::default());
+        assert_eq!(
+            recover_with(&runner, &paths, &host()).unwrap(),
+            Recovered::default()
+        );
     }
     #[test]
     fn rejected_new_action_leaves_the_superseded_intent_and_activity_unchanged() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "restart", Phase::StartPending);
         let mut runner = Fake::new("Running");
         runner.replaced = true;
         assert!(perform(&runner, &paths, &host(), "stop", "dev").is_err());
-        assert!(load(&path(&paths, ID)).unwrap().is_some_and(|saved| saved.action == "restart"));
+        assert!(load(&path(&paths, ID))
+            .unwrap()
+            .is_some_and(|saved| saved.action == "restart"));
         let history = runtime_activity::read(&paths).unwrap();
         assert!(!history.iter().any(|event| event["detail"]
             .as_str()
@@ -846,7 +913,7 @@ mod tests {
     }
     #[test]
     fn explicit_new_action_settles_the_superseded_activity() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         pending(&paths, "restart", Phase::StartPending);
         perform(&Fake::new("Running"), &paths, &host(), "stop", "dev").unwrap();
@@ -873,7 +940,7 @@ mod tests {
     #[test]
     #[ignore = "child of the explicitly requested disposable lifecycle recovery test"]
     fn lifecycle_recovery_crash_child() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         crate::test_support::live::require_confirmation();
         let root = std::env::var("SILO_TEST_LIFECYCLE_ROOT").expect("missing isolated test root");
         let action =
@@ -907,7 +974,7 @@ mod tests {
     #[test]
     #[ignore = "requires signed bundled runtime, guest image and hardware virtualization; uses only a disposable VM"]
     fn lifecycle_recovery_survives_real_worker_exit_without_repeating_restart() {
-    let _test_state = crate::test_support::global_state();
+        let _test_state = crate::test_support::global_state();
         crate::test_support::live::require_confirmation();
         let directory = tempfile::Builder::new()
             .prefix("silo-lifecycle-live-")
@@ -946,7 +1013,8 @@ mod tests {
                         name: name.into(),
                         action: action.into(),
                         phase,
-                        event: runtime_activity::begin(&paths, action, name, machine.id()).map_err(error)?,
+                        event: runtime_activity::begin(&paths, action, name, machine.id())
+                            .map_err(error)?,
                     },
                 )
             };
@@ -973,7 +1041,11 @@ mod tests {
             };
             let recover = || -> Result<Recovered, RuntimeError> {
                 let recovered = recover_with(&ProcessRunner, &paths, &host)?;
-                if recovered.failures.is_empty() { Ok(recovered) } else { Err(error(recovered.failures.join("\n"))) }
+                if recovered.failures.is_empty() {
+                    Ok(recovered)
+                } else {
+                    Err(error(recovered.failures.join("\n")))
+                }
             };
             checkpoint("restart", Phase::StopPending)?;
             exit_child("stop")?;

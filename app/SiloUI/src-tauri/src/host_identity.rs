@@ -36,7 +36,11 @@ struct CacheState {
 }
 impl Cache {
     const fn new() -> Self {
-        Self(Mutex::new(CacheState { value: None, read_at: None, reading: false }))
+        Self(Mutex::new(CacheState {
+            value: None,
+            read_at: None,
+            reading: false,
+        }))
     }
     fn state(&self) -> std::sync::MutexGuard<'_, CacheState> {
         // A cache of a value re-read from the host; recover after a panic (K-24).
@@ -50,7 +54,9 @@ impl Cache {
         changed: impl FnOnce() + Send + 'static,
     ) -> Option<HostIdentity> {
         let mut state = self.state();
-        let stale = state.read_at.is_none_or(|at| now.saturating_duration_since(at) >= ttl);
+        let stale = state
+            .read_at
+            .is_none_or(|at| now.saturating_duration_since(at) >= ttl);
         if stale && !state.reading {
             state.reading = true;
             let refresh = thread::Builder::new()
@@ -62,11 +68,7 @@ impl Cache {
         }
         state.value.clone()
     }
-    fn refresh(
-        &self,
-        read: impl FnOnce() -> Option<HostIdentity>,
-        changed: impl FnOnce(),
-    ) {
+    fn refresh(&self, read: impl FnOnce() -> Option<HostIdentity>, changed: impl FnOnce()) {
         struct Reading<'a>(&'a Cache);
         impl Drop for Reading<'_> {
             fn drop(&mut self) {
@@ -149,7 +151,9 @@ fn developer_directories() -> Vec<PathBuf> {
         .collect()
 }
 fn developer_git_installed(directories: &[PathBuf]) -> bool {
-    directories.iter().any(|directory| directory.join("usr/bin/git").is_file())
+    directories
+        .iter()
+        .any(|directory| directory.join("usr/bin/git").is_file())
 }
 
 fn read_with(mut get: impl FnMut(&str, &str) -> Option<String>) -> Option<HostIdentity> {
@@ -232,7 +236,10 @@ mod tests {
     use super::*;
 
     fn identity(name: &str) -> Option<HostIdentity> {
-        Some(HostIdentity { name: name.into(), email: "author@example.test".into() })
+        Some(HostIdentity {
+            name: name.into(),
+            email: "author@example.test".into(),
+        })
     }
 
     #[test]
@@ -245,24 +252,59 @@ mod tests {
         let first = notify.clone();
         // The caller never waits for Git: the first call returns immediately.
         assert_eq!(
-            cache.get(start, ttl, move || { released.recv().unwrap(); identity("First") }, move || first.send("first").unwrap()),
+            cache.get(
+                start,
+                ttl,
+                move || {
+                    released.recv().unwrap();
+                    identity("First")
+                },
+                move || first.send("first").unwrap()
+            ),
             None
         );
         // Callers during the read do not start more Git processes.
-        assert_eq!(cache.get(start, ttl, || panic!("second concurrent read"), || panic!("second change")), None);
+        assert_eq!(
+            cache.get(
+                start,
+                ttl,
+                || panic!("second concurrent read"),
+                || panic!("second change")
+            ),
+            None
+        );
         release.send(()).unwrap();
-        assert_eq!(notified.recv_timeout(Duration::from_secs(5)).unwrap(), "first");
+        assert_eq!(
+            notified.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "first"
+        );
         while cache.state().reading {
             thread::sleep(Duration::from_millis(5));
         }
         // A fresh value is served without reading again.
         let read_at = cache.state().read_at.unwrap();
-        assert_eq!(cache.get(read_at, ttl, || panic!("read within ttl"), || panic!("change")), identity("First"));
+        assert_eq!(
+            cache.get(
+                read_at,
+                ttl,
+                || panic!("read within ttl"),
+                || panic!("change")
+            ),
+            identity("First")
+        );
         // A stale value is still served while one background refresh runs; an
         // unchanged identity does not announce a change.
         let (done, finished) = std::sync::mpsc::channel();
         assert_eq!(
-            cache.get(read_at + ttl, ttl, move || { done.send(()).unwrap(); identity("First") }, || panic!("unchanged identity announced")),
+            cache.get(
+                read_at + ttl,
+                ttl,
+                move || {
+                    done.send(()).unwrap();
+                    identity("First")
+                },
+                || panic!("unchanged identity announced")
+            ),
             identity("First")
         );
         finished.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -271,8 +313,16 @@ mod tests {
         }
         let later = cache.state().read_at.unwrap() + ttl;
         let changed = notify.clone();
-        cache.get(later, ttl, || identity("Second"), move || changed.send("second").unwrap());
-        assert_eq!(notified.recv_timeout(Duration::from_secs(5)).unwrap(), "second");
+        cache.get(
+            later,
+            ttl,
+            || identity("Second"),
+            move || changed.send("second").unwrap(),
+        );
+        assert_eq!(
+            notified.recv_timeout(Duration::from_secs(5)).unwrap(),
+            "second"
+        );
     }
 
     #[test]
@@ -282,7 +332,10 @@ mod tests {
         assert!(!developer_git_installed(&[tools.clone()]));
         std::fs::create_dir_all(tools.join("usr/bin")).unwrap();
         std::fs::write(tools.join("usr/bin/git"), b"").unwrap();
-        assert!(developer_git_installed(&[root.path().join("missing"), tools]));
+        assert!(developer_git_installed(&[
+            root.path().join("missing"),
+            tools
+        ]));
         assert!(!installer_shim(Path::new("/opt/homebrew/bin/git")));
     }
 

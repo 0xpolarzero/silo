@@ -71,7 +71,11 @@ pub(crate) fn linux_editor_command(
             _ => return Err(UNSUPPORTED_EDITOR.into()),
         };
         let program = find_program("flatpak").ok_or("The selected editor is unavailable.")?;
-        return Ok(EditorCommand { program, args: vec!["run".into(), app.into()], zed });
+        return Ok(EditorCommand {
+            program,
+            args: vec!["run".into(), app.into()],
+            zed,
+        });
     }
     let token = exec_program(argv).ok_or("The selected editor is unavailable.")?;
     let program = if Path::new(token).is_absolute() {
@@ -92,7 +96,11 @@ pub(crate) fn linux_editor_command(
         }
         _ => return Err(UNSUPPORTED_EDITOR.into()),
     };
-    Ok(EditorCommand { program, args: Vec::new(), zed })
+    Ok(EditorCommand {
+        program,
+        args: Vec::new(),
+        zed,
+    })
 }
 
 /// Commands that run the user's preferred terminal (G-07). The freedesktop
@@ -121,7 +129,10 @@ fn appimage_root() -> Option<PathBuf> {
 }
 
 fn inside(entry: &str, root: &str) -> bool {
-    entry == root || entry.strip_prefix(root).is_some_and(|rest| rest.starts_with('/'))
+    entry == root
+        || entry
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 /// Environment changes that undo the AppImage's AppRun hooks for a child
@@ -222,8 +233,13 @@ mod tests {
         assert_eq!(tokens("/usr/share/code/code %F"), ["/usr/share/code/code"]);
         let snap = tokens("env BAMF_DESKTOP_FILE_HINT=/var/lib/snapd/code.desktop /snap/bin/code --force-user-env %F");
         assert_eq!(exec_program(&snap), Some("/snap/bin/code"));
-        assert_eq!(exec_program(&tokens("/usr/bin/env -i A=b zed %U")), Some("zed"));
-        let flatpak = tokens("/usr/bin/flatpak run --branch=stable --command=code com.visualstudio.code @@ %F @@");
+        assert_eq!(
+            exec_program(&tokens("/usr/bin/env -i A=b zed %U")),
+            Some("zed")
+        );
+        let flatpak = tokens(
+            "/usr/bin/flatpak run --branch=stable --command=code com.visualstudio.code @@ %F @@",
+        );
         assert!(!flatpak.iter().any(|token| token == "@@" || token == "%F"));
     }
 
@@ -236,13 +252,21 @@ mod tests {
         executable(&cli);
         let argv = vec![electron.to_str().unwrap().to_owned()];
         let command = linux_editor_command(&argv, None, &nowhere).unwrap();
-        assert_eq!(command, EditorCommand { program: cli, args: Vec::new(), zed: false });
+        assert_eq!(
+            command,
+            EditorCommand {
+                program: cli,
+                args: Vec::new(),
+                zed: false
+            }
+        );
         // A CLI on PATH (the package's /usr/bin/code link) is used as is.
         let path_cli = root.path().join("bin/code");
         executable(&path_cli);
         let found = path_cli.clone();
         let command =
-            linux_editor_command(&["code".into()], None, &move |_: &str| Some(found.clone())).unwrap();
+            linux_editor_command(&["code".into()], None, &move |_: &str| Some(found.clone()))
+                .unwrap();
         assert_eq!(command.program, path_cli);
     }
 
@@ -250,13 +274,34 @@ mod tests {
     fn snap_flatpak_and_zed_tarball_entries_are_launchable() {
         let snap = tokens("env BAMF_DESKTOP_FILE_HINT=x /snap/bin/code --force-user-env %F");
         let command = linux_editor_command(&snap, None, &nowhere).unwrap();
-        assert_eq!((command.program, command.zed), (PathBuf::from("/snap/bin/code"), false));
+        assert_eq!(
+            (command.program, command.zed),
+            (PathBuf::from("/snap/bin/code"), false)
+        );
 
         let flatpak = |_: &str| Some(PathBuf::from("/usr/bin/flatpak"));
-        let command = linux_editor_command(&tokens("/usr/bin/flatpak run dev.zed.Zed %U"), Some("dev.zed.Zed"), &flatpak).unwrap();
-        assert_eq!(command, EditorCommand { program: "/usr/bin/flatpak".into(), args: vec!["run".into(), "dev.zed.Zed".into()], zed: true });
+        let command = linux_editor_command(
+            &tokens("/usr/bin/flatpak run dev.zed.Zed %U"),
+            Some("dev.zed.Zed"),
+            &flatpak,
+        )
+        .unwrap();
+        assert_eq!(
+            command,
+            EditorCommand {
+                program: "/usr/bin/flatpak".into(),
+                args: vec!["run".into(), "dev.zed.Zed".into()],
+                zed: true
+            }
+        );
         let command = linux_editor_command(&[], Some("com.visualstudio.code"), &flatpak).unwrap();
-        assert_eq!(command.args, [OsString::from("run"), OsString::from("com.visualstudio.code")]);
+        assert_eq!(
+            command.args,
+            [
+                OsString::from("run"),
+                OsString::from("com.visualstudio.code")
+            ]
+        );
         assert!(!command.zed);
         assert!(linux_editor_command(&[], Some("org.gnome.TextEditor"), &flatpak).is_err());
 
@@ -264,16 +309,25 @@ mod tests {
         let editor = root.path().join("zed.app/libexec/zed-editor");
         executable(&editor);
         executable(&root.path().join("zed.app/bin/zed"));
-        let command = linux_editor_command(&[editor.to_str().unwrap().into()], None, &nowhere).unwrap();
+        let command =
+            linux_editor_command(&[editor.to_str().unwrap().into()], None, &nowhere).unwrap();
         assert!(command.zed);
         assert!(command.program.ends_with("zed.app/libexec/../bin/zed"));
     }
 
     #[test]
     fn text_editors_that_cannot_open_sandboxes_are_refused() {
-        for line in ["gnome-text-editor %U", "/usr/bin/gedit %U", "codium %F", "/usr/bin/env A=b kate"] {
+        for line in [
+            "gnome-text-editor %U",
+            "/usr/bin/gedit %U",
+            "codium %F",
+            "/usr/bin/env A=b kate",
+        ] {
             let found = |name: &str| Some(PathBuf::from("/usr/bin").join(name));
-            assert!(linux_editor_command(&tokens(line), None, &found).is_err(), "{line}");
+            assert!(
+                linux_editor_command(&tokens(line), None, &found).is_err(),
+                "{line}"
+            );
         }
     }
 
@@ -281,10 +335,21 @@ mod tests {
     fn the_terminal_default_prefers_system_launchers() {
         let listed = ["/usr/share/applications/org.gnome.Ptyxis.desktop".to_string()];
         let both = |name: &str| Some(PathBuf::from("/usr/bin").join(name));
-        assert_eq!(linux_terminal_default(&both, &listed).as_deref(), Some("/usr/bin/xdg-terminal-exec"));
-        let debian = |name: &str| (name == "x-terminal-emulator").then(|| PathBuf::from("/usr/bin/x-terminal-emulator"));
-        assert_eq!(linux_terminal_default(&debian, &listed).as_deref(), Some("/usr/bin/x-terminal-emulator"));
-        assert_eq!(linux_terminal_default(&nowhere, &listed).as_deref(), Some(listed[0].as_str()));
+        assert_eq!(
+            linux_terminal_default(&both, &listed).as_deref(),
+            Some("/usr/bin/xdg-terminal-exec")
+        );
+        let debian = |name: &str| {
+            (name == "x-terminal-emulator").then(|| PathBuf::from("/usr/bin/x-terminal-emulator"))
+        };
+        assert_eq!(
+            linux_terminal_default(&debian, &listed).as_deref(),
+            Some("/usr/bin/x-terminal-emulator")
+        );
+        assert_eq!(
+            linux_terminal_default(&nowhere, &listed).as_deref(),
+            Some(listed[0].as_str())
+        );
         assert_eq!(linux_terminal_default(&nowhere, &[]), None);
     }
 
@@ -294,28 +359,60 @@ mod tests {
         let environment = [
             ("APPDIR", "/tmp/.mount_SiloAbC"),
             ("APPIMAGE", "/home/me/Silo.AppImage"),
-            ("GSETTINGS_SCHEMA_DIR", "/tmp/.mount_SiloAbC//usr/share/glib-2.0/schemas"),
+            (
+                "GSETTINGS_SCHEMA_DIR",
+                "/tmp/.mount_SiloAbC//usr/share/glib-2.0/schemas",
+            ),
             ("GTK_PATH", "/tmp/.mount_SiloAbC//usr/lib/gtk-3.0"),
-            ("GDK_PIXBUF_MODULE_FILE", "/tmp/.mount_SiloAbC//usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache"),
-            ("GST_PLUGIN_SYSTEM_PATH_1_0", "/tmp/.mount_SiloAbC/usr/lib/gstreamer-1.0"),
-            ("XDG_DATA_DIRS", "/tmp/.mount_SiloAbC/usr/share:/usr/share:/usr/local/share"),
+            (
+                "GDK_PIXBUF_MODULE_FILE",
+                "/tmp/.mount_SiloAbC//usr/lib/gdk-pixbuf-2.0/2.10.0/loaders.cache",
+            ),
+            (
+                "GST_PLUGIN_SYSTEM_PATH_1_0",
+                "/tmp/.mount_SiloAbC/usr/lib/gstreamer-1.0",
+            ),
+            (
+                "XDG_DATA_DIRS",
+                "/tmp/.mount_SiloAbC/usr/share:/usr/share:/usr/local/share",
+            ),
             ("PATH", "/tmp/.mount_SiloAbC/usr/bin:/usr/bin:/bin"),
             ("LD_LIBRARY_PATH", "/tmp/.mount_SiloAbC/usr/lib"),
             ("HOME", "/home/me"),
             ("OTHER_MOUNT", "/tmp/.mount_SiloAbCdef/usr/lib"),
         ]
         .map(|(name, value)| (OsString::from(name), OsString::from(value)));
-        let changes: std::collections::HashMap<_, _> = appimage_child_environment(environment, root)
-            .into_iter()
-            .map(|(name, value)| (name.into_string().unwrap(), value.map(|value| value.into_string().unwrap())))
-            .collect();
-        for removed in ["APPDIR", "APPIMAGE", "GSETTINGS_SCHEMA_DIR", "GTK_PATH", "GDK_PIXBUF_MODULE_FILE", "GST_PLUGIN_SYSTEM_PATH_1_0", "LD_LIBRARY_PATH"] {
+        let changes: std::collections::HashMap<_, _> =
+            appimage_child_environment(environment, root)
+                .into_iter()
+                .map(|(name, value)| {
+                    (
+                        name.into_string().unwrap(),
+                        value.map(|value| value.into_string().unwrap()),
+                    )
+                })
+                .collect();
+        for removed in [
+            "APPDIR",
+            "APPIMAGE",
+            "GSETTINGS_SCHEMA_DIR",
+            "GTK_PATH",
+            "GDK_PIXBUF_MODULE_FILE",
+            "GST_PLUGIN_SYSTEM_PATH_1_0",
+            "LD_LIBRARY_PATH",
+        ] {
             assert_eq!(changes.get(removed), Some(&None), "{removed}");
         }
-        assert_eq!(changes["XDG_DATA_DIRS"].as_deref(), Some("/usr/share:/usr/local/share"));
+        assert_eq!(
+            changes["XDG_DATA_DIRS"].as_deref(),
+            Some("/usr/share:/usr/local/share")
+        );
         assert_eq!(changes["PATH"].as_deref(), Some("/usr/bin:/bin"));
         assert!(!changes.contains_key("HOME"));
-        assert!(!changes.contains_key("OTHER_MOUNT"), "a different mount is not this AppImage");
+        assert!(
+            !changes.contains_key("OTHER_MOUNT"),
+            "a different mount is not this AppImage"
+        );
     }
 
     #[test]
@@ -326,6 +423,9 @@ mod tests {
         sanitize_child(&mut command);
         assert_eq!(command.get_envs().count(), 0);
         assert!(!tools_are_temporary());
-        assert_eq!(stable_executable().unwrap(), std::env::current_exe().unwrap());
+        assert_eq!(
+            stable_executable().unwrap(),
+            std::env::current_exe().unwrap()
+        );
     }
 }

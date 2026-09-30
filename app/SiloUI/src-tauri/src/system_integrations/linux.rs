@@ -327,7 +327,10 @@ pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(),
         .unwrap_or(0);
     // The standard has no permission prompt. The desktop controls suppression/DND.
     let hints = std::collections::HashMap::from([
-        ("desktop-entry", super::NOTIFICATION_DESKTOP_ENTRY.to_variant()),
+        (
+            "desktop-entry",
+            super::NOTIFICATION_DESKTOP_ENTRY.to_variant(),
+        ),
         ("urgency", 1u8.to_variant()),
     ]);
     let parameters = (
@@ -367,7 +370,9 @@ pub fn clear_notifications(keys: &[String]) {
         let Some(map) = guard.as_mut() else { return };
         keys.iter().filter_map(|key| map.remove(key)).collect()
     };
-    let Ok(proxy) = notifications_proxy() else { return };
+    let Ok(proxy) = notifications_proxy() else {
+        return;
+    };
     if proxy.name_owner().is_none() {
         return;
     }

@@ -78,11 +78,36 @@ fn guest(
 fn installer_script(action: &str) -> String {
     let mut script = String::from("set -eu\ndesktop_stage=$(mktemp -d /tmp/silo-desktop.XXXXXXXX)\ntrap 'rm -rf \"$desktop_stage\"' EXIT\n");
     for (variable, filename, source, delimiter) in [
-        ("SILO_DESKTOP_SERVICE_SOURCE", "desktop-service.py", include_str!("../guest/desktop-service.py"), "SILO_DESKTOP_SERVICE_EOF"),
-        ("SILO_LUDA_SETUP_SOURCE", "setup-luda.py", include_str!("../guest/setup-luda.py"), "SILO_LUDA_SETUP_EOF"),
-        ("SILO_LUDA_LOCK_SOURCE", "luda-lock.json", include_str!("../guest/luda-lock.json"), "SILO_LUDA_LOCK_EOF"),
-        ("SILO_DESKTOP_STREAMER_LOCK_SOURCE", "desktop-streamer-lock.json", include_str!("../guest/desktop-streamer-lock.json"), "SILO_DESKTOP_STREAMER_LOCK_EOF"),
-        ("SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE", "patch-selkies-web-client.py", include_str!("../guest/patch-selkies-web-client.py"), "SILO_SELKIES_WEB_CLIENT_PATCH_EOF"),
+        (
+            "SILO_DESKTOP_SERVICE_SOURCE",
+            "desktop-service.py",
+            include_str!("../guest/desktop-service.py"),
+            "SILO_DESKTOP_SERVICE_EOF",
+        ),
+        (
+            "SILO_LUDA_SETUP_SOURCE",
+            "setup-luda.py",
+            include_str!("../guest/setup-luda.py"),
+            "SILO_LUDA_SETUP_EOF",
+        ),
+        (
+            "SILO_LUDA_LOCK_SOURCE",
+            "luda-lock.json",
+            include_str!("../guest/luda-lock.json"),
+            "SILO_LUDA_LOCK_EOF",
+        ),
+        (
+            "SILO_DESKTOP_STREAMER_LOCK_SOURCE",
+            "desktop-streamer-lock.json",
+            include_str!("../guest/desktop-streamer-lock.json"),
+            "SILO_DESKTOP_STREAMER_LOCK_EOF",
+        ),
+        (
+            "SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE",
+            "patch-selkies-web-client.py",
+            include_str!("../guest/patch-selkies-web-client.py"),
+            "SILO_SELKIES_WEB_CLIENT_PATCH_EOF",
+        ),
     ] {
         script.push_str(&format!("export {variable}=\"$desktop_stage/{filename}\"\ncat > \"${variable}\" <<'{delimiter}'\n{source}\n{delimiter}\n"));
     }
@@ -226,11 +251,15 @@ fn status_with(
 ) -> Result<Value, String> {
     let settings = configuration(machine);
     let fallback = |state: &str| json!({"installed": settings.is_some(), "state":state, "autoStart":settings.is_some_and(|s| s.start_with_sandbox), "backend":null, "sessionState":"stopped", "streamState":"stopped", "updateRequired":false, "streamerVersion":null, "lcuState":null, "lcuReason":null, "lcuVersion":null, "lcuAppVersion":null, "lcuRuntimeVersion":null, "lcuAgents":null, "lcuReadiness":null});
-    let inspected = match runtime::observe_vm(runner, paths, machine.name()).map_err(|e| e.to_string())? {
-        runtime::VmRuntime::Present(inspected) => Some(inspected),
-        runtime::VmRuntime::Absent => None,
-    };
-    if inspected.as_ref().is_none_or(|inspected| inspected.status != "Running") {
+    let inspected =
+        match runtime::observe_vm(runner, paths, machine.name()).map_err(|e| e.to_string())? {
+            runtime::VmRuntime::Present(inspected) => Some(inspected),
+            runtime::VmRuntime::Absent => None,
+        };
+    if inspected
+        .as_ref()
+        .is_none_or(|inspected| inspected.status != "Running")
+    {
         return Ok(fallback(if settings.is_some() {
             "vm-stopped"
         } else {
@@ -261,9 +290,9 @@ fn public_status(value: Value) -> Result<Value, String> {
         .as_bool()
         .ok_or("The desktop returned an invalid startup preference.")?;
     let legacy_component_state = || {
-        value["state"].as_str().filter(|state| {
-            matches!(*state, "running" | "starting" | "stopped" | "failed")
-        })
+        value["state"]
+            .as_str()
+            .filter(|state| matches!(*state, "running" | "starting" | "stopped" | "failed"))
     };
     let backend = match value.get("backend") {
         None if installed => Some("kasm"),
@@ -279,7 +308,10 @@ fn public_status(value: Value) -> Result<Value, String> {
             None => Ok(legacy_component_state()),
             Some(Value::Null) => Ok(None),
             Some(Value::String(state))
-                if matches!(state.as_str(), "stopped" | "starting" | "running" | "failed") =>
+                if matches!(
+                    state.as_str(),
+                    "stopped" | "starting" | "running" | "failed"
+                ) =>
             {
                 Ok(Some(state.as_str()))
             }
@@ -296,14 +328,19 @@ fn public_status(value: Value) -> Result<Value, String> {
     let streamer_version = value["streamerVersion"].as_str().filter(|version| {
         let parts = version.split('.').collect::<Vec<_>>();
         parts.len() == 3
-            && parts.iter().all(|part| {
-                !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
-            })
+            && parts
+                .iter()
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
     });
     let lcu_state = value["lcuState"].as_str().filter(|state| {
         matches!(
             *state,
-            "needs-runtime" | "not-installed" | "repair-required" | "failed" | "installing" | "ready"
+            "needs-runtime"
+                | "not-installed"
+                | "repair-required"
+                | "failed"
+                | "installing"
+                | "ready"
         )
     });
     let lcu_reason = value["lcuReason"].as_str().filter(|reason| {
@@ -363,7 +400,9 @@ fn safe_display(value: Option<&str>) -> Option<&str> {
         display.len() <= 32
             && display.len() > 1
             && display.starts_with(':')
-            && display[1..].bytes().all(|byte| byte.is_ascii_digit() || byte == b'.')
+            && display[1..]
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || byte == b'.')
     })
 }
 
@@ -438,13 +477,24 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
     let (paths, machine) = machine(app, workspace)?;
     if let Some(action) = action {
         runtime::shutdown::ensure_accepting_operations()?;
-        if !matches!(action, "start" | "stop" | "restart" | "setup-tools" | "restart-streamer" | "update-streamer" | "setup-lcu") {
+        if !matches!(
+            action,
+            "start"
+                | "stop"
+                | "restart"
+                | "setup-tools"
+                | "restart-streamer"
+                | "update-streamer"
+                | "setup-lcu"
+        ) {
             return Err("Unsupported desktop action.".into());
         }
         if configuration(&machine).is_none() {
             return Err("Add a Linux desktop in sandbox settings first.".into());
         }
-        let inspected = match runtime::observe_vm(&runtime::ProcessRunner, &paths, workspace).map_err(|e| e.to_string())? {
+        let inspected = match runtime::observe_vm(&runtime::ProcessRunner, &paths, workspace)
+            .map_err(|e| e.to_string())?
+        {
             runtime::VmRuntime::Absent => return Err(crate::terminal::start_first(workspace)),
             runtime::VmRuntime::Present(inspected) => inspected,
         };
@@ -489,7 +539,9 @@ async fn execute(
         }
     })
     .await
-    .map_err(|_| "Silo could not finish the Linux desktop action. Reopen the viewer and retry.".to_string())?
+    .map_err(|_| {
+        "Silo could not finish the Linux desktop action. Reopen the viewer and retry.".to_string()
+    })?
 }
 #[tauri::command]
 pub async fn read_desktop_state(
@@ -567,8 +619,20 @@ mod tests {
     fn configure_guest(script: String) -> ExpectedCommand {
         ExpectedCommand::ok(
             [
-                "exec", "dev", "--no-tty", "--quiet", "--timeout", "1800s", "--user",
-                "root", "--workdir", "/", "--", "sh", "-c", &script,
+                "exec",
+                "dev",
+                "--no-tty",
+                "--quiet",
+                "--timeout",
+                "1800s",
+                "--user",
+                "root",
+                "--workdir",
+                "/",
+                "--",
+                "sh",
+                "-c",
+                &script,
             ],
             "",
         )
@@ -602,7 +666,18 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let runner = ScriptedRunner::new([inspect("Running", json!({"silo.managed":"true"}))]);
-        let error = configure_with(&runner, &paths(dir.path()), "dev", Some(&DesktopConfiguration { start_with_sandbox: true }), &DesktopConfiguration { start_with_sandbox: false }).unwrap_err();
+        let error = configure_with(
+            &runner,
+            &paths(dir.path()),
+            "dev",
+            Some(&DesktopConfiguration {
+                start_with_sandbox: true,
+            }),
+            &DesktopConfiguration {
+                start_with_sandbox: false,
+            },
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("Migrate"));
         runner.assert_finished();
     }
@@ -642,7 +717,16 @@ mod tests {
                 installer_script("install")
             )),
         ]);
-        configure_with(&runner, &paths(dir.path()), "dev", None, &DesktopConfiguration { start_with_sandbox: false }).unwrap();
+        configure_with(
+            &runner,
+            &paths(dir.path()),
+            "dev",
+            None,
+            &DesktopConfiguration {
+                start_with_sandbox: false,
+            },
+        )
+        .unwrap();
         runner.assert_finished();
         let calls = runner.calls();
         let script = calls.last().unwrap().last().unwrap();
@@ -668,7 +752,10 @@ mod tests {
         assert!(update.contains("SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE"));
         assert!(update.contains("set -- update-streamer\n"));
         assert_eq!(action_timeout("update-streamer"), Duration::from_secs(1800));
-        assert_eq!(action_script("restart"), "/usr/local/bin/silo-desktop restart");
+        assert_eq!(
+            action_script("restart"),
+            "/usr/local/bin/silo-desktop restart"
+        );
     }
 
     #[test]
@@ -680,7 +767,9 @@ mod tests {
         assert!(setup.contains("/usr/local/libexec/silo-setup-lcu.py setup"));
         assert!(setup.contains("setup-lcu.py\" status"));
         assert!(setup.contains("needs-runtime"));
-        assert!(setup.find("lcu_status=$(python3").unwrap() < setup.find("install -m 0644").unwrap());
+        assert!(
+            setup.find("lcu_status=$(python3").unwrap() < setup.find("install -m 0644").unwrap()
+        );
         assert!(!setup.contains("SILO_DESKTOP_LCU_LOCK_SOURCE"));
         assert_eq!(action_timeout("setup-lcu"), Duration::from_secs(1800));
         assert!(!action_starts_vm("setup-lcu"));
@@ -693,8 +782,19 @@ mod tests {
     #[test]
     fn long_desktop_actions_are_not_flagged_before_their_guest_timeout() {
         let _test_state = crate::test_support::global_state();
-        for action in ["start", "stop", "restart", "setup-tools", "restart-streamer", "update-streamer", "setup-lcu"] {
-            assert!(action_expected_duration(action) > action_timeout(action), "{action}");
+        for action in [
+            "start",
+            "stop",
+            "restart",
+            "setup-tools",
+            "restart-streamer",
+            "update-streamer",
+            "setup-lcu",
+        ] {
+            assert!(
+                action_expected_duration(action) > action_timeout(action),
+                "{action}"
+            );
             assert!(action_expected_duration(action) >= Duration::from_secs(10 * 60));
         }
     }
@@ -707,7 +807,8 @@ mod tests {
             "installed":true,"autoStart":false,"state":"running",
             "version":long,"user":"silo\u{1b}[31m","display":":1; echo",
             "ludaVersion":"<script>"
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(status["version"].is_null());
         assert!(status["user"].is_null());
         assert!(status["display"].is_null());
@@ -715,7 +816,8 @@ mod tests {
         let status = public_status(json!({
             "installed":true,"autoStart":false,"state":"running",
             "version":"1.2.3","user":"silo","display":":1.0","ludaVersion":"0.3.0"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(status["version"], "1.2.3");
         assert_eq!(status["user"], "silo");
         assert_eq!(status["display"], ":1.0");
@@ -733,7 +835,8 @@ mod tests {
         assert_eq!(status["streamState"], "stopped");
         assert_eq!(status["updateRequired"], false);
         assert!(!status.to_string().contains("private"));
-        let old = public_status(json!({"installed":true,"autoStart":false,"state":"stopped"})).unwrap();
+        let old =
+            public_status(json!({"installed":true,"autoStart":false,"state":"stopped"})).unwrap();
         assert!(old["ludaState"].is_null());
         assert_eq!(old["backend"], "kasm");
         assert!(old["lcuState"].is_null());
@@ -741,7 +844,8 @@ mod tests {
             "installed":true,"autoStart":true,"state":"failed",
             "backend":"selkies","sessionState":"running","streamState":"failed",
             "updateRequired":true,"streamerVersion":"2.0.0","password":"private"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(split["backend"], "selkies");
         assert_eq!(split["sessionState"], "running");
         assert_eq!(split["streamState"], "failed");
@@ -757,25 +861,31 @@ mod tests {
             "lcuAgents":["pi","codex","claude-code","unexpected"],
             "lcuReadiness":"ready","lcuReason":"invalid-receipt",
             "appPath":"/private/app","password":"private"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(lcu["state"], "running");
         assert_eq!(lcu["sessionState"], "running");
         assert_eq!(lcu["streamState"], "failed");
         assert_eq!(lcu["lcuState"], "ready");
         assert_eq!(lcu["lcuAppVersion"], "26.924.22138");
-        assert_eq!(lcu["lcuRuntimeVersion"], "0.0.24/20260924074400-f52ea85e2a98");
-        assert_eq!(lcu["lcuAgents"], json!(["pi","codex","claude-code"]));
+        assert_eq!(
+            lcu["lcuRuntimeVersion"],
+            "0.0.24/20260924074400-f52ea85e2a98"
+        );
+        assert_eq!(lcu["lcuAgents"], json!(["pi", "codex", "claude-code"]));
         assert!(!lcu.to_string().contains("/private/app"));
         assert!(!lcu.to_string().contains("private"));
         let unsafe_runtime = public_status(json!({
             "installed":true,"autoStart":true,"state":"running",
             "lcuRuntimeVersion":"../../private/runtime"
-        })).unwrap();
+        }))
+        .unwrap();
         assert!(unsafe_runtime["lcuRuntimeVersion"].is_null());
         let prerequisite = public_status(json!({
             "installed":true,"autoStart":true,"state":"running",
             "lcuState":"needs-runtime","lcuReason":"chatgpt-app-required"
-        })).unwrap();
+        }))
+        .unwrap();
         assert_eq!(prerequisite["state"], "running");
         assert_eq!(prerequisite["lcuState"], "needs-runtime");
         assert_eq!(prerequisite["lcuReason"], "chatgpt-app-required");
