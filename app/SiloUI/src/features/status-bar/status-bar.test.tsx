@@ -21,6 +21,70 @@ function setup(overrides: Partial<ApplicationSource> = {}) {
 }
 
 describe("status bar", () => {
+  it.each(["row", "menu"])("guards a memory-pressure Start from the %s (I-04)", async (surface) => {
+    const base = applicationSourceForScenario("complete")
+    const { user, actions } = setup({
+      workspaces: base.workspaces.map(workspace => ({ ...workspace, state: "stopped" })),
+      resourceNotice: { kind: "start-memory", sandbox: "dev", memoryGiB: 32 },
+    })
+    if (surface === "menu") {
+      await user.click(screen.getByRole("button", { name: "Actions for dev" }))
+      await user.click(screen.getByRole("menuitem", { name: "Start" }))
+    } else await user.click(screen.getByRole("button", { name: "Start dev" }))
+    expect(actions.startWorkspace).not.toHaveBeenCalled()
+    const prompt = screen.getByRole("group", { name: "Starting dev may slow this computer" })
+    expect(prompt).toHaveTextContent("32 GB")
+    await user.click(within(prompt).getByRole("button", { name: "Start anyway" }))
+    expect(actions.startWorkspace).toHaveBeenCalledExactlyOnceWith("dev")
+  })
+
+  it("reports unavailable VM operations at the tray control (I-04)", async () => {
+    const base = applicationSourceForScenario("complete")
+    const { user, actions } = setup({
+      workspaces: base.workspaces.map(workspace => ({ ...workspace, state: "stopped" })),
+      vmOperationsUnavailable: "This build cannot run local VMs.",
+    })
+    await user.click(screen.getByRole("button", { name: "Start dev" }))
+    expect(actions.startWorkspace).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert", { name: "VM operation unavailable" })).toHaveTextContent("This build cannot run local VMs.")
+  })
+
+  it("rechecks current availability before Start anyway (I-04)", async () => {
+    const base = applicationSourceForScenario("complete")
+    const { user, actions, source, rerender } = setup({
+      workspaces: base.workspaces.map(workspace => ({ ...workspace, state: "stopped" })),
+      resourceNotice: { kind: "start-memory", sandbox: "dev", memoryGiB: 32 },
+    })
+    await user.click(screen.getByRole("button", { name: "Start dev" }))
+    rerender(<StatusBar source={{ ...source, workspaces: source.workspaces.map(workspace => ({ ...workspace, freshness: "stale" })) }} actions={actions} defaultOpen />)
+    expect(screen.getByRole("button", { name: "Start anyway" })).toBeDisabled()
+    expect(actions.startWorkspace).not.toHaveBeenCalled()
+  })
+
+  it.each(["Stop", "Restart"])("guards confirmed %s when local operations become unavailable (I-04)", async (action) => {
+    const { user, actions, source, rerender } = setup()
+    await user.click(screen.getByRole("button", { name: "Actions for dev" }))
+    await user.click(screen.getByRole("menuitem", { name: `${action}…` }))
+    rerender(<StatusBar source={{ ...source, vmOperationsUnavailable: "Local VMs unavailable." }} actions={actions} defaultOpen />)
+    await user.click(screen.getByRole("button", { name: action }))
+    expect(actions.stopWorkspace).not.toHaveBeenCalled()
+    expect(actions.restartWorkspace).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert", { name: "VM operation unavailable" })).toHaveTextContent("Local VMs unavailable.")
+  })
+
+  it("keeps a remote Start independent of same-named local guards (I-04)", async () => {
+    const base = applicationSourceForScenario("complete")
+    const computer = { id: "office", name: "office-mac", address: "office.local", connected: true, vmId: "vm-1" }
+    const { user, actions } = setup({
+      workspaces: [{ ...base.workspaces[0]!, computer, state: "stopped" }],
+      vmOperationsUnavailable: "Local VMs unavailable.",
+      resourceNotice: { kind: "start-memory", sandbox: "dev", memoryGiB: 32 },
+    })
+    await user.click(screen.getByRole("button", { name: "Start dev" }))
+    expect(actions.startWorkspace).toHaveBeenCalledExactlyOnceWith(remoteWorkspaceTarget("office", "vm-1"))
+    expect(screen.queryByRole("button", { name: "Start anyway" })).not.toBeInTheDocument()
+  })
+
   it("pushes the selected repository and shows source-confirmed progress and success", async () => {
     const { user, actions, source, rerender } = setup()
     const row = within(screen.getByRole("listitem", { name: "dev" }))

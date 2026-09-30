@@ -1,3 +1,4 @@
+import { lifecycleGuard, type LifecyclePrompt } from "@/features/application/model/lifecycle-guard"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react"
@@ -96,6 +97,30 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
   const [hasNavigated, setHasNavigated] = useState(false)
   const [folderWorkspace, setFolderWorkspace] = useState<string | null>(null)
   const [confirmation, setConfirmation] = useState<{ workspace: string; action: "stop" | "restart" } | null>(null)
+  const [startPrompt, setStartPrompt] = useState<{ target: string; prompt: LifecyclePrompt } | null>(null)
+  const [lifecycleIssue, setLifecycleIssue] = useState<{ title: string; message: string } | null>(null)
+  const guarded = lifecycleGuard(source, actions, {
+    notify: (title, message) => setLifecycleIssue({ title, message }),
+    prompt: (prompt, _confirm, workspace) => {
+      // Store the target, then confirm against the latest source after any refresh.
+      setStartPrompt({ target: workspaceTarget(workspace), prompt })
+    },
+  })
+  const guardedActions: StatusBarActions = {
+    ...actions,
+    startWorkspace: (target) => {
+      const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === target)
+      if (workspace) { setLifecycleIssue(null); guarded.request(workspace, "start") }
+    },
+    stopWorkspace: (target) => {
+      const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === target)
+      if (workspace) guarded.confirm(workspace, "stop")
+    },
+    restartWorkspace: (target) => {
+      const workspace = source.workspaces.find(workspace => workspaceTarget(workspace) === target)
+      if (workspace) guarded.confirm(workspace, "restart")
+    },
+  }
   const repair = source.runtimeRepair
   const folders = source.workspaces.find(({ machine }) => machine.id === folderWorkspace)
   const failedPushes = source.repositoryPushOperations.filter((operation) => operation.status === "failed")
@@ -116,6 +141,12 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
   return (
     <div key="sandboxes" className={cn("status-page flex max-h-[518px] shrink-0 flex-col overflow-hidden", hasNavigated && "status-page-back")}>
       <div className="shrink-0 px-2 pt-2">
+        {lifecycleIssue && <OperationIssue
+          title={lifecycleIssue.title}
+          detail={lifecycleIssue.message}
+          actionLabel="Review VM operation availability"
+          onReview={() => actions.openSilo({ workspaceSection: "overview" })}
+        />}
         {repair && <ListCard className="mb-2">
           <ListRow
             icon={<ListRowIcon className="bg-destructive/10 text-destructive"><CircleAlert className="size-3.5" /></ListRowIcon>}
@@ -192,12 +223,23 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
                         : availability.canOpen ? <>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.terminal}`} onClick={() => actions.openTerminal(target)}><Terminal /></SandboxAction>
                           <SandboxAction label={`Open ${machine.name} in ${source.preferences.editor}`} onClick={() => openFolders(machine.id)}><Code /></SandboxAction>
-                        </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => actions.startWorkspace(target)}><Play /></SandboxAction>
+                        </> : availability.canStart ? <SandboxAction label={`Start ${machine.name}`} onClick={() => guardedActions.startWorkspace(target)}><Play /></SandboxAction>
                           : <SandboxAction label={`Open ${machine.name} in Silo`} onClick={() => actions.openSilo({ workspace: target })}><SiloMark /></SandboxAction>)}
-                    <WorkspaceActions workspace={workspace} source={source} actions={actions} onFolders={() => openFolders(machine.id)} onConfirm={(action) => setConfirmation({ workspace: target, action })} />
+                    <WorkspaceActions workspace={workspace} source={source} actions={guardedActions} onFolders={() => openFolders(machine.id)} onConfirm={(action) => setConfirmation({ workspace: target, action })} />
                   </>}
                 />
                 <RepositoryPushes workspace={workspace} source={source} actions={actions} />
+                {startPrompt?.target === target && <ListRowDetails label={startPrompt.prompt.title} className="gap-2 pl-0">
+                  <p className="text-[11px] font-medium">{startPrompt.prompt.title}</p>
+                  <p className="text-[11px] text-muted-foreground">{startPrompt.prompt.description}</p>
+                  <div className="flex justify-end gap-1.5">
+                    <Button variant="ghost" size="xs" onClick={() => setStartPrompt(null)}>Cancel</Button>
+                    <Button size="xs" disabled={!availability.canStart} onClick={() => {
+                      setStartPrompt(null)
+                      guarded.confirm(workspace, "start")
+                    }}>Start anyway</Button>
+                  </div>
+                </ListRowDetails>}
                 {pending && <ListRowDetails label={`${pending.action === "stop" ? "Stop" : "Restart"} ${machine.name}?`} className="gap-2 pl-0">
                   <p className="text-[11px] text-muted-foreground">{pending.action === "stop" ? "Stop" : "Restart"} {machine.name}{workspace.computer ? ` on ${workspace.computer.name}` : ""}? Running processes will be interrupted.</p>
                   <div className="flex justify-end gap-1.5">
@@ -205,8 +247,8 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
                     <Button variant="destructive" size="xs" disabled={pending.action === "stop" ? !availability.canStop : !availability.canRestart} onClick={() => {
                       if (pending.action === "stop" ? !availability.canStop : !availability.canRestart) return
                       setConfirmation(null)
-                      if (pending.action === "stop") actions.stopWorkspace(target)
-                      else actions.restartWorkspace(target)
+                      if (pending.action === "stop") guardedActions.stopWorkspace(target)
+                      else guardedActions.restartWorkspace(target)
                     }}>{pending.action === "stop" ? <Square /> : <RotateCw />}{pending.action === "stop" ? "Stop" : "Restart"}</Button>
                   </div>
                 </ListRowDetails>}

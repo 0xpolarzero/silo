@@ -1,0 +1,111 @@
+import { showActionFailure, showOperationFailure } from "@/lib/operation-toast"
+
+import type { ApplicationActions, ApplicationSource, ApplicationWorkspace } from "./application-source"
+import { workspaceTarget } from "./remote-computers"
+import { workspaceAvailability } from "./workspace-availability"
+
+export type LifecycleAction = "start" | "stop" | "restart"
+
+/** A question to ask before a lifecycle action runs. */
+export interface LifecyclePrompt {
+  title: string
+  description: string
+  confirmLabel: string
+  tone: "default" | "destructive"
+}
+
+export type LifecycleCheck =
+  | { kind: "ready" }
+  | { kind: "confirm"; prompt: LifecyclePrompt }
+  | { kind: "unavailable"; title: string; message: string }
+
+type LifecycleActions = Pick<ApplicationActions, "startWorkspace" | "stopWorkspace" | "restartWorkspace">
+
+function sandboxName(workspace: ApplicationWorkspace) {
+  return workspace.computer ? `${workspace.machine.name} on ${workspace.computer.name}` : workspace.machine.name
+}
+
+/**
+ * The guards every surface applies to a lifecycle request (list row, sandbox page, command
+ * palette, toasts, and the status panel): local VM operations can be unavailable in this
+ * build, and starting a VM under memory pressure asks first.
+ */
+export function lifecycleCheck(source: ApplicationSource, workspace: ApplicationWorkspace, action: LifecycleAction): LifecycleCheck {
+  const local = !workspace.computer
+  if (local && source.vmOperationsUnavailable) return { kind: "unavailable", title: "VM operation unavailable", message: source.vmOperationsUnavailable }
+  const notice = source.resourceNotice
+  if (action === "start" && local && notice?.kind === "start-memory" && notice.sandbox === workspace.machine.name) {
+    return { kind: "confirm", prompt: {
+      title: `Starting ${workspace.machine.name} may slow this computer`,
+      description: `Silo found high memory pressure now. This sandbox can use up to ${notice.memoryGiB} GB. Close memory-heavy apps, or start anyway.`,
+      confirmLabel: "Start anyway",
+      tone: "default",
+    } }
+  }
+  return { kind: "ready" }
+}
+
+/** Sends the action to the sandbox's own computer. */
+export function runLifecycle(actions: LifecycleActions, workspace: ApplicationWorkspace, action: LifecycleAction) {
+  const target = workspaceTarget(workspace)
+  if (action === "start") actions.startWorkspace(target)
+  else if (action === "stop") actions.stopWorkspace(target)
+  else actions.restartWorkspace(target)
+}
+
+export interface LifecyclePresenters {
+  /** Reports a request that cannot run. Defaults to a failure notification. */
+  notify?: (title: string, message: string) => void
+  /** Asks a prompt where the surface has no confirmation of its own; `confirm` proceeds.
+   * Defaults to a warning notification with the confirm action. */
+  prompt?: (prompt: LifecyclePrompt, confirm: () => void, workspace: ApplicationWorkspace) => void
+}
+
+export interface LifecycleGuard {
+  check: (workspace: ApplicationWorkspace, action: LifecycleAction) => LifecycleCheck
+  /** A new request: reports why it can't run, asks its prompt, or runs it. */
+  request: (workspace: ApplicationWorkspace, action: LifecycleAction) => void
+  /** Runs a request the user already confirmed, or re-submits one (Retry): prompts are skipped,
+   * but a request that can no longer run is still reported instead. */
+  confirm: (workspace: ApplicationWorkspace, action: LifecycleAction) => void
+}
+
+const verbs: Record<LifecycleAction, string> = { start: "start", stop: "stop", restart: "restart" }
+
+/** The shared guarded lifecycle layer. Pages, the palette and the status panel call this
+ * instead of the raw start/stop/restart actions. */
+export function lifecycleGuard(source: ApplicationSource, actions: LifecycleActions, presenters: LifecyclePresenters = {}): LifecycleGuard {
+  const notify = presenters.notify ?? ((title: string, message: string) => showActionFailure(title, message, undefined, { native: false }))
+  const prompt = presenters.prompt ?? ((question: LifecyclePrompt, confirm: () => void, workspace: ApplicationWorkspace) => {
+    showOperationFailure(`lifecycle-prompt:${workspaceTarget(workspace)}`, question.title, {
+      description: question.description, tone: "warning", native: false, sandbox: workspace.machine.name,
+      action: { label: question.confirmLabel, onClick: confirm },
+    })
+  })
+  function blocked(workspace: ApplicationWorkspace, action: LifecycleAction): LifecycleCheck | undefined {
+    const check = lifecycleCheck(source, workspace, action)
+    if (check.kind === "unavailable") return check
+    // The sandbox may have changed since the control was shown (or the prompt was asked).
+    const availability = workspaceAvailability(workspace, source)
+    const allowed = action === "start" ? availability.canStart : action === "stop" ? availability.canStop : availability.canRestart
+    const reason = availability.reasons[action]
+    if (!allowed) return { kind: "unavailable", title: `Couldn't ${verbs[action]} ${sandboxName(workspace)}`, message: reason ?? "It is busy." }
+    return undefined
+  }
+  const guard: LifecycleGuard = {
+    check: (workspace, action) => lifecycleCheck(source, workspace, action),
+    request(workspace, action) {
+      const unavailable = blocked(workspace, action)
+      if (unavailable?.kind === "unavailable") { notify(unavailable.title, unavailable.message); return }
+      const check = lifecycleCheck(source, workspace, action)
+      if (check.kind === "confirm") prompt(check.prompt, () => guard.confirm(workspace, action), workspace)
+      else runLifecycle(actions, workspace, action)
+    },
+    confirm(workspace, action) {
+      const unavailable = blocked(workspace, action)
+      if (unavailable?.kind === "unavailable") { notify(unavailable.title, unavailable.message); return }
+      runLifecycle(actions, workspace, action)
+    },
+  }
+  return guard
+}
