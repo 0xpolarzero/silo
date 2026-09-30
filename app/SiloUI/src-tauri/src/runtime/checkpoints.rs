@@ -685,11 +685,10 @@ pub async fn create_checkpoint(
         // Checkpoint capture is cancellable and expected to finish within 15 minutes.
         guard.allow_cancel();
         guard.expect_within(std::time::Duration::from_secs(15 * 60));
-        let _guard = guard;
         shutdown::ensure_accepting_operations()?;
-        let _ = worker_app.emit("silo://application-state-changed", ());
-        let result = capture_with(&ProcessRunner, &paths, &workspace_id, &name, "manual")
-            .and_then(|_| application_state_response(&worker_app, &paths));
+        let result = capture_with(&ProcessRunner, &paths, &workspace_id, &name, "manual");
+        drop(guard);
+        let result = result.and_then(|_| application_state_response(&worker_app, &paths));
         let _ = worker_app.emit("silo://application-state-changed", ());
         result.map_err(|e| e.to_string())
     })
