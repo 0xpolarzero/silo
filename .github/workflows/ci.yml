@@ -128,5 +128,5 @@ jobs:
           go-version: '1.25.x'
           cache: false
       - run: npm run runtime:prepare
-      # The suite shares process-wide state and only passes serially.
-      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
+      # Process-wide state is isolated inside the suite; use default test threads.
+      - run: cargo test --manifest-path src-tauri/Cargo.toml --locked

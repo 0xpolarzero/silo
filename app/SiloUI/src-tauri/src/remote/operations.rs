@@ -345,9 +345,16 @@ fn write_marker(journal: &Path, path: &Path, method: &str, status: &str) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runtime::OPERATIONS;
+    use crate::runtime::operation_gate::OperationGate;
+
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
+
+    // Registry tests own their admission state: a process-wide computer operation
+    // must not split the two-VM barrier or cancel an unrelated queued change.
+    fn gate() -> &'static OperationGate {
+        Box::leak(Box::new(OperationGate::new()))
+    }
 
     fn registry() -> &'static Registry {
         Box::leak(Box::new(Registry::new()))
@@ -397,20 +404,20 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
     }
-    fn waiting_for(vm: &str) -> bool {
-        OPERATIONS
-            .snapshot()
+    fn waiting_for(gate: &OperationGate, vm: &str) -> bool {
+        gate.snapshot()
             .waiting
             .iter()
             .any(|entry| entry.vm_id.as_deref() == Some(vm))
     }
     /// Runs like a remote change: takes the VM's gate on this thread, then works.
     fn change_on(
+        gate: &'static OperationGate,
         vm: String,
         runs: &'static AtomicUsize,
     ) -> impl FnOnce() -> Result<Value, BridgeError> {
         move || {
-            let _guard = OPERATIONS
+            let _guard = gate
                 .vm(&vm, "vm", "Remote change")
                 .map_err(|e| e.to_string())?;
             runs.fetch_add(1, Ordering::SeqCst);
@@ -423,6 +430,7 @@ mod tests {
 
     #[test]
     fn changes_to_two_vms_run_concurrently() {
+        let gate = gate();
         let registry = registry();
         let (a, b) = (Fixture::new(), Fixture::new());
         let entered = Arc::new(std::sync::Barrier::new(2));
@@ -431,7 +439,7 @@ mod tests {
                 let entered = entered.clone();
                 scope.spawn(move || {
                     registry.submit(fixture.submission(always(), always()), || {
-                        let _guard = OPERATIONS
+                        let _guard = gate
                             .vm(&fixture.vm(), "vm", "Remote change")
                             .map_err(|e| e.to_string())?;
                         // Both changes hold their VM's turn at once, or this never returns.
@@ -447,6 +455,7 @@ mod tests {
 
     #[test]
     fn changes_to_the_same_vm_run_in_turn() {
+        let gate = gate();
         let registry = registry();
         let first = Fixture::new();
         let mut second = Fixture::new();
@@ -459,9 +468,7 @@ mod tests {
             let order_first = order.clone();
             let running = scope.spawn(move || {
                 registry.submit(first.submission(always(), always()), move || {
-                    let _guard = OPERATIONS
-                        .vm(vm, "vm", "First")
-                        .map_err(|e| e.to_string())?;
+                    let _guard = gate.vm(vm, "vm", "First").map_err(|e| e.to_string())?;
                     order_first.lock().unwrap().push("first started");
                     hold.recv().unwrap();
                     order_first.lock().unwrap().push("first finished");
@@ -472,14 +479,12 @@ mod tests {
             let order_second = order.clone();
             let queued = scope.spawn(move || {
                 registry.submit(second.submission(always(), always()), move || {
-                    let _guard = OPERATIONS
-                        .vm(vm, "vm", "Second")
-                        .map_err(|e| e.to_string())?;
+                    let _guard = gate.vm(vm, "vm", "Second").map_err(|e| e.to_string())?;
                     order_second.lock().unwrap().push("second started");
                     Ok(Value::Null)
                 })
             });
-            wait_for(|| waiting_for(vm));
+            wait_for(|| waiting_for(gate, vm));
             release.send(()).unwrap();
             running.join().unwrap().unwrap();
             queued.join().unwrap().unwrap();
@@ -492,13 +497,14 @@ mod tests {
 
     #[test]
     fn a_queued_change_whose_deadline_passes_never_runs() {
+        let gate = gate();
         let registry = registry();
         let fixture = Fixture::new();
         let busy = {
             let vm = fixture.vm();
             let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
             let thread = thread::spawn(move || {
-                let guard = OPERATIONS.vm(&vm, "vm", "Long local work").unwrap();
+                let guard = gate.vm(&vm, "vm", "Long local work").unwrap();
                 held.0.send(()).unwrap();
                 release.1.recv().unwrap();
                 drop(guard);
@@ -509,9 +515,9 @@ mod tests {
         let runs = counter();
         let mut submission = fixture.submission(always(), always());
         submission.start_within = Duration::from_millis(300);
-        let result = registry.submit(submission, change_on(fixture.vm(), runs));
+        let result = registry.submit(submission, change_on(gate, fixture.vm(), runs));
         assert_eq!(result, Err(EXPIRED.into()));
-        assert!(!waiting_for(&fixture.vm()));
+        assert!(!waiting_for(gate, &fixture.vm()));
         busy.1.send(()).unwrap();
         busy.0.join().unwrap();
         assert_eq!(runs.load(Ordering::SeqCst), 0);
@@ -519,7 +525,7 @@ mod tests {
         assert_eq!(
             registry.submit(
                 fixture.submission(always(), always()),
-                change_on(fixture.vm(), runs)
+                change_on(gate, fixture.vm(), runs)
             ),
             Err(EXPIRED.into())
         );
@@ -528,6 +534,7 @@ mod tests {
 
     #[test]
     fn a_queued_change_stops_when_its_connection_closes_or_access_is_revoked() {
+        let gate = gate();
         for revoke_access in [false, true] {
             let registry = registry();
             let fixture = Fixture::new();
@@ -535,7 +542,7 @@ mod tests {
             let busy = {
                 let vm = fixture.vm();
                 thread::spawn(move || {
-                    let guard = OPERATIONS.vm(&vm, "vm", "Long local work").unwrap();
+                    let guard = gate.vm(&vm, "vm", "Long local work").unwrap();
                     held.0.send(()).unwrap();
                     release.1.recv().unwrap();
                     drop(guard);
@@ -550,10 +557,10 @@ mod tests {
                 let queued = scope.spawn(|| {
                     registry.submit(
                         fixture.submission(connection, allowed),
-                        change_on(fixture.vm(), runs),
+                        change_on(gate, fixture.vm(), runs),
                     )
                 });
-                wait_for(|| waiting_for(&fixture.vm()));
+                wait_for(|| waiting_for(gate, &fixture.vm()));
                 if revoke_access {
                     enabled.store(false, Ordering::SeqCst)
                 } else {
@@ -581,13 +588,14 @@ mod tests {
 
     #[test]
     fn a_retry_attaches_to_the_queued_change_and_receives_its_result() {
+        let gate = gate();
         let registry = registry();
         let fixture = Fixture::new();
         let (held, release) = (std::sync::mpsc::channel(), std::sync::mpsc::channel::<()>());
         let busy = {
             let vm = fixture.vm();
             thread::spawn(move || {
-                let guard = OPERATIONS.vm(&vm, "vm", "Long local work").unwrap();
+                let guard = gate.vm(&vm, "vm", "Long local work").unwrap();
                 held.0.send(()).unwrap();
                 release.1.recv().unwrap();
                 drop(guard);
@@ -600,10 +608,10 @@ mod tests {
             let first = scope.spawn(|| {
                 registry.submit(
                     fixture.submission(first_connection, always()),
-                    change_on(fixture.vm(), runs),
+                    change_on(gate, fixture.vm(), runs),
                 )
             });
-            wait_for(|| waiting_for(&fixture.vm()));
+            wait_for(|| waiting_for(gate, &fixture.vm()));
             // The first connection is lost; the controller retries with the same identity.
             first_open.store(false, Ordering::SeqCst);
             let retry = scope.spawn(|| {

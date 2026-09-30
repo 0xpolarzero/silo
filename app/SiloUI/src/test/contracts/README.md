@@ -29,7 +29,7 @@ nice -n 10 env \
   SILO_GITHUB_CLIENT_SECRET=test-secret \
   SILO_UPDATE_CONTRACT_FIXTURES=1 \
   cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked \
-  contract_tests -- --test-threads=1
+  contract_tests
 ```
 
 Review the JSON diff and update the frontend parser when needed. Repeat the Rust

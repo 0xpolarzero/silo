@@ -9,14 +9,68 @@ instead of acquiring the production operation gate to serialize unrelated tests.
 operation gate, shutdown admission, GitHub caches, SSH listeners or secret caches.
 It releases shutdown admission on drop, including assertion unwind. Join all
 workers before dropping the guard. A worker must not acquire the test lock itself.
-Tests using independent operation gates can exercise real concurrent admission
-inside their guarded test. This is conservative module-level isolation, not an
-injection of every production global. Keep the documented `--test-threads=1`
-default for normal native checks until the full suite has been qualified on both
-supported platforms. Focused parallel checks do not establish that qualification.
+Tests with independent gates and state instances run in parallel. Keep the guard
+when their helpers still reach global shutdown admission or caches. The remaining
+serial group consists of guarded runtime, GitHub, SSH, network, secrets, desktop,
+backup and remote tests: 531 guard sites across 19 source files. This conservative
+module isolation permits concurrency within each owning test and serializes this
+group inside the full parallel suite. Ordinary checks use `cargo test --locked`
+with Cargo's default test thread count. Opt-in live checks retain their documented
+serial commands and require separate authorization.
 
 The storage quit regression now changes shutdown admission in the same process
 under this guard; it no longer recursively launches its test executable.
+
+The failed-Quit retry regression completes the admission change synchronously
+under its guard. It no longer leaves a sleeping, unjoined worker that can change
+the next test's shutdown generation. Remote operation registry tests own their
+gates, so unrelated computer operations cannot split their two-VM barrier or
+cancel their queued requests.
+
+## File descriptor isolation
+
+The seven ordinary `host_push_cache` tests each execute once in a private child
+of the current test binary, selected with `--exact`. The parent verifies the child
+exit status and that exactly one test passed. These children can run concurrently.
+An unrelated test worker's fork can retain a sweep lock after its owning test
+closes the descriptor. A mutex around only cache tests cannot exclude forks from
+other modules. Shared lock references are documented in
+[Apple's flock(2) manual](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/flock.2.html)
+and the [Linux flock(2) manual](https://man7.org/linux/man-pages/man2/flock.2.html).
+A pipe-coordinated fork reproduction confirmed that parent close left the lock
+busy until child exit. Separate test processes isolate the file descriptor table
+while preserving the cache's real locking and intentional inherited-child test.
+
+Keep environment overrides on child `Command` instances, filesystem state in
+owned temporary directories, and listener ports allocated by the OS. A test's
+workers must finish before its isolation guard or temporary directory drops.
+
+## Full-suite qualification (K-18)
+
+On 2026-09-30, Rust 1.94.0 on `aarch64-apple-darwin`, with 16 logical CPUs,
+passed ten consecutive full default-thread runs after all isolation fixes. Every
+run passed 1,033 tests and ignored 13 opt-in or subprocess-helper tests. Commands
+ran from `app/SiloUI/src-tauri`, prefixed with `nice -n 10`, using the release
+guide's synthetic GitHub values (`silo-test`, `test-client`, `test-secret`).
+`RUST_TEST_THREADS` was unset. No suites overlapped during the timing comparison.
+
+| Check | Full runs | Wall time |
+| --- | --- | --- |
+| `cargo test --locked` qualification | 10 consecutive passes | Median 65.68 s; range 62.00–67.65 s |
+| Final serial comparison, `cargo test --locked -- --test-threads=1` | 1 pass | 133.06 s |
+| Final `cargo test --locked` | 1 pass | 62.30 s |
+
+The parallel median was 50.6% lower than the serial wall time on this
+shared host. Both final runs passed the same 1,033 tests with 13 ignored. Earlier
+exploration included one cache-lock failure; its complete output was preserved
+before the file descriptor isolation fix and qualification restarted.
+
+Logs and timing JSON remain under the ignored
+`app/SiloUI/src-tauri/target/verification/k18/` directory (`parallel-11.log` for
+the failure, `qualified-01.log` through `qualified-10.log`, and `final-*.log`).
+Linux CI now uses the same default-thread command; Linux execution was outside
+this local qualification. These fixture checks do not establish live VM or
+packaged-app behavior.
 
 ## Runtime fixtures
 

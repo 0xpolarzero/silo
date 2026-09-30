@@ -11,7 +11,7 @@ From the repository root:
 npm --prefix app/SiloUI test
 npm --prefix app/SiloUI run typecheck
 npm --prefix app/SiloUI run lint
-cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -- --test-threads=1
+cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked
 RUSTUP_TOOLCHAIN=1.94.0 npm --prefix app/SiloUI run desktop:build:debug
 codesign --verify --deep --strict \
   app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app

@@ -5809,13 +5809,11 @@ mod tests {
             |_guard| {},
             || {
                 if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
-                    // Quit begins while this attempt backs off, stops the VMs, fails fast
-                    // and reopens admission before the backoff ends.
-                    std::thread::spawn(|| {
-                        std::thread::sleep(Duration::from_millis(50));
-                        let _reopen = Reopen;
-                        shutdown::begin();
-                    });
+                    // Complete a failed Quit before returning the first failure. The
+                    // retry must remember its generation even though admission reopened.
+                    // Keep the global mutation on this test's thread under its guard.
+                    let _reopen = Reopen;
+                    shutdown::begin();
                 }
                 Err(RuntimeError::TimedOut {
                     operation: "Starting quit-dev".into(),

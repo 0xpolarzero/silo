@@ -278,8 +278,35 @@ fn evict(root: &Path, path: &Path, name: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// flock references survive an unrelated test worker's fork until exec. Keep
+    /// these tests' file descriptor tables private while the outer suite runs in
+    /// parallel; serializing only this module cannot exclude other modules' forks.
+    fn in_subprocess(test: &str) -> bool {
+        const CHILD_TEST: &str = "SILO_CACHE_ISOLATED_TEST";
+        let name = format!("host_push_cache::tests::{test}");
+        if std::env::var(CHILD_TEST).as_deref() == Ok(name.as_str()) {
+            return false;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture"])
+            .env(CHILD_TEST, &name)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("1 passed; 0 failed"),
+            "isolated test {name} failed: {}\n{stdout}\n{stderr}",
+            output.status
+        );
+        true
+    }
     #[test]
     fn sweep_skips_unknown_entries() {
+        if in_subprocess("sweep_skips_unknown_entries") {
+            return;
+        }
         let temporary = tempfile::tempdir().unwrap();
         fs::write(temporary.path().join(".DS_Store"), b"finder").unwrap();
         fs::create_dir(temporary.path().join("notes")).unwrap();
@@ -291,6 +318,9 @@ mod tests {
     }
     #[test]
     fn inherited_lock_survives_parent_exit_until_git_child_finishes() {
+        if in_subprocess("inherited_lock_survives_parent_exit_until_git_child_finishes") {
+            return;
+        }
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("cache");
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -352,6 +382,9 @@ mod tests {
 
     #[test]
     fn reuses_same_repository_and_excludes_concurrent_process_handles() {
+        if in_subprocess("reuses_same_repository_and_excludes_concurrent_process_handles") {
+            return;
+        }
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("cache");
         let cache = acquire(&root, "computer/sandbox/repository").unwrap();
@@ -375,6 +408,11 @@ mod tests {
     }
     #[test]
     fn different_repositories_push_concurrently_and_eviction_skips_caches_in_use() {
+        if in_subprocess(
+            "different_repositories_push_concurrently_and_eviction_skips_caches_in_use",
+        ) {
+            return;
+        }
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("cache");
         let first = acquire_with_budget(&root, "first", 100).unwrap();
@@ -390,10 +428,13 @@ mod tests {
         let first_path = first.directory.clone();
         drop(first);
         assert!(first_path.exists());
-        assert!(acquire_with_budget(&root, "first", 100).is_ok());
+        drop(acquire_with_budget(&root, "first", 100).unwrap());
     }
     #[test]
     fn evicts_oldest_repository_and_removes_single_oversized_repository() {
+        if in_subprocess("evicts_oldest_repository_and_removes_single_oversized_repository") {
+            return;
+        }
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("cache");
         let first = acquire_with_budget(&root, "first", 100).unwrap();
@@ -415,6 +456,9 @@ mod tests {
     }
     #[test]
     fn crash_markers_and_failed_publications_discard_stale_git_locks() {
+        if in_subprocess("crash_markers_and_failed_publications_discard_stale_git_locks") {
+            return;
+        }
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("cache");
         let cache = acquire(&root, "key").unwrap();
@@ -442,6 +486,9 @@ mod tests {
 
     #[test]
     fn never_follows_symbolic_links_in_cache_or_lock() {
+        if in_subprocess("never_follows_symbolic_links_in_cache_or_lock") {
+            return;
+        }
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("cache");
         let target = temporary.path().join("outside");
