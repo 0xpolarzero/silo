@@ -130,7 +130,7 @@ it("dismisses a sandbox's notifications when it is deleted and announces the del
 
   await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
   await user.click(await screen.findByRole("menuitem", { name: `Delete ${workspace.machine.name}` }))
-  await user.click(confirmButton("Delete"))
+  await user.click(confirmButton("Delete permanently"))
   expect(await screen.findByText(`Deleted ${workspace.machine.name}`)).toBeVisible()
 
   const remaining = { ...source, workspaces: source.workspaces.filter(item => item.machine.id !== workspace.machine.id) }

@@ -1231,7 +1231,7 @@ describe("application", () => {
 
     await user.click(screen.getByRole("button", { name: "More actions for playgrounds" }))
     await user.click(screen.getByRole("menuitem", { name: "Delete playgrounds" }))
-    await user.click(within((await screen.findByText("Delete playgrounds?")).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete" }))
+    await user.click(within((await screen.findByText("Delete playgrounds permanently?")).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete permanently" }))
 
     const row = overview.getByText("playgrounds").closest("li") as HTMLElement
     expect(row).toHaveAttribute("aria-busy", "true")

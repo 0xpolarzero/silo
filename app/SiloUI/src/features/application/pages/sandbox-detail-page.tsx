@@ -2,7 +2,6 @@ import { ChevronRight, Code, Cpu, GitBranch, Globe, KeyRound, Play, Plus, Server
 import { useId, type MouseEvent, type ReactNode } from "react"
 
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
-import { ConfirmBody } from "@/components/confirm-popover"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
 import { Button } from "@/components/ui/button"
@@ -13,7 +12,7 @@ import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
-import { deleteSandboxDescription } from "@/features/sandboxes/model/delete-sandbox-copy"
+import { DeleteSandboxBody, type DeleteSandboxDetails } from "@/features/sandboxes/components/delete-sandbox-confirmation"
 import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
 import { CheckpointPanel } from "@/features/application/components/checkpoint-panel"
 import { StatusSeparator, WorkspaceStatus } from "@/features/application/components/workspace-status"
@@ -71,6 +70,8 @@ export interface SandboxDetailControls {
   lifecycleGuard: LifecycleGuard
   /** In-place Edit/Delete of this sandbox. Absent in read-only or standalone renders. */
   editing?: SandboxDetailEditing
+  /** What the Delete dialog states (checkpoints, size) and offers, as from the list row. */
+  deleteDetails?: DeleteSandboxDetails
   /** Duplicate opens the list editor for the new sandbox (it leaves the detail page). */
   onDuplicate?: () => void
   /** Jump to another section (Files/Network filtered to this sandbox, or the Secrets tab). */
@@ -368,16 +369,14 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     { value: "access", label: "SSH", visible: showAccess },
   ]
   const visibleTabs = tabs.filter(tab => tab.visible)
-  const deleteTitle = `Delete ${displayName}?`
   const menuPopovers: MenuPopovers = {
     ...controls.popovers,
-    delete: close => <ConfirmBody
-      tone="destructive"
-      title={deleteTitle}
-      description={deleteSandboxDescription(machine.kind, workspace.checkpoints?.length)}
-      confirmLabel="Delete"
+    delete: close => <DeleteSandboxBody
+      kind={machine.kind}
+      displayName={displayName}
+      details={controls.deleteDetails}
       onClose={close}
-      onConfirm={async () => {
+      onDelete={async () => {
         if (await editing.deleteWithNotice(machine)) controls.onBack()
       }}
     />,

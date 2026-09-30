@@ -37,6 +37,7 @@ import type {
   SandboxDetailTab,
 } from "@/features/application/model/application-source"
 import { MachineList } from "@/features/sandboxes/components/machine-list"
+import type { DeleteSandboxDetails } from "@/features/sandboxes/components/delete-sandbox-confirmation"
 import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/components/sandbox-list"
 
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
@@ -386,6 +387,18 @@ export function OverviewPage({ active = true, readOnly = false,
     return workspaceAvailability(workspace, source).busy || Boolean(workspace.computer && !workspace.computer.connected)
   }
 
+  /** What a sandbox's Delete dialog states and offers, the same from its row and its page. */
+  function deleteDetails(workspace: ApplicationWorkspace): DeleteSandboxDetails {
+    const { machine } = workspace
+    const readStorage = actions.readWorkspaceStorage
+    return {
+      checkpoints: workspace.checkpoints?.length,
+      readSize: machine.kind === "vm" && !workspace.computer && readStorage
+        ? async () => { const storage = await readStorage(machine.id); return storage.workspaceHostBytes + storage.runtimeHostBytes }
+        : undefined,
+    }
+  }
+
   /** Re-submits a failed lifecycle action, guarded like any other request. */
   function lifecycleRetry(workspace: ApplicationWorkspace): (() => void) | undefined {
     const action = workspace.lifecycleFailureAction ?? "start"
@@ -580,6 +593,7 @@ export function OverviewPage({ active = true, readOnly = false,
       configurationLocked,
       workspaceOperationBusy: availability.busy,
       changesBlocked: changesBlocked(workspace),
+      deleteDetails: deleteDetails(workspace),
       canOpen: availability.canOpen && !readOnly,
       canStart: availability.canStart && !readOnly,
       canStop: availability.canStop && !readOnly,
@@ -680,6 +694,7 @@ export function OverviewPage({ active = true, readOnly = false,
                   badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
                   popovers: menu.popovers,
                   menuActions: menu.items,
+                  deleteDetails: workspace ? deleteDetails(workspace) : undefined,
                   busy: workspaceOperationBusy || Boolean(workspace?.computer?.busy),
                   suppressInteractions: workspace ? changesBlocked(workspace) : false,
                   icon: workspaceOperationBusy ? <ListRowIcon aria-hidden="true"><Loader2 className="size-3.5 animate-spin" /></ListRowIcon> : undefined,
