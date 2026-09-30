@@ -36,7 +36,7 @@ import { MachineList } from "@/features/sandboxes/components/machine-list"
 import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/components/sandbox-list"
 
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
-import { workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
+import { sandboxBusyReason, workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
 
 /** A lifecycle action shows a progress notification only if it is still running after this long. */
 const LIFECYCLE_TOAST_DELAY_MS = 800
@@ -349,6 +349,7 @@ export function OverviewPage({ active = true, readOnly = false,
   }
   const isMachineCreated = (machine: SetupMachineConfiguration) => committedWorkspaces.has(machine.id)
   const isMachineRunning = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.state === "running"
+  const machineBusyReason = (machine: SetupMachineConfiguration) => sandboxBusyReason(workspaces.get(machine.id))
 
   function notifyOperationUnavailable() {
     showActionFailure("VM operation unavailable", source.vmOperationsUnavailable ?? "VM operations are unavailable.", undefined, { native: false })
@@ -586,6 +587,7 @@ export function OverviewPage({ active = true, readOnly = false,
               onDeleteMachine={deleteMachine}
               isMachineCreated={isMachineCreated}
               isMachineRunning={isMachineRunning}
+              getMachineBusyReason={machineBusyReason}
               onMachinesChange={changeMachines}
               interactionDisabled={configurationLocked}
               validateOperation={validateMachineOperation}

@@ -64,9 +64,11 @@ interface MachineListProps {
   validateOperation?: (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => string | undefined
   /** The CPUs and memory of a computer ("" is this one), when known: fits new-sandbox defaults and presets, and rejects ceilings above it. */
   getHostCapacity?: (computerId: string) => HostCapacity | undefined
+  /** Why a sandbox cannot be edited or deleted now (it is starting or stopping), if so. */
+  getMachineBusyReason?: (machine: SetupMachineConfiguration) => string | undefined
 }
 
-export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning, getHostCapacity }: MachineListProps) {
+export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning, getHostCapacity, getMachineBusyReason }: MachineListProps) {
   const {
     computerId, setComputerId,
     committing,
@@ -78,7 +80,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     baselineRef,
     captureBaseline, beginOperation, dispatchChange,
     startEdit, startAdd, startDuplicate, save, remove, reviewConflict, deleteWithNotice,
-  } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp, getHostCapacity })
+  } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp, getHostCapacity, getMachineBusyReason })
 
   const [addOpen, setAddOpen] = useState(false)
   const [draggedID, setDraggedID] = useState<string | null>(null)
@@ -231,7 +233,9 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
             {displayMachines.map((machine) => {
               const isEditing = editor?.draft.id === machine.id
               const runningVM = machine.kind === "vm" && Boolean(isMachineRunning?.(machine))
-              const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : undefined
+              // Starting or stopping VMs can be neither edited nor deleted until they settle.
+              const busyReason = getMachineBusyReason?.(machine)
+              const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : busyReason
               const presentation = getRowPresentation?.(machine)
               const rowInteractionsDisabled = interactionDisabled || Boolean(presentation?.suppressInteractions)
               const computerName = computers?.find(computer => computer.id === getComputerId?.(machine))?.name
@@ -293,23 +297,23 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                         />,
                       }} items={[
                         ...presentation.menuActions,
-                        { label: "Edit", separatorBefore: presentation.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: interactionDisabled, onSelect: () => startEdit(machine) },
+                        { label: "Edit", separatorBefore: presentation.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: interactionDisabled || Boolean(busyReason), tooltip: busyReason, onSelect: () => startEdit(machine) },
                         { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: interactionDisabled, onSelect: () => startDuplicate(machine) },
-                        ...(machine.kind === "vm" && !machine.desktop && isMachineCreated?.(machine) ? [{ label: "Add Linux desktop", icon: Monitor, disabled: interactionDisabled, onSelect: () => {
+                        ...(machine.kind === "vm" && !machine.desktop && isMachineCreated?.(machine) ? [{ label: "Add Linux desktop", icon: Monitor, disabled: interactionDisabled || Boolean(busyReason), tooltip: busyReason, onSelect: () => {
                           beginOperation()
                           captureBaseline()
                           void save({ ...machine, desktop: { startWithSandbox: true } }, machine.id, getComputerId?.(machine) ?? "")
                         } }] : []),
-                        { icon: Trash2, label: "Delete", accessibleLabel: `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled || runningVM, tooltip: deleteTooltip, popover: "delete" },
+                        { icon: Trash2, label: "Delete", accessibleLabel: `Delete ${deletionName}`, destructive: true, disabled: interactionDisabled || runningVM || Boolean(busyReason), tooltip: deleteTooltip, popover: "delete" },
                       ]} />}</> : undefined}
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
-                        <SandboxAction label={`Edit ${machine.name}`} disabled={interactionDisabled} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
+                        <SandboxAction label={`Edit ${machine.name}`} tooltip={busyReason} disabled={interactionDisabled || Boolean(busyReason)} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
                         <SandboxAction tooltip={machine.kind === "vm" ? "Create a new VM with these settings" : "Create a new SSH configuration with these settings."} label={`Duplicate ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
                           <CopyPlus />
                         </SandboxAction>
                         <ConfirmPopover align="end" tone="destructive" title={`Delete ${deletionName}?`} description={deleteSandboxDescription(machine.kind)} confirmLabel="Delete" tooltip={deleteTooltip ?? `Delete ${deletionName}`} onConfirm={() => remove(machine)}>
-                          <Button type="button" variant="ghost" size="icon-xs" aria-label={`Delete ${deletionName}`} disabled={interactionDisabled || runningVM}>
+                          <Button type="button" variant="ghost" size="icon-xs" aria-label={`Delete ${deletionName}`} disabled={interactionDisabled || runningVM || Boolean(busyReason)}>
                             <Trash2 />
                           </Button>
                         </ConfirmPopover>

@@ -31,6 +31,8 @@ export interface MachineEditingOptions {
   interactionDisabledReason?: string
   /** The capacity of a computer ("" is this one), when known, so new sandboxes fit it. */
   getHostCapacity?: (computerId: string) => HostCapacity | undefined
+  /** Why a sandbox cannot be edited or deleted now (it is starting or stopping), if so. */
+  getMachineBusyReason?: (machine: SetupMachineConfiguration) => string | undefined
 }
 
 /**
@@ -52,15 +54,20 @@ export function useMachineEditing({
   interactionDisabled = false,
   interactionDisabledReason = defaultSaveBlockedReason,
   getHostCapacity,
+  getMachineBusyReason,
 }: MachineEditingOptions) {
   const [computerId, setComputerId] = useState("")
   const [committing, setCommitting] = useState(false)
   const disabled = interactionDisabled || committing
-  // An editor can stay open while another change starts (or fails and awaits review):
-  // Save is then disabled with this reason instead of silently doing nothing.
-  const saveBlockedReason = interactionDisabled ? interactionDisabledReason : undefined
   const [editorFocusRequest, setEditorFocusRequest] = useState(0)
   const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft)
+  const busyReason = (machine: SetupMachineConfiguration | undefined) => machine ? getMachineBusyReason?.(machine) : undefined
+  // An editor can stay open while another change starts (or fails and awaits review), or
+  // while its sandbox starts or stops: Save is then disabled with this reason instead of
+  // silently doing nothing or being rejected.
+  const saveBlockedReason = interactionDisabled
+    ? interactionDisabledReason
+    : editor?.originalID ? busyReason(machines.find(({ id }) => id === editor.originalID)) : undefined
   // The saved configuration captured when the current operation began. Every local
   // save/delete/reorder carries it as the change's `expected` baseline, so a queued edit
   // applies to fresh state — or is rejected — instead of overwriting concurrent work.
@@ -100,6 +107,8 @@ export function useMachineEditing({
 
   function startEdit(machine: SetupMachineConfiguration) {
     if (disabled) return
+    const busy = busyReason(machine)
+    if (busy) { showActionFailure(`Couldn't edit ${machine.name}`, busy, undefined, { native: false }); return }
     beginOperation()
     captureBaseline()
     setEditorBaseline(structuredClone(machine))
@@ -153,7 +162,9 @@ export function useMachineEditing({
 
   async function save(machine: SetupMachineConfiguration, originalID = editor?.originalID, targetComputerId = computerId) {
     if (committing) return
-    if (saveBlockedReason) { showActionFailure(`Couldn't save ${machine.name}`, saveBlockedReason, undefined, { native: false }); return }
+    // Also covers menu saves with no editor open (Add Linux desktop).
+    const blockedReason = saveBlockedReason ?? (originalID ? busyReason(machines.find(({ id }) => id === originalID)) : undefined)
+    if (blockedReason) { showActionFailure(`Couldn't save ${machine.name}`, blockedReason, undefined, { native: false }); return }
     const blocked = validateOperation?.(machine, !originalID, targetComputerId)
     if (blocked) { showActionFailure(`Couldn't save ${machine.name}`, blocked, undefined, { native: false }); return }
     const baseline = baselineRef.current ?? undefined
@@ -207,6 +218,8 @@ export function useMachineEditing({
 
   async function remove(machine: SetupMachineConfiguration) {
     if (disabled || (machine.kind === "vm" && isMachineRunning?.(machine))) return
+    const busy = busyReason(machine)
+    if (busy) { showActionFailure(`Couldn't delete ${machine.name}`, busy, undefined, { native: false }); return }
     beginOperation()
     captureBaseline()
     const baseline = baselineRef.current ?? undefined
@@ -241,6 +254,11 @@ export function useMachineEditing({
     // The popover may have been opened while the sandbox was stopped; never delete a running VM.
     if (machine.kind === "vm" && isMachineRunning?.(machine)) {
       showActionFailure(`Couldn't delete ${machine.name}`, "Stop the sandbox before deleting it.", undefined, { native: false })
+      return false
+    }
+    const busy = busyReason(machine)
+    if (busy) {
+      showActionFailure(`Couldn't delete ${machine.name}`, busy, undefined, { native: false })
       return false
     }
     try {

@@ -12,6 +12,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
 import { useMachineEditing } from "@/features/sandboxes/model/use-machine-editing"
+import { sandboxBusyReason } from "@/features/sandboxes/model/workspace-presentation"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import { deleteSandboxDescription } from "@/features/sandboxes/model/delete-sandbox-copy"
@@ -328,6 +329,8 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
   const target = workspaceTarget(workspace)
   const state = workspace.state
   const canStop = state === "running" || state === "starting"
+  // A starting or stopping VM can be neither edited nor deleted until it settles.
+  const busyReason = sandboxBusyReason(workspace)
 
   // The detail page edits and deletes this sandbox in place using the same flow as the list.
   const editingContext = controls.editing
@@ -340,17 +343,18 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     validateOperation: editingContext?.validateOperation,
     isMachineRunning: editingContext?.isMachineRunning,
     interactionDisabled: controls.configurationLocked,
+    getMachineBusyReason: (item) => item.id === machine.id ? busyReason : undefined,
   })
-  const canEdit = Boolean(editingContext) && !controls.configurationLocked
+  const canEdit = Boolean(editingContext) && !controls.configurationLocked && !busyReason
   const isEditing = Boolean(editing.editor)
   const editComputerMachines = editingContext?.getComputerId
     ? (editingContext.machines).filter(item => (editingContext.getComputerId!(item) ?? "") === editing.computerId)
     : (editingContext?.machines ?? [machine])
 
   const editMenuActions: MenuAction[] = editingContext ? [
-    { label: "Edit", separatorBefore: controls.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: controls.configurationLocked, onSelect: () => editing.startEdit(machine) },
+    { label: "Edit", separatorBefore: controls.menuActions.length > 0, icon: Pencil, accessibleLabel: `Edit ${machine.name}`, disabled: controls.configurationLocked || Boolean(busyReason), tooltip: busyReason, onSelect: () => editing.startEdit(machine) },
     { label: "Duplicate", icon: CopyPlus, accessibleLabel: `Duplicate ${machine.name}`, disabled: controls.configurationLocked || !controls.onDuplicate, onSelect: () => controls.onDuplicate?.() },
-    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running"), tooltip: machine.kind === "vm" && state === "running" ? "Stop the sandbox before deleting it." : undefined, popover: "delete" },
+    { label: "Delete", icon: Trash2, destructive: true, accessibleLabel: `Delete ${machine.name}`, disabled: controls.configurationLocked || (machine.kind === "vm" && state === "running") || Boolean(busyReason), tooltip: machine.kind === "vm" && state === "running" ? "Stop the sandbox before deleting it." : busyReason, popover: "delete" },
   ] : []
   const menuActions = [...controls.menuActions, ...editMenuActions]
 
