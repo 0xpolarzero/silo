@@ -104,3 +104,31 @@ and does not consume the sandbox's root-disk allowance. The current per-VM recip
 instead writes about 690 MB into each sandbox's own upper disk, against its
 quota, and repeats the downloads for every VM. During an image upgrade, hosts
 keep both image versions cached while older VMs use the previous one.
+
+### ChatGPT app and LCU in the image, 2026-10-01
+
+Same method, layered on the desktop candidate above. The official
+`chatgpt_arm64.deb` from OpenAI's `latest` URL was version 26.928.31416,
+453,121,290 bytes, SHA-256
+`b3c3f37dedfc57db72e810a1dc5be7b22586f0b99b7d4875868b06bdd855ba86`, with
+`Installed-Size` 1,526,812 KiB. It was installed from a bind mount so the package
+file did not remain in a layer. LCU 0.4.0 was then installed by calling the
+unchanged `setup-lcu.py` `extract_release` path, which reported runtime
+`0.0.27/20260927214556-b77d38801cca`. Agent registration, `doctor` and a VM boot
+were not run.
+
+| Image | Uncompressed (`docker image inspect`) | gzip -9 `docker save` |
+| --- | ---: | ---: |
+| Base plus desktop | 966,462,539 | 307,815,523 |
+| Plus ChatGPT app | 2,696,523,215 | 965,586,482 |
+| Plus LCU 0.4.0 | 4,432,691,266 | 1,661,058,238 |
+
+The app brought 27 new packages: the app itself, `mesa-vulkan-drivers` (about
+113 MB) and smaller systemd/NSS libraries. LCU's installer copies the whole app
+into a private generation under `/opt/lcu/apps` (1,535,176 KiB), so the image
+holds the app twice; its own release adds about 37 MB. The same final image was
+1,302,708,209 bytes with zstd -19 instead of gzip.
+
+The earlier [redistribution review](research/codex-linux-engine-probe-2026-09-22.md)
+found no grant to redistribute the app's engine. Publishing an image that
+contains it is a separate decision from these measurements.
