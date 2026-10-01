@@ -34,7 +34,7 @@ export function WorkspaceStatus({ workspace, source, readOnly, onCancel }: { wor
   }
   if (workspace.computer?.busy) return <span role="status">Updating…</span>
   if (workspace.computer && !workspace.computer.connected) return <span>Offline · last known status</span>
-  return <span className="inline-flex items-center gap-1.5 align-middle">
+  return <span className="inline-flex items-baseline gap-1.5 align-baseline">
     <WorkspaceStateLabel state={workspace.state} />
     {queueVmId !== null && waitingForVm && <><StatusSeparator /><WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} onCancel={cancel} /></>}
   </span>

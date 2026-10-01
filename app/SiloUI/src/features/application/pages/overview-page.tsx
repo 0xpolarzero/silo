@@ -776,7 +776,7 @@ export function OverviewPage({ active = true, readOnly = false,
                     <p className="truncate text-xs" title={checkpointOperation.stage}>{checkpointOperation.stage}</p>
                     <Progress value={null} aria-label="Checkpoint operation progress" />
                   </div> : (
-                    <span className="inline-flex max-w-full items-center gap-1 align-middle">
+                    <span className="inline-flex max-w-full items-baseline gap-1 align-baseline">
                       <span className="truncate" title={workspace?.attention?.message}>
                         {workspace ? <WorkspaceStatus workspace={workspace} source={source} readOnly={readOnly} onCancel={actions.cancelOperation} /> : <WorkspaceStateLabel state={state} />}
                         {workspace?.attention && <> · {workspace.attention.message}</>}
