@@ -148,7 +148,12 @@ fn running(
     Ok(result)
 }
 pub(crate) fn running_names(app: &AppHandle) -> Result<Vec<String>, String> {
-    running(&ProcessRunner, &runtime_paths(app)?).map(|v| v.into_iter().map(|m| m.name).collect())
+    // An unfinished storage migration holds the runtime back: nothing is running, and
+    // it must not stop an update from installing.
+    let Some(paths) = runtime_paths_if_in_use(app)? else {
+        return Ok(Vec::new());
+    };
+    running(&ProcessRunner, &paths).map(|v| v.into_iter().map(|m| m.name).collect())
 }
 /// Caller holds the operation gate (computer scope) for the whole installation,
 /// including every stop.
@@ -157,7 +162,9 @@ pub(crate) fn prepare(app: &AppHandle, consent: bool) -> Result<(), String> {
         operation_gate::held(),
         "update preparation requires the operation gate"
     );
-    let paths = runtime_paths(app)?;
+    let Some(paths) = runtime_paths_if_in_use(app)? else {
+        return Ok(());
+    };
     if load(&paths)?.is_some() {
         return Err(
             "A previous update still has sandboxes to resume. Relaunch Silo before updating again."
@@ -198,7 +205,9 @@ pub(crate) fn restore_locked(app: &AppHandle) -> Result<(), String> {
         operation_gate::held(),
         "update restore requires the operation gate"
     );
-    let paths = runtime_paths(app)?;
+    let Some(paths) = runtime_paths_if_in_use(app)? else {
+        return Ok(());
+    };
     let host = host_resources().map_err(|e| e.to_string())?;
     restore_pending(&paths, |machine| {
         resume_unless_removed(&paths, machine, |machine| {
@@ -259,7 +268,10 @@ pub(crate) fn recover(app: &AppHandle) -> Result<bool, String> {
     let _guard = OPERATIONS
         .computer("Resuming sandboxes after update")
         .map_err(|_| "Sandbox operations are unavailable.")?;
-    let existed = load(&runtime_paths(app)?)?.is_some();
+    let Some(paths) = runtime_paths_if_in_use(app)? else {
+        return Ok(false);
+    };
+    let existed = load(&paths)?.is_some();
     restore_locked(app)?;
     Ok(existed)
 }

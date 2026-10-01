@@ -392,6 +392,48 @@ Created and the mount became Owned. The owned copy matched byte for byte. The
 source's hash, size, mtime and inode were unchanged. No VM or Silo app was
 started; this is not live migration or packaged-app qualification.
 
+### The previous generation stays closed (2026-10-01)
+
+`<app data>/runtime` is a pre-upgrade backup, and downgrading is not
+supported. Until the migration is `complete` or `not-required`, nothing may run
+`msb` against it or open its database, and after "Continue" into a fresh runtime
+it holds the only copy of the unconverted sandboxes. A newer `msb` upgrades the
+database it opens in place: a live check on 2026-10-01 launched a development
+build over a database made by the released 0.6.17 runtime. The old `msb.db-wal`
+and `msb.db-shm` changed, `seaql_migrations` gained the three 0.7.4 migrations,
+and 0.6.17 then refused the home with "database schema is newer than this msb
+binary". A running `msb` could also tear the conversion's copy of the database.
+
+Three launch paths had reached the old home through `runtime_paths`, which
+resolved to `runtime/` until `runtime-generation.json` existed. The storage
+monitor ran its periodic inspection whenever migration blocked operations (its
+branch was inverted). The main window's data source starts polling outside the
+migration screen, so `read_network_state` inspected every saved VM every ten
+seconds. Quit listed managed VMs before stopping them. An empty window with no
+frontend still modified the database at launch.
+
+`runtime::runtime_paths` is now the only way to name a runtime, and it refuses
+with "Finish the Silo runtime migration before using sandboxes." unless the
+migration is `complete` or `not-required`; a record that needs manual repair
+refuses too. The staged conversion uses `runtime::migration_runtime_paths`, which
+names only `runtime-checkpoints-converted`. Callers that merely look for running
+VMs (Quit, update checks, update preparation, health checks) treat the refusal as
+"nothing is running", so a failed migration cannot stop Quit or an update.
+An interrupted export or import must settle before the migration may start
+(E-50), so its recovery and the backup service, which keeps its runtime command
+for the process, get `runtime::inert_runtime_paths`: the same files, but no
+executable, so `msb` cannot start. Recovery that needs the runtime fails and keeps
+its journal. `runtime_migration/guard_tests.rs` covers every status, the Continue
+generation, a fake-`msb` process that must never start, the inert paths, the
+staged conversion, and a scan that fails if production code builds `RuntimePaths`
+elsewhere or names the previous folder.
+
+Outside the app's reach: an editor's saved SSH `ProxyCommand` runs `msb ssh
+serve` with the home it was written for. Re-running the live check after the
+change left the old database byte-identical through launch, UI polling and Quit,
+and 0.6.17 listed the home without error. That check used a fixture with no real
+sandbox, so it is not live migration or packaged-app qualification.
+
 ### Pre-upgrade backup (2026-10-01)
 
 After a migration that converted every sandbox, `<app data>/runtime` is a

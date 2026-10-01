@@ -660,27 +660,87 @@ struct HostResources {
     physical_memory_bytes: Option<u64>,
 }
 
+/// The runtime Silo is using now. Every runtime command, database and metadata file
+/// is reached through these paths, so this is where the storage migration gate sits:
+/// it refuses until the migration is `complete` or `not-required`. The previous
+/// generation is a pre-upgrade backup, so nothing may run `msb` against it while the
+/// migration is pending, running or failed, or after the user continued into a fresh
+/// runtime.
 pub(crate) fn runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
-    let executable =
-        crate::bundled_tools::directory(app)?.join(if cfg!(windows) { "msb.exe" } else { "msb" });
+    paths_for_storage(app, &crate::runtime_migration::runtime_storage(app)?)
+}
+
+/// `None` while the storage migration holds the runtime back. For callers that only
+/// look for running sandboxes to report or stop (Quit, updates, health checks): no
+/// runtime is in use then, so nothing runs, and the migration must not make Quit or an
+/// update fail. Anything that acts on a sandbox uses `runtime_paths` and is refused.
+pub(crate) fn runtime_paths_if_in_use(app: &AppHandle) -> Result<Option<RuntimePaths>, String> {
+    if crate::runtime_migration::blocks_operations(app) {
+        return Ok(None);
+    }
+    runtime_paths(app).map(Some)
+}
+
+/// `paths` with no way to start `msb`: every runtime command fails as unavailable
+/// before any process or database is touched, while saved files stay readable.
+pub(crate) fn without_runtime(mut paths: RuntimePaths) -> RuntimePaths {
+    paths.executable = PathBuf::new();
+    paths.library = PathBuf::new();
+    paths
+}
+
+/// The files of the selected storage with no runtime to start, for settling saved
+/// state that must finish before the storage migration can start (an interrupted
+/// export or import, E-50). Nothing started through these paths can reach `msb`.
+pub(crate) fn inert_runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
     let app_data = app
         .path()
         .app_data_dir()
         .map_err(|error| format!("Silo could not locate its application storage: {error}"))?;
+    let storage = crate::runtime_migration::selected_runtime_storage(&app_data)?;
+    paths_for_storage(app, &storage).map(without_runtime)
+}
+
+/// The runtime stored in `storage`, whatever the migration state. Only the
+/// migration's staged conversion may call this, to reach the staged runtime while
+/// every other caller is refused. Everything else uses `runtime_paths`.
+pub(crate) fn migration_runtime_paths(
+    app: &AppHandle,
+    storage: &Path,
+) -> Result<RuntimePaths, String> {
+    paths_for_storage(app, storage)
+}
+
+fn paths_for_storage(app: &AppHandle, storage: &Path) -> Result<RuntimePaths, String> {
+    let executable =
+        crate::bundled_tools::directory(app)?.join(if cfg!(windows) { "msb.exe" } else { "msb" });
     let resource_dir = app
         .path()
         .resource_dir()
         .map_err(|error| format!("Silo could not locate its bundled resources: {error}"))?;
+    let user_home = app.path().home_dir().map_err(|error| error.to_string())?;
+    Ok(paths_in_storage(
+        executable,
+        &resource_dir,
+        &user_home,
+        storage,
+    ))
+}
+
+fn paths_in_storage(
+    executable: PathBuf,
+    resource_dir: &Path,
+    user_home: &Path,
+    storage: &Path,
+) -> RuntimePaths {
     let library = bundled_runtime_library(
         &executable,
-        &resource_dir,
+        resource_dir,
         tauri::utils::platform::bundle_type(),
     );
-    let storage = crate::runtime_migration::selected_runtime_storage(&app_data)?;
     let storage_home = storage.join("microsandbox");
-    let user_home = app.path().home_dir().map_err(|error| error.to_string())?;
-    let home = runtime_home_alias(&user_home, &storage_home);
-    Ok(RuntimePaths {
+    let home = runtime_home_alias(user_home, &storage_home);
+    RuntimePaths {
         guest_image: resource_dir.join("guest-image"),
         executable,
         home,
@@ -688,7 +748,7 @@ pub(crate) fn runtime_paths(app: &AppHandle) -> Result<RuntimePaths, String> {
         library,
         metadata: storage.join("machines.json"),
         volumes: storage.join("volumes"),
-    })
+    }
 }
 
 pub(crate) fn bundled_runtime_library(
@@ -2735,6 +2795,11 @@ impl RuntimeRunner for HealthRunner<'_> {
 /// created, started, or changed here.
 pub(crate) fn health_observations(app: &AppHandle) -> crate::health_watch::Reading {
     use crate::health_watch::{Reading, VmReading};
+    // An unfinished storage migration holds the runtime back: there is nothing to
+    // observe, and that is not a health problem to report.
+    if crate::runtime_migration::blocks_operations(app) {
+        return Reading::Discarded;
+    }
     let paths = runtime_paths(app);
     let before = paths
         .as_ref()

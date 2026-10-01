@@ -380,19 +380,10 @@ fn copy_runtime_tree(
     Ok(())
 }
 
+/// The staged runtime the conversion runs against. It never names the previous
+/// generation: the staged copy is the only runtime a migration in progress may run.
 fn staged_paths(app: &AppHandle, app_data: &Path) -> Result<runtime::RuntimePaths, String> {
-    let mut paths = runtime::runtime_paths(app)?;
-    let storage = app_data.join(CONVERTED);
-    let storage_home = storage.join("microsandbox");
-    let user_home = app
-        .path()
-        .home_dir()
-        .map_err(|_| "Account home is unavailable.")?;
-    paths.home = runtime::runtime_home_alias(&user_home, &storage_home);
-    paths.storage_home = Some(storage_home);
-    paths.metadata = storage.join("machines.json");
-    paths.volumes = storage.join("volumes");
-    Ok(paths)
+    runtime::migration_runtime_paths(app, &app_data.join(CONVERTED))
 }
 
 fn inspection_failure(stage: &str, name: &str, error: &runtime::RuntimeError) -> String {
@@ -822,20 +813,58 @@ pub(crate) fn start_if_pending(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn ensure_ready(app: &AppHandle) -> Result<(), String> {
-    let controller = app.state::<Arc<Controller>>();
-    if !controller.writable {
+const NOT_READY: &str = "Finish the Silo runtime migration before using sandboxes.";
+
+/// Whether the normal runtime may be used in this migration state. Until the
+/// migration is `complete` or `not-required`, no runtime command may run and no
+/// runtime database may be opened (a newer `msb` upgrades the database it opens in
+/// place, and a live one can tear the conversion's copy). After "Continue" the
+/// untouched previous generation holds the only copy of unconverted sandboxes.
+fn check_ready(writable: bool, status: &str) -> Result<(), String> {
+    if !writable {
         return Err("Saved migration data needs manual repair. The file was preserved.".into());
     }
-    let state = controller
-        .state
-        .lock()
-        .map_err(|_| "Migration state is unavailable.")?;
-    if matches!(state.status.as_str(), "complete" | "not-required") {
+    if matches!(status, "complete" | "not-required") {
         Ok(())
     } else {
-        Err("Finish the Silo runtime migration before using sandboxes.".into())
+        Err(NOT_READY.into())
     }
+}
+
+/// The runtime storage the normal runtime may use in this migration state, or why
+/// it may not use any. Until a generation is selected this is the previous
+/// generation (`runtime/`), which is why a pending, running or failed migration
+/// refuses every caller: the folder is a pre-upgrade backup, never a live runtime.
+fn usable_storage(app_data: &Path, writable: bool, status: &str) -> Result<PathBuf, String> {
+    check_ready(writable, status)?;
+    selected_runtime_storage(app_data)
+}
+
+fn readiness(app: &AppHandle) -> Result<(Arc<Controller>, String), String> {
+    // A runtime asked for before the gate exists is not ready either.
+    let controller = app
+        .try_state::<Arc<Controller>>()
+        .ok_or(NOT_READY)?
+        .inner()
+        .clone();
+    let status = controller
+        .state
+        .lock()
+        .map_err(|_| "Migration state is unavailable.")?
+        .status
+        .clone();
+    Ok((controller, status))
+}
+
+pub(crate) fn ensure_ready(app: &AppHandle) -> Result<(), String> {
+    let (controller, status) = readiness(app)?;
+    check_ready(controller.writable, &status)
+}
+
+/// The storage behind `runtime::runtime_paths`, the only way to name a runtime.
+pub(crate) fn runtime_storage(app: &AppHandle) -> Result<PathBuf, String> {
+    let (controller, status) = readiness(app)?;
+    usable_storage(&controller.app_data, controller.writable, &status)
 }
 
 pub(crate) fn blocks_operations(app: &AppHandle) -> bool {
@@ -980,6 +1009,9 @@ pub(crate) fn previous_generation_is_backup(app_data: &Path) -> bool {
     matches!(generation(app_data), Ok(Some(selected)) if selected == CONVERTED)
         && matches!(read(&app_data.join(FILE)), Ok(Some(state)) if state.status == "complete")
 }
+
+#[cfg(test)]
+mod guard_tests;
 
 #[cfg(test)]
 mod tests {
