@@ -99,6 +99,7 @@ const accountMigrationShape = z.object({
 const accountMigrationPlanShape = z.object({
   sandbox: z.string(), running: z.boolean(), resume: z.boolean(), steps: z.array(z.string()), backupDirectory: z.string(),
   backupBytes: z.number().nonnegative(), availableBytes: z.number().nonnegative(), requiredBytes: z.number().nonnegative(), enoughSpace: z.boolean(),
+  memoryBytes: z.number().nonnegative().optional().catch(undefined), availableMemoryBytes: z.number().nonnegative().optional().catch(undefined),
 })
 const accountMigrationOutcomeShape = z.object({
   succeeded: z.boolean(), backupDirectory: z.string().optional(), error: z.string().optional(), diagnostic: z.string().optional(),

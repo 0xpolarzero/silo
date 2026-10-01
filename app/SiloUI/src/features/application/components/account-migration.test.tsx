@@ -51,6 +51,27 @@ it("refuses to migrate while the backup does not fit, and checks the space again
   expect(onMigrate).not.toHaveBeenCalled()
 })
 
+it("warns, without refusing, when the computer has less memory available than the sandbox can use", async () => {
+  const user = userEvent.setup()
+  const onMigrate = vi.fn()
+  const read = vi.fn().mockResolvedValue(fixtureAccountMigrationPlan(legacyWorkspace(), "low-memory"))
+  const first = render(<AccountMigrationBody sandboxName="dev" computerName="devbox" plan={read} onMigrate={onMigrate} onClose={vi.fn()} />)
+
+  expect(await screen.findByRole("note", { name: "Low memory" })).toHaveTextContent("dev can use up to 12.0 GiB of memory while it migrates, and devbox has about 6.9 GiB available. If memory runs out, dev stops midway and Retry continues from the backup. Stop other sandboxes first.")
+  await user.click(screen.getByRole("button", { name: "Migrate" }))
+  await vi.waitFor(() => expect(onMigrate).toHaveBeenCalledOnce())
+  first.unmount()
+
+  // Enough memory, or none measured (macOS): no warning.
+  for (const change of [{ availableMemoryBytes: 13 * 1024 ** 3 }, { availableMemoryBytes: undefined }]) {
+    read.mockResolvedValueOnce({ ...fixtureAccountMigrationPlan(legacyWorkspace(), "low-memory"), ...change })
+    const { unmount } = render(<AccountMigrationBody sandboxName="dev" plan={read} onMigrate={vi.fn()} onClose={vi.fn()} />)
+    expect(await screen.findByRole("list", { name: "Migration steps" })).toBeVisible()
+    expect(screen.queryByRole("note", { name: "Low memory" })).toBeNull()
+    unmount()
+  }
+})
+
 it("offers Retry for an earlier attempt, and reports a failed dry run", async () => {
   const user = userEvent.setup()
   const view = render(<AccountMigrationBody sandboxName="dev" plan={() => Promise.resolve(plan({ resume: true, backupBytes: 0 }))} onMigrate={vi.fn()} onClose={vi.fn()} />)

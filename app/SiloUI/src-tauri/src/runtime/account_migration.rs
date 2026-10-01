@@ -188,6 +188,13 @@ pub struct Plan {
     available_bytes: u64,
     required_bytes: u64,
     enough_space: bool,
+    /// The sandbox's memory. Copying the home folders can fill all of it with file cache.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_bytes: Option<u64>,
+    /// Memory this computer has available now, where Silo can measure it (Linux). Below
+    /// `memory_bytes`, the host may kill the VM midway; the plan warns but allows it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    available_memory_bytes: Option<u64>,
 }
 
 /// The result of an attempt that ran. Cancellation is reported as an error instead.
@@ -505,7 +512,39 @@ pub(super) fn plan_with(
         available_bytes,
         required_bytes,
         enough_space: available_bytes >= required_bytes,
+        memory_bytes: inspected
+            .config
+            .pointer("/resources/memory_mib")
+            .and_then(Value::as_u64)
+            .and_then(|mib| mib.checked_mul(1024 * 1024)),
+        available_memory_bytes: None,
     })
+}
+
+/// Memory available to new work on this computer, where the kernel reports it.
+#[cfg(target_os = "linux")]
+fn available_memory() -> Option<u64> {
+    mem_available(&fs::read_to_string("/proc/meminfo").ok()?)
+}
+
+/// macOS compresses and swaps memory instead of killing a VM when it runs short.
+#[cfg(not(target_os = "linux"))]
+fn available_memory() -> Option<u64> {
+    None
+}
+
+/// `MemAvailable` from `/proc/meminfo`, in bytes.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn mem_available(meminfo: &str) -> Option<u64> {
+    meminfo
+        .lines()
+        .find_map(|line| line.strip_prefix("MemAvailable:"))?
+        .trim()
+        .strip_suffix("kB")?
+        .trim()
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1024)
 }
 
 // Failure summaries redact words containing `/`, so messages never embed paths;
@@ -702,8 +741,9 @@ fn migrate_guest(
     name: &str,
     resume: bool,
     progress: &dyn Fn(Stage),
-    stage: &Cell<Stage>,
+    reached: &Reached,
 ) -> Result<(), RuntimeError> {
+    let stage = &reached.stage;
     let enter = |next: Stage| {
         stage.set(next);
         progress(next);
@@ -725,6 +765,14 @@ fn migrate_guest(
         guest(runner, paths, name, &payload).map(drop)
     });
     let failed = stage.get();
+    // A VM that died under a guest command, for example killed when the host ran out of
+    // memory, is reported as such rather than as the command's failure.
+    if result.is_err() && matches!(failed, Stage::Installing | Stage::Migrating) {
+        reached.crashed.set(
+            inspect_workspace(runner, paths, name)
+                .is_ok_and(|observed| observed.status == "Crashed"),
+        );
+    }
     enter(Stage::Finishing);
     let stopped = stop(runner, paths, name);
     match (result, stopped) {
@@ -781,10 +829,18 @@ fn guest_reason(detail: &str) -> Option<String> {
         .filter(|message| !message.is_empty())
 }
 
-/// The message and Details of a failure in `stage`.
-fn describe(stage: Stage, error: &RuntimeError) -> Failure {
+/// How far an attempt got: its step, and whether the VM crashed during a guest command.
+struct Reached {
+    stage: Cell<Stage>,
+    crashed: Cell<bool>,
+}
+
+/// The message and Details of a failure where the attempt `reached`.
+fn describe(reached: &Reached, error: &RuntimeError) -> Failure {
+    let stage = reached.stage.get();
     let report = failure_report(error);
     let message = match error {
+        _ if reached.crashed.get() => "The sandbox stopped unexpectedly during the migration. This computer may have run out of memory: stop other sandboxes, then retry.".into(),
         RuntimeError::Failed { detail, .. } => {
             let reason = guest_reason(detail)
                 .filter(|_| matches!(stage, Stage::Installing | Stage::Migrating))
@@ -816,9 +872,12 @@ pub(super) fn migrate_with(
     free_space: FreeSpace<'_>,
     progress: &dyn Fn(Stage),
 ) -> Result<PathBuf, Failed> {
-    let stage = Cell::new(Stage::Checking);
-    attempt(runner, paths, machine, free_space, progress, &stage).map_err(|error| Failed {
-        failure: describe(stage.get(), &error),
+    let reached = Reached {
+        stage: Cell::new(Stage::Checking),
+        crashed: Cell::new(false),
+    };
+    attempt(runner, paths, machine, free_space, progress, &reached).map_err(|error| Failed {
+        failure: describe(&reached, &error),
         error,
     })
 }
@@ -829,8 +888,9 @@ fn attempt(
     machine: &MachineConfiguration,
     free_space: FreeSpace<'_>,
     progress: &dyn Fn(Stage),
-    stage: &Cell<Stage>,
+    reached: &Reached,
 ) -> Result<PathBuf, RuntimeError> {
+    let stage = &reached.stage;
     progress(Stage::Checking);
     let inspected = check(runner, paths, machine)?;
     let (directory, existing) = locate(paths, machine)?;
@@ -912,7 +972,7 @@ fn attempt(
         operation_gate::check_cancelled().map_err(|_| RuntimeError::Cancelled {
             operation: label(machine.name(), None),
         })?;
-        migrate_guest(runner, paths, machine.name(), resume, progress, stage)?;
+        migrate_guest(runner, paths, machine.name(), resume, progress, reached)?;
         // Never advertise the new account until guest verification and a clean stop.
         operation_gate::uncancellable(|| publish_label(runner, paths, machine.name()))
     })();
@@ -933,7 +993,7 @@ fn attempt(
             if record.phase == Phase::BackingUp {
                 let _ = remove_snapshot(&directory);
             }
-            record.failure = Some(describe(stage.get(), &error));
+            record.failure = Some(describe(reached, &error));
             // The failure is what matters; a failed save leaves the earlier record.
             let _ = save(&directory, &mut record);
             Err(error)
@@ -1040,7 +1100,9 @@ fn plan_local(
     id: &str,
 ) -> Result<Plan, RuntimeError> {
     let machine = configured(paths, id)?;
-    plan_with(runner, paths, &machine, &crate::backup::available_bytes)
+    let mut plan = plan_with(runner, paths, &machine, &crate::backup::available_bytes)?;
+    plan.available_memory_bytes = available_memory();
+    Ok(plan)
 }
 
 /// Run one migration in the VM's lane of the operation gate. Only admission errors and
@@ -1266,7 +1328,7 @@ mod tests {
                 "inspect" => ok(json!({
                     "name": args[1],
                     "status": self.status.borrow().clone(),
-                    "config": {"labels": self.labels.borrow().clone(), "mounts": self.mounts.borrow().clone()},
+                    "config": {"labels": self.labels.borrow().clone(), "mounts": self.mounts.borrow().clone(), "resources": {"memory_mib": 12288}},
                 })
                 .to_string()),
                 "stop" => {
@@ -1394,6 +1456,67 @@ mod tests {
             .iter()
             .any(|step| step.starts_with("Back up the root and workspace disks")));
         assert!(plan.steps.iter().any(|step| step.contains("/home/silo")));
+        assert_eq!(plan.memory_bytes, Some(12 * 1024 * 1024 * 1024));
+        assert_eq!(plan.available_memory_bytes, None);
+    }
+
+    #[test]
+    fn available_memory_is_read_from_meminfo() {
+        let meminfo = "MemTotal:       15787692 kB\nMemFree:          611204 kB\nMemAvailable:    7281592 kB\nBuffers:            1024 kB\n";
+        assert_eq!(mem_available(meminfo), Some(7_281_592 * 1024));
+        assert_eq!(mem_available("MemTotal: 1 kB\n"), None);
+        assert_eq!(mem_available("MemAvailable: many kB\n"), None);
+    }
+
+    #[test]
+    fn a_vm_that_dies_during_the_migration_is_reported_as_stopped_unexpectedly() {
+        // Linux kills the VM when the host runs out of memory; the exec then ends early.
+        struct Crashing(Fake);
+        impl RuntimeRunner for Crashing {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                if args[0] == "exec" && args.iter().any(|arg| arg == "python3") {
+                    self.0.calls.borrow_mut().push(args.to_vec());
+                    *self.0.status.borrow_mut() = "Crashed".into();
+                    return Err(RuntimeError::Failed {
+                        operation: "The sandbox operation".into(),
+                        exit_code: Some(1),
+                        detail: "error: runtime error: exec session ended without exit event"
+                            .into(),
+                    });
+                }
+                self.0.run(paths, args, timeout)
+            }
+        }
+        let fixture = fixture();
+        let fake = Crashing(Fake::new("Stopped"));
+        let failed =
+            migrate_with(&fake, &fixture.paths, &fixture.machine, &plenty, &|_| {}).unwrap_err();
+        let expected = "The sandbox stopped unexpectedly during the migration. This computer may have run out of memory: stop other sandboxes, then retry.";
+        assert_eq!(failed.failure.message, expected);
+        assert!(failed
+            .failure
+            .diagnostic
+            .unwrap()
+            .contains("exec session ended without exit event"));
+        let saved = record(&fixture);
+        assert_eq!(saved.phase, Phase::BackedUp);
+        assert_eq!(saved.failure.unwrap().message, expected);
+        assert!(!fake.0.labels.borrow().contains_key("silo.working-account"));
+
+        // A guest command that fails while the VM keeps running is not a crash.
+        let fixture = self::fixture();
+        let fake = Fake::new("Stopped");
+        fake.fail_on(&["exec"], guest_failure("No space left on device"));
+        let failed = migrate(&fake, &fixture, &RefCell::new(Vec::new())).unwrap_err();
+        assert_eq!(
+            failed.failure.message,
+            "Silo could not install the required packages: No space left on device"
+        );
     }
 
     #[test]

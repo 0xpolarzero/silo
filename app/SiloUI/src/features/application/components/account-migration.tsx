@@ -75,6 +75,8 @@ export function AccountMigrationBody({ sandboxName, computerName, plan, onMigrat
   const { plan: value } = state
   const shortfall = value.requiredBytes - value.availableBytes
   const where = computerName ? ` on ${computerName}` : ""
+  const { memoryBytes, availableMemoryBytes } = value
+  const lowMemory = memoryBytes !== undefined && availableMemoryBytes !== undefined && availableMemoryBytes < memoryBytes
   return <div className="grid gap-2.5" {...WIDE_POPOVER}>
     <p className="font-medium">{value.resume ? `Continue migrating ${sandboxName}` : `Migrate ${sandboxName} to the silo account`}</p>
     <p role="note" className="flex gap-1.5 text-amber-700 dark:text-amber-400">
@@ -93,6 +95,10 @@ export function AccountMigrationBody({ sandboxName, computerName, plan, onMigrat
       <dd className={value.enoughSpace ? undefined : "text-destructive"}>{formatSandboxSize(value.availableBytes)} available{where}, needs about {formatSandboxSize(value.requiredBytes)}</dd>
     </dl>
     {!value.enoughSpace && <p role="alert" className="text-destructive">Not enough free space for the backup. Free up at least {formatSandboxSize(shortfall)}{where}, then check again. Nothing was changed.</p>}
+    {lowMemory && <p role="note" aria-label="Low memory" className="flex gap-1.5 text-amber-700 dark:text-amber-400">
+      <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden="true" />
+      <span>{sandboxName} can use up to {formatSandboxSize(memoryBytes)} of memory while it migrates, and {computerName ?? "this computer"} has about {formatSandboxSize(availableMemoryBytes)} available. If memory runs out, {sandboxName} stops midway and Retry continues from the backup. Stop other sandboxes first.</span>
+    </p>}
     <div className="flex justify-end gap-2">
       {cancel}
       {value.enoughSpace

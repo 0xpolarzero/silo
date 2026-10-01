@@ -15,10 +15,18 @@ Before anything changes, Silo runs a dry run and shows:
 - the steps below, including whether the VM is stopped first;
 - the backup's maximum size and its folder;
 - the free space on that volume, and whether the backup fits;
-- a warning that files inside the sandbox are rewritten.
+- a warning that files inside the sandbox are rewritten;
+- on Linux, a warning when the computer has less memory available
+  (`MemAvailable`) than the VM's memory.
 
 Migrate is unavailable until the backup fits; **Check again** repeats the dry
-run after you free space.
+run after you free space. The memory warning does not block the migration.
+Copying the home folders fills the VM's memory with file cache, so a VM can use
+all of its memory during the migration even if it normally uses little. When
+the host runs out, Linux kills the VM process. Stop other VMs first. On
+2026-10-01 a 12 GiB VM was killed this way on a 15 GiB host while another 12 GiB
+VM was running. macOS compresses and swaps memory instead, so Silo shows no
+memory figure there.
 
 The migration waits its turn in the VM's lane of the operation queue, like
 Start or a checkpoint, and the queue shows its current step. It can be
@@ -30,7 +38,9 @@ would need Retry to finish.
 On success the VM is stopped and ready to start, and a notice names the backup
 folder. On failure, the sandbox page shows the exact error with **Details**, the
 backup folder, and **Retry**. Retry continues with the same backup; if the
-backup itself failed, Retry backs up the disks again.
+backup itself failed, Retry backs up the disks again. If the VM crashed while
+a command ran inside it, the error says the sandbox stopped unexpectedly and
+suggests freeing memory, rather than reporting the runtime's lost session.
 
 A sandbox on another computer is migrated by that computer, in its own queue,
 with its backup on that computer. Both computers must run a Silo version with
@@ -165,8 +175,9 @@ Host orchestration is covered by Rust tests in `account_migration.rs`: the dry
 run, a successful migration (backup before boot, label only after a clean
 stop), a guest failure that keeps the backup and never publishes the label,
 Retry with `snapshot verify` and `--resume`, a failed backup that is removed and
-redone, a cancelled backup, insufficient space, layout and identity checks, and
-the operation-queue labels and cancellability. The guest payload keeps its
+redone, a cancelled backup, insufficient space, a VM that crashes during the guest
+step, the VM memory and host `MemAvailable` in the dry run, layout and identity
+checks, and the operation-queue labels and cancellability. The guest payload keeps its
 Python tests:
 
 ```sh

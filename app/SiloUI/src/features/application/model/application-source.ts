@@ -186,6 +186,10 @@ export interface AccountMigrationPlan {
   availableBytes: number
   requiredBytes: number
   enoughSpace: boolean
+  /** The sandbox's memory; copying its home folders can fill all of it. */
+  memoryBytes?: number
+  /** Memory the computer has available now, where Silo can measure it (Linux). */
+  availableMemoryBytes?: number
 }
 
 /** The result of a migration attempt that ran. A cancelled one rejects instead. */

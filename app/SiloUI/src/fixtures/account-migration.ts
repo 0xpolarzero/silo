@@ -1,7 +1,7 @@
 import type { AccountMigrationOutcome, AccountMigrationPlan, ApplicationSource, ApplicationWorkspace } from "@/features/application/model/application-source"
 
 /** `?account-migration=…`: the dev sandbox still uses the old account layout. */
-export const accountMigrationFixtureModes = ["required", "failed", "running", "no-space", "fails"] as const
+export const accountMigrationFixtureModes = ["required", "failed", "running", "no-space", "low-memory", "fails"] as const
 export type AccountMigrationFixtureMode = (typeof accountMigrationFixtureModes)[number]
 
 export function accountMigrationFixtureModeFromSearch(search: string): AccountMigrationFixtureMode | undefined {
@@ -60,6 +60,8 @@ export function fixtureAccountMigrationPlan(workspace: ApplicationWorkspace, mod
     availableBytes,
     requiredBytes,
     enoughSpace: availableBytes >= requiredBytes,
+    memoryBytes: (mode === "low-memory" ? 12 : 8) * GIB,
+    ...(mode === "low-memory" ? { availableMemoryBytes: Math.round(6.9 * GIB) } : {}),
   }
 }
 

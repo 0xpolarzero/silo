@@ -1710,12 +1710,15 @@ describe("account migration bridge", () => {
     const hostId = "11111111-1111-4111-8111-111111111111"
     const vmId = "22222222-2222-4222-8222-222222222222"
     const mock = native({}, {
-      remote_plan_account_migration: () => plan,
+      remote_plan_account_migration: () => ({ ...plan, memoryBytes: 12 * 1024 ** 3, availableMemoryBytes: "unknown" }),
       remote_migrate_account: () => ({ succeeded: true, backupDirectory: "/backups/dev-3f2a1b4c" }),
     })
     const store = createProductionSource(mock.bridge)
     const target = `silo-remote:${hostId}:${vmId}`
-    await expect(store.applicationActions.planAccountMigration!(target)).resolves.toMatchObject({ resume: true })
+    // The remote computer measures its own memory; a value Silo cannot read is left out.
+    const remotePlan = await store.applicationActions.planAccountMigration!(target)
+    expect(remotePlan).toMatchObject({ resume: true, memoryBytes: 12 * 1024 ** 3 })
+    expect(remotePlan.availableMemoryBytes).toBeUndefined()
     expect(mock.invoke).toHaveBeenCalledWith("remote_plan_account_migration", { hostId, vmId })
     await expect(store.applicationActions.migrateAccount!(target)).resolves.toEqual({ succeeded: true, backupDirectory: "/backups/dev-3f2a1b4c" })
     expect(mock.invoke).toHaveBeenCalledWith("remote_migrate_account", { hostId, vmId })
