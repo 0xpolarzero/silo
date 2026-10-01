@@ -31,6 +31,10 @@ test("the recipe matches the version and never leaves package files in a layer",
   assert.match(dockerfile, /sha256sum --check/)
   assert.doesNotMatch(dockerfile.replace(/^#.*$/gm, ""), /mousepad/)
   assert.match(dockerfile, /gnome-text-editor/)
+  // The runtime installer detects v4 by this marker; it must match the recipe version.
+  assert.ok(dockerfile.includes(`"version":"${GUEST_IMAGE_VERSION}"`))
+  assert.match(dockerfile, /"capabilities":\["desktop","accessibility"/)
+  assert.ok(dockerfile.includes("/usr/local/share/silo/guest-image.json"))
   assert.doesNotMatch(dockerfile.replace(/^#.*$/gm, ""), /openai|oaistatic|chatgpt/i)
   const ignore = readFileSync(new URL("../guest-image/Dockerfile.dockerignore", import.meta.url), "utf8")
   for (const input of ["desktop-streamer-lock.json", "silo-accessibility.py", "setup-github.sh"]) {
