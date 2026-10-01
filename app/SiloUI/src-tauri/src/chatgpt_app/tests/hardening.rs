@@ -22,8 +22,12 @@ fn again(dir: &tempfile::TempDir, package: &[u8], lock: &Lock) -> (Result<PathBu
     (result, fake.calls.load(Ordering::SeqCst))
 }
 
-pub(super) fn forget_session() {
-    *VERIFIED.lock().unwrap() = None;
+/// Forget only this root's fully verified trees, as a new process would.
+/// Clearing the whole process-wide cache races with tests running in parallel.
+pub(super) fn forget_session(root: &Path) {
+    if let Some(map) = VERIFIED.lock().unwrap_or_else(|p| p.into_inner()).as_mut() {
+        map.retain(|path, _| !path.starts_with(root));
+    }
 }
 
 fn verified(dir: &tempfile::TempDir, lock: &Lock) -> bool {
@@ -154,7 +158,7 @@ fn a_preseeded_version_folder_is_never_accepted() {
     // A genuine record over a forged tree does not match the tree digest.
     fs::remove_dir_all(&path).unwrap();
     plant_fake_tree(&path);
-    forget_session();
+    forget_session(&chatgpt_root(&dir));
     assert!(!verified(&dir, &lock));
     let (result, calls) = again(&dir, &package, &lock);
     assert_eq!(calls, 1);
@@ -193,7 +197,7 @@ fn tampering_after_publication_is_detected() {
         verified(&dir, &lock),
         "within the session the cheap check cannot see it"
     );
-    forget_session();
+    forget_session(&chatgpt_root(&dir));
     assert!(!verified(&dir, &lock));
     let (result, calls) = again(&dir, &package, &lock);
     assert_eq!(calls, 1);
@@ -249,14 +253,14 @@ fn an_interrupted_publish_is_never_reused() {
     let record = chatgpt_root(&dir).join("1.2.3-arm64.published.json");
     let bytes = fs::read(&record).unwrap();
     fs::write(&record, &bytes[..bytes.len() / 2]).unwrap();
-    forget_session();
+    forget_session(&chatgpt_root(&dir));
     assert!(!verified(&dir, &lock));
     assert_eq!(again(&dir, &package, &lock).1, 1);
 
     // A record present but the tree partial (files missing) is not ready.
     let (dir, package, lock, path) = published();
     fs::remove_dir_all(path.join("resources")).unwrap();
-    forget_session();
+    forget_session(&chatgpt_root(&dir));
     assert!(!verified(&dir, &lock));
     assert_eq!(again(&dir, &package, &lock).1, 1);
 

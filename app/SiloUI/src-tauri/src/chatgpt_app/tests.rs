@@ -685,7 +685,7 @@ fn live_download_of_the_pinned_arm64_package() {
     let started = Instant::now();
     assert!(verify_published(&root, &lock, DebArch::Arm64).is_some());
     println!("cheap reuse check: {:?}", started.elapsed());
-    hardening::forget_session();
+    hardening::forget_session(&root);
     let started = Instant::now();
     assert!(verify_published(&root, &lock, DebArch::Arm64).is_some());
     let full = digest_tree(&path, true).unwrap();
