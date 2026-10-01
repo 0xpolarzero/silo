@@ -12,7 +12,7 @@ Use your usual editor and terminal, give an AI agent a Linux desktop, and choose
 
 - **Work across computers.** Create, start, stop, and monitor local and remote sandboxes in one app. Each sandbox has its own page for its settings, checkpoints, storage, and SSH access.
 - **Use familiar tools.** Open projects in your editor or terminal, browse files, and connect to development servers through local addresses.
-- **Give agents a desktop.** Add an interactive Linux desktop with [Luda tools](docs/SiloUI-LUDA.md) for supported agents, including Codex, Claude Code, and Cursor. Install and sign in to the agents inside the sandbox yourself.
+- **Give agents a desktop.** Add an interactive Linux desktop to a sandbox. Agents can use it through LCU: choose "Set up LCU" in the desktop viewer, which requires the official ChatGPT Linux app inside the sandbox. Built-in computer use for new sandboxes is planned; see the [computer-use plan](docs/SiloUI-COMPUTER-USE-PLAN.md). Install and sign in to the agents inside the sandbox yourself.
 - **Control GitHub access.** Connect through OAuth and select repositories for each sandbox, with read-only access by default. Alternatively, use a [personal token](docs/SiloUI-GITHUB-PERSONAL-TOKENS.md), which grants the token's full permissions.
 - **Scope API credentials.** Store credentials in your computer's credential store and choose the sandboxes and HTTPS domains that can use them. See [how secrets work](docs/SiloUI-SECRETS.md).
 - **Save and branch state.** Create checkpoints of a sandbox, restore it to an earlier checkpoint, or fork a new sandbox with a copy of its files.
