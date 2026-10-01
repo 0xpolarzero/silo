@@ -1061,6 +1061,14 @@ describe("production application bridge", () => {
     for (const operation of operations) expect(parseBackupState({ ...backup, operation }).operation).toEqual(operation)
   })
 
+  it("accepts the unseen marker the Rust bridge serializes only when a result was not shown yet", () => {
+    const result = { operation: "restore", archive: backup.archives[0], runningNames: [], targetName: "copy", kind: "result", outcome: "failed", title: "Import interrupted before the upgrade", message: "Silo closed before this import finished.", detail: "No sandbox was added. Import the file again." }
+    expect(parseBackupState({ ...backup, operationId: "op-1", operation: result, resultUnseen: true }).resultUnseen).toBe(true)
+    // Omitted when false, like every other result.
+    expect(parseBackupState({ ...backup, operationId: "op-1", operation: result }).resultUnseen).toBeUndefined()
+    expect(() => parseBackupState({ ...backup, resultUnseen: "yes" })).toThrow()
+  })
+
   it("rejects malformed authoritative state instead of substituting preview data", () => {
     expect(() => parseApplicationSource({ workspaces: [] })).toThrow()
     expect(() => parseBackupState({ availability: "available", archives: [] })).toThrow()

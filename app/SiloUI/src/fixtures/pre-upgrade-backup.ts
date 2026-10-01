@@ -1,5 +1,6 @@
 import type { RuntimeMigrationBackend, RuntimeMigrationState } from "@/desktop/runtime-migration-boundary"
 import type { PreUpgradeBackup, PreUpgradeBackupBackend } from "@/features/storage/pre-upgrade-backup"
+import type { TransferResultNoticeBackend } from "@/features/application/model/transfer-result-notice"
 
 /**
  * `present`: a backup with a date. `no-date`: Silo cannot read its saved date, so it never deletes
@@ -74,13 +75,14 @@ export const fixtureCompletedMigration: RuntimeMigrationState = {
   status: "complete", stage: "Migration complete", logs: [], migratedCount: 2, failedCount: 0, totalCount: 2, canContinue: false,
 }
 
-/** A migration that has just completed, with the fixture backup left behind. */
-export function createFixtureMigrationBackend(preUpgradeBackup: PreUpgradeBackupBackend): RuntimeMigrationBackend {
+/** A migration that has just completed, with the fixture backup left behind and, when given, an export or import result it produced. */
+export function createFixtureMigrationBackend(preUpgradeBackup: PreUpgradeBackupBackend, transferResult?: TransferResultNoticeBackend): RuntimeMigrationBackend {
   return {
     read: async () => fixtureCompletedMigration,
     retry: async () => fixtureCompletedMigration,
     continueAfterFailure: async () => fixtureCompletedMigration,
     subscribe: async () => () => {},
     preUpgradeBackup,
+    transferResult,
   }
 }

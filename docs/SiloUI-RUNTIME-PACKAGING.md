@@ -508,9 +508,42 @@ two steps, and the first never writes to the previous generation:
    refusal and before the copy, and records a result in its place: "Export or import
    record set aside", "An export or import record couldn't be read and was set aside.
    If an export or import was running before the upgrade, run it again." Whatever the
-   unknown operation did is copied like any other content. Outside a migration an
-   unreadable journal behaves as before (exports and imports stay unavailable, with the
-   file kept).
+   unknown operation did is copied like any other content. While a migration is
+   unfinished, an unreadable journal is left where it is (exports and imports stay
+   unavailable) until `convert_with` sets it aside. At any other launch, `install`
+   does the same (`set_aside_at_startup`, which shares `set_aside_unreadable_journal`'s
+   rename and notice): a journal that cannot be read or that another version wrote
+   used to keep exports and imports unavailable until the user removed the file by
+   hand, and is now renamed aside, never read or deleted, with the same result in its
+   place ("If an export or import was running, run it again."; the wording does not
+   mention the upgrade). If the rename fails the file stays and exports and imports
+   stay unavailable as before.
+4. **The user is shown what the upgrade recorded.** An export and import result present
+   when the window opens belongs to an earlier session and is not toasted, so none of
+   the results above would have been seen: the screen about the pre-upgrade backup
+   comes first after a migration, and a result recorded just before it counts as old.
+   The journal therefore carries `unseen` on a result an upgrade produced: one settled
+   before the migration (`finish_settlement` with `before_upgrade`), one whose cleanup
+   waited for the upgrade (recorded by the launch after it), and the set-aside notice,
+   from either path. It is written only when true (an older build then refuses the
+   journal until the result is acknowledged or dismissed; a journal written before the
+   field counts as seen), it is removed with the journal when the result is dismissed,
+   and a new operation replaces both. `read_backup_state` reports it as `resultUnseen`
+   for the result in `operation`, and `acknowledge_backup_result(expectedOperationId)`
+   (main window only) marks exactly that result seen, keeping the result until it is
+   dismissed. The screen about the backup (`migration-backup-notice.tsx`) reads it
+   only when it is shown, lists it beside the backup, and **Open Silo** acknowledges it
+   before the application opens, so it is not shown twice; if that fails the result
+   stays unseen and the application shows it. Where the screen does not appear (no
+   backup left, its notice already shown) or the result is recorded later (recovery of
+   an operation that waited for the upgrade finishes after the screen opened), the
+   application shows an unseen result as an ordinary export and import notification
+   that stays until dismissed, and dismissing it removes it like any result, which is
+   how it is acknowledged there: the main window may be hidden at launch, so showing
+   the notification acknowledges nothing. No other result is marked unseen, so an
+   ordinary result from an earlier session stays silent as before. Fixtures:
+   `?view=migration&unseen-result=interrupted-import` and
+   `?view=app&unseen-result=set-aside` (`UI-PATTERNS.md`).
 
 A live check on 2026-10-01 launched the development build (`Silo Dev`, `org.silo.dev`,
 synthetic GitHub configuration) in an isolated home (`HOME=/tmp/sl`) over previous
@@ -538,12 +571,13 @@ index of a copied home still names the previous generation's artifacts; Silo's c
 selects by group and member, which MicroSandbox resolves under its current home, but
 that was not exercised live. A first run, before a sandbox's state was considered,
 showed that `msb remove` refuses a `Created` sandbox: the recovery failed and kept its
-journal, which led to the handling above. The notice is recorded as the journal's
-result like every other interrupted operation; the export and import page treats a
-result already present when it opens as stale and does not toast it
-(`features/application/components/sandbox-transfer.tsx`), and the pre-upgrade backup
-screen comes first after a migration, so what the user sees was not exercised either.
-This is not a qualification of the migration or of the packaged app.
+journal, which led to the handling above. At the time of this check the export and
+import page treated every result already present when it opens as stale and did not
+toast it, and the pre-upgrade backup screen comes first after a migration, so the user
+would not have seen any of these results; item 4 above is the change that shows them.
+What the user sees (the screen and the notification) is covered by component tests and
+fixtures only, not by a live run. This is not a qualification of the migration or of the
+packaged app.
 
 Outside the app's reach: an editor's saved SSH `ProxyCommand` runs `msb ssh
 serve` with the home it was written for (the migration copied those entries

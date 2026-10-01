@@ -10,6 +10,9 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: native.listen }))
 // omitted Option fields, rather than passing a typed frontend state directly.
 const failedJson = JSON.parse(`{"version":1,"status":"failed","stage":"Converting dev disks","logs":["Conversion failed"],"migratedCount":1,"failedCount":1,"totalCount":2,"canContinue":true,"logPath":"/tmp/silo-migration.log","error":"dev could not be converted"}`)
 const completeJson = JSON.parse(`{"version":1,"status":"complete","stage":"Ready","logs":[],"migratedCount":2,"failedCount":0,"totalCount":2,"canContinue":false}`)
+// Matches backup_controller::BackupState's serde camelCase JSON: nothing to report, then a result an upgrade produced.
+const idleBackupState = JSON.parse(`{"snapshotId":"1","availability":"available","archives":[],"operation":null}`)
+const unseenBackupState = JSON.parse(`{"snapshotId":"2","operationId":"5b0c8e3e-3b8e-4c4c-9a0b-1f0f5f2d2b77","availability":"available","archives":[],"resultUnseen":true,"operation":{"kind":"result","operation":"restore","archive":{"name":"dev.silo-backup","archivePath":"/exports/dev.silo-backup","completedLabel":"In progress","size":"Unknown","destination":"/exports","sandboxes":["dev"]},"runningNames":[],"targetName":"copy","outcome":"failed","title":"Import interrupted before the upgrade","message":"Silo closed before this import finished.","detail":"No sandbox was added. Import the file again."}}`)
 
 beforeEach(() => { native.invoke.mockReset(); native.listen.mockClear() })
 
@@ -62,6 +65,7 @@ describe("native migration boundary", () => {
       if (command === "read_pre_upgrade_backup") return backup
       if (command === "measure_pre_upgrade_backup") return 13314398617
       if (command === "acknowledge_pre_upgrade_backup_notice") return null
+      if (command === "read_backup_state") return idleBackupState
       throw new Error(`Unexpected migration command: ${command}`)
     })
     renderNativeGate()
@@ -73,6 +77,43 @@ describe("native migration boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
     expect(await screen.findByText("Normal application")).toBeVisible()
     await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("acknowledge_pre_upgrade_backup_notice"))
+    // Nothing was produced by the upgrade, so nothing is acknowledged.
+    expect(native.invoke).not.toHaveBeenCalledWith("acknowledge_backup_result", expect.anything())
+  })
+
+  it("tells the user the outcome of an export or import the upgrade interrupted, and acknowledges it before opening Silo", async () => {
+    const backup = JSON.parse(`{"deleteAt":"2026-10-15T12:00:00Z","noticePending":true}`)
+    let acknowledged: unknown
+    native.invoke.mockImplementation(async (command, args) => {
+      if (command === "read_runtime_migration_state") return completeJson
+      if (command === "read_pre_upgrade_backup") return backup
+      if (command === "measure_pre_upgrade_backup") return 13314398617
+      if (command === "acknowledge_pre_upgrade_backup_notice") return null
+      if (command === "read_backup_state") return acknowledged ? idleBackupState : unseenBackupState
+      if (command === "acknowledge_backup_result") { acknowledged = args; return true }
+      throw new Error(`Unexpected migration command: ${command}`)
+    })
+    renderNativeGate()
+    expect(await screen.findByRole("heading", { name: "Import interrupted before the upgrade" })).toBeVisible()
+    expect(screen.getByText("Silo closed before this import finished. No sandbox was added. Import the file again.")).toBeVisible()
+    expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
+    expect(native.listen).toHaveBeenCalledWith("silo://application-state-changed", expect.any(Function))
+    fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
+    expect(await screen.findByText("Normal application")).toBeVisible()
+    // The id the result was read with, so nothing else can be marked seen.
+    expect(acknowledged).toEqual({ expectedOperationId: "5b0c8e3e-3b8e-4c4c-9a0b-1f0f5f2d2b77" })
+  })
+
+  it("does not read the export and import state when the screen about the backup is not shown", async () => {
+    native.invoke.mockImplementation(async command => {
+      if (command === "read_runtime_migration_state") return completeJson
+      // The notice was already acknowledged, so the application shows any unseen result itself.
+      if (command === "read_pre_upgrade_backup") return { deleteAt: "2026-10-15T12:00:00Z", noticePending: false }
+      throw new Error(`Unexpected migration command: ${command}`)
+    })
+    renderNativeGate()
+    expect(await screen.findByText("Normal application")).toBeVisible()
+    expect(native.invoke).not.toHaveBeenCalledWith("read_backup_state")
   })
 
   it("deletes the pre-upgrade backup through the native command", async () => {
@@ -82,6 +123,7 @@ describe("native migration boundary", () => {
       if (command === "read_pre_upgrade_backup") return present ? { deleteAt: null, noticePending: true } : null
       if (command === "measure_pre_upgrade_backup") return 1048576
       if (command === "delete_pre_upgrade_backup") { present = false; return null }
+      if (command === "read_backup_state") return idleBackupState
       throw new Error(`Unexpected migration command: ${command}`)
     })
     renderNativeGate()

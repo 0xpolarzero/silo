@@ -40,6 +40,12 @@ export interface BackupState {
   destination?: string
   archives: BackupArchive[]
   operation: BackupOperation | null
+  /**
+   * `operation` is a result the user was not shown as it happened: one an upgrade produced, or the notice
+   * that an unreadable export or import record was set aside. Unlike any other result present when Silo
+   * opens, it is not stale: it is shown, and stays until it is dismissed.
+   */
+  resultUnseen?: boolean
 }
 
 /** An export that completed and passed verification. */

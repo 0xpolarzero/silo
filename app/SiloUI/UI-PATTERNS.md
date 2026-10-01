@@ -104,6 +104,7 @@ surface and its fixtures; there is no on-page selector, so edit the URL.
 | `activity` | See `activityFixtureModes` | `src/fixtures/application-activity.ts` |
 | `backup-operation` | See `backupFixtureModes` | `src/fixtures/application-backup.ts` |
 | `pre-upgrade-backup` | `present`, `no-date`, `delete-fails`, `read-fails`; `view=migration` defaults to `present`, other views show none | `src/fixtures/pre-upgrade-backup.ts` |
+| `unseen-result` | `interrupted-import`, `interrupted-export`, `set-aside`: an export or import result Silo has not shown yet (see below) | `src/fixtures/transfer-result-notice.ts` |
 | `resource-notice` | `create-storage`, `start-memory` | `src/fixtures/application-resources.ts` |
 | `operations` | `running`, `stuck` | `src/fixtures/operation-queue.ts` |
 | `appearance` | `light`, `dark`; otherwise the fixture's theme preference | `src/fixtures/preview.tsx` |
@@ -113,6 +114,27 @@ For example, `/preview.html?view=status-bar&status-bar=long-list` or
 from finished onboarding or choosing **Open Silo** in the status bar switches
 the URL to `view=app`. `glass.html` is a separate material study
 (`docs/SiloUI-GLASS-STUDY.md`) that always shows the complete app scenario.
+
+### Unseen export and import results
+
+An export or import result present when Silo opens is from an earlier session and
+stays silent, except one the runtime marks unseen (`BackupState.resultUnseen`): a
+result an upgrade produced for an operation it interrupted, or the notice that an
+unreadable export or import record was set aside. After an upgrade the screen about
+the pre-upgrade backup shows it as a callout beside the backup (title, then message
+and detail), and **Open Silo** acknowledges it before the application opens, so
+the application does not show it again. Wherever that screen does not appear (no
+backup, or its notice was already shown), the application shows the result as an
+ordinary export and import notification that stays until it is dismissed, which is
+also what acknowledges it there: the window may be hidden at launch, so showing it
+acknowledges nothing.
+
+`/preview.html?view=migration&unseen-result=interrupted-import` shows the callout
+on the post-upgrade screen, and **Open Silo** then opens the application without
+the notification. `/preview.html?view=app&unseen-result=set-aside` opens the
+application with the set-aside notice as a notification, as when no backup notice is
+pending. `interrupted-export` is the export wording. The parameter applies to
+`view=app` and `view=migration`.
 
 ## Status bar preview
 

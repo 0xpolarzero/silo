@@ -246,6 +246,7 @@ const backupStateShape = z.object({
   unsupportedStorage: z.object({ sandbox: z.string(), label: z.string() }).strict().optional(),
   destination: z.string().optional(),
   archives: z.array(backupArchiveShape), operation: backupOperationShape.nullable(),
+  resultUnseen: z.boolean().optional(),
 }).strict()
 const archiveInspectionShape = z.object({ archive: backupArchiveShape, valid: z.boolean(), reason: z.string().optional() }).strict()
 
@@ -596,7 +597,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         if (operation.kind === "running") dismissedBackupResults.clear()
       }
     }
-    const next = { ...base, backup: { ...base.backup, operation } }
+    // The marker belongs to the result the runtime reported, not to one dismissed here or replaced by a local operation.
+    const { resultUnseen, ...reported } = base.backup
+    const next = { ...base, backup: { ...reported, operation, ...(resultUnseen && operation === base.backup.operation && { resultUnseen }) } }
     if (!base.source) return next
     const networkRows = new Map((network?.workspaces ?? []).map(row => [row.workspace, row]))
     const workspaces = base.source.workspaces.filter(workspace => !workspace.computer).map(workspace => ({

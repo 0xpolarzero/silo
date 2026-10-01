@@ -2,7 +2,9 @@ import { act, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
+import type { TransferResultNotice, TransferResultNoticeBackend } from "@/features/application/model/transfer-result-notice"
 import { createFixtureMigrationBackend, createFixturePreUpgradeBackup, fixtureDeleteFailure, type PreUpgradeBackupFixtureOptions } from "@/fixtures/pre-upgrade-backup"
+import { createFixtureUnseenResult, type UnseenResultFixtureMode } from "@/fixtures/transfer-result-notice"
 import { RuntimeMigrationBoundary } from "./runtime-migration-boundary"
 
 function setup(options: PreUpgradeBackupFixtureOptions = {}) {
@@ -127,5 +129,159 @@ describe("migration complete: pre-upgrade backup", () => {
     render(<RuntimeMigrationBoundary backend={migration}><p>Normal application</p></RuntimeMigrationBoundary>)
     expect(await screen.findByText("Updating your sandboxes")).toBeVisible()
     expect(backup.calls).toEqual([])
+  })
+})
+
+describe("migration complete: result of an export or import the upgrade interrupted", () => {
+  function setupResult(mode: UnseenResultFixtureMode, options: PreUpgradeBackupFixtureOptions = {}, transfer = createFixtureUnseenResult(mode)) {
+    const backup = createFixturePreUpgradeBackup(options)
+    const user = userEvent.setup()
+    // What the application sees when it opens: the child records whether the result was still unseen then.
+    const opened: boolean[] = []
+    function Application() {
+      opened.push(transfer.current().unseen)
+      return <p>Normal application</p>
+    }
+    render(<RuntimeMigrationBoundary backend={createFixtureMigrationBackend(backup, transfer)}><Application /></RuntimeMigrationBoundary>)
+    return { backup, transfer, user, opened }
+  }
+
+  it("tells the user what became of an interrupted import on the screen about the backup", async () => {
+    setupResult("interrupted-import")
+    expect(await screen.findByRole("heading", { name: "Your sandboxes were updated" })).toBeVisible()
+    const result = await screen.findByRole("region", { name: "Import interrupted before the upgrade" })
+    expect(result).toHaveTextContent("Silo closed before this import finished. No sandbox was added. Import the file again.")
+    // Beside the backup, not instead of it.
+    expect(screen.getByRole("heading", { name: "Pre-upgrade backup" })).toBeVisible()
+    expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
+  })
+
+  it("shows the notice that an unreadable record was set aside", async () => {
+    setupResult("set-aside")
+    const result = await screen.findByRole("region", { name: "Export or import record set aside" })
+    expect(result).toHaveTextContent("An export or import record couldn’t be read and was set aside. If an export or import was running, run it again.")
+  })
+
+  it("acknowledges the result when Open Silo is chosen, before the application opens, so the application does not show it again", async () => {
+    const { transfer, user, opened } = setupResult("interrupted-import")
+    await screen.findByRole("region", { name: "Import interrupted before the upgrade" })
+    // Nothing is acknowledged by showing it: the user may close the window without reading it.
+    expect(transfer.calls).not.toContain("acknowledge")
+    expect(transfer.current().unseen).toBe(true)
+    await user.click(screen.getByRole("button", { name: "Open Silo" }))
+    expect(await screen.findByText("Normal application")).toBeVisible()
+    expect(transfer.calls.filter(call => call === "acknowledge")).toHaveLength(1)
+    expect(transfer.current().unseen).toBe(false)
+    expect(opened).toEqual([false])
+    expect(screen.queryByRole("region", { name: "Import interrupted before the upgrade" })).not.toBeInTheDocument()
+  })
+
+  it("keeps the result on the screen while it is acknowledged, and Open Silo waits for it", async () => {
+    const transfer = createFixtureUnseenResult("interrupted-export")
+    let finish!: () => void
+    const acknowledge = transfer.acknowledge
+    transfer.acknowledge = async id => { await new Promise<void>(resolve => { finish = resolve }); await acknowledge(id) }
+    const { user } = setupResult("interrupted-export", {}, transfer)
+    await screen.findByRole("region", { name: "Export interrupted before the upgrade" })
+    await user.click(screen.getByRole("button", { name: "Open Silo" }))
+    expect(screen.getByRole("button", { name: "Open Silo" })).toBeDisabled()
+    expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
+    await act(async () => finish())
+    expect(await screen.findByText("Normal application")).toBeVisible()
+  })
+
+  it("does not make the result vanish when Silo reports a change after it was acknowledged", async () => {
+    const transfer = createFixtureUnseenResult("interrupted-import")
+    let finish!: () => void
+    const acknowledge = transfer.acknowledge
+    // The acknowledgement changes the result, and Silo reports that before the call returns.
+    transfer.acknowledge = async id => { await acknowledge(id); await new Promise<void>(resolve => { finish = resolve }) }
+    const { user } = setupResult("interrupted-import", {}, transfer)
+    await screen.findByRole("region", { name: "Import interrupted before the upgrade" })
+    await user.click(screen.getByRole("button", { name: "Open Silo" }))
+    await waitFor(() => expect(transfer.current().unseen).toBe(false))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByRole("region", { name: "Import interrupted before the upgrade" })).toBeVisible()
+    await act(async () => finish())
+    expect(await screen.findByText("Normal application")).toBeVisible()
+  })
+
+  it("opens Silo and leaves the result unseen, so the application shows it, when acknowledging fails", async () => {
+    const transfer = createFixtureUnseenResult("interrupted-import")
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {})
+    transfer.acknowledge = async () => { throw new Error("disk full") }
+    const { user, opened } = setupResult("interrupted-import", {}, transfer)
+    await user.click(await screen.findByRole("button", { name: "Open Silo" }))
+    expect(await screen.findByText("Normal application")).toBeVisible()
+    expect(opened).toEqual([true])
+    await waitFor(() => expect(errors).toHaveBeenCalledWith("Silo export and import result:", "disk full"))
+  })
+
+  it("shows a result that is recorded after the screen opened, once recovery has finished", async () => {
+    let result: TransferResultNotice | null = null
+    let refresh = () => {}
+    const transfer: TransferResultNoticeBackend = {
+      read: async () => result,
+      acknowledge: async () => {},
+      subscribe: async changed => { refresh = changed; return () => {} },
+    }
+    const backup = createFixturePreUpgradeBackup()
+    render(<RuntimeMigrationBoundary backend={createFixtureMigrationBackend(backup, transfer)}><p>Normal application</p></RuntimeMigrationBoundary>)
+    await screen.findByRole("heading", { name: "Your sandboxes were updated" })
+    expect(screen.queryByRole("region", { name: "Import interrupted" })).not.toBeInTheDocument()
+    result = { id: "op-1", operation: "restore", outcome: "failed", title: "Import interrupted", message: "Silo closed before this import finished.", detail: "No sandbox was added. Import the file again." }
+    await act(async () => refresh())
+    expect(await screen.findByRole("region", { name: "Import interrupted" })).toBeVisible()
+  })
+
+  it("shows an outcome that is not a failure without a warning", async () => {
+    const transfer: TransferResultNoticeBackend = {
+      read: async () => ({ id: "op-1", operation: "backup", outcome: "success", title: "Export complete", message: "Silo verified this export after relaunching." }),
+      acknowledge: async () => {},
+      subscribe: async () => () => {},
+    }
+    render(<RuntimeMigrationBoundary backend={createFixtureMigrationBackend(createFixturePreUpgradeBackup(), transfer)}><p>Normal application</p></RuntimeMigrationBoundary>)
+    const result = await screen.findByRole("region", { name: "Export complete" })
+    expect(result).toHaveTextContent("Silo verified this export after relaunching.")
+    expect(result).not.toHaveClass("border-amber-500/30")
+  })
+
+  it("does not read the result when the screen is not shown, so the application shows it", async () => {
+    const { backup, transfer, opened } = setupResult("interrupted-import", { noticePending: false })
+    expect(await screen.findByText("Normal application")).toBeVisible()
+    expect(backup.calls).toEqual(["read"])
+    expect(transfer.calls).toEqual([])
+    // Still unseen when the application opens, which is what makes it show the result.
+    expect(opened).toEqual([true])
+  })
+
+  it("does not read it either when the backup is already gone", async () => {
+    const { transfer, opened } = setupResult("interrupted-import", { gone: true })
+    expect(await screen.findByText("Normal application")).toBeVisible()
+    expect(transfer.calls).toEqual([])
+    expect(opened).toEqual([true])
+  })
+
+  it("opens Silo without a result when it cannot be read", async () => {
+    const transfer = createFixtureUnseenResult("interrupted-import")
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {})
+    transfer.read = async () => { throw new Error("Silo could not read export and import state.") }
+    const { user } = setupResult("interrupted-import", {}, transfer)
+    await user.click(await screen.findByRole("button", { name: "Open Silo" }))
+    expect(await screen.findByText("Normal application")).toBeVisible()
+    expect(screen.queryByRole("region", { name: /interrupted/ })).not.toBeInTheDocument()
+    expect(transfer.calls).not.toContain("acknowledge")
+    expect(errors).toHaveBeenCalledWith("Silo export and import result:", "Silo could not read export and import state.")
+  })
+
+  it("shows the screen without a result when none is unseen", async () => {
+    const transfer = createFixtureUnseenResult("interrupted-import")
+    transfer.read = async () => null
+    const { user } = setupResult("interrupted-import", {}, transfer)
+    await screen.findByRole("heading", { name: "Your sandboxes were updated" })
+    expect(screen.queryByRole("region", { name: /interrupted/ })).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Open Silo" }))
+    expect(await screen.findByText("Normal application")).toBeVisible()
+    expect(transfer.calls).not.toContain("acknowledge")
   })
 })
