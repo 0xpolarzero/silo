@@ -22,6 +22,22 @@ test("the publication workflow repeats neither the image version nor the owner",
   assert.match(workflow, /environment: guest-image-publish/)
 })
 
+test("the recipe matches the version and never leaves package files in a layer", () => {
+  const dockerfile = readFileSync(new URL("../guest-image/Dockerfile", import.meta.url), "utf8")
+  assert.ok(dockerfile.includes(`org.opencontainers.image.version="${GUEST_IMAGE_VERSION}"`))
+  // Package files are downloaded, verified and deleted in one RUN, or bind-mounted; never COPYed.
+  assert.doesNotMatch(dockerfile, /^COPY .*\.deb/m)
+  assert.match(dockerfile, /RUN --mount=type=bind,source=src-tauri\/guest\/desktop-streamer-lock\.json/)
+  assert.match(dockerfile, /sha256sum --check/)
+  assert.doesNotMatch(dockerfile.replace(/^#.*$/gm, ""), /mousepad/)
+  assert.match(dockerfile, /gnome-text-editor/)
+  assert.doesNotMatch(dockerfile.replace(/^#.*$/gm, ""), /openai|oaistatic|chatgpt/i)
+  const ignore = readFileSync(new URL("../guest-image/Dockerfile.dockerignore", import.meta.url), "utf8")
+  for (const input of ["desktop-streamer-lock.json", "silo-accessibility.py", "setup-github.sh"]) {
+    assert.ok(ignore.includes(`!src-tauri/guest/${input}`), input)
+  }
+})
+
 test("offline image validation rejects unsupported platforms before invoking Docker", () => {
   assert.throws(() => verifyGuestImage("riscv64", "unused", {
     run: () => assert.fail("Unsupported image must not run"),

@@ -17,6 +17,13 @@ curl -fsS file:///etc/os-release -o /dev/null
 command -v sudo >/dev/null || { echo "Guest image is missing sudo" >&2; exit 1; }
 python3 -c 'import json; assert json.loads("true") is True'
 test -x /usr/lib/openssh/sftp-server
+test -x /usr/bin/selkies || { echo "Guest image is missing the Selkies streamer" >&2; exit 1; }
+test -x /usr/bin/xfce4-session || { echo "Guest image is missing the Xfce session" >&2; exit 1; }
+test -x /usr/local/libexec/silo-accessibility
+test -f /etc/xdg/autostart/silo-accessibility.desktop
+grep -qx 'toolkit-accessibility=true' /etc/dconf/db/local.d/00-silo-accessibility
+test -f /etc/dconf/db/local && test "$(xdg-mime query default text/plain)" = org.gnome.TextEditor.desktop
+if dpkg -s mousepad >/dev/null 2>&1; then echo "Mousepad crashes under AT-SPI paste and must not be installed" >&2; exit 1; fi
 if getent passwd silo || getent group silo; then
   echo "The working account must be provisioned per VM, not preinstalled in the image" >&2
   exit 1
@@ -27,7 +34,7 @@ sudo -n -u nobody sh -ec 'test "$(id -u)" != 0; /usr/lib/openssh/sftp-server -Q 
 }
 
 /** The recipe version. Increment it for every image update; published versions are never reused. */
-export const GUEST_IMAGE_VERSION = "ubuntu-24.04-v3"
+export const GUEST_IMAGE_VERSION = "ubuntu-24.04-v4"
 
 /**
  * Names derived from the recipe version and the publishing repository. The
@@ -39,7 +46,7 @@ export function guestImageMetadata(env = process.env) {
   const owner = repository?.split("/")[0]
   if (!owner || !/^[A-Za-z0-9-]+$/.test(owner)) throw new Error("Cannot determine the publishing GitHub owner.")
   const match = /^ubuntu-(\d+\.\d+)-(v\d+)$/.exec(GUEST_IMAGE_VERSION)
-  if (!match) throw new Error("Guest image versions look like ubuntu-24.04-v3.")
+  if (!match) throw new Error("Guest image versions look like ubuntu-24.04-v4.")
   return {
     version: GUEST_IMAGE_VERSION,
     // Container registries require lowercase repository names.

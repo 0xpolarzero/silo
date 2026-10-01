@@ -90,6 +90,57 @@ signed packaged runtime, with its public archive hash verified. Evidence:
 `target/verification/working-account/offline-v3-published/live.log`.
 The GUI was not launched, and Linux/KVM execution remains untested.
 
+## Guest image v4 recipe (unpublished)
+
+`GUEST_IMAGE_VERSION` is `ubuntu-24.04-v4`. `guest-image/image-lock.json` still
+pins the published v3 images; v4 is not published and no app uses it. Publication
+needs the owner's reviewer approval in the `guest-image-publish` environment and
+is not triggered by the recipe change. When v4 is published, copy both manifests
+into the lock and add a changeset in the same change that first uses it.
+
+v4 builds on the unchanged v3 layer (`setup-github.sh`, sudo, Python 3, OpenSSH
+SFTP server) and adds, in one further layer:
+
+- **Desktop.** The package list of `src-tauri/guest/setup-desktop.sh` with the same
+  `--no-install-recommends` (Xfce session, panel, settings, xfwm4, Thunar, terminal,
+  Greybird, Xvfb, PulseAudio, AT-SPI core and the X utilities), and the pinned
+  Selkies 2.0.0 `.deb` for the build architecture from `desktop-streamer-lock.json`.
+  The `.deb` is downloaded, SHA-256 verified, installed and deleted inside one
+  `RUN`; the lock and the poller are `RUN --mount=type=bind` inputs. Never `COPY` a
+  package file and delete it later: that keeps it (about 60 MB) in a layer.
+  The runtime pieces of `setup-desktop.sh` (Selkies web-client patch, connection
+  credentials, receipts, `silo-desktop`) are not part of the image.
+- **ChatGPT and LCU system libraries.** The LCU v0.7.0 `SYSTEM_PACKAGES`
+  ([source](https://github.com/0xpolarzero/lcu/blob/v0.7.0/scripts/install.py)),
+  a superset of the ChatGPT Linux `.deb` dependencies on Ubuntu 24.04, so LCU
+  installs with `--skip-system --offline`. No OpenAI file and no LCU are in the image.
+  **TODO:** stage the pinned, hash-checked LCU release archive in the marked place
+  in the Dockerfile once the new LCU release is published.
+- **Accessibility defaults.** `gsettings-desktop-schemas`, the dconf stack,
+  `/etc/dconf/profile/user` (`user-db:user`, `system-db:local`) and
+  `/etc/dconf/db/local.d/00-silo-accessibility` with
+  `toolkit-accessibility=true`, compiled by `dconf update`. This sets
+  `org.a11y.Status.IsEnabled` in each session (Firefox exposes web content; GTK and Qt
+  already do).
+- **Chromium/Electron poller.** `src-tauri/guest/silo-accessibility.py` is installed
+  as `/usr/local/libexec/silo-accessibility` and autostarted by
+  `/etc/xdg/autostart/silo-accessibility.desktop` in any Xfce session. It calls
+  `getAttributes()` and `getRelationSet()` on each application root and its first
+  five children, which makes Chromium expose full web trees (Chrome 154: 4 to 242
+  nodes; ChatGPT Electron: 2 to 28). It skips handled applications and backs off
+  from 2 s to 10 s when nothing changes. It needs `python3-pyatspi`.
+- **Text editor.** GNOME Text Editor (GTK4) replaces Mousepad and is the system
+  default for `text/plain` and a few common text types in `/etc/xdg/mimeapps.list`
+  (`xdg-mime query default text/plain` gives `org.gnome.TextEditor.desktop`). GTK
+  3.24's AT-SPI `PasteText` has a use-after-free that crashes every GTK3 text view.
+  When launching it for automation, use `gnome-text-editor --standalone` so each
+  launch is its own process rather than a request to an existing instance.
+
+The apt lists and caches are removed in the same layer, and
+`/usr/local/share/silo-packages.txt` is regenerated after the desktop packages.
+`verifyGuestImage` also checks the desktop, poller, dconf and editor defaults, and
+that Mousepad is absent. Measurements are in [guest image size](SiloUI-GUEST-IMAGE-SIZE.md).
+
 ## Runtime behavior
 
 The app validates the bundled image before importing it into its private
