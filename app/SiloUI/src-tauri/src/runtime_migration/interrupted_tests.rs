@@ -231,14 +231,7 @@ impl runtime::RuntimeRunner for ConvertedRuntime {
                     .iter()
                     .find(|row| row[0] == *name)
                     .expect("only a sandbox that is listed is removed");
-                // MicroSandbox 0.7.4 removes only a sandbox that is Stopped or Crashed.
-                if row[2] == "Created" {
-                    return Err(runtime::RuntimeError::Failed {
-                        operation: "Removing the sandbox".into(),
-                        exit_code: Some(1),
-                        detail: format!("sandbox still running: cannot remove sandbox {name:?}: status is Created"),
-                    });
-                }
+                // The bundled runtime removes a Created sandbox like a Stopped one.
                 if *self.fail_remove.lock().unwrap() {
                     return Err(runtime::RuntimeError::Invalid(
                         "test removal refused".into(),
@@ -335,7 +328,6 @@ fn shapes() -> Vec<Shape> {
         released_import: Some("Stopped"),
         ..Leftovers::default()
     };
-    let taken = " Silo removed its disk but not its sandbox record, which this runtime cannot remove while the sandbox has never started, so the name copy stays taken.";
     let stages = Leftovers {
         load_stages: true,
         ..Leftovers::default()
@@ -352,9 +344,7 @@ fn shapes() -> Vec<Shape> {
             leftovers: released,
             outcome: "failed",
             title: "Import interrupted",
-            detail: format!(
-                "No sandbox was added.{taken} Import the file again under another name."
-            ),
+            detail: "No sandbox was added. Import the file again.".into(),
         },
         Shape {
             name: "cancelled import by the released 0.9.0 that wrote its disk",
@@ -363,7 +353,7 @@ fn shapes() -> Vec<Shape> {
             leftovers: released,
             outcome: "cancelled",
             title: "Import cancelled",
-            detail: format!("No sandbox was added.{taken}"),
+            detail: "No sandbox was added.".into(),
         },
         Shape {
             name: "import by a released Silo whose sandbox the runtime can remove",
@@ -544,22 +534,20 @@ fn what_only_the_runtime_can_remove_is_cleaned_from_the_converted_generation_aft
             .iter()
             .map(|row| row[0].as_str().unwrap().to_owned())
             .collect();
-        if let Some(status) = shape.leftovers.released_import {
-            // The disk is gone either way. The runtime removes the sandbox's record when it
-            // is Stopped; a sandbox that never started stays, and the result says so.
+        if shape.leftovers.released_import.is_some() {
+            // The orphan's disk and its sandbox record are gone, whether the sandbox never
+            // started (a released import leaves it Created) or had stopped.
             assert!(!converted.join("volumes/copy").exists(), "{state}");
-            let mut calls = vec![
-                "list --format json",
-                "inspect copy --format json",
-                "remove --force --quiet copy",
-            ];
-            if status == "Created" {
-                assert_eq!(sandboxes, ["dev", "copy"], "{state}: the record stays");
-                calls.push("inspect copy --format json");
-            } else {
-                assert_eq!(sandboxes, ["dev"], "{state}: the orphan sandbox record");
-            }
-            assert_eq!(runtime.calls(), calls, "{state}");
+            assert_eq!(sandboxes, ["dev"], "{state}: the orphan sandbox record");
+            assert_eq!(
+                runtime.calls(),
+                [
+                    "list --format json",
+                    "inspect copy --format json",
+                    "remove --force --quiet copy",
+                ],
+                "{state}"
+            );
         } else {
             assert_eq!(sandboxes, ["dev"], "{state}");
         }

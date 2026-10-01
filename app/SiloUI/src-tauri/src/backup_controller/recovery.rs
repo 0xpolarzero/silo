@@ -1019,24 +1019,22 @@ const RELEASED_DISK_MARKER: &str = ".silo-restore-owner";
 /// sandbox uses the name. The current import never leaves these: it records a native
 /// snapshot group in the journal instead, which [`discard_uncommitted_import`] removes.
 ///
-/// Returns whether the runtime's sandbox had to stay. A released import leaves it in the
-/// `Created` state, and MicroSandbox 0.7.4 removes only a sandbox that is `Stopped` or
-/// `Crashed` (`msb remove` fails with "status is Created", with or without `--force`),
-/// so the disk is removed and the sandbox's name stays taken. Starting it to change that
-/// would run guest code over a partial disk.
+/// A released import leaves its sandbox `Created`, never started. The bundled runtime
+/// removes such a sandbox like a stopped one (the `remove-created` patch), without running
+/// guest code, so the sandbox and its disk both go and the name is free again.
 fn discard_released_import(
     runner: &dyn runtime::RuntimeRunner,
     paths: &runtime::RuntimePaths,
     metadata: &runtime::MachineConfigurationRequest,
     name: &str,
     identity: &str,
-) -> Result<bool, String> {
+) -> Result<(), String> {
     if metadata
         .machines
         .iter()
         .any(|machine| machine.name() == name)
     {
-        return Ok(false);
+        return Ok(());
     }
     let folder = paths.volumes.join(name);
     match fs::symlink_metadata(&folder) {
@@ -1046,7 +1044,7 @@ fn discard_released_import(
                 "The disk storage for {name} is not a folder. No files were removed."
             ))
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => {
             return Err(format!(
                 "Silo could not inspect the incomplete import's disk storage: {error}"
@@ -1055,26 +1053,15 @@ fn discard_released_import(
     }
     let owner = fs::read_to_string(folder.join(RELEASED_DISK_MARKER)).ok();
     if owner.as_deref() != Some(identity) {
-        return fs::remove_dir(&folder).map(|()| false).map_err(|_| {
+        return fs::remove_dir(&folder).map_err(|_| {
             format!("Silo could not verify who owns the disk storage for {name}. No files were removed.")
         });
     }
-    let kept = match runtime::cleanup_failed_create(runner, paths, name, identity) {
-        Ok(()) => false,
-        // The sandbox is Silo's own (the identity check came first) and never started.
-        Err(error) => {
-            let never_started = runtime::inspect_workspace(runner, paths, name)
-                .is_ok_and(|inspected| inspected.status == "Created");
-            if !never_started {
-                return Err(error.to_string());
-            }
-            true
-        }
-    };
+    runtime::cleanup_failed_create(runner, paths, name, identity)
+        .map_err(|error| error.to_string())?;
     fs::remove_dir_all(&folder).map_err(|error| {
         format!("Silo could not remove the incomplete import's disk storage: {error}")
-    })?;
-    Ok(kept)
+    })
 }
 
 /// Settle an operation interrupted by a relaunch without repeating it (E-31):
@@ -1161,7 +1148,6 @@ pub(super) fn recover_at_paths_with(
         Request::Restore {
             name, id, group, ..
         } => {
-            let mut note = String::new();
             if let Some(id) = id {
                 let metadata =
                     runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
@@ -1176,12 +1162,10 @@ pub(super) fn recover_at_paths_with(
                     ));
                 }
                 // An identity without a group is the journal of a released Silo.
-                let kept =
-                    group.is_none() && discard_released_import(runner, paths, &metadata, name, id)?;
-                discard_uncommitted_import(paths, controller, id, group.as_deref())?;
-                if kept {
-                    note = format!(" Silo removed its disk but not its sandbox record, which this runtime cannot remove while the sandbox has never started, so the name {name} stays taken.");
+                if group.is_none() {
+                    discard_released_import(runner, paths, &metadata, name, id)?;
                 }
+                discard_uncommitted_import(paths, controller, id, group.as_deref())?;
             } else if group.is_some() {
                 discard_pending_import(paths, controller)?;
             }
@@ -1191,20 +1175,15 @@ pub(super) fn recover_at_paths_with(
                     "cancelled",
                     "Import cancelled",
                     "The import was cancelled.",
-                    Some(&format!("No sandbox was added.{note}")),
+                    Some("No sandbox was added."),
                 )
             } else {
-                let again = if note.is_empty() {
-                    "Import the file again."
-                } else {
-                    "Import the file again under another name."
-                };
                 result(
                     journal.archive.clone(),
                     "failed",
                     "Import interrupted",
                     "Silo closed before this import finished.",
-                    Some(&format!("No sandbox was added.{note} {again}")),
+                    Some("No sandbox was added. Import the file again."),
                 )
             })
         }
@@ -2960,8 +2939,8 @@ mod tests {
         present: Mutex<Vec<(String, String)>>,
         calls: Mutex<Vec<String>>,
         fail_remove: bool,
-        /// What `msb inspect` reports for every sandbox. MicroSandbox 0.7.4 removes only a
-        /// `Stopped` or `Crashed` one: `msb remove` fails for a sandbox that is `Created`.
+        /// What `msb inspect` reports for every sandbox. The bundled runtime removes a
+        /// `Created` sandbox like a `Stopped` one.
         status: &'static str,
     }
     impl Sandboxes {
@@ -3025,13 +3004,6 @@ mod tests {
                     serde_json::json!({"name": name, "status": self.status, "config": {"labels": {"silo.managed": "true", "silo.machine-id": id}}}).to_string()
                 }
                 ["remove", "--force", "--quiet", name] => {
-                    if self.status == "Created" {
-                        return Err(runtime::RuntimeError::Failed {
-                            operation: "Removing the sandbox".into(),
-                            exit_code: Some(1),
-                            detail: format!("sandbox still running: cannot remove sandbox {name:?}: status is Created"),
-                        });
-                    }
                     if self.fail_remove {
                         return Err(runtime::RuntimeError::Invalid(
                             "test removal refused".into(),
@@ -3122,10 +3094,10 @@ mod tests {
     }
 
     #[test]
-    fn recovery_removes_the_disk_of_a_released_import_whose_sandbox_cannot_be_removed_yet() {
+    fn recovery_removes_a_released_import_whose_sandbox_never_started() {
         let _test_state = crate::test_support::global_state();
-        // A released import leaves its sandbox created and never started, which
-        // MicroSandbox 0.7.4 refuses to remove.
+        // A released import leaves its sandbox created and never started. The runtime
+        // removes it whole, so neither its record nor its name stays behind.
         for cancelled in [false, true] {
             let directory = tempfile::tempdir().unwrap();
             let paths = storage_with_released_import(directory.path());
@@ -3150,26 +3122,24 @@ mod tests {
             )
             .unwrap();
             let (outcome, title, _, detail) = result_of(&recovered);
-            let detail = detail.unwrap();
-            // The disk, which is what takes the space, is gone; the sandbox's record stays
-            // and the result says its name is taken.
             assert!(!paths.volumes.join("copy").exists());
-            assert_eq!(runtime.names(), ["dev", "copy"]);
-            assert!(
-                detail.starts_with(
-                    "No sandbox was added. Silo removed its disk but not its sandbox record"
-                ),
-                "{detail}"
+            assert_eq!(runtime.names(), ["dev"]);
+            assert_eq!(
+                runtime.calls(),
+                [
+                    "list --format json",
+                    "inspect copy --format json",
+                    "remove --force --quiet copy"
+                ]
             );
-            assert!(detail.contains("the name copy stays taken."), "{detail}");
             if cancelled {
                 assert_eq!((outcome, title.as_str()), ("cancelled", "Import cancelled"));
-                assert!(!detail.contains("Import the file again"), "{detail}");
+                assert_eq!(detail.as_deref(), Some("No sandbox was added."));
             } else {
                 assert_eq!((outcome, title.as_str()), ("failed", "Import interrupted"));
-                assert!(
-                    detail.ends_with("Import the file again under another name."),
-                    "{detail}"
+                assert_eq!(
+                    detail.as_deref(),
+                    Some("No sandbox was added. Import the file again.")
                 );
             }
             // Recovery is complete: the journal no longer owns anything.
