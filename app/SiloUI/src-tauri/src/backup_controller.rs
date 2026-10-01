@@ -2373,12 +2373,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn migrated_native_config_exports_only_the_current_empty_github_policy() {
-        let _test_state = crate::test_support::global_state();
-        let network: Value =
-            serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
-        let mut inspected = serde_json::json!({
+    fn inspected_legacy_config(network: Value) -> Value {
+        serde_json::json!({
             "name":"legacy",
             "image":{"Oci":{"reference":"ubuntu","root_disk":{"kind":"managed"}}},
             "resources":{"cpus":1,"max_cpus":1,"memory_mib":1024,"max_memory_mib":1024},
@@ -2390,7 +2386,51 @@ mod tests {
             "lifecycle":{"ephemeral":false,"max_duration_secs":null,"idle_timeout_secs":null},
             "external_mount_policy":"strict",
             "snapshot_parent":"snap_174f34b70bd7ec64dc487d6aa763cf3b"
-        });
+        })
+    }
+
+    #[test]
+    fn the_real_config_of_a_sandbox_created_with_silos_arguments_passes_the_export_check() {
+        let _test_state = crate::test_support::global_state();
+        // `msb inspect --format json` of a sandbox created by the bundled MicroSandbox
+        // 0.7.4 with the argument list of `runtime::create_machine` (smaller disks),
+        // including `--net-strict=true`.
+        let mut inspected: Value = serde_json::from_str(include_str!(
+            "test_support/msb-inspect/created-by-silo-0.7.4-config.json"
+        ))
+        .unwrap();
+        assert_eq!(inspected["network"]["strict"], true);
+        canonicalize_backup_runtime(&mut inspected).unwrap();
+        assert!(normalize_backup_root_capacity(&mut inspected, 4096));
+        backup::validate_snapshottable_config("e2e-new-silo", &inspected).unwrap();
+        // Without any tolerance for `strict`: the sandbox's network is the profile.
+        let profile: Value =
+            serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
+        assert_eq!(inspected["network"], profile);
+    }
+
+    #[test]
+    fn the_real_network_of_a_forked_sandbox_exports_after_its_addresses_are_cleared() {
+        let _test_state = crate::test_support::global_state();
+        // `msb inspect` of a forked (full) restore from MicroSandbox 0.7.4: it keeps the
+        // interface addresses of the checkpoint, and `strict` is the runtime's default.
+        let network: Value =
+            serde_json::from_str(include_str!("test_support/msb-inspect/forked-0.7.4.json"))
+                .unwrap();
+        assert_eq!(network["strict"], true);
+        assert_ne!(network["interface"], serde_json::json!({}));
+        let mut inspected = inspected_legacy_config(network);
+        canonicalize_backup_runtime(&mut inspected).unwrap();
+        assert!(normalize_backup_root_capacity(&mut inspected, 4096));
+        backup::validate_snapshottable_config("legacy", &inspected).unwrap();
+    }
+
+    #[test]
+    fn migrated_native_config_exports_only_the_current_empty_github_policy() {
+        let _test_state = crate::test_support::global_state();
+        let network: Value =
+            serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
+        let mut inspected = inspected_legacy_config(network);
         inspected["network"]["interface"] = serde_json::json!({
             "ipv4_address":"172.16.0.6","ipv6_address":"fd42:6d73:62:1::2",
             "mac":[2,109,115,0,1,2],"mtu":1500

@@ -2440,12 +2440,55 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
 // Only the exact credential-free profile installed during Silo VM creation is
 // restorable here. Custom policies, host secret references and values stay blocked.
 pub(crate) fn default_github_network(network: &Value) -> bool {
-    network == &github_network_defaults()
+    with_profile_strict(network) == github_network_defaults()
 }
 
 fn github_network_defaults() -> Value {
     serde_json::from_str(include_str!("../guest/github-network-default.json"))
         .expect("checked-in GitHub network defaults")
+}
+
+/// MicroSandbox's `strict` option only changes connections that a hostname-based
+/// allow rule (`domain` or `domain_suffix`) admits: they need an inspectable
+/// request authority. Silo's profile has no such rule, so either value behaves
+/// the same there.
+fn strict_is_inert(network: &Value) -> bool {
+    network
+        .get("policy")
+        .and_then(|policy| policy.get("rules"))
+        .is_none_or(|rules| {
+            rules.as_array().is_some_and(|rules| {
+                rules.iter().all(|rule| {
+                    rule.get("destination").is_some_and(|destination| {
+                        destination.get("domain").is_none()
+                            && destination.get("domain_suffix").is_none()
+                    })
+                })
+            })
+        })
+}
+
+/// Silo creates sandboxes with `strict` on, the profile's value, and the runtime
+/// gives restores and forks its current default (also on). The saved value
+/// still differs by origin: MicroSandbox 0.7.2 saved its then-default (off), and
+/// a configuration saved by 0.6.17 holds none until a newer runtime rewrites it.
+/// Archives exported before the profile changed carry the 0.7.2 value as well.
+/// Where it cannot change anything (see `strict_is_inert`), and imports create
+/// every sandbox with the profile's value anyway, such a network counts as
+/// having the profile's value. Anything else, such as a value that is not a
+/// boolean, stays as it is and fails the comparison.
+fn with_profile_strict(network: &Value) -> Value {
+    let mut network = network.clone();
+    let boolean_or_missing = network.get("strict").is_none_or(Value::is_boolean);
+    if boolean_or_missing && strict_is_inert(&network) {
+        if let (Some(object), Some(strict)) = (
+            network.as_object_mut(),
+            github_network_defaults().get("strict"),
+        ) {
+            object.insert("strict".into(), strict.clone());
+        }
+    }
+    network
 }
 
 /// The network an import starts from: Silo's profile with a deny-all policy.
@@ -2461,7 +2504,7 @@ fn imported_deny_network_value() -> Value {
 }
 
 fn imported_deny_network(network: &Value) -> bool {
-    network == &imported_deny_network_value()
+    with_profile_strict(network) == imported_deny_network_value()
 }
 
 /// An export carries no network authority: the importing Silo applies a
@@ -2474,6 +2517,8 @@ fn portable_export_network(name: &str, runtime_config: &mut Value) -> Result<(),
     let Some(network) = runtime_config.get_mut("network") else {
         return Ok(());
     };
+    // The archive carries the profile's `strict`, whichever value the source had.
+    *network = with_profile_strict(network);
     if default_github_network(network)
         || imported_deny_network(network)
         || network.get("policy").is_some_and(Value::is_null)
@@ -4412,6 +4457,176 @@ mod tests {
         config["init"] = serde_json::json!({"cmd": ["/sbin/init"]});
         let error = export_with_runtime(config).err().unwrap().to_string();
         assert!(error.contains("custom init settings"), "{error}");
+    }
+
+    /// The `network` section of real `msb inspect --format json` output
+    /// (`test_support/msb-inspect`). `created`, `restored`, `forked` and
+    /// `imported` come from the bundled MicroSandbox 0.7.4 (a restore, a
+    /// forked full restore and an import-style deny-all restore of a
+    /// sandbox saved with `strict` off); `created-0.7.2` comes from 0.7.2 and
+    /// `migrated-from-*` from an old-layout sandbox after the 0.7.4 `adopt-disk`
+    /// that migration runs.
+    fn captured_network(origin: &str) -> Value {
+        let text = match origin {
+            "created-0.7.4" => include_str!("test_support/msb-inspect/created-0.7.4.json"),
+            "restored-0.7.4" => include_str!("test_support/msb-inspect/restored-0.7.4.json"),
+            "forked-0.7.4" => include_str!("test_support/msb-inspect/forked-0.7.4.json"),
+            "imported-0.7.4" => include_str!("test_support/msb-inspect/imported-0.7.4.json"),
+            "created-0.7.2" => include_str!("test_support/msb-inspect/created-0.7.2.json"),
+            "migrated-from-0.7.2" => {
+                include_str!("test_support/msb-inspect/migrated-from-0.7.2.json")
+            }
+            "migrated-from-0.6.17" => {
+                include_str!("test_support/msb-inspect/migrated-from-0.6.17.json")
+            }
+            "migrated-from-0.6.17-before-adopt-disk" => {
+                include_str!("test_support/msb-inspect/migrated-from-0.6.17-before-adopt-disk.json")
+            }
+            other => panic!("no captured network for {other}"),
+        };
+        serde_json::from_str(text).unwrap()
+    }
+
+    const CAPTURED_NETWORKS: [(&str, Option<bool>); 8] = [
+        // Created by Silo's own `msb create`: the runtime's current default.
+        ("created-0.7.4", Some(true)),
+        ("restored-0.7.4", Some(true)),
+        ("forked-0.7.4", Some(true)),
+        ("imported-0.7.4", Some(true)),
+        // Before MicroSandbox 0.7.4 the default was off.
+        ("created-0.7.2", Some(false)),
+        ("migrated-from-0.7.2", Some(false)),
+        // MicroSandbox 0.6.17 had no such option; `adopt-disk` saves the current default.
+        ("migrated-from-0.6.17", Some(true)),
+        ("migrated-from-0.6.17-before-adopt-disk", None),
+    ];
+
+    #[test]
+    fn captured_networks_carry_the_strict_value_of_their_origin() {
+        for (origin, strict) in CAPTURED_NETWORKS {
+            assert_eq!(
+                captured_network(origin)
+                    .get("strict")
+                    .and_then(Value::as_bool),
+                strict,
+                "{origin}"
+            );
+        }
+    }
+
+    #[test]
+    fn export_accepts_the_network_of_sandboxes_from_every_origin() {
+        let profile_strict = github_network_defaults()["strict"].clone();
+        for (origin, _) in CAPTURED_NETWORKS {
+            let mut config = managed_config("dev");
+            config["network"] = captured_network(origin);
+            // A fork keeps the addresses it was captured with; the controller clears
+            // them before an export (`canonicalize_backup_runtime`).
+            config["network"]["interface"] = serde_json::json!({});
+            let manifest = export_with_runtime(config)
+                .unwrap_or_else(|error| panic!("{origin} cannot be exported: {error}"));
+            let network = &manifest.sandboxes[0].runtime_config["network"];
+            assert!(
+                default_github_network(network) || imported_deny_network(network),
+                "{origin}: {network}"
+            );
+            // Whatever the source carried, the archive carries the profile's value.
+            assert_eq!(network["strict"], profile_strict, "{origin}");
+        }
+    }
+
+    #[test]
+    fn the_profile_is_what_silo_creates_sandboxes_with() {
+        // `msb create` in runtime.rs passes `--net-strict=true`; the runtime
+        // saves that value, and an export of the sandbox must accept it as is.
+        let mut config = managed_config("dev");
+        config["network"] = captured_network("created-0.7.4");
+        assert_eq!(config["network"]["strict"], true);
+        assert!(default_github_network(&config["network"]));
+        assert_eq!(github_network_defaults()["strict"], true);
+        assert_eq!(imported_deny_network_value()["strict"], true);
+    }
+
+    #[test]
+    fn archives_made_while_the_runtime_default_was_off_still_import() {
+        // An export made before this change recorded the profile with `strict` off
+        // (the 0.7.2 default); a configuration saved by 0.6.17 records no value.
+        // Those archives carry the profile's network, or its deny-all variant.
+        let profile = github_network_defaults();
+        for strict in [Some(false), Some(true), None] {
+            for policy in [
+                profile["policy"].clone(),
+                imported_deny_network_value()["policy"].clone(),
+            ] {
+                let mut config = managed_config("dev");
+                config["network"] = profile.clone();
+                config["network"]["policy"] = policy;
+                match strict {
+                    Some(value) => config["network"]["strict"] = value.into(),
+                    None => {
+                        config["network"].as_object_mut().unwrap().remove("strict");
+                    }
+                }
+                validate_snapshottable_config("dev", &config)
+                    .unwrap_or_else(|error| panic!("{strict:?}: {error}"));
+            }
+        }
+    }
+
+    #[test]
+    fn strict_only_counts_as_a_setting_where_a_hostname_rule_depends_on_it() {
+        let export_with_rule = |origin: &str, strict: Value, destination: Value| {
+            let mut config = managed_config("dev");
+            config["network"] = captured_network(origin);
+            config["network"]["strict"] = strict;
+            config["network"]["policy"]["rules"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "action": "allow",
+                    "destination": destination,
+                    "direction": "egress",
+                    "ports": [],
+                    "protocols": []
+                }));
+            export_with_runtime(config)
+        };
+        for origin in ["created-0.7.4", "created-0.7.2"] {
+            for hostname in [
+                serde_json::json!({"domain": "example.com"}),
+                serde_json::json!({"domain_suffix": "example.com"}),
+            ] {
+                // With `strict` off the runtime treats a hostname allow rule differently,
+                // so that combination is a real setting, and the export names it.
+                let error = export_with_rule(origin, false.into(), hostname.clone())
+                    .err()
+                    .unwrap()
+                    .to_string();
+                assert!(error.contains("custom network strict settings"), "{error}");
+                // With it on (the profile's value) the rule is only a custom policy,
+                // which an export resets like any other.
+                let manifest = export_with_rule(origin, true.into(), hostname).unwrap();
+                assert!(imported_deny_network(
+                    &manifest.sandboxes[0].runtime_config["network"]
+                ));
+            }
+            // Without a hostname rule the value changes nothing.
+            let manifest = export_with_rule(
+                origin,
+                false.into(),
+                serde_json::json!({"cidr": "10.0.0.0/8"}),
+            )
+            .unwrap();
+            assert!(imported_deny_network(
+                &manifest.sandboxes[0].runtime_config["network"]
+            ));
+        }
+        // A value that is not a boolean is never accepted.
+        let mut config = managed_config("dev");
+        config["network"] = captured_network("created-0.7.4");
+        config["network"]["strict"] = "yes".into();
+        let error = export_with_runtime(config).err().unwrap().to_string();
+        assert!(error.contains("custom network strict settings"), "{error}");
     }
 
     #[test]
