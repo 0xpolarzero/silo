@@ -3844,8 +3844,11 @@ fn apply_configuration_with_progress(
         "configuration changes require the operation gate"
     );
     let resources = host_resources().map_err(|e| e.to_string())?;
+    let mut request = request;
     validate_request(&request).map_err(|e| e.to_string())?;
     validate_requested_resources(&request, &resources).map_err(|e| e.to_string())?;
+    let previous = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
+    apply_desktop_defaults(paths, &previous, &mut request);
     configuration_recovery::prepare_retry(&ProcessRunner, paths, Some(&request))
         .map_err(|e| e.to_string())?;
     let retry_workspace = retry_workspace.or_else(|| {
@@ -4935,6 +4938,31 @@ fn apply_whole_configuration(
     apply_whole_configuration_with_progress(runner, paths, host, request, None, &|_, _, _| {})
 }
 
+/// Default the desktop of new v4 sandboxes. This must run before a request is compared
+/// with or recorded in the configuration journal, so a resubmitted failed creation
+/// matches the journaled (already defaulted) request.
+fn apply_desktop_defaults(
+    paths: &RuntimePaths,
+    previous: &MachineConfigurationRequest,
+    request: &mut MachineConfigurationRequest,
+) {
+    apply_desktop_defaults_for(
+        guest_image::bundled_version(&paths.guest_image).as_deref(),
+        previous,
+        request,
+    );
+}
+
+fn apply_desktop_defaults_for(
+    version: Option<&str>,
+    previous: &MachineConfigurationRequest,
+    request: &mut MachineConfigurationRequest,
+) {
+    if let Some(version) = version {
+        crate::desktop::default_new_vm_desktops(&mut request.machines, &previous.machines, version);
+    }
+}
+
 fn apply_whole_configuration_with_progress(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
@@ -4946,13 +4974,7 @@ fn apply_whole_configuration_with_progress(
     let _attempt = configuration_recovery::attempt();
     validate_request(&request)?;
     let previous = read_metadata(&paths.metadata)?;
-    if let Some(version) = guest_image::bundled_version(&paths.guest_image) {
-        crate::desktop::default_new_vm_desktops(
-            &mut request.machines,
-            &previous.machines,
-            &version,
-        );
-    }
+    apply_desktop_defaults(paths, &previous, &mut request);
     if retry_workspace.is_some_and(|name| {
         !request
             .machines
@@ -7804,6 +7826,31 @@ esac
             .unwrap()
             .iter()
             .any(|args| args[0] == "create" || args[0] == "remove"));
+    }
+
+    #[test]
+    fn resubmitted_failed_creation_without_desktop_matches_the_journaled_request() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = request(vec![]);
+        // The first attempt journaled the defaulted request, then failed.
+        let mut first = request(vec![vm()]);
+        apply_desktop_defaults_for(Some("ubuntu-24.04-v4"), &previous, &mut first);
+        configuration_recovery::begin(&paths, &first).unwrap();
+        configuration_recovery::claim(&paths, &first.machines[0]).unwrap();
+        // The same creation is resubmitted without a desktop choice.
+        let mut again = request(vec![vm()]);
+        apply_desktop_defaults_for(Some("ubuntu-24.04-v4"), &previous, &mut again);
+        assert_eq!(again, first);
+        // Without the defaulting the journal would reject the resubmission.
+        assert!(configuration_recovery::begin(&paths, &request(vec![vm()])).is_err());
+        let runner = StubRunner::successful_json(vec![json!([]), json!([])]);
+        configuration_recovery::prepare_retry(&runner, &paths, Some(&again)).unwrap();
+        configuration_recovery::begin(&paths, &again).unwrap();
+        // A second recorded retry keeps working.
+        configuration_recovery::prepare_retry(&runner, &paths, Some(&again)).unwrap();
+        configuration_recovery::begin(&paths, &again).unwrap();
     }
 
     #[test]
