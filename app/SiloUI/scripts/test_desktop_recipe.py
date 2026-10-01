@@ -65,8 +65,6 @@ elif name == 'python3':
             'sessionState': os.environ.get('SESSION_STATE', 'stopped'),
             'streamState': os.environ.get('STREAM_STATE', 'stopped'),
         }))
-    elif args and args[0].endswith('/silo-setup-luda.py') and os.environ.get('LUDA_FAIL'):
-        sys.exit(23)
 elif name == 'install':
     if '-d' in args:
         pathlib.Path(args[-1]).mkdir(parents=True, exist_ok=True)
@@ -106,8 +104,6 @@ class DesktopRecipe(unittest.TestCase):
         self.fixture = self.root / 'sources'
         self.fixture.mkdir()
         (self.fixture / 'desktop-service.py').write_text(stub)
-        (self.fixture / 'setup-luda.py').write_text('# fixture installer\n')
-        (self.fixture / 'luda-lock.json').write_text('{"version":"test"}\n')
         (self.fixture / 'patch-selkies-web-client.py').write_text('# fixture patcher\n')
         streamer_lock = (SOURCE.parent / 'desktop-streamer-lock.json').read_text()
         (self.fixture / 'desktop-streamer-lock.json').write_text(streamer_lock)
@@ -177,11 +173,10 @@ class DesktopRecipe(unittest.TestCase):
         self.assertEqual(connection['port'], 6901)
         self.assertRegex(connection['password'], r'^[0-9a-f]{64}$')
 
-    def test_fresh_desktop_provisions_luda_before_starting(self):
+    def test_fresh_desktop_installs_no_luda_tools(self):
         calls = self.run_recipe()
-        install = ['python3', [str(self.root / 'usr/local/libexec/silo-setup-luda.py')]]
-        self.assertEqual(calls.count(install), 1)
-        self.assertLess(calls.index(install), calls.index(['silo-desktop', ['boot']]))
+        self.assertFalse(any('luda' in ' '.join([name, *args]).lower() for name, args in calls))
+        self.assertLess(0, calls.index(['silo-desktop', ['boot']]))
 
     def test_fresh_desktop_selects_amd64_streamer_asset_and_receipt(self):
         digest = 'bbaa4d71012b9374a753b7dfddc1da07e31f34b04277fe4fb3d045f18fd88391'
@@ -194,24 +189,9 @@ class DesktopRecipe(unittest.TestCase):
         self.assertEqual(receipt['packageSha256'], digest)
         self.assertIn(['python3', [str(self.fixture / 'patch-selkies-web-client.py'), 'amd64']], calls)
 
-    def test_luda_failure_fails_installation_and_retry_preserves_desktop(self):
-        result = subprocess.run(['/bin/sh', str(self.recipe), 'install'],
-                                env=dict(self.env, LUDA_FAIL='1'),
-                                text=True, capture_output=True, timeout=15)
-        self.assertEqual(result.returncode, 23, result.stdout + result.stderr)
-        calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
-        self.assertNotIn(['silo-desktop', ['boot']], calls)
-        self.assertTrue((self.state / 'installed.json').exists())
-        (self.root / 'calls.jsonl').unlink()
-        calls = self.run_recipe()
-        self.assertIn(['python3', [str(self.root / 'usr/local/libexec/silo-setup-luda.py')]], calls)
-        self.assertFalse(any(name in ('curl', 'apt-get') for name, _ in calls))
-        self.assertFalse(any(name == 'silo-desktop' and args in (['boot'], ['stop'])
-                             for name, args in calls))
-
-    def test_existing_desktop_install_and_repair_upgrade_session_and_theme(self):
+    def test_existing_desktop_install_upgrades_session_and_theme(self):
         (self.state / 'installed.json').write_text('{"version":"1"}')
-        for action in ('install', 'setup-tools'):
+        for action in ('install',):
             with self.subTest(action=action):
                 (self.home / '.vnc/xstartup').write_text('#!/bin/sh\nexec xfce4-session\n')
                 (self.root / 'theme-installed').unlink(missing_ok=True)
@@ -224,10 +204,6 @@ class DesktopRecipe(unittest.TestCase):
                                  'Ordinary setup preserves the legacy Kasm backend')
                 self.assertFalse(any(name == 'silo-desktop' and args in (['boot'], ['stop'])
                                      for name, args in calls), 'Preserve the running desktop')
-                installers = [args for name, args in calls if name == 'python3'
-                              and args[0].endswith('/silo-setup-luda.py')]
-                self.assertEqual(len(installers), 1)
-                self.assertEqual('--repair' in installers[0], action == 'setup-tools')
                 # Repeating setup on an upgraded desktop needs no package network.
                 (self.root / 'calls.jsonl').unlink()
                 calls = self.run_recipe(action)

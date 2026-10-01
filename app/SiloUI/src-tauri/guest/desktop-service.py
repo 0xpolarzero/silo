@@ -25,7 +25,6 @@ HOME = Path('/home/silo')
 SELF = '/usr/local/bin/silo-desktop'
 LOG = Path('/var/log/silo-desktop.log')
 WORKING_ACCOUNT = Path('/var/lib/silo/working-account.json')
-LUDA_PYTHON = Path('/opt/luda/current/.venv/bin/python')
 SELKIES_EXECUTABLE = Path('/usr/bin/selkies')
 LCU_RECEIPT = STATE / 'lcu.json'
 LCU_APP = Path('/usr/lib/chatgpt')
@@ -373,30 +372,6 @@ def remove_stale_display_artifacts():
         return False
 
 
-def recorded_luda_status(installing):
-    try:
-        missing = object()
-        data = read('luda.json', missing)
-        executable = LUDA_PYTHON.is_file() and os.access(LUDA_PYTHON, os.X_OK)
-        # An unrecorded executable may have been installed independently. Its
-        # registration is unknown; absence of our receipt is not a failure.
-        state = (None if executable else 'missing') if data is missing else data.get('state')
-        version = None if data is missing else data.get('version')
-        if installing:
-            state = 'installing'
-        elif state == 'installing' or (state == 'ready' and not executable):
-            state = 'failed'
-        elif state not in ('missing', 'ready', 'failed', None):
-            state = 'failed'
-        if not isinstance(version, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version):
-            version = None
-        return dict(ludaState=state, ludaVersion=version)
-    except (ValueError, AttributeError):
-        return dict(ludaState='installing' if installing else 'failed', ludaVersion=None)
-    except OSError:
-        return dict(ludaState='installing' if installing else None, ludaVersion=None)
-
-
 def lcu_status():
     """Project only the installed LCU receipt and required runtime paths."""
     result = dict(lcuState=None, lcuReason=None, lcuVersion=None,
@@ -473,25 +448,6 @@ def safe_lcu_version(value):
 def safe_lcu_runtime_version(value):
     return value if isinstance(value, str) and len(value) <= 64 and re.fullmatch(
         r'[0-9]+\.[0-9]+\.[0-9]+/[0-9]{14}-[0-9a-f]{12}', value) else None
-
-
-def luda_status():
-    try:
-        guard = (STATE / 'luda.lock').open('rb')
-    except FileNotFoundError:
-        return recorded_luda_status(False)
-    except OSError:
-        return dict(ludaState=None, ludaVersion=None)
-    with guard:
-        try:
-            # A shared, nonblocking lock proves no installer is active while
-            # reading its receipt. Never create or rewrite files during a check.
-            fcntl.flock(guard, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return recorded_luda_status(True)
-        except OSError:
-            return dict(ludaState=None, ludaVersion=None)
-        return recorded_luda_status(False)
 
 
 def selkies_http_ready():
@@ -927,7 +883,7 @@ def status():
                 autoStart=config['autoStart'], port=6901, user=USER, display=':1',
                 backend=backend, streamerVersion=streamer_version,
                 sessionState=session_state, streamState=stream_state,
-                updateRequired=update_required, **luda_status(), **lcu_status())
+                updateRequired=update_required, **lcu_status())
 
 
 def start():
@@ -1116,13 +1072,11 @@ def main():
             write(STATE / 'config.json', {'autoStart': enabled})
             if enabled:
                 start()
-        elif action == 'repair-luda':
-            subprocess.run(['python3', '/usr/local/libexec/silo-setup-luda.py', '--repair'], check=True)
         elif action == 'boot':
             if read('config.json', {'autoStart': True})['autoStart']:
                 start()
         else:
-            raise RuntimeError('Usage: silo-desktop status|connection|start|stop|restart|restart-streamer|boot|repair-luda|autostart true|false')
+            raise RuntimeError('Usage: silo-desktop status|connection|start|stop|restart|restart-streamer|boot|autostart true|false')
         print(json.dumps(status()))
 
 

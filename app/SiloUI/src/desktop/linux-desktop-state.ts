@@ -12,8 +12,6 @@ export const linuxDesktopStateSchema = z.object({
   sessionState: desktopSessionStateSchema.nullish(),
   streamState: desktopSessionStateSchema.nullish(),
   updateRequired: z.boolean().nullish(),
-  ludaState: z.enum(["missing", "installing", "ready", "failed"]).nullish(),
-  ludaVersion: z.string().nullish().catch(null),
   lcuState: z.enum(["needs-runtime", "not-installed", "installing", "repair-required", "failed", "ready"]).nullish(),
   lcuReason: z.string().nullish().catch(null),
   lcuVersion: z.string().nullish().catch(null),
@@ -27,7 +25,7 @@ export const linuxDesktopStateSchema = z.object({
   display: z.string().nullish().catch(null),
 })
 export type LinuxDesktopState = z.infer<typeof linuxDesktopStateSchema>
-export type DesktopAction = "start" | "stop" | "restart" | "setup-tools" | "setup-lcu" | "restart-streamer" | "update-streamer"
+export type DesktopAction = "start" | "stop" | "restart" | "setup-lcu" | "restart-streamer" | "update-streamer"
 
 export function parseLinuxDesktopState(value: unknown): LinuxDesktopState {
   const status = linuxDesktopStateSchema.parse(value)

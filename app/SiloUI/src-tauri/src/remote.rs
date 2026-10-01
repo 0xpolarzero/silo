@@ -802,7 +802,7 @@ fn request_timeout(request: &Value) -> Duration {
         || (request["method"] == "desktop.action"
             && matches!(
                 request["params"]["action"].as_str(),
-                Some("setup-tools" | "update-streamer" | "setup-lcu")
+                Some("update-streamer" | "setup-lcu")
             ))
     {
         Duration::from_secs(2100)
@@ -1793,10 +1793,10 @@ mod tests {
     }
 
     #[test]
-    fn desktop_tools_setup_has_time_to_install_over_remote_connection() {
+    fn desktop_lcu_setup_has_time_to_install_over_remote_connection() {
         let _test_state = crate::test_support::global_state();
         assert_eq!(
-            request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-tools"}})),
+            request_timeout(&json!({"method":"desktop.action","params":{"action":"setup-lcu"}})),
             Duration::from_secs(2100)
         );
         assert_eq!(

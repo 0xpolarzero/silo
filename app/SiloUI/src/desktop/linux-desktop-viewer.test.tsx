@@ -43,31 +43,10 @@ describe("desktop viewer lifecycle", () => {
     expect(onRetry).toHaveBeenCalledOnce()
     expect(onAction).not.toHaveBeenCalled()
   })
-  it.each(["missing", "failed"] as const)("offers repair in the existing header for confirmed %s tools", async ludaState => {
-    const user = userEvent.setup()
-    const { onAction } = viewer({ installed: true, autoStart: false, state: "running", ludaState })
-    expect(onAction).not.toHaveBeenCalled()
-    const header = within(screen.getByRole("banner"))
-    expect(header.getByRole("alert")).toHaveTextContent("Agent tools unavailable")
-    await user.click(header.getByRole("button", { name: "Repair agent tools" }))
-    expect(onAction).toHaveBeenCalledExactlyOnceWith("setup-tools")
-  })
-  it.each(["ready", undefined, null] as const)("has no setup banner or repair action for %s tools", ludaState => {
-    const { onAction } = viewer({ installed: true, autoStart: true, state: "running", ludaState })
-    expect(screen.queryByText(/Agent desktop tools ready|Set up Luda/)).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: /agent tools/ })).not.toBeInTheDocument()
+  it("ignores Luda fields still reported by an older guest", () => {
+    viewer({ installed: true, autoStart: true, state: "running", ludaState: "failed" } as never)
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-    expect(onAction).not.toHaveBeenCalled()
-  })
-  it("does not diagnose tools while the VM is stopped", () => {
-    viewer({ installed: true, autoStart: false, state: "vm-stopped", ludaState: "failed" })
-    expect(screen.queryByRole("button", { name: /agent tools/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-  })
-  it("shows installation progress without inviting another repair", () => {
-    viewer({ installed: true, autoStart: false, state: "running", ludaState: "installing" }, null, true)
-    expect(within(screen.getByRole("banner")).getByRole("status")).toHaveTextContent("Setting up agent tools")
-    expect(screen.queryByRole("button", { name: /agent tools/ })).not.toBeInTheDocument()
+    expect(screen.queryByText(/agent tools/i)).not.toBeInTheDocument()
   })
   it("closes the actions dropdown with Escape without changing the desktop", async () => {
     const user = userEvent.setup()
