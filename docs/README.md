@@ -52,6 +52,7 @@ above for current behavior and build commands.
 
 - [Checkpoint and desktop direction](research/checkpoints-desktop-direction-2026-09-24.md): newer MicroSandbox snapshot/fork support, the upstream-upgrade alternative, Btrfs limits, desktop candidate fit, LCU boundaries and qualification requirements.
 - [MicroSandbox live public ports](research/microsandbox-live-public-ports-0.7.2.md): pinned control and publisher source, Silo's loopback TCP contract, ingress and multi-tenant boundaries, and regression limits.
+- [MicroSandbox removing a sandbox that never started](research/microsandbox-remove-created-2026-10-01.md): upstream state of the `Created` removal refusal and an unpublished issue and pull request draft for the `remove-created` patch.
 
 ### Desktop and agent computer use
 

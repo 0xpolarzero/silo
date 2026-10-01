@@ -1,6 +1,6 @@
 # SiloUI runtime packaging
 
-Status: MicroSandbox 0.7.4 runtime inputs and eleven patches are pinned; the qualification evidence in this document was collected on the 0.7.2 runtime and has not been repeated on 0.7.4 (see [MicroSandbox 0.7.4 upgrade](#microsandbox-074-upgrade)). The optimized macOS qualification bundle passed disposable migration, checkpoint, fork, restore, restart, and authorized live GitHub policy checks. On Linux ARM64, the final AppImage passed native WebKit smoke, packaged-tool integrity, and dependency checks; the authentic predecessor passed migration, checkpoint/fork/restore, RAM/process replay, same-home lineage exports, cold-cache import/Start with the original source cache absent, relaunch persistence, and saved/native/physical capacity checks. These tests ran in an Ubuntu 24.04 ARM64 Lima guest with nested KVM on Apple Silicon, not bare-metal Linux ARM64. On Linux x86-64, the runtime-7 package passed authentic migration and the same-home export matrix; a separate production fresh-home import/Start passed with source cache paths absent. The x86 desktop package also passed unsaved Mousepad checkpoint/fork/source-restore and stale-X11 recovery. The positive live remote-viewer check passed on the final x86 AppImage SHA-256 `8079943262a6a70e007403aa3900d1fd857080d63a04ea8dc4fb700dc5c7d8b2`, controller executable SHA-256 `96ffb0bad56f0e655d2072a7d9ad7bf987c83961292b5c62d84f5d437d671465`. Pinned-key SSH authenticated and exited 0; the running remote viewer connected, while opening a stopped fork left it stopped. Evidence is in `app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/remote-final/`. The later user-authorized x86 runtime-8 AppImage passed payload, manifest, tool-version, protocol-probe, and dependency verification, as well as live port-control proof. Its package SHA-256 is `58a0516b396632390b9637966219ff732b577810fcf18483dcc9cbb1409d804a`; detailed hashes and evidence are in [Linux verification](SiloUI-LINUX-VERIFICATION.md). The native GTK destination chooser and source-only archive export passed; see [Linux verification](SiloUI-LINUX-VERIFICATION.md). Release signing and distribution are publication steps outside this implementation qualification.
+Status: MicroSandbox 0.7.4 runtime inputs and twelve patches are pinned; the qualification evidence in this document was collected on the 0.7.2 runtime and has not been repeated on 0.7.4 (see [MicroSandbox 0.7.4 upgrade](#microsandbox-074-upgrade)). The optimized macOS qualification bundle passed disposable migration, checkpoint, fork, restore, restart, and authorized live GitHub policy checks. On Linux ARM64, the final AppImage passed native WebKit smoke, packaged-tool integrity, and dependency checks; the authentic predecessor passed migration, checkpoint/fork/restore, RAM/process replay, same-home lineage exports, cold-cache import/Start with the original source cache absent, relaunch persistence, and saved/native/physical capacity checks. These tests ran in an Ubuntu 24.04 ARM64 Lima guest with nested KVM on Apple Silicon, not bare-metal Linux ARM64. On Linux x86-64, the runtime-7 package passed authentic migration and the same-home export matrix; a separate production fresh-home import/Start passed with source cache paths absent. The x86 desktop package also passed unsaved Mousepad checkpoint/fork/source-restore and stale-X11 recovery. The positive live remote-viewer check passed on the final x86 AppImage SHA-256 `8079943262a6a70e007403aa3900d1fd857080d63a04ea8dc4fb700dc5c7d8b2`, controller executable SHA-256 `96ffb0bad56f0e655d2072a7d9ad7bf987c83961292b5c62d84f5d437d671465`. Pinned-key SSH authenticated and exited 0; the running remote viewer connected, while opening a stopped fork left it stopped. Evidence is in `app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/remote-final/`. The later user-authorized x86 runtime-8 AppImage passed payload, manifest, tool-version, protocol-probe, and dependency verification, as well as live port-control proof. Its package SHA-256 is `58a0516b396632390b9637966219ff732b577810fcf18483dcc9cbb1409d804a`; detailed hashes and evidence are in [Linux verification](SiloUI-LINUX-VERIFICATION.md). The native GTK destination chooser and source-only archive export passed; see [Linux verification](SiloUI-LINUX-VERIFICATION.md). Release signing and distribution are publication steps outside this implementation qualification.
 
 ## Qualification evidence
 
@@ -30,7 +30,7 @@ Silo now pins the official [MicroSandbox v0.7.4 release](https://github.com/supe
 | `aarch64-unknown-linux-gnu` | `msb-linux-aarch64` `781984850e178801508f8ec1ca12b44703242bc30481945cd9b301b3010acd03` | `agentd-aarch64` `373ce4e86abc9695dbc1da272591f877eb9072e4f9be7fc747178e2b025da386` | `libkrunfw-linux-aarch64.so` `98d01137190de7022a3132c6f55c245ef43d02d67d5d7e697ee19c303fce8769` |
 | `x86_64-unknown-linux-gnu` | `msb-linux-x86_64` `b75244c1d0d24566009aa94d06f92b957cfd5affdf5550935dedc378cb0691e4` | `agentd-x86_64` `e0628a8ff7d00c1a349ee1002c8fec2e510ef118e9e1d4e08e0530e550be5d0c` | `libkrunfw-linux-x86_64.so` `ce9a749e8471e89aa5e2ad88de0c1581c3384c100bcb107a75bb12739a12d590` |
 
-The release listing publishes SHA-256 values for these assets; for 0.7.4 every `msb`, `agentd` and libkrunfw asset in the table was downloaded on 2026-09-30 and hashed locally, and each digest equals the published one. The `checksums.sha256` listing digest is `79e60a721c7348bf86a7ae0b12fa1b7db41e81dcf14823e21dee295c9f8906d8`. Silo applies eleven ordered patches, each pinned by SHA-256 in `app/SiloUI/runtime-inputs.json`. Preflight validates their exact names, order, path containment, and bytes. The build cache key includes all patch hashes. Earlier macOS and Linux qualification cited above used the 0.7.2 runtime; it qualifies neither 0.7.4 nor any rebased patch.
+The release listing publishes SHA-256 values for these assets; for 0.7.4 every `msb`, `agentd` and libkrunfw asset in the table was downloaded on 2026-09-30 and hashed locally, and each digest equals the published one. The `checksums.sha256` listing digest is `79e60a721c7348bf86a7ae0b12fa1b7db41e81dcf14823e21dee295c9f8906d8`. Silo applies twelve ordered patches, each pinned by SHA-256 in `app/SiloUI/runtime-inputs.json`. Preflight validates their exact names, order, path containment, and bytes. The build cache key includes all patch hashes. Earlier macOS and Linux qualification cited above used the 0.7.2 runtime; it qualifies neither 0.7.4 nor any rebased patch.
 
 Ordered source patch pins (all `-0.7.4.patch`; "Feature" is a Silo-specific capability, "Fix" corrects an upstream defect):
 
@@ -47,6 +47,7 @@ Ordered source patch pins (all `-0.7.4.patch`; "Feature" is a Silo-specific capa
 | `microsandbox-secret-values-stdin-0.7.4.patch` | `4411bec2dae797f3c85eaa389e20fcb45a4ffe0b525e719d238a9d9427892312` | Feature | `MSB_SECRET_VALUES_STDIN=1`: secret `env` sources resolve only from a bounded JSON document on stdin; `--silo-secret-values-protocol` probe. |
 | `microsandbox-import-stage-id-0.7.4.patch` | `ccbf71f5b718add94f7b0556b4224a540770484e08a0000e39a9ac25481dafe0` | Feature | `snapshot load --stage-id <32 hex>` so Silo can journal and clean exactly the staging paths of an interrupted import. |
 | `microsandbox-sftp-user-0.7.4.patch` | `812987f168198e5708b4b6bae1a30e20b65f7c652f4855db5e6e6959cb1e618d` | Fix | Nonroot SFTP sessions run through the guest `sftp-server` under the SSH user; upstream runs them as root (upstream issue 1623). |
+| `microsandbox-remove-created-0.7.4.patch` | `d42071128d10d80c1b950aefbc3c673d1d2bf0115ef7534a9075c50cce83c355` | Fix | `remove` also removes a sandbox whose status is `Created` (prepared, never started). Upstream's removal helper accepts only `Stopped` and `Crashed`, although the handle-level check and `destroy` already treat `Created` as removable; see [Removing a sandbox that never started](#removing-a-sandbox-that-never-started-2026-10-01). |
 
 The former ninth patch (`microsandbox-preserve-basic-auth`, an independent Basic Auth substitution policy plus `query_params` normalization) is dropped for 0.7.4; the rationale is in [MicroSandbox 0.7.4 upgrade](#microsandbox-074-upgrade). Its 2026-09-27 verification (isolated `adopt-disk` on a copied catalog preserving `headers=true`, `basic_auth=true`, `query=false`, `body=false`) applies to the 0.7.2 runtime only.
 
@@ -126,6 +127,7 @@ Silo moved from v0.7.2 (`60d4dc8a436fb9365491567ec21d073e924e3c6d`) to v0.7.4 (`
 
 - Imported image VMDK descriptors keep the exporting machine's absolute cache paths. Reproduced without a VM: the patch's `imported_image_vmdk_uses_destination_cache_after_source_is_removed` test fails on unpatched v0.7.4 (`cold: VMDK does not point to imported extent`) and passes with `portable-image-cache`.
 - SFTP through `msb ssh serve` acts as root for nonroot users. Upstream issue 1623 (open) reports it; Silo observed it live on Linux; the code path is `sdk/rust/lib/sandbox/ssh.rs:1636-1690` plus the root agent filesystem handler. Not reproduced in this change because it needs a running guest.
+- `msb remove` refuses a sandbox whose status is `Created` (never started), with or without `--force`. Reproduced with the unpatched build of the eleven-patch tree (see [Removing a sandbox that never started](#removing-a-sandbox-that-never-started-2026-10-01)); fixed by `remove-created`.
 
 Not defects: legacy Basic Auth widening (deliberate, tested upstream) and the omitted restored root capacity (default-size metadata that Silo's export check needs; the disk itself is not shrunk).
 
@@ -151,6 +153,134 @@ Decisions. The profile and every sandbox Silo creates use `true`, set explicitly
 - Silo: `test:release`, preflight, typecheck, lint, the full Vitest run, the Python script suite and the full native suite (`--test-threads=1`, synthetic GitHub configuration) pass. `src-tauri/Cargo.toml` and `Cargo.lock` now pin `microsandbox-image` and `microsandbox-utils` at the new commit.
 - Pins updated from the release without a Linux build: the Linux `msb`, both `agentd` and the libkrunfw digests (all downloaded and hashed). The Linux patched CLI is not built or verified here; it needs the `linux-packaging` workflow. No 0.7.4 VM, migration or installed-app qualification was run on any platform.
 - Risks to check before a release: (1) upgrading an existing catalog applies upstream's `m20260922_000001_migrate_secret_config`, which rewrites saved secret configurations and refuses to roll back global passthrough defaults (not exercised against a real Silo catalog here); (2) exports made by a Silo bundling 0.7.2 are accepted (`EARLIER_IMPORTABLE_RUNTIME_VERSIONS` lists `0.7.2`; the 0.7.4 runtime loaded and verified a 0.7.2 export, both using `msb-snapshot-tar-zstd-v0.7`); (3) all lifecycle, checkpoint, restore, SSH and public-port behaviour rebuilt on the new builder is covered by unit tests only.
+
+### Removing a sandbox that never started (2026-10-01)
+
+Silo creates every sandbox with `msb create ... --no-start` (`create-stopped`), so a new
+sandbox has runtime status `Created` until its first boot. Unpatched MicroSandbox 0.7.4
+could not remove one: `msb remove <name>` exits 1 with `error: sandbox still running:
+cannot remove sandbox "<name>": status is Created`; `--force` fails the same way and
+`msb stop` leaves the status at `Created`. Silo's delete (`preflight_removal` and
+`remove_machine_runtime` in `runtime.rs`) treats `Created` as stopped and runs `msb remove
+--quiet <name>`, so deleting any never-started sandbox failed. The cause is
+`remove_local_persisted_sandbox` (`sdk/rust/lib/sandbox/mod.rs`, v0.7.4 lines 1739 and
+1783): both its status check and the recheck under the lifecycle locks accept only
+`Stopped | Crashed`, while `SandboxHandle::remove`, which calls it, rejects only
+`Starting`, `Running`, `Draining` and `Paused`, and `destroy` already skips its stop step
+for `Created`. Upstream's own local create never writes `Created` (its entity calls it
+"Cloud-only today"), so the gap is invisible upstream.
+
+**Upstream (checked 2026-10-01).** v0.7.5 (2026-09-30) and `main` (`09df3d4b`, the 0.7.6
+version bump) still read `Stopped | Crashed` in both places, and no issue or pull request
+covers it. Moving the runtime pin is not part of this change: the pin is deliberate, and
+0.7.5 does not contain a fix anyway. The issue and pull request text is drafted, unpublished,
+in [the research note](research/microsandbox-remove-created-2026-10-01.md).
+
+**Patch.** A new `microsandbox-remove-created-0.7.4.patch`, applied last (kind Fix), instead
+of an extension of `create-stopped`. It changes one file, `sdk/rust/lib/sandbox/mod.rs`, and
+does not depend on any other patch: it applies to unpatched v0.7.4 and to the twelve-patch
+tree, and its tests pass on both. That keeps it a small, separately reviewable change that can be
+sent upstream on its own, and a future change to either patch does not disturb the other's
+pin. It adds `sandbox_status_allows_removal` (`Created`, `Stopped` or `Crashed`) and uses it for
+both status checks. Everything else in `remove_local_persisted_sandbox` is unchanged: the
+transition guard, the snapshot-lineage guard, the exact-identity check (`SandboxReplaced`), the
+lifecycle-lock recheck, and the refusal of `Starting`, `Running`, `Draining` and `Paused`. A
+`Created` sandbox has no run record, runtime process or socket, so there is nothing to tear down
+beyond what removing a `Stopped` one already does (socket artifacts, `sandboxes/<name>`, and the
+catalog row with its cascading rows). A concurrent first start of the same sandbox is excluded
+by the same transition guard and lifecycle lock that `start` takes before it moves `Created` to
+`Starting`; a create in flight holds both until it returns. No CLI flag or protocol probe is
+added (a behaviour change has no flag to probe); the pinned patch hash in the manifest is the
+evidence that a runtime has the change.
+
+Tests inside the patch, next to the existing `persisted_removal_*` tests:
+`persisted_removal_removes_a_sandbox_that_never_started` (a `Created`, a `Stopped` and a
+`Crashed` sandbox, each with a private directory and a label row: directory, sandbox row and
+label rows are gone) and `persisted_removal_still_refuses_a_sandbox_that_may_own_a_runtime`
+(`Starting`, `Running`, `Draining` and `Paused` are refused with `SandboxStillRunning`, and
+their directory and row stay). The first fails without the change with `SandboxStillRunning("cannot
+remove sandbox \"never-started\": status is Created")` and passes with it.
+
+**Which Silo flows leave `Created`.** Found by reading `runtime.rs`, `runtime/checkpoints.rs`,
+`backup.rs` and the pinned start and restore source; not every path was run, because the
+runtime cannot boot a guest here.
+
+- Creating a sandbox. `create_machine_with_progress` runs the only production `msb create`, with
+  `--no-start`. The sandbox stays `Created` until `verify_guest_tools` boots it once through
+  `msb exec`, and Silo accepts `Created` or `Stopped` after that check. A failure before the
+  first boot completes (the create itself, the status check, a first boot that fails its start
+  validation) calls `cleanup_failed_create`, whose `msb remove --force --quiet` failed for a
+  `Created` sandbox: the runtime record kept the name, and the managed workspace disk stayed too,
+  because it is removed only after the runtime removal succeeds. A start that fails after it
+  claims `Starting` ends `Stopped` instead (`start_sandbox`).
+- Deleting. Whatever is `Created` when the user deletes it (the same leftovers, and records
+  copied by the migration, which accepts `Created`) failed to delete.
+- Interrupted imports by a released Silo (0.9.0 and earlier). They leave the sandbox `Created`
+  over a partial disk; this is the orphan that `discard_released_import` removes.
+- Not these: fork, restore and import with the current code keep a pending-restore record
+  without any runtime sandbox until Start, and Start runs `msb restore`, which inserts `Starting`
+  (`rollback_failed_startup` ends it `Stopped`, or removes the record). Checkpoints
+  (`snapshot create`) do not change a sandbox's status.
+
+**Silo side.** `discard_released_import` no longer has a `Created` special case: it removes the
+sandbox through `cleanup_failed_create` and then the disk folder, and an interrupted import
+reports "No sandbox was added. Import the file again." The "removed its disk but not its sandbox
+record ... the name stays taken ... import under another name" wording and its test are
+replaced by `recovery_removes_a_released_import_whose_sandbox_never_started`; the migration
+fixture (`runtime_migration/interrupted_tests.rs`) now models the runtime that removes a `Created`
+sandbox, and its two released-import shapes expect the same result as a stopped one. New in `runtime.rs`: `deleting_a_sandbox_that_never_started_removes_it_from_the_runtime_and_its_disk`
+runs the real delete path (`apply_whole_configuration`) against a fake runtime that removes
+`Created`, `Stopped` and `Crashed` sandboxes and refuses the rest, and checks that `msb remove
+--quiet <name>` is issued, the record and disk go, and a running sandbox is refused by Silo before
+`remove` is issued.
+
+**Verification (macOS ARM64, Rust 1.94.0, no VM, throwaway `MSB_HOME`s under `/tmp`).**
+
+- `npm --prefix app/SiloUI run runtime:prepare` rebuilt the twelve-patch CLI in 5m56s. Packaged
+  `msb` SHA-256 `34eb037978dd86d113564b32bb29c81babb6ac58777cbbfcfb0eb19dee6a7d8c`;
+  `--version` prints `msb 0.7.4`; all six Silo protocol probes print `1`; `--no-start`,
+  `--progress-json`, `--mount-owned`, `snapshot load --stage-id`, the managed SSH flags, snapshot
+  creation and forked-restore flags are present; the staged manifest lists the twelve patch hashes,
+  the last being `d42071128d10d80c1b950aefbc3c673d1d2bf0115ef7534a9075c50cce83c355`.
+- Reproduction with a control build (the eleven-patch tree without this patch, `cargo build
+  --release`, SHA-256 `b7dfdcf9d7071eb6683cc7f302b1097bf9fbc8e506ef178b4cde52b3e58f22b7`): `msb create
+  <empty rootfs> --name e2e-created --no-start` gives status `Created`; `msb remove e2e-created`
+  exits 1 with the message above, `remove --force --quiet` exits 1, `msb stop` leaves `Created`, and
+  creating the name again fails with "already exists".
+- The same script against the packaged `msb`: `remove` exits 0 (`Removed e2e-created`), so does
+  `remove --force --quiet`, `msb list` is empty, the name can be created and removed again, and
+  the only database rows left are msb's own maintenance lease.
+- Parity with `Stopped`: two sandboxes with a 1 GiB owned workspace disk, one left `Created`, one
+  set to `Stopped` in the catalog (a VM cannot boot here). Each removal deleted exactly its
+  `sandboxes/<name>/owned-volumes/work_*/disk.raw` and its `sandbox` and `sandbox_labels` rows, and
+  left the same lock files; the home was then equal to an empty one apart from msb's own lock and
+  database files.
+- Refusal: a catalog row `Running` with a run record naming a live process (this script's own
+  `sleep`; reconciliation keeps a Running row whose recorded pid is alive). `msb remove` exits 1
+  with `sandbox still running: cannot remove sandbox 'e2e-live': still running`, as it does for
+  `Starting`, `Draining` and `Paused`; the sandbox directory, sandbox row and run row stay. After
+  the process ended, the row reconciled to `Crashed` and `remove` succeeded.
+- `cargo +1.94.0 test --locked -p microsandbox --lib persisted_removal` on the twelve-patch tree and,
+  separately, on pristine v0.7.4 with only this patch: 5 passed each. With the helper reverted to
+  `Stopped | Crashed` the new acceptance test fails with the error above. The full SDK library
+  suite on the twelve-patch tree (`cargo test --locked -p microsandbox --lib`, 275 s) passed 1148
+  tests with 14 ignored and none failing. The patch is `rustfmt` clean (`cargo fmt --all
+  --check` on the pristine tree with the patch). Clippy with `-D warnings` on that tree reports
+  pre-existing diagnostics under Rust 1.94.0 (11 in the library tests, one in each of two
+  integration tests), none in `sandbox/mod.rs`.
+- Silo: the full native suite (`cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked`,
+  synthetic GitHub configuration, default threads) passed 1141 tests with 15 ignored in 71.5 s;
+  `cargo +1.94.0 fmt --check` is clean; `npm --prefix app/SiloUI run test:release` ran 71 tests
+  (65 passed, 6 skipped, none failed; also under Node 24.11.1), the runtime Vitest file passed 13,
+  and the Python release-cache and toolchain tests passed 5. These use fixtures and fake runners,
+  not the rebuilt runtime. The packaged app (`desktop:build`) was not built.
+
+**Not verified.** No VM was booted, so a running sandbox was not refused by a real runtime (the
+refusal above uses a live process as the runtime stand-in). The Linux CLI was not built; the patch
+is plain Rust and applies to the same source, but the `linux-packaging` workflow has not run it.
+The packaged app, a real interrupted import over a migrated home, and the delete of a sandbox
+whose creation failed were not exercised live. A remote computer that runs an older Silo, whose
+bundled `msb` lacks this patch, still cannot delete a never-started sandbox.
 
 ## Pinned Git distribution
 
@@ -488,13 +618,13 @@ two steps, and the first never writes to the previous generation:
    the folder only when its marker holds the journaled identity (an empty folder, or
    one with another owner, is left as it is, and a saved sandbox with the name keeps it)
    and the runtime's sandbox only when it is Silo's own with that identity
-   (`runtime::cleanup_failed_create`). A released import leaves its sandbox `Created`,
-   which MicroSandbox 0.7.4 refuses to remove: `msb remove` fails with "status is
-   Created" (checked with the bundled 0.7.4, with and without `--force`, on a sandbox it
-   created itself too), and starting it would run guest code over a partial disk. The
-   disk, which holds the space, is removed, the sandbox record stays, and the result
-   says its name stays taken and to import under another name. A sandbox that is
-   `Stopped` (or `Crashed`, by MicroSandbox's rule) is removed whole, with the disk.
+   (`runtime::cleanup_failed_create`). A released import leaves its sandbox `Created`.
+   Unpatched MicroSandbox 0.7.4 refuses to remove such a sandbox (`msb remove` fails
+   with "status is Created", with and without `--force`), and starting it to change
+   that would run guest code over a partial disk. The bundled runtime's
+   `remove-created` patch (see [Removing a sandbox that never started](#removing-a-sandbox-that-never-started-2026-10-01))
+   removes it like a `Stopped` or `Crashed` one, without running anything, so the
+   sandbox and its disk are removed whole and the name is free again.
 
    An earlier version of this change reported "Silo did not clean up the data it had
    started" and gave the cleanup up. That result no longer exists: no journal is
@@ -565,9 +695,10 @@ created with `msb create` over `volumes/copy` with its marker), and the pending 
 a released Silo writes. Each run converted the sandbox ("Sandbox 1 of 1 converted and
 verified", `complete`) and left all 20 entries of the previous generation byte-identical
 (a manifest of every entry, size and SHA-256 before and after). With the sandbox
-`Created`, as the released import leaves it, the next launch removed `volumes/copy`
-from the converted generation, kept the sandbox record the runtime cannot remove, and
-recorded the "name stays taken" result. With the record `Stopped` (set in the fixture's
+`Created`, as the released import leaves it, the next launch (before the `remove-created`
+patch existed) removed `volumes/copy` from the converted generation, kept the sandbox
+record the runtime could not remove, and recorded a "name stays taken" result; that
+result no longer exists, and this run was not repeated with the patched runtime. With the record `Stopped` (set in the fixture's
 database before the run), the next launch removed the record, its sandbox directory and
 the disk from the converted generation, and recorded "Import interrupted. No sandbox
 was added. Import the file again." although the record named the previous generation's
@@ -582,14 +713,14 @@ MicroSandbox's source, its snapshot index stores each member's absolute path, so
 index of a copied home still names the previous generation's artifacts; Silo's cleanup
 selects by group and member, which MicroSandbox resolves under its current home, but
 that was not exercised live. A first run, before a sandbox's state was considered,
-showed that `msb remove` refuses a `Created` sandbox: the recovery failed and kept its
-journal, which led to the handling above. At the time of this check the export and
-import page treated every result already present when it opens as stale and did not
-toast it, and the pre-upgrade backup screen comes first after a migration, so the user
-would not have seen any of these results; item 4 above is the change that shows them.
-What the user sees (the screen and the notification) is covered by component tests and
-fixtures only, not by a live run. This is not a qualification of the migration or of the
-packaged app.
+showed that unpatched `msb remove` refuses a `Created` sandbox: the recovery failed and
+kept its journal, which first led to a special case that kept the record (replaced by
+the `remove-created` patch). At the time of this check the export and import page
+treated every result already present when it opens as stale and did not toast it, and
+the pre-upgrade backup screen comes first after a migration, so the user would not have
+seen any of these results; item 4 above is the change that shows them. What the user
+sees (the screen and the notification) is covered by component tests and fixtures only,
+not by a live run. This is not a qualification of the migration or of the packaged app.
 
 Outside the app's reach: an editor's saved SSH `ProxyCommand` runs `msb ssh
 serve` with the home it was written for (the migration copied those entries

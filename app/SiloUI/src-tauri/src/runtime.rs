@@ -10534,6 +10534,124 @@ exit 9
         assert!(unavailable_runtime.calls.lock().unwrap().is_empty());
     }
 
+    /// The runtime's sandbox `dev` as the bundled `msb` treats it: `inspect` reports its
+    /// status, and `remove` accepts one that is `Created` (never started), `Stopped` or
+    /// `Crashed` and refuses any other with the runtime's own error. Every call is recorded.
+    struct RemovalRuntime {
+        status: &'static str,
+        paths: RuntimePaths,
+        removed: Mutex<bool>,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl RuntimeRunner for RemovalRuntime {
+        fn run(
+            &self,
+            _paths: &RuntimePaths,
+            args: &[String],
+            _timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(args.join(" "));
+            let stdout = match args
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                ["inspect", "dev", "--format", "json"] => {
+                    inspect(&self.paths, self.status).to_string()
+                }
+                ["remove", "--quiet", "dev"] => {
+                    if !matches!(self.status, "Created" | "Stopped" | "Crashed") {
+                        return Err(RuntimeError::Failed {
+                            operation: "Removing the sandbox".into(),
+                            exit_code: Some(1),
+                            detail: format!(
+                                "sandbox still running: cannot remove sandbox \"dev\": status is {}",
+                                self.status
+                            ),
+                        });
+                    }
+                    *self.removed.lock().unwrap() = true;
+                    String::new()
+                }
+                ["snapshot", "list", "--format", "json"] | ["list", "--format", "json"] => {
+                    "[]".into()
+                }
+                other => panic!("unexpected runtime command: {other:?}"),
+            };
+            Ok(CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn deleting_a_sandbox_that_never_started_removes_it_from_the_runtime_and_its_disk() {
+        let _test_state = crate::test_support::global_state();
+        // A sandbox whose first start never happened is `Created`: a setup that failed before
+        // its first boot, a fork or restore not yet started, an interrupted import's orphan.
+        // Silo treats it as stopped, and the runtime now removes it the same way.
+        for status in ["Created", "Stopped", "Crashed"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            let disk = disk_path(&paths, "dev", "workspace");
+            fs::create_dir_all(disk.parent().unwrap()).unwrap();
+            fs::write(&disk, b"workspace-data").unwrap();
+            let runner = RemovalRuntime {
+                status,
+                paths: paths.clone(),
+                removed: Mutex::new(false),
+                calls: Mutex::new(Vec::new()),
+            };
+
+            apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]))
+                .unwrap_or_else(|error| panic!("{status}: {error}"));
+
+            let calls = runner.calls.lock().unwrap().clone();
+            assert!(
+                calls.iter().any(|call| call == "remove --quiet dev"),
+                "{status}: {calls:?}"
+            );
+            assert!(*runner.removed.lock().unwrap(), "{status}");
+            assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+            assert!(!disk.exists(), "{status}: the disk goes with the sandbox");
+        }
+    }
+
+    #[test]
+    fn deleting_a_sandbox_the_runtime_would_refuse_to_remove_keeps_everything() {
+        let _test_state = crate::test_support::global_state();
+        for status in ["Running", "Starting", "Draining", "Paused"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            let disk = disk_path(&paths, "dev", "workspace");
+            fs::create_dir_all(disk.parent().unwrap()).unwrap();
+            fs::write(&disk, b"workspace-data").unwrap();
+            let runner = RemovalRuntime {
+                status,
+                paths: paths.clone(),
+                removed: Mutex::new(false),
+                calls: Mutex::new(Vec::new()),
+            };
+
+            let error = remove_machine(&runner, &paths, &vm()).unwrap_err();
+
+            // Silo refuses first, so `remove` is never issued for a sandbox that may run.
+            assert!(error.to_string().contains("Stop sandbox 'dev'"), "{status}");
+            assert_eq!(
+                *runner.calls.lock().unwrap(),
+                ["inspect dev --format json"],
+                "{status}"
+            );
+            assert!(!*runner.removed.lock().unwrap(), "{status}");
+            assert_eq!(fs::read(&disk).unwrap(), b"workspace-data", "{status}");
+        }
+    }
+
     #[test]
     fn adding_or_removing_a_vm_does_not_recheck_or_report_unchanged_vms() {
         let _test_state = crate::test_support::global_state();
