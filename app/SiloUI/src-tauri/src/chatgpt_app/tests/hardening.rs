@@ -585,7 +585,10 @@ fn a_tree_published_at_the_old_location_moves_and_is_still_verified() {
     // Recreate the old layout: tree directly under the root, no published folder.
     fs::rename(&path, base.join("1.2.3-arm64")).unwrap();
     fs::remove_dir(base.join("published")).unwrap();
-    assert!(!verified(&dir, &lock), "nothing is published before the move");
+    assert!(
+        !verified(&dir, &lock),
+        "nothing is published before the move"
+    );
     let mounted = ensure_published_dir(&base).unwrap();
     assert!(!base.join("1.2.3-arm64").exists());
     assert!(mounted.join("1.2.3-arm64/ChatGPT").is_file());

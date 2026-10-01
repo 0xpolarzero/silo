@@ -5333,6 +5333,43 @@ pub(crate) fn create_disposable_test_machine(
     Ok(machine)
 }
 
+/// Like `create_disposable_test_machine` with sizes a desktop needs. The configuration
+/// is applied as the app does: a v4 image makes the new VM's desktop built in.
+#[cfg(test)]
+pub(crate) fn create_disposable_desktop_machine(
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<MachineConfiguration, RuntimeError> {
+    let machine = MachineConfiguration::Vm {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: name.into(),
+        cpus: 2,
+        max_cpus: 2,
+        memory_gib: 4,
+        max_memory_gib: 4,
+        workspace_storage_gib: 2,
+        runtime_storage_gib: 6,
+        desktop: None,
+    };
+    let mut request = read_metadata(&paths.metadata)?;
+    request.machines.push(machine);
+    apply_whole_configuration(&ProcessRunner, paths, &host_resources()?, request)?;
+    read_metadata(&paths.metadata)?
+        .machines
+        .into_iter()
+        .find(|machine| machine.name() == name)
+        .ok_or_else(|| RuntimeError::Invalid("The disposable sandbox was not saved.".into()))
+}
+
+/// The app's explicit Start for a disposable sandbox (boot hooks included).
+#[cfg(test)]
+pub(crate) fn start_disposable_test_machine(
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<(), RuntimeError> {
+    workspace_action_with(&ProcessRunner, paths, &host_resources()?, "start", name)
+}
+
 /// Exercise the same explicit Start path as the app for an imported sandbox.
 /// Live regressions supply disposable runtime paths; no app data is resolved here.
 #[cfg(test)]

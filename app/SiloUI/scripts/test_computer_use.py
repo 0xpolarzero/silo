@@ -54,8 +54,9 @@ class Guest(unittest.TestCase):
         self.commands = []
         self.lcu_status = {'lcu_version': '0.8.0', 'setup': {'approval': 'ask'},
                            'compatibility': {'status': 'tested', 'warning': None},
-                           'app': {'version': '26.928.31416', 'runtime': '0.0.27/20260927214556-b77d38801cca'},
-                           'agents': [{'agent': 'claude-code'}, {'agent': 'codex'}]}
+                           'app': {'path': str(self.mount / APP_DIR), 'version': '26.928.31416',
+                                   'runtime': '0.0.27/20260927214556-b77d38801cca'}}
+        self.setup_output = 'Claude Code: MCP registered.\nCodex: MCP registered.\nCodex: hooks registered.\n'
         self.failures = {}
         self.session = True
         self.installed = False
@@ -99,11 +100,11 @@ class Guest(unittest.TestCase):
         pinned['lcu'].update(lcu)
         (self.state / 'pinned.json').write_text(json.dumps(pinned))
 
-    def fake_run(self, argv, *, user=False, timeout=900, check=True, cwd=None, extra_env=None):
+    def fake_run(self, argv, *, user=False, timeout=900, check=True, cwd=None, extra_env=None, quiet=False):
         self.commands.append((list(argv), bool(user), cwd))
         name = Path(argv[0]).name
         if name == 'tar':
-            return REAL_RUN(argv, timeout=timeout, check=check)
+            return REAL_RUN(argv, timeout=timeout, check=check, quiet=quiet)
         key = ' '.join(argv[1:3]) if name == 'lcu' else name
         failure = self.failures.get(name) or self.failures.get(key)
         if failure:
@@ -118,6 +119,8 @@ class Guest(unittest.TestCase):
             if not self.installed:
                 return subprocess.CompletedProcess(argv, 1, stdout='', stderr='')
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(self.lcu_status), stderr='')
+        if name == 'lcu' and argv[1:2] == ['setup']:
+            return subprocess.CompletedProcess(argv, 0, stdout=self.setup_output, stderr='')
         if name == 'curl':
             Path(argv[argv.index('--output') + 1]).write_bytes(self.served.read_bytes())
         return subprocess.CompletedProcess(argv, 0, stdout='', stderr='')
@@ -216,6 +219,8 @@ class Sync(Guest):
                                         '--approval', 'ask'])
         self.assertTrue(setup[1], 'setup runs as the working account')
         doctor = self.lcu_commands()[-1]
+        self.assertTrue([user for argv, user, _ in self.commands if argv == doctor][0],
+                        'the session launcher runs as the desktop account')
         self.assertEqual(doctor[1:], ['--user', 'silo', '--', str(cu.PREFIX / 'current/bin/lcu'),
                                       'doctor', '--non-interactive', '--require-ready'])
         receipt = self.receipt()
@@ -255,6 +260,21 @@ class Sync(Guest):
         cu.sync(force=True)
         self.assertTrue(any(argv[1:2] == ['setup'] for argv, *_ in self.commands))
         self.assertFalse(any(argv[0].endswith('install.sh') for argv, *_ in self.commands))
+
+    def test_agents_are_the_ones_setup_confirmed(self):
+        self.assertEqual(cu.registered_agents(self.setup_output), ['claude-code', 'codex'])
+        self.assertEqual(cu.registered_agents('Pi: extension registered.\nOh My Pi: plugin registered.\n'),
+                         ['oh-my-pi', 'pi'])
+        self.assertEqual(cu.registered_agents('Codex: MCP failed: boom\nNo agents detected\n'), [])
+        self.setup_output = ''
+        self.assertEqual(cu.sync()['agents'], [])
+
+    def test_lcu_installed_for_another_app_folder_is_installed_again(self):
+        cu.sync()
+        self.lcu_status['app']['path'] = '/somewhere/else'
+        self.commands.clear()
+        cu.sync(force=True)
+        self.assertTrue(any(argv[0].endswith('install.sh') for argv, *_ in self.commands))
 
     def test_a_new_app_folder_installs_again_against_it(self):
         cu.sync()
@@ -344,9 +364,9 @@ class Sync(Guest):
         report = cu.digest(self.lcu_status)
         self.assertEqual(report['compatibility'], 'tested')
         self.assertEqual(report['appVersion'], '26.928.31416')
-        self.assertEqual(report['agents'], ['claude-code', 'codex'])
+        self.assertNotIn('agents', report)
         empty = cu.digest(None)
-        self.assertEqual((empty['compatibility'], empty['agents']), ('unknown', []))
+        self.assertEqual(empty['compatibility'], 'unknown')
         hostile = cu.digest({'compatibility': {'status': 'x', 'warning': 'a\x1b[31m' + 'b' * 999},
                              'app': {'version': '$(id)'}})
         self.assertEqual(hostile['compatibility'], 'unknown')

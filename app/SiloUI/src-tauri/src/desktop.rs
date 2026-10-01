@@ -285,6 +285,15 @@ fn machine(
     Ok((paths, machine))
 }
 
+/// The desktop state a live regression polls (production code path, real runtime).
+#[cfg(test)]
+pub(crate) fn test_status(
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+) -> Result<Value, String> {
+    status_with(&runtime::ProcessRunner, paths, machine)
+}
+
 fn status_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,

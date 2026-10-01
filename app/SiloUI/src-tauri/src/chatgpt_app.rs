@@ -1722,6 +1722,11 @@ fn open_storage(root: &Path, create: bool) -> std::io::Result<(Dir, Dir)> {
         root_dir.sync()?;
     }
     if create {
+        // The guest's working account must be able to enter the mounted folder. It holds
+        // only verified, read-only trees and nothing private (records live outside).
+        if published.stat_self()?.st_mode & 0o7777 != 0o755 {
+            published.chmod(0o755)?;
+        }
         migrate_legacy_trees(root, &root_dir, &published);
     }
     Ok((root_dir, published))

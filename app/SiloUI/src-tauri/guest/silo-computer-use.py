@@ -230,8 +230,8 @@ def status(pinned=None, receipt=None):
     return result
 
 
-def run(argv, *, user=False, timeout=900, check=True, cwd=None, extra_env=None):
-    """Runs a command with no stdin, appending its output to the log."""
+def run(argv, *, user=False, timeout=900, check=True, cwd=None, extra_env=None, quiet=False):
+    """Runs a command with no stdin, appending its output to the log (except a listing)."""
     if user:
         argv = ['runuser', '-u', USER, '--', 'env', f'HOME={HOME}', f'USER={USER}',
                 f'LOGNAME={USER}', *argv]
@@ -245,7 +245,7 @@ def run(argv, *, user=False, timeout=900, check=True, cwd=None, extra_env=None):
     except subprocess.TimeoutExpired:
         log(f'$ {" ".join(argv)}\ntimed out after {timeout}s')
         raise Failure('timed-out', ' '.join(argv[:3])) from None
-    log(f'$ {" ".join(argv)}\n{result.stdout[-4000:]}exit {result.returncode}')
+    log(f'$ {" ".join(argv)}\n{"" if quiet else result.stdout[-4000:]}exit {result.returncode}')
     if check and result.returncode != 0:
         raise Failure('command-failed', f'{argv[0]} exited {result.returncode}')
     return result
@@ -284,7 +284,7 @@ def member_is_safe(name):
 
 
 def extract(archive, stage, root_name):
-    listing = run(['tar', '-tzf', str(archive)], timeout=300).stdout.splitlines()
+    listing = run(['tar', '-tzf', str(archive)], timeout=300, quiet=True).stdout.splitlines()
     if not listing or any(not member_is_safe(line) or line.split('/')[0] != root_name for line in listing):
         raise Failure('lcu-archive-invalid')
     run(['tar', '-xzf', str(archive), '-C', str(stage), '--no-same-owner'], timeout=600)
@@ -323,8 +323,22 @@ def install(pinned, stage):
 
 
 def setup(approval):
-    run([lcu_command('lcu'), 'setup', '--agent', 'auto', '--session', 'direct', '--yes',
-         '--approval', approval], user=True, timeout=600)
+    """Registers LCU with the agents found for the working account; returns their names."""
+    result = run([lcu_command('lcu'), 'setup', '--agent', 'auto', '--session', 'direct', '--yes',
+                  '--approval', approval], user=True, timeout=600)
+    return registered_agents(result.stdout)
+
+
+def registered_agents(output):
+    """Agents whose registration `lcu setup` confirmed (`Codex: MCP registered.`)."""
+    names = []
+    for line in (output or '').splitlines():
+        match = re.fullmatch(r'([A-Z][A-Za-z ]{1,24}): [A-Za-z ]{2,24} registered\.', line.strip())
+        if match:
+            name = re.sub(r'[^a-z0-9]+', '-', match.group(1).lower()).strip('-')
+            if name not in names:
+                names.append(name)
+    return sorted(names)
 
 
 def session_running():
@@ -344,8 +358,10 @@ def doctor(wait):
         if time.monotonic() >= deadline:
             raise Failure('desktop-session-not-running')
         time.sleep(2)
+    # The launcher must run as the desktop account itself.
     result = run([lcu_command('lcu-session'), '--user', USER, '--', lcu_command('lcu'),
-                  'doctor', '--non-interactive', '--require-ready'], timeout=300, check=False)
+                  'doctor', '--non-interactive', '--require-ready'], user=True, timeout=300,
+                 check=False)
     return result.returncode == 0
 
 
@@ -354,21 +370,11 @@ def digest(report):
     report = report or {}
     compat = report.get('compatibility') if isinstance(report.get('compatibility'), dict) else {}
     app = report.get('app') if isinstance(report.get('app'), dict) else {}
-    agents = report.get('agents')
-    if not isinstance(agents, list):
-        setup_info = report.get('setup') if isinstance(report.get('setup'), dict) else {}
-        agents = setup_info.get('agents') if isinstance(setup_info.get('agents'), list) else []
-    names = []
-    for agent in agents:
-        name = agent.get('agent') or agent.get('name') if isinstance(agent, dict) else agent
-        if isinstance(name, str) and name not in names:
-            names.append(name)
     return {
         'compatibility': compat.get('status') if compat.get('status') in COMPATIBILITY else 'unknown',
         'warning': clean_text(compat.get('warning')),
         'appVersion': clean(app.get('version')),
         'runtimeVersion': clean_text(app.get('runtime'), 64),
-        'agents': names,
     }
 
 
@@ -408,6 +414,18 @@ def sync(force=False, boot=False, approval=None):
     return status(pinned)
 
 
+def installed_for(report, pinned):
+    """Whether `lcu status --json` shows the pinned LCU installed against the pinned app folder."""
+    if not report or report.get('lcu_version') != pinned['lcu']['version']:
+        return False
+    app = report.get('app') if isinstance(report.get('app'), dict) else {}
+    # LCU links the app in place: its release folder's `app` resolves to the mounted folder.
+    try:
+        return os.path.realpath(app['path']) == os.path.realpath(app_folder(pinned))
+    except (KeyError, TypeError, OSError):
+        return False
+
+
 def update(pinned, mode, force, boot):
     existing = read_json(RECEIPT)
     if (not force and existing and existing.get('state') == 'ready'
@@ -417,14 +435,13 @@ def update(pinned, mode, force, boot):
     try:
         STAGE.mkdir(mode=0o700, parents=True, exist_ok=True)
         installed = lcu_status() if Path(lcu_command('lcu')).exists() else None
-        current = (existing or {}).get('appDir') == pinned['app']['dir']
-        if not (installed and installed.get('lcu_version') == pinned['lcu']['version'] and current):
+        if not installed_for(installed, pinned):
             install(pinned, STAGE)
-        setup(mode)
+        agents = setup(mode)
         report = digest(lcu_status())
         if not doctor(SESSION_WAIT_BOOT if boot else SESSION_WAIT):
             raise Failure('doctor-failed')
-        write_receipt(pinned, mode, 'ready', readiness='ready', **report)
+        write_receipt(pinned, mode, 'ready', readiness='ready', agents=agents, **report)
     except Failure as failure:
         log(f'computer use setup failed: {failure.reason}: {failure}')
         write_receipt(pinned, mode, 'failed', failure.reason, readiness='failed')

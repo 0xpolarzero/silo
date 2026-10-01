@@ -4411,6 +4411,259 @@ mod tests {
         );
         eprintln!("Verified checkpoint export/import preserves checkpoint-time disk content.");
     }
+
+    /// Built-in computer use against the real runtime: a new VM from the v4 image gets
+    /// the read-only ChatGPT folder and sets itself up (LCU installed in place, setup,
+    /// doctor), the approval switch applies, and an export imported into a cold home
+    /// gets the mount again and sets itself up again. Needs the v4 image artifacts
+    /// (`SILO_TEST_GUEST_IMAGE`: a directory with manifest.json and image.tar.gz),
+    /// a published ChatGPT folder (`SILO_TEST_PUBLISHED`, canonical), a signed msb
+    /// (`SILO_TEST_MSB`, `SILO_TEST_LIBKRUNFW`) and `SILO_LIVE_TEST_CONFIRM`.
+    /// Uses only disposable /tmp homes and `e2e-*` sandboxes.
+    #[test]
+    #[ignore = "requires the v4 guest image, a published ChatGPT app and hardware virtualization"]
+    fn live_built_in_computer_use_sets_up_and_survives_export_and_import() {
+        crate::test_support::live::require_confirmation();
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::Builder::new()
+            .prefix("silo-cu-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let guest_image = PathBuf::from(std::env::var("SILO_TEST_GUEST_IMAGE").unwrap());
+        // The app's own preparation of the shared folder (creates, tightens, canonicalizes).
+        let published = crate::chatgpt_app::ensure_published_dir(
+            PathBuf::from(std::env::var("SILO_TEST_PUBLISHED").unwrap())
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        crate::computer_use::set_test_published_dir(Some(published.clone()));
+        crate::chatgpt_app::set_test_cache(Some(crate::chatgpt_app::Status::Ready {
+            path: published.clone(),
+            version: "26.928.31416".into(),
+        }));
+        let executable = PathBuf::from(std::env::var("SILO_TEST_MSB").unwrap());
+        let library = PathBuf::from(std::env::var("SILO_TEST_LIBKRUNFW").unwrap());
+        let make = |name: &str| runtime::RuntimePaths {
+            guest_image: guest_image.clone(),
+            executable: executable.clone(),
+            library: library.clone(),
+            home: directory.path().join(name),
+            storage_home: None,
+            metadata: directory.path().join(format!("{name}-machines.json")),
+            volumes: directory.path().join(format!("{name}-volumes")),
+        };
+        let paths = make("runtime");
+        let source_name = "e2e-cu-source";
+        let restored_name = "e2e-cu-restored";
+        struct Cleanup<'a>(&'a runtime::RuntimePaths, &'static str);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = runtime::run_msb(
+                    self.0,
+                    &["stop".into(), self.1.into()],
+                    Duration::from_secs(60),
+                );
+            }
+        }
+        let _a = Cleanup(&paths, "e2e-cu-source");
+        let _b = Cleanup(&paths, "e2e-cu-restored");
+        let exec = |paths: &runtime::RuntimePaths, name: &str, user: &str, script: &str| {
+            runtime::run_msb(
+                paths,
+                &[
+                    "exec",
+                    name,
+                    "--no-start",
+                    "--user",
+                    user,
+                    "--workdir",
+                    "/",
+                    "--",
+                    "sh",
+                    "-c",
+                    script,
+                ]
+                .map(String::from),
+                Duration::from_secs(300),
+            )
+            .map(|output| output.stdout)
+        };
+        let wait_ready = |paths: &runtime::RuntimePaths, name: &str| -> Value {
+            let started = std::time::Instant::now();
+            loop {
+                let machine = runtime::read_metadata(&paths.metadata)
+                    .unwrap()
+                    .machines
+                    .into_iter()
+                    .find(|machine| machine.name() == name)
+                    .unwrap();
+                let status = crate::desktop::test_status(paths, &machine).unwrap();
+                let state = status["computerUse"]["state"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned();
+                eprintln!(
+                    "[{:>4}s] {name}: desktop {} computerUse {state} {}",
+                    started.elapsed().as_secs(),
+                    status["state"],
+                    status["computerUse"]["reason"]
+                );
+                if state == "ready" || state == "failed" {
+                    return status;
+                }
+                assert!(started.elapsed() < Duration::from_secs(900), "timed out");
+                std::thread::sleep(Duration::from_secs(10));
+            }
+        };
+
+        // 1. A new VM on the v4 image is built in, mounts the folder, and sets itself up.
+        let machine = runtime::create_disposable_desktop_machine(&paths, source_name).unwrap();
+        assert!(crate::computer_use::is_built_in(&machine), "{machine:?}");
+        let inspected = inspect(&paths, source_name).unwrap();
+        eprintln!("mounts at create: {}", inspected.config["mounts"]);
+        assert!(crate::computer_use::mount_present(
+            &inspected.config,
+            &machine
+        ));
+        runtime::start_disposable_test_machine(&paths, source_name).unwrap();
+        let status = wait_ready(&paths, source_name);
+        eprintln!("status: {status}");
+        let report = exec(
+            &paths,
+            source_name,
+            "silo",
+            "grep ' /opt/silo/chatgpt ' /proc/mounts; touch /opt/silo/chatgpt/x 2>&1 | head -1; /opt/lcu/current/bin/lcu status --json; cat /var/lib/silo-computer-use/receipt.json",
+        )
+        .unwrap();
+        eprintln!("guest evidence:\n{report}");
+        if status["computerUse"]["state"] != "ready" {
+            eprintln!(
+                "guest log:\n{}",
+                exec(
+                    &paths,
+                    source_name,
+                    "root",
+                    "tail -n 80 /var/log/silo-computer-use.log; ls -ldn /opt/silo/chatgpt /opt/silo/chatgpt/*",
+                )
+                .unwrap()
+            );
+        }
+        assert_eq!(status["computerUse"]["state"], "ready");
+        assert_eq!(status["computerUse"]["compatibility"], "tested");
+        assert!(report.contains("ro,"), "{report}");
+
+        // 2. The approval switch applies to the running VM.
+        let applied = crate::computer_use::apply_approval_with(
+            &runtime::ProcessRunner,
+            &paths,
+            &machine,
+            crate::computer_use::Approval::Auto,
+            true,
+        );
+        eprintln!("apply approval: {applied:?}");
+        applied.unwrap();
+        let status = crate::desktop::test_status(&paths, &machine).unwrap();
+        assert_eq!(status["computerUse"]["approval"], "auto");
+        eprintln!(
+            "approval in guest: {}",
+            exec(&paths, source_name, "silo", "cat /var/lib/silo-computer-use/approval.json; cat ~/.claude/settings.json 2>/dev/null; cat ~/.codex/config.toml 2>/dev/null").unwrap()
+        );
+
+        // 3. Export preparation: the host-specific mount is dropped and the VM still
+        // passes the export checks (the import side mounts its own folder again).
+        runtime::run_msb(
+            &paths,
+            &["stop".into(), source_name.into()],
+            Duration::from_secs(120),
+        )
+        .unwrap();
+        let mut inspected = inspect(&paths, source_name).unwrap();
+        canonicalize_backup_runtime(&mut inspected.config).unwrap();
+        crate::computer_use::strip_mount_for_export(&mut inspected.config).unwrap();
+        backup_volumes(&machine, &mut inspected).unwrap();
+        backup::validate_snapshottable_config(source_name, &inspected.config).unwrap();
+        assert_eq!(inspected.config["mounts"].as_array().unwrap().len(), 1);
+
+        // 4. A restore never carries host mounts: pass the mount again, as `start_pending`
+        // does, and let the boot hook set computer use up again.
+        let snapshot = [
+            "snapshot",
+            "create",
+            "--sandbox",
+            source_name,
+            "cu-proof",
+            "--quiet",
+        ];
+        runtime::run_msb(
+            &paths,
+            &snapshot.map(String::from),
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        let mut second = machine.clone();
+        if let runtime::MachineConfiguration::Vm { id, name, .. } = &mut second {
+            *id = uuid::Uuid::new_v4().to_string();
+            *name = restored_name.into();
+        }
+        let mut request = runtime::read_metadata(&paths.metadata).unwrap();
+        request.machines.push(second.clone());
+        runtime::write_metadata(&paths.metadata, &request).unwrap();
+        let mut args: Vec<String> = [
+            "restore",
+            &format!("{source_name}:cu-proof"),
+            "--name",
+            restored_name,
+            "--cpus",
+            "2",
+            "--memory",
+            "4G",
+            "--label",
+            "silo.managed=true",
+            "--label",
+            &format!("silo.machine-id={}", second.id()),
+            "--label",
+            "silo.github-protocol=1",
+        ]
+        .map(String::from)
+        .to_vec();
+        args.extend(crate::computer_use::mount_args(&second).unwrap());
+        eprintln!("restore args: {args:?}");
+        runtime::RuntimeRunner::run(
+            &runtime::ProcessRunner,
+            &paths,
+            &args,
+            Duration::from_secs(900),
+        )
+        .unwrap();
+        let restored_inspect = inspect(&paths, restored_name).unwrap();
+        eprintln!(
+            "mounts after restore: {}",
+            restored_inspect.config["mounts"]
+        );
+        assert!(crate::computer_use::mount_present(
+            &restored_inspect.config,
+            &second
+        ));
+        let status = wait_ready(&paths, restored_name);
+        eprintln!("restored status: {status}");
+        let report = exec(
+            &paths,
+            restored_name,
+            "silo",
+            "grep ' /opt/silo/chatgpt ' /proc/mounts; /opt/lcu/current/bin/lcu status --json | head -12; cat /var/lib/silo-computer-use/approval.json",
+        )
+        .unwrap();
+        eprintln!("restored guest evidence:\n{report}");
+        assert_eq!(status["computerUse"]["state"], "ready");
+        let _ = runtime::run_msb(
+            &paths,
+            &["stop".into(), restored_name.into()],
+            Duration::from_secs(120),
+        );
+        crate::computer_use::set_test_published_dir(None);
+        crate::chatgpt_app::set_test_cache(None);
+    }
 }
 
 pub(crate) fn update_ready(app: &AppHandle) -> Result<(), String> {
