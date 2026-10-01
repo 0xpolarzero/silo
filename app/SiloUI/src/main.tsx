@@ -4,6 +4,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 
 import "./index.css"
+import { ComputerUseProvider, createComputerUseBridge, nativeComputerUseBackend } from "@/desktop/computer-use-bridge"
 import { createApplicationService, emptyApplicationCatalog } from "@/desktop/applications"
 import { StatusPanelUnavailable } from "@/desktop/application-loading"
 import { createNativeDependencyStore } from "@/desktop/dependencies"
@@ -70,6 +71,7 @@ function start() {
   // Resolved defaults are local to each webview's store, not saved settings.
   // Both windows must discover them; the provider refreshes them on focus.
   const applicationService = createApplicationService(settings)
+  const computerUse = createComputerUseBridge(nativeComputerUseBackend)
   let started = false
 
   // The only steps a Retry repeats: settings must be ready before the app renders.
@@ -91,7 +93,9 @@ function start() {
         <SettingsProvider store={settings}>
           <SystemIntegrationProvider store={systemIntegrations}>
             <ApplicationCatalogProvider initialCatalog={applicationCatalog} service={applicationService}>
-              <ProductionSurface source={production} dependencyStore={dependencies} statusPanel={statusPanel} />
+              <ComputerUseProvider bridge={computerUse}>
+                <ProductionSurface source={production} dependencyStore={dependencies} statusPanel={statusPanel} />
+              </ComputerUseProvider>
             </ApplicationCatalogProvider>
           </SystemIntegrationProvider>
         </SettingsProvider>

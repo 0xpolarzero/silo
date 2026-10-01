@@ -30,6 +30,8 @@ import { operationQueueFromSearch } from "./operation-queue"
 import { RuntimeMigrationBoundary } from "@/desktop/runtime-migration-boundary"
 import { createFixtureMigrationBackend, fixtureBackupForMode, preUpgradeBackupFixtureModeFromSearch } from "./pre-upgrade-backup"
 import { createFixtureEditorInclude, editorIncludeFixtureModeFromSearch } from "./editor-include"
+import { ComputerUseProvider, createComputerUseBridge } from "@/desktop/computer-use-bridge"
+import { chatGptFixtureFromSearch, computerUseFixtureFromSearch, createFixtureComputerUseBackend, withComputerUseFixture } from "./computer-use"
 import { createFixtureUnseenResult, unseenResultFixtureModeFromSearch } from "./transfer-result-notice"
 
 export function FixtureApp({ nativeOnboardingComplete = false, nativeDependencies = null, nativeOperations = false, settingsStore }: { nativeOnboardingComplete?: boolean; nativeDependencies?: DependencyRuntime | null; nativeOperations?: boolean; settingsStore?: SettingsStore }) {
@@ -67,7 +69,11 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   const editorIncludeMode = editorIncludeFixtureModeFromSearch(window.location.search)
   const editorInclude = useMemo(() => editorIncludeMode ? createFixtureEditorInclude() : undefined, [editorIncludeMode])
   const baseSource = withResourceFixture(completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode), resourceMode)
-  const fixtureSource = operationQueue ? { ...baseSource, operationQueue } : baseSource
+  const computerUseMode = computerUseFixtureFromSearch(window.location.search)
+  const chatGptMode = chatGptFixtureFromSearch(window.location.search)
+  const computerUseBridge = useMemo(() => computerUseMode || chatGptMode ? createComputerUseBridge(createFixtureComputerUseBackend(computerUseMode ?? "ready", chatGptMode ?? "ready")) : null, [computerUseMode, chatGptMode])
+  const queuedSource = operationQueue ? { ...baseSource, operationQueue } : baseSource
+  const fixtureSource = computerUseMode ? withComputerUseFixture(queuedSource, computerUseMode) : queuedSource
   useDesktopFixtures({ source: fixtureSource, mode: statusBarMode },
     (source) => setStatusBarHandoff((current) => ({ source, route: current?.route })),
     (route) => {
@@ -93,7 +99,7 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
     }, 1_600)
     return () => window.clearInterval(timer)
   }, [activityMode])
-  return (
+  const content = (
     <>
       {surface === "desktop" ? <LinuxDesktopPreview /> : surface === "migration" && migrationBackend ? (
         <RuntimeMigrationBoundary backend={migrationBackend}>
@@ -158,4 +164,5 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
       )}
     </>
   )
+  return computerUseBridge ? <ComputerUseProvider bridge={computerUseBridge}>{content}</ComputerUseProvider> : content
 }
