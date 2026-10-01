@@ -216,6 +216,7 @@ fn main() {
             backup_controller::start_restore,
             backup_controller::cancel_backup_operation,
             backup_controller::dismiss_backup_operation,
+            backup_controller::acknowledge_backup_result,
             runtime::read_application_state,
             runtime::storage::read_workspace_storage,
             runtime::storage::reclaim_workspace_storage,

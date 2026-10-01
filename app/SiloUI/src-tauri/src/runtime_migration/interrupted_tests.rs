@@ -529,6 +529,8 @@ fn what_only_the_runtime_can_remove_is_cleaned_from_the_converted_generation_aft
         let reported = journal_file(app_data);
         assert_eq!(reported["terminal"]["title"], shape.title, "{state}");
         assert!(reported.get("awaitingUpgrade").is_none(), "{state}");
+        // The user could not have seen it: it was produced across the upgrade.
+        assert_eq!(reported["unseen"], true, "{state}");
         assert!(matches!(
             crate::backup_controller::journal_state(app_data),
             JournalState::Settled
@@ -821,6 +823,7 @@ fn an_unreadable_journal_is_set_aside_and_the_migration_proceeds() {
             "{state}"
         );
         assert_eq!(notice["terminal"]["outcome"], "failed", "{state}");
+        assert_eq!(notice["unseen"], true, "{state}");
         assert!(!old
             .join("before-checkpoints-backup-operation.json")
             .exists());
@@ -945,6 +948,8 @@ fn an_operation_that_left_nothing_for_the_runtime_is_settled_and_reported_before
         let journal = journal_file(app_data);
         assert_eq!(journal["terminal"]["title"], title, "{state}");
         assert!(journal.get("awaitingUpgrade").is_none(), "{state}");
+        // Recorded before the upgrade, so the user has not seen it yet.
+        assert_eq!(journal["unseen"], true, "{state}");
         assert!(!old
             .join("before-checkpoints-backup-operation.json")
             .exists());

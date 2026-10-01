@@ -19,6 +19,15 @@ pub(super) struct Journal {
     /// `settle_before_migration`). Omitted when false, so older builds can still read it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     awaiting_upgrade: bool,
+    /// Set on a result the user could not have seen as it happened: one an upgrade
+    /// produced (an operation interrupted before it, settled before or after the storage
+    /// migration), or the notice that an unreadable record was set aside. It stays until
+    /// the user has been shown the result and acknowledges it (see [`acknowledge`]), or
+    /// dismisses it, which removes the journal. Journals written before this field existed
+    /// have none, and so count as seen. Omitted when false, so older builds can read every
+    /// result that is not waiting to be shown.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    unseen: bool,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
@@ -93,6 +102,7 @@ impl Journal {
             cancelled: false,
             terminal: None,
             awaiting_upgrade: false,
+            unseen: false,
         }
     }
     pub(super) fn restore(archive: Archive, name: String, source: Option<String>) -> Self {
@@ -109,7 +119,12 @@ impl Journal {
             cancelled: false,
             terminal: None,
             awaiting_upgrade: false,
+            unseen: false,
         }
+    }
+    /// Whether this holds a result the user has not yet been shown (see `unseen`).
+    fn is_unseen_result(&self) -> bool {
+        self.terminal.is_some() && self.unseen
     }
     /// Whether the first launch of an upgrade settled everything it could without the
     /// runtime and left the rest for recovery in the converted storage.
@@ -134,7 +149,7 @@ impl Journal {
             _ => None,
         }
     }
-    fn operation(&self) -> Operation {
+    pub(super) fn operation(&self) -> Operation {
         match &self.terminal {
             Some(result) => Operation::Result {
                 operation: self.kind(),
@@ -236,8 +251,31 @@ pub(crate) fn journal_state(app_data: &Path) -> JournalState {
 /// and return where it went. The file is only renamed, never read, changed or deleted, so
 /// it stays for diagnosis. A result in its place tells the user an export or import
 /// record was set aside and may need to be run again; failing to save that result never
-/// fails the setting aside.
+/// fails the setting aside. The result is marked unseen: nothing the user did led to it.
 pub(crate) fn set_aside_unreadable_journal(app_data: &Path) -> Result<PathBuf, String> {
+    set_aside(
+        app_data,
+        "If an export or import was running before the upgrade, run it again.",
+    )
+    .map(|(aside, _)| aside)
+}
+
+/// Outside a migration, set aside a journal that [`load`] refused, as the migration does
+/// (see [`set_aside_unreadable_journal`]), so exports and imports are available again
+/// instead of staying unavailable until the file is removed by hand. Returns the notice
+/// that took its place, which is the journal to start with even when saving it failed.
+pub(super) fn set_aside_at_startup(history: &Path) -> Result<Journal, String> {
+    let app_data = history
+        .parent()
+        .ok_or("Missing operation storage directory.")?;
+    set_aside(
+        app_data,
+        "If an export or import was running, run it again.",
+    )
+    .map(|(_, notice)| notice)
+}
+
+fn set_aside(app_data: &Path, detail: &str) -> Result<(PathBuf, Journal), String> {
     let journal = journal_path(&app_data.join(HISTORY_FILE));
     let today = time::OffsetDateTime::now_utc();
     let date = format!(
@@ -282,17 +320,16 @@ pub(crate) fn set_aside_unreadable_journal(app_data: &Path) -> Result<PathBuf, S
             outcome: "failed".into(),
             title: "Export or import record set aside".into(),
             message: "An export or import record couldn\u{2019}t be read and was set aside.".into(),
-            detail: Some(
-                "If an export or import was running before the upgrade, run it again.".into(),
-            ),
+            detail: Some(detail.into()),
             running: Vec::new(),
         }),
         awaiting_upgrade: false,
+        unseen: true,
     };
     if let Err(error) = write(&app_data.join(HISTORY_FILE), &notice) {
         eprintln!("Silo could not record that an export or import record was set aside: {error}");
     }
-    Ok(aside)
+    Ok((aside, notice))
 }
 
 /// The rules a saved journal must meet to be loaded. `begin` applies them too,
@@ -502,6 +539,36 @@ pub(super) fn token(controller: &Controller) -> Result<Option<String>, String> {
         .as_ref()
         .map(|j| j.id.clone()))
 }
+/// Whether the journal holds a result the user has not been shown yet.
+pub(super) fn unseen(controller: &Controller) -> Result<bool, String> {
+    Ok(controller
+        .journal
+        .lock()
+        .map_err(|_| "Saved operation unavailable.")?
+        .as_ref()
+        .is_some_and(Journal::is_unseen_result))
+}
+/// Record that the user was shown the result the journal holds, when it is the one with
+/// the identity `expected`: nothing else is touched, and a result that was replaced or
+/// dismissed in the meantime stays as it is. The result itself stays until it is
+/// dismissed, but no longer counts as unseen. Returns whether anything changed.
+pub(super) fn acknowledge(controller: &Controller, expected: &str) -> Result<bool, String> {
+    let mut saved = controller
+        .journal
+        .lock()
+        .map_err(|_| "Saved operation unavailable.")?;
+    let Some(journal) = saved
+        .as_ref()
+        .filter(|journal| journal.is_unseen_result() && journal.id == expected)
+    else {
+        return Ok(false);
+    };
+    let mut next = journal.clone();
+    next.unseen = false;
+    write(&controller.history_path, &next)?;
+    *saved = Some(next);
+    Ok(true)
+}
 fn cleanup_archive_partial(journal: &Journal) -> Result<(), String> {
     if !matches!(journal.request, Request::Backup { .. }) {
         return Ok(());
@@ -665,7 +732,18 @@ pub(super) fn dismiss(controller: &Controller) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn complete(controller: &Controller, mut operation: Operation) -> Operation {
+pub(super) fn complete(controller: &Controller, operation: Operation) -> Operation {
+    complete_marked(controller, operation, false)
+}
+
+/// Record the result of an operation, marking it unseen when `unseen`: the result of an
+/// operation the first launch of an upgrade settled. The result of one that waited for the
+/// upgrade is unseen too, whatever `unseen` says.
+pub(super) fn complete_marked(
+    controller: &Controller,
+    mut operation: Operation,
+    unseen: bool,
+) -> Operation {
     let cleanup_pending = controller
         .journal
         .lock()
@@ -708,7 +786,9 @@ pub(super) fn complete(controller: &Controller, mut operation: Operation) -> Ope
     {
         if let Err(error) = update(controller, |j| {
             j.archive = archive.clone();
-            // Whatever waited for the upgrade has been settled or is reported now.
+            // Whatever waited for the upgrade has been settled or is reported now, and
+            // the user has not been told yet.
+            j.unseen = unseen || j.awaiting_upgrade;
             j.awaiting_upgrade = false;
             j.terminal = Some(Terminal {
                 outcome: (*outcome).into(),
@@ -752,12 +832,11 @@ pub(super) fn resume(
     let (kind, archive, target) = (journal.kind(), journal.archive.clone(), journal.target());
     let (outer_app, outer_controller) = (app.clone(), controller.clone());
     let work = move || {
-        let operation = match recover(&app, &controller, &journal, &cancellation) {
-            Ok(Settlement::Settled(operation)) => Some(complete(&controller, operation)),
-            // Nothing is running and nothing is reported yet: the upgrade converts the
-            // storage first, and the relaunch that follows finishes the cleanup and
-            // reports it.
-            Ok(Settlement::AfterUpgrade) => None,
+        // Decided once: it picks both how the operation is settled and whether its result
+        // is marked as one the user has not been shown (the upgrade produced it).
+        let before_upgrade = crate::runtime_migration::blocks_operations(&app);
+        let operation = match recover(&app, &controller, &journal, &cancellation, before_upgrade) {
+            Ok(settlement) => finish_settlement(&controller, settlement, before_upgrade),
             // Retain the journal: never discard ownership after an uncertain
             // cleanup. The next launch retries; dismissing abandons it (E-43).
             Err(error) => Some(Operation::Result {
@@ -796,11 +875,31 @@ pub(super) fn resume(
     });
     Ok(())
 }
+/// What to report once an interrupted operation was settled, recording it. `before_upgrade`
+/// is whether it was settled before the storage migration: such a result is one the user
+/// has not seen when the migration is over.
+pub(super) fn finish_settlement(
+    controller: &Controller,
+    settlement: Settlement,
+    before_upgrade: bool,
+) -> Option<Operation> {
+    match settlement {
+        Settlement::Settled(operation) => {
+            Some(complete_marked(controller, operation, before_upgrade))
+        }
+        // Nothing is running and nothing is reported yet: the upgrade converts the
+        // storage first, and the relaunch that follows finishes the cleanup and
+        // reports it.
+        Settlement::AfterUpgrade => None,
+    }
+}
+
 fn recover(
     app: &AppHandle,
     controller: &Controller,
     journal: &Journal,
     cancellation: &backup::Cancellation,
+    before_upgrade: bool,
 ) -> Result<Settlement, String> {
     // The storage migration refuses to start while a journal is pending (E-50), so an
     // interrupted operation settles before it. Until the migration finishes, the
@@ -808,7 +907,7 @@ fn recover(
     // or write to it, so the operation is settled without the runtime, and whatever
     // only the runtime can clean up waits for the converted storage. After the
     // migration, this is the ordinary recovery in the storage in use.
-    if crate::runtime_migration::blocks_operations(app) {
+    if before_upgrade {
         let paths = runtime::inert_runtime_paths(app)?;
         return settle_before_migration(&paths, controller, journal, cancellation);
     }
@@ -2622,14 +2721,14 @@ mod tests {
         controller: &Controller,
         journal: &Journal,
     ) -> (&'static str, String, String, Option<String>) {
-        let Settlement::Settled(settled) =
+        let settlement =
             settle_before_migration(paths, controller, journal, &backup::Cancellation::default())
-                .unwrap()
-        else {
+                .unwrap();
+        let Settlement::Settled(settled) = &settlement else {
             panic!("this journal leaves data only the runtime can remove");
         };
-        let result = result_of(&settled);
-        complete(controller, settled);
+        let result = result_of(settled);
+        finish_settlement(controller, settlement, true);
         result
     }
 
@@ -3499,6 +3598,278 @@ mod tests {
         // No journal to set aside: nothing is created.
         assert!(set_aside_unreadable_journal(app_data).is_err());
         assert_eq!(fs::read_dir(app_data).unwrap().count(), 0);
+    }
+
+    fn result_operation(title: &str) -> Operation {
+        Operation::Result {
+            operation: "restore",
+            archive: completed_archive(),
+            running_names: vec![],
+            target_name: Some("copy".into()),
+            outcome: "failed",
+            title: title.into(),
+            message: "Silo closed before this import finished.".into(),
+            detail: Some("No sandbox was added. Import the file again.".into()),
+        }
+    }
+
+    fn journal_json(controller: &Controller) -> Value {
+        serde_json::from_slice(&fs::read(journal_path(&controller.history_path)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_result_is_unseen_only_when_an_upgrade_produced_it() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let journal = Journal::restore(completed_archive(), "copy".into(), None);
+        let id = journal.id.clone();
+
+        // An ordinary result, or one recorded after an operation the user ran, is not.
+        begin(&controller, journal.clone()).unwrap();
+        complete(&controller, result_operation("Import interrupted"));
+        assert!(!unseen(&controller).unwrap());
+        assert!(journal_json(&controller).get("unseen").is_none());
+        assert!(!acknowledge(&controller, &id).unwrap());
+
+        // One settled before the storage migration is.
+        begin(&controller, journal.clone()).unwrap();
+        complete_marked(
+            &controller,
+            result_operation("Import interrupted before the upgrade"),
+            true,
+        );
+        assert!(unseen(&controller).unwrap());
+        assert_eq!(journal_json(&controller)["unseen"], true);
+        assert!(load(&controller.history_path)
+            .unwrap()
+            .unwrap()
+            .is_unseen_result());
+
+        // One that waited for the upgrade is too, wherever it is recorded.
+        begin(&controller, journal.clone()).unwrap();
+        update(&controller, |journal| journal.awaiting_upgrade = true).unwrap();
+        assert!(!unseen(&controller).unwrap(), "nothing is reported yet");
+        complete(&controller, result_operation("Import interrupted"));
+        assert!(unseen(&controller).unwrap());
+        assert_eq!(journal_json(&controller).get("awaitingUpgrade"), None);
+
+        // A later operation replaces it, and the replacement is not unseen.
+        begin(&controller, journal).unwrap();
+        assert!(!unseen(&controller).unwrap());
+        complete(&controller, result_operation("Import interrupted"));
+        assert!(!unseen(&controller).unwrap());
+    }
+
+    #[test]
+    fn what_the_upgrade_settled_is_unseen_once_it_is_reported() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let paths = previous_generation(app_data, &[("dev", OLD_VM)]);
+        let (controller, journal) = released_journal(
+            app_data,
+            &app_data.join("dev.silo-backup"),
+            released_export(serde_json::json!([])),
+        );
+        // Nothing was reported while the journal only waited to be settled.
+        assert!(!unseen(&controller).unwrap());
+        let (outcome, title, _, _) = settle(&paths, &controller, &journal);
+        assert_eq!(
+            (outcome, title.as_str()),
+            ("failed", "Export interrupted before the upgrade")
+        );
+        assert!(unseen(&controller).unwrap());
+        assert_eq!(journal_json(&controller)["unseen"], true);
+    }
+
+    #[test]
+    fn the_unseen_marker_round_trips_and_older_journals_count_as_seen() {
+        let _test_state = crate::test_support::global_state();
+        let terminal = serde_json::json!({"outcome":"failed","title":"Import interrupted","message":"m","detail":null,"running":[]});
+        let loaded = |extra: Vec<(&str, Value)>| {
+            let directory = tempfile::tempdir().unwrap();
+            let mut journal: Value = serde_json::from_str(&journal_text(1, None)).unwrap();
+            for (key, value) in extra {
+                journal[key] = value;
+            }
+            fs::write(
+                directory.path().join("backup-operation.json"),
+                journal.to_string(),
+            )
+            .unwrap();
+            load(&directory.path().join("backup-history.json"))
+                .unwrap()
+                .unwrap()
+        };
+        // Written before the marker existed: seen, like every result the user had before.
+        assert!(!loaded(vec![("terminal", terminal.clone())]).is_unseen_result());
+        let marked = loaded(vec![
+            ("terminal", terminal.clone()),
+            ("unseen", true.into()),
+        ]);
+        assert!(marked.is_unseen_result());
+        assert!(!loaded(vec![("terminal", terminal), ("unseen", false.into())]).is_unseen_result());
+        // A result is what is unseen: an unfinished operation never is.
+        assert!(!loaded(vec![("unseen", true.into())]).is_unseen_result());
+        // It survives a write and a read, and is omitted when false so older builds read it.
+        let directory = tempfile::tempdir().unwrap();
+        let history = directory.path().join("backup-history.json");
+        write(&history, &marked).unwrap();
+        assert!(load(&history).unwrap().unwrap().is_unseen_result());
+        let text = fs::read_to_string(journal_path(&history)).unwrap();
+        assert!(text.contains("\"unseen\":true"), "{text}");
+        let seen = Journal {
+            unseen: false,
+            ..marked
+        };
+        write(&history, &seen).unwrap();
+        let text = fs::read_to_string(journal_path(&history)).unwrap();
+        assert!(!text.contains("unseen"), "{text}");
+    }
+
+    #[test]
+    fn acknowledging_a_result_marks_only_that_result_seen_and_keeps_it() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let journal = Journal::restore(completed_archive(), "copy".into(), None);
+        let id = journal.id.clone();
+        begin(&controller, journal).unwrap();
+        complete_marked(
+            &controller,
+            result_operation("Import interrupted before the upgrade"),
+            true,
+        );
+
+        // A result that was replaced is left alone.
+        let other = uuid::Uuid::new_v4().to_string();
+        assert!(!acknowledge(&controller, &other).unwrap());
+        assert!(unseen(&controller).unwrap());
+
+        assert!(acknowledge(&controller, &id).unwrap());
+        assert!(!unseen(&controller).unwrap());
+        // Durable, and the result itself stays until it is dismissed.
+        let saved = load(&controller.history_path).unwrap().unwrap();
+        assert!(!saved.is_unseen_result());
+        assert!(saved.terminal.is_some());
+        assert!(journal_json(&controller).get("unseen").is_none());
+        // Acknowledging again changes nothing.
+        assert!(!acknowledge(&controller, &id).unwrap());
+
+        // A result that cannot be saved as seen stays unseen, so it is not lost.
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), None),
+        )
+        .unwrap();
+        let again = token(&controller).unwrap().unwrap();
+        complete_marked(
+            &controller,
+            result_operation("Import interrupted before the upgrade"),
+            true,
+        );
+        fs::remove_file(journal_path(&controller.history_path)).unwrap();
+        fs::create_dir(journal_path(&controller.history_path)).unwrap();
+        assert!(acknowledge(&controller, &again).is_err());
+        assert!(unseen(&controller).unwrap());
+    }
+
+    #[test]
+    fn dismissing_an_unseen_result_removes_it_with_its_marker() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), None),
+        )
+        .unwrap();
+        complete_marked(
+            &controller,
+            result_operation("Import interrupted before the upgrade"),
+            true,
+        );
+        assert!(unseen(&controller).unwrap());
+        dismiss(&controller).unwrap();
+        assert!(!unseen(&controller).unwrap());
+        assert!(load(&controller.history_path).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_journal_that_cannot_be_read_is_set_aside_at_startup_with_an_unseen_notice() {
+        let _test_state = crate::test_support::global_state();
+        let cases = [
+            ("damaged", "{not json".to_string()),
+            ("empty", String::new()),
+            ("another version", journal_text(2, None)),
+            (
+                "unknown content",
+                journal_text(1, Some(("unknown", true.into()))),
+            ),
+        ];
+        for (state, text) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            let app_data = directory.path();
+            let history = app_data.join("backup-history.json");
+            fs::write(app_data.join("backup-operation.json"), &text).unwrap();
+            assert!(load(&history).is_err(), "{state}");
+
+            let notice = set_aside_at_startup(&history).unwrap();
+            assert!(notice.is_unseen_result(), "{state}");
+            // The notice is the journal, so it is what `load` reads from now on.
+            let saved = load(&history).unwrap().unwrap();
+            assert_eq!(saved.id, notice.id, "{state}");
+            assert!(saved.is_unseen_result(), "{state}");
+            assert!(!saved.is_pending(), "{state}");
+            assert!(
+                matches!(journal_state(app_data), JournalState::Settled),
+                "{state}"
+            );
+            let Operation::Result {
+                outcome,
+                title,
+                message,
+                detail,
+                ..
+            } = saved.operation()
+            else {
+                panic!("{state}: the notice is a result");
+            };
+            assert_eq!(outcome, "failed", "{state}");
+            assert_eq!(title, "Export or import record set aside", "{state}");
+            assert_eq!(
+                message, "An export or import record couldn\u{2019}t be read and was set aside.",
+                "{state}"
+            );
+            // Nothing says the upgrade was involved.
+            assert_eq!(
+                detail.as_deref(),
+                Some("If an export or import was running, run it again."),
+                "{state}"
+            );
+            // The record is only renamed: the same bytes, beside the other files.
+            let aside: Vec<_> = fs::read_dir(app_data)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .starts_with("backup-operation.unreadable-")
+                })
+                .collect();
+            assert_eq!(aside.len(), 1, "{state}: {aside:?}");
+            assert_eq!(fs::read_to_string(&aside[0]).unwrap(), text, "{state}");
+        }
+    }
+
+    #[test]
+    fn nothing_is_set_aside_at_startup_when_there_is_no_record_to_rename() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        assert!(set_aside_at_startup(&directory.path().join("backup-history.json")).is_err());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 
     #[test]

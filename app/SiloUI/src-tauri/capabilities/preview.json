@@ -57,6 +57,7 @@
     "allow-start-restore",
     "allow-cancel-backup-operation",
     "allow-dismiss-backup-operation",
+    "allow-acknowledge-backup-result",
     "allow-read-application-state",
     "allow-read-workspace-storage",
     "allow-reclaim-workspace-storage",

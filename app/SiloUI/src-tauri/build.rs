@@ -95,6 +95,7 @@ fn main() {
             "start_restore",
             "cancel_backup_operation",
             "dismiss_backup_operation",
+            "acknowledge_backup_result",
             "reveal_backup_archive",
             "read_application_state",
             "read_workspace_storage",
