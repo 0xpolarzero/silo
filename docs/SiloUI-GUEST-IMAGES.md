@@ -110,12 +110,23 @@ SFTP server) and adds, in one further layer:
   package file and delete it later: that keeps it (about 60 MB) in a layer.
   The runtime pieces of `setup-desktop.sh` (Selkies web-client patch, connection
   credentials, receipts, `silo-desktop`) are not part of the image.
-- **ChatGPT and LCU system libraries.** The LCU v0.7.0 `SYSTEM_PACKAGES`
-  ([source](https://github.com/0xpolarzero/lcu/blob/v0.7.0/scripts/install.py)),
+- **ChatGPT and LCU system libraries.** The LCU `SYSTEM_PACKAGES` (checked against
+  v0.8.0,
+  [source](https://github.com/0xpolarzero/lcu/blob/v0.8.0/scripts/install.py)),
   a superset of the ChatGPT Linux `.deb` dependencies on Ubuntu 24.04, so LCU
-  installs with `--skip-system --offline`. No OpenAI file and no LCU are in the image.
-  **TODO:** stage the pinned, hash-checked LCU release archive in the marked place
-  in the Dockerfile once the new LCU release is published.
+  installs with `--skip-system --offline`. No OpenAI file and no installed LCU
+  are in the image.
+- **LCU archive.** `src-tauri/guest/lcu-lock.json` is the one place that pins LCU
+  (version, and URL and SHA-256 per architecture; the ChatGPT app lock's
+  `lcuVersion` must agree, which a test checks). The same `RUN` downloads the
+  archive for the build architecture, verifies it with `sha256sum --check` and
+  keeps it unextracted as `/usr/local/share/silo/lcu/lcu-<version>-linux-<arch>.tar.gz`
+  (5.6 MB); the lock is a bind mount, never a `COPY`. The marker lists the
+  `lcu-archive` capability. `verifyGuestImage` re-checks the archive hash against
+  the lock and that `/opt/lcu`, `/usr/lib/chatgpt` and `/opt/silo` do not exist. A VM
+  installs the archive against the mounted app at boot
+  ([built-in computer use](SiloUI-DESKTOP.md#built-in-computer-use)); if the lock is
+  bumped without a new image the VM downloads and verifies the new archive instead.
 - **Accessibility defaults.** `gsettings-desktop-schemas`, the dconf stack,
   `/etc/dconf/profile/user` (`user-db:user`, `system-db:local`) and
   `/etc/dconf/db/local.d/00-silo-accessibility` with
