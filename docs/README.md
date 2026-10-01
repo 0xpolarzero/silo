@@ -81,6 +81,7 @@ above for current behavior and build commands.
 
 ### Product films and website
 
+- [README and website value review, 2026-09-29](research/public-docs-review-2026-09-29.md): reader decision gaps, broken GitHub explanation link, agent quickstart priority, and proposed observed-user validation.
 - [Release film](SiloUI-RELEASE-FILM.md): 59-second storyboard, product-claim sources, fixture boundaries, and rendering commands.
 - [Demo script](SiloUI-DEMO-SCRIPT.md): current `SiloDemo` cut and production-component boundaries, with [editing research](SiloUI-DEMO-EDITING-RESEARCH.md).
 - [Launch cut notes](SiloUI-LAUNCH-CUT-NOTES.md): feature evidence for the independent 54-second launch cut.

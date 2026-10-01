@@ -399,8 +399,9 @@ host restart, or the supported Linux platform matrix.
 
 ## MicroSandbox 0.7.2 security parity checkpoint
 
-The standalone [0.7.2 network patch](../app/SiloUI/patches/microsandbox-silo-network-0.7.2.patch)
-applies to the official tag. It adds selective TLS interception for currently
+The standalone 0.7.2 network patch (`microsandbox-silo-network-0.7.2.patch`,
+replaced by the per-feature patches in the 0.7.4 rebase) applied to the
+official tag. It adds selective TLS interception for currently
 allowed secret destinations, closes existing proxy connections when secret
 policy changes, and carries managed SSH, `exec --no-start`, and SFTP login-home
 behaviour. Its GitHub profile selector substitutes a scoped token only in an
