@@ -5,6 +5,7 @@ mod backup_controller;
 mod bridge_error;
 mod bundled_tools;
 mod channel;
+mod chatgpt_app;
 #[cfg(test)]
 mod command_permissions_tests;
 mod dependencies;
