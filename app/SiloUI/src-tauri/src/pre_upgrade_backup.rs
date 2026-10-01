@@ -16,6 +16,11 @@
 //! `before-checkpoints-backup-history.json`, which the migration moved there so the old
 //! export journal and export-folder choice are not replayed against the new runtime.
 //! Nothing reads them back, so deleting the folder loses nothing the app uses.
+//!
+//! The previous generation was also reached through an alias symlink in the account's state
+//! directory (`runtime::runtime_home_alias`), which dangles once the folder is gone. It is
+//! removed with the folder, and later if the folder was deleted by hand, but only when it is a
+//! symlink whose link text is exactly the backup's `microsandbox` directory.
 use crate::{runtime::image_cache, runtime_migration};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -304,12 +309,57 @@ fn ensure_converted_runtime_is_independent(app_data: &Path, previous: &Path) -> 
     }
 }
 
-/// Deletes exactly `<app_data>/runtime`. `Ok(false)` when it was already gone.
-fn delete_backup(app_data: &Path) -> Result<bool, String> {
+/// Removes the previous generation's runtime alias, which dangles once its backup is gone.
+/// Best effort, never a reason to fail a deletion that has already succeeded. Only a
+/// symlink whose link text is exactly the backup's `microsandbox` directory goes: a folder,
+/// a file, a link to anywhere else, the converted generation's alias and every other entry in
+/// the state directory stay. The link is never followed. `user_home` is `None` when the
+/// account's home is unknown, which leaves the alias alone.
+fn remove_previous_alias(app_data: &Path, user_home: Option<&Path>) {
+    let Some(alias) = user_home
+        .zip(runtime_migration::backup_locations(app_data))
+        .map(|(home, at)| at.previous_alias(home))
+    else {
+        return;
+    };
+    let failed = |error: io::Error| {
+        eprintln!("Silo could not remove the previous runtime's alias link: {error}");
+    };
+    match fs::symlink_metadata(&alias.link) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {}
+        Ok(_) => return,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(error) => return failed(error),
+    }
+    match fs::read_link(&alias.link) {
+        Ok(target) if target == alias.target => {}
+        Ok(_) => return,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+        Err(error) => return failed(error),
+    }
+    match fs::remove_file(&alias.link) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => failed(error),
+    }
+}
+
+/// A backup that was deleted by hand leaves its alias behind. Cheap enough for every check.
+fn tidy_alias_of_deleted_backup(app_data: &Path, user_home: Option<&Path>) {
+    let _deletion = lock(&DELETION);
+    if matches!(inspect(app_data), Backup::Gone) {
+        remove_previous_alias(app_data, user_home);
+    }
+}
+
+/// Deletes exactly `<app_data>/runtime`, then its runtime alias. `Ok(false)` when the folder
+/// was already gone.
+fn delete_backup(app_data: &Path, user_home: Option<&Path>) -> Result<bool, String> {
     let _deletion = lock(&DELETION);
     let previous = match inspect(app_data) {
         Backup::Present(previous) => previous,
         Backup::Gone => {
+            remove_previous_alias(app_data, user_home);
             forget(app_data);
             return Ok(false);
         }
@@ -323,20 +373,31 @@ fn delete_backup(app_data: &Path) -> Result<bool, String> {
         format!("Silo could not finish deleting the pre-upgrade backup: {error}. Your sandboxes were not affected. Try again.")
     })?;
     let _ = fs::File::open(app_data).and_then(|directory| directory.sync_all());
+    remove_previous_alias(app_data, user_home);
     let _held = lock(&RECORD);
     forget(app_data);
     Ok(true)
 }
 
 /// Deletes the backup when its 14 days are over. `Ok(true)` when this call deleted it.
-fn delete_if_due(app_data: &Path, now: OffsetDateTime) -> Result<bool, String> {
+fn delete_if_due(
+    app_data: &Path,
+    user_home: Option<&Path>,
+    now: OffsetDateTime,
+) -> Result<bool, String> {
     let saved = {
         let held = lock(&RECORD);
         ensure_started(&held, app_data, now)
     };
     match saved {
-        Some(Saved::Valid { started, .. }) if is_due(started, now) => delete_backup(app_data),
-        _ => Ok(false),
+        Some(Saved::Valid { started, .. }) if is_due(started, now) => {
+            delete_backup(app_data, user_home)
+        }
+        Some(_) => Ok(false),
+        None => {
+            tidy_alias_of_deleted_backup(app_data, user_home);
+            Ok(false)
+        }
     }
 }
 
@@ -346,11 +407,12 @@ pub(crate) fn install(app: &AppHandle) {
     let Ok(app_data) = app.path().app_data_dir() else {
         return;
     };
+    let user_home = app.path().home_dir().ok();
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("pre-upgrade-backup".into())
         .spawn(move || loop {
-            match delete_if_due(&app_data, OffsetDateTime::now_utc()) {
+            match delete_if_due(&app_data, user_home.as_deref(), OffsetDateTime::now_utc()) {
                 Ok(true) => {
                     eprintln!("Silo deleted the pre-upgrade backup after 14 days.");
                     let _ = app.emit(CHANGED, ());
@@ -417,7 +479,8 @@ pub(crate) async fn delete_pre_upgrade_backup(
 ) -> Result<(), String> {
     require_main(&window)?;
     let app_data = app_data(&app)?;
-    let removed = blocking(move || delete_backup(&app_data)).await?;
+    let user_home = app.path().home_dir().ok();
+    let removed = blocking(move || delete_backup(&app_data, user_home.as_deref())).await?;
     if removed {
         let _ = app.emit(CHANGED, ());
     }
@@ -591,13 +654,13 @@ mod tests {
         let dir = complete();
         assert!(!dir.path().join(FILE).exists());
         // The launch check records the start without deleting anything.
-        assert!(!delete_if_due(dir.path(), at("2026-10-01T09:00:00Z")).unwrap());
+        assert!(!delete_if_due(dir.path(), None, at("2026-10-01T09:00:00Z")).unwrap());
         assert_eq!(started_at(dir.path()), "2026-10-01T09:00:00Z");
         assert!(dir.path().join("runtime").is_dir());
         // Not due on day 13, due on day 14.
-        assert!(!delete_if_due(dir.path(), at("2026-10-14T09:00:00Z")).unwrap());
+        assert!(!delete_if_due(dir.path(), None, at("2026-10-14T09:00:00Z")).unwrap());
         assert!(dir.path().join("runtime").is_dir());
-        assert!(delete_if_due(dir.path(), at("2026-10-15T09:00:00Z")).unwrap());
+        assert!(delete_if_due(dir.path(), None, at("2026-10-15T09:00:00Z")).unwrap());
         assert!(!dir.path().join("runtime").exists());
     }
 
@@ -607,7 +670,7 @@ mod tests {
         save(dir.path(), at("2026-09-01T10:00:00Z"), true).unwrap();
         let outside = dir.path().join("runtime-checkpoints-converted/keep.txt");
         fs::write(&outside, b"converted").unwrap();
-        assert!(delete_if_due(dir.path(), at("2026-10-01T10:00:00Z")).unwrap());
+        assert!(delete_if_due(dir.path(), None, at("2026-10-01T10:00:00Z")).unwrap());
         assert!(!dir.path().join("runtime").exists());
         assert!(
             !dir.path().join(FILE).exists(),
@@ -615,7 +678,7 @@ mod tests {
         );
         assert_eq!(fs::read(outside).unwrap(), b"converted");
         // The next hourly check, and the status, find nothing to do.
-        assert!(!delete_if_due(dir.path(), at("2026-10-01T11:00:00Z")).unwrap());
+        assert!(!delete_if_due(dir.path(), None, at("2026-10-01T11:00:00Z")).unwrap());
         assert_eq!(
             status(dir.path(), at("2026-10-01T11:00:00Z")).unwrap(),
             None
@@ -627,10 +690,10 @@ mod tests {
         let dir = complete();
         let converted = dir.path().join(CONVERTED).join("machines.json");
         fs::write(&converted, b"converted").unwrap();
-        assert!(delete_backup(dir.path()).unwrap());
+        assert!(delete_backup(dir.path(), None).unwrap());
         assert!(!dir.path().join("runtime").exists());
-        assert!(!delete_backup(dir.path()).unwrap());
-        assert!(!delete_backup(dir.path()).unwrap());
+        assert!(!delete_backup(dir.path(), None).unwrap());
+        assert!(!delete_backup(dir.path(), None).unwrap());
         assert_eq!(fs::read(converted).unwrap(), b"converted");
         assert!(dir.path().join("runtime-generation.json").exists());
         assert!(dir.path().join("runtime-migration.json").exists());
@@ -643,7 +706,7 @@ mod tests {
         let results: Vec<_> = (0..8)
             .map(|_| {
                 let app_data = app_data.clone();
-                std::thread::spawn(move || delete_backup(&app_data))
+                std::thread::spawn(move || delete_backup(&app_data, None))
             })
             .collect::<Vec<_>>()
             .into_iter()
@@ -667,9 +730,11 @@ mod tests {
             None
         );
         assert_eq!(measure(dir.path()).unwrap(), None);
-        assert!(delete_backup(dir.path()).unwrap_err().contains("converted"));
+        assert!(delete_backup(dir.path(), None)
+            .unwrap_err()
+            .contains("converted"));
         // Even an ancient record never makes it due.
-        assert!(!delete_if_due(dir.path(), at("2026-10-01T10:00:00Z")).unwrap());
+        assert!(!delete_if_due(dir.path(), None, at("2026-10-01T10:00:00Z")).unwrap());
         assert!(matches!(inspect(dir.path()), Backup::NotABackup));
         assert_eq!(
             fs::read(dir.path().join("runtime/volumes/dev/workspace.raw")).unwrap(),
@@ -695,8 +760,8 @@ mod tests {
         ] {
             let now = at("2026-10-01T10:00:00Z");
             assert_eq!(status(dir.path(), now).unwrap(), None, "{name}");
-            assert!(delete_backup(dir.path()).is_err(), "{name}");
-            assert!(!delete_if_due(dir.path(), now).unwrap(), "{name}");
+            assert!(delete_backup(dir.path(), None).is_err(), "{name}");
+            assert!(!delete_if_due(dir.path(), None, now).unwrap(), "{name}");
             assert!(!dir.path().join(FILE).exists(), "{name}");
             assert!(dir.path().join("runtime/volumes/dev").is_dir(), "{name}");
         }
@@ -714,9 +779,9 @@ mod tests {
             status(dir.path(), at("2026-10-01T10:00:00Z")).unwrap(),
             None
         );
-        let error = delete_backup(dir.path()).unwrap_err();
+        let error = delete_backup(dir.path(), None).unwrap_err();
         assert!(error.contains("link"), "{error}");
-        assert!(!delete_if_due(dir.path(), at("2030-01-01T00:00:00Z")).unwrap());
+        assert!(!delete_if_due(dir.path(), None, at("2030-01-01T00:00:00Z")).unwrap());
         assert_eq!(measure(dir.path()).unwrap(), None);
         assert!(fs::symlink_metadata(dir.path().join("runtime"))
             .unwrap()
@@ -747,7 +812,7 @@ mod tests {
             locate(&previous, &dir.path().join(CONVERTED)),
             Backup::Refused(_)
         ));
-        assert!(delete_backup(dir.path()).is_err());
+        assert!(delete_backup(dir.path(), None).is_err());
         assert_eq!(fs::read(&previous).unwrap(), b"not a folder");
     }
 
@@ -768,7 +833,7 @@ mod tests {
         std::os::unix::fs::symlink(elsewhere.path().join("file"), previous.join("file-link"))
             .unwrap();
         std::os::unix::fs::symlink("missing", previous.join("volumes/dangling")).unwrap();
-        assert!(delete_backup(dir.path()).unwrap());
+        assert!(delete_backup(dir.path(), None).unwrap());
         assert!(!previous.exists());
         assert_eq!(
             fs::read(elsewhere.path().join("folder/precious")).unwrap(),
@@ -798,13 +863,13 @@ mod tests {
                 }),
                 "{name}"
             );
-            assert!(!delete_if_due(dir.path(), now).unwrap(), "{name}");
+            assert!(!delete_if_due(dir.path(), None, now).unwrap(), "{name}");
             assert!(dir.path().join("runtime").is_dir(), "{name}");
             assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), contents, "{name}");
             acknowledge(dir.path(), now).unwrap();
             assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), contents, "{name}");
             // The user can still reclaim the space by hand.
-            assert!(delete_backup(dir.path()).unwrap(), "{name}");
+            assert!(delete_backup(dir.path(), None).unwrap(), "{name}");
             assert!(!dir.path().join("runtime").exists(), "{name}");
         }
     }
@@ -854,7 +919,7 @@ mod tests {
         let dir = complete();
         let bytes = measure(dir.path()).unwrap().unwrap();
         assert!(bytes >= 64 * 1024, "{bytes}");
-        assert!(delete_backup(dir.path()).unwrap());
+        assert!(delete_backup(dir.path(), None).unwrap());
         assert_eq!(measure(dir.path()).unwrap(), None);
     }
 
@@ -870,14 +935,14 @@ mod tests {
         status(dir.path(), now).unwrap();
         let locked = dir.path().join("runtime/microsandbox/sandboxes/dev");
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
-        let error = delete_backup(dir.path()).unwrap_err();
+        let error = delete_backup(dir.path(), None).unwrap_err();
         assert!(error.contains("could not finish deleting"), "{error}");
         assert!(error.contains("Try again"), "{error}");
         assert!(!error.contains(dir.path().to_str().unwrap()), "{error}");
         assert!(dir.path().join(FILE).exists());
         assert!(status(dir.path(), now).unwrap().is_some());
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
-        assert!(delete_backup(dir.path()).unwrap());
+        assert!(delete_backup(dir.path(), None).unwrap());
         assert!(!dir.path().join("runtime").exists());
         assert!(!dir.path().join(FILE).exists());
     }
@@ -897,16 +962,300 @@ mod tests {
         let vmdk = cache.join("vmdk/image.vmdk");
         fs::write(&vmdk, descriptor(&old.display().to_string())).unwrap();
         // No copy in the converted cache: the image would stop booting.
-        let error = delete_backup(app_data).unwrap_err();
+        let error = delete_backup(app_data, None).unwrap_err();
         assert!(error.contains("still reads files"), "{error}");
         assert!(app_data.join("runtime").is_dir());
         // With the converted copy present, deletion points the image at it, then deletes.
         fs::create_dir_all(cache.join("layers")).unwrap();
         fs::write(cache.join("layers").join(LAYER), vec![0; 512]).unwrap();
-        assert!(delete_backup(app_data).unwrap());
+        assert!(delete_backup(app_data, None).unwrap());
         assert!(!app_data.join("runtime").exists());
         let repaired = fs::read_to_string(&vmdk).unwrap();
         assert!(repaired.contains(CONVERTED), "{repaired}");
         assert!(!repaired.contains("runtime/microsandbox"), "{repaired}");
+    }
+
+    /// The alias the runtime makes for the storage `generation` under `app_data`.
+    #[cfg(unix)]
+    fn alias_for(home: &Path, app_data: &Path, generation: &str) -> PathBuf {
+        crate::runtime::runtime_home_alias(home, &app_data.join(generation).join("microsandbox"))
+    }
+
+    /// Makes that alias as the runtime does: a symlink to the generation's `microsandbox`.
+    #[cfg(unix)]
+    fn link_alias(home: &Path, app_data: &Path, generation: &str) -> PathBuf {
+        let alias = alias_for(home, app_data, generation);
+        fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(app_data.join(generation).join("microsandbox"), &alias).unwrap();
+        alias
+    }
+
+    /// Whether anything, even a dangling link, is at `path`.
+    #[cfg(unix)]
+    fn present(path: &Path) -> bool {
+        fs::symlink_metadata(path).is_ok()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deleting_the_backup_removes_the_previous_alias_and_nothing_else_in_the_state_dir() {
+        let dir = complete();
+        let home = tempfile::tempdir().unwrap();
+        let previous = link_alias(home.path(), dir.path(), "runtime");
+        let converted = link_alias(home.path(), dir.path(), CONVERTED);
+        // The alias is where the runtime puts it, which follows the running channel.
+        assert_eq!(
+            previous.parent().unwrap(),
+            crate::channel::current().state_dir(home.path())
+        );
+        let state_dir = previous.parent().unwrap().to_path_buf();
+        let elsewhere = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), state_dir.join("0123456789ab")).unwrap();
+        fs::write(state_dir.join("notes.txt"), b"mine").unwrap();
+        fs::create_dir(state_dir.join("editor")).unwrap();
+
+        assert!(delete_backup(dir.path(), Some(home.path())).unwrap());
+
+        assert!(!dir.path().join("runtime").exists());
+        assert!(!present(&previous));
+        assert_eq!(
+            fs::read_link(&converted).unwrap(),
+            dir.path().join(CONVERTED).join("microsandbox")
+        );
+        assert_eq!(
+            fs::read_link(state_dir.join("0123456789ab")).unwrap(),
+            elsewhere.path()
+        );
+        assert_eq!(fs::read(state_dir.join("notes.txt")).unwrap(), b"mine");
+        assert!(state_dir.join("editor").is_dir());
+        // Repeating the deletion has nothing left to do.
+        assert!(!delete_backup(dir.path(), Some(home.path())).unwrap());
+        assert!(present(&converted));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_automatic_deletion_removes_the_alias_only_once_the_backup_is_deleted() {
+        let dir = complete();
+        let home = tempfile::tempdir().unwrap();
+        let previous = link_alias(home.path(), dir.path(), "runtime");
+        let converted = link_alias(home.path(), dir.path(), CONVERTED);
+        save(dir.path(), at("2026-10-01T10:00:00Z"), true).unwrap();
+        let home = Some(home.path());
+        // Not due: the folder is still there, and so is the alias that reaches it.
+        assert!(!delete_if_due(dir.path(), home, at("2026-10-14T10:00:00Z")).unwrap());
+        assert!(dir.path().join("runtime").is_dir());
+        assert!(previous.exists());
+        assert!(delete_if_due(dir.path(), home, at("2026-10-15T10:00:00Z")).unwrap());
+        assert!(!dir.path().join("runtime").exists());
+        assert!(!present(&previous));
+        assert!(converted.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_alias_that_points_elsewhere_is_kept_with_its_target() {
+        let elsewhere = tempfile::tempdir().unwrap();
+        fs::write(elsewhere.path().join("precious"), b"mine").unwrap();
+        for (name, target) in [
+            ("another folder", elsewhere.path().to_path_buf()),
+            (
+                "another folder, same name",
+                elsewhere.path().join("microsandbox"),
+            ),
+            ("a relative link", PathBuf::from("../runtime/microsandbox")),
+        ] {
+            let dir = complete();
+            let home = tempfile::tempdir().unwrap();
+            let alias = alias_for(home.path(), dir.path(), "runtime");
+            fs::create_dir_all(alias.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&target, &alias).unwrap();
+            assert!(
+                delete_backup(dir.path(), Some(home.path())).unwrap(),
+                "{name}"
+            );
+            assert!(!dir.path().join("runtime").exists(), "{name}");
+            assert_eq!(fs::read_link(&alias).unwrap(), target, "{name}");
+            assert_eq!(
+                fs::read(elsewhere.path().join("precious")).unwrap(),
+                b"mine",
+                "{name}"
+            );
+        }
+        // The converted generation's own folder is not the previous alias's target either.
+        let dir = complete();
+        let home = tempfile::tempdir().unwrap();
+        let alias = alias_for(home.path(), dir.path(), "runtime");
+        fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        let converted = dir.path().join(CONVERTED).join("microsandbox");
+        std::os::unix::fs::symlink(&converted, &alias).unwrap();
+        assert!(delete_backup(dir.path(), Some(home.path())).unwrap());
+        assert_eq!(fs::read_link(&alias).unwrap(), converted);
+        assert!(converted.join("cache/vmdk").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_or_file_at_the_alias_path_is_never_removed() {
+        for as_folder in [true, false] {
+            let dir = complete();
+            let home = tempfile::tempdir().unwrap();
+            let alias = alias_for(home.path(), dir.path(), "runtime");
+            fs::create_dir_all(alias.parent().unwrap()).unwrap();
+            if as_folder {
+                fs::create_dir_all(alias.join("microsandbox")).unwrap();
+                fs::write(alias.join("keep.txt"), b"mine").unwrap();
+            } else {
+                fs::write(&alias, b"mine").unwrap();
+            }
+            assert!(delete_backup(dir.path(), Some(home.path())).unwrap());
+            assert!(!dir.path().join("runtime").exists());
+            if as_folder {
+                assert_eq!(fs::read(alias.join("keep.txt")).unwrap(), b"mine");
+                assert!(alias.join("microsandbox").is_dir());
+            } else {
+                assert_eq!(fs::read(&alias).unwrap(), b"mine");
+            }
+            // The check that finds the folder already gone keeps it as well.
+            assert!(
+                !delete_if_due(dir.path(), Some(home.path()), at("2026-10-01T10:00:00Z")).unwrap()
+            );
+            assert!(present(&alias));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_converted_generations_alias_is_untouched_when_there_is_no_previous_alias() {
+        let dir = complete();
+        let home = tempfile::tempdir().unwrap();
+        let converted = link_alias(home.path(), dir.path(), CONVERTED);
+        let state_dir = converted.parent().unwrap().to_path_buf();
+        assert!(delete_backup(dir.path(), Some(home.path())).unwrap());
+        assert!(!delete_backup(dir.path(), Some(home.path())).unwrap());
+        assert!(!delete_if_due(dir.path(), Some(home.path()), at("2026-10-01T10:00:00Z")).unwrap());
+        assert_eq!(
+            fs::read_link(&converted).unwrap(),
+            dir.path().join(CONVERTED).join("microsandbox")
+        );
+        assert_eq!(fs::read_dir(state_dir).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_alias_is_removed_when_the_backup_was_already_deleted_by_hand() {
+        for by_check in [true, false] {
+            let dir = complete();
+            let home = tempfile::tempdir().unwrap();
+            let previous = link_alias(home.path(), dir.path(), "runtime");
+            let converted = link_alias(home.path(), dir.path(), CONVERTED);
+            save(dir.path(), at("2026-10-01T10:00:00Z"), false).unwrap();
+            fs::remove_dir_all(dir.path().join("runtime")).unwrap();
+            assert!(!previous.exists() && present(&previous), "it dangles");
+            let home = Some(home.path());
+            if by_check {
+                // The check at launch, and every hour after it.
+                assert!(!delete_if_due(dir.path(), home, at("2026-10-02T10:00:00Z")).unwrap());
+            } else {
+                assert!(!delete_backup(dir.path(), home).unwrap());
+            }
+            assert!(!present(&previous));
+            assert!(converted.exists());
+            assert!(!dir.path().join(FILE).exists());
+            // Once removed, later checks leave everything alone.
+            assert!(!delete_if_due(dir.path(), home, at("2026-10-03T10:00:00Z")).unwrap());
+            assert!(converted.exists());
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn no_alias_is_touched_unless_the_migration_completed_into_the_converted_generation() {
+        for (name, dir) in [
+            ("after Continue", migrated(Some(CLEAN), Some("complete"))),
+            ("restarting", migrated(Some(CONVERTED), Some("running"))),
+            ("failed", migrated(Some(CONVERTED), Some("failed"))),
+            ("no migration record", migrated(Some(CONVERTED), None)),
+            ("never migrated", migrated(None, None)),
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            // The alias is exactly the one the runtime made for the previous generation.
+            let alias = link_alias(home.path(), dir.path(), "runtime");
+            let now = at("2026-10-01T10:00:00Z");
+            let home = Some(home.path());
+            assert!(delete_backup(dir.path(), home).is_err(), "{name}");
+            assert!(!delete_if_due(dir.path(), home, now).unwrap(), "{name}");
+            assert!(present(&alias), "{name}");
+            // Even with the folder missing, it is not Silo's to tidy.
+            fs::remove_dir_all(dir.path().join("runtime")).unwrap();
+            assert!(delete_backup(dir.path(), home).is_err(), "{name}");
+            assert!(!delete_if_due(dir.path(), home, now).unwrap(), "{name}");
+            assert!(present(&alias), "{name}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_backup_that_is_refused_keeps_its_alias() {
+        let dir = complete();
+        let home = tempfile::tempdir().unwrap();
+        let alias = link_alias(home.path(), dir.path(), "runtime");
+        let elsewhere = tempfile::tempdir().unwrap();
+        fs::remove_dir_all(dir.path().join("runtime")).unwrap();
+        std::os::unix::fs::symlink(elsewhere.path(), dir.path().join("runtime")).unwrap();
+        assert!(delete_backup(dir.path(), Some(home.path())).is_err());
+        assert!(!delete_if_due(dir.path(), Some(home.path()), at("2030-01-01T00:00:00Z")).unwrap());
+        assert!(present(&alias));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unknown_or_empty_home_never_fails_the_deletion() {
+        let dir = complete();
+        let home = tempfile::tempdir().unwrap();
+        let alias = link_alias(home.path(), dir.path(), "runtime");
+        assert!(delete_backup(dir.path(), None).unwrap());
+        assert!(
+            present(&alias),
+            "without a home Silo cannot tell where it is"
+        );
+        // A home with no state directory at all.
+        let dir = complete();
+        let empty = tempfile::tempdir().unwrap();
+        assert!(delete_backup(dir.path(), Some(empty.path())).unwrap());
+        assert!(!dir.path().join("runtime").exists());
+        assert_eq!(fs::read_dir(empty.path()).unwrap().count(), 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failing_to_remove_the_alias_does_not_fail_the_deletion_and_is_retried_by_the_next_check() {
+        use std::os::unix::fs::PermissionsExt;
+        if unsafe { libc::geteuid() } == 0 {
+            return; // root ignores directory permissions
+        }
+        let dir = complete();
+        let home = tempfile::tempdir().unwrap();
+        let alias = link_alias(home.path(), dir.path(), "runtime");
+        let state_dir = alias.parent().unwrap().to_path_buf();
+        status(dir.path(), at("2026-10-01T10:00:00Z")).unwrap();
+        // Unlinking needs write access to the folder that holds the link.
+        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let outcome = delete_backup(dir.path(), Some(home.path()));
+        fs::set_permissions(&state_dir, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(outcome, Ok(true));
+        assert!(!dir.path().join("runtime").exists());
+        assert!(
+            !dir.path().join(FILE).exists(),
+            "the record goes with the backup"
+        );
+        assert!(present(&alias), "the alias was left, only logged");
+        assert_eq!(
+            status(dir.path(), at("2026-10-01T11:00:00Z")).unwrap(),
+            None
+        );
+        // The next check finds the folder gone and the alias still there, and finishes.
+        assert!(!delete_if_due(dir.path(), Some(home.path()), at("2026-10-01T12:00:00Z")).unwrap());
+        assert!(!present(&alias));
     }
 }

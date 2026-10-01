@@ -479,9 +479,18 @@ Storage lists it with **Show** and **Delete now** until it is gone.
   retry. Before deleting, Silo runs the image-cache repair and refuses if any
   converted image descriptor still names a file below the backup, because a
   sandbox whose image reads from the backup stops booting once it is gone
-  (see `runtime/image_cache.rs`). It does not remove the runtime-home alias
-  symlink that the previous generation left under `~/.silo` (or `~/.silo-dev`);
-  that is a dangling link outside the backup folder.
+  (see `runtime/image_cache.rs`).
+- **Runtime-home alias.** The previous generation was reached through an alias
+  symlink under `~/.silo` (or `~/.silo-dev`) that dangles once the folder is
+  gone. After a successful deletion Silo also removes that link, located with
+  `runtime::runtime_home_alias` through `runtime_migration::backup_locations`.
+  It goes only if it is a symlink whose link text is exactly
+  `<app data>/runtime/microsandbox`; a folder, a file, a link to anywhere else,
+  the converted generation's alias and every other entry stay, and the link is
+  never followed. It is best effort: a failure is logged and does not fail the
+  deletion. The hourly check also removes a dangling alias when the folder was
+  already deleted by hand, again only while the migration is complete into the
+  converted generation.
 - **Size** is allocated bytes (`st_blocks`), not apparent size, so a sparse
   disk image counts what it occupies; symlinks are not followed and a file with
   several names counts once. It is a separate command (`measure_pre_upgrade_backup`)
