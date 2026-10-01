@@ -34,7 +34,13 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
             state["name"] = Value::String(vm_name(app, params)?);
             Ok(state)
         }
-        "desktop.action" => crate::desktop::dispatch(app, method, params),
+        "desktop.action" | "computer.approval" => crate::desktop::dispatch(app, method, params),
+        "chatgpt.status" => serde_json::to_value(crate::chatgpt_app::local_status(app)?)
+            .map_err(|_| "Could not encode the ChatGPT app status.".to_owned()),
+        "chatgpt.accept" => serde_json::to_value(crate::chatgpt_app::local_accept_notice(app)?)
+            .map_err(|_| "Could not encode the ChatGPT app status.".to_owned()),
+        "chatgpt.prepare" => serde_json::to_value(crate::chatgpt_app::start_prepare(app)?)
+            .map_err(|_| "Could not encode the ChatGPT app status.".to_owned()),
         "ssh.access.state" | "ssh.access.save" | "ssh.access.connection" => {
             crate::ssh_access::remote_dispatch(app, method, params)
         }

@@ -8,9 +8,22 @@ import { fileURLToPath } from "node:url"
 import { createGzip } from "node:zlib"
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..")
+/** The pinned LCU release archive for an image architecture, from the one lock that pins it. */
+export function lcuArchive(architecture) {
+  const lock = JSON.parse(readFileSync(resolve(root, "src-tauri/guest/lcu-lock.json"), "utf8"))
+  const asset = lock.assets?.[architecture]
+  if (lock.schemaVersion !== 1 || !/^[0-9][0-9A-Za-z.]*$/.test(lock.version) || !asset
+    || !/^[0-9a-f]{64}$/.test(asset.sha256)
+    || !asset.url.startsWith(`https://github.com/0xpolarzero/lcu/releases/download/v${lock.version}/`)) {
+    throw new Error("The LCU lock is invalid")
+  }
+  return { version: lock.version, url: asset.url, sha256: asset.sha256, name: asset.url.split("/").pop() }
+}
+
 export function verifyGuestImage(architecture, imageReference, { run = execFileSync } = {}) {
   if (!["arm64", "amd64"].includes(architecture)) throw new Error("Unsupported guest image architecture")
   const tools = readFileSync(resolve(root, "src-tauri/guest/verify-tools.sh"), "utf8")
+  const lcu = lcuArchive(architecture)
   const check = `${tools}
 curl --version
 curl -fsS file:///etc/os-release -o /dev/null
@@ -20,6 +33,11 @@ test -x /usr/lib/openssh/sftp-server
 test -x /usr/bin/selkies || { echo "Guest image is missing the Selkies streamer" >&2; exit 1; }
 test -x /usr/bin/xfce4-session || { echo "Guest image is missing the Xfce session" >&2; exit 1; }
 python3 -c 'import json; m = json.load(open("/usr/local/share/silo/guest-image.json")); assert m["schemaVersion"] == 1 and m["version"] == "'${GUEST_IMAGE_VERSION}'" and {"desktop", "accessibility"} <= set(m["capabilities"]) and m["streamerVersion"] == "2.0.0"'
+python3 -c 'import json; m = json.load(open("/usr/local/share/silo/guest-image.json")); assert "lcu-archive" in m["capabilities"]'
+# The pinned LCU archive (guest/lcu-lock.json) is staged unextracted; LCU itself and any ChatGPT app are not in the image.
+echo '${lcu.sha256}  /usr/local/share/silo/lcu/${lcu.name}' | sha256sum --check --status || { echo "The staged LCU archive does not match guest/lcu-lock.json" >&2; exit 1; }
+test "$(ls /usr/local/share/silo/lcu | wc -l)" = 1 || { echo "Only the pinned LCU archive may be staged" >&2; exit 1; }
+test ! -e /opt/lcu && test ! -e /usr/lib/chatgpt && test ! -e /opt/silo || { echo "The image must not contain LCU or a ChatGPT app" >&2; exit 1; }
 test -x /usr/local/libexec/silo-accessibility
 python3 -c 'import py_compile; py_compile.compile("/usr/local/libexec/silo-accessibility", cfile="/tmp/silo-accessibility.pyc", doraise=True)' || { echo "The accessibility poller does not compile" >&2; exit 1; }
 test -f /etc/xdg/autostart/silo-accessibility.desktop

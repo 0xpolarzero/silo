@@ -34,10 +34,13 @@ the text default. The image describes itself in
 
 - **Host.** A new VM saved without a desktop setting gets one with
   `Start desktop with sandbox` on when the bundled image is v4 or later
-  (`desktop::default_new_vm_desktops`, applied when the configuration is saved).
-  Creation then runs the same install action as the explicit flow, so no user step
-  is needed; an explicit choice in the request is kept. Existing VMs and VMs on
-  older images keep the explicit "Add Linux desktop" flow.
+  (`desktop::default_new_vm_desktops`, applied when the configuration is saved),
+  and `desktop.builtIn: true`. Creation then runs the same install action as the
+  explicit flow, so no user step is needed; an explicit startup choice in the
+  request is kept. `builtIn` is Silo's to decide: a value in a saved
+  configuration is ignored (an existing VM keeps what it had, a VM on an older
+  image is never built in). Existing VMs and VMs on older images keep the
+  explicit "Add Linux desktop" flow.
 - **Guest.** `setup-desktop.sh install` reads the marker and verifies the
   capability, the Selkies version, `/usr/bin/selkies`, every package in
   `src-tauri/guest/desktop-packages.txt` (shared with the image Dockerfile), the
@@ -63,7 +66,64 @@ the text default. The image describes itself in
   and `silo-accessibility` running as `silo`. The container needs `SYS_PTRACE`
   (the helper reads `/proc/PID/exe`); a MicroSandbox VM does not.
 
-LCU installation is separate and unchanged.
+## Built-in computer use
+
+A VM created from a v4 or later image (`desktop.builtIn`) has agent computer use
+ready with no setup. Implementation: `src-tauri/src/computer_use.rs`,
+`guest/silo-computer-use.py`, image recipe in `guest-image/Dockerfile`; the
+mounted app is described in [ChatGPT app](SiloUI-CHATGPT-APP.md) and the design
+in the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
+
+- **Image.** The pinned LCU archive (`guest/lcu-lock.json`, SHA-256 verified at
+  build) is staged unextracted in `/usr/local/share/silo/lcu/`. LCU itself and
+  any OpenAI file are not in the image.
+- **Mount.** The computer's published ChatGPT folder is mounted read-only at
+  `/opt/silo/chatgpt` (see the ChatGPT app doc; restores pass it again).
+- **After every boot** (`prepare_booted`, so start and restore) Silo pushes
+  `/usr/local/libexec/silo-computer-use`, `/var/lib/silo-computer-use/pinned.json`
+  (the tested app/LCU pair) and starts `silo-computer-use sync --boot --approval
+  <mode>` detached; the boot never waits for it or fails because of it. Pushing
+  the helper each time keeps it current with Silo, which the image cannot. The same
+  runs when the app becomes ready while the VM runs (after the one-time notice and
+  download), so a VM created before consent gains computer use without a restart.
+- **`sync`** is idempotent and does nothing when the receipt matches the pinned
+  pair and the approval mode. Otherwise: require the read-only mount and the
+  app folder (else `needs-app`); use the staged archive if its hash matches the
+  lock, else download the locked URL and verify it; extract it to local disk
+  (never the shared folder: its Node symlink dangles there); run
+  `scripts/install.sh --user silo --runtime-only --skip-system --offline
+  --existing-app <folder> --yes`; run `lcu setup --agent auto --session direct
+  --yes --approval ask|auto` as `silo`; read `lcu status --json`; wait for the
+  desktop session and run `lcu-session --user silo -- lcu doctor
+  --non-interactive --require-ready` as `silo`. The result is
+  `/var/lib/silo-computer-use/receipt.json`; the log is
+  `/var/log/silo-computer-use.log`. A reinstall happens only when LCU's recorded
+  app path or version differs from the pinned pair.
+- **Approval.** Per VM in `<storage>/computer-use/<id>.json` (default `ask`),
+  pushed with every sync, so a stopped VM picks a changed mode up at its next
+  boot. `ask` removes only LCU's own harness entries, `auto` adds them
+  (Claude Code `permissions.allow`, Codex `default_tools_approval_mode`); native
+  app permissions and the original runtime's own approvals are unchanged.
+  A fork starts with its source's mode; an import starts with `ask`.
+- **Desktop state.** `read_desktop_state` adds `computerUse` for built-in VMs,
+  also while stopped (`state: "vm-stopped"` keeps the approval and the last
+  versions seen): `state` (`unavailable`, `needs-consent`, `preparing`,
+  `installing`, `ready`, `failed`), `reason`, `compatibility` (`tested`,
+  `untested`, `unknown`), `warning`, `approval`, `appVersion`, `runtimeVersion`,
+  `lcuVersion`, `agents`. The running read costs one guest command that also
+  returns the helper's `status`, which only reads the receipt. The legacy `lcu*`
+  fields stay for VMs created before v4.
+- **Commands.** `set_computer_use_approval { workspace, mode: "ask" | "auto" }`
+  stores the mode and, when the VM runs, applies it; the `setup-computer-use`
+  desktop action reruns `lcu setup` for agents installed later (and works for
+  every v4 VM, whether or not the desktop is reachable). Both route to the owning
+  computer. An older Silo there answers "Update Silo on that computer to use
+  computer use."
+
+Legacy VMs: `setup-lcu` keeps working for VMs created before v4 with the 0.4.0
+lock (`guest/lcu-legacy-lock.json`); it is refused for built-in VMs.
+
+LCU installation on VMs created before v4 is separate and unchanged.
 
 ## Applications and external tools
 

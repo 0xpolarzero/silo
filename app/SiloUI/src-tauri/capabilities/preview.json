@@ -131,6 +131,10 @@
     "allow-answer-quit-request",
     "allow-read-desktop-state",
     "allow-desktop-action",
-    "allow-open-desktop"
+    "allow-open-desktop",
+    "allow-set-computer-use-approval",
+    "allow-chatgpt-app-status",
+    "allow-chatgpt-app-accept-notice",
+    "allow-chatgpt-app-prepare"
   ]
 }

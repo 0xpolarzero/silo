@@ -183,6 +183,10 @@ const METHODS: &[(&str, Access)] = &[
     ("desktop.connect", Access::Read),
     ("desktop.status", Access::Read),
     ("desktop.action", Access::Change),
+    ("chatgpt.status", Access::Read),
+    ("chatgpt.accept", Access::Change),
+    ("chatgpt.prepare", Access::Change),
+    ("computer.approval", Access::Change),
     ("ssh.access.state", Access::Read),
     ("ssh.access.connection", Access::Read),
     ("ssh.access.save", Access::Change),
@@ -808,8 +812,9 @@ fn request_timeout(request: &Value) -> Duration {
         || (request["method"] == "desktop.action"
             && matches!(
                 request["params"]["action"].as_str(),
-                Some("update-streamer" | "setup-lcu")
+                Some("update-streamer" | "setup-lcu" | "setup-computer-use")
             ))
+        || request["method"] == "computer.approval"
     {
         Duration::from_secs(2100)
     } else {
@@ -2945,6 +2950,9 @@ mod dispatch_tests {
                 "runtime.upsert",
                 "runtime.delete",
                 "desktop.action",
+                "chatgpt.accept",
+                "chatgpt.prepare",
+                "computer.approval",
                 "ssh.access.save",
                 "guest.prepare",
                 "network.publish",

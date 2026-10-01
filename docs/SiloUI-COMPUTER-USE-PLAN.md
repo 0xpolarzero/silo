@@ -1,6 +1,7 @@
 # Built-in Linux desktop and computer use: plan
 
-Status: approved 2026-10-01, in implementation. This replaces the optional,
+Status: approved 2026-10-01; the backend integration (sections 3 to 5) is implemented
+and verified live (2026-10-02, see the evidence in [ChatGPT app](SiloUI-CHATGPT-APP.md#integration-2026-10-02)). This replaces the optional,
 per-VM desktop installation described in [Linux desktop](SiloUI-DESKTOP.md)
 for new VMs, and replaces Luda with [LCU](https://github.com/0xpolarzero/lcu).
 
@@ -109,7 +110,8 @@ absolute).
 - Desktop recipe (Xfce, Selkies 2.0.0) installed at image build.
 - ChatGPT runtime dependencies and LCU system packages, so LCU installs with
   `--skip-system --offline`.
-- Pinned LCU release archive, hash-checked, staged for installation in the VM.
+- Pinned LCU release archive, hash-checked, staged for installation in the VM
+  (done: `guest/lcu-lock.json`, LCU 0.8.0, `/usr/local/share/silo/lcu/`).
 - Accessibility: dconf `toolkit-accessibility=true` system default and an
   autostarted AT-SPI attribute poller for Chromium/Electron.
 - GNOME Text Editor as the `text/plain` default instead of Mousepad.
@@ -128,7 +130,21 @@ absolute).
 - Pass canonical paths to MicroSandbox.
 - Remote computers do this on the owning computer.
 
+Done: lock (`lcuVersion` 0.8.0), notice, download, verification, extraction and
+publication under `<app data>/chatgpt/published/`, with the three commands
+registered, cached status reads and routing to the owning computer. See
+[ChatGPT app](SiloUI-CHATGPT-APP.md).
+
 ### 5. VM integration
+
+Done (see [built-in computer use](SiloUI-DESKTOP.md#built-in-computer-use)):
+mount at creation and on every restore (verified), boot and app-ready sync,
+approval modes, `setup-computer-use`, `computerUse` desktop state, garbage
+collection of unused versions. Decisions: the guest step is pushed and started
+by the host after every boot (`prepare_booted`) and when the app becomes ready
+while VMs run, rather than by a guest boot hook, so the helper always matches
+Silo; garbage collection runs at start and after a prepare, only while no VM
+runs.
 
 - New VMs are created with a stable per-computer folder mounted read-only at
   `/opt/silo/chatgpt`. That folder holds only verified, published version
@@ -182,6 +198,13 @@ Backend (Rust, guest scripts) and frontend implement this together.
   status object), and `set_computer_use_approval { workspace, mode: "ask" |
   "auto" }` returning the desktop state. `desktop_action` gains the action
   `setup-computer-use`, which reruns LCU setup for agents installed later.
+  As implemented, the three `chatgpt_app_*` commands take an optional
+  `workspace` (no argument means this computer); for a remote VM they run on its
+  owner (bridge methods `chatgpt.status`, `chatgpt.accept`, `chatgpt.prepare`,
+  `computer.approval`; for a remote prepare the owner downloads and the
+  controller polls it, emitting `chatgpt-app-status` itself).
+- `desktop.builtIn: boolean` in a VM's saved/reported `desktop` object marks a VM
+  created from a v4 image. Silo decides it; a written value is ignored.
 - App status object, tagged by `state`: `notConsented`, `idle`,
   `downloading { receivedBytes, totalBytes }`, `verifying`, `extracting`,
   `ready { path, version }`, `failed { reason, retryable }`.

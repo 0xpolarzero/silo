@@ -1129,6 +1129,9 @@ fn prepare_booted(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeEr
             )
         });
         crate::ssh_access::reconcile(paths);
+    } else {
+        // Built-in computer use installs itself in the background; it never fails a boot.
+        crate::computer_use::after_boot(&Booted, paths, workspace);
     }
     prepared
 }
@@ -5188,6 +5191,8 @@ fn create_machine_with_progress(
     else {
         return Ok(());
     };
+    // Needed before anything is claimed or created: a VM without its mount never gets it.
+    let mounts = crate::computer_use::mount_args(machine)?;
     configuration_recovery::claim(paths, machine)?;
     progress("workspace-disk-preparation", name, 0);
     let preflight = (|| {
@@ -5227,7 +5232,7 @@ fn create_machine_with_progress(
     preflight?;
     progress("workspace-image-preparation", name, 0);
     let image = runner.prepare_guest_image(paths)?;
-    let args = vec![
+    let mut args: Vec<String> = vec![
         "create".into(),
         image,
         "--pull".into(),
@@ -5268,6 +5273,13 @@ fn create_machine_with_progress(
         "--quiet".into(),
         "--progress-json".into(),
     ];
+    // Built-in computer use: the computer's ChatGPT app folder, read-only. A snapshot
+    // never carries host mounts, so every restore passes this again (see checkpoints).
+    let before_start = args
+        .iter()
+        .position(|arg| arg == "--no-start")
+        .unwrap_or(args.len());
+    args.splice(before_start..before_start, mounts);
     progress("workspace-runtime-preparation", name, 0);
     if let Err(error) = runner.run(paths, &args, MUTATION_TIMEOUT) {
         return Err(with_cleanup_error(
@@ -5341,6 +5353,43 @@ pub(crate) fn create_disposable_test_machine(
     request.machines.push(machine.clone());
     apply_whole_configuration(&ProcessRunner, paths, &host_resources()?, request)?;
     Ok(machine)
+}
+
+/// Like `create_disposable_test_machine` with sizes a desktop needs. The configuration
+/// is applied as the app does: a v4 image makes the new VM's desktop built in.
+#[cfg(test)]
+pub(crate) fn create_disposable_desktop_machine(
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<MachineConfiguration, RuntimeError> {
+    let machine = MachineConfiguration::Vm {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: name.into(),
+        cpus: 2,
+        max_cpus: 2,
+        memory_gib: 4,
+        max_memory_gib: 4,
+        workspace_storage_gib: 2,
+        runtime_storage_gib: 6,
+        desktop: None,
+    };
+    let mut request = read_metadata(&paths.metadata)?;
+    request.machines.push(machine);
+    apply_whole_configuration(&ProcessRunner, paths, &host_resources()?, request)?;
+    read_metadata(&paths.metadata)?
+        .machines
+        .into_iter()
+        .find(|machine| machine.name() == name)
+        .ok_or_else(|| RuntimeError::Invalid("The disposable sandbox was not saved.".into()))
+}
+
+/// The app's explicit Start for a disposable sandbox (boot hooks included).
+#[cfg(test)]
+pub(crate) fn start_disposable_test_machine(
+    paths: &RuntimePaths,
+    name: &str,
+) -> Result<(), RuntimeError> {
+    workspace_action_with(&ProcessRunner, paths, &host_resources()?, "start", name)
 }
 
 /// Exercise the same explicit Start path as the app for an imported sandbox.
@@ -6613,9 +6662,11 @@ esac
                         .unwrap();
                     let old = crate::desktop::DesktopConfiguration {
                         start_with_sandbox: true,
+                        built_in: false,
                     };
                     let desired = crate::desktop::DesktopConfiguration {
                         start_with_sandbox: false,
+                        built_in: false,
                     };
                     let result = crate::desktop::configure_with(
                         &ProcessRunner,
@@ -6655,6 +6706,7 @@ esac
         if let MachineConfiguration::Vm { desktop, .. } = &mut desired {
             *desktop = Some(crate::desktop::DesktopConfiguration {
                 start_with_sandbox: true,
+                built_in: false,
             });
         }
         let runner = StubRunner::successful_json(vec![
@@ -6681,6 +6733,7 @@ esac
         if let MachineConfiguration::Vm { desktop, .. } = &mut previous {
             *desktop = Some(crate::desktop::DesktopConfiguration {
                 start_with_sandbox: true,
+                built_in: false,
             });
         }
         let runner = StubRunner::successful_json(vec![]);
@@ -7864,6 +7917,7 @@ esac
         if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
             *desktop = Some(crate::desktop::DesktopConfiguration {
                 start_with_sandbox: false,
+                built_in: false,
             });
         }
         let candidate = request(vec![machine.clone()]);
@@ -9585,6 +9639,7 @@ exit 9
             if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
                 *desktop = Some(crate::desktop::DesktopConfiguration {
                     start_with_sandbox: true,
+                    built_in: false,
                 });
             }
             let runner = StubRunner::successful_json(vec![
@@ -9610,6 +9665,89 @@ exit 9
                 .contains("silo-desktop autostart true"));
             assert!(calls[3].contains(&"--no-start".into()));
         }
+    }
+
+    fn built_in_vm() -> MachineConfiguration {
+        let mut machine = vm();
+        if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+            *desktop = Some(crate::desktop::DesktopConfiguration {
+                start_with_sandbox: true,
+                built_in: true,
+            });
+        }
+        machine
+    }
+
+    #[test]
+    fn creating_a_built_in_vm_mounts_the_published_app_folder_read_only() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let published = directory.path().join("published");
+        fs::create_dir(&published).unwrap();
+        crate::computer_use::set_test_published_dir(Some(published.clone()));
+        let runner = StubRunner::successful_json(vec![
+            json!([]),
+            json!(1),
+            json!(1),
+            json!(null),
+            inspect(&paths, "Created"),
+            json!(null),
+            inspect(&paths, "Stopped"),
+            inspect(&paths, "Stopped"),
+            json!(1),
+            json!(null),
+            inspect(&paths, "Stopped"),
+        ]);
+        create_machine(&runner, &paths, &built_in_vm()).unwrap();
+        crate::computer_use::set_test_published_dir(None);
+        let calls = runner.calls.lock().unwrap();
+        let mount = format!("{}:/opt/silo/chatgpt:ro", published.display());
+        let create = &calls[3];
+        let position = create.iter().position(|arg| arg == "-v").unwrap();
+        assert_eq!(create[position + 1], mount);
+        assert_eq!(create.iter().filter(|arg| *arg == "-v").count(), 1);
+        assert!(position < create.iter().position(|arg| arg == "--no-start").unwrap());
+        // The workspace disk is still the only owned mount.
+        assert!(create
+            .windows(2)
+            .any(|pair| pair == ["--mount-owned", "/workspace:kind=disk,size=60G"]));
+    }
+
+    #[test]
+    fn creating_a_vm_without_built_in_computer_use_adds_no_mount() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        crate::computer_use::set_test_published_dir(Some(directory.path().to_path_buf()));
+        let runner = StubRunner::successful_json(vec![
+            json!([]),
+            json!(1),
+            json!(1),
+            json!(null),
+            inspect_owned_workspace(&paths, "Created"),
+            json!(null),
+            inspect_owned_workspace(&paths, "Stopped"),
+        ]);
+        create_machine(&runner, &paths, &vm()).unwrap();
+        crate::computer_use::set_test_published_dir(None);
+        let calls = runner.calls.lock().unwrap();
+        assert!(!calls[3]
+            .iter()
+            .any(|arg| arg == "-v" || arg.contains("/opt/silo")));
+    }
+
+    #[test]
+    fn a_built_in_vm_is_not_created_without_the_shared_folder() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        crate::computer_use::set_test_published_dir(None);
+        let runner = StubRunner::successful_json(vec![]);
+        let error = create_machine(&runner, &paths, &built_in_vm()).unwrap_err();
+        assert!(error.to_string().contains("shared ChatGPT folder"));
+        // Refused before the runtime was asked anything or anything was claimed.
+        assert!(runner.calls.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -783,6 +783,7 @@ pub(super) fn view_pending(record: &Record, name: &str) -> Option<PendingRestore
 }
 
 pub(crate) fn forget_removed(paths: &RuntimePaths, id: &str) -> Result<(), RuntimeError> {
+    crate::computer_use::forget(paths, id);
     let target = path(paths, id);
     match fs::remove_file(target) {
         Ok(()) => File::open(directory(paths))
@@ -985,6 +986,8 @@ pub(super) fn start_pending(
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
+    // Before any state changes: a VM that needs the mount cannot restore without it.
+    let mounts = crate::computer_use::mount_args(machine)?;
     let mut record = load(paths, machine.id())?;
     let lineage_group = ensure_snapshot_group(paths, machine.id(), machine.name())?;
     record.snapshot_group = Some(lineage_group.clone());
@@ -1176,6 +1179,8 @@ pub(super) fn start_pending(
         ]);
     }
     args.extend(network_args);
+    // A snapshot never carries host mounts: pass the computer-use mount again.
+    args.extend(mounts);
     let restored = runner.run(paths, &args, Duration::from_secs(900));
     // A completed restore resumed the VM; after a failure, a running, paused or crashed VM
     // shows it ran as well. Checked even after a cancel.
@@ -1186,7 +1191,8 @@ pub(super) fn start_pending(
         .is_ok_and(|vm| matches!(vm.status.as_str(), "Running" | "Paused" | "Crashed"));
     let result = restored
         .and_then(|_| inspect_workspace(runner, paths, machine.name()))
-        .and_then(|observed| if running_child_matches(&observed, machine.id(), &attempt_id, &material, &policy) {
+        .and_then(|observed| if running_child_matches(&observed, machine.id(), &attempt_id, &material, &policy)
+            && crate::computer_use::mount_present(&observed.config, machine) {
             Ok(observed)
         } else { Err(error("The restored VM did not reach a verified running state. Its checkpoint was preserved.")) });
     match result {
@@ -1478,6 +1484,7 @@ pub(super) fn fork_commit(
     });
     child_record.desired_network_policy = Some(fork.desired_policy.clone());
     save(paths, &child_id, &child_record)?;
+    crate::computer_use::inherit_settings(paths, source.id(), &child_id);
     let mut copied_github = false;
     let mut copied_secrets = false;
     let result = (|| {
@@ -2979,6 +2986,114 @@ mod tests {
             load(&paths, ID).unwrap().snapshot_group.as_deref(),
             Some("silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9")
         );
+    }
+
+    /// Records every command, answers like a runtime whose restore fails.
+    struct RestoreProbe(Mutex<Vec<Vec<String>>>);
+    impl RuntimeRunner for RestoreProbe {
+        fn run(
+            &self,
+            _paths: &RuntimePaths,
+            args: &[String],
+            _timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            self.0.lock().unwrap().push(args.to_vec());
+            let stdout = match args.first().map(String::as_str) {
+                Some("snapshot") => serde_json::json!([{
+                    "group":"silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
+                    "name":"silo-backup-0-330418-1790360984903",
+                    "scope":"disk", "availability":"ready"
+                }])
+                .to_string(),
+                Some("list") => "[]".into(),
+                Some("restore") => return Err(error("synthetic restore failure")),
+                Some("inspect") => return Err(error("sandbox not found: dev")),
+                _ => panic!("unexpected command: {args:?}"),
+            };
+            Ok(CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    fn built_in_machine() -> MachineConfiguration {
+        let mut machine = machine();
+        if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+            *desktop = Some(crate::desktop::DesktopConfiguration {
+                start_with_sandbox: true,
+                built_in: true,
+            });
+        }
+        machine
+    }
+
+    fn pending_import(paths: &RuntimePaths) {
+        import_pending_restore(
+            paths,
+            ID,
+            "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
+            "silo-backup-0-330418-1790360984903",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn restoring_a_built_in_vm_passes_the_computer_use_mount_again() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let published = directory.path().join("published");
+        std::fs::create_dir(&published).unwrap();
+        crate::computer_use::set_test_published_dir(Some(published.clone()));
+        pending_import(&paths);
+        let runner = RestoreProbe(Mutex::new(Vec::new()));
+        assert!(start_pending(&runner, &paths, &built_in_machine()).is_err());
+        let calls = runner.0.lock().unwrap();
+        let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
+        let mount = format!("{}:/opt/silo/chatgpt:ro", published.display());
+        assert!(
+            restore
+                .windows(2)
+                .any(|pair| pair == ["-v", mount.as_str()]),
+            "{restore:?}"
+        );
+        crate::computer_use::set_test_published_dir(None);
+    }
+
+    #[test]
+    fn restoring_a_vm_without_built_in_computer_use_adds_no_mount() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        crate::computer_use::set_test_published_dir(Some(directory.path().to_path_buf()));
+        pending_import(&paths);
+        let runner = RestoreProbe(Mutex::new(Vec::new()));
+        assert!(start_pending(&runner, &paths, &machine()).is_err());
+        let calls = runner.0.lock().unwrap();
+        let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
+        assert!(!restore
+            .iter()
+            .any(|arg| arg == "-v" || arg.contains("/opt/silo")));
+        crate::computer_use::set_test_published_dir(None);
+    }
+
+    #[test]
+    fn a_built_in_vm_cannot_restore_without_the_shared_folder() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        crate::computer_use::set_test_published_dir(None);
+        pending_import(&paths);
+        let runner = RestoreProbe(Mutex::new(Vec::new()));
+        let failure = start_pending(&runner, &paths, &built_in_machine()).unwrap_err();
+        assert!(failure.to_string().contains("shared ChatGPT folder"));
+        // Nothing ran and the pending restore is untouched.
+        assert!(runner.0.lock().unwrap().is_empty());
+        assert!(load(&paths, ID)
+            .unwrap()
+            .pending_checkpoint_restore
+            .is_some());
     }
 
     #[test]

@@ -21,22 +21,25 @@ RUN sh /tmp/silo-setup-github.sh \
 #     No mousepad (GTK 3.24's AT-SPI PasteText use-after-free crashes every GTK3
 #     text view); gnome-text-editor (GTK4) is the text editor. Includes the dconf
 #     stack and python3-pyatspi for the poller in src-tauri/guest/silo-accessibility.py.
-#  3. LCU v0.7.0 SYSTEM_PACKAGES, a superset of the ChatGPT Linux .deb's
-#     dependencies on Ubuntu 24.04, so LCU installs with --skip-system --offline.
-#     Source: https://github.com/0xpolarzero/lcu/blob/v0.7.0/scripts/install.py
+#  3. LCU SYSTEM_PACKAGES (checked against v0.8.0), a superset of the ChatGPT Linux
+#     .deb's dependencies on Ubuntu 24.04, so LCU installs with --skip-system --offline.
+#     Source: https://github.com/0xpolarzero/lcu/blob/v0.8.0/scripts/install.py
 #     Packages already named in an earlier group are not repeated.
 #
 # The pinned Selkies .deb is downloaded, SHA-256 verified, installed and deleted
-# inside this one RUN so no package file stays in any layer; the lock and the
+# inside this one RUN so no package file stays in any layer; the locks and the
 # poller are bind-mounted, never COPYed. Apt lists and caches are cleaned here.
 #
-# TODO(LCU): stage the pinned, hash-checked LCU release archive (for example under
-# /usr/local/share/silo/) here once the new LCU release is published. Do not add
-# LCU itself or any OpenAI file before then.
+# The pinned LCU release archive (src-tauri/guest/lcu-lock.json, the one place to
+# bump it) is downloaded and SHA-256 verified in the same RUN and kept, unextracted,
+# under /usr/local/share/silo/lcu/. A VM installs it against the ChatGPT app the host
+# mounts at boot (src-tauri/guest/silo-computer-use.py). LCU itself is not installed
+# here, and no OpenAI file is ever part of the image.
 ARG TARGETARCH
 RUN --mount=type=bind,source=src-tauri/guest/desktop-streamer-lock.json,target=/mnt/desktop-streamer-lock.json \
     --mount=type=bind,source=src-tauri/guest/desktop-packages.txt,target=/mnt/desktop-packages.txt \
     --mount=type=bind,source=src-tauri/guest/silo-accessibility.py,target=/mnt/silo-accessibility.py \
+    --mount=type=bind,source=src-tauri/guest/lcu-lock.json,target=/mnt/lcu-lock.json \
     set -eu \
     && export DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
@@ -58,6 +61,13 @@ RUN --mount=type=bind,source=src-tauri/guest/desktop-streamer-lock.json,target=/
     && apt-get install -y --no-install-recommends /tmp/selkies.deb \
     && test -x /usr/bin/selkies \
     && rm -f /tmp/selkies.deb \
+    && set -- $(python3 -c "import json,re,sys; l=json.load(open('/mnt/lcu-lock.json')); a=l['assets'][sys.argv[1]]; assert l['schemaVersion']==1 and re.fullmatch(r'[0-9][0-9A-Za-z.]*', l['version']) and a['url'].startswith('https://github.com/0xpolarzero/lcu/releases/download/v'+l['version']+'/') and re.fullmatch('[0-9a-f]{64}', a['sha256']); print(a['url'], a['sha256'])" "$TARGETARCH") \
+    && lcu_url=$1 && lcu_sha256=$2 \
+    && install -d -m 0755 /usr/local/share/silo/lcu \
+    && lcu_archive=/usr/local/share/silo/lcu/${lcu_url##*/} \
+    && curl --silent --show-error --fail --location --retry 2 --connect-timeout 30 --max-time 600 \
+        --proto '=https' --tlsv1.2 "$lcu_url" -o "$lcu_archive" \
+    && echo "$lcu_sha256  $lcu_archive" | sha256sum --check --status \
     && install -d -m 0755 /usr/local/libexec /etc/dconf/profile /etc/dconf/db/local.d /etc/xdg/autostart \
     && install -m 0755 /mnt/silo-accessibility.py /usr/local/libexec/silo-accessibility \
     && printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Silo accessibility' \
@@ -73,7 +83,7 @@ RUN --mount=type=bind,source=src-tauri/guest/desktop-streamer-lock.json,target=/
         'application/json=org.gnome.TextEditor.desktop' 'application/xml=org.gnome.TextEditor.desktop' \
         > /etc/xdg/mimeapps.list \
     && install -d -m 0755 /usr/local/share/silo \
-    && printf '%s\n' '{"schemaVersion":1,"version":"ubuntu-24.04-v4","capabilities":["desktop","accessibility","lcu-system-packages"],"streamerVersion":"2.0.0"}' > /usr/local/share/silo/guest-image.json \
+    && printf '%s\n' '{"schemaVersion":1,"version":"ubuntu-24.04-v4","capabilities":["desktop","accessibility","lcu-system-packages","lcu-archive"],"streamerVersion":"2.0.0"}' > /usr/local/share/silo/guest-image.json \
     && dpkg-query -W > /usr/local/share/silo-packages.txt \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/*
 CMD ["/bin/bash"]

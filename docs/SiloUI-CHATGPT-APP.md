@@ -1,9 +1,11 @@
 # Pinned ChatGPT app on each computer
 
 Implements section 4 of the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
-Code: `app/SiloUI/src-tauri/src/chatgpt_app.rs`, lock:
-`app/SiloUI/src-tauri/guest/chatgpt-app-lock.json`. It is not yet wired into VM
-creation or the UI; remote computers run it on the owning computer.
+Code: `app/SiloUI/src-tauri/src/chatgpt_app.rs` (this folder) and
+`computer_use.rs` (VM integration); lock:
+`app/SiloUI/src-tauri/guest/chatgpt-app-lock.json`. Remote computers run it on
+the owning computer. [Linux desktop](SiloUI-DESKTOP.md#built-in-computer-use)
+describes what a VM does with the folder.
 
 ## Behavior
 
@@ -38,9 +40,9 @@ x86-64.
    at once and kills the unpacking tools without draining the package.
 8. Publishes in a crash-safe order: every file is synced as written; directories
    are synced bottom-up; the tree digests are computed from what is on disk;
-   the staging directory is renamed to `<version>-<debarch>` and the parent is
-   synced; the **publication record** is then written (exclusive temporary,
-   sync, rename, parent sync). The record is the last durable step, so a crash
+   the staging directory is renamed into `published/<version>-<debarch>` and
+   both parents are synced; the **publication record** (next to `published/`,
+   not in it) is then written (exclusive temporary, sync, rename, parent sync). The record is the last durable step, so a crash
    at any earlier point leaves a folder that is never reused. The `.deb` is
    deleted after the record is durable. Every sync error aborts publication
    (and removes a tree whose record could not be written).
@@ -52,9 +54,18 @@ appeared meanwhile is accepted only if it passes verification.
 Stale `.staging-*`, `.rejected-*` and temporary files are removed on the next
 call.
 
-`collect_garbage(root, lock, arch, in_use)` removes `<version>-<arch>` folders
-(and their records) that are neither pinned nor in `in_use` (folder names),
-stale staging directories and downloads of other versions.
+`collect_garbage(root, lock, arch, in_use)` removes `published/<version>-<arch>`
+folders (and their records) that are neither pinned nor in `in_use` (folder
+names), stale staging directories and downloads of other versions. The app runs
+it at start and after an update is prepared, and only while no VM runs: all VMs
+mount the whole `published/` folder and a running guest may still use the
+previous version until its next boot sync.
+
+`ensure_published_dir(root)` creates the root and an empty `published/` (mode
+0755, so the guest's working account can enter the mount), moves a tree an
+earlier build published directly under the root into `published/` (it is
+verified like any other before use) and returns the canonical path VMs mount.
+The app calls it at start, so the folder exists before any consent.
 
 ## Filesystem safety
 
@@ -82,8 +93,8 @@ folders in the storage directory, so nothing is trusted by path:
 
 ## Publication record and verification
 
-`<root>/<version>-<debarch>.published.json` sits next to the tree (never inside
-it) and holds: schema version, lock version, architecture, the `.deb` SHA-256
+`<root>/<version>-<debarch>.published.json` sits next to `published/` (never
+inside it, so the mounted folder holds only verified trees) and holds: schema version, lock version, architecture, the `.deb` SHA-256
 from the lock, `treeSha256`, `statSha256`, entry count and byte count.
 
 `treeSha256` is SHA-256 over the sorted list of (path, type, mode, size,
@@ -127,13 +138,16 @@ so production (`org.silo.preview`) and Dev (`org.silo.dev`) never share it, as
 `~/Library/Application Support/<identifier>/chatgpt/`.
 
 ```text
-.lock  consent.json  downloads/  .staging-*/  <version>-<debarch>/
+.lock  consent.json  downloads/  .staging-*/
 <version>-<debarch>.published.json
+published/<version>-<debarch>/
 ```
 
-The `<version>-<debarch>` folder holds what dpkg would place in
-`/usr/lib/chatgpt`: `ChatGPT`, `resources/…`. It is the directory to mount
-read-only; mount only this folder (large mounts slow the first `statfs`).
+Each `published/<version>-<debarch>` folder holds what dpkg would place in
+`/usr/lib/chatgpt`: `ChatGPT`, `resources/…`. `published/` is what VMs mount
+read-only at `/opt/silo/chatgpt`; it holds only verified trees and is
+garbage collected, which keeps MicroSandbox's first `statfs` walk of the mount
+small (#1701/#1702). Records, staging, downloads and consent stay outside it.
 
 ## Consent
 
@@ -148,11 +162,25 @@ read-only; mount only this folder (large mounts slow the first `statfs`).
 `ready {path,version}`, `failed {reason,retryable}`. The reporter is called
 from the worker thread (downloads throttled to 4 per second).
 
-Tauri commands, written but not registered (registration needs `build.rs`
-permissions, `capabilities/preview.json` and `main.rs`, which integration
-owns): `chatgpt_app_status`, `chatgpt_app_accept_notice`,
-`chatgpt_app_prepare` (async, runs `ensure`, emits the `chatgpt-app-status`
-event).
+### Commands
+
+All three return the status object (`chatgpt_app_prepare` resolves with the
+final one) and take an optional `workspace`: for a remote VM they run on the
+computer that owns it (`chatgpt.status`, `chatgpt.accept` and `chatgpt.prepare`
+bridge methods; an older Silo there answers "Update Silo on that computer to use
+computer use."). `chatgpt_app_status` never blocks the UI thread and never
+re-verifies in the render path: status reads use a cache filled at app start, by
+the commands and by progress events. The first full digest of a process runs on
+a background thread at start. `chatgpt_app_prepare` emits `chatgpt-app-status`
+for every step; for a remote computer the owner downloads and the controller
+polls its status, emitting the same event.
+
+- `chatgpt_app_status { workspace? }`
+- `chatgpt_app_accept_notice { workspace? }`
+- `chatgpt_app_prepare { workspace? }`
+
+When preparing finishes with `ready`, running built-in VMs on this computer set
+computer use up at once (see below); stopped ones do it when they start.
 
 ## Extraction and validation
 
@@ -205,8 +233,10 @@ plan and has not been recomputed locally; the OpenAI InRelease signature could
 not be checked here (no gpg), only its hash chain to `Packages`.
 
 The runtime pair is `0.0.27/20260927214556-b77d38801cca`
-(`resources/cua_node/manifest.json`). `lcuVersion` is `null` until integration
-fills in the tested LCU release. The owner updates the pair by hand.
+(`resources/cua_node/manifest.json`). `lcuVersion` is `0.8.0`, the LCU release
+tested with it; `guest/lcu-lock.json` pins that release's archives (a test
+checks that both locks agree). The owner updates the pair by hand: bump the
+app lock and `lcu-lock.json` together.
 
 ## Verification
 
@@ -228,7 +258,7 @@ exclusive consent files. They use temporary directories and no process-wide
 Silo state (the in-memory verification cache is keyed by path).
 
 Opt-in live test, downloads 453 MB and unpacks about 1.5 GB into a temporary
-directory:
+directory (set `SILO_LIVE_CHATGPT_ROOT` to keep the published folder):
 
 ```sh
 SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures \
@@ -247,3 +277,28 @@ cheap reuse check (record, executables, stat digest) took 28 ms; the first
 full content digest of a process took 6.2 s. In the unoptimized debug test
 profile SHA-256 is about 20 times slower (the full digest took 121 s), which
 is a test-profile artifact only.
+
+## Integration (2026-10-02)
+
+The mount, guest flow and commands are in `computer_use.rs`; the guest side in
+`guest/silo-computer-use.py`; the image side in `guest-image/Dockerfile`.
+
+- **Mount.** A VM created from a v4 or later image (`desktop.builtIn`) is
+  created with `-v <canonical published dir>:/opt/silo/chatgpt:ro`; creation
+  fails if Silo has no such folder rather than make a VM that can never get
+  computer use. Every restore (import, transfer, checkpoint restore and fork)
+  passes the same `-v` again, because MicroSandbox never carries host mounts in
+  disk snapshots, and checks that the restored VM reports a read-only `Bind`
+  mount at that path. Exports drop the mount from the saved configuration (its
+  host path means nothing elsewhere); `desktop.builtIn` in the VM settings is
+  what makes the importing computer mount its own folder. Pre-v4 VMs never get
+  the mount.
+- **Guest.** Silo pushes the helper and the pinned pair into the guest and runs
+  `sync` after every boot (detached) and when the app becomes ready; see
+  [Linux desktop](SiloUI-DESKTOP.md#built-in-computer-use).
+- **Evidence** (2026-10-02, macOS arm64, MicroSandbox 0.7.6, real v4 image and
+  real app): a fresh VM mounted the folder read-only (`ro` in `/proc/mounts`,
+  writes fail with EROFS), `lcu status --json` reported `tested`, `lcu doctor`
+  (which lists windows and takes a screenshot on Linux) passed within seconds of
+  boot, `--approval auto` wrote `default_tools_approval_mode = "approve"` for
+  Codex, and a restore with the mount passed again became ready again.

@@ -10,6 +10,11 @@ use tauri::{AppHandle, Emitter};
 pub struct DesktopConfiguration {
     #[serde(default = "default_start")]
     pub start_with_sandbox: bool,
+    /// The desktop and computer use come with the guest image (v4 and later) and always
+    /// start with the VM. Silo decides this when it creates the VM; a value sent with a
+    /// saved configuration is ignored (see `keep_built_in`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub built_in: bool,
 }
 fn default_start() -> bool {
     true
@@ -30,23 +35,40 @@ pub(crate) fn image_includes_desktop(image_version: &str) -> bool {
 }
 
 /// On such an image the desktop is part of every new VM, started with it (computer use
-/// needs a running session). Existing VMs and explicit choices are left alone.
+/// needs a running session). Existing VMs and explicit choices are left alone, except
+/// that `built_in` is Silo's to decide: an existing VM keeps what it had and a new VM
+/// has it exactly when it is created from such an image, whatever a request says.
 pub(crate) fn default_new_vm_desktops(
     machines: &mut [MachineConfiguration],
     previous: &[MachineConfiguration],
     image_version: &str,
 ) {
-    if !image_includes_desktop(image_version) {
-        return;
-    }
+    let built_in_image = image_includes_desktop(image_version);
     for machine in machines {
-        if previous.iter().any(|old| old.id() == machine.id()) {
+        let old = previous.iter().find(|old| old.id() == machine.id());
+        let MachineConfiguration::Vm { desktop, .. } = machine else {
             continue;
-        }
-        if let MachineConfiguration::Vm { desktop, .. } = machine {
-            desktop.get_or_insert(DesktopConfiguration {
-                start_with_sandbox: true,
-            });
+        };
+        match old {
+            Some(old) => {
+                let was_built_in = configuration(old).is_some_and(|old| old.built_in);
+                if let Some(configuration) = desktop {
+                    configuration.built_in = was_built_in;
+                }
+            }
+            None if built_in_image => {
+                desktop
+                    .get_or_insert(DesktopConfiguration {
+                        start_with_sandbox: true,
+                        built_in: true,
+                    })
+                    .built_in = true;
+            }
+            None => {
+                if let Some(configuration) = desktop {
+                    configuration.built_in = false;
+                }
+            }
         }
     }
 }
@@ -71,7 +93,7 @@ pub(crate) fn only_desktop_changed(
     }
 }
 
-fn guest(
+pub(crate) fn guest(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
@@ -159,7 +181,7 @@ fn lcu_setup_script() -> String {
         ),
         (
             "lcu-lock.json",
-            include_str!("../guest/lcu-lock.json"),
+            include_str!("../guest/lcu-legacy-lock.json"),
             "SILO_LCU_LOCK_EOF",
         ),
     ] {
@@ -190,7 +212,10 @@ fn action_script(action: &str) -> String {
 }
 
 fn action_timeout(action: &str) -> Duration {
-    if matches!(action, "update-streamer" | "setup-lcu") {
+    if matches!(
+        action,
+        "update-streamer" | "setup-lcu" | "setup-computer-use"
+    ) {
         Duration::from_secs(1800)
     } else if action == "restart-streamer" {
         Duration::from_secs(120)
@@ -272,13 +297,31 @@ fn machine(
     Ok((paths, machine))
 }
 
+/// The desktop state a live regression polls (production code path, real runtime).
+#[cfg(test)]
+pub(crate) fn test_status(
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+) -> Result<Value, String> {
+    status_with(&runtime::ProcessRunner, paths, machine)
+}
+
 fn status_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
 ) -> Result<Value, String> {
     let settings = configuration(machine);
-    let fallback = |state: &str| json!({"installed": settings.is_some(), "state":state, "autoStart":settings.is_some_and(|s| s.start_with_sandbox), "backend":null, "sessionState":"stopped", "streamState":"stopped", "updateRequired":false, "streamerVersion":null, "lcuState":null, "lcuReason":null, "lcuVersion":null, "lcuAppVersion":null, "lcuRuntimeVersion":null, "lcuAgents":null, "lcuReadiness":null});
+    let built_in = crate::computer_use::is_built_in(machine);
+    let fallback = |state: &str| {
+        let mut value = json!({"installed": settings.is_some(), "state":state, "autoStart":settings.is_some_and(|s| s.start_with_sandbox), "backend":null, "sessionState":"stopped", "streamState":"stopped", "updateRequired":false, "streamerVersion":null, "lcuState":null, "lcuReason":null, "lcuVersion":null, "lcuAppVersion":null, "lcuRuntimeVersion":null, "lcuAgents":null, "lcuReadiness":null});
+        // A stopped VM still reports its approval mode and the last versions it had.
+        if let Some(computer_use) = crate::computer_use::desktop_state(paths, machine, false, None)
+        {
+            value["computerUse"] = computer_use;
+        }
+        value
+    };
     let inspected =
         match runtime::observe_vm(runner, paths, machine.name()).map_err(|e| e.to_string())? {
             runtime::VmRuntime::Present(inspected) => Some(inspected),
@@ -294,10 +337,35 @@ fn status_with(
             "uninstalled"
         }));
     }
-    let output = guest(runner, paths, machine.name(), "if [ -x /usr/local/bin/silo-desktop ]; then /usr/local/bin/silo-desktop status; else printf '%s\\n' '{\"installed\":false,\"state\":\"uninstalled\",\"autoStart\":false}'; fi", Duration::from_secs(15), false).map_err(|e| e.to_string())?;
-    let value: Value = serde_json::from_str(output.trim())
+    let mut script = String::from("if [ -x /usr/local/bin/silo-desktop ]; then /usr/local/bin/silo-desktop status; else printf '%s\\n' '{\"installed\":false,\"state\":\"uninstalled\",\"autoStart\":false}'; fi");
+    if built_in {
+        script.push('\n');
+        script.push_str(crate::computer_use::STATUS_COMMAND);
+    }
+    let output = guest(
+        runner,
+        paths,
+        machine.name(),
+        &script,
+        Duration::from_secs(15),
+        false,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut lines = output.trim().lines();
+    let value: Value = serde_json::from_str(lines.next().unwrap_or("").trim())
         .map_err(|_| "The desktop returned an invalid status.")?;
-    public_status(value)
+    let mut status = public_status(value)?;
+    if built_in {
+        let guest_state = lines
+            .next()
+            .and_then(|line| serde_json::from_str::<Value>(line.trim()).ok());
+        if let Some(computer_use) =
+            crate::computer_use::desktop_state(paths, machine, true, guest_state.as_ref())
+        {
+            status["computerUse"] = computer_use;
+        }
+    }
+    Ok(status)
 }
 
 // Project explicit public fields: credentials and arbitrary guest output never reach the UI.
@@ -471,6 +539,13 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
         app,
         params["vmId"].as_str().ok_or("Missing VM identity.")?,
     )?;
+    if method == "computer.approval" {
+        return local_approval(
+            app,
+            &name,
+            params["mode"].as_str().ok_or("Missing approval mode.")?,
+        );
+    }
     local(
         app,
         &name,
@@ -506,12 +581,29 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
         runtime::shutdown::ensure_accepting_operations()?;
         if !matches!(
             action,
-            "start" | "stop" | "restart" | "restart-streamer" | "update-streamer" | "setup-lcu"
+            "start"
+                | "stop"
+                | "restart"
+                | "restart-streamer"
+                | "update-streamer"
+                | "setup-lcu"
+                | "setup-computer-use"
         ) {
             return Err("Unsupported desktop action.".into());
         }
         if configuration(&machine).is_none() {
             return Err("Add a Linux desktop in sandbox settings first.".into());
+        }
+        if action == "setup-computer-use" && !crate::computer_use::is_built_in(&machine) {
+            return Err(
+                "Computer use is built into sandboxes created with the current guest image. Create a new sandbox to use it."
+                    .into(),
+            );
+        }
+        if action == "setup-lcu" && crate::computer_use::is_built_in(&machine) {
+            return Err(
+                "This sandbox sets up computer use itself. Choose Set up computer use.".into(),
+            );
         }
         let inspected = match runtime::observe_vm(&runtime::ProcessRunner, &paths, workspace)
             .map_err(|e| e.to_string())?
@@ -524,18 +616,88 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
         } else if inspected.status != "Running" {
             return Err("Start the sandbox before changing its desktop session.".into());
         }
-        guest(
-            &runtime::ProcessRunner,
-            &paths,
-            workspace,
-            &action_script(action),
-            action_timeout(action),
-            false,
-        )
-        .map_err(|e| e.to_string())?;
+        if action == "setup-computer-use" {
+            crate::computer_use::setup_with(&runtime::ProcessRunner, &paths, &machine, true)
+                .map_err(|e| e.to_string())?;
+        } else {
+            guest(
+                &runtime::ProcessRunner,
+                &paths,
+                workspace,
+                &action_script(action),
+                action_timeout(action),
+                false,
+            )
+            .map_err(|e| e.to_string())?;
+        }
         let _ = app.emit("silo://application-state-changed", ());
     }
     status_with(&runtime::ProcessRunner, &paths, &machine)
+}
+
+/// Stores a VM's computer-use approval mode and, when it runs, applies it.
+fn local_approval(app: &AppHandle, workspace: &str, mode: &str) -> Result<Value, String> {
+    let approval =
+        crate::computer_use::Approval::parse(mode).ok_or("Unsupported computer-use approval.")?;
+    let paths = runtime::runtime_paths(app)?;
+    let vm_id = runtime::resolve_vm_id(&paths, workspace).map_err(|e| e.to_string())?;
+    let guard = runtime::OPERATIONS
+        .vm(
+            &vm_id,
+            workspace,
+            &format!("Updating {workspace} computer use"),
+        )
+        .map_err(|e| e.to_string())?;
+    guard.allow_cancel();
+    guard.expect_within(action_expected_duration("setup-computer-use"));
+    let (paths, machine) = machine(app, workspace)?;
+    runtime::shutdown::ensure_accepting_operations()?;
+    if !crate::computer_use::is_built_in(&machine) {
+        return Err(
+            "Computer use is built into sandboxes created with the current guest image.".into(),
+        );
+    }
+    let running = matches!(
+        runtime::observe_vm(&runtime::ProcessRunner, &paths, workspace).map_err(|e| e.to_string())?,
+        runtime::VmRuntime::Present(inspected) if inspected.status == "Running"
+    );
+    crate::computer_use::apply_approval_with(
+        &runtime::ProcessRunner,
+        &paths,
+        &machine,
+        approval,
+        running,
+    )
+    .map_err(|e| e.to_string())?;
+    let _ = app.emit("silo://application-state-changed", ());
+    drop(guard);
+    status_with(&runtime::ProcessRunner, &paths, &machine)
+}
+
+/// A VM's approval mode for computer use: "ask" (the harness asks first) or "auto".
+/// Returns the VM's desktop state. Routed to the computer that owns the VM.
+#[tauri::command]
+pub async fn set_computer_use_approval(
+    app: AppHandle,
+    window: tauri::Window,
+    workspace: String,
+    mode: String,
+) -> Result<Value, String> {
+    crate::desktop_viewer::require_workspace(&window, &workspace)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
+            crate::chatgpt_app::call_owner(
+                &app,
+                &host,
+                "computer.approval",
+                json!({"vmId":vm,"mode":mode}),
+            )
+        } else {
+            local_approval(&app, &workspace, &mode)
+        }
+    })
+    .await
+    .map_err(|_| "Silo could not change computer use. Retry.".to_string())?
 }
 
 async fn execute(
@@ -545,6 +707,7 @@ async fn execute(
 ) -> Result<Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
         if let Some((host, vm)) = crate::remote_access::target(&workspace)? {
+            let setup = action.as_deref() == Some("setup-computer-use");
             crate::remote::call_remote(
                 &app,
                 &host,
@@ -555,6 +718,14 @@ async fn execute(
                 },
                 json!({"vmId":vm,"action":action}),
             )
+            // An older Silo there rejects the action it does not know.
+            .map_err(|error| {
+                if setup && error == "Unsupported desktop action." {
+                    "Update Silo on that computer to use computer use.".into()
+                } else {
+                    error
+                }
+            })
         } else {
             local(&app, &workspace, action.as_deref())
         }
@@ -665,6 +836,7 @@ mod tests {
     fn new_vms_on_a_v4_image_get_an_autostarting_desktop() {
         let manual = DesktopConfiguration {
             start_with_sandbox: false,
+            built_in: false,
         };
         let existing = vm("existing", None);
         let mut machines = vec![
@@ -692,15 +864,63 @@ mod tests {
         assert_eq!(
             configuration(&machines[1]),
             Some(&DesktopConfiguration {
-                start_with_sandbox: true
+                start_with_sandbox: true,
+                built_in: true,
             })
         );
         assert_eq!(
             configuration(&machines[2]),
-            Some(&manual),
-            "explicit choice is preserved"
+            Some(&DesktopConfiguration {
+                start_with_sandbox: false,
+                built_in: true,
+            }),
+            "an explicit startup choice is preserved; the desktop is built in"
         );
         assert_eq!(configuration(&machines[3]), None);
+    }
+
+    #[test]
+    fn built_in_is_decided_by_silo_not_by_the_request() {
+        let claimed = DesktopConfiguration {
+            start_with_sandbox: true,
+            built_in: true,
+        };
+        let plain = DesktopConfiguration {
+            start_with_sandbox: true,
+            built_in: false,
+        };
+        // An existing VM keeps what it had, whatever the saved configuration says.
+        let built_in_before = vm("old", Some(claimed.clone()));
+        let plain_before = vm("plain", Some(plain.clone()));
+        let none_before = vm("none", None);
+        let previous = vec![built_in_before, plain_before, none_before];
+        let mut machines = vec![
+            vm("old", Some(plain.clone())),
+            vm("plain", Some(claimed.clone())),
+            vm("none", Some(claimed.clone())),
+            vm("fresh-v3", Some(claimed.clone())),
+        ];
+        default_new_vm_desktops(&mut machines, &previous, "ubuntu-24.04-v3");
+        assert_eq!(configuration(&machines[0]), Some(&claimed));
+        assert_eq!(configuration(&machines[1]), Some(&plain));
+        assert_eq!(configuration(&machines[2]), Some(&plain));
+        assert_eq!(
+            configuration(&machines[3]),
+            Some(&plain),
+            "pre-v4 images are not built in"
+        );
+        // The flag is reported as `builtIn` and omitted when false (older UIs and exports).
+        assert_eq!(
+            serde_json::to_value(&claimed).unwrap(),
+            json!({"startWithSandbox": true, "builtIn": true})
+        );
+        assert_eq!(
+            serde_json::to_value(&plain).unwrap(),
+            json!({"startWithSandbox": true})
+        );
+        let parsed: DesktopConfiguration =
+            serde_json::from_value(json!({"startWithSandbox": false})).unwrap();
+        assert!(!parsed.built_in);
     }
 
     #[test]
@@ -752,6 +972,7 @@ mod tests {
             None,
             &DesktopConfiguration {
                 start_with_sandbox: true,
+                built_in: false,
             },
         )
         .unwrap_err();
@@ -773,9 +994,11 @@ mod tests {
             "dev",
             Some(&DesktopConfiguration {
                 start_with_sandbox: true,
+                built_in: false,
             }),
             &DesktopConfiguration {
                 start_with_sandbox: false,
+                built_in: false,
             },
         )
         .unwrap();
@@ -801,6 +1024,7 @@ mod tests {
             None,
             &DesktopConfiguration {
                 start_with_sandbox: false,
+                built_in: false,
             },
         )
         .unwrap();
@@ -977,6 +1201,100 @@ mod tests {
         );
         runner.assert_finished();
     }
+    fn built_in_machine() -> MachineConfiguration {
+        serde_json::from_value(json!({"kind":"vm","id":"00000000-0000-4000-8000-000000000001","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":true,"builtIn":true}})).unwrap()
+    }
+
+    #[test]
+    fn a_stopped_built_in_vm_still_reports_computer_use_without_booting() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        crate::computer_use::set_approval(
+            &paths,
+            built_in_machine().id(),
+            crate::computer_use::Approval::Auto,
+        )
+        .unwrap();
+        let runner = ScriptedRunner::new([inspect("Stopped", json!({}))]);
+        let status = status_with(&runner, &paths, &built_in_machine()).unwrap();
+        assert_eq!(status["state"], "vm-stopped");
+        assert_eq!(status["computerUse"]["approval"], "auto");
+        assert!(status["computerUse"]["state"].is_string());
+        runner.assert_finished();
+        // A VM without built-in computer use reports none.
+        let runner = ScriptedRunner::new([inspect("Stopped", json!({}))]);
+        let machine: MachineConfiguration = serde_json::from_value(json!({"kind":"vm","id":"id","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":true}})).unwrap();
+        assert!(status_with(&runner, &paths, &machine)
+            .unwrap()
+            .get("computerUse")
+            .is_none());
+    }
+
+    #[test]
+    fn a_running_built_in_vm_reads_both_statuses_in_one_guest_command() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let machine = built_in_machine();
+        let script = format!(
+            "if [ -x /usr/local/bin/silo-desktop ]; then /usr/local/bin/silo-desktop status; else printf '%s\\n' '{{\"installed\":false,\"state\":\"uninstalled\",\"autoStart\":false}}'; fi\n{}",
+            crate::computer_use::STATUS_COMMAND
+        );
+        let guest_output = format!(
+            "{}\n{}\n",
+            json!({"installed":true,"state":"running","autoStart":true,"sessionState":"running","streamState":"running","backend":"selkies"}),
+            json!({"state":"ready","reason":null,"compatibility":"untested","warning":"Not tested.","appVersion":"26.928.31416","runtimeVersion":null,"lcuVersion":"0.8.0","agents":["codex"],"approval":"ask","mount":"ok"})
+        );
+        let runner = ScriptedRunner::new([
+            inspect("Running", json!({})),
+            ExpectedCommand::ok(
+                [
+                    "exec",
+                    "dev",
+                    "--no-start",
+                    "--no-tty",
+                    "--quiet",
+                    "--timeout",
+                    "15s",
+                    "--user",
+                    "root",
+                    "--workdir",
+                    "/",
+                    "--",
+                    "sh",
+                    "-c",
+                    script.as_str(),
+                ],
+                guest_output,
+            ),
+        ]);
+        crate::chatgpt_app::set_test_cache(Some(crate::chatgpt_app::Status::Ready {
+            path: "/x".into(),
+            version: "26.928.31416".into(),
+        }));
+        let status = status_with(&runner, &paths(dir.path()), &machine).unwrap();
+        crate::chatgpt_app::set_test_cache(None);
+        assert_eq!(status["state"], "running");
+        let computer_use = &status["computerUse"];
+        assert_eq!(computer_use["state"], "ready");
+        assert_eq!(computer_use["compatibility"], "untested");
+        assert_eq!(computer_use["warning"], "Not tested.");
+        assert_eq!(computer_use["lcuVersion"], "0.8.0");
+        assert_eq!(computer_use["agents"], json!(["codex"]));
+        assert_eq!(computer_use["approval"], "ask");
+        runner.assert_finished();
+    }
+
+    #[test]
+    fn setup_computer_use_is_a_known_action_only_for_built_in_vms() {
+        assert_eq!(
+            action_timeout("setup-computer-use"),
+            Duration::from_secs(1800)
+        );
+        assert!(action_expected_duration("setup-computer-use") >= Duration::from_secs(1800));
+        assert!(!action_starts_vm("setup-computer-use"));
+    }
+
     #[test]
     fn status_projection_does_not_leak_guest_credentials() {
         let _test_state = crate::test_support::global_state();

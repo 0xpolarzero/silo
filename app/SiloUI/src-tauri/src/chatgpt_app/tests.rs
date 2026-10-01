@@ -200,7 +200,7 @@ fn run(
 
 fn assert_nothing_published(dir: &tempfile::TempDir) {
     let root = dir.path().join("chatgpt");
-    assert!(!root.join("1.2.3-arm64").exists());
+    assert!(!root.join("published/1.2.3-arm64").exists());
     let leftovers: Vec<_> = fs::read_dir(&root)
         .unwrap()
         .flatten()
@@ -218,7 +218,7 @@ fn bundled_lock_is_valid_and_pins_both_architectures() {
         lock.cua_runtime_version,
         "0.0.27/20260927214556-b77d38801cca"
     );
-    assert_eq!(lock.lcu_version, None);
+    assert_eq!(lock.lcu_version.as_deref(), Some("0.8.0"));
     let arm = lock.asset(DebArch::Arm64).unwrap();
     assert_eq!(arm.bytes, 453121290);
     assert!(arm
@@ -272,7 +272,7 @@ fn valid_package_is_published_with_modes_links_and_a_canonical_path() {
     let path = result.unwrap();
     assert_eq!(
         path,
-        fs::canonicalize(dir.path().join("chatgpt/1.2.3-arm64")).unwrap()
+        fs::canonicalize(dir.path().join("chatgpt/published/1.2.3-arm64")).unwrap()
     );
     assert_eq!(
         fs::metadata(path.join("ChatGPT"))
@@ -498,7 +498,7 @@ fn damaged_published_folder_is_replaced_and_good_one_is_never_touched() {
     let dir = root();
     let package = deb(&good_items());
     let lock = lock_for(&package);
-    let target = dir.path().join("chatgpt/1.2.3-arm64");
+    let target = dir.path().join("chatgpt/published/1.2.3-arm64");
     fs::create_dir_all(target.join("partial")).unwrap();
     let (result, _) = run(&dir, &package, &lock);
     let path = result.unwrap();
@@ -566,16 +566,19 @@ fn garbage_collection_keeps_pinned_and_in_use_versions() {
     let (result, _) = run(&dir, &package, &lock);
     result.unwrap();
     let root = dir.path().join("chatgpt");
+    let published = root.join("published");
     for name in ["1.0.0-arm64", "1.1.0-arm64", "1.1.0-amd64"] {
-        fs::create_dir_all(root.join(name).join("sub")).unwrap();
+        fs::create_dir_all(published.join(name).join("sub")).unwrap();
     }
-    fs::create_dir_all(root.join("unrelated")).unwrap();
+    fs::create_dir_all(published.join("unrelated")).unwrap();
     fs::create_dir_all(root.join(".staging-x")).unwrap();
     let in_use = HashSet::from(["1.1.0-arm64".to_owned()]);
     let removed = collect_garbage(&root, &lock, DebArch::Arm64, &in_use).unwrap();
     assert_eq!(removed, ["1.0.0-arm64", "1.1.0-amd64"]);
-    assert!(root.join("1.1.0-arm64").exists() && root.join("1.2.3-arm64/ChatGPT").exists());
-    assert!(root.join("unrelated").exists() && !root.join(".staging-x").exists());
+    assert!(
+        published.join("1.1.0-arm64").exists() && published.join("1.2.3-arm64/ChatGPT").exists()
+    );
+    assert!(published.join("unrelated").exists() && !root.join(".staging-x").exists());
     assert!(
         collect_garbage(&dir.path().join("missing"), &lock, DebArch::Arm64, &in_use)
             .unwrap()
@@ -599,6 +602,46 @@ fn path_and_link_rules() {
     assert!(check_link_target(b"a/../x", 3, "p").is_err());
     assert!(check_link_target(b"/a", 3, "p").is_err());
     assert!(check_link_target(b"", 3, "p").is_err());
+}
+
+#[test]
+fn commands_run_where_the_vm_lives() {
+    // No workspace, or a local one, means this computer.
+    assert_eq!(owner(None), Ok(None));
+    assert_eq!(owner(Some("dev")), Ok(None));
+    // A remote VM routes to the computer that owns it.
+    let host = "00000000-0000-4000-8000-0000000000aa";
+    let vm = "00000000-0000-4000-8000-0000000000bb";
+    assert_eq!(
+        owner(Some(&format!("silo-remote:{host}:{vm}"))),
+        Ok(Some(host.to_owned()))
+    );
+    // A malformed remote target never falls back to this computer.
+    assert!(owner(Some("silo-remote:nope")).is_err());
+}
+
+#[test]
+fn an_older_silo_on_the_owning_computer_gets_a_clear_message() {
+    use crate::bridge_error::{BridgeError, ErrorCode};
+    assert_eq!(
+        owner_error(BridgeError::unsupported()),
+        "Update Silo on that computer to use computer use."
+    );
+    assert_eq!(
+        owner_error(BridgeError::new(ErrorCode::Internal, "Disk is full.")),
+        "Disk is full."
+    );
+}
+
+#[test]
+fn the_cached_status_is_what_cheap_reads_see() {
+    set_test_cache(None);
+    set_test_cache(Some(Status::Verifying));
+    assert_eq!(cached_status(), Some(Status::Verifying));
+    assert!(in_progress(&Status::Extracting));
+    assert!(!in_progress(&Status::Idle));
+    assert!(!in_progress(&Status::NotConsented));
+    set_test_cache(None);
 }
 
 #[test]
@@ -638,7 +681,9 @@ mod hardening;
 fn live_download_of_the_pinned_arm64_package() {
     crate::test_support::live::require_confirmation();
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("chatgpt");
+    // `SILO_LIVE_CHATGPT_ROOT` keeps the published app for a manual VM check.
+    let root = std::env::var_os("SILO_LIVE_CHATGPT_ROOT")
+        .map_or_else(|| dir.path().join("chatgpt"), PathBuf::from);
     accept_notice(&root).unwrap();
     let lock = Lock::bundled().unwrap();
     let started = Instant::now();
@@ -656,7 +701,7 @@ fn live_download_of_the_pinned_arm64_package() {
     println!("ready in {:?} at {}", started.elapsed(), path.display());
     assert_eq!(
         path,
-        fs::canonicalize(root.join("26.928.31416-arm64")).unwrap()
+        fs::canonicalize(root.join("published/26.928.31416-arm64")).unwrap()
     );
     let executable = path.join("ChatGPT");
     assert!(fs::metadata(&executable).unwrap().permissions().mode() & 0o111 != 0);
