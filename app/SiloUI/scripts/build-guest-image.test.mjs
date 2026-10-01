@@ -37,7 +37,7 @@ test("the recipe matches the version and never leaves package files in a layer",
   assert.ok(dockerfile.includes("/usr/local/share/silo/guest-image.json"))
   assert.doesNotMatch(dockerfile.replace(/^#.*$/gm, ""), /openai|oaistatic|chatgpt/i)
   const ignore = readFileSync(new URL("../guest-image/Dockerfile.dockerignore", import.meta.url), "utf8")
-  for (const input of ["desktop-streamer-lock.json", "silo-accessibility.py", "setup-github.sh"]) {
+  for (const input of ["desktop-streamer-lock.json", "desktop-packages.txt", "silo-accessibility.py", "setup-github.sh"]) {
     assert.ok(ignore.includes(`!src-tauri/guest/${input}`), input)
   }
 })

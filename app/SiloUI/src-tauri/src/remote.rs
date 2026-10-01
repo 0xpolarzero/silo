@@ -795,10 +795,16 @@ fn silo_public_key() -> Option<String> {
     Some(public.trim().to_owned())
 }
 fn request_timeout(request: &Value) -> Duration {
+    // A new VM may get a desktop from the owner (it defaults one on v4 images), so
+    // creation needs the desktop-capable time even when the request names none.
     if (request["method"] == "runtime.upsert"
-        && request
+        && (request
             .pointer("/params/machine/desktop")
-            .is_some_and(|v| !v.is_null()))
+            .is_some_and(|v| !v.is_null())
+            || (request.pointer("/params/machine/kind") == Some(&json!("vm"))
+                && request
+                    .pointer("/params/expected")
+                    .is_none_or(Value::is_null))))
         || (request["method"] == "desktop.action"
             && matches!(
                 request["params"]["action"].as_str(),
@@ -1789,6 +1795,27 @@ mod tests {
         );
         assert!(
             checkpoint_remote_request("not-an-id", "create", Some("Point"), None, None).is_err()
+        );
+    }
+
+    #[test]
+    fn creating_a_remote_vm_has_time_for_an_owner_defaulted_desktop() {
+        let _test_state = crate::test_support::global_state();
+        let vm = json!({"kind":"vm","name":"dev"});
+        let upsert = |machine: Value, expected: Value| {
+            request_timeout(
+                &json!({"method":"runtime.upsert","params":{"machine":machine,"expected":expected}}),
+            )
+        };
+        assert_eq!(upsert(vm.clone(), Value::Null), Duration::from_secs(2100));
+        assert_eq!(
+            request_timeout(&json!({"method":"runtime.upsert","params":{"machine":vm}})),
+            Duration::from_secs(2100)
+        );
+        assert_eq!(upsert(vm.clone(), vm.clone()), Duration::from_secs(600));
+        assert_eq!(
+            upsert(json!({"kind":"ssh","name":"other"}), Value::Null),
+            Duration::from_secs(600)
         );
     }
 

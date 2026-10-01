@@ -126,6 +126,18 @@ fn installer_script(action: &str) -> String {
             include_str!("../guest/patch-selkies-web-client.py"),
             "SILO_SELKIES_WEB_CLIENT_PATCH_EOF",
         ),
+        (
+            "SILO_DESKTOP_PACKAGES_SOURCE",
+            "desktop-packages.txt",
+            include_str!("../guest/desktop-packages.txt"),
+            "SILO_DESKTOP_PACKAGES_EOF",
+        ),
+        (
+            "SILO_ACCESSIBILITY_HELPER_SOURCE",
+            "silo-accessibility.py",
+            include_str!("../guest/silo-accessibility.py"),
+            "SILO_ACCESSIBILITY_HELPER_EOF",
+        ),
     ] {
         script.push_str(&format!("export {variable}=\"$desktop_stage/{filename}\"\ncat > \"${variable}\" <<'{delimiter}'\n{source}\n{delimiter}\n"));
     }

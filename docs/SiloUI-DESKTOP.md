@@ -39,13 +39,21 @@ the text default. The image describes itself in
   is needed; an explicit choice in the request is kept. Existing VMs and VMs on
   older images keep the explicit "Add Linux desktop" flow.
 - **Guest.** `setup-desktop.sh install` reads the marker and verifies the
-  capability, the Selkies version, `/usr/bin/selkies`, the required packages and
-  the autostart entry. If all hold, it runs no apt and downloads nothing: it
+  capability, the Selkies version, `/usr/bin/selkies`, every package in
+  `src-tauri/guest/desktop-packages.txt` (shared with the image Dockerfile), the
+  session commands (`xauth`, `Xvfb`, `xfce4-session`, `dbus-run-session` and
+  others), the accessibility helper, autostart entry and dconf database, and that
+  the Selkies web client can be patched. If all hold, it runs no apt and downloads nothing: it
   prepares the `silo` account, patches the Selkies web client, creates viewer
   credentials, writes the streamer receipt, `xstartup`, `silo-desktop`, the boot
   hook, `packages.txt` and `installed.json` (`"image":"preinstalled"`), then starts
   the desktop. If the marker is unreadable, disagrees with the pinned streamer or
-  a package is missing, it prints why and performs the full install below.
+  anything above is missing or damaged, it prints why and performs the full
+  install below. On a v4-marked guest that install restores the complete v4 package
+  set (including `gnome-text-editor`, not `mousepad`), reinstalls the pinned
+  streamer and rewrites the accessibility defaults; on older guests it keeps the
+  original recipe. An explicit `install` rerun revalidates a v4 desktop the same
+  way and keeps existing connection credentials; legacy installs are only refreshed.
 - **Session.** The Selkies backend starts `dbus-run-session -- startxfce4`, so
   `/etc/xdg/autostart` entries run in the session with `XDG_CURRENT_DESKTOP=XFCE`
   (also kept in `xstartup`, which the recipe test checks along with
