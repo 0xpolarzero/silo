@@ -16,11 +16,11 @@ RUN sh /tmp/silo-setup-github.sh \
 # v4 content: the desktop, computer-use dependencies and accessibility defaults.
 #
 # Packages, in groups:
-#  1. Desktop: the list of src-tauri/guest/setup-desktop.sh, minus mousepad
-#     (GTK 3.24's AT-SPI PasteText use-after-free crashes every GTK3 text view),
-#     plus gnome-text-editor (GTK4) as the text editor.
-#  2. Accessibility: gsettings schemas, the dconf stack and python3-pyatspi for
-#     the poller in src-tauri/guest/silo-accessibility.py.
+#  1+2. Desktop and accessibility: src-tauri/guest/desktop-packages.txt, shared
+#     with setup-desktop.sh (which verifies and, if needed, repairs the same set).
+#     No mousepad (GTK 3.24's AT-SPI PasteText use-after-free crashes every GTK3
+#     text view); gnome-text-editor (GTK4) is the text editor. Includes the dconf
+#     stack and python3-pyatspi for the poller in src-tauri/guest/silo-accessibility.py.
 #  3. LCU v0.7.0 SYSTEM_PACKAGES, a superset of the ChatGPT Linux .deb's
 #     dependencies on Ubuntu 24.04, so LCU installs with --skip-system --offline.
 #     Source: https://github.com/0xpolarzero/lcu/blob/v0.7.0/scripts/install.py
@@ -35,15 +35,13 @@ RUN sh /tmp/silo-setup-github.sh \
 # LCU itself or any OpenAI file before then.
 ARG TARGETARCH
 RUN --mount=type=bind,source=src-tauri/guest/desktop-streamer-lock.json,target=/mnt/desktop-streamer-lock.json \
+    --mount=type=bind,source=src-tauri/guest/desktop-packages.txt,target=/mnt/desktop-packages.txt \
     --mount=type=bind,source=src-tauri/guest/silo-accessibility.py,target=/mnt/silo-accessibility.py \
     set -eu \
     && export DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
-        ca-certificates curl dbus-x11 at-spi2-core xfce4-session xfce4-panel xfce4-settings \
-        xfdesktop4 xfwm4 thunar xfce4-terminal greybird-gtk-theme fonts-dejavu-core xauth \
-        x11-utils procps xvfb pulseaudio gnome-text-editor \
-        gsettings-desktop-schemas dconf-service dconf-gsettings-backend dconf-cli python3-pyatspi \
+        $(cat /mnt/desktop-packages.txt) \
         bubblewrap ffmpeg libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
         libc6 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libexpat1 libgbm1 libgcc-s1 \
         libgdk-pixbuf-2.0-0 libgl1 libglib2.0-bin libglib2.0-0t64 libgtk-3-0t64 libnotify4 \

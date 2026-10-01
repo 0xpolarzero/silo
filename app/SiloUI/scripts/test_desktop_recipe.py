@@ -6,6 +6,7 @@ The shell's real branching and generated session script remain under test.
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,7 +23,12 @@ args = sys.argv[1:]
 root = pathlib.Path(os.environ['RECIPE_ROOT'])
 with (root / 'calls.jsonl').open('a') as output:
     output.write(json.dumps([name, args]) + '\n')
-if name == 'id':
+if name == 'dconf':
+    if args == ['update']:
+        database = root / 'etc/dconf/db/local'
+        database.parent.mkdir(parents=True, exist_ok=True)
+        database.write_text('compiled')
+elif name == 'id':
     print('silo' if '-gn' in args else '0')
 elif name == 'dpkg':
     if '--print-architecture' in args:
@@ -56,6 +62,9 @@ elif name == 'python3':
     if args and args[0].endswith('/patch-selkies-web-client.py'):
         if os.environ.get('SELKIES_PATCH_FAIL'):
             sys.exit(32)
+        if os.environ.get('SELKIES_PATCH_FAIL_ONCE') and not (root / 'patch-failed-once').exists():
+            (root / 'patch-failed-once').touch()
+            sys.exit(32)
     if args and args[0] in ('-', '-c'):
         source = sys.stdin.read() if args[0] == '-' else args[1]
         if args[0] == '-' and not any(marker in source for marker in
@@ -77,7 +86,14 @@ elif name == 'python3':
         }))
 elif name == 'install':
     if '-d' in args:
-        pathlib.Path(args[-1]).mkdir(parents=True, exist_ok=True)
+        skip = False
+        for argument in args:
+            if skip:
+                skip = False
+            elif argument in ('-m', '-o', '-g'):
+                skip = True
+            elif not argument.startswith('-'):
+                pathlib.Path(argument).mkdir(parents=True, exist_ok=True)
     else:
         destination = pathlib.Path(args[-1])
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +110,11 @@ elif name == 'df':
 '''
 
 
+RUNTIME_COMMANDS = ('xauth', 'Xvfb', 'pulseaudio', 'xfce4-session', 'xfwm4',
+                    'dbus-run-session', 'runuser')
+SHARED_PACKAGES = (SOURCE.parent / 'desktop-packages.txt').read_text().split()
+
+
 class DesktopRecipe(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='silo-desktop-recipe-')
@@ -103,7 +124,7 @@ class DesktopRecipe(unittest.TestCase):
         binaries.mkdir()
         stub = '#!' + sys.executable + '\n' + STUB
         for name in ('id', 'dpkg', 'dpkg-query', 'apt-get', 'python3', 'install',
-                     'curl', 'sha256sum', 'usermod', 'chown', 'flock', 'df'):
+                     'curl', 'sha256sum', 'usermod', 'chown', 'flock', 'df', 'dconf'):
             path = binaries / name
             path.write_text(stub)
             path.chmod(0o755)
@@ -115,6 +136,8 @@ class DesktopRecipe(unittest.TestCase):
         self.fixture.mkdir()
         (self.fixture / 'desktop-service.py').write_text(stub)
         (self.fixture / 'patch-selkies-web-client.py').write_text('# fixture patcher\n')
+        for shared in ('desktop-packages.txt', 'silo-accessibility.py'):
+            (self.fixture / shared).write_text((SOURCE.parent / shared).read_text())
         streamer_lock = (SOURCE.parent / 'desktop-streamer-lock.json').read_text()
         (self.fixture / 'desktop-streamer-lock.json').write_text(streamer_lock)
         os_release = self.root / 'os-release'
@@ -293,7 +316,23 @@ class PreinstalledImageDesktop(DesktopRecipe):
         autostart = self.root / 'etc/xdg/autostart/silo-accessibility.desktop'
         autostart.parent.mkdir(parents=True)
         autostart.write_text('[Desktop Entry]\n')
-        recipe = self.recipe.read_text().replace('/etc/xdg/autostart', str(self.root) + '/etc/xdg/autostart')
+        for command in RUNTIME_COMMANDS:
+            path = self.root / 'bin' / command
+            path.write_text('#!/bin/sh\nexit 0\n')
+            path.chmod(0o755)
+        helper = self.root / 'usr/local/libexec/silo-accessibility'
+        helper.parent.mkdir(parents=True)
+        helper.write_text('#!/bin/sh\n')
+        helper.chmod(0o755)
+        for name, content in (('profile/user', 'user-db:user\n'), ('db/local', 'compiled'),
+                              ('db/local.d/00-silo-accessibility',
+                               '[org/gnome/desktop/interface]\ntoolkit-accessibility=true\n')):
+            path = self.root / 'etc/dconf' / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+        recipe = self.recipe.read_text()
+        for guest_path in ('/etc/xdg', '/etc/dconf'):
+            recipe = recipe.replace(guest_path, str(self.root) + guest_path)
         self.recipe.write_text(recipe)
 
     def write_marker(self, **overrides):
@@ -345,14 +384,37 @@ class PreinstalledImageDesktop(DesktopRecipe):
         self.assertFalse(any(name in ('apt-get', 'curl') for name, _ in calls))
         self.assert_session_identity()
 
-    def run_fallback(self, env=None):
-        result = subprocess.run(['/bin/sh', str(self.recipe), 'install'], env=dict(self.env, **(env or {})),
+    def run_fallback(self, env=None, action='install', v4=True):
+        result = subprocess.run(['/bin/sh', str(self.recipe), action], env=dict(self.env, **(env or {})),
                                 text=True, capture_output=True, timeout=15)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
-        self.assertTrue(any(name == 'apt-get' and 'xvfb' in args for name, args in calls))
+        installs = [args for name, args in calls
+                    if name == 'apt-get' and 'install' in args and not any('selkies.deb' in a for a in args)]
+        self.assertEqual(len(installs), 1)
         self.assertTrue(any(name == 'curl' for name, _ in calls))
         self.assertEqual(json.loads((self.state / 'installed.json').read_text()).get('image'), None)
+        defaults = self.root / 'etc/xdg/mimeapps.list'
+        if v4:
+            # The complete v4 package set and accessibility defaults are restored.
+            for package in SHARED_PACKAGES:
+                self.assertIn(package, installs[0])
+            self.assertNotIn('mousepad', installs[0])
+            for package in ('gnome-text-editor', 'python3-pyatspi', 'dconf-cli'):
+                self.assertIn(package, installs[0])
+            self.assertEqual((self.root / 'usr/local/libexec/silo-accessibility').read_text(),
+                             (SOURCE.parent / 'silo-accessibility.py').read_text())
+            self.assertIn('Exec=' + str(self.root) + '/usr/local/libexec/silo-accessibility',
+                          (self.root / 'etc/xdg/autostart/silo-accessibility.desktop').read_text())
+            self.assertIn('toolkit-accessibility=true',
+                          (self.root / 'etc/dconf/db/local.d/00-silo-accessibility').read_text())
+            self.assertEqual((self.root / 'etc/dconf/profile/user').read_text(), 'user-db:user\nsystem-db:local\n')
+            self.assertIn(['dconf', ['update']], calls)
+            self.assertIn('text/plain=org.gnome.TextEditor.desktop', defaults.read_text())
+        else:
+            self.assertIn('mousepad', installs[0])
+            self.assertNotIn('gnome-text-editor', installs[0])
+            self.assertFalse(defaults.exists())
         return result.stderr
 
     def test_v4_missing_package_falls_back_to_the_full_install_with_a_message(self):
@@ -375,8 +437,46 @@ class PreinstalledImageDesktop(DesktopRecipe):
 
     def test_image_without_desktop_capability_installs_silently_like_v3(self):
         self.write_marker(capabilities=['something-else'])
-        stderr = self.run_fallback()
+        stderr = self.run_fallback(v4=False)
         self.assertNotIn('guest image', stderr)
+
+    def test_v4_missing_runtime_command_falls_back(self):
+        if shutil.which('xauth', path='/usr/bin:/bin'):
+            self.skipTest('The host provides xauth outside the stubbed PATH')
+        (self.root / 'bin/xauth').unlink()
+        stderr = self.run_fallback()
+        self.assertIn('missing xauth', stderr)
+
+    def test_v4_missing_accessibility_helper_falls_back_and_restores_it(self):
+        (self.root / 'usr/local/libexec/silo-accessibility').unlink()
+        self.assertIn('missing the accessibility helper', self.run_fallback())
+
+    def test_v4_missing_dconf_database_falls_back(self):
+        (self.root / 'etc/dconf/db/local').unlink()
+        self.assertIn('missing the accessibility settings', self.run_fallback())
+
+    def test_v4_damaged_selkies_client_falls_back_and_reinstalls_the_streamer(self):
+        stderr = self.run_fallback({'SELKIES_PATCH_FAIL_ONCE': '1'})
+        self.assertIn('web client is missing or damaged', stderr)
+        calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertTrue(any(name == 'apt-get' and '--reinstall' in args and any('selkies.deb' in a for a in args)
+                            for name, args in calls))
+
+    def test_explicit_rerun_revalidates_and_repairs_a_preinstalled_guest(self):
+        self.run_recipe()
+        connection = (self.state / 'connection.json').read_text()
+        (self.root / 'calls.jsonl').unlink()
+        # A healthy rerun stays an offline refresh; a removed package is repaired.
+        self.assertFalse(any(name in ('apt-get', 'curl') for name, _ in self.run_recipe()))
+        (self.root / 'calls.jsonl').unlink()
+        stderr = self.run_fallback({'V4_MISSING_PACKAGE': 'xvfb'})
+        self.assertIn('guest image package xvfb is missing', stderr)
+        self.assertEqual((self.state / 'connection.json').read_text(), connection)
+
+    def test_legacy_install_without_streamer_receipt_is_only_refreshed(self):
+        (self.state / 'installed.json').write_text('{"version":"1"}')
+        calls = self.run_recipe(env={'V4_MISSING_PACKAGE': 'xvfb'})
+        self.assertFalse(any(name in ('apt-get', 'curl') for name, _ in calls))
 
 
 if __name__ == '__main__':

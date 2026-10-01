@@ -14,6 +14,8 @@ esac
 helper=${SILO_DESKTOP_SERVICE_SOURCE:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/desktop-service.py}
 streamer_lock=${SILO_DESKTOP_STREAMER_LOCK_SOURCE:-$(dirname -- "$helper")/desktop-streamer-lock.json}
 selkies_web_client_patch=${SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE:-$(dirname -- "$helper")/patch-selkies-web-client.py}
+desktop_packages_file=${SILO_DESKTOP_PACKAGES_SOURCE:-$(dirname -- "$helper")/desktop-packages.txt}
+accessibility_source=${SILO_ACCESSIBILITY_HELPER_SOURCE:-$(dirname -- "$helper")/silo-accessibility.py}
 [ -f "$helper" ] || { echo 'Desktop lifecycle helper is missing' >&2; exit 1; }
 mkdir -p /var/lib/silo-desktop
 chmod 0700 /var/lib/silo-desktop
@@ -129,7 +131,7 @@ install_streamer() {
     curl --silent --show-error --fail --location --retry 2 --connect-timeout 30 --max-time 600 --proto '=https' --tlsv1.2 "$streamer_url" -o "$package.partial"
     printf '%s  %s\n' "$streamer_digest" "$package.partial" | sha256sum --check --status || { rm -f "$package.partial"; echo 'Desktop streamer download checksum mismatch' >&2; exit 1; }
     mv "$package.partial" "$package"
-    apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 install -y --no-install-recommends "$package"
+    apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 install -y --no-install-recommends --reinstall "$package"
     [ -x /usr/bin/selkies ] || { echo 'Pinned desktop streamer did not install /usr/bin/selkies' >&2; exit 1; }
     [ -f "$selkies_web_client_patch" ] || { echo 'Selkies web client patch helper is missing' >&2; exit 1; }
     python3 "$selkies_web_client_patch" "$arch"
@@ -175,13 +177,6 @@ ensure_theme() {
         apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends greybird-gtk-theme
     fi
 }
-if [ -f /var/lib/silo-desktop/installed.json ]; then
-    install -m 0755 "$helper" /usr/local/bin/silo-desktop
-    configure_session
-    ensure_theme
-    python3 "$helper" status
-    exit 0
-fi
 # v4 and later guest images ship the desktop packages, the pinned streamer and the
 # accessibility defaults. They describe themselves in a marker file; trust it only
 # after the packages and the streamer are verified, otherwise install normally.
@@ -207,7 +202,8 @@ else:
 PY
     ) || problem='The guest image marker is unreadable'
     [ "$problem" = ok ] || { echo "$problem"; return 0; }
-    for package in ca-certificates curl python3 sudo dbus-x11 at-spi2-core xfce4-session xfce4-panel xfce4-settings xfdesktop4 xfwm4 thunar xfce4-terminal greybird-gtk-theme xvfb pulseaudio gnome-text-editor dconf-cli python3-pyatspi; do
+    [ -f "$desktop_packages_file" ] || { echo 'The desktop package list is missing'; return 0; }
+    for package in $(cat "$desktop_packages_file"); do
         [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" = 'install ok installed' ] || { echo "The guest image package $package is missing"; return 0; }
     done
     case "$(dpkg-query -W -f='${Version}' selkies 2>/dev/null || true)" in
@@ -215,8 +211,36 @@ PY
         *) echo "The guest image does not contain Selkies $streamer_version"; return 0 ;;
     esac
     [ -x /usr/bin/selkies ] || { echo 'The guest image is missing /usr/bin/selkies'; return 0; }
+    # Every program the session needs, not only the packages that normally own them.
+    for command_name in xauth Xvfb pulseaudio xfce4-session xfwm4 dbus-run-session runuser; do
+        command -v "$command_name" >/dev/null 2>&1 || { echo "The guest image is missing $command_name"; return 0; }
+    done
+    # The accessibility defaults: the poller, its autostart entry and the dconf database.
+    [ -x /usr/local/libexec/silo-accessibility ] || { echo 'The guest image is missing the accessibility helper'; return 0; }
     [ -f /etc/xdg/autostart/silo-accessibility.desktop ] || { echo 'The guest image is missing the accessibility autostart entry'; return 0; }
+    [ -f /etc/dconf/profile/user ] && [ -f /etc/dconf/db/local ] && grep -qx 'toolkit-accessibility=true' /etc/dconf/db/local.d/00-silo-accessibility 2>/dev/null || { echo 'The guest image is missing the accessibility settings'; return 0; }
+    # The patcher needs exactly the pinned web client; it is idempotent.
+    [ -f "$selkies_web_client_patch" ] && python3 "$selkies_web_client_patch" "$arch" >/dev/null 2>&1 || { echo 'The Selkies web client is missing or damaged'; return 0; }
     echo ok
+}
+# Restore the accessibility and default-application settings of the v4 guest image
+# (the same files guest-image/Dockerfile writes) when the packages were reinstalled.
+restore_image_defaults() {
+    [ -f "$accessibility_source" ] || { echo 'Accessibility helper source is missing' >&2; exit 1; }
+    install -d -m 0755 /usr/local/libexec /etc/dconf/profile /etc/dconf/db/local.d /etc/xdg/autostart /usr/local/share/silo
+    install -m 0755 "$accessibility_source" /usr/local/libexec/silo-accessibility
+    printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Silo accessibility' \
+        'Comment=Lets assistive tools read Chromium and Electron web content' \
+        'Exec=/usr/local/libexec/silo-accessibility' 'NoDisplay=true' \
+        'X-GNOME-Autostart-enabled=true' > /etc/xdg/autostart/silo-accessibility.desktop
+    printf '%s\n' 'user-db:user' 'system-db:local' > /etc/dconf/profile/user
+    printf '%s\n' '[org/gnome/desktop/interface]' 'toolkit-accessibility=true' > /etc/dconf/db/local.d/00-silo-accessibility
+    dconf update
+    printf '%s\n' '[Default Applications]' 'text/plain=org.gnome.TextEditor.desktop' \
+        'text/markdown=org.gnome.TextEditor.desktop' 'text/x-log=org.gnome.TextEditor.desktop' \
+        'text/x-python=org.gnome.TextEditor.desktop' 'text/x-shellscript=org.gnome.TextEditor.desktop' \
+        'application/json=org.gnome.TextEditor.desktop' 'application/xml=org.gnome.TextEditor.desktop' \
+        > /etc/xdg/mimeapps.list
 }
 # The image cannot hold per-VM state: connection credentials, the web-client patch,
 # receipts, the lifecycle helper and the session script. Never touches apt or the network.
@@ -242,6 +266,21 @@ BOOT
 }
 load_streamer_lock
 image_problem=$(image_desktop_problem)
+# A guest carrying the v4 marker is repaired to the complete v4 package set and settings.
+v4_guest=0
+[ "$image_problem" = none ] || v4_guest=1
+if [ -f /var/lib/silo-desktop/installed.json ]; then
+    # Explicit reruns revalidate a v4 desktop (preinstalled or already repaired) and
+    # repair it through the full install below, which keeps the connection
+    # credentials. Healthy, legacy and Kasm installs are only refreshed.
+    if [ "$v4_guest" = 0 ] || [ "$image_problem" = ok ] || [ ! -f /var/lib/silo-desktop/streamer.json ]; then
+        install -m 0755 "$helper" /usr/local/bin/silo-desktop
+        configure_session
+        ensure_theme
+        python3 "$helper" status
+        exit 0
+    fi
+fi
 if [ "$image_problem" = ok ]; then
     printf '%s\n' 'Using the desktop preinstalled in the guest image' >&2
     printf '%s\n' installing > /var/lib/silo-desktop/install-stage
@@ -265,9 +304,16 @@ if [ -n "$(dpkg --audit)" ]; then
     dpkg --configure -a || apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 install -f -y
 fi
 apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 update
-apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends ca-certificates curl python3 sudo dbus-x11 at-spi2-core xfce4-session xfce4-panel xfce4-settings xfdesktop4 xfwm4 thunar xfce4-terminal mousepad greybird-gtk-theme fonts-dejavu-core xauth x11-utils procps xvfb pulseaudio
+if [ "$v4_guest" = 1 ]; then
+    [ -f "$desktop_packages_file" ] || { echo 'The desktop package list is missing' >&2; exit 1; }
+    desktop_packages=$(cat "$desktop_packages_file")
+else
+    desktop_packages='ca-certificates curl python3 sudo dbus-x11 at-spi2-core xfce4-session xfce4-panel xfce4-settings xfdesktop4 xfwm4 thunar xfce4-terminal mousepad greybird-gtk-theme fonts-dejavu-core xauth x11-utils procps xvfb pulseaudio'
+fi
+apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends $desktop_packages
 printf '%s\n' installing > /var/lib/silo-desktop/install-stage
 install_streamer create
+[ "$v4_guest" = 0 ] || restore_image_defaults
 if [ ! -d "$desktop_home/.vnc" ]; then
     install -d -m 0700 -o "$desktop_user" -g "$(id -gn "$desktop_user")" "$desktop_home/.vnc"
 fi
