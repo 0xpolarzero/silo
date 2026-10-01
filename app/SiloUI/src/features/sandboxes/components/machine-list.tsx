@@ -55,6 +55,11 @@ interface MachineListProps {
   onMachinesChange: (machines: SetupMachineConfiguration[], baseline?: SetupMachineConfiguration[]) => Promise<void> | void
   getRowPresentation?: (machine: SetupMachineConfiguration) => MachineRowPresentation
   sortPriority?: (machine: SetupMachineConfiguration) => number
+  /** This computer's saved position of a row, lower first; rows without one follow in `machines` order. */
+  orderRank?: (machine: SetupMachineConfiguration) => number | undefined
+  /** Saves a reordered list (every row, local and remote, by id) instead of changing the
+   * sandbox configuration. Without it, only local rows reorder, through `onMachinesChange`. */
+  onReorder?: (machineIds: string[]) => void
   newSandboxRequest?: number
   onNewSandboxRequestHandled?: (id: number) => void
   /** Opens the sandbox's detail page when its row body is activated. */
@@ -78,7 +83,7 @@ interface MachineListProps {
   editorDraftKey?: string
 }
 
-export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning, getHostCapacity, getMachineBusyReason, editorDraftKey }: MachineListProps) {
+export function MachineList({ computers, getComputerId, onCommitMachine, onDeleteMachine, onConnectComputer, onImportSandbox, importPopover, machines, onMachinesChange, getRowPresentation, sortPriority, orderRank, onReorder, interactionDisabled: interactionDisabledProp = false, newSandboxRequest, onNewSandboxRequestHandled, onOpenMachine, machineActionRequest, onMachineActionHandled, summary, footer, initialEditorDraft = null, onEditorDraftChange, validateOperation, isMachineCreated, isMachineRunning, getHostCapacity, getMachineBusyReason, editorDraftKey }: MachineListProps) {
   const {
     computerId, setComputerId,
     committing,
@@ -96,18 +101,27 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   const [draggedID, setDraggedID] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState("")
 
+  // Rows in this computer's saved order; rows it has not placed yet keep their place after them.
+  const orderedMachines = useMemo(() => {
+    if (!orderRank) return machines
+    return [...machines]
+      .map((machine, index) => ({ machine, index, rank: orderRank(machine) ?? Number.POSITIVE_INFINITY }))
+      .sort((a, b) => a.rank - b.rank || a.index - b.index)
+      .map(({ machine }) => machine)
+  }, [machines, orderRank])
+
   const displayMachines = useMemo(() => {
     // Inject the open editor's draft whenever no live machine carries its id: a new/
     // duplicated machine, or one deleted elsewhere while its editor stayed open (so the
     // conflict notice remains visible instead of the row vanishing).
     const detached = editor ? !machines.some(({ id }) => id === editor.draft.id) : false
     if (!sortPriority) {
-      const next = [...machines]
+      const next = [...orderedMachines]
       if (editor && detached) next.splice(editor.insertAt, 0, editor.draft)
       return next
     }
 
-    const next = [...machines]
+    const next = [...orderedMachines]
       .map((machine, index) => ({ machine, index }))
       .sort((a, b) => sortPriority(a.machine) - sortPriority(b.machine) || a.index - b.index)
       .map(({ machine }) => machine)
@@ -116,7 +130,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
       next.splice(sourceIndex >= 0 ? sourceIndex + 1 : next.length, 0, editor.draft)
     }
     return next
-  }, [editor, machines, sortPriority])
+  }, [editor, machines, orderedMachines, sortPriority])
 
   const consumedNewRequest = useRef(0)
   const openRequestedVM = useEffectEvent((id: number) => {
@@ -144,10 +158,11 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
     runMachineAction(machineActionRequest)
   }, [machineActionRequest])
 
-  // Only this computer's order persists (remote computers keep their own), so remote rows
-  // are neither draggable nor drop targets, and positions count local rows only.
   const isRemote = (machine: SetupMachineConfiguration) => Boolean(getComputerId?.(machine))
-  const orderable = displayMachines.filter((machine) => !isRemote(machine) && machines.some(({ id }) => id === machine.id))
+  // With `onReorder`, this computer saves its own order of every row. Otherwise only local rows
+  // reorder (their order is part of this computer's configuration) and positions count them only.
+  const reorderable = (machine: SetupMachineConfiguration) => Boolean(onReorder) || !isRemote(machine)
+  const orderable = displayMachines.filter((machine) => reorderable(machine) && machines.some(({ id }) => id === machine.id))
   // A keyboard move waits for the source to publish the previous one, so rapid presses
   // never recompute from the stale `machines` the first move started from.
   const reorderPending = useRef(false)
@@ -156,8 +171,9 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   function reorder(id: string, targetIndex: number) {
     if (interactionDisabled || reorderPending.current) return
     // Reorder against the order captured when the drag/keyboard move began, so the change
-    // carries that order as `expectedOrder` and does not fold in concurrent edits.
-    const base = (baselineRef.current ?? [...machines]).filter((machine) => !isRemote(machine))
+    // carries that order as `expectedOrder` and does not fold in concurrent edits. A saved
+    // display order has no configuration to conflict with, so it reorders the current rows.
+    const base = onReorder ? [...orderedMachines] : (baselineRef.current ?? [...machines]).filter((machine) => !isRemote(machine))
     const reorderBaseline = baselineRef.current ? base : undefined
     const from = orderable.findIndex((machine) => machine.id === id)
     const boundedTarget = Math.max(0, Math.min(targetIndex, orderable.length - 1))
@@ -190,6 +206,11 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
       updated.splice(configuredTarget, 0, configuredMoved)
     }
 
+    if (onReorder) {
+      onReorder(updated.map(({ id }) => id))
+      setAnnouncement(`${moved.name} moved to position ${boundedTarget + 1} of ${orderable.length}.`)
+      return
+    }
     const pending = dispatchChange(configurationRequest(updated).machines, reorderBaseline)
     if (pending) {
       reorderPending.current = true
@@ -277,7 +298,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       tone={presentation?.tone}
                       detail={presentation?.detail ?? machineSummary(machine)}
                       detailClassName={presentation?.detailClassName}
-                      leading={isRemote(machine) ? <span aria-hidden="true" className="size-7 shrink-0" /> : <span
+                      leading={!reorderable(machine) ? <span aria-hidden="true" className="size-7 shrink-0" /> : <span
                         role="button"
                         tabIndex={rowInteractionsDisabled ? -1 : 0}
                         draggable={!editor && !rowInteractionsDisabled}

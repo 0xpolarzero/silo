@@ -273,6 +273,10 @@ fn valid_setting(key: &str, value: &Value) -> Option<bool> {
         "startupWorkspaceIds" => value.as_array().is_some_and(|ids| {
             ids.len() <= 256 && ids.iter().all(|id| bounded_string(id, 256, false))
         }),
+        // This computer's sandbox list order, local and remote; the UI owns the keys.
+        "sandboxOrder" => value.as_array().is_some_and(|keys| {
+            keys.len() <= 1024 && keys.iter().all(|key| bounded_string(key, 512, false))
+        }),
         _ => return None,
     })
 }
@@ -1793,6 +1797,24 @@ mod tests {
             valid_setting("startupWorkspaceIds", &json!(vec!["id"; 257])),
             Some(false)
         );
+    }
+
+    #[test]
+    fn sandbox_order_limit_matches_the_typescript_boundary() {
+        let key = "remote:".to_owned() + &"a".repeat(505);
+        assert_eq!(
+            valid_setting("sandboxOrder", &json!(vec![key.as_str(); 1024])),
+            Some(true)
+        );
+        assert_eq!(
+            valid_setting("sandboxOrder", &json!(vec!["local:id"; 1025])),
+            Some(false)
+        );
+        assert_eq!(
+            valid_setting("sandboxOrder", &json!([key.clone() + "a"])),
+            Some(false)
+        );
+        assert_eq!(valid_setting("sandboxOrder", &json!([""])), Some(false));
     }
 
     #[test]

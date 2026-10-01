@@ -23,11 +23,8 @@ it.each([
   const source = sourceWith(change)
   render(<OverviewPage source={source} actions={{} as ApplicationActions} onMachinesChange={vi.fn()} />)
   const row = within(screen.getByText("dev").closest("li")!)
-  if (source.workspaces.find(({ machine }) => machine.name === "dev")!.computer) {
-    expect(row.queryByRole("button", { name: "Reorder dev" })).not.toBeInTheDocument()
-  } else {
-    expect(row.getByRole("button", { name: "Reorder dev" })).toHaveAttribute("aria-disabled", "true")
-  }
+  // Remote rows reorder too (this computer keeps its own order), but not while work runs.
+  expect(row.getByRole("button", { name: "Reorder dev" })).toHaveAttribute("aria-disabled", "true")
   await user.click(row.getByRole("button", { name: "More actions for dev" }))
   expect(screen.getByRole("menuitem", { name: "Edit dev" })).toHaveAttribute("data-disabled")
   await user.keyboard("{Escape}")

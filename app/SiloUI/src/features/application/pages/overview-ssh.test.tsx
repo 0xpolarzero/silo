@@ -55,6 +55,19 @@ it("opens the sandbox's SSH tab from the SSH badge in the list and on the sandbo
   expect(screen.getByRole("tab", { name: "SSH" })).toHaveAttribute("aria-selected", "true")
 })
 
+it("opens the SSH tab from the sandbox menu, after Storage", async () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const workspace = source.workspaces.find(w => w.machine.kind === "vm")!
+  const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), readWorkspaceStorage: vi.fn().mockResolvedValue(null), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn() } as unknown as ApplicationActions
+  const user = userEvent.setup()
+  render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: `More actions for ${workspace.machine.name}` }))
+  const items = screen.getAllByRole("menuitem").map(item => item.getAttribute("aria-label") ?? item.textContent)
+  expect(items.indexOf(`SSH for ${workspace.machine.name}`)).toBe(items.indexOf(`Storage for ${workspace.machine.name}`) + 1)
+  await user.click(screen.getByRole("menuitem", { name: `SSH for ${workspace.machine.name}` }))
+  expect(screen.getByRole("tab", { name: "SSH" })).toHaveAttribute("aria-selected", "true")
+})
+
 it("keeps Network limited to service ports", () => {
   const source = applicationSourceForScenario("complete")
   render(<NetworkPage workspaces={source.workspaces} browser="Safari" actions={{ refreshSshAccess: vi.fn() } as unknown as ApplicationActions} active />)

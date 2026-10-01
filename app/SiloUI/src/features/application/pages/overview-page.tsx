@@ -13,7 +13,7 @@ import { workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
 import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditing } from "./sandbox-detail-page"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
-import { CircleAlert, Code, Download, GitFork, HardDrive, History, Loader2, Monitor, Play, RotateCw, Square, Terminal } from "lucide-react"
+import { CircleAlert, Code, Download, GitFork, HardDrive, History, KeyRound, Loader2, Monitor, Play, RotateCw, Square, Terminal } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
 import { dismissOperationToast, dismissSandboxToasts, showActionFailure, showOperationFailure, showOperationNotice, showOperationProgress } from "@/lib/operation-toast"
 
@@ -45,6 +45,8 @@ import { SandboxAction, type SandboxIconState } from "@/features/sandboxes/compo
 import { SecretChangesLabel } from "@/features/sandboxes/components/secret-changes-label"
 import { sandboxBusyReason, workspaceIconState, workspaceRowTone } from "@/features/sandboxes/model/workspace-presentation"
 import { hostCapacityFrom } from "@/features/sandboxes/model/machine-limits"
+import { nextSandboxOrder, sandboxOrderKey, sandboxOrderRanks } from "@/features/sandboxes/model/sandbox-order"
+import { useSettings } from "@/features/preferences/settings-store"
 
 /** A command palette request carried out on a sandbox's page. */
 export interface SandboxPageRequest {
@@ -355,6 +357,17 @@ export function OverviewPage({ active = true, readOnly = false,
   // The sandbox editing callbacks, shared by the list and the detail page's in-place editor
   // and delete dialog so both commit, delete, and validate through exactly the same paths.
   const getMachineComputerId = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.computer?.id
+  // This computer's own order of the list, local and remote sandboxes alike.
+  const { settings: { sandboxOrder }, updateSettings } = useSettings()
+  const orderRanks = sandboxOrderRanks(sandboxOrder)
+  const orderRank = (machine: SetupMachineConfiguration) => {
+    const workspace = workspaces.get(machine.id)
+    return workspace ? orderRanks.get(sandboxOrderKey(workspace)) : undefined
+  }
+  const reorderSandboxes = (ids: string[]) => {
+    const shown = ids.flatMap(id => { const workspace = workspaces.get(id); return workspace ? [sandboxOrderKey(workspace)] : [] })
+    void updateSettings({ sandboxOrder: nextSandboxOrder(sandboxOrder, shown) })
+  }
   const commitMachine = actions.saveRemoteMachine ? async (machine: SetupMachineConfiguration, original: SetupMachineConfiguration | undefined, computerId: string, baseline?: SetupMachineConfiguration[]) => {
     if (computerId) await actions.saveRemoteMachine!(computerId, machine, original)
     else await updateLocal(machine, original, baseline)
@@ -471,10 +484,12 @@ export function OverviewPage({ active = true, readOnly = false,
       restartPrompt
         ? { label: "Restart…", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, popover: "restart" }
         : { label: "Restart", icon: RotateCw, accessibleLabel: `Restart ${machine.name}`, disabled: readOnly || !availability.canRestart, tooltip: readOnly || availability.canRestart ? undefined : availability.reasons.restart, onSelect: () => guard.request(workspace, "restart") },
-      // Checkpoints and Storage open the page's tabs, which disable their own actions as needed.
+      // Checkpoints, Storage and SSH open the page's tabs, which disable their own actions as needed.
       ...(vm ? [{ label: "Checkpoints", icon: History, accessibleLabel: `Checkpoints for ${machine.name}`, onSelect: () => openSandbox(machine.id, "checkpoints") }] : []),
       ...(vm && actions.forkCheckpoint ? [{ label: "Fork…", icon: GitFork, accessibleLabel: `Fork ${machine.name}`, disabled: forkDisabled(workspace), popover: "fork" }] : []),
       ...(vm && local && actions.readWorkspaceStorage ? [{ label: "Storage", icon: HardDrive, accessibleLabel: `Storage for ${machine.name}`, onSelect: () => openSandbox(machine.id, "storage") }] : []),
+      // Shown whenever the page shows its SSH tab.
+      ...(vm && (source.sshAccess || actions.refreshSshAccess) ? [{ label: "SSH", icon: KeyRound, accessibleLabel: `SSH for ${machine.name}`, onSelect: () => openSandbox(machine.id, "access") }] : []),
       ...(vm && local && exportSandbox ? [{ label: "Export…", icon: Download, accessibleLabel: `Export ${machine.name}`, disabled: configurationLocked || availability.busy || transferBusy || stale, onSelect: () => exportSandbox(machine.name) }] : []),
     ]
     const popovers: MenuPopovers = { ...forkPopovers(workspace) }
@@ -712,6 +727,8 @@ export function OverviewPage({ active = true, readOnly = false,
               // New sandboxes fit this computer; remote computers do not report capacity yet.
               getHostCapacity={(computerId) => computerId ? undefined : hostCapacityFrom(source.hostCapacity)}
               onMachinesChange={changeMachines}
+              orderRank={orderRank}
+              onReorder={reorderSandboxes}
               interactionDisabled={configurationLocked}
               validateOperation={validateMachineOperation}
               summary={configurationOperation ? <>{source.workspaces.length} configured · {configurationOperation.status === "failed" ? "Sandbox changes failed" : "Applying sandbox changes"}</> : undefined}

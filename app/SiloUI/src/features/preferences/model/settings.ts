@@ -6,6 +6,8 @@ export const settingSchemas = {
   launchAtLogin: z.boolean(),
   startWorkspacesAtLaunch: z.boolean(),
   startupWorkspaceIds: z.array(z.string().min(1).max(256)).max(256),
+  /** This computer's order for the sandbox list, local and remote, by `sandboxOrderKey`. */
+  sandboxOrder: z.array(z.string().min(1).max(512)).max(1024),
   terminal: z.string().min(1).max(256),
   editor: z.string().min(1).max(256),
   browser: z.string().min(1).max(256),
@@ -36,6 +38,7 @@ export const defaultSettings: Settings = {
   launchAtLogin: true,
   startWorkspacesAtLaunch: false,
   startupWorkspaceIds: [],
+  sandboxOrder: [],
   terminal: "Terminal",
   editor: "Visual Studio Code",
   browser: "Safari",
