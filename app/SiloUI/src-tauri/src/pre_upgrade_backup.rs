@@ -142,14 +142,13 @@ enum Backup {
 }
 
 /// What `<app_data>/runtime` is, given the folder Silo currently reads sandboxes from.
-fn locate(app_data: &Path, selected: &Path) -> Backup {
-    let previous = app_data.join("runtime");
+fn locate(previous: &Path, selected: &Path) -> Backup {
     if selected == previous {
         return Backup::Refused(IN_USE);
     }
-    match fs::symlink_metadata(&previous) {
+    match fs::symlink_metadata(previous) {
         Ok(metadata) if metadata.file_type().is_symlink() => Backup::Refused(REDIRECTED),
-        Ok(metadata) if metadata.is_dir() => Backup::Present(previous),
+        Ok(metadata) if metadata.is_dir() => Backup::Present(previous.to_path_buf()),
         Ok(_) => Backup::Refused(UNINSPECTABLE),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Backup::Gone,
         Err(_) => Backup::Refused(UNINSPECTABLE),
@@ -157,12 +156,9 @@ fn locate(app_data: &Path, selected: &Path) -> Backup {
 }
 
 fn inspect(app_data: &Path) -> Backup {
-    if !runtime_migration::previous_generation_is_backup(app_data) {
-        return Backup::NotABackup;
-    }
-    match runtime_migration::selected_runtime_storage(app_data) {
-        Ok(selected) => locate(app_data, &selected),
-        Err(_) => Backup::NotABackup,
+    match runtime_migration::backup_locations(app_data) {
+        Some(at) => locate(&at.previous, &at.selected),
+        None => Backup::NotABackup,
     }
 }
 
@@ -294,7 +290,10 @@ fn measure(app_data: &Path) -> Result<Option<u64>, String> {
 /// files. Startup repairs that too, but this must not depend on which runs first: a VM whose
 /// image still reads from the backup stops booting once the backup is gone.
 fn ensure_converted_runtime_is_independent(app_data: &Path, previous: &Path) -> Result<(), String> {
-    let cache = runtime_migration::selected_runtime_storage(app_data)?.join("microsandbox/cache");
+    let cache = runtime_migration::backup_locations(app_data)
+        .ok_or_else(|| NOT_A_BACKUP.to_string())?
+        .selected
+        .join("microsandbox/cache");
     if let Err(message) = image_cache::repair(&cache) {
         eprintln!("Image cache repair: {message}");
     }
@@ -734,18 +733,18 @@ mod tests {
         let dir = complete();
         let previous = dir.path().join("runtime");
         assert!(matches!(
-            locate(dir.path(), &previous),
+            locate(&previous, &previous),
             Backup::Refused(reason) if reason == IN_USE
         ));
         assert!(matches!(
-            locate(dir.path(), &dir.path().join(CONVERTED)),
+            locate(&previous, &dir.path().join(CONVERTED)),
             Backup::Present(_)
         ));
         fs::write(dir.path().join("file"), b"x").unwrap();
         fs::remove_dir_all(&previous).unwrap();
         fs::write(&previous, b"not a folder").unwrap();
         assert!(matches!(
-            locate(dir.path(), &dir.path().join(CONVERTED)),
+            locate(&previous, &dir.path().join(CONVERTED)),
             Backup::Refused(_)
         ));
         assert!(delete_backup(dir.path()).is_err());

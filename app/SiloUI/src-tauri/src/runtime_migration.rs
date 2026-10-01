@@ -1010,6 +1010,25 @@ pub(crate) fn previous_generation_is_backup(app_data: &Path) -> bool {
         && matches!(read(&app_data.join(FILE)), Ok(Some(state)) if state.status == "complete")
 }
 
+/// The pre-upgrade backup and the storage Silo reads sandboxes from instead, once
+/// [`previous_generation_is_backup`] holds. Paths only: the backup module measures, reveals
+/// or deletes the previous generation and never runs the runtime against either path.
+pub(crate) struct BackupLocations {
+    pub(crate) previous: PathBuf,
+    pub(crate) selected: PathBuf,
+}
+
+pub(crate) fn backup_locations(app_data: &Path) -> Option<BackupLocations> {
+    if !previous_generation_is_backup(app_data) {
+        return None;
+    }
+    let selected = selected_runtime_storage(app_data).ok()?;
+    Some(BackupLocations {
+        previous: app_data.join("runtime"),
+        selected,
+    })
+}
+
 #[cfg(test)]
 mod guard_tests;
 
