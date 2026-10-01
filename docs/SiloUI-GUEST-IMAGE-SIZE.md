@@ -132,3 +132,34 @@ holds the app twice; its own release adds about 37 MB. The same final image was
 The earlier [redistribution review](research/codex-linux-engine-probe-2026-09-22.md)
 found no grant to redistribute the app's engine. Publishing an image that
 contains it is a separate decision from these measurements.
+
+## v4 recipe measurement, 2026-10-01
+
+Built with `node app/SiloUI/scripts/build-guest-image.mjs arm64|amd64` (Docker/OrbStack;
+arm64 native, amd64 emulated), from the unpublished v4 recipe described in
+[guest images](SiloUI-GUEST-IMAGES.md#guest-image-v4-recipe-unpublished). Decimal MB.
+
+| Architecture | gzip -9 archive | Uncompressed Docker-save archive | Packages |
+| --- | ---: | ---: | ---: |
+| ARM64 | 409.26 | 1,294.17 | 519 |
+| AMD64 | 417.90 | 1,365.23 | 522 |
+
+For comparison the published v3 archives are 85.77 / 295.77 MB (ARM64) and
+87.77 / 269.18 MB (AMD64). The v4 layer is 972 MB uncompressed on ARM64. It
+includes ffmpeg and bubblewrap (needed by LCU) and the Selkies package (169 MB
+installed on ARM64, 276 MB on AMD64). These totals are about 20 MB above the
+earlier planning estimate of 389 / 400 MB; the cause was not investigated.
+No `.deb`, apt list or temporary file remains in the image.
+
+Checks on both architectures: Selkies 2.0.0 and Xfce 4.18.3 installed; Mousepad
+absent; as a normal user, `dbus-launch gsettings get org.gnome.desktop.interface
+toolkit-accessibility` is `true`; `xdg-mime query default text/plain` is
+`org.gnome.TextEditor.desktop`. In an Xfce session on Xvfb the autostarted poller
+was running, `org.a11y.Status.IsEnabled` was true and the AT-SPI desktop listed
+the Xfce components and GNOME Text Editor. Poller CPU over a 60 s window with those
+applications running: 0.04 CPU-seconds (about 0.07% of a core, 18 MB RSS) on native
+ARM64; 0.11 CPU-seconds (about 0.18%, 26 MB RSS) on emulated AMD64. The poller was not
+exercised against Chrome or Electron in this build. The ChatGPT app library check
+was skipped: its extracted copy (`/private/tmp/cg`) no longer exists and nothing
+was downloaded. These are container checks, not VM boots. Local images were removed
+afterwards.
