@@ -13,16 +13,16 @@ it("warns about data loss until dismissed, and stays dismissed after remount", a
   const user = userEvent.setup()
   const store = createMemorySettingsStore()
   const view = render(notice(store))
-  expect(await screen.findByRole("region", { name: "Silo is a preview" })).toHaveTextContent("Export sandboxes you care about regularly")
+  expect(await screen.findByRole("region", { name: "Silo is in preview" })).toHaveTextContent("Export sandboxes you care about regularly")
 
   await user.click(screen.getByRole("button", { name: "Got it" }))
-  expect(screen.queryByRole("region", { name: "Silo is a preview" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("region", { name: "Silo is in preview" })).not.toBeInTheDocument()
   expect(store.getSnapshot().settings.previewNoticeDismissed).toBe(true)
 
   view.unmount()
   render(notice(store))
   await Promise.resolve()
-  expect(screen.queryByRole("region", { name: "Silo is a preview" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("region", { name: "Silo is in preview" })).not.toBeInTheDocument()
 })
 
 it("closes from the dismiss button", async () => {
@@ -43,5 +43,5 @@ it("stays hidden until saved settings are read", async () => {
   })
   render(notice(store))
   await Promise.resolve()
-  expect(screen.queryByRole("region", { name: "Silo is a preview" })).not.toBeInTheDocument()
+  expect(screen.queryByRole("region", { name: "Silo is in preview" })).not.toBeInTheDocument()
 })

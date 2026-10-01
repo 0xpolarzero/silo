@@ -12,7 +12,7 @@ export function PreviewNotice() {
     <section aria-labelledby="preview-notice-title" className="flex items-start gap-2.5 rounded-md border border-amber-500/30 bg-amber-500/[.07] px-3 py-2.5 text-xs">
       <TriangleAlert className="mt-px size-3.5 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden="true" />
       <div className="min-w-0 flex-1">
-        <h2 id="preview-notice-title" className="font-medium">Silo is a preview</h2>
+        <h2 id="preview-notice-title" className="font-medium">Silo is in preview</h2>
         <p className="mt-0.5 text-muted-foreground">An update or a bug can lose sandbox data. Export sandboxes you care about regularly from their actions menu (Export…), and push your work to GitHub often.</p>
         <Button size="xs" variant="outline" className="mt-2" onClick={dismiss}>Got it</Button>
       </div>
