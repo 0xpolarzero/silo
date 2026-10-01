@@ -19,6 +19,7 @@ import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, Re
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { defaultStartupWorkspaceIds } from "@/features/application/model/startup-workspaces"
 import { AlphaNotice } from "@/features/application/components/alpha-notice"
+import { EditorIncludeNotice } from "@/features/application/components/editor-include-notice"
 import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
 import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
@@ -321,7 +322,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       onSidebarCollapsedChange={setSidebarCollapsed}
       navigationDisabled={installingUpdate}
       notice={<UpdateNotice onOpen={() => navigation.selectSettingsSection("general")} />}
-      banner={<AlphaNotice />}
+      banner={<><AlphaNotice /><EditorIncludeNotice /></>}
       activeTab={visibleTab}
       workspaceSection={visibleWorkspaceSection}
       settingsSection={settingsSection}

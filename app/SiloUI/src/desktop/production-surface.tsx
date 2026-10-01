@@ -3,6 +3,8 @@ import { RuntimeMigrationBoundary } from "@/desktop/runtime-migration-boundary"
 import { desktopUpdateBackend } from "@/desktop/updates"
 import { desktopPreUpgradeBackupBackend } from "@/desktop/pre-upgrade-backup"
 import { PreUpgradeBackupProvider } from "@/features/storage/pre-upgrade-backup"
+import { desktopEditorIncludeBackend } from "@/desktop/editor-include"
+import { EditorIncludeProvider } from "@/features/application/model/editor-include"
 import { UpdatesProvider, useUpdates } from "@/features/updates/update-store"
 import { useMainRoute } from "@/desktop/use-main-route"
 import { useEffect, useMemo, useState, type ReactNode } from "react"
@@ -49,7 +51,7 @@ export function ProductionSurface(props: ProductionSurfaceProps) {
 function MainSurface(props: ProductionSurfaceProps) {
   // Quit drains accepted setup first; name that work while the overlay waits for it.
   const { setupDrain } = useProductionSource(props.source)
-  return <ShutdownBoundary pendingWork={setupDrain}><RuntimeMigrationBoundary><PreUpgradeBackupProvider backend={desktopPreUpgradeBackupBackend}><ProductionContent {...props} /></PreUpgradeBackupProvider></RuntimeMigrationBoundary></ShutdownBoundary>
+  return <ShutdownBoundary pendingWork={setupDrain}><RuntimeMigrationBoundary><PreUpgradeBackupProvider backend={desktopPreUpgradeBackupBackend}><EditorIncludeProvider backend={desktopEditorIncludeBackend}><ProductionContent {...props} /></EditorIncludeProvider></PreUpgradeBackupProvider></RuntimeMigrationBoundary></ShutdownBoundary>
 }
 function ProductionContent({ source, dependencyStore, statusPanel = false }: ProductionSurfaceProps) {
   const current = useProductionSource(source)

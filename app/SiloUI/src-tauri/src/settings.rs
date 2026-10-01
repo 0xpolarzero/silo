@@ -261,6 +261,8 @@ fn valid_setting(key: &str, value: &Value) -> Option<bool> {
         | "editorUseSystemDefault"
         | "browserUseSystemDefault" => value.is_boolean(),
         "terminal" | "editor" | "browser" => bounded_string(value, 256, false),
+        // The SSH `Include` line whose notice the user dismissed; null until then.
+        "editorIncludeNoticeDismissed" => value.is_null() || bounded_string(value, 8192, false),
         "terminalPath" | "editorPath" | "browserPath" => {
             value.is_null()
                 || (bounded_string(value, 4096, false)
@@ -1308,7 +1310,8 @@ mod tests {
             "terminal": "iTerm", "editor": "Cursor", "browser": "Firefox",
             "reduceMotion": true, "notificationsEnabled": false,
             "notifyHealth": true, "notifyActions": false, "notifyBackup": true,
-            "alphaNoticeDismissed": true
+            "alphaNoticeDismissed": true,
+            "editorIncludeNoticeDismissed": "Include \"/home/user/.silo/bbbbbbbbbbbb/ssh/*.conf\""
         });
         let mut store = SettingsStore::load(Some(path.clone()));
         assert!(store
@@ -1319,6 +1322,74 @@ mod tests {
         assert_eq!(
             SettingsStore::load(Some(path)).snapshot().settings,
             patch.as_object().unwrap().clone()
+        );
+    }
+
+    #[test]
+    fn a_dismissed_ssh_include_notice_is_saved_replaced_and_cleared() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let key = "editorIncludeNoticeDismissed";
+        let line = |home: &str| format!("Include \"/home/user/.silo/{home}/ssh/*.conf\"");
+        let save = |value: Value| {
+            let mut patch = Map::new();
+            patch.insert(key.into(), value);
+            patch
+        };
+        let mut store = SettingsStore::load(Some(path.clone()));
+        assert!(!store.snapshot().settings.contains_key(key));
+        for value in [
+            json!(line("aaaaaaaaaaaa")),
+            json!(line("bbbbbbbbbbbb")),
+            Value::Null,
+        ] {
+            assert!(store
+                .update(save(value.clone()))
+                .unwrap()
+                .save_error
+                .is_none());
+            assert_eq!(
+                SettingsStore::load(Some(path.clone())).snapshot().settings[key],
+                value
+            );
+        }
+        let saved = std::fs::read(&path).unwrap();
+        for invalid in [json!(""), json!(true), json!("x".repeat(8193))] {
+            assert!(store.update(save(invalid)).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), saved);
+        }
+    }
+
+    #[test]
+    fn settings_saved_without_the_dismissed_line_still_load_and_keep_every_field() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&json!({
+                "schemaVersion": 1, "futureDocumentField": 1,
+                "settings": {"theme": "dark", "alphaNoticeDismissed": true, "futurePreference": 42},
+                "onboardingDraft": null
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let mut store = SettingsStore::load(Some(path.clone()));
+        let before = store.snapshot();
+        assert!(!before.write_protected && before.save_error.is_none());
+        assert_eq!(before.settings["theme"], "dark");
+        assert!(!before.settings.contains_key("editorIncludeNoticeDismissed"));
+        let mut patch = Map::new();
+        patch.insert("editorIncludeNoticeDismissed".into(), json!("Include x"));
+        store.update(patch).unwrap();
+        let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        assert_eq!(saved["schemaVersion"], 1);
+        assert_eq!(saved["futureDocumentField"], 1);
+        assert_eq!(saved["settings"]["alphaNoticeDismissed"], true);
+        assert_eq!(saved["settings"]["futurePreference"], 42);
+        assert_eq!(
+            saved["settings"]["editorIncludeNoticeDismissed"],
+            "Include x"
         );
     }
 

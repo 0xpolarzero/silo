@@ -13,6 +13,7 @@ import { SettingsProvider, useSettings } from "@/features/preferences/settings-s
 import { SystemIntegrationProvider } from "@/features/preferences/system-integrations-store"
 import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrations"
 import { PreUpgradeBackupProvider, type PreUpgradeBackupBackend } from "@/features/storage/pre-upgrade-backup"
+import { EditorIncludeProvider, type EditorIncludeBackend } from "@/features/application/model/editor-include"
 
 const inactiveApplicationActions: ApplicationActions = {
   openNetworkPort: async () => undefined,
@@ -32,7 +33,7 @@ const inactiveApplicationActions: ApplicationActions = {
   disconnectGitHub: () => undefined,
 }
 
-export function ApplicationPreview({ source, actions, backupPreviewMode, initialRoute, nativeOperations = false, preUpgradeBackup }: {
+export function ApplicationPreview({ source, actions, backupPreviewMode, initialRoute, nativeOperations = false, preUpgradeBackup, editorInclude }: {
   source: ApplicationSource
   actions?: Partial<ApplicationActions>
   backupPreviewMode?: BackupFixtureMode
@@ -40,6 +41,8 @@ export function ApplicationPreview({ source, actions, backupPreviewMode, initial
   nativeOperations?: boolean
   /** The previous storage an upgrade kept; Settings, General shows it when given. */
   preUpgradeBackup?: PreUpgradeBackupBackend
+  /** The SSH `Include` line Silo could not add; the application shows a notice for it when given. */
+  editorInclude?: EditorIncludeBackend
 }) {
   const { store } = useSettings(source.preferences)
   const [systemIntegrations] = useState(() => createFixtureSystemIntegrationStore(store))
@@ -47,7 +50,8 @@ export function ApplicationPreview({ source, actions, backupPreviewMode, initial
     ? <UnavailableApplicationPreview source={source} actions={actions} initialRoute={initialRoute} />
     : <FixtureApplicationPreview source={source} actions={actions} backupPreviewMode={backupPreviewMode} initialRoute={initialRoute} />
   const withBackup = preUpgradeBackup ? <PreUpgradeBackupProvider backend={preUpgradeBackup}>{application}</PreUpgradeBackupProvider> : application
-  return <SettingsProvider store={store}><SystemIntegrationProvider store={systemIntegrations}>{withBackup}</SystemIntegrationProvider></SettingsProvider>
+  const withInclude = editorInclude ? <EditorIncludeProvider backend={editorInclude}>{withBackup}</EditorIncludeProvider> : withBackup
+  return <SettingsProvider store={store}><SystemIntegrationProvider store={systemIntegrations}>{withInclude}</SystemIntegrationProvider></SettingsProvider>
 }
 
 function FixtureApplicationPreview({ source, actions, backupPreviewMode, initialRoute }: Parameters<typeof ApplicationPreview>[0]) {

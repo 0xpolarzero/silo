@@ -194,6 +194,7 @@ fn main() {
             notifications::clear_sandbox_notices,
             system_integrations::open_integration_settings,
             system_integrations::show_integration_error,
+            editor::read_editor_include_notice,
             applications::list_applications,
             applications::choose_application,
             dependencies::read_dependencies,

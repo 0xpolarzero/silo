@@ -73,3 +73,13 @@ it.each([
 ])("derives the new notification categories from legacy keys only when absent: %j", (saved, expected) => {
   expect(readSettingsOverrides(saved)).toEqual(expected)
 })
+
+it("reads and writes the dismissed SSH include line, and settings saved without it still load", () => {
+  const line = 'Include "/Users/ada/.silo/3f9c1a7be204/ssh/*.conf"'
+  expect(readSettingsOverrides({ editorIncludeNoticeDismissed: line })).toEqual({ editorIncludeNoticeDismissed: line })
+  expect(readSettingsOverrides({ editorIncludeNoticeDismissed: null })).toEqual({ editorIncludeNoticeDismissed: null })
+  expect(readSettingsOverrides({ theme: "dark", alphaNoticeDismissed: true })).toEqual({ theme: "dark", alphaNoticeDismissed: true })
+  expect(readSettingsOverrides({ editorIncludeNoticeDismissed: "" })).toEqual({})
+  expect(settingsPatchSchema.parse({ editorIncludeNoticeDismissed: line })).toEqual({ editorIncludeNoticeDismissed: line })
+  expect(settingsPatchSchema.safeParse({ editorIncludeNoticeDismissed: true }).success).toBe(false)
+})

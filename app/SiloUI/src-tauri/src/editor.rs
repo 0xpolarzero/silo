@@ -13,7 +13,7 @@ use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 
 /// Serializes SSH key and configuration file writes only. Never hold it across
 /// remote calls, guest commands, probes or editor launches: the desktop viewer
@@ -903,6 +903,80 @@ fn repoint_converted_entries(
     install_include(user_home, &include_line(&root)?)
 }
 
+/// What a launch's repair of the editor entries left for the user.
+#[derive(Debug, PartialEq)]
+enum Repair {
+    /// The entries point at the converted home, and nothing is left to do.
+    Done,
+    /// Silo can't change the user's SSH configuration (the manual line
+    /// `install_include` explains): this `Include` line is for the user to add.
+    ManualInclude(String),
+    /// Anything else that went wrong, which may pass on its own.
+    Failed(String),
+}
+
+/// `repoint_converted_entries`, told apart by what the user can do about its failure.
+fn repair_after_migration(paths: &RuntimePaths, user_home: &Path, previous_home: &Path) -> Repair {
+    let Err(error) = repoint_converted_entries(paths, user_home, previous_home) else {
+        return Repair::Done;
+    };
+    match include_line(&paths.home.join("ssh")) {
+        Ok(line) if error == manual_include(&user_home.join(".ssh/config"), &line) => {
+            Repair::ManualInclude(line)
+        }
+        _ => Repair::Failed(error),
+    }
+}
+
+/// The `Include` line the last repair could not add and the user has to. The
+/// notice in the application shows it until the line is in the user's SSH
+/// configuration or the user dismisses it, so a missed toast never loses it.
+static MANUAL_INCLUDE: Mutex<Option<String>> = Mutex::new(None);
+const MANUAL_INCLUDE_CHANGED: &str = "silo://editor-include-changed";
+
+/// Replaces the line the user has to add. Whether that changed it.
+fn replace_manual_include(line: Option<String>) -> bool {
+    let mut current = MANUAL_INCLUDE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let changed = *current != line;
+    *current = line;
+    changed
+}
+
+/// Tells the application when the line the user has to add changed.
+fn set_manual_include(app: &AppHandle, line: Option<String>) {
+    if replace_manual_include(line) {
+        let _ = app.emit(MANUAL_INCLUDE_CHANGED, ());
+    }
+}
+
+/// The line the user has to add, unless their SSH configuration has it by now.
+fn manual_include_needed(user_home: &Path, line: Option<String>) -> Option<String> {
+    line.filter(|line| !user_config_has_line(user_home, line))
+}
+
+/// The `Include` line the user must add to their SSH configuration themselves
+/// because Silo can't change it, or `None`. Checked against the file at every
+/// read, so a line added since is no longer reported.
+#[tauri::command]
+pub(crate) async fn read_editor_include_notice(
+    app: AppHandle,
+    window: WebviewWindow,
+) -> Result<Option<String>, String> {
+    if window.label() != "main" {
+        return Err("Only the main window can read the editor connection notice.".into());
+    }
+    let home = app.path().home_dir().map_err(|_| FAILED)?;
+    let line = MANUAL_INCLUDE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    tauri::async_runtime::spawn_blocking(move || manual_include_needed(&home, line))
+        .await
+        .map_err(|_| FAILED.into())
+}
+
 /// The runtime home the previous generation used, once the storage migration
 /// completed and converted every sandbox. `None` before that, without any
 /// migration, and after "Continue" into a fresh runtime, where the previous
@@ -938,16 +1012,21 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
         if let (Some((previous_home, home)), Ok(paths)) = (migrated, runtime::runtime_paths(&app)) {
-            if let Err(error) = repoint_converted_entries(&paths, &home, &previous_home) {
-                crate::notifications::notify(
-                    &app,
-                    crate::notifications::failure(
-                        "startup:editor-connections",
-                        "Editor connections need attention",
-                        &format!("Editors that reconnect on their own may still open the sandbox copies kept from before the upgrade. {error}"),
-                        None,
-                    ),
-                );
+            match repair_after_migration(&paths, &home, &previous_home) {
+                Repair::Done => set_manual_include(&app, None),
+                Repair::ManualInclude(line) => set_manual_include(&app, Some(line)),
+                Repair::Failed(error) => {
+                    set_manual_include(&app, None);
+                    crate::notifications::notify(
+                        &app,
+                        crate::notifications::failure(
+                            "startup:editor-connections",
+                            "Editor connections need attention",
+                            &format!("Editors that reconnect on their own may still open the sandbox copies kept from before the upgrade. {error}"),
+                            None,
+                        ),
+                    );
+                }
             }
         }
         if !appimage {
@@ -1767,26 +1846,7 @@ mod tests {
     #[test]
     fn an_unwritable_linked_config_explains_the_line_to_add_and_the_entries_are_still_repointed() {
         let computer = migrated();
-        let store = computer.directory.path().join("store");
-        fs::create_dir_all(&store).unwrap();
-        fs::rename(computer.user_home.join(".ssh/config"), store.join("config")).unwrap();
-        std::os::unix::fs::symlink(store.join("config"), computer.user_home.join(".ssh/config"))
-            .unwrap();
-        // Like a read-only home-manager file in the Nix store.
-        let root = unsafe { libc::geteuid() } == 0;
-        let lock = |locked: bool| {
-            if root {
-                let owner = if locked { 65534 } else { 0 };
-                std::os::unix::fs::chown(&store, Some(owner), None).unwrap();
-                std::os::unix::fs::chown(store.join("config"), Some(owner), None).unwrap();
-            } else {
-                fs::set_permissions(
-                    &store,
-                    fs::Permissions::from_mode(if locked { 0o555 } else { 0o755 }),
-                )
-                .unwrap();
-            }
-        };
+        let (store, lock) = read_only_linked_config(&computer);
         let before = fs::read(store.join("config")).unwrap();
         lock(true);
         let error = computer.repoint().unwrap_err();
@@ -1805,6 +1865,143 @@ mod tests {
         assert!(computer
             .entry(&computer.converted)
             .contains(&format!("MSB_HOME={}", computer.converted.home.display())));
+    }
+
+    /// Moves the user's SSH configuration into a store folder it links to, like a
+    /// read-only home-manager file in the Nix store. Returns the folder and a switch
+    /// that locks (`true`) or unlocks (`false`) it for this account.
+    fn read_only_linked_config(computer: &Migrated) -> (PathBuf, impl Fn(bool)) {
+        let store = computer.directory.path().join("store");
+        fs::create_dir_all(&store).unwrap();
+        fs::rename(computer.user_home.join(".ssh/config"), store.join("config")).unwrap();
+        std::os::unix::fs::symlink(store.join("config"), computer.user_home.join(".ssh/config"))
+            .unwrap();
+        let root = unsafe { libc::geteuid() } == 0;
+        let folder = store.clone();
+        (store, move |locked: bool| {
+            if root {
+                let owner = if locked { 65534 } else { 0 };
+                std::os::unix::fs::chown(&folder, Some(owner), None).unwrap();
+                std::os::unix::fs::chown(folder.join("config"), Some(owner), None).unwrap();
+            } else {
+                fs::set_permissions(
+                    &folder,
+                    fs::Permissions::from_mode(if locked { 0o555 } else { 0o755 }),
+                )
+                .unwrap();
+            }
+        })
+    }
+
+    /// A runtime home named `name` holding a copy of the previous one, as a
+    /// migration leaves it.
+    fn converted_at(computer: &Migrated, name: &str) -> RuntimePaths {
+        let mut paths = computer.converted.clone();
+        paths.home = computer.user_home.join(".silo").join(name);
+        fs::create_dir_all(&paths.home).unwrap();
+        let copy = Command::new("/bin/cp")
+            .arg("-R")
+            .arg(computer.previous.home.join("."))
+            .arg(&paths.home)
+            .status()
+            .unwrap();
+        assert!(copy.success());
+        paths
+    }
+
+    impl Migrated {
+        fn repair(&self, converted: &RuntimePaths) -> Repair {
+            repair_after_migration(converted, &self.user_home, &self.previous.home)
+        }
+
+        fn include(&self, home: &str) -> String {
+            format!(
+                "Include \"{}/.silo/{home}/ssh/*.conf\"",
+                self.user_home.display()
+            )
+        }
+    }
+
+    #[test]
+    fn a_line_is_reported_only_where_silo_cannot_add_it_and_only_until_it_is_there() {
+        let computer = migrated();
+        let line = computer.include(NEW_HOME);
+        let needed = |line: &str| manual_include_needed(&computer.user_home, Some(line.into()));
+
+        // Silo can write the file: it adds the line itself and has nothing to report.
+        let writable = migrated();
+        assert_eq!(writable.repair(&writable.converted), Repair::Done);
+        assert_eq!(
+            manual_include_needed(&writable.user_home, Some(writable.include(NEW_HOME))),
+            None
+        );
+
+        // Silo can't: every launch reports the line, however often it repeats, and
+        // the entries are repointed all the same.
+        let (store, lock) = read_only_linked_config(&computer);
+        let entry = computer.converted.home.join("ssh/dev.conf");
+        lock(true);
+        let launches: Vec<_> = (0..2)
+            .map(|_| {
+                fs::copy(computer.previous.home.join("ssh/dev.conf"), &entry).unwrap();
+                (
+                    computer.repair(&computer.converted),
+                    computer.entry(&computer.converted),
+                )
+            })
+            .collect();
+        // A different converted home needs a different line.
+        let later = converted_at(&computer, "cccccccccccc");
+        let changed = computer.repair(&later);
+        lock(false);
+        for (repair, entry) in launches {
+            assert_eq!(repair, Repair::ManualInclude(line.clone()));
+            assert!(entry.contains(&format!("MSB_HOME={}", computer.converted.home.display())));
+        }
+        assert_eq!(
+            changed,
+            Repair::ManualInclude(computer.include("cccccccccccc"))
+        );
+        assert_eq!(needed(&line), Some(line.clone()));
+
+        // The user adds the line to the file their configuration links to: it is no
+        // longer reported, and the next launch finds nothing left to do.
+        let old = fs::read(store.join("config")).unwrap();
+        fs::write(
+            store.join("config"),
+            [format!("{line}\n").as_bytes(), &old].concat(),
+        )
+        .unwrap();
+        lock(true);
+        let after = computer.repair(&computer.converted);
+        lock(false);
+        assert_eq!(after, Repair::Done);
+        assert_eq!(needed(&line), None);
+        // The line of another home is still needed.
+        assert_eq!(
+            needed(&computer.include("cccccccccccc")),
+            Some(computer.include("cccccccccccc"))
+        );
+    }
+
+    #[test]
+    fn a_failure_other_than_the_line_to_add_is_not_reported_as_one() {
+        let computer = migrated();
+        // A runtime home `ssh` can't be told about: the `Include` can't be written at all.
+        let mut broken = computer.converted.clone();
+        broken.home = computer.user_home.join(".silo/bb\nbb");
+        assert_eq!(computer.repair(&broken), Repair::Failed(FAILED.into()));
+    }
+
+    #[test]
+    fn the_line_to_add_is_replaced_and_cleared() {
+        // The only test that touches the process-wide line.
+        assert!(!replace_manual_include(None));
+        assert!(replace_manual_include(Some("Include a".into())));
+        assert!(!replace_manual_include(Some("Include a".into())));
+        assert!(replace_manual_include(Some("Include b".into())));
+        assert!(replace_manual_include(None));
+        assert!(!replace_manual_include(None));
     }
 
     #[test]

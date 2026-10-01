@@ -29,6 +29,7 @@ import { resourceFixtureModeFromSearch, withResourceFixture } from "./applicatio
 import { operationQueueFromSearch } from "./operation-queue"
 import { RuntimeMigrationBoundary } from "@/desktop/runtime-migration-boundary"
 import { createFixtureMigrationBackend, fixtureBackupForMode, preUpgradeBackupFixtureModeFromSearch } from "./pre-upgrade-backup"
+import { createFixtureEditorInclude, editorIncludeFixtureModeFromSearch } from "./editor-include"
 
 export function FixtureApp({ nativeOnboardingComplete = false, nativeDependencies = null, nativeOperations = false, settingsStore }: { nativeOnboardingComplete?: boolean; nativeDependencies?: DependencyRuntime | null; nativeOperations?: boolean; settingsStore?: SettingsStore }) {
   const source = applicationSourceForScenario(scenarioFromSearch(window.location.search))
@@ -58,6 +59,8 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   const backupFixtureMode = preUpgradeBackupFixtureModeFromSearch(window.location.search) ?? (surface === "migration" ? "present" : undefined)
   const preUpgradeBackup = useMemo(() => backupFixtureMode ? fixtureBackupForMode(backupFixtureMode, 1_500) : undefined, [backupFixtureMode])
   const migrationBackend = useMemo(() => preUpgradeBackup ? createFixtureMigrationBackend(preUpgradeBackup) : undefined, [preUpgradeBackup])
+  const editorIncludeMode = editorIncludeFixtureModeFromSearch(window.location.search)
+  const editorInclude = useMemo(() => editorIncludeMode ? createFixtureEditorInclude() : undefined, [editorIncludeMode])
   const baseSource = withResourceFixture(completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode), resourceMode)
   const fixtureSource = operationQueue ? { ...baseSource, operationQueue } : baseSource
   useDesktopFixtures({ source: fixtureSource, mode: statusBarMode },
@@ -95,6 +98,7 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
             backupPreviewMode={backupMode}
             nativeOperations={nativeOperations}
             preUpgradeBackup={preUpgradeBackup}
+            editorInclude={editorInclude}
           />
         </RuntimeMigrationBoundary>
       ) : surface === "app" ? (
@@ -105,6 +109,7 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
           source={statusBarHandoff?.source ?? fixtureSource}
           nativeOperations={nativeOperations}
           preUpgradeBackup={preUpgradeBackup}
+          editorInclude={editorInclude}
         />
       ) : surface === "status-bar" ? (
         <StatusBarPreview

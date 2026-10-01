@@ -588,7 +588,13 @@ a file is written only when its content would change.
   exact line reported when the file cannot be changed), but only when the user's
   file still includes the previous home: that line shows they use editor
   connections, and a user who removed it keeps their file as it is. When the line
-  cannot be added, Silo posts a notification with the line to add.
+  cannot be added, the application shell shows a notice with the line and a Copy
+  button (`EditorIncludeNotice`, fed by `read_editor_include_notice`). It stays,
+  across launches, until the line is in the user's file or the user dismisses it;
+  the dismissal saves that line as `editorIncludeNoticeDismissed`, so a different
+  needed line shows it again. A toast or system notification would be lost when
+  the window is focused, notifications are off or the page has not loaded yet.
+  Other failures to add it still notify.
 - **The previous `Include` stays.** The new line goes first and `ssh` keeps the
   first value it finds for `ProxyCommand` and `UserKnownHostsFile`, so the
   repointed entries win while the backup exists. A glob that matches nothing is
