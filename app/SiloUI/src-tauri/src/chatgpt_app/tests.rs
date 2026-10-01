@@ -681,7 +681,9 @@ mod hardening;
 fn live_download_of_the_pinned_arm64_package() {
     crate::test_support::live::require_confirmation();
     let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("chatgpt");
+    // `SILO_LIVE_CHATGPT_ROOT` keeps the published app for a manual VM check.
+    let root = std::env::var_os("SILO_LIVE_CHATGPT_ROOT")
+        .map_or_else(|| dir.path().join("chatgpt"), PathBuf::from);
     accept_notice(&root).unwrap();
     let lock = Lock::bundled().unwrap();
     let started = Instant::now();
