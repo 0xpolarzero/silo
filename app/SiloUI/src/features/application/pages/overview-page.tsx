@@ -763,7 +763,7 @@ export function OverviewPage({ active = true, readOnly = false,
                 const openReason = readOnly || availability?.canOpen ? undefined : availability?.reasons.open
                 return {
                   kindBadge: workspace?.computer ? <ComputerBadge computer={workspace.computer} /> : undefined,
-                  badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} /></>,
+                  badge: <>{badge}<SshAccessBadges access={access} stale={sshStale} onOpen={() => openSandbox(machine.id, "access")} /></>,
                   popovers: menu.popovers,
                   menuActions: menu.items,
                   deleteDetails: workspace ? deleteDetails(workspace) : undefined,

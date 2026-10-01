@@ -149,7 +149,8 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
 }
 
 
-export function SshAccessBadges({ access, stale = false }: { access?: SshAccessWorkspace; stale?: boolean }) {
+/** The SSH status badge. With `onOpen` it is a button that opens the sandbox's SSH tab. */
+export function SshAccessBadges({ access, stale = false, onOpen }: { access?: SshAccessWorkspace; stale?: boolean; onOpen?: () => void }) {
   if (!access?.enabled) return null
   const network = access.bindAddress !== "127.0.0.1"
   const label = `SSH from ${access.computerName}${network ? " and other computers" : " only"}`
@@ -160,9 +161,13 @@ export function SshAccessBadges({ access, stale = false }: { access?: SshAccessW
   const tone = failed ? "border-destructive/20 bg-destructive/10 text-destructive"
     : unknown ? "border-amber-500/20 bg-amber-500/10 text-amber-700 dark:text-amber-400"
     : network ? "border-blue-500/15 bg-blue-500/10 text-blue-700 dark:text-blue-300" : "border-border bg-muted text-muted-foreground"
+  const name = access.state === "listening" && !unknown ? label : `${label}: ${status}`
+  const className = `inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 align-middle text-[9px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ${tone}`
+  const content = <>{failed || unknown ? <TriangleAlert className="size-3" aria-hidden="true" /> : network && <ConnectionIcon kind="ssh" network className="size-3" />}{failed ? "SSH error" : "SSH"}</>
   return <TooltipProvider delayDuration={150}><Tooltip><TooltipTrigger asChild>
-    <span tabIndex={0} aria-label={access.state === "listening" && !unknown ? label : `${label}: ${status}`} className={`inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-0.5 text-[9px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring ${tone}`}>
-      {failed || unknown ? <TriangleAlert className="size-3" aria-hidden="true" /> : network && <ConnectionIcon kind="ssh" network className="size-3" />}{failed ? "SSH error" : "SSH"}
-    </span>
-  </TooltipTrigger><TooltipContent>{label} · {status}</TooltipContent></Tooltip></TooltipProvider>
+    {onOpen
+      // Inside a list row, the click opens the SSH tab instead of the row's own page.
+      ? <button type="button" aria-label={name} className={`${className} cursor-pointer hover:brightness-110`} onClick={event => { event.stopPropagation(); onOpen() }}>{content}</button>
+      : <span tabIndex={0} aria-label={name} className={className}>{content}</span>}
+  </TooltipTrigger><TooltipContent>{label} · {status}{onOpen && " · Open SSH settings"}</TooltipContent></Tooltip></TooltipProvider>
 }

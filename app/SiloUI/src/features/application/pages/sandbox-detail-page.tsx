@@ -91,7 +91,7 @@ export interface SandboxDetailControls {
 
 const Sep = StatusSeparator
 
-function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess, sshStale, onCancel }: {
+function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess, sshStale, onCancel, onOpenSsh }: {
   workspace: ApplicationWorkspace
   source: ApplicationSource
   readOnly: boolean
@@ -99,6 +99,7 @@ function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess
   sshAccess?: SshAccessWorkspace
   sshStale: boolean
   onCancel?: ApplicationActions["cancelOperation"]
+  onOpenSsh?: () => void
 }) {
   const { machine } = workspace
   const location = workspace.computer ? workspace.computer.name : machine.kind === "vm" ? "VM" : "SSH host"
@@ -106,7 +107,7 @@ function DetailSubtitle({ workspace, source, readOnly, pendingSecrets, sshAccess
     <WorkspaceStatus workspace={workspace} source={source} readOnly={readOnly} onCancel={onCancel} />
     <Sep />{location}
     {pendingSecrets.length > 0 && <><Sep /><SecretChangesLabel inline workspace={machine.name} state={workspace.state} secrets={pendingSecrets} /></>}
-    {sshAccess?.enabled && <><Sep /><SshAccessBadges access={sshAccess} stale={sshStale} /></>}
+    {sshAccess?.enabled && <><Sep /><SshAccessBadges access={sshAccess} stale={sshStale} onOpen={onOpenSsh} /></>}
   </span>
 }
 
@@ -384,7 +385,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
     { value: "overview", label: "Overview", visible: true },
     { value: "checkpoints", label: "Checkpoints", visible: showCheckpoints },
     { value: "storage", label: "Storage", visible: showStorage },
-    { value: "access", label: "SSH access", visible: showAccess },
+    { value: "access", label: "SSH", visible: showAccess },
   ]
   const visibleTabs = tabs.filter(tab => tab.visible)
   const menuPopovers: MenuPopovers = {
@@ -413,7 +414,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
           <ChevronRight className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className={cn(listHeadingClassName, "truncate")} title={machine.name}>{machine.name}</span>
         </nav>}
-        subtitle={<span data-slot="sandbox-detail-status"><DetailSubtitle workspace={workspace} source={source} readOnly={controls.readOnly} pendingSecrets={pendingSecrets} sshAccess={access} sshStale={sshStale} onCancel={actions.cancelOperation} /></span>}
+        subtitle={<span data-slot="sandbox-detail-status"><DetailSubtitle workspace={workspace} source={source} readOnly={controls.readOnly} pendingSecrets={pendingSecrets} sshAccess={access} sshStale={sshStale} onCancel={actions.cancelOperation} onOpenSsh={showAccess ? () => controls.onSelectTab("access") : undefined} /></span>}
         actions={<div className="flex shrink-0 items-center gap-1">
           <DisabledReason reason={controls.canOpen ? undefined : reasons.open}><Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.terminal}`} disabled={!controls.canOpen} onClick={controls.onTerminal}><Terminal aria-hidden="true" data-icon="inline-start" />Terminal</Button></DisabledReason>
           <DisabledReason reason={controls.canOpen ? undefined : reasons.open}><Button type="button" variant="outline" size="xs" aria-label={`Open ${machine.name} in ${source.preferences.editor}`} disabled={!controls.canOpen} onClick={controls.onEditor}><Code aria-hidden="true" data-icon="inline-start" />Editor</Button></DisabledReason>

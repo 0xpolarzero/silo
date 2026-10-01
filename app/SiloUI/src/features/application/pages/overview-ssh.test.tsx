@@ -21,7 +21,7 @@ it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", asy
   expect(row.queryByRole("button", { name: /SSH access controls/ })).not.toBeInTheDocument()
 
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
-  await user.click(screen.getByRole("tab", { name: "SSH access" }))
+  await user.click(screen.getByRole("tab", { name: "SSH" }))
   expect(screen.getAllByRole("switch")).toHaveLength(2)
   expect(screen.getByText("ssh -p 2222 silo@127.0.0.1")).toBeVisible()
   expect(screen.getByText("ssh -p 2222 silo@192.168.1.42")).toBeVisible()
@@ -40,6 +40,21 @@ it("surfaces both SSH addresses and the scope badge on the sandbox SSH tab", asy
   expect(within(screen.getByRole("navigation", { name: "Breadcrumb" }).parentElement!).getByLabelText(/^SSH from .* only$/)).toBeVisible()
 })
 
+it("opens the sandbox's SSH tab from the SSH badge in the list and on the sandbox page", async () => {
+  const source = structuredClone(applicationSourceForScenario("complete"))
+  const workspace = source.workspaces.find(w => w.machine.kind === "vm")!
+  source.sshAccess = { workspaces: [{ workspace: workspace.machine.name, enabled: true, port: 2222, bindAddress: "10.211.55.2", keys: [], state: "error", message: "The selected network address is unavailable. Choose an active interface.", fingerprint: null, computerName: "Ada Mac", addresses: ["127.0.0.1"] }] }
+  const actions = { refreshSshAccess: vi.fn().mockResolvedValue(undefined), saveSshAccess: vi.fn(), sshConnection: vi.fn(), openTerminal: vi.fn() } as unknown as ApplicationActions
+  const user = userEvent.setup()
+  render(<OverviewPage source={source} actions={actions} onMachinesChange={vi.fn()} />)
+  await user.click(within(screen.getByRole("list", { name: "Configured sandboxes" })).getByRole("button", { name: /^SSH from Ada Mac/ }))
+  expect(screen.getByRole("tab", { name: "SSH" })).toHaveAttribute("aria-selected", "true")
+
+  await user.click(screen.getByRole("tab", { name: "Overview" }))
+  await user.click(within(screen.getByRole("navigation", { name: "Breadcrumb" }).parentElement!).getByRole("button", { name: /^SSH from Ada Mac/ }))
+  expect(screen.getByRole("tab", { name: "SSH" })).toHaveAttribute("aria-selected", "true")
+})
+
 it("keeps Network limited to service ports", () => {
   const source = applicationSourceForScenario("complete")
   render(<NetworkPage workspaces={source.workspaces} browser="Safari" actions={{ refreshSshAccess: vi.fn() } as unknown as ApplicationActions} active />)
@@ -56,7 +71,7 @@ it("allows read-only SSH disclosure without refreshing, copying, or changing the
   expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
   expect(screen.getByRole("button", { name: "Stop dev" })).toBeDisabled()
   await user.click(screen.getByRole("button", { name: "Open dev" }))
-  await user.click(screen.getByRole("tab", { name: "SSH access" }))
+  await user.click(screen.getByRole("tab", { name: "SSH" }))
   expect(screen.getByText("ssh -p 2222 silo@192.168.1.42")).toBeVisible()
   for (const control of screen.getAllByRole("switch")) expect(control).toBeDisabled()
   expect(screen.getByRole("button", { name: "Copy SSH address" })).toBeDisabled()
