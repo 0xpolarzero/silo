@@ -96,3 +96,48 @@ fn reveal_backup_archive_is_allowlisted_for_the_main_window_only() {
         );
     }
 }
+
+#[test]
+fn pre_upgrade_backup_commands_are_allowlisted_for_the_main_window_only() {
+    let manifests: Value =
+        serde_json::from_str(include_str!("../gen/schemas/acl-manifests.json")).unwrap();
+    let capabilities: Value =
+        serde_json::from_str(include_str!("../gen/schemas/capabilities.json")).unwrap();
+    let preview = &capabilities["preview"];
+    assert_eq!(preview["windows"], serde_json::json!(["main"]));
+
+    for command in [
+        "read_pre_upgrade_backup",
+        "measure_pre_upgrade_backup",
+        "delete_pre_upgrade_backup",
+        "reveal_pre_upgrade_backup",
+        "acknowledge_pre_upgrade_backup_notice",
+    ] {
+        let permission = format!("allow-{}", command.replace('_', "-"));
+        assert_eq!(
+            manifests["__app-acl__"]["permissions"][&permission]["commands"]["allow"],
+            serde_json::json!([command]),
+            "Tauri must generate a permission for {command}"
+        );
+        assert!(
+            preview["permissions"]
+                .as_array()
+                .unwrap()
+                .contains(&Value::String(permission.clone())),
+            "The local main window must be able to invoke {command}"
+        );
+        // No other capability may grant a deletion or file-manager command to another window.
+        for (name, capability) in capabilities.as_object().unwrap() {
+            if name == "preview" {
+                continue;
+            }
+            assert!(
+                !capability["permissions"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&Value::String(permission.clone())),
+                "Only the main window may use {command}, not {name}"
+            );
+        }
+    }
+}

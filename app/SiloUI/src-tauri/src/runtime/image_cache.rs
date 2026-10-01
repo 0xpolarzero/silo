@@ -79,6 +79,47 @@ fn cached_copy(path: &str, cache: &Path) -> Option<PathBuf> {
     (valid && fs::symlink_metadata(&copy).is_ok_and(|metadata| metadata.is_file())).then_some(copy)
 }
 
+/// A small regular `.vmdk` file: an image descriptor, not a disk's data.
+fn is_descriptor(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension == "vmdk")
+        && fs::symlink_metadata(path)
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 64 * 1024)
+}
+
+/// Whether any image descriptor in `cache` still names a file below `runtime`, so removing
+/// that runtime would break the VMs that boot from this cache. A descriptor that cannot be
+/// read counts as unverifiable and fails, since it might name such a file.
+pub(crate) fn reads_from(cache: &Path, runtime: &Path) -> Result<bool, String> {
+    let entries = match fs::read_dir(cache.join("vmdk")) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(_) => return Err("Silo could not read the runtime's image cache.".into()),
+    };
+    let canonical = fs::canonicalize(runtime).ok();
+    for entry in entries {
+        let path = entry
+            .map_err(|_| "Silo could not read the runtime's image cache.")?
+            .path();
+        if !is_descriptor(&path) {
+            continue;
+        }
+        let descriptor = fs::read_to_string(&path)
+            .map_err(|_| "Silo could not read an image descriptor in the runtime's cache.")?;
+        let inside = |extent: &str| {
+            let extent = Path::new(extent);
+            extent.starts_with(runtime)
+                || canonical
+                    .as_ref()
+                    .is_some_and(|own| extent.starts_with(own))
+        };
+        if descriptor.lines().filter_map(extent_path).any(inside) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Point every image VMDK in `cache` at this cache's EROFS files, including files that
 /// another runtime still has. Returns how many descriptors changed. A descriptor whose
 /// files are missing everywhere is left alone and reported; the others are repaired.
@@ -95,12 +136,7 @@ pub(crate) fn repair(cache: &Path) -> Result<usize, String> {
         let path = entry
             .map_err(|_| "Silo could not read the runtime's image cache.")?
             .path();
-        let is_descriptor = path
-            .extension()
-            .is_some_and(|extension| extension == "vmdk")
-            && fs::symlink_metadata(&path)
-                .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 64 * 1024);
-        if !is_descriptor {
+        if !is_descriptor(&path) {
             continue;
         }
         let Ok(descriptor) = fs::read_to_string(&path) else {
@@ -223,6 +259,30 @@ mod tests {
             assert_eq!(cached_copy(path, &cache), None, "{path}");
         }
         assert_eq!(repair(&cache.join("absent")).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_descriptor_naming_a_file_below_a_runtime_is_reported() {
+        let (directory, cache) = cache();
+        let previous = directory.path().join("Application Support/runtime");
+        let inside = previous.join("microsandbox/cache/layers").join(LAYER);
+        let own = cache.join("layers").join(LAYER);
+        let vmdk = cache.join("vmdk/x.vmdk");
+        let text =
+            |path: &Path| descriptor(&path.display().to_string(), &path.display().to_string());
+        assert!(!reads_from(&cache.join("absent"), &previous).unwrap());
+        fs::write(&vmdk, text(&inside)).unwrap();
+        assert!(reads_from(&cache, &previous).unwrap());
+        // The converted runtime's own files, in a sibling folder with the same prefix, are not below it.
+        fs::write(&vmdk, text(&own)).unwrap();
+        assert!(!reads_from(&cache, &previous).unwrap());
+        // Repair is what removes the dependency for a copied cache.
+        fs::write(&vmdk, text(&inside)).unwrap();
+        assert_eq!(repair(&cache).unwrap(), 1);
+        assert!(!reads_from(&cache, &previous).unwrap());
+        // A descriptor that cannot be read cannot be verified.
+        fs::write(&vmdk, [0xff, 0xfe, 0xfd]).unwrap();
+        assert!(reads_from(&cache, &previous).is_err());
     }
 
     #[test]

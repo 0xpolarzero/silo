@@ -377,6 +377,86 @@ Created and the mount became Owned. The owned copy matched byte for byte. The
 source's hash, size, mtime and inode were unchanged. No VM or Silo app was
 started; this is not live migration or packaged-app qualification.
 
+### Pre-upgrade backup (2026-10-01)
+
+After a migration that converted every sandbox, `<app data>/runtime` is a
+pre-upgrade backup: nothing reads it, downgrading is not supported, and on a
+filesystem without reflinks (ext4) it is a second full copy of every sandbox
+disk, the image cache and the database. On APFS the copies are clones, so
+deleting frees less than the allocated size Silo shows. Silo keeps it for 14
+days and then deletes it; the owner can delete it sooner. The migration screen
+reports its size and the date it will be deleted, and Settings, General,
+Storage lists it with **Show** and **Delete now** until it is gone.
+`src-tauri/src/pre_upgrade_backup.rs` owns this.
+
+- **Only after a complete conversion.** The folder is offered, measured,
+  revealed and deleted only while `runtime-migration.json` reports `complete` and
+  `runtime-generation.json` selects `runtime-checkpoints-converted`
+  (`runtime_migration::previous_generation_is_backup`). After "Continue" the
+  generation is `runtime-checkpoints-clean` and the same folder holds the only
+  copy of the unconverted sandboxes, so none of this applies. Without a
+  generation file nothing was migrated.
+- **Window.** The 14 days start when Silo first sees the migration complete,
+  which is the first launch after the conversion restarts. An install that
+  migrated before this feature has no record, so its window starts at its first
+  launch with it. The start is stored in a separate `pre-upgrade-backup.json`
+  (`version`, `startedAt` in RFC 3339 UTC, `noticeAcknowledged`), not in
+  `runtime-migration.json`: that reader rejects unknown fields, so builds
+  without this feature would refuse a changed file. They never read the new
+  one. A record that is damaged or has another `version` is kept untouched;
+  the backup is still offered and can be deleted by hand, but Silo never
+  deletes it automatically.
+- **Schedule.** Checked at launch and then hourly while Silo runs. A backup
+  that came due while Silo was closed is deleted at the next launch. Hourly
+  rather than daily because the sleep does not count time the computer spent
+  asleep, and a check that finds nothing due reads one small file. The date
+  shown is the local calendar date of the deletion instant (14 x 24 hours after
+  the start); no countdown is shown. A clock set far forward would delete early;
+  a clock set back never does.
+- **Deleting.** Exactly `<app data>/runtime`, with `remove_dir_all`, which
+  unlinks symlinks instead of following them. A symlink or non-directory at
+  that path, or the folder Silo currently reads from, is refused. One deletion
+  runs at a time; a concurrent or repeated request waits and then finds nothing
+  to delete, which succeeds. A failure part-way (permissions, I/O) keeps the
+  rest, the record and the Settings row, and reports the cause so the user can
+  retry. Before deleting, Silo runs the image-cache repair and refuses if any
+  converted image descriptor still names a file below the backup, because a
+  sandbox whose image reads from the backup stops booting once it is gone
+  (see `runtime/image_cache.rs`). It does not remove the runtime-home alias
+  symlink that the previous generation left under `~/.silo` (or `~/.silo-dev`);
+  that is a dangling link outside the backup folder.
+- **Size** is allocated bytes (`st_blocks`), not apparent size, so a sparse
+  disk image counts what it occupies; symlinks are not followed and a file with
+  several names counts once. It is a separate command (`measure_pre_upgrade_backup`)
+  that runs off the async workers and only where the size is shown, so reading
+  the status at launch never walks the folder.
+- **Show** reveals the folder with the same `tauri_plugin_opener::reveal_item_in_dir`
+  as exports. The folder holds Linux disk images (`upper.ext4`, `workspace.raw`)
+  and a database: copyable, not browsable on macOS.
+- **Quarantined files.** The migration moved the previous export journal and
+  export-folder setting into the folder as `before-checkpoints-backup-operation.json`
+  and `before-checkpoints-backup-history.json` so they are not replayed against the
+  new runtime. Nothing reads them back: the journal can only be terminal at that
+  point (conversion refuses an unfinished one), and the history only remembers
+  an export folder and, in older builds, a list of exports that no UI showed.
+  The export files themselves are elsewhere and are not touched.
+
+Existing tools considered: a launchd agent or systemd timer would run while Silo
+is closed, but deleting needs Silo's own migration state and image-cache check
+in the same process, and Silo already runs its other maintenance (storage
+reclaim, log retention) from a monitor thread. The new code is date arithmetic,
+a guarded `remove_dir_all` and one small file.
+
+Verification: native unit tests cover the date arithmetic across month, year and
+leap boundaries, the clean-generation, symlink and in-use refusals, legacy installs
+without a record, past-due deletion at launch, idempotent and concurrent deletion,
+symlinks inside the backup, a failed deletion keeping its row, damaged and
+later-version records, sparse and hard-linked sizes, and the image-descriptor
+check. Frontend tests cover the migration screen, the Settings row, the confirmation,
+failure and retry against fixtures, and the native JSON contract. None of this
+deleted a real migrated install or booted a converted VM after deleting its
+backup.
+
 ### SFTP working-account identity
 
 The `sftp-user` patch runs nonroot SFTP sessions through the guest's bundled OpenSSH
