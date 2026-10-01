@@ -74,6 +74,8 @@ RUN --mount=type=bind,source=src-tauri/guest/desktop-streamer-lock.json,target=/
         'text/x-python=org.gnome.TextEditor.desktop' 'text/x-shellscript=org.gnome.TextEditor.desktop' \
         'application/json=org.gnome.TextEditor.desktop' 'application/xml=org.gnome.TextEditor.desktop' \
         > /etc/xdg/mimeapps.list \
+    && install -d -m 0755 /usr/local/share/silo \
+    && printf '%s\n' '{"schemaVersion":1,"version":"ubuntu-24.04-v4","capabilities":["desktop","accessibility","lcu-system-packages"],"streamerVersion":"2.0.0"}' > /usr/local/share/silo/guest-image.json \
     && dpkg-query -W > /usr/local/share/silo-packages.txt \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/*
 CMD ["/bin/bash"]

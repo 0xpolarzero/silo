@@ -28,7 +28,17 @@ elif name == 'dpkg':
     if '--print-architecture' in args:
         print(os.environ.get('DPKG_ARCH', 'arm64'))
 elif name == 'dpkg-query':
-    if 'greybird-gtk-theme' in args:
+    if os.environ.get('PREINSTALLED_IMAGE') and ('-f=${Status}' in args or '-f=${Version}' in args):
+        package = args[-1]
+        if os.environ.get('V4_MISSING_PACKAGE') == package:
+            sys.exit(1)
+        if '-f=${Version}' in args:
+            sys.stdout.write(os.environ.get('V4_SELKIES_VERSION', '2.0.0-1~ubuntu24.04'))
+        else:
+            sys.stdout.write('install ok installed')
+    elif '-W' in args and len(args) == 1:
+        print('xfce4-session\t4.18')
+    elif 'greybird-gtk-theme' in args:
         if not (root / 'theme-installed').exists():
             sys.exit(1)
         print('install ok installed')
@@ -50,7 +60,7 @@ elif name == 'python3':
         source = sys.stdin.read() if args[0] == '-' else args[1]
         if args[0] == '-' and not any(marker in source for marker in
                                       ('SILO_STREAMER_LOCK_V1', 'SILO_STREAMER_RECEIPT_V1',
-                                       'SILO_DESKTOP_CONNECTION_V1')):
+                                       'SILO_DESKTOP_CONNECTION_V1', 'SILO_GUEST_IMAGE_MARKER_V1')):
             sys.exit('unexpected Python recipe helper')
         result = subprocess.run([sys.executable, *args], input=source if args[0] == '-' else None,
                                  text=True, capture_output=True, env=os.environ)
@@ -135,6 +145,9 @@ class DesktopRecipe(unittest.TestCase):
         self.assertTrue(os.access(session, os.X_OK))
         # Run the generated script, replacing only its final desktop launch with
         # observation of the environment delivered to that launch.
+        # /etc/xdg/autostart entries (the accessibility poller) only run inside
+        # a session started by xfce4-session under its own D-Bus session.
+        self.assertIn('exec dbus-run-session -- xfce4-session', session.read_text())
         script = session.read_text().replace('exec dbus-run-session -- xfce4-session',
                                              'printf "%s" "$XDG_CURRENT_DESKTOP"')
         result = subprocess.run(['/bin/sh', '-c', script], env={'PATH': '/usr/bin:/bin'},
@@ -262,6 +275,108 @@ class DesktopRecipe(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(json.loads(receipt_path.read_text()), old_receipt)
         self.assertFalse((self.root / 'usr/local/bin/silo-desktop').exists())
+
+
+class PreinstalledImageDesktop(DesktopRecipe):
+    """v4 guest images already hold the desktop; only per-VM state is provisioned."""
+
+    def setUp(self):
+        super().setUp()
+        self.env['PREINSTALLED_IMAGE'] = '1'
+        marker = self.root / 'usr/local/share/silo/guest-image.json'
+        marker.parent.mkdir(parents=True)
+        self.write_marker(capabilities=['desktop', 'accessibility', 'lcu-system-packages'])
+        binary = self.root / 'usr/bin/selkies'
+        binary.parent.mkdir(parents=True)
+        binary.write_text('#!/bin/sh\n')
+        binary.chmod(0o755)
+        autostart = self.root / 'etc/xdg/autostart/silo-accessibility.desktop'
+        autostart.parent.mkdir(parents=True)
+        autostart.write_text('[Desktop Entry]\n')
+        recipe = self.recipe.read_text().replace('/etc/xdg/autostart', str(self.root) + '/etc/xdg/autostart')
+        self.recipe.write_text(recipe)
+
+    def write_marker(self, **overrides):
+        marker = {'schemaVersion': 1, 'version': 'ubuntu-24.04-v4', 'streamerVersion': '2.0.0',
+                  'capabilities': ['desktop']}
+        marker.update(overrides)
+        (self.root / 'usr/local/share/silo/guest-image.json').write_text(json.dumps(marker))
+
+    # The inherited v3 tests do not apply to the preinstalled path.
+    test_fresh_desktop_installs_theme_and_launches_identified_session = None
+    test_fresh_desktop_installs_no_luda_tools = None
+    test_fresh_desktop_selects_amd64_streamer_asset_and_receipt = None
+    test_existing_desktop_install_upgrades_session_and_theme = None
+    test_update_streamer_requires_stopped_desktop_even_when_stream_failed = None
+    test_update_streamer_writes_receipt_after_pinned_install_without_restarting_desktop = None
+    test_failed_selkies_package_install_does_not_write_receipt = None
+
+    def test_v4_image_provisions_state_without_apt_or_network(self):
+        calls = self.run_recipe()
+        names = [name for name, _ in calls]
+        self.assertNotIn('apt-get', names)
+        self.assertNotIn('curl', names)
+        self.assertNotIn('df', names)
+        self.assertIn(['python3', [str(self.fixture / 'patch-selkies-web-client.py'), 'arm64']], calls)
+        self.assertIn(['silo-desktop', ['boot']], calls)
+        self.assertEqual(json.loads((self.state / 'streamer.json').read_text())['version'], '2.0.0')
+        self.assertEqual((self.state / 'streamer.json').stat().st_mode & 0o777, 0o600)
+        connection = json.loads((self.state / 'connection.json').read_text())
+        self.assertEqual((connection['username'], connection['port']), ('silo', 6901))
+        self.assertRegex(connection['password'], r'^[0-9a-f]{64}$')
+        self.assertEqual(json.loads((self.state / 'installed.json').read_text())['image'], 'preinstalled')
+        self.assertTrue((self.state / 'packages.txt').exists())
+        self.assertEqual((self.state / 'install-stage').read_text().strip(), 'installed')
+        self.assertTrue((self.root / 'usr/local/bin/silo-desktop').exists())
+        self.assertTrue(os.access(self.root / 'usr/local/libexec/silo-desktop-boot', os.X_OK))
+        self.assert_session_identity()
+
+    def test_v4_amd64_receipt_uses_the_build_architecture(self):
+        digest = 'bbaa4d71012b9374a753b7dfddc1da07e31f34b04277fe4fb3d045f18fd88391'
+        self.run_recipe(env={'DPKG_ARCH': 'amd64', 'EXPECTED_STREAMER_SHA': digest})
+        receipt = json.loads((self.state / 'streamer.json').read_text())
+        self.assertEqual((receipt['architecture'], receipt['packageSha256']), ('amd64', digest))
+
+    def test_v4_rerun_is_an_offline_session_refresh(self):
+        self.run_recipe()
+        (self.root / 'calls.jsonl').unlink()
+        (self.home / '.vnc/xstartup').write_text('#!/bin/sh\nexec xfce4-session\n')
+        calls = self.run_recipe()
+        self.assertFalse(any(name in ('apt-get', 'curl') for name, _ in calls))
+        self.assert_session_identity()
+
+    def run_fallback(self, env=None):
+        result = subprocess.run(['/bin/sh', str(self.recipe), 'install'], env=dict(self.env, **(env or {})),
+                                text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+        self.assertTrue(any(name == 'apt-get' and 'xvfb' in args for name, args in calls))
+        self.assertTrue(any(name == 'curl' for name, _ in calls))
+        self.assertEqual(json.loads((self.state / 'installed.json').read_text()).get('image'), None)
+        return result.stderr
+
+    def test_v4_missing_package_falls_back_to_the_full_install_with_a_message(self):
+        stderr = self.run_fallback({'V4_MISSING_PACKAGE': 'gnome-text-editor'})
+        self.assertIn('guest image package gnome-text-editor is missing', stderr)
+
+    def test_v4_wrong_streamer_version_falls_back(self):
+        stderr = self.run_fallback({'V4_SELKIES_VERSION': '1.6.2-1'})
+        self.assertIn('does not contain Selkies 2.0.0', stderr)
+
+    def test_v4_marker_for_another_streamer_or_unreadable_falls_back(self):
+        self.write_marker(streamerVersion='1.0.0')
+        self.assertIn('different desktop streamer', self.run_fallback())
+        for name in ('calls.jsonl', 'theme-installed'):
+            (self.root / name).unlink(missing_ok=True)
+        for path in self.state.iterdir():
+            path.unlink()
+        (self.root / 'usr/local/share/silo/guest-image.json').write_text('not json')
+        self.assertIn('marker is unreadable', self.run_fallback())
+
+    def test_image_without_desktop_capability_installs_silently_like_v3(self):
+        self.write_marker(capabilities=['something-else'])
+        stderr = self.run_fallback()
+        self.assertNotIn('guest image', stderr)
 
 
 if __name__ == '__main__':

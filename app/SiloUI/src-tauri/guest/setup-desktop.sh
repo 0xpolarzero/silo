@@ -182,6 +182,75 @@ if [ -f /var/lib/silo-desktop/installed.json ]; then
     python3 "$helper" status
     exit 0
 fi
+# v4 and later guest images ship the desktop packages, the pinned streamer and the
+# accessibility defaults. They describe themselves in a marker file; trust it only
+# after the packages and the streamer are verified, otherwise install normally.
+image_marker=/usr/local/share/silo/guest-image.json
+image_desktop_problem() {
+    [ -f "$image_marker" ] || { echo none; return 0; }
+    problem=$(python3 - "$image_marker" "$streamer_version" <<'PY'
+import json, sys
+
+# SILO_GUEST_IMAGE_MARKER_V1
+try:
+    marker = json.load(open(sys.argv[1], encoding='utf-8'))
+except (OSError, ValueError):
+    print('The guest image marker is unreadable')
+    raise SystemExit(0)
+capabilities = marker.get('capabilities') if isinstance(marker, dict) else None
+if not isinstance(capabilities, list) or 'desktop' not in capabilities:
+    print('none')
+elif marker.get('schemaVersion') != 1 or marker.get('streamerVersion') != sys.argv[2]:
+    print('The guest image describes a different desktop streamer')
+else:
+    print('ok')
+PY
+    ) || problem='The guest image marker is unreadable'
+    [ "$problem" = ok ] || { echo "$problem"; return 0; }
+    for package in ca-certificates curl python3 sudo dbus-x11 at-spi2-core xfce4-session xfce4-panel xfce4-settings xfdesktop4 xfwm4 thunar xfce4-terminal greybird-gtk-theme xvfb pulseaudio gnome-text-editor dconf-cli python3-pyatspi; do
+        [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" = 'install ok installed' ] || { echo "The guest image package $package is missing"; return 0; }
+    done
+    case "$(dpkg-query -W -f='${Version}' selkies 2>/dev/null || true)" in
+        "$streamer_version"-*|"$streamer_version") ;;
+        *) echo "The guest image does not contain Selkies $streamer_version"; return 0 ;;
+    esac
+    [ -x /usr/bin/selkies ] || { echo 'The guest image is missing /usr/bin/selkies'; return 0; }
+    [ -f /etc/xdg/autostart/silo-accessibility.desktop ] || { echo 'The guest image is missing the accessibility autostart entry'; return 0; }
+    echo ok
+}
+# The image cannot hold per-VM state: connection credentials, the web-client patch,
+# receipts, the lifecycle helper and the session script. Never touches apt or the network.
+provision_image_desktop() {
+    [ -f "$selkies_web_client_patch" ] || { echo 'Selkies web client patch helper is missing' >&2; exit 1; }
+    python3 "$selkies_web_client_patch" "$arch"
+    ensure_connection_credentials create
+    write_streamer_receipt
+    if [ ! -d "$desktop_home/.vnc" ]; then
+        install -d -m 0700 -o "$desktop_user" -g "$(id -gn "$desktop_user")" "$desktop_home/.vnc"
+    fi
+    configure_session
+    install -m 0755 "$helper" /usr/local/bin/silo-desktop
+    mkdir -p /usr/local/libexec
+    cat > /usr/local/libexec/silo-desktop-boot <<'BOOT'
+#!/bin/sh
+exec /usr/local/bin/silo-desktop boot
+BOOT
+    chmod 0755 /usr/local/libexec/silo-desktop-boot
+    dpkg-query -W > /var/lib/silo-desktop/packages.txt
+    printf '%s\n' '{"version":"1","desktopRecipeVersion":1,"image":"preinstalled"}' > /var/lib/silo-desktop/installed.json
+    printf '%s\n' installed > /var/lib/silo-desktop/install-stage
+}
+load_streamer_lock
+image_problem=$(image_desktop_problem)
+if [ "$image_problem" = ok ]; then
+    printf '%s\n' 'Using the desktop preinstalled in the guest image' >&2
+    printf '%s\n' installing > /var/lib/silo-desktop/install-stage
+    provision_image_desktop
+    /usr/local/bin/silo-desktop boot
+    exit 0
+elif [ "$image_problem" != none ]; then
+    printf '%s; installing the desktop packages instead\n' "$image_problem" >&2
+fi
 if command -v Xvnc >/dev/null 2>&1 && [ ! -f /var/lib/silo-desktop/install-stage ]; then
     echo 'An existing unmanaged VNC installation conflicts with the Silo desktop' >&2
     exit 1

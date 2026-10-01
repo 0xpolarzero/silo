@@ -20,12 +20,22 @@ const MAX_UNPACKED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GuestImageManifest {
     schema_version: u8,
+    #[serde(default)]
+    version: String,
     architecture: String,
     pub(crate) image_reference: String,
     image_digest: String,
     archive_sha256: String,
     archive_bytes: u64,
     unpacked_bytes: u64,
+}
+
+/// The recipe version of the bundled image (for example `ubuntu-24.04-v4`), if readable.
+pub(crate) fn bundled_version(directory: &Path) -> Option<String> {
+    validate_directory(directory)
+        .ok()
+        .map(|manifest| manifest.version)
+        .filter(|version| !version.is_empty())
 }
 
 fn valid_sha256(value: &str) -> bool {
@@ -236,6 +246,23 @@ mod tests {
         )
         .unwrap();
         manifest
+    }
+    #[test]
+    fn bundled_version_reads_the_recipe_version_when_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manifest = fixture(dir.path());
+        assert_eq!(bundled_version(&dir.path().join("guest-image")), None);
+        manifest["version"] = json!("ubuntu-24.04-v4");
+        fs::write(
+            dir.path().join("guest-image/manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            bundled_version(&dir.path().join("guest-image")).as_deref(),
+            Some("ubuntu-24.04-v4")
+        );
+        assert_eq!(bundled_version(&dir.path().join("missing")), None);
     }
     #[test]
     fn bundle_preflight_is_read_only_and_rejects_corruption() {

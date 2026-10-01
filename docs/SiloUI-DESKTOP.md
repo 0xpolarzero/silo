@@ -22,6 +22,41 @@ must never be logged or exposed in ordinary UI. Guest metadata lives in
 and process start time. The helper allows three startup attempts, then leaves a
 failed state for explicit recovery.
 
+## Guest image v4: the desktop is part of the VM
+
+Guest images from v4 on (unpublished until the owner publishes it; see
+[guest images](SiloUI-GUEST-IMAGES.md)) already contain the Xfce packages, Selkies
+2.0.0, the accessibility defaults (dconf `toolkit-accessibility=true` and the
+`/etc/xdg/autostart/silo-accessibility.desktop` poller) and GNOME Text Editor as
+the text default. The image describes itself in
+`/usr/local/share/silo/guest-image.json` (`schemaVersion`, `version`,
+`capabilities`, `streamerVersion`).
+
+- **Host.** A new VM saved without a desktop setting gets one with
+  `Start desktop with sandbox` on when the bundled image is v4 or later
+  (`desktop::default_new_vm_desktops`, applied when the configuration is saved).
+  Creation then runs the same install action as the explicit flow, so no user step
+  is needed; an explicit choice in the request is kept. Existing VMs and VMs on
+  older images keep the explicit "Add Linux desktop" flow.
+- **Guest.** `setup-desktop.sh install` reads the marker and verifies the
+  capability, the Selkies version, `/usr/bin/selkies`, the required packages and
+  the autostart entry. If all hold, it runs no apt and downloads nothing: it
+  prepares the `silo` account, patches the Selkies web client, creates viewer
+  credentials, writes the streamer receipt, `xstartup`, `silo-desktop`, the boot
+  hook, `packages.txt` and `installed.json` (`"image":"preinstalled"`), then starts
+  the desktop. If the marker is unreadable, disagrees with the pinned streamer or
+  a package is missing, it prints why and performs the full install below.
+- **Session.** The Selkies backend starts `dbus-run-session -- startxfce4`, so
+  `/etc/xdg/autostart` entries run in the session with `XDG_CURRENT_DESKTOP=XFCE`
+  (also kept in `xstartup`, which the recipe test checks along with
+  `dbus-run-session`).
+- Verified offline (`--network none`, Xvfb) in a container from the locally built
+  arm64 v4 image: the session shows `xfce4-session`, `xfwm4`, `xfce4-panel`, Selkies
+  and `silo-accessibility` running as `silo`. The container needs `SYS_PTRACE`
+  (the helper reads `/proc/PID/exe`); a MicroSandbox VM does not.
+
+LCU installation is separate and unchanged.
+
 ## Applications and external tools
 
 VMs use `silo`, with home `/home/silo`, for terminal, SSH, editor and desktop

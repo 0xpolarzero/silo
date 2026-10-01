@@ -21,6 +21,36 @@ pub(crate) fn configuration(machine: &MachineConfiguration) -> Option<&DesktopCo
         _ => None,
     }
 }
+/// Guest images from v4 on contain the desktop. Their version looks like `ubuntu-24.04-v4`.
+pub(crate) fn image_includes_desktop(image_version: &str) -> bool {
+    image_version
+        .rsplit_once("-v")
+        .and_then(|(_, revision)| revision.parse::<u32>().ok())
+        .is_some_and(|revision| revision >= 4)
+}
+
+/// On such an image the desktop is part of every new VM, started with it (computer use
+/// needs a running session). Existing VMs and explicit choices are left alone.
+pub(crate) fn default_new_vm_desktops(
+    machines: &mut [MachineConfiguration],
+    previous: &[MachineConfiguration],
+    image_version: &str,
+) {
+    if !image_includes_desktop(image_version) {
+        return;
+    }
+    for machine in machines {
+        if previous.iter().any(|old| old.id() == machine.id()) {
+            continue;
+        }
+        if let MachineConfiguration::Vm { desktop, .. } = machine {
+            desktop.get_or_insert(DesktopConfiguration {
+                start_with_sandbox: true,
+            });
+        }
+    }
+}
+
 pub(crate) fn only_desktop_changed(
     previous: &MachineConfiguration,
     next: &MachineConfiguration,
@@ -586,6 +616,86 @@ mod tests {
             json!({"name":"dev","status":status,"config":{"labels":labels}}).to_string(),
         )
         .with_timeout(Duration::from_secs(10))
+    }
+
+    fn vm(id: &str, desktop: Option<DesktopConfiguration>) -> MachineConfiguration {
+        MachineConfiguration::Vm {
+            id: id.into(),
+            name: format!("vm-{id}"),
+            cpus: 2,
+            max_cpus: 4,
+            memory_gib: 4,
+            max_memory_gib: 8,
+            workspace_storage_gib: 10,
+            runtime_storage_gib: 10,
+            desktop,
+        }
+    }
+
+    #[test]
+    fn only_v4_and_later_images_include_the_desktop() {
+        for version in ["ubuntu-24.04-v4", "ubuntu-24.04-v5", "ubuntu-24.04-v12"] {
+            assert!(image_includes_desktop(version), "{version}");
+        }
+        for version in [
+            "ubuntu-24.04-v3",
+            "ubuntu-24.04-v1",
+            "ubuntu-24.04",
+            "",
+            "v4x",
+            "ubuntu-24.04-vx",
+        ] {
+            assert!(!image_includes_desktop(version), "{version}");
+        }
+    }
+
+    #[test]
+    fn new_vms_on_a_v4_image_get_an_autostarting_desktop() {
+        let manual = DesktopConfiguration {
+            start_with_sandbox: false,
+        };
+        let existing = vm("existing", None);
+        let mut machines = vec![
+            existing.clone(),
+            vm("fresh", None),
+            vm("chosen", Some(manual.clone())),
+            MachineConfiguration::Ssh {
+                id: "ssh".into(),
+                name: "ssh".into(),
+                host: "h".into(),
+                user: "u".into(),
+                port: 22,
+            },
+        ];
+        default_new_vm_desktops(
+            &mut machines,
+            std::slice::from_ref(&existing),
+            "ubuntu-24.04-v4",
+        );
+        assert_eq!(
+            configuration(&machines[0]),
+            None,
+            "existing VMs keep their configuration"
+        );
+        assert_eq!(
+            configuration(&machines[1]),
+            Some(&DesktopConfiguration {
+                start_with_sandbox: true
+            })
+        );
+        assert_eq!(
+            configuration(&machines[2]),
+            Some(&manual),
+            "explicit choice is preserved"
+        );
+        assert_eq!(configuration(&machines[3]), None);
+    }
+
+    #[test]
+    fn older_images_keep_the_explicit_install_flow() {
+        let mut machines = vec![vm("fresh", None)];
+        default_new_vm_desktops(&mut machines, &[], "ubuntu-24.04-v3");
+        assert_eq!(configuration(&machines[0]), None);
     }
 
     fn managed_vm() -> ExpectedCommand {

@@ -19,6 +19,7 @@ python3 -c 'import json; assert json.loads("true") is True'
 test -x /usr/lib/openssh/sftp-server
 test -x /usr/bin/selkies || { echo "Guest image is missing the Selkies streamer" >&2; exit 1; }
 test -x /usr/bin/xfce4-session || { echo "Guest image is missing the Xfce session" >&2; exit 1; }
+python3 -c 'import json; m = json.load(open("/usr/local/share/silo/guest-image.json")); assert m["schemaVersion"] == 1 and m["version"] == "'${GUEST_IMAGE_VERSION}'" and {"desktop", "accessibility"} <= set(m["capabilities"]) and m["streamerVersion"] == "2.0.0"'
 test -x /usr/local/libexec/silo-accessibility
 test -f /etc/xdg/autostart/silo-accessibility.desktop
 grep -qx 'toolkit-accessibility=true' /etc/dconf/db/local.d/00-silo-accessibility
