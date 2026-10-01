@@ -150,12 +150,12 @@ describe("bundled MicroSandbox release staging", () => {
     expect((await stat(staged.executablePath)).mode & 0o777).toBe(0o755)
     const manifest = JSON.parse(await readFile(staged.manifestPath, "utf8"))
     expect(manifest).toMatchObject({
-      microsandboxVersion: "0.7.4",
+      microsandboxVersion: "0.7.6",
       targetTriple,
       executable: {
         bundledName: "msb",
         sha256: sha256(executable),
-        sourceCommit: "e36ffc0a58b48d70e0e4d66d75f1596994e3865a",
+        sourceCommit: "09df3d4b9d832adaede1fb9a198cfc660bfab8cd",
         patchSha256s: MICROSANDBOX_PATCHES.map((_, index) => sha256(patches[index])),
         officialReleaseAsset: "msb-darwin-aarch64",
       },
@@ -178,6 +178,7 @@ describe("bundled MicroSandbox release staging", () => {
     let outdatedCachedAccount = false
     let outdatedCachedStdin = false
     let outdatedCachedStaging = false
+    let outdatedCachedNoStdin = false
     const sourceArtifact = { url: "https://example.test/source.tar.gz", sha256: sha256(source) }
     const selected = {
       ...runtimeTargets[targetTriple],
@@ -222,11 +223,13 @@ describe("bundled MicroSandbox release staging", () => {
         if (outdatedCachedStaging && !command.includes("cargo-target") && args[0] === "snapshot" && args[1] === "load") return "--group"
         if (args.includes("--help")) {
           const oldFlags = "--mount-owned --no-start --progress-json"
+          const currentFlags = `${oldFlags} --no-stdin`
           if (args[0] === "snapshot") return "--from-sandbox --group --dest-dir --full --guest-flush --integrity --stage-id"
-          if (args[0] === "restore") return "--forked --name"
+          if (args[0] === "restore") return "--cow-mem --name"
+          if (outdatedCachedNoStdin && !command.includes("cargo-target") && args[0] === "exec") return oldFlags
           return outdatedCachedSsh && !command.includes("cargo-target") && args[0] === "ssh"
             ? oldFlags
-            : `${oldFlags} --authorized-keys --exit-on-stdin-close --expected-machine-id`
+            : `${currentFlags} --authorized-keys --exit-on-stdin-close --expected-machine-id`
         }
       }
       throw new Error(`Unexpected tool invocation: ${command} ${args.join(" ")}`)
@@ -263,11 +266,16 @@ describe("bundled MicroSandbox release staging", () => {
         expect(compilations).toBe(5)
         outdatedCachedStaging = false
 
+        outdatedCachedNoStdin = true
+        await stage()
+        expect(compilations).toBe(6)
+        outdatedCachedNoStdin = false
+
         agentd = Buffer.from("agent revision two")
         selected.agentdSha256 = sha256(agentd)
         const changed = await stage()
         expect(await readFile(changed.executablePath, "utf8")).toBe("compiled runtime:agent revision two")
-        expect(compilations).toBe(6)
+        expect(compilations).toBe(7)
         const manifest = JSON.parse(await readFile(changed.manifestPath, "utf8"))
         expect(manifest.executable.embeddedAgentdReleaseSha256).toBe(sha256(agentd))
         expect(manifest.executable.sha256).toBe(sha256(await readFile(changed.executablePath)))

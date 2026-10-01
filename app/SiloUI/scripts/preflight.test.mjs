@@ -22,7 +22,7 @@ function fixture(t) {
 test("clean inputs validate without external commands or generated files", t => {
   const { root, inputs } = fixture(t)
   assert.deepEqual(preflight(root), inputs)
-  assert.equal(inputs.patches.at(-1).path, "patches/microsandbox-remove-created-0.7.4.patch")
+  assert.equal(inputs.patches.at(-1).path, "patches/microsandbox-restore-starting-control-0.7.6.patch")
 })
 
 const mutations = [

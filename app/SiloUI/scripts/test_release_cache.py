@@ -52,19 +52,19 @@ class ReleaseCacheTests(unittest.TestCase):
         self.assertEqual(paths[0], paths[2], 'Runtime restore/save paths must match')
         self.assertEqual(paths[1], paths[3], 'Cargo restore/save paths must match')
         runtime = 'app/SiloUI/src-tauri/target/runtime-cache/'
-        allowed = [runtime + 'v0.7.4/patched-builds/key/msb',
-                   runtime + 'v0.7.4/patched-builds/key/msb.sha256',
-                   runtime + 'v0.7.4/microsandbox-e36ffc0a58b48d70e0e4d66d75f1596994e3865a.tar.gz',
-                   runtime + 'v0.7.4/agentd-aarch64',
-                   runtime + 'v0.7.4/libkrunfw-darwin-aarch64.dylib',
-                   runtime + 'v0.7.4/licenses/microsandbox-Apache-2.0.txt',
+        allowed = [runtime + 'v0.7.6/patched-builds/key/msb',
+                   runtime + 'v0.7.6/patched-builds/key/msb.sha256',
+                   runtime + 'v0.7.6/microsandbox-09df3d4b9d832adaede1fb9a198cfc660bfab8cd.tar.gz',
+                   runtime + 'v0.7.6/agentd-aarch64',
+                   runtime + 'v0.7.6/libkrunfw-darwin-aarch64.dylib',
+                   runtime + 'v0.7.6/licenses/microsandbox-Apache-2.0.txt',
                    runtime + 'dugite/version/archive.tar.gz',
                    runtime + 'git-lfs-transfer/pin/source.tar.gz',
                    runtime + 'git-lfs-transfer/pin/builds/linux-arm64/git-lfs-transfer',
                    'app/SiloUI/src-tauri/runtime/guest-image/image.tar.gz',
                    '.cargo/registry/cache/index/crate.tar.gz']
-        forbidden = [runtime + 'v0.7.4/patched-builds/key/cargo-target/release/msb',
-                     runtime + 'v0.7.4/patched-builds/key/work/source.rs',
+        forbidden = [runtime + 'v0.7.6/patched-builds/key/cargo-target/release/msb',
+                     runtime + 'v0.7.6/patched-builds/key/work/source.rs',
                      runtime + 'git-lfs-transfer/pin/source-123/main.go',
                      'app/SiloUI/src-tauri/target/release/silo-ui',
                      'app/SiloUI/src-tauri/target/debug/build/silo/output',
