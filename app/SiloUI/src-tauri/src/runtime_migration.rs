@@ -245,6 +245,12 @@ fn quarantine_previous_backup_state(app_data: &Path) -> Result<(), String> {
         if !source.exists() {
             continue;
         }
+        // A journal that recorded its result cannot be resumed. It stays, so the
+        // export and import page still reports it after the upgrade, such as an
+        // operation interrupted before it.
+        if name == "backup-operation.json" && journal_is_finished(&source) {
+            continue;
+        }
         let destination = old.join(format!("before-checkpoints-{name}"));
         if destination.exists() {
             return Err(
@@ -263,6 +269,18 @@ fn quarantine_previous_backup_state(app_data: &Path) -> Result<(), String> {
             .map_err(|_| "Previous backup progress could not be synced.")?;
     }
     Ok(())
+}
+
+/// Whether the export/import journal at `path` recorded a result (`terminal`).
+fn journal_is_finished(path: &Path) -> bool {
+    fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .is_some_and(|journal| {
+            journal
+                .get("terminal")
+                .is_some_and(|result| !result.is_null())
+        })
 }
 
 fn prepare_clean_generation(app_data: &Path) -> Result<(), String> {
@@ -1052,6 +1070,8 @@ impl BackupLocations {
 
 #[cfg(test)]
 mod guard_tests;
+#[cfg(test)]
+mod interrupted_tests;
 
 #[cfg(test)]
 mod tests {

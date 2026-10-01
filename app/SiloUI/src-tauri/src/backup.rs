@@ -235,6 +235,8 @@ fn inherit_worker_lock(command: &mut Command, lock: &File) {
     }
 }
 
+const WORKER_LOCK_FILE: &str = ".silo-backup-worker.lock";
+
 /// Also held by a surviving snapshot/create child after the app exits. A bounded
 /// wait prevents recovery from racing that child's writes or hanging forever.
 pub(crate) fn wait_for_interrupted_command(home: &Path, timeout: Duration) -> io::Result<File> {
@@ -263,7 +265,38 @@ fn wait_for_worker_lock(
         .write(true)
         .create(true)
         .truncate(false)
-        .open(home.join(".silo-backup-worker.lock"))?;
+        .open(home.join(WORKER_LOCK_FILE))?;
+    lock_exclusively(file, timeout, cancellation)
+}
+
+/// [`wait_for_interrupted_command`] for a home that must not be written, such as
+/// the previous runtime generation before the storage migration: it opens an
+/// existing lock file read-only and creates neither the file nor the folder.
+/// `None` means no lock file exists, so no earlier child can hold it.
+pub(crate) fn wait_for_interrupted_command_in_place(
+    home: &Path,
+    timeout: Duration,
+) -> io::Result<Option<File>> {
+    let file = match OpenOptions::new()
+        .read(true)
+        .open(home.join(WORKER_LOCK_FILE))
+    {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    match lock_exclusively(file, timeout, &Cancellation::default()) {
+        Ok(file) => Ok(Some(file)),
+        Err(BackupError::Io(error)) => Err(error),
+        Err(error) => Err(io::Error::other(error.to_string())),
+    }
+}
+
+fn lock_exclusively(
+    file: File,
+    timeout: Duration,
+    cancellation: &Cancellation,
+) -> Result<File, BackupError> {
     let started = Instant::now();
     loop {
         // SAFETY: file owns this valid descriptor for the duration of the lock.
@@ -3396,6 +3429,9 @@ fn unique_suffix() -> String {
 }
 
 #[cfg(test)]
+pub(crate) use tests::write_finished_export;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::process::ExitStatusExt;
@@ -3817,6 +3853,18 @@ mod tests {
         )
     }
 
+    /// A finished export of the sandbox `dev` at `destination`, for tests of code
+    /// that finds an export file after the process that wrote it was interrupted.
+    pub(crate) fn write_finished_export(destination: &Path) {
+        let temp = tempfile::tempdir().unwrap();
+        create_one(
+            &service(&temp, FakeRunner::default()),
+            destination.to_path_buf(),
+            false,
+        )
+        .unwrap();
+    }
+
     fn script_command(directory: &Path, script: &str) -> MsbCommand {
         use std::os::unix::fs::PermissionsExt;
         let executable = directory.join("msb");
@@ -4011,6 +4059,41 @@ mod tests {
         child.wait().unwrap();
         assert_eq!(blocked.unwrap_err().kind(), io::ErrorKind::TimedOut);
         assert!(wait_for_interrupted_command(directory.path(), Duration::from_secs(2)).is_ok());
+    }
+
+    #[test]
+    fn checking_for_a_surviving_child_writes_nothing_and_still_waits_for_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        // No lock file: no child can hold it, and neither it nor its folder is created.
+        assert!(wait_for_interrupted_command_in_place(&home, Duration::ZERO)
+            .unwrap()
+            .is_none());
+        assert!(!home.exists());
+        fs::create_dir(&home).unwrap();
+        assert!(wait_for_interrupted_command_in_place(&home, Duration::ZERO)
+            .unwrap()
+            .is_none());
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 0);
+
+        // A surviving child that inherited the lock keeps recovery out until it exits.
+        let lock = wait_for_interrupted_command(&home, Duration::ZERO).unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "read line"]).stdin(Stdio::piped());
+        inherit_worker_lock(&mut command, &lock);
+        let mut child = command.spawn().unwrap();
+        drop(lock);
+        let blocked = wait_for_interrupted_command_in_place(&home, Duration::ZERO);
+        drop(child.stdin.take());
+        child.wait().unwrap();
+        assert_eq!(blocked.unwrap_err().kind(), io::ErrorKind::TimedOut);
+        assert!(
+            wait_for_interrupted_command_in_place(&home, Duration::from_secs(2))
+                .unwrap()
+                .is_some()
+        );
+        // Waiting for it left the one file the previous runtime wrote there.
+        assert_eq!(fs::read_dir(&home).unwrap().count(), 1);
     }
 
     #[test]
