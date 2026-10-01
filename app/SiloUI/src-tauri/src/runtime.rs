@@ -1339,6 +1339,29 @@ fn takes_worker_lock(args: &[String]) -> bool {
     })
 }
 
+/// Arguments handed to the bundled `msb`. A noninteractive `exec` (`--no-tty`) never
+/// forwards host input: Silo's only standard input is the secret document the runtime
+/// consumes at startup. `--no-stdin` (MicroSandbox 0.7.5 and later) gives the guest EOF
+/// without starting a stdin forwarder, so an open pipe can never hold the command up.
+/// Interactive terminals (`--tty`) and commands that already choose are left as written.
+fn runtime_arguments(args: &[String]) -> Vec<String> {
+    let has = |flag: &str| args.iter().any(|arg| arg == flag);
+    if args.first().map(String::as_str) != Some("exec")
+        || !has("--no-tty")
+        || has("--tty")
+        || has("--no-stdin")
+    {
+        return args.to_vec();
+    }
+    let mut adjusted = args.to_vec();
+    let at = adjusted
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(adjusted.len());
+    adjusted.insert(at, "--no-stdin".into());
+    adjusted
+}
+
 thread_local! {
     // Quit already owns the computer gate and a parent worker flock. Its scoped
     // workers may share that flock only for independent stop commands.
@@ -1434,7 +1457,7 @@ fn spawn_runtime(
     // then resolves secret sources only from them (D-45, B-28).
     let secret_values = secret_values_document(material, github_profile)?;
     command
-        .args(args)
+        .args(runtime_arguments(args))
         .env("MSB_HOME", &paths.home)
         .env("MSB_PATH", &paths.executable)
         .env("MSB_LIBKRUNFW_PATH", &paths.library)
@@ -6143,6 +6166,81 @@ mod tests {
                 .pop_front()
                 .expect("missing stub output")
         }
+    }
+
+    #[test]
+    fn noninteractive_exec_gets_no_stdin_before_the_command_separator() {
+        let to_args =
+            |args: &[&str]| -> Vec<String> { args.iter().map(|a| (*a).to_owned()).collect() };
+        assert_eq!(
+            runtime_arguments(&to_args(&[
+                "exec", "dev", "--no-tty", "--quiet", "--", "sh", "-c", "true"
+            ])),
+            to_args(&[
+                "exec",
+                "dev",
+                "--no-tty",
+                "--quiet",
+                "--no-stdin",
+                "--",
+                "sh",
+                "-c",
+                "true"
+            ])
+        );
+        // The first separator ends the options; later ones belong to the command.
+        assert_eq!(
+            runtime_arguments(&to_args(&[
+                "exec", "dev", "--no-tty", "--", "sh", "--", "x"
+            ])),
+            to_args(&[
+                "exec",
+                "dev",
+                "--no-tty",
+                "--no-stdin",
+                "--",
+                "sh",
+                "--",
+                "x"
+            ])
+        );
+        assert_eq!(
+            runtime_arguments(&to_args(&["exec", "dev", "--no-tty"])),
+            to_args(&["exec", "dev", "--no-tty", "--no-stdin"])
+        );
+        // Interactive, already-decided, non-exec and option-free commands are untouched.
+        for unchanged in [
+            vec!["exec", "dev", "--tty", "--no-start"],
+            vec!["exec", "dev", "--no-tty", "--no-stdin", "--", "true"],
+            vec!["exec", "dev", "--", "true"],
+            vec!["start", "dev", "--no-tty"],
+            vec!["create", "dev", "--", "--no-tty"],
+        ] {
+            assert_eq!(runtime_arguments(&to_args(&unchanged)), to_args(&unchanged));
+        }
+    }
+
+    #[test]
+    fn the_spawned_runtime_receives_no_stdin_for_noninteractive_exec() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fs::create_dir_all(&paths.home).unwrap();
+        fs::write(&paths.library, b"test").unwrap();
+        crate::test_support::write_shell_script(
+            &paths.executable,
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$MSB_HOME/args\"\n".to_string(),
+        );
+        let run = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+            run_msb_with_progress(&paths, &args, Duration::from_secs(20), &|_| {})
+        };
+        run(&["exec", "dev", "--no-start", "--no-tty", "--", "true"]).unwrap();
+        run(&["inspect", "dev"]).unwrap();
+        assert_eq!(
+            fs::read_to_string(paths.home.join("args")).unwrap(),
+            "exec dev --no-start --no-tty --no-stdin -- true\ninspect dev\n"
+        );
     }
 
     fn fake_lifecycle_msb(paths: &RuntimePaths, block_on: &str) {
