@@ -12,10 +12,12 @@
 //! (no record) as a window starting at its first launch. Without a readable record the
 //! backup is still shown and can be deleted by hand, but is never deleted automatically.
 //!
-//! The folder also holds `before-checkpoints-backup-operation.json` and
-//! `before-checkpoints-backup-history.json`, which the migration moved there so the old
-//! export journal and export-folder choice are not replayed against the new runtime.
-//! Nothing reads them back, so deleting the folder loses nothing the app uses.
+//! The folder may also hold `before-checkpoints-backup-history.json`, and
+//! `before-checkpoints-backup-operation.json` when the export journal was still pending or
+//! unreadable. The migration moved them there so the old export-folder choice and an
+//! unfinished journal are not replayed against the new runtime; a journal that already
+//! recorded its result stays in place so its result is still shown. Nothing reads the moved
+//! files back, so deleting the folder loses nothing the app uses.
 //!
 //! The previous generation was also reached through an alias symlink in the account's state
 //! directory (`runtime::runtime_home_alias`), which dangles once the folder is gone. It is
