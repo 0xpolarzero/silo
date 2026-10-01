@@ -686,8 +686,10 @@ pub(crate) fn start_monitor(app: &AppHandle) {
             // Periodic background work skips whenever any operation is active or waiting.
             if let Ok(_guard) = OPERATIONS.try_computer_hidden("Trimming sandbox storage") {
                 if shutdown::ensure_accepting_operations().is_ok() {
+                    // No paths exist while the storage migration is unfinished, so
+                    // neither step below can reach the previous generation.
                     if let Ok(paths) = runtime_paths(&app) {
-                        if !recovered && !crate::runtime_migration::blocks_operations(&app) {
+                        if !recovered {
                             match checkpoints::recover_interrupted(&ProcessRunner, &paths) {
                                 Ok(()) => recovered = true,
                                 Err(failure) => {

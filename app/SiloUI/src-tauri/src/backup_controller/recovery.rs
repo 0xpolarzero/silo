@@ -686,7 +686,15 @@ fn recover(
     journal: &Journal,
     cancellation: &backup::Cancellation,
 ) -> Result<Operation, String> {
-    let paths = runtime::runtime_paths(app)?;
+    // The storage migration refuses to start while a journal is pending (E-50), so an
+    // interrupted operation settles before it, with the files it needs but no way to
+    // start `msb` against the previous generation. Work that needs the runtime fails
+    // and keeps the journal.
+    let paths = if crate::runtime_migration::blocks_operations(app) {
+        runtime::inert_runtime_paths(app)?
+    } else {
+        runtime::runtime_paths(app)?
+    };
     recover_at_paths(&paths, controller, journal, cancellation)
 }
 /// Settle an operation interrupted by a relaunch without repeating it (E-31):

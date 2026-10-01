@@ -59,7 +59,11 @@ pub(crate) fn stop_local_vms(app: &AppHandle) -> Result<(), String> {
         // cannot restore listeners while local VM shutdown is in progress.
         crate::ssh_access::close_all();
         crate::desktop_viewer::close_all();
-        let paths = runtime_paths(app)?;
+        // With the storage migration unfinished no runtime is in use, so no VM of this
+        // Silo can be running and Quit has nothing to stop.
+        let Some(paths) = runtime_paths_if_in_use(app)? else {
+            return Ok(());
+        };
         // The quit overlay follows the queue and shows which VM is stopping (D-29).
         let progress = |name: &str, index: usize, total: usize| {
             guard.relabel(&format!("Stopping {name} ({index} of {total})"));

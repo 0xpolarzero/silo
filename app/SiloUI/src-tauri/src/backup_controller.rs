@@ -212,12 +212,21 @@ pub(crate) struct Controller {
 }
 
 pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
-    let paths = runtime::runtime_paths(app)?;
     let scratch = app
         .path()
         .app_cache_dir()
         .map_err(|error| format!("Silo could not locate private export working storage: {error}"))?
         .join("backup-work");
+    // The service keeps this runtime command for the life of the process, and an
+    // unfinished storage migration ends in a restart. Until then nothing may run
+    // `msb` against the previous generation, so the service gets paths that cannot
+    // start it. Interrupted work can still settle its files (E-50); operations are
+    // refused with the migration message.
+    let paths = if crate::runtime_migration::blocks_operations(app) {
+        runtime::inert_runtime_paths(app)?
+    } else {
+        runtime::runtime_paths(app)?
+    };
     let history_path = app
         .path()
         .app_data_dir()
