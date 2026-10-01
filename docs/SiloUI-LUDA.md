@@ -1,4 +1,11 @@
-# Agent tools for the Linux desktop
+# Agent tools for the Linux desktop (historical)
+
+> **Historical.** Silo no longer installs Luda. New desktops install no agent
+> tools; [LCU](https://github.com/0xpolarzero/lcu) replaces Luda as the supported
+> computer-use integration (see the [computer-use plan](SiloUI-COMPUTER-USE-PLAN.md)).
+> The app's Luda recipe, status fields and repair action were removed. Existing
+> VMs that already have Luda keep their files; Silo neither updates nor removes
+> them. The text below describes the removed behavior.
 
 Adding the optional Linux desktop installs Luda's runtime, MCP registration and
 complete skill for the VM's `silo` account. This happens inside the VM's disk
@@ -71,7 +78,7 @@ setup attempts. Guest state is `/var/lib/silo-desktop/luda.json`.
 
 ## Reproducible inputs
 
-[`guest/luda-lock.json`](../app/SiloUI/src-tauri/guest/luda-lock.json) pins
+`guest/luda-lock.json` (removed) pins
 Luda v0.3.4, commit `e3863fb24dd28bda5910a8c2382a13afd4ee1064`, with source archive
 SHA-256 `a82772fb19db389260b5970d5657da6955700f36450b2da9dec6ea0c91bc0e15`.
 This hash covers the GitHub commit archive consumed by the guest installer.

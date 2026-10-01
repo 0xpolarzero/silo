@@ -37,10 +37,11 @@ rules, including on new VMs when files were deliberately created with sudo.
 Conflicting pre-existing VNC configuration is reported before installation,
 rather than overwritten. See [working accounts](SiloUI-WORKING-ACCOUNT.md).
 
-Adding a desktop installs [Luda tools and skill](SiloUI-LUDA.md) for all supported
-agent profiles under `silo`, including agents installed later. Silo does not
-install or authenticate the agents themselves. Existing desktops offer explicit
-agent-tool setup and repair in their viewer. Tools running in a remote
+Adding a desktop installs no agent tools. Silo previously installed
+[Luda](SiloUI-LUDA.md) (now historical); [LCU](SiloUI-COMPUTER-USE-PLAN.md) is the
+supported computer-use integration and is set up explicitly from a running
+desktop. Existing desktops that already have Luda keep it untouched, and Silo
+ignores its status. Silo does not install or authenticate agents. Tools running in a remote
 SSH project must execute inside the guest and target this display; selecting
 an SSH project does not redirect a macOS-only plugin. Human and automated
 input share the ordinary Linux session without Silo arbitrating control.

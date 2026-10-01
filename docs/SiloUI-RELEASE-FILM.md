@@ -40,7 +40,7 @@ Rendering does not call a VM, SSH, credential store, agent, or external service.
 | Claim | Repository source and boundary |
 | --- | --- |
 | Linux VMs on owned computers | [README](../README.md). Local macOS/Linux and remote SSH management are supported; the film makes no boot-speed claim. |
-| Agent desktop tools | [Luda integration](SiloUI-LUDA.md). Adding the optional desktop installs tools and skills for supported guest agents. Users install and sign in to the agents themselves; ordinary host SSH does not inherit guest MCP configuration. |
+| Agent desktop tools | [Luda integration](SiloUI-LUDA.md) (since removed; LCU replaces it). Adding the optional desktop installed tools and skills for supported guest agents. Users install and sign in to the agents themselves; ordinary host SSH does not inherit guest MCP configuration. |
 | Local and remote management | [Remote computers](SiloUI-REMOTE-COMPUTERS.md). The owner runs Silo and accepts SSH. Connections do not synchronize credentials or migrate VMs. |
 | Editor and terminal workflow | [Editor handoff](SiloUI-EDITOR-HANDOFF.md), [terminal handoff](SiloUI-TERMINAL-HANDOFF.md), and [Files](SiloUI-FILES.md). The edit and terminal output are illustrative, not native application recordings. |
 | Repository selection and read-only defaults | [GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md). The copy explicitly names OAuth; [personal tokens](SiloUI-GITHUB-PERSONAL-TOKENS.md) use their full permissions. |

@@ -112,7 +112,7 @@ screenshots use guest coordinates, independent of viewer scaling.
 The [earlier LCU prototype](research/e2b-lcu-qualification-2026-09-22.md)
 recorded direct guest accessibility editing and a separate native viewer.
 That evidence is limited to its tested fixture and architecture. The current
-production recipe installs [Luda](SiloUI-LUDA.md); it also operates inside the
+production recipe at the time installed [Luda](SiloUI-LUDA.md), since removed; it also operates inside the
 guest. This proposal does not silently replace that integration or claim the
 new Selkies combination has already passed.
 
