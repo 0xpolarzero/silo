@@ -429,7 +429,9 @@ staged conversion, and a scan that fails if production code builds `RuntimePaths
 elsewhere or names the previous folder.
 
 Outside the app's reach: an editor's saved SSH `ProxyCommand` runs `msb ssh
-serve` with the home it was written for. Re-running the live check after the
+serve` with the home it was written for (the migration copied those entries
+unchanged until [Editor connections after the migration](#editor-connections-after-the-migration-2026-10-01)).
+Re-running the live check after the
 change left the old database byte-identical through launch, UI polling and Quit,
 and 0.6.17 listed the home without error. That check used a fixture with no real
 sandbox, so it is not live migration or packaged-app qualification.
@@ -513,6 +515,67 @@ check. Frontend tests cover the migration screen, the Settings row, the confirma
 failure and retry against fixtures, and the native JSON contract. None of this
 deleted a real migrated install or booted a converted VM after deleting its
 backup.
+
+### Editor connections after the migration (2026-10-01)
+
+"Open in editor" writes one SSH entry per sandbox into `<runtime home>/ssh/*.conf`
+and prepends `Include "<runtime home>/ssh/*.conf"` to the user's `~/.ssh/config`.
+The runtime home is the alias `~/.silo/<hash of the storage path>`, so the previous
+and the converted generation have different ones. The migration copies `ssh/`
+verbatim, so each copied entry still named the previous home in its `ProxyCommand`
+(`MSB_HOME`), `IdentityFile` and `UserKnownHostsFile`, and the user's file included
+only the previous home until the user opened the sandbox from Silo again. An
+editor that reconnects by itself (a restored VS Code window) therefore ran `msb
+ssh serve` against the pre-upgrade copy: it started the stale sandbox outside the
+migration guard, an upgraded `msb` opened that database and changed it in place,
+and once the backup was deleted nothing connected.
+
+`editor::refresh_transports` now repairs this at every launch, on every build,
+while `runtime_migration::backup_locations` reports a completed conversion into
+the converted generation. It never runs for the clean generation chosen with
+"Continue", where the previous folder holds the only copy of the unconverted
+sandboxes, or while the migration is unfinished. Running at every launch also
+repairs installs that migrated before this change, and it is a few small reads:
+a file is written only when its content would change.
+
+- **Entries.** In the selected home's `ssh/`, each `*.conf` Silo wrote (it has a
+  `ProxyCommand` line; symlinks, other files and invalid sandbox names are left
+  alone) gets its `ProxyCommand`, `IdentityFile` and `UserKnownHostsFile`
+  regenerated for the converted home, with the current bundled `msb`
+  (`rewrite_configs`, shared with the AppImage refresh, and `with_local_entry`).
+  The `Host` name is kept, because an editor saved it. `prepare_configuration` now
+  keeps such an earlier `silo-<hash>-<sandbox>` name on the `Host` line when it
+  rewrites an entry, so "Open in editor" does not undo this for the saved name.
+- **`Include`.** Added with `install_include`, with all its rules (links from
+  dotfile managers followed when this account owns them, atomic replacement, the
+  exact line reported when the file cannot be changed), but only when the user's
+  file still includes the previous home: that line shows they use editor
+  connections, and a user who removed it keeps their file as it is. When the line
+  cannot be added, Silo posts a notification with the line to add.
+- **The previous `Include` stays.** The new line goes first and `ssh` keeps the
+  first value it finds for `ProxyCommand` and `UserKnownHostsFile`, so the
+  repointed entries win while the backup exists. A glob that matches nothing is
+  harmless once the backup and its alias are deleted, and `IdentityFile` is the
+  one cumulative option: a missing second file is skipped. Removing the line would
+  mean editing the user's file beyond one prepended line.
+- **The previous generation is never written.** Its `ssh/*.conf` stay as copied.
+
+Verification (2026-10-01): unit tests cover repointing real entries written by
+`prepare` and copied like the migration does, with `ssh -G` showing the
+`MSB_HOME`, identity and known-hosts file before and after; the previous home
+unchanged byte for byte; repeating; an `Include` that is present, absent or in a
+stow-linked or read-only config; entries that are not Silo's; the clean and
+unfinished generations; and the earlier alias surviving "Open in editor". A live
+check in an isolated `HOME` built the previous generation as v0.9.0 writes it
+with a real sandbox made by the released 0.6.17 `msb`, converted it with the real
+`convert_with` and the 0.7.4 `msb`, and then ran an editor-style `ssh`:
+before, `ssh -G` resolved `MSB_HOME` to the previous home, the connection
+reached the previous copy and changed its database files; after, it resolved to
+the converted home, authenticated with the converted home's key and reached the
+running converted sandbox, the previous home stayed byte-identical, and it kept
+working with the previous home deleted. The sandbox had a hand-written
+rootfs, not a Silo guest, so the session itself failed in the guest at the missing
+working account. No editor, packaged app or Silo guest was used.
 
 ### SFTP working-account identity
 
