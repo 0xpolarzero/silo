@@ -74,6 +74,7 @@ fn main() {
             "clear_sandbox_notices",
             "open_integration_settings",
             "show_integration_error",
+            "read_editor_include_notice",
             "list_applications",
             "choose_application",
             "read_dependencies",

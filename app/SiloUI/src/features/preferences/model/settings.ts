@@ -22,6 +22,8 @@ export const settingSchemas = {
   notifyCompletions: z.boolean(),
   onboardingComplete: z.boolean(),
   alphaNoticeDismissed: z.boolean(),
+  /** The SSH `Include` line whose notice was dismissed; a different needed line shows it again. */
+  editorIncludeNoticeDismissed: z.string().min(1).max(8192).nullable(),
 } as const
 
 export const settingsSchema = z.object(settingSchemas).strict()
@@ -50,6 +52,7 @@ export const defaultSettings: Settings = {
   notifyCompletions: true,
   onboardingComplete: false,
   alphaNoticeDismissed: false,
+  editorIncludeNoticeDismissed: null,
 }
 
 // Read fields independently: one invalid field must not erase other saved choices.

@@ -14,6 +14,7 @@ vi.mock("./updates", () => ({ desktopUpdateBackend: backend }))
 vi.mock("./shutdown-boundary", () => ({ ShutdownBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
 vi.mock("./runtime-migration-boundary", () => ({ RuntimeMigrationBoundary: ({ children }: { children: import("react").ReactNode }) => children }))
 vi.mock("./use-main-route", () => ({ useMainRoute: () => undefined }))
+vi.mock("./editor-include", () => ({ desktopEditorIncludeBackend: { read: async () => null, subscribe: async () => () => {} } }))
 vi.mock("./production-source", async () => {
   const { applicationSourceForScenario } = await import("@/fixtures/application-scenarios")
   const { useUnavailableBackup } = await import("@/fixtures/application-backup")
