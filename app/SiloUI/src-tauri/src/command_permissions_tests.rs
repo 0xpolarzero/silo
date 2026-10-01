@@ -42,6 +42,7 @@ fn migration_and_checkpoint_commands_are_allowlisted_for_the_main_window() {
         "abandon_restore",
         "read_checkpoint_usage",
         "remote_checkpoint_action",
+        "acknowledge_backup_result",
     ] {
         let permission = format!("allow-{}", command.replace('_', "-"));
         assert_eq!(

@@ -642,6 +642,34 @@ describe("result and job identity", () => {
     } finally { store.dispose() }
   })
 
+  it("keeps the runtime's unseen marker on the result it belongs to and drops it once the result is dismissed here", async () => {
+    const interrupted = { ...result, operation: "restore" as const, outcome: "failed" as const, title: "Import interrupted before the upgrade", message: "Silo closed before this import finished." }
+    const mock = bridge(command => {
+      if (command === "read_backup_state") return { ...backup, operationId: "op-1", operation: interrupted, resultUnseen: true }
+      if (command === "dismiss_backup_operation") return true
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      expect(store.getSnapshot().backup).toMatchObject({ operationId: "op-1", resultUnseen: true, operation: { kind: "result", title: "Import interrupted before the upgrade" } })
+      store.backupActions.dismissOperation()
+      // The runtime is told what was shown, and the dismissed result is no longer reported unseen.
+      expect(mock.invoke).toHaveBeenCalledWith("dismiss_backup_operation", { expectedOperation: interrupted, expectedOperationId: "op-1" })
+      expect(store.getSnapshot().backup.operation).toBeNull()
+      expect(store.getSnapshot().backup.resultUnseen).toBeUndefined()
+    } finally { store.dispose() }
+  })
+
+  it("does not report an ordinary result as unseen", async () => {
+    const mock = bridge(command => { if (command === "read_backup_state") return { ...backup, operationId: "op-1", operation: result } })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      expect(store.getSnapshot().backup.operation).toMatchObject({ kind: "result" })
+      expect(store.getSnapshot().backup.resultUnseen).toBeUndefined()
+    } finally { store.dispose() }
+  })
+
   it("identifies a dismissed result by its operation id, not its serialized payload (H-33)", async () => {
     let raced = false
     const mock = bridge(command => {

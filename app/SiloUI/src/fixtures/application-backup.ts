@@ -51,6 +51,8 @@ interface BackupFixtureOptions {
   source: ApplicationSource
   previewMode?: BackupFixtureMode
   onRestoreComplete?: (targetName: string) => void
+  /** A result already present when the window opens, and whether the user has not been shown it (see `BackupState.resultUnseen`). */
+  initialResult?: { operation: BackupOperation; unseen: boolean }
 }
 
 type RunningFixture = { operation: BackupOperationKind; archive: BackupArchive; runningNames: string[]; targetName?: string; step: number }
@@ -67,11 +69,12 @@ function resultFor(running: RunningFixture, mode: BackupFixtureMode): Extract<Ba
   return { ...common, kind: "result", outcome: "success", title: `${running.targetName} is ready`, message: "The new sandbox was imported and verified. It is stopped.", detail: "Disk files and settings were imported; running programs were not." }
 }
 
-export function useBackupFixture({ source, previewMode = "success", onRestoreComplete }: BackupFixtureOptions): BackupController {
+export function useBackupFixture({ source, previewMode = "success", onRestoreComplete, initialResult }: BackupFixtureOptions): BackupController {
   const snapshotId = `${JSON.stringify(source.backup)}:${previewMode}`
   const [archives, setArchives] = useState<BackupArchive[]>(() => source.backup.lastArchive ? [initialBackupArchive(source)] : [])
   const [running, setRunning] = useState<RunningFixture | null>(null)
-  const [result, setResult] = useState<BackupOperation | null>(null)
+  const [result, setResult] = useState<BackupOperation | null>(initialResult?.operation ?? null)
+  const [resultUnseen, setResultUnseen] = useState(initialResult?.unseen ?? false)
   // The export awaited through `exportAndVerify`, settled with its fixture result.
   const awaitedExport = useRef<{ operationId: string; resolve: (value: VerifiedExport) => void; reject: (error: Error) => void } | null>(null)
 
@@ -89,6 +92,7 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
       if (result.outcome === "success" && running.operation === "backup") setArchives((current) => [running.archive, ...current])
       if (result.outcome === "success" && running.operation === "restore" && running.targetName) onRestoreComplete?.(running.targetName)
       setResult(result)
+      setResultUnseen(false)
       setRunning(null)
     }, 900)
     return () => window.clearTimeout(timer)
@@ -96,6 +100,7 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
 
   function start(operation: BackupOperationKind, archive: BackupArchive, selected: string[], targetName?: string) {
     setResult(null)
+    setResultUnseen(false)
     setRunning({ operation, archive, targetName, step: 0, runningNames: source.workspaces.filter(({ machine, state }) => selected.includes(machine.name) && state === "running").map(({ machine }) => machine.name) })
   }
 
@@ -114,6 +119,7 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
       availableSpaceGB: previewMode === "space-blocked" ? 19 : previewMode === "restore-storage" ? 15 : 86,
       unsupportedStorage: previewMode === "unsupported-storage" ? { sandbox: "dev", label: "Client files" } : undefined,
       archives,
+      ...(resultUnseen && !running && result && { resultUnseen: true }),
       operation: running ? { kind: "running", operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), progress: 18 + running.step * 25, phases: phasesFor(running.operation, running.step) } : result,
     },
     actions: {
@@ -140,9 +146,10 @@ export function useBackupFixture({ source, previewMode = "success", onRestoreCom
           awaitedExport.current = null
         }
         setResult({ operation: running.operation, archive: running.archive, runningNames: running.runningNames, ...(running.targetName && { targetName: running.targetName }), kind: "result", outcome: "cancelled", title: running.operation === "backup" ? "Export cancelled" : "Import cancelled", message: running.operation === "backup" ? "The export was cancelled." : "The import was cancelled.", detail: running.operation === "backup" ? "No export file was saved." : "No sandbox was added. The export file was not changed." })
+        setResultUnseen(false)
         setRunning(null)
       },
-      dismissOperation: () => setResult(null),
+      dismissOperation: () => { setResult(null); setResultUnseen(false) },
       async revealArchive() { /* Fixtures have no file manager to reveal; the toast action is exercised in tests. */ },
     },
   }

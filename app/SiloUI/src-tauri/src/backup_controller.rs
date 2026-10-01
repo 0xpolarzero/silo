@@ -96,6 +96,12 @@ pub(crate) struct BackupState {
     /// frontend contract still requires the field.
     archives: Vec<Archive>,
     operation: Option<Operation>,
+    /// `operation` is a result an upgrade produced, or the notice that an unreadable record
+    /// was set aside, and the user has not been shown it yet. Unlike any other result
+    /// present when the window opens, it is not stale: it is shown, and acknowledged with
+    /// `acknowledge_backup_result` once it was (or dismissed like any result).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    result_unseen: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -186,10 +192,26 @@ struct Saved {
     journal_error: Option<String>,
 }
 
-fn load_saved(history_path: &Path) -> Saved {
-    let (journal, journal_error) = match recovery::load(history_path) {
+/// `set_aside` is false while the storage migration is unfinished: it sets an unusable
+/// journal aside itself, after its last refusal (see `runtime_migration::convert_with`),
+/// and until then the file stays where it is. Otherwise nothing could ever settle a
+/// journal that was read but cannot be used, so it is set aside here, and the notice that
+/// took its place is the saved operation. A file that could not be read at all (an I/O
+/// error) is never set aside: exports and imports stay unavailable, and the next launch
+/// reads it again.
+fn load_saved(history_path: &Path, set_aside: bool) -> Saved {
+    let (journal, journal_error) = match recovery::try_load(history_path) {
         Ok(journal) => (journal, None),
-        Err(error) => (None, Some(error)),
+        Err(recovery::LoadFailure::Unusable(error)) if set_aside => {
+            match recovery::set_aside_at_startup(history_path) {
+                Ok(notice) => (Some(notice), None),
+                Err(failure) => {
+                    eprintln!("{failure} Exports and imports stay unavailable.");
+                    (None, Some(error))
+                }
+            }
+        }
+        Err(failure) => (None, Some(failure.into_message())),
     };
     Saved {
         destination: load_destination(history_path),
@@ -227,7 +249,8 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
     // `msb` against the previous generation, so the service gets paths that cannot
     // start it. Interrupted work can still settle its files (E-50); operations are
     // refused with the migration message.
-    let paths = if crate::runtime_migration::blocks_operations(app) {
+    let migrating = crate::runtime_migration::blocks_operations(app);
+    let paths = if migrating {
         runtime::inert_runtime_paths(app)?
     } else {
         runtime::runtime_paths(app)?
@@ -241,7 +264,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         destination,
         journal,
         journal_error,
-    } = load_saved(&history_path);
+    } = load_saved(&history_path, !migrating);
     let controller = Arc::new(Controller {
         journal: Mutex::new(journal.clone()),
         history_path,
@@ -424,6 +447,8 @@ fn backup_state(controller: &Controller) -> Result<BackupState, String> {
     let availability_message = journal_error.or_else(|| {
         recovery::unresolved(controller).unwrap_or(true).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
     });
+    let result_unseen =
+        matches!(operation, Some(Operation::Result { .. })) && recovery::unseen(controller)?;
     Ok(BackupState {
         snapshot_id: controller.revision.load(Ordering::Relaxed).to_string(),
         operation_id: recovery::token(controller)?,
@@ -435,6 +460,7 @@ fn backup_state(controller: &Controller) -> Result<BackupState, String> {
         availability_message,
         archives: Vec::new(),
         operation,
+        result_unseen,
     })
 }
 
@@ -1971,6 +1997,29 @@ pub(crate) async fn dismiss_backup_operation(
     .map_err(|error| error.to_string())?
 }
 
+/// The user was shown the result `read_backup_state` reported as unseen, which has the
+/// operation id `expected_operation_id`: the post-upgrade screen did. Only that result is
+/// marked seen; it stays until dismissed. Returns whether it was still waiting to be seen.
+#[tauri::command]
+pub(crate) async fn acknowledge_backup_result(
+    app: AppHandle,
+    window: WebviewWindow,
+    controller: State<'_, Arc<Controller>>,
+    expected_operation_id: String,
+) -> Result<bool, String> {
+    require_main(&window)?;
+    let controller = controller.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = recovery::acknowledge(&controller, &expected_operation_id)?;
+        if changed {
+            publish(&app, &controller);
+        }
+        Ok(changed)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 fn dismiss_finished_operation(
     controller: &Controller,
     expected: Option<&Value>,
@@ -2043,19 +2092,16 @@ mod tests {
             return FirstLaunch::NoJournal;
         };
         *controller.journal.lock().unwrap() = Some(journal.clone());
-        match recovery::settle_before_migration(
+        let settlement = recovery::settle_before_migration(
             paths,
             &controller,
             &journal,
             &backup::Cancellation::default(),
         )
-        .unwrap()
-        {
-            recovery::Settlement::Settled(operation) => {
-                let operation = recovery::complete(&controller, operation);
-                FirstLaunch::Result(serde_json::to_value(operation).unwrap())
-            }
-            recovery::Settlement::AfterUpgrade => FirstLaunch::AwaitingUpgrade,
+        .unwrap();
+        match recovery::finish_settlement(&controller, settlement, true) {
+            Some(operation) => FirstLaunch::Result(serde_json::to_value(operation).unwrap()),
+            None => FirstLaunch::AwaitingUpgrade,
         }
     }
 
@@ -2120,7 +2166,9 @@ mod tests {
             &backup::Cancellation::default(),
         );
         Some(recovered.map(|operation| {
-            serde_json::to_value(recovery::complete(&controller, operation)).unwrap()
+            let settled = recovery::Settlement::Settled(operation);
+            let reported = recovery::finish_settlement(&controller, settled, false).unwrap();
+            serde_json::to_value(reported).unwrap()
         }))
     }
 
@@ -2601,7 +2649,7 @@ mod tests {
         let path = directory.path().join("backup-history.json");
         let controller = history_controller(path.clone());
         remember_destination(&controller, directory.path().to_path_buf());
-        let saved = load_saved(&path);
+        let saved = load_saved(&path, true);
         assert_eq!(saved.destination.as_deref(), Some(directory.path()));
         assert!(saved.journal_error.is_none());
         let bytes = fs::read_to_string(path).unwrap();
@@ -2633,7 +2681,7 @@ mod tests {
             br#"{"schemaVersion":2,"destination":"/backups","archives":[]}"#,
         ] {
             fs::write(&path, saved).unwrap();
-            let loaded = load_saved(&path);
+            let loaded = load_saved(&path, true);
             assert!(loaded.destination.is_none());
             assert!(loaded.journal_error.is_none());
         }
@@ -2649,20 +2697,278 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            load_saved(&path).destination,
+            load_saved(&path, true).destination,
             Some(PathBuf::from("/backups"))
         );
     }
 
     #[test]
-    fn an_unreadable_saved_operation_still_blocks_new_transfers() {
+    fn an_unreadable_saved_operation_blocks_new_transfers_while_the_migration_is_unfinished() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("backup-history.json");
         fs::write(directory.path().join("backup-operation.json"), b"broken").unwrap();
-        let loaded = load_saved(&path);
+        // The migration sets it aside itself, after its last refusal: until then the
+        // file stays where it is, untouched.
+        let loaded = load_saved(&path, false);
         assert!(loaded.journal.is_none());
         assert!(loaded.journal_error.is_some());
+        assert_eq!(
+            fs::read(directory.path().join("backup-operation.json")).unwrap(),
+            b"broken"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        let controller = Controller {
+            journal: Mutex::new(loaded.journal),
+            ..history_controller(path)
+        };
+        controller.view.lock().unwrap().journal_error = loaded.journal_error;
+        assert_eq!(
+            serde_json::to_value(backup_state(&controller).unwrap()).unwrap()["availability"],
+            "unavailable"
+        );
+        assert!(recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None)
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn an_unreadable_saved_operation_is_set_aside_at_startup_and_transfers_are_available_again() {
+        let _test_state = crate::test_support::global_state();
+        let supported = |version: u64| {
+            serde_json::json!({
+                "version": version,
+                "id": "5b0c8e3e-3b8e-4c4c-9a0b-1f0f5f2d2b77",
+                "archive": {"name": "dev.silo-backup", "archivePath": "/exports/dev.silo-backup", "completedLabel": "In progress", "size": "Unknown", "destination": "/exports", "sandboxes": ["dev"]},
+                "request": {"kind": "backup", "names": ["dev"]},
+                "cancelled": false,
+                "terminal": null,
+            })
+            .to_string()
+        };
+        let cases = [
+            ("damaged", "{\"version\":1,\"id\":".to_string()),
+            ("empty", String::new()),
+            ("unsupported version", supported(2)),
+        ];
+        for (state, text) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            let app_data = directory.path();
+            let path = app_data.join("backup-history.json");
+            fs::write(app_data.join("backup-operation.json"), &text).unwrap();
+            let loaded = load_saved(&path, true);
+            // The record is kept, renamed and unread, and a notice took its place.
+            assert!(loaded.journal_error.is_none(), "{state}");
+            let notice = loaded.journal.clone().expect(state);
+            let aside: Vec<_> = fs::read_dir(app_data)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .filter(|path| {
+                    path.to_string_lossy()
+                        .contains("backup-operation.unreadable-")
+                })
+                .collect();
+            assert_eq!(aside.len(), 1, "{state}: {aside:?}");
+            assert_eq!(fs::read_to_string(&aside[0]).unwrap(), text, "{state}");
+
+            // The state the window reads: available, and the notice is not stale.
+            let controller = Controller {
+                journal: Mutex::new(loaded.journal),
+                ..history_controller(path.clone())
+            };
+            set_operation(&controller, notice.operation()).unwrap();
+            let read = serde_json::to_value(backup_state(&controller).unwrap()).unwrap();
+            assert_eq!(read["availability"], "available", "{state}");
+            assert!(read.get("availabilityMessage").is_none(), "{state}");
+            assert_eq!(read["resultUnseen"], true, "{state}");
+            assert_eq!(read["operationId"], notice.identity(), "{state}");
+            assert_eq!(
+                read["operation"]["title"], "Export or import record set aside",
+                "{state}"
+            );
+            assert_eq!(read["operation"]["kind"], "result", "{state}");
+
+            // The user was shown it: it stays, as an ordinary result, until dismissed.
+            assert!(recovery::acknowledge(&controller, notice.identity()).unwrap());
+            let read = serde_json::to_value(backup_state(&controller).unwrap()).unwrap();
+            assert!(read.get("resultUnseen").is_none(), "{state}");
+            assert_eq!(read["operation"]["kind"], "result", "{state}");
+
+            // Exports and imports start again, and the next launch reads what they saved.
+            recovery::begin(
+                &controller,
+                recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+            )
+            .expect(state);
+            assert!(
+                recovery::load(&path).unwrap().unwrap().is_pending(),
+                "{state}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_operation_that_cannot_be_read_is_not_set_aside_and_is_read_again_next_launch() {
+        use std::os::unix::fs::PermissionsExt;
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let path = app_data.join("backup-history.json");
+        let journal = app_data.join("backup-operation.json");
+        // Content that is set aside when it is read: only the failure to read it differs.
+        fs::write(&journal, b"{not json").unwrap();
+        fs::set_permissions(&journal, fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = fs::read(&journal).is_ok();
+        let loaded = load_saved(&path, true);
+        fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).unwrap();
+        // The owner can read it anyway (running as root): nothing to check.
+        if readable {
+            return;
+        }
+        // Exports and imports stay unavailable, and the file is where it was, unchanged.
+        assert!(loaded.journal.is_none());
+        let error = loaded
+            .journal_error
+            .clone()
+            .expect("the failure is reported");
+        assert!(error.contains("could not read"), "{error}");
+        assert_eq!(fs::read(&journal).unwrap(), b"{not json");
+        assert_eq!(fs::read_dir(app_data).unwrap().count(), 1);
+        let controller = history_controller(path.clone());
+        controller.view.lock().unwrap().journal_error = loaded.journal_error;
+        assert_eq!(
+            serde_json::to_value(backup_state(&controller).unwrap()).unwrap()["availability"],
+            "unavailable"
+        );
+        assert!(recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None)
+        )
+        .is_err());
+
+        // The next launch reads it again, and a damaged record is then set aside.
+        let retried = load_saved(&path, true);
+        assert!(retried.journal_error.is_none());
+        assert!(retried.journal.is_some_and(|notice| !notice.is_pending()));
+        let aside: Vec<_> = fs::read_dir(app_data)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.to_string_lossy()
+                    .contains("backup-operation.unreadable-")
+            })
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(fs::read(&aside[0]).unwrap(), b"{not json");
+    }
+
+    #[test]
+    fn a_folder_in_place_of_the_saved_operation_is_not_set_aside() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let journal = directory.path().join("backup-operation.json");
+        fs::create_dir(&journal).unwrap();
+        let loaded = load_saved(&path, true);
+        assert!(loaded.journal.is_none());
+        assert!(loaded.journal_error.is_some());
+        assert!(journal.is_dir());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_saved_operation_that_cannot_be_set_aside_keeps_transfers_unavailable() {
+        use std::os::unix::fs::PermissionsExt;
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let path = app_data.join("backup-history.json");
+        fs::write(app_data.join("backup-operation.json"), b"broken").unwrap();
+        fs::set_permissions(app_data, fs::Permissions::from_mode(0o500)).unwrap();
+        // A folder that cannot be changed cannot be tested: the owner may write anyway.
+        let writable = fs::write(app_data.join("probe"), b"").is_ok();
+        let loaded = load_saved(&path, true);
+        fs::set_permissions(app_data, fs::Permissions::from_mode(0o700)).unwrap();
+        if writable {
+            return;
+        }
+        assert!(loaded.journal.is_none());
+        assert!(loaded
+            .journal_error
+            .is_some_and(|error| error.contains("preserved")));
+        assert_eq!(
+            fs::read(app_data.join("backup-operation.json")).unwrap(),
+            b"broken"
+        );
+    }
+
+    #[test]
+    fn a_readable_saved_operation_is_never_set_aside() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let controller = history_controller(path.clone());
+        recovery::begin(
+            &controller,
+            recovery::Journal::restore(completed_archive(), "copy".into(), None),
+        )
+        .unwrap();
+        let before = fs::read(directory.path().join("backup-operation.json")).unwrap();
+        let loaded = load_saved(&path, true);
+        assert!(loaded.journal.is_some_and(|journal| journal.is_pending()));
+        assert!(loaded.journal_error.is_none());
+        assert_eq!(
+            fs::read(directory.path().join("backup-operation.json")).unwrap(),
+            before
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        // And a folder with no record at all has nothing to set aside.
+        let empty = tempfile::tempdir().unwrap();
+        let loaded = load_saved(&empty.path().join("backup-history.json"), true);
+        assert!(loaded.journal.is_none() && loaded.journal_error.is_none());
+    }
+
+    #[test]
+    fn only_a_result_is_reported_as_unseen_and_acknowledging_is_exact() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let controller = history_controller(path);
+        let journal = recovery::Journal::restore(completed_archive(), "copy".into(), None);
+        let id = journal.identity().to_string();
+        recovery::begin(&controller, journal).unwrap();
+        let result = |title: &str| Operation::Result {
+            operation: "restore",
+            archive: completed_archive(),
+            running_names: Vec::new(),
+            target_name: Some("copy".into()),
+            outcome: "failed",
+            title: title.into(),
+            message: "Silo closed before this import finished.".into(),
+            detail: None,
+        };
+        // Nothing is unseen while the operation runs.
+        let running = serde_json::to_value(backup_state(&controller).unwrap()).unwrap();
+        assert!(running.get("resultUnseen").is_none());
+        let settled = recovery::complete_marked(
+            &controller,
+            result("Import interrupted before the upgrade"),
+            true,
+        );
+        set_operation(&controller, settled).unwrap();
+        let read = serde_json::to_value(backup_state(&controller).unwrap()).unwrap();
+        assert_eq!(read["resultUnseen"], true);
+        // The window dismisses with the result and id it was shown, as for any result.
+        let shown =
+            serde_json::to_value(controller.view.lock().unwrap().operation.clone()).unwrap();
+        assert!(dismiss_finished_operation(&controller, Some(&shown), Some(id.as_str())).unwrap());
+        let read = serde_json::to_value(backup_state(&controller).unwrap()).unwrap();
+        assert!(read.get("resultUnseen").is_none());
+        assert!(read["operation"].is_null());
+        assert!(recovery::load(&controller.history_path).unwrap().is_none());
     }
 
     #[test]
@@ -2857,6 +3163,7 @@ mod tests {
             availability_message: None,
             archives: Vec::new(),
             operation: None,
+            result_unseen: false,
         };
         let expected: Value =
             serde_json::from_str(include_str!("../../src/test/contracts/backup-state.json"))

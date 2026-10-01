@@ -30,6 +30,7 @@ import { operationQueueFromSearch } from "./operation-queue"
 import { RuntimeMigrationBoundary } from "@/desktop/runtime-migration-boundary"
 import { createFixtureMigrationBackend, fixtureBackupForMode, preUpgradeBackupFixtureModeFromSearch } from "./pre-upgrade-backup"
 import { createFixtureEditorInclude, editorIncludeFixtureModeFromSearch } from "./editor-include"
+import { createFixtureUnseenResult, unseenResultFixtureModeFromSearch } from "./transfer-result-notice"
 
 export function FixtureApp({ nativeOnboardingComplete = false, nativeDependencies = null, nativeOperations = false, settingsStore }: { nativeOnboardingComplete?: boolean; nativeDependencies?: DependencyRuntime | null; nativeOperations?: boolean; settingsStore?: SettingsStore }) {
   const source = applicationSourceForScenario(scenarioFromSearch(window.location.search))
@@ -58,7 +59,11 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   // The migration view always has one; elsewhere it appears only when asked for.
   const backupFixtureMode = preUpgradeBackupFixtureModeFromSearch(window.location.search) ?? (surface === "migration" ? "present" : undefined)
   const preUpgradeBackup = useMemo(() => backupFixtureMode ? fixtureBackupForMode(backupFixtureMode, 1_500) : undefined, [backupFixtureMode])
-  const migrationBackend = useMemo(() => preUpgradeBackup ? createFixtureMigrationBackend(preUpgradeBackup) : undefined, [preUpgradeBackup])
+  // An export or import result Silo has not shown yet. The screen about the backup shows and acknowledges it;
+  // the application shows it as a notification when that screen does not appear.
+  const unseenResultMode = unseenResultFixtureModeFromSearch(window.location.search)
+  const unseenResult = useMemo(() => unseenResultMode ? createFixtureUnseenResult(unseenResultMode) : undefined, [unseenResultMode])
+  const migrationBackend = useMemo(() => preUpgradeBackup ? createFixtureMigrationBackend(preUpgradeBackup, unseenResult) : undefined, [preUpgradeBackup, unseenResult])
   const editorIncludeMode = editorIncludeFixtureModeFromSearch(window.location.search)
   const editorInclude = useMemo(() => editorIncludeMode ? createFixtureEditorInclude() : undefined, [editorIncludeMode])
   const baseSource = withResourceFixture(completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode), resourceMode)
@@ -99,6 +104,7 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
             nativeOperations={nativeOperations}
             preUpgradeBackup={preUpgradeBackup}
             editorInclude={editorInclude}
+            unseenResult={unseenResult}
           />
         </RuntimeMigrationBoundary>
       ) : surface === "app" ? (
@@ -110,6 +116,7 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
           nativeOperations={nativeOperations}
           preUpgradeBackup={preUpgradeBackup}
           editorInclude={editorInclude}
+          unseenResult={unseenResult}
         />
       ) : surface === "status-bar" ? (
         <StatusBarPreview

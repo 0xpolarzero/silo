@@ -14,6 +14,7 @@ import { SystemIntegrationProvider } from "@/features/preferences/system-integra
 import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrations"
 import { PreUpgradeBackupProvider, type PreUpgradeBackupBackend } from "@/features/storage/pre-upgrade-backup"
 import { EditorIncludeProvider, type EditorIncludeBackend } from "@/features/application/model/editor-include"
+import type { FixtureUnseenResult } from "@/fixtures/transfer-result-notice"
 
 const inactiveApplicationActions: ApplicationActions = {
   openNetworkPort: async () => undefined,
@@ -33,7 +34,7 @@ const inactiveApplicationActions: ApplicationActions = {
   disconnectGitHub: () => undefined,
 }
 
-export function ApplicationPreview({ source, actions, backupPreviewMode, initialRoute, nativeOperations = false, preUpgradeBackup, editorInclude }: {
+export function ApplicationPreview({ source, actions, backupPreviewMode, initialRoute, nativeOperations = false, preUpgradeBackup, editorInclude, unseenResult }: {
   source: ApplicationSource
   actions?: Partial<ApplicationActions>
   backupPreviewMode?: BackupFixtureMode
@@ -43,18 +44,20 @@ export function ApplicationPreview({ source, actions, backupPreviewMode, initial
   preUpgradeBackup?: PreUpgradeBackupBackend
   /** The SSH `Include` line Silo could not add; the application shows a notice for it when given. */
   editorInclude?: EditorIncludeBackend
+  /** An export or import result that was not shown yet; the application starts with it, as after an upgrade. */
+  unseenResult?: FixtureUnseenResult
 }) {
   const { store } = useSettings(source.preferences)
   const [systemIntegrations] = useState(() => createFixtureSystemIntegrationStore(store))
   const application = nativeOperations
     ? <UnavailableApplicationPreview source={source} actions={actions} initialRoute={initialRoute} />
-    : <FixtureApplicationPreview source={source} actions={actions} backupPreviewMode={backupPreviewMode} initialRoute={initialRoute} />
+    : <FixtureApplicationPreview source={source} actions={actions} backupPreviewMode={backupPreviewMode} initialRoute={initialRoute} unseenResult={unseenResult} />
   const withBackup = preUpgradeBackup ? <PreUpgradeBackupProvider backend={preUpgradeBackup}>{application}</PreUpgradeBackupProvider> : application
   const withInclude = editorInclude ? <EditorIncludeProvider backend={editorInclude}>{withBackup}</EditorIncludeProvider> : withBackup
   return <SettingsProvider store={store}><SystemIntegrationProvider store={systemIntegrations}>{withInclude}</SystemIntegrationProvider></SettingsProvider>
 }
 
-function FixtureApplicationPreview({ source, actions, backupPreviewMode, initialRoute }: Parameters<typeof ApplicationPreview>[0]) {
+function FixtureApplicationPreview({ source, actions, backupPreviewMode, initialRoute, unseenResult }: Parameters<typeof ApplicationPreview>[0]) {
   const fixture = useApplicationFixture(source)
   const [sshSettings, setSshSettings] = useState<Record<string, SshAccessRequest>>({})
   const sshAccess = { workspaces: fixture.source.workspaces.filter(w => w.machine.kind === "vm").map((w, index): SshAccessWorkspace => {
@@ -70,10 +73,13 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
     return fixtureLogPage(workspace, request)
   }, [fixture.source.workspaces])
   const listWorkspaceDirectory = useMemo(() => fixtureDirectoryLoader(source.workspaces), [source.workspaces])
+  // Read once, when the application opens: a result acknowledged on the screen about the backup is already seen.
+  const [initialResult] = useState(() => unseenResult?.current())
   const backup = useBackupFixture({
     source: fixture.source,
     previewMode: backupPreviewMode,
     onRestoreComplete: fixture.onRestoreComplete,
+    initialResult,
   })
 
   return <ApplicationCatalogProvider initialCatalog={fixtureApplicationCatalog}><ApplicationApp

@@ -159,6 +159,81 @@ describe("results present at load", () => {
     expect(backup.actions.dismissOperation).not.toHaveBeenCalled()
   })
 
+  it("does not toast a finished failure or cancellation from a previous session either", async () => {
+    for (const outcome of ["failed", "cancelled"] as const) {
+      const old: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: "copy", outcome, title: "Import interrupted", message: "Silo closed before this import finished.", detail: "No sandbox was added. Import the file again." }
+      const backup = controller({ operation: old })
+      const { unmount } = render(<Harness backup={backup} />)
+      await act(async () => { await Promise.resolve() })
+      expect(screen.queryByText("Import interrupted")).not.toBeInTheDocument()
+      expect(backup.actions.dismissOperation).not.toHaveBeenCalled()
+      unmount()
+    }
+  })
+
+  it("shows a failure the backend marks unseen even though it is present at load", async () => {
+    const interrupted: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: "copy", outcome: "failed", title: "Import interrupted before the upgrade", message: "Silo closed before this import finished.", detail: "No sandbox was added. Import the file again." }
+    const backup = controller({ operation: interrupted, resultUnseen: true })
+    render(<Harness backup={backup} />)
+    expect(await screen.findByText("Import interrupted before the upgrade")).toBeVisible()
+    expect(screen.getByText("Silo closed before this import finished.")).toBeVisible()
+    expect(screen.getByText("No sandbox was added. Import the file again.")).toBeVisible()
+    // There is no import of this session to retry.
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+    // Showing it acknowledges nothing: the window may be hidden, so only dismissing it does.
+    await act(async () => { await Promise.resolve() })
+    expect(backup.actions.dismissOperation).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: /close|dismiss/i }))
+    await act(async () => { await Promise.resolve() })
+    expect(backup.actions.dismissOperation).toHaveBeenCalledOnce()
+  })
+
+  it("shows the notice that an unreadable record was set aside", async () => {
+    const setAside: BackupOperation = { kind: "result", operation: "backup", archive: { ...archive, name: "Export or import record", archivePath: "/data/backup-operation.unreadable-2026-10-01.json", sandboxes: [] }, runningNames: [], outcome: "failed", title: "Export or import record set aside", message: "An export or import record couldn’t be read and was set aside.", detail: "If an export or import was running, run it again." }
+    render(<Harness backup={controller({ operation: setAside, resultUnseen: true })} />)
+    expect(await screen.findByText("Export or import record set aside")).toBeVisible()
+    expect(screen.getByText("An export or import record couldn’t be read and was set aside.")).toBeVisible()
+    expect(screen.getByText("If an export or import was running, run it again.")).toBeVisible()
+  })
+
+  it("shows an unseen result of every outcome, with the actions of an ordinary one", async () => {
+    const done: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "success", title: "Export complete", message: "Silo verified this export after relaunching." }
+    const { rerender } = render(<Harness backup={controller({ operation: done, resultUnseen: true })} />)
+    expect(await screen.findByText("Exported")).toBeVisible()
+    expect(screen.getByRole("button", { name: /Show in (Finder|folder)/ })).toBeVisible()
+    const cancelled: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "cancelled", title: "Export cancelled", message: "The export was cancelled.", detail: "No export file was saved." }
+    rerender(<Harness backup={controller({ operation: cancelled, resultUnseen: true })} />)
+    expect(await screen.findByText("Export cancelled")).toBeVisible()
+    expect(screen.getByText("The export was cancelled.")).toBeVisible()
+    expect(screen.getByText("No export file was saved.")).toBeVisible()
+  })
+
+  it("keeps an unseen cancellation until it is dismissed, unlike the ordinary one that disappears by itself", async () => {
+    vi.useFakeTimers()
+    try {
+      const cancelled: BackupOperation = { kind: "result", operation: "backup", archive, runningNames: [], outcome: "cancelled", title: "Export cancelled", message: "The export was cancelled." }
+      const unseen = controller({ operation: cancelled, resultUnseen: true })
+      render(<Harness backup={unseen} />)
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+      expect(screen.getByText("Export cancelled")).toBeVisible()
+      expect(unseen.actions.dismissOperation).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+  })
+
+  it("does not show a result as unseen once the backend no longer reports it so", async () => {
+    const interrupted: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: "copy", outcome: "failed", title: "Import interrupted before the upgrade", message: "Silo closed before this import finished." }
+    // Acknowledged on the screen shown after the upgrade, so it opens as any old result does.
+    render(<Harness backup={controller({ operation: interrupted, resultUnseen: false })} />)
+    await act(async () => { await Promise.resolve() })
+    expect(screen.queryByText("Import interrupted before the upgrade")).not.toBeInTheDocument()
+  })
+
+  it("does not take an unseen flag for a running operation", async () => {
+    const running: BackupOperation = { kind: "running", operation: "restore", archive, runningNames: [], targetName: "copy", progress: 10, phases: [{ title: "Create new sandbox", detail: "Writing managed disk data.", tone: "running" }] }
+    render(<Harness backup={controller({ operation: running, resultUnseen: true })} />)
+    expect(await screen.findByText("Importing copy")).toBeVisible()
+  })
+
   it("dismisses a stale import result whose sandbox no longer exists", async () => {
     const success: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: "gone-sandbox", outcome: "success", title: "ready", message: "ok" }
     const backup = controller({ operation: success })

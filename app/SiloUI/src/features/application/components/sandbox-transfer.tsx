@@ -45,7 +45,8 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
   const retryRef = useRef<(() => void) | undefined>(undefined)
   const reviewDraftRef = useRef<Extract<ImportReview, { kind: "review" }> | null>(null)
   const [review, setReview] = useState<ImportReview | null>(null)
-  // A result already present when the app loads is from a previous session: never toast it.
+  // A result already present when the app loads is from a previous session: never toast it, unless
+  // the backend marks it unseen (an upgrade produced it, or an unreadable record was set aside).
   const seenOperation = useRef(false)
   // The export file check behind the open review; closing the review aborts it (E-27).
   const inspectionRef = useRef<AbortController | null>(null)
@@ -104,8 +105,13 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
     seenOperation.current = true
     if (!operation) { dismissOperationToast(TRANSFER_TOAST_ID); return }
     const isExport = operation.operation === "backup"
+    // The user was not shown this result as it happened. It appears as an ordinary result notification
+    // that stays until dismissed; dismissing it removes it like any other result and is what
+    // acknowledges it here. Closing Silo first leaves it unseen, so the next launch shows it again.
+    // The window may be hidden at launch, so merely showing the notification acknowledges nothing.
+    const unseen = operation.kind === "result" && controller.state.resultUnseen === true
 
-    if (firstLoad && operation.kind !== "running") {
+    if (firstLoad && operation.kind !== "running" && !unseen) {
       // Stale result: stay silent, and clear it when the imported sandbox has since been deleted.
       const target = operation.operation === "restore" && operation.outcome === "success" ? operation.targetName : undefined
       if (target && !optionsRef.current.source.workspaces.some(({ machine, computer }) => !computer && machine.name === target)) backupRef.current.actions.dismissOperation()
@@ -157,7 +163,9 @@ export function useSandboxTransfer(backup: BackupController, options: { source: 
     }
 
     if (operation.outcome === "cancelled") {
-      showOperationNotice(TRANSFER_TOAST_ID, operation.title, { description: operation.message, onDismiss: dismiss })
+      // A result nobody has seen stays until dismissed; the usual cancellation notice disappears by itself.
+      const description = unseen && operation.detail ? <div className="grid gap-1"><p>{operation.message}</p><p className="text-muted-foreground">{operation.detail}</p></div> : operation.message
+      showOperationNotice(TRANSFER_TOAST_ID, operation.title, { description, duration: unseen ? Infinity : undefined, onDismiss: dismiss })
       return
     }
 
