@@ -6144,6 +6144,118 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
         assert_eq!((set_ups(), state().as_str()), (5, "Running"));
     }
 
+    /// Opt-in: a new VM gets the account at creation, an older layout is moved to it by
+    /// the next Start, and a setup that cannot finish leaves the VM stopped.
+    #[test]
+    #[ignore = "requires the packaged runtime and hardware virtualization"]
+    fn live_start_sets_up_the_silo_account_of_new_and_older_vms() {
+        crate::test_support::live::require_confirmation();
+        let _test_state = crate::test_support::global_state();
+        // The live runtime control socket requires a short root (104 bytes on macOS).
+        let directory = tempfile::Builder::new()
+            .prefix("silo-account-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let paths = RuntimePaths {
+            guest_image: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image"),
+            executable: PathBuf::from(std::env::var("SILO_TEST_MSB").expect("packaged msb path")),
+            library: PathBuf::from(
+                std::env::var("SILO_TEST_LIBKRUNFW").expect("packaged library path"),
+            ),
+            home: directory.path().join("runtime"),
+            storage_home: None,
+            metadata: directory.path().join("machines.json"),
+            volumes: directory.path().join("volumes"),
+        };
+        let name = "silo-account-proof";
+        let restored = "silo-account-restored";
+        struct Stop<'a>(&'a RuntimePaths);
+        impl Drop for Stop<'_> {
+            fn drop(&mut self) {
+                for name in ["silo-account-proof", "silo-account-restored"] {
+                    let args = ["stop".into(), name.into()];
+                    let _ = run_msb(self.0, &args, Duration::from_secs(60));
+                }
+            }
+        }
+        let _stop = Stop(&paths);
+        let host = host_resources().unwrap();
+        let action =
+            |action: &str| workspace_action_with(&ProcessRunner, &paths, &host, action, name);
+        let exec_in = |name: &str, user: &str, script: &str| {
+            let args = [
+                "exec",
+                name,
+                "--no-start",
+                "--user",
+                user,
+                "--",
+                "sh",
+                "-ec",
+                script,
+            ];
+            run_msb(&paths, &args.map(String::from), Duration::from_secs(180))
+                .map(|output| output.stdout)
+        };
+        let exec = |user: &str, script: &str| exec_in(name, user, script);
+        let moved = r#"test "$(cat /home/silo/.codex/auth.json)" = secret
+test "$(head -1 /home/silo/.local/bin/tool)" = '#!/home/silo/.local/bin/python'
+grep -q 'PATH=/home/silo/.local/bin' /home/silo/.bashrc
+test "$(stat -c %U /workspace/project /home/silo/.codex/auth.json | sort -u)" = silo
+test "$(cat /root/.codex/auth.json)" = secret
+test -f /var/lib/silo/working-account.json"#;
+        create_disposable_test_machine(&paths, name).unwrap();
+        action("start").unwrap();
+        assert_eq!(
+            exec("silo", "id -un; cat /var/lib/silo/working-account.json").unwrap(),
+            "silo\n{\"schemaVersion\":1,\"user\":\"silo\",\"home\":\"/home/silo\"}\n"
+        );
+        // Recreate the layout of an older Silo: agent state under root, no silo account.
+        exec(
+            "root",
+            r#"mkdir -p /root/.local/bin /root/.codex
+printf secret > /root/.codex/auth.json
+printf '#!/root/.local/bin/python\n' > /root/.local/bin/tool
+printf 'export PATH=/root/.local/bin:$PATH\n' >> /root/.bashrc
+printf work > /workspace/project
+userdel -rf silo
+rm /etc/sudoers.d/silo /var/lib/silo/working-account.json
+chown -R root:root /workspace"#,
+        )
+        .unwrap();
+        action("stop").unwrap();
+        let snapshot = ["snapshot", "create", "--sandbox", name, "older", "--quiet"];
+        run_msb(
+            &paths,
+            &snapshot.map(String::from),
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        action("start").unwrap();
+        exec("root", moved).unwrap();
+        assert_eq!(exec("silo", "id -un; sudo -n id -u").unwrap(), "silo\n0\n");
+        // A checkpoint from before the move is set up as it is restored.
+        let restore = ["restore", "silo-account-proof:older", "--name", restored];
+        run_msb(&paths, &restore.map(String::from), Duration::from_secs(300)).unwrap();
+        exec_in(restored, "root", moved).unwrap();
+        assert_eq!(exec_in(restored, "silo", "id -un").unwrap(), "silo\n");
+        // A setup that cannot finish names its reason and leaves the VM stopped.
+        exec(
+            "root",
+            "userdel -rf silo; rm /var/lib/silo/working-account.json; useradd -u 1001 conflict",
+        )
+        .unwrap();
+        action("stop").unwrap();
+        let error = action("start").unwrap_err().to_string();
+        assert!(error.contains("reserved account ID 1001"), "{error}");
+        assert_eq!(
+            inspect_workspace(&ProcessRunner, &paths, name)
+                .unwrap()
+                .status,
+            "Stopped"
+        );
+    }
+
     #[test]
     fn cancelling_exec_still_stops_its_temporary_boot() {
         let _test_state = crate::test_support::global_state();
