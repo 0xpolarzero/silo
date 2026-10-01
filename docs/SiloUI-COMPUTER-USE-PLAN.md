@@ -130,16 +130,19 @@ absolute).
 
 ### 5. VM integration
 
-- New VMs are created with the pinned version's folder mounted read-only at
-  `/opt/silo/chatgpt`. Mount only that version's folder (statfs walk). The
-  folder must exist before VM start.
+- New VMs are created with a stable per-computer folder mounted read-only at
+  `/opt/silo/chatgpt`. That folder holds only verified, published version
+  folders (staging, downloads and records live elsewhere) and is garbage
+  collected, which keeps the first-statfs walk (#1701/#1702) small. It exists,
+  possibly empty, before any VM starts, so a VM created before the one-time
+  notice was accepted gains computer use later, and a pinned-version change
+  reaches existing VMs at their next boot.
 - At boot, a guest helper installs LCU against the mounted app when the pinned
   pair changes, runs `lcu setup --agent auto`, and applies the VM's approval
   mode. A "Set up computer use" action reruns setup after a harness is
   installed.
 - Export, import and transfer pass the mount again on restore and verify it.
-- Changing the pinned version updates a VM at its next start (recreated mount
-  where MicroSandbox allows, otherwise reported as needing a new VM).
+- Changing the pinned version updates a VM at its next start.
 - Remove app versions no VM references.
 - VMs created before v4 keep their desktops; computer use requires a new VM.
 
@@ -163,3 +166,30 @@ Claude Code and Codex desktop tasks with independent file checks, approvals
 on and off; export/import keeps the mount; GTK, Qt, Firefox, Chrome and
 Electron expose trees; poller CPU cost; `df` on a cold cache; pinned-version
 change. Record final sizes and add a `minor` changeset.
+
+## Integration contract
+
+Backend (Rust, guest scripts) and frontend implement this together.
+
+- Host storage: `<app data>/chatgpt/` keeps `.lock`, consent, downloads,
+  staging and publication records; verified trees are published under
+  `<app data>/chatgpt/published/<version>-<debarch>/`. VMs mount
+  `published/` read-only at `/opt/silo/chatgpt`; the guest uses
+  `/opt/silo/chatgpt/<pinned version>-<debarch>` passed by the host.
+- Commands (Tauri, local and routed to the owning computer like other VM
+  operations): `chatgpt_app_status`, `chatgpt_app_accept_notice`,
+  `chatgpt_app_prepare` (asynchronous; emits `chatgpt-app-status` with the
+  status object), and `set_computer_use_approval { workspace, mode: "ask" |
+  "auto" }` returning the desktop state. `desktop_action` gains the action
+  `setup-computer-use`, which reruns LCU setup for agents installed later.
+- App status object, tagged by `state`: `notConsented`, `idle`,
+  `downloading { receivedBytes, totalBytes }`, `verifying`, `extracting`,
+  `ready { path, version }`, `failed { reason, retryable }`.
+- Desktop state (`read_desktop_state`) gains an optional `computerUse` object
+  for v4 VMs: `state` (`unavailable`, `needs-consent`, `preparing`,
+  `installing`, `ready`, `failed`), `reason`, `compatibility` (`tested`,
+  `untested`, `unknown`, from `lcu status --json`), `warning`, `approval`
+  (`ask` or `auto`), `appVersion`, `runtimeVersion`, `lcuVersion`, `agents`.
+  The legacy `lcu*` fields remain for VMs created before v4.
+- Per-VM approval mode is stored in VM metadata, default `ask`, and applied
+  with `lcu setup --approval`.
