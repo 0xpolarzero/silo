@@ -427,28 +427,32 @@ status, the Continue generation, a fake-`msb` process that must never start, the
 inert paths, the staged conversion, and a scan that fails if production code
 builds `RuntimePaths` elsewhere or names the previous folder.
 
-Recovery through the inert paths had still written to the previous generation (it
-created the runtime alias and `.silo-backup-worker.lock`, and for an import that
-owned a loaded snapshot group it deleted that group's load stage before failing),
-and a journal that owned an export capture or an import group failed closed. The
-migration then refused to start, and the export page that could dismiss the
-journal was hidden behind the migration screen. An interrupted export or import
-now settles without the runtime and without writing to the previous generation
-(`settle_before_migration`): it waits for a surviving child's existing lock
-read-only, removes the working files and partial export file it left outside that
-folder, keeps a finished export file (reported as complete when it verifies),
-reports an import whose settings were saved as complete, and abandons whatever only
-the runtime could clean up. The journal then records "Export interrupted before
-the upgrade" or "Import interrupted before the upgrade" with "Silo did not clean up
-the data it had started", the migration converts only the sandboxes saved in the
-settings (an import that never saved its sandbox is never converted), and
-quarantine leaves a journal that holds a result in place, so the export and import
-page still shows it after the upgrade. No release can leave a journal that needs the
-runtime: `pending_capture` and `group` were added after the 0.9.0 tag (commits
-`3ca76f3e`, `0429b238`), and `backup_controller/recovery.rs` is identical in v0.7.0
-through v0.9.0, so every journal state a released Silo writes already settled
-without the runtime. The abandonment protects development builds and keeps the
-backup exactly as it was.
+Recovery through the inert paths had still written to the previous generation (the
+runtime alias, `.silo-backup-worker.lock`, and for an import that owned a loaded
+snapshot group, that group's load stage), and a journal that owned an export capture
+or an import group failed closed, so the migration could not start while the export
+page that could dismiss it was hidden. An interrupted export or import now settles
+without the runtime and without writing to the previous generation
+(`settle_before_migration`): it waits for a surviving child's lock read-only, removes
+the working files and partial export file it left elsewhere, keeps a finished export
+file, reports an import whose settings were saved as complete, and abandons what only
+the runtime could clean up. The journal records "Export/Import interrupted before the
+upgrade" and that Silo did not clean up the data it had started; the migration
+converts only the sandboxes saved in the settings, so an import that never saved its
+sandbox is never converted; and quarantine leaves a journal that holds a result in
+place, so the export page still shows it after the upgrade. No release can leave a
+journal that needs the runtime: `pending_capture` and `group` were added after the
+0.9.0 tag (commits `3ca76f3e`, `0429b238`) and `backup_controller/recovery.rs` is
+identical in v0.7.0 through v0.9.0, so every journal a released Silo writes already
+settled without it. The change protects development builds and keeps the backup
+exactly as it was. A live check on 2026-10-01 launched the development build in an
+isolated home over a fixture previous generation with a pending import journal that
+owned a snapshot group: the build before the change stopped the migration with "could
+not be recovered", created the worker lock and deleted the load stage inside the
+previous generation; the new build settled the journal, left all 14 entries of the
+previous generation byte-identical, and started the conversion, which then stopped at
+inspecting the fixture's fake database. The fixture has no real sandbox, so this is
+not live migration.
 
 Outside the app's reach: an editor's saved SSH `ProxyCommand` runs `msb ssh
 serve` with the home it was written for. Re-running the live check after the
@@ -512,13 +516,15 @@ Storage lists it with **Show** and **Delete now** until it is gone.
 - **Show** reveals the folder with the same `tauri_plugin_opener::reveal_item_in_dir`
   as exports. The folder holds Linux disk images (`upper.ext4`, `workspace.raw`)
   and a database: copyable, not browsable on macOS.
-- **Quarantined files.** The migration moved the previous export journal and
-  export-folder setting into the folder as `before-checkpoints-backup-operation.json`
-  and `before-checkpoints-backup-history.json` so they are not replayed against the
-  new runtime. Nothing reads them back: the journal can only be terminal at that
-  point (conversion refuses an unfinished one), and the history only remembers
-  an export folder and, in older builds, a list of exports that no UI showed.
-  The export files themselves are elsewhere and are not touched.
+- **Quarantined files.** The migration moved the previous export-folder setting
+  into the folder as `before-checkpoints-backup-history.json`, and an export journal
+  that recorded no result or cannot be read as `before-checkpoints-backup-operation.json`,
+  so they are not replayed against the new runtime. A journal that recorded a result
+  (including an interrupted operation settled before the upgrade) is not moved:
+  nothing can resume it, and the export page shows it until the user dismisses it.
+  Nothing reads the moved files back: conversion refuses an unfinished journal, and
+  the history only remembers an export folder and, in older builds, a list of exports
+  that no UI showed. The export files themselves are elsewhere and are not touched.
 
 Existing tools considered: a launchd agent or systemd timer would run while Silo
 is closed, but deleting needs Silo's own migration state and image-cache check
