@@ -422,11 +422,33 @@ VMs (Quit, update checks, update preparation, health checks) treat the refusal a
 An interrupted export or import must settle before the migration may start
 (E-50), so its recovery and the backup service, which keeps its runtime command
 for the process, get `runtime::inert_runtime_paths`: the same files, but no
-executable, so `msb` cannot start. Recovery that needs the runtime fails and keeps
-its journal. `runtime_migration/guard_tests.rs` covers every status, the Continue
-generation, a fake-`msb` process that must never start, the inert paths, the
-staged conversion, and a scan that fails if production code builds `RuntimePaths`
-elsewhere or names the previous folder.
+executable, so `msb` cannot start. `runtime_migration/guard_tests.rs` covers every
+status, the Continue generation, a fake-`msb` process that must never start, the
+inert paths, the staged conversion, and a scan that fails if production code
+builds `RuntimePaths` elsewhere or names the previous folder.
+
+Recovery through the inert paths had still written to the previous generation (it
+created the runtime alias and `.silo-backup-worker.lock`, and for an import that
+owned a loaded snapshot group it deleted that group's load stage before failing),
+and a journal that owned an export capture or an import group failed closed. The
+migration then refused to start, and the export page that could dismiss the
+journal was hidden behind the migration screen. An interrupted export or import
+now settles without the runtime and without writing to the previous generation
+(`settle_before_migration`): it waits for a surviving child's existing lock
+read-only, removes the working files and partial export file it left outside that
+folder, keeps a finished export file (reported as complete when it verifies),
+reports an import whose settings were saved as complete, and abandons whatever only
+the runtime could clean up. The journal then records "Export interrupted before
+the upgrade" or "Import interrupted before the upgrade" with "Silo did not clean up
+the data it had started", the migration converts only the sandboxes saved in the
+settings (an import that never saved its sandbox is never converted), and
+quarantine leaves a journal that holds a result in place, so the export and import
+page still shows it after the upgrade. No release can leave a journal that needs the
+runtime: `pending_capture` and `group` were added after the 0.9.0 tag (commits
+`3ca76f3e`, `0429b238`), and `backup_controller/recovery.rs` is identical in v0.7.0
+through v0.9.0, so every journal state a released Silo writes already settled
+without the runtime. The abandonment protects development builds and keeps the
+backup exactly as it was.
 
 Outside the app's reach: an editor's saved SSH `ProxyCommand` runs `msb ssh
 serve` with the home it was written for. Re-running the live check after the

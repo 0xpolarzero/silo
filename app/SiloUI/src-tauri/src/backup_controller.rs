@@ -325,7 +325,7 @@ fn wait_for_controller_recovery(
         }
         if !controller.busy.load(Ordering::Acquire) {
             if migration {
-                return Err("An interrupted export or import could not be recovered. Dismiss its result before retrying migration. No sandbox data was changed.".into());
+                return Err("An interrupted export or import could not be settled. Relaunch Silo to try again. No sandbox data was changed.".into());
             }
             // Recovery failed and published its error in the export/import
             // view, where the user can retry by relaunching or abandon it.
@@ -1994,8 +1994,32 @@ fn dismiss_finished_operation(
 }
 
 #[cfg(test)]
+pub(crate) use tests::settle_journal_before_migration;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What the first launch of an upgrade does with the journal the previous version
+    /// left in `app_data`: settle it with `paths`, which cannot start `msb`, and record
+    /// the result. Returns the result as the export and import page receives it.
+    pub(crate) fn settle_journal_before_migration(
+        app_data: &Path,
+        paths: &runtime::RuntimePaths,
+    ) -> Option<Value> {
+        let controller = history_controller(app_data.join("backup-history.json"));
+        let journal = recovery::load(&controller.history_path).unwrap()?;
+        *controller.journal.lock().unwrap() = Some(journal.clone());
+        let operation = recovery::settle_before_migration(
+            paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
+        let operation = recovery::complete(&controller, operation);
+        Some(serde_json::to_value(operation).unwrap())
+    }
 
     pub(super) fn history_controller(path: PathBuf) -> Controller {
         Controller {
@@ -3241,7 +3265,7 @@ mod tests {
         .unwrap();
         assert!(wait_for_controller_recovery(&controller, true, &|| false)
             .unwrap_err()
-            .contains("Dismiss its result"));
+            .contains("Relaunch Silo to try again"));
         wait_for_controller_recovery(&controller, false, &|| false).unwrap();
         assert!(recovery::pending(&controller).unwrap());
     }
