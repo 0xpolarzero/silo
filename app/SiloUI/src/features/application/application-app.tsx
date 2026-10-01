@@ -18,6 +18,7 @@ import { applicationCommands, type SandboxCommandRequest } from "@/features/appl
 import type { ApplicationActions, ApplicationSource, RepositoryPushOperation, RepositoryPushTarget, SandboxConfigurationOperation } from "@/features/application/model/application-source"
 import { useApplicationNavigation, type ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { defaultStartupWorkspaceIds } from "@/features/application/model/startup-workspaces"
+import { PreviewNotice } from "@/features/application/components/preview-notice"
 import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
 import { GeneralPage } from "@/features/application/pages/general-page"
 import { GitHubPage } from "@/features/application/pages/github-page"
@@ -320,6 +321,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       onSidebarCollapsedChange={setSidebarCollapsed}
       navigationDisabled={installingUpdate}
       notice={<UpdateNotice onOpen={() => navigation.selectSettingsSection("general")} />}
+      banner={<PreviewNotice />}
       activeTab={visibleTab}
       workspaceSection={visibleWorkspaceSection}
       settingsSection={settingsSection}

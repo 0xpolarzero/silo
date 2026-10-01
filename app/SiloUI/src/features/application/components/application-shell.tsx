@@ -312,6 +312,7 @@ export function ApplicationShell({
   reduceMotion = false,
   commandMenu,
   notice,
+  banner,
   children,
 }: {
   activeTab: ApplicationTab
@@ -334,6 +335,8 @@ export function ApplicationShell({
   reduceMotion?: boolean
   commandMenu?: ReactNode
   notice?: ReactNode
+  /** In-flow content above every page; unlike `notice`, it never covers the page. */
+  banner?: ReactNode
   children: ReactNode
 }) {
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(activeTab === "workspaces")
@@ -467,6 +470,7 @@ export function ApplicationShell({
         </nav>
         <div className="application-content relative flex min-h-0 min-w-0 flex-col">
           <div className="pointer-events-none absolute inset-x-0 top-3 z-20 mx-auto flex w-full max-w-4xl justify-center px-4 sm:px-6">{notice}</div>
+          {banner}
           <div inert={navigationDisabled || undefined} className={cn("min-h-0 min-w-0 flex-1", activeTab === "workspaces" ? "overflow-hidden" : "overflow-y-auto")}>{children}</div>
         </div>
       </div>
