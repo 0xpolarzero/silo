@@ -431,28 +431,119 @@ Recovery through the inert paths had still written to the previous generation (t
 runtime alias, `.silo-backup-worker.lock`, and for an import that owned a loaded
 snapshot group, that group's load stage), and a journal that owned an export capture
 or an import group failed closed, so the migration could not start while the export
-page that could dismiss it was hidden. An interrupted export or import now settles
-without the runtime and without writing to the previous generation
-(`settle_before_migration`): it waits for a surviving child's lock read-only, removes
-the working files and partial export file it left elsewhere, keeps a finished export
-file, reports an import whose settings were saved as complete, and abandons what only
-the runtime could clean up. The journal records "Export/Import interrupted before the
-upgrade" and that Silo did not clean up the data it had started; the migration
-converts only the sandboxes saved in the settings, so an import that never saved its
-sandbox is never converted; and quarantine leaves a journal that holds a result in
-place, so the export page still shows it after the upgrade. No release can leave a
-journal that needs the runtime: `pending_capture` and `group` were added after the
-0.9.0 tag (commits `3ca76f3e`, `0429b238`) and `backup_controller/recovery.rs` is
-identical in v0.7.0 through v0.9.0, so every journal a released Silo writes already
-settled without it. The change protects development builds and keeps the backup
-exactly as it was. A live check on 2026-10-01 launched the development build in an
-isolated home over a fixture previous generation with a pending import journal that
-owned a snapshot group: the build before the change stopped the migration with "could
-not be recovered", created the worker lock and deleted the load stage inside the
-previous generation; the new build settled the journal, left all 14 entries of the
-previous generation byte-identical, and started the conversion, which then stopped at
-inspecting the fixture's fake database. The fixture has no real sandbox, so this is
-not live migration.
+page that could dismiss it was hidden. An interrupted export or import now settles in
+two steps, and the first never writes to the previous generation:
+
+1. **First launch of the upgrade: what needs no runtime**
+   (`backup_controller/recovery.rs`, `settle_before_migration`). It waits for a
+   surviving child's lock read-only, removes the working files and the partial export
+   file the operation left elsewhere, keeps a finished export file, and reports an
+   import whose settings were saved as complete. When nothing is left for the runtime,
+   the journal records its result ("Export/Import interrupted before the upgrade", or
+   cancelled) and stays in place for the export and import page.
+2. **What only the runtime can remove waits for the converted storage.** An export
+   capture (`pending_capture`), a loaded import group or the sandbox identity of an
+   unfinished import (`group`, `id`) are in the previous generation, so the migration
+   copies them into the converted generation with everything else. Giving them up
+   would waste that space and could make a later import under the same name fail, so
+   the journal is kept, pending, with `awaitingUpgrade` set (written only when set,
+   and cleared when the result is recorded). The marker is what the migration
+   recognises: `wait_for_migration_recovery` and the journal check in `convert_with`
+   no longer wait for such a journal, and `quarantine_previous_backup_state` leaves it
+   where it is when it selects the converted generation. The migration ends in a
+   restart. The next launch finds the migration `complete`, so `recover` runs the
+   ordinary `recover_at_paths` with the paths of `runtime::runtime_paths`, which names
+   the converted generation: it removes what the operation left from that copy and
+   reports as after any relaunch ("Import interrupted", "Export cancelled", "Export
+   complete" when a finished file verifies). The pre-upgrade backup keeps its copy of
+   what was left, untouched, until it is deleted.
+
+   If that cleanup fails, the journal stays and the failed-recovery behaviour applies
+   as for any interrupted operation (relaunch to retry, or dismiss to stop retrying).
+   The migration already completed and is never reopened by it. "Continue" (the clean
+   generation) keeps its previous behaviour: it isolates every unfinished journal,
+   waiting ones included, in the previous folder, and nothing is cleaned there or in
+   the clean generation, since the previous folder then holds the only copy of the
+   sandboxes that were not converted.
+
+   *Paths.* The journal names no path inside the previous generation: it holds names,
+   identities, an import group and an export capture's group and member (the only paths
+   are the export file and its folder, which the user chose). Recovery recomputes every
+   path from them through `runtime::runtime_paths`, and MicroSandbox resolves the
+   snapshot selectors (`group:member`) from its current home, never from a path stored
+   in the database. The converted database does still hold the previous generation's
+   absolute paths, copied unchanged: `snapshot_index.artifact_path`, and the disk path
+   of each sandbox record. Silo selects by group and member, and by sandbox name and
+   identity, never by those paths; MicroSandbox's `remove` deletes the sandbox's own
+   directory below its home and its record, and leaves the disk image at the configured
+   path alone. The tests refuse a runtime command whose storage is not the converted
+   generation.
+
+   *A released import.* Silo 0.9.0's import journaled the new sandbox's identity, claimed
+   `volumes/<name>` with an `.silo-restore-owner` marker, wrote the disk and ran
+   `msb create` over it, and its own recovery ran `msb remove` for it, so a 0.9.0 journal
+   can need the runtime. (`pending_capture` and `group` exist only in development
+   builds, but a released import's identity needs it too.)
+   `discard_released_import` is the same cleanup for the converted storage: it removes
+   the folder only when its marker holds the journaled identity (an empty folder, or
+   one with another owner, is left as it is, and a saved sandbox with the name keeps it)
+   and the runtime's sandbox only when it is Silo's own with that identity
+   (`runtime::cleanup_failed_create`). A released import leaves its sandbox `Created`,
+   which MicroSandbox 0.7.4 refuses to remove: `msb remove` fails with "status is
+   Created" (checked with the bundled 0.7.4, with and without `--force`, on a sandbox it
+   created itself too), and starting it would run guest code over a partial disk. The
+   disk, which holds the space, is removed, the sandbox record stays, and the result
+   says its name stays taken and to import under another name. A sandbox that is
+   `Stopped` (or `Crashed`, by MicroSandbox's rule) is removed whole, with the disk.
+
+   An earlier version of this change reported "Silo did not clean up the data it had
+   started" and gave the cleanup up. That result no longer exists: no journal is
+   abandoned, and nothing else produced the wording.
+3. **An unreadable journal does not hold the migration back.** A
+   `backup-operation.json` that cannot be read, or that another version wrote, can be
+   settled by nothing, and used to refuse the migration with the only way out being
+   "Continue". `convert_with` now renames it to
+   `backup-operation.unreadable-<UTC date>.json` in the app data folder (never reading,
+   changing or deleting it; a numeric suffix keeps an earlier one), after its last
+   refusal and before the copy, and records a result in its place: "Export or import
+   record set aside", "An export or import record couldn't be read and was set aside.
+   If an export or import was running before the upgrade, run it again." Whatever the
+   unknown operation did is copied like any other content. Outside a migration an
+   unreadable journal behaves as before (exports and imports stay unavailable, with the
+   file kept).
+
+A live check on 2026-10-01 launched the development build (`Silo Dev`, `org.silo.dev`,
+synthetic GitHub configuration) in an isolated home (`HOME=/tmp/sl`) over previous
+generations made with the released 0.9.0's `msb` 0.6.17: a saved sandbox `dev`, the
+leftovers of an import that stopped after it saved its identity (the sandbox `copy`
+created with `msb create` over `volumes/copy` with its marker), and the pending journal
+a released Silo writes. Each run converted the sandbox ("Sandbox 1 of 1 converted and
+verified", `complete`) and left all 20 entries of the previous generation byte-identical
+(a manifest of every entry, size and SHA-256 before and after). With the sandbox
+`Created`, as the released import leaves it, the next launch removed `volumes/copy`
+from the converted generation, kept the sandbox record the runtime cannot remove, and
+recorded the "name stays taken" result. With the record `Stopped` (set in the fixture's
+database before the run), the next launch removed the record, its sandbox directory and
+the disk from the converted generation, and recorded "Import interrupted. No sandbox
+was added. Import the file again." although the record named the previous generation's
+disk by absolute path. With a journal of another version, the file was set aside
+byte-identical and the result recorded. The dev build's `msb` is the pinned 0.7.4 with
+the patches, which cannot boot VMs, so nothing started guest code. The released
+import's sandboxes were made with `msb create` over a plain root folder, not restored
+from a snapshot. The interrupted capture and the loaded import group of a development
+build were not made live: no bootable guest image was available to snapshot, so those
+shapes are covered by the unit tests only (a fake runtime and a scripted `msb`). By
+MicroSandbox's source, its snapshot index stores each member's absolute path, so the
+index of a copied home still names the previous generation's artifacts; Silo's cleanup
+selects by group and member, which MicroSandbox resolves under its current home, but
+that was not exercised live. A first run, before a sandbox's state was considered,
+showed that `msb remove` refuses a `Created` sandbox: the recovery failed and kept its
+journal, which led to the handling above. The notice is recorded as the journal's
+result like every other interrupted operation; the export and import page treats a
+result already present when it opens as stale and does not toast it
+(`features/application/components/sandbox-transfer.tsx`), and the pre-upgrade backup
+screen comes first after a migration, so what the user sees was not exercised either.
+This is not a qualification of the migration or of the packaged app.
 
 Outside the app's reach: an editor's saved SSH `ProxyCommand` runs `msb ssh
 serve` with the home it was written for (the migration copied those entries
@@ -527,13 +618,16 @@ Storage lists it with **Show** and **Delete now** until it is gone.
 - **Show** reveals the folder with the same `tauri_plugin_opener::reveal_item_in_dir`
   as exports. The folder holds Linux disk images (`upper.ext4`, `workspace.raw`)
   and a database: copyable, not browsable on macOS.
-- **Quarantined files.** The migration moved the previous export-folder setting
-  into the folder as `before-checkpoints-backup-history.json`, and an export journal
-  that recorded no result or cannot be read as `before-checkpoints-backup-operation.json`,
-  so they are not replayed against the new runtime. A journal that recorded a result
-  (including an interrupted operation settled before the upgrade) is not moved:
-  nothing can resume it, and the export page shows it until the user dismisses it.
-  Nothing reads the moved files back: conversion refuses an unfinished journal, and
+- **Quarantined files.** The migration moves the previous export-folder setting
+  into the folder as `before-checkpoints-backup-history.json`, so it is not replayed
+  against the new runtime. After a conversion it moves no export journal: one that
+  recorded a result stays so the export page shows it until the user dismisses it, one
+  that waits for the upgrade stays for the converted generation's recovery (the backup
+  keeps its copy of what the operation left), and one that cannot be read is set aside
+  in the app data folder as `backup-operation.unreadable-<UTC date>.json`. Only
+  "Continue" moves an unfinished journal into the previous folder (as
+  `before-checkpoints-backup-operation.json`), which is not a backup then. Earlier
+  builds also moved a finished journal there. Nothing reads the moved files back, and
   the history only remembers an export folder and, in older builds, a list of exports
   that no UI showed. The export files themselves are elsewhere and are not touched.
 
