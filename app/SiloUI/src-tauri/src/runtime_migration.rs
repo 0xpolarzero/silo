@@ -717,12 +717,20 @@ fn convert_with(
                 .into(),
         );
     }
-    // An unreadable journal is not waited for, since nothing can settle it. It is set
-    // aside after every refusal below, so a refused migration still changes nothing.
+    // A journal that was read but cannot be used is not waited for, since nothing can
+    // settle it. It is set aside after every refusal below, so a refused migration still
+    // changes nothing. One that could not be read at all is not known to be unusable, so it
+    // is never set aside: the migration waits for a launch that can read it.
     let journal = crate::backup_controller::journal_state(app_data);
     if matches!(journal, crate::backup_controller::JournalState::Pending) {
         return Err(
             "An interrupted backup must finish before sandbox migration. No data was changed."
+                .into(),
+        );
+    }
+    if matches!(journal, crate::backup_controller::JournalState::Unavailable) {
+        return Err(
+            "The saved export or import record could not be read. Relaunch Silo to try again. No data was changed."
                 .into(),
         );
     }

@@ -500,7 +500,8 @@ two steps, and the first never writes to the previous generation:
    started" and gave the cleanup up. That result no longer exists: no journal is
    abandoned, and nothing else produced the wording.
 3. **An unreadable journal does not hold the migration back.** A
-   `backup-operation.json` that cannot be read, or that another version wrote, can be
+   `backup-operation.json` that was read but cannot be used (damaged or empty, not a
+   journal, a field this version does not know), or that another version wrote, can be
    settled by nothing, and used to refuse the migration with the only way out being
    "Continue". `convert_with` now renames it to
    `backup-operation.unreadable-<UTC date>.json` in the app data folder (never reading,
@@ -518,6 +519,17 @@ two steps, and the first never writes to the previous generation:
    place ("If an export or import was running, run it again."; the wording does not
    mention the upgrade). If the rename fails the file stays and exports and imports
    stay unavailable as before.
+
+   Only a journal that was read and is unusable is set aside, on both paths. The kind
+   is a type, not a message: `recovery::try_load` returns `LoadFailure::Unusable` for
+   a file it read but could not use, and `LoadFailure::Io` for any `io::Error` from
+   opening or reading it (permission denied, a failing disk, a folder in its place),
+   and `journal_state` reports the second as `JournalState::Unavailable`. Nothing is
+   known about such a file, so it is never renamed: exports and imports stay
+   unavailable, and `convert_with` refuses ("The saved export or import record could
+   not be read. Relaunch Silo to try again. No data was changed."), without waiting for
+   it. The next launch reads it again. Earlier in this change a folder in place of the
+   journal was set aside by the migration; it is now refused until it is removed.
 4. **The user is shown what the upgrade recorded.** An export and import result present
    when the window opens belongs to an earlier session and is not toasted, so none of
    the results above would have been seen: the screen about the pre-upgrade backup

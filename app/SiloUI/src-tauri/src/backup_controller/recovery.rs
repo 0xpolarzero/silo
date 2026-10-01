@@ -208,21 +208,49 @@ fn write(history: &Path, journal: &Journal) -> Result<(), String> {
         .and_then(|dir| dir.sync_all())
         .map_err(|e| e.to_string())
 }
-pub(super) fn load(history: &Path) -> Result<Option<Journal>, String> {
+/// Why [`try_load`] found no journal to use. The kind decides what may be done with the
+/// file: only one that was read can be set aside (see [`set_aside`]).
+#[derive(Debug)]
+pub(super) enum LoadFailure {
+    /// The file could not be opened or read (an `io::Error`: permission denied, a failing
+    /// disk, a folder in its place). Nothing is known about what it holds, so it is never
+    /// set aside; the failure may pass, and the next launch reads it again.
+    Io(String),
+    /// The file was read but is no journal this version can use: damaged or empty, not a
+    /// journal, with a field it does not know, or written by a version it does not support.
+    /// Nothing can settle it, so it may be set aside.
+    Unusable(String),
+}
+
+impl LoadFailure {
+    pub(super) fn into_message(self) -> String {
+        match self {
+            Self::Io(message) | Self::Unusable(message) => message,
+        }
+    }
+}
+
+/// [`load`], with the reason it failed as a type rather than a message.
+pub(super) fn try_load(history: &Path) -> Result<Option<Journal>, LoadFailure> {
     let bytes = match fs::read(journal_path(history)) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
-            return Err(format!(
+            return Err(LoadFailure::Io(format!(
                 "Silo could not read the interrupted export or import: {e}"
-            ))
+            )))
         }
     };
     let journal: Journal = serde_json::from_slice(&bytes).map_err(|e| {
-        format!("Silo could not read the interrupted export or import. The saved file was preserved: {e}")
+        LoadFailure::Unusable(format!("Silo could not read the interrupted export or import. The saved file was preserved: {e}"))
     })?;
-    validate(&journal)?;
+    validate(&journal).map_err(LoadFailure::Unusable)?;
     Ok(Some(journal))
+}
+/// [`try_load`] with its failure as a message, for tests that only read what was saved.
+#[cfg(test)]
+pub(super) fn load(history: &Path) -> Result<Option<Journal>, String> {
+    try_load(history).map_err(LoadFailure::into_message)
 }
 /// How the export and import journal in `app_data` bears on the storage migration.
 pub(crate) enum JournalState {
@@ -231,24 +259,31 @@ pub(crate) enum JournalState {
     Settled,
     /// An interrupted operation no launch has settled yet.
     Pending,
-    /// It cannot be read, or a version this one does not support wrote it. Nothing can
-    /// settle it, so the migration sets it aside instead of waiting for it.
+    /// It was read but cannot be used, or a version this one does not support wrote it.
+    /// Nothing can settle it, so the migration sets it aside instead of waiting for it.
     Unreadable,
+    /// The file could not be read at all (an I/O error), so nothing is known about it. It
+    /// is neither waited for nor set aside: the migration refuses to start until a launch
+    /// can read it.
+    Unavailable,
 }
 
 pub(crate) fn journal_state(app_data: &Path) -> JournalState {
-    match load(&app_data.join(HISTORY_FILE)) {
+    match try_load(&app_data.join(HISTORY_FILE)) {
         Ok(None) => JournalState::Settled,
         Ok(Some(journal)) if !journal.is_pending() || journal.is_awaiting_upgrade() => {
             JournalState::Settled
         }
         Ok(Some(_)) => JournalState::Pending,
-        Err(_) => JournalState::Unreadable,
+        Err(LoadFailure::Unusable(_)) => JournalState::Unreadable,
+        Err(LoadFailure::Io(_)) => JournalState::Unavailable,
     }
 }
 
 /// Set the journal in `app_data` aside as `backup-operation.unreadable-<UTC date>.json`
-/// and return where it went. The file is only renamed, never read, changed or deleted, so
+/// and return where it went. Only for a journal [`try_load`] read and found unusable
+/// ([`LoadFailure::Unusable`], [`JournalState::Unreadable`]), never for one it could not
+/// read at all. The file is only renamed, never read, changed or deleted, so
 /// it stays for diagnosis. A result in its place tells the user an export or import
 /// record was set aside and may need to be run again; failing to save that result never
 /// fails the setting aside. The result is marked unseen: nothing the user did led to it.
@@ -260,7 +295,7 @@ pub(crate) fn set_aside_unreadable_journal(app_data: &Path) -> Result<PathBuf, S
     .map(|(aside, _)| aside)
 }
 
-/// Outside a migration, set aside a journal that [`load`] refused, as the migration does
+/// Outside a migration, set aside a journal that [`try_load`] found unusable, as the migration does
 /// (see [`set_aside_unreadable_journal`]), so exports and imports are available again
 /// instead of staying unavailable until the file is removed by hand. Returns the notice
 /// that took its place, which is the journal to start with even when saving it failed.
@@ -3452,6 +3487,7 @@ mod tests {
                 JournalState::Settled => "settled",
                 JournalState::Pending => "pending",
                 JournalState::Unreadable => "unreadable",
+                JournalState::Unavailable => "unavailable",
             };
             assert_eq!(found, expected);
         };
@@ -3489,10 +3525,11 @@ mod tests {
             fs::write(&journal, &text).unwrap();
             state("unreadable");
         }
-        // A file that cannot be read at all, such as a folder in its place.
+        // A file that cannot be read at all, such as a folder in its place, is not known to
+        // be unusable: it is not set aside.
         fs::remove_file(&journal).unwrap();
         fs::create_dir(&journal).unwrap();
-        state("unreadable");
+        state("unavailable");
     }
 
     #[test]
@@ -3797,7 +3834,7 @@ mod tests {
     }
 
     #[test]
-    fn a_journal_that_cannot_be_read_is_set_aside_at_startup_with_an_unseen_notice() {
+    fn a_journal_that_cannot_be_used_is_set_aside_at_startup_with_an_unseen_notice() {
         let _test_state = crate::test_support::global_state();
         let cases = [
             ("damaged", "{not json".to_string()),
@@ -3861,6 +3898,83 @@ mod tests {
                 .collect();
             assert_eq!(aside.len(), 1, "{state}: {aside:?}");
             assert_eq!(fs::read_to_string(&aside[0]).unwrap(), text, "{state}");
+        }
+    }
+
+    #[test]
+    fn a_journal_is_unusable_only_when_it_was_read_and_cannot_be_used() {
+        let _test_state = crate::test_support::global_state();
+        let cases = [
+            ("damaged", "{not json".to_string()),
+            ("empty", String::new()),
+            ("not a journal", "[1, 2, 3]".to_string()),
+            ("another version", journal_text(2, None)),
+            (
+                "unknown content",
+                journal_text(1, Some(("unknown", true.into()))),
+            ),
+            (
+                "invalid identity",
+                journal_text(1, None).replace(JOURNAL_ID, "not-an-identity"),
+            ),
+        ];
+        for (state, text) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            let app_data = directory.path();
+            fs::write(app_data.join("backup-operation.json"), &text).unwrap();
+            let history = app_data.join("backup-history.json");
+            // Read, and refused by what it holds: the kind says it may be set aside.
+            assert!(
+                matches!(try_load(&history), Err(LoadFailure::Unusable(_))),
+                "{state}"
+            );
+            assert!(
+                matches!(journal_state(app_data), JournalState::Unreadable),
+                "{state}"
+            );
+            // The message is the same one `load` reports.
+            assert_eq!(
+                load(&history).err().unwrap(),
+                try_load(&history).err().unwrap().into_message(),
+                "{state}"
+            );
+        }
+        // No file is no journal, and a file that could not be read at all (here a folder in
+        // its place) is not known to be unusable.
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let history = app_data.join("backup-history.json");
+        assert!(try_load(&history).unwrap().is_none());
+        fs::create_dir(app_data.join("backup-operation.json")).unwrap();
+        assert!(matches!(try_load(&history), Err(LoadFailure::Io(_))));
+        assert!(matches!(journal_state(app_data), JournalState::Unavailable));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_journal_that_cannot_be_read_is_not_unusable_and_stays_where_it_is() {
+        use std::os::unix::fs::PermissionsExt;
+        let _test_state = crate::test_support::global_state();
+        // Content that would be set aside if it could be read: the kind of failure decides,
+        // not what the file holds.
+        for text in ["{not json".to_string(), journal_text(2, None)] {
+            let directory = tempfile::tempdir().unwrap();
+            let app_data = directory.path();
+            let journal = app_data.join("backup-operation.json");
+            fs::write(&journal, &text).unwrap();
+            fs::set_permissions(&journal, fs::Permissions::from_mode(0o000)).unwrap();
+            let readable = fs::read(&journal).is_ok();
+            let loaded = try_load(&app_data.join("backup-history.json"));
+            let state = journal_state(app_data);
+            fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).unwrap();
+            // The owner can read it anyway (running as root): nothing to check.
+            if readable {
+                return;
+            }
+            assert!(matches!(loaded, Err(LoadFailure::Io(_))));
+            assert!(matches!(state, JournalState::Unavailable));
+            assert_eq!(fs::read_to_string(&journal).unwrap(), text);
+            assert_eq!(fs::read_dir(app_data).unwrap().count(), 1);
         }
     }
 

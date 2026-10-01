@@ -837,6 +837,92 @@ fn an_unreadable_journal_is_set_aside_and_the_migration_proceeds() {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn a_journal_that_cannot_be_read_refuses_the_migration_and_is_never_set_aside() {
+    use std::os::unix::fs::PermissionsExt;
+    let _test_state = crate::test_support::global_state();
+    let (dir, paths) = previous_generation(Leftovers::default());
+    let app_data = dir.path();
+    let old = app_data.join("runtime");
+    let journal = app_data.join("backup-operation.json");
+    // Content that is set aside when it can be read: only the failure to read it differs.
+    let bytes = b"{\"version\":1,\"id\":".to_vec();
+    fs::write(&journal, &bytes).unwrap();
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o000)).unwrap();
+    // The owner can read it anyway (running as root): nothing to check.
+    if fs::read(&journal).is_ok() {
+        fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).unwrap();
+        return;
+    }
+    let runner = StagedRuntime {
+        old_runtime: old.clone(),
+        calls: Mutex::new(Vec::new()),
+    };
+    let before = tree(&old);
+    let aside = || {
+        fs::read_dir(app_data)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("backup-operation.unreadable-"))
+            .count()
+    };
+
+    // Nothing is known about it, so the migration neither waits for it nor sets it aside:
+    // it refuses, changes nothing, and the next launch tries again.
+    assert!(matches!(
+        crate::backup_controller::journal_state(app_data),
+        JournalState::Unavailable
+    ));
+    let refusal = convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap_err();
+    assert!(
+        refusal.contains("Relaunch Silo to try again") && refusal.contains("No data was changed"),
+        "{refusal}"
+    );
+    assert!(runner.calls.lock().unwrap().is_empty());
+    assert!(!app_data.join(CONVERTED).exists());
+    assert_eq!(aside(), 0);
+    assert_eq!(tree(&old), before);
+    fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        fs::read(&journal).unwrap(),
+        bytes,
+        "the file was not touched"
+    );
+
+    // Once it can be read, it is a damaged record like any other: set aside, and the
+    // migration proceeds.
+    convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap();
+    assert_eq!(aside(), 1);
+    assert_eq!(
+        journal_file(app_data)["terminal"]["title"],
+        "Export or import record set aside"
+    );
+}
+
+#[test]
+fn a_folder_in_place_of_the_journal_refuses_the_migration_and_is_never_set_aside() {
+    let _test_state = crate::test_support::global_state();
+    let (dir, paths) = previous_generation(Leftovers::default());
+    let app_data = dir.path();
+    let old = app_data.join("runtime");
+    let journal = app_data.join("backup-operation.json");
+    fs::create_dir(&journal).unwrap();
+    let runner = StagedRuntime {
+        old_runtime: old.clone(),
+        calls: Mutex::new(Vec::new()),
+    };
+    let refusal = convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap_err();
+    assert!(refusal.contains("Relaunch Silo to try again"), "{refusal}");
+    assert!(journal.is_dir());
+    assert!(fs::read_dir(app_data).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with("backup-operation.unreadable-")));
+    assert!(!app_data.join(CONVERTED).exists());
+}
+
 #[test]
 fn a_journal_with_a_result_stays_for_the_export_page_but_pending_progress_is_isolated() {
     let dir = tempfile::tempdir().unwrap();

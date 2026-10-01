@@ -192,21 +192,26 @@ struct Saved {
     journal_error: Option<String>,
 }
 
-/// `set_aside` is false while the storage migration is unfinished: it sets an unreadable
+/// `set_aside` is false while the storage migration is unfinished: it sets an unusable
 /// journal aside itself, after its last refusal (see `runtime_migration::convert_with`),
-/// and until then the file stays where it is. Otherwise nothing could ever settle it, so
-/// it is set aside here, and the notice that took its place is the saved operation.
+/// and until then the file stays where it is. Otherwise nothing could ever settle a
+/// journal that was read but cannot be used, so it is set aside here, and the notice that
+/// took its place is the saved operation. A file that could not be read at all (an I/O
+/// error) is never set aside: exports and imports stay unavailable, and the next launch
+/// reads it again.
 fn load_saved(history_path: &Path, set_aside: bool) -> Saved {
-    let (journal, journal_error) = match recovery::load(history_path) {
+    let (journal, journal_error) = match recovery::try_load(history_path) {
         Ok(journal) => (journal, None),
-        Err(error) if set_aside => match recovery::set_aside_at_startup(history_path) {
-            Ok(notice) => (Some(notice), None),
-            Err(failure) => {
-                eprintln!("{failure} Exports and imports stay unavailable.");
-                (None, Some(error))
+        Err(recovery::LoadFailure::Unusable(error)) if set_aside => {
+            match recovery::set_aside_at_startup(history_path) {
+                Ok(notice) => (Some(notice), None),
+                Err(failure) => {
+                    eprintln!("{failure} Exports and imports stay unavailable.");
+                    (None, Some(error))
+                }
             }
-        },
-        Err(error) => (None, Some(error)),
+        }
+        Err(failure) => (None, Some(failure.into_message())),
     };
     Saved {
         destination: load_destination(history_path),
@@ -2802,6 +2807,76 @@ mod tests {
                 "{state}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_saved_operation_that_cannot_be_read_is_not_set_aside_and_is_read_again_next_launch() {
+        use std::os::unix::fs::PermissionsExt;
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let path = app_data.join("backup-history.json");
+        let journal = app_data.join("backup-operation.json");
+        // Content that is set aside when it is read: only the failure to read it differs.
+        fs::write(&journal, b"{not json").unwrap();
+        fs::set_permissions(&journal, fs::Permissions::from_mode(0o000)).unwrap();
+        let readable = fs::read(&journal).is_ok();
+        let loaded = load_saved(&path, true);
+        fs::set_permissions(&journal, fs::Permissions::from_mode(0o600)).unwrap();
+        // The owner can read it anyway (running as root): nothing to check.
+        if readable {
+            return;
+        }
+        // Exports and imports stay unavailable, and the file is where it was, unchanged.
+        assert!(loaded.journal.is_none());
+        let error = loaded
+            .journal_error
+            .clone()
+            .expect("the failure is reported");
+        assert!(error.contains("could not read"), "{error}");
+        assert_eq!(fs::read(&journal).unwrap(), b"{not json");
+        assert_eq!(fs::read_dir(app_data).unwrap().count(), 1);
+        let controller = history_controller(path.clone());
+        controller.view.lock().unwrap().journal_error = loaded.journal_error;
+        assert_eq!(
+            serde_json::to_value(backup_state(&controller).unwrap()).unwrap()["availability"],
+            "unavailable"
+        );
+        assert!(recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None)
+        )
+        .is_err());
+
+        // The next launch reads it again, and a damaged record is then set aside.
+        let retried = load_saved(&path, true);
+        assert!(retried.journal_error.is_none());
+        assert!(retried.journal.is_some_and(|notice| !notice.is_pending()));
+        let aside: Vec<_> = fs::read_dir(app_data)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.to_string_lossy()
+                    .contains("backup-operation.unreadable-")
+            })
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(fs::read(&aside[0]).unwrap(), b"{not json");
+    }
+
+    #[test]
+    fn a_folder_in_place_of_the_saved_operation_is_not_set_aside() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let journal = directory.path().join("backup-operation.json");
+        fs::create_dir(&journal).unwrap();
+        let loaded = load_saved(&path, true);
+        assert!(loaded.journal.is_none());
+        assert!(loaded.journal_error.is_some());
+        assert!(journal.is_dir());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
     #[test]
