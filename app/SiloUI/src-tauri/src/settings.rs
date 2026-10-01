@@ -247,7 +247,7 @@ fn valid_setting(key: &str, value: &Value) -> Option<bool> {
         "theme" => matches!(value.as_str(), Some("system" | "light" | "dark")),
         "launchAtLogin"
         | "onboardingComplete"
-        | "previewNoticeDismissed"
+        | "alphaNoticeDismissed"
         | "startWorkspacesAtLaunch"
         | "reduceMotion"
         | "notificationsEnabled"
@@ -1308,7 +1308,7 @@ mod tests {
             "terminal": "iTerm", "editor": "Cursor", "browser": "Firefox",
             "reduceMotion": true, "notificationsEnabled": false,
             "notifyHealth": true, "notifyActions": false, "notifyBackup": true,
-            "previewNoticeDismissed": true
+            "alphaNoticeDismissed": true
         });
         let mut store = SettingsStore::load(Some(path.clone()));
         assert!(store
