@@ -1,14 +1,21 @@
 //! An export or import the previous Silo left unfinished must not hold the storage
-//! migration back. The first launch of the upgrade settles it without the runtime
-//! and without writing to the previous generation, a pre-upgrade backup; the
-//! migration then proceeds, converts only the sandboxes saved in the settings, and
-//! leaves the recorded result for the export and import page.
+//! migration back, and must not leave its data behind in the converted storage.
+//!
+//! The first launch of the upgrade settles it without the runtime and without writing to
+//! the previous generation, a pre-upgrade backup. What only the runtime can remove stays
+//! owned by the journal, which waits for the upgrade; the migration copies it with
+//! everything else and converts only the sandboxes saved in the settings. The launch after
+//! the migration runs the ordinary recovery against the converted generation, which
+//! removes the copy and reports the result. The previous generation never changes.
 use super::*;
+use crate::backup_controller::{FirstLaunch, JournalState};
 use std::collections::BTreeMap;
 
 const VM_ID: &str = "fcfbc268-ae3f-40ff-8dfa-8af78911e52f";
 const IMPORT_ID: &str = "0f6d5c1a-7a63-4b0a-9a36-4a6f1d3f6e11";
 const GROUP: &str = "silo-import-0123456789abcdef0123456789abcdef";
+const SUFFIX: &str = "0123456789abcdef0123456789abcdef";
+const MEMBER: &str = "silo-backup-0-1-2";
 
 fn one_vm(name: &str, id: &str) -> runtime::MachineConfigurationRequest {
     serde_json::from_value(serde_json::json!({
@@ -18,9 +25,28 @@ fn one_vm(name: &str, id: &str) -> runtime::MachineConfigurationRequest {
     .unwrap()
 }
 
-/// A previous generation with one saved sandbox and the leftovers of an import that
-/// never saved its own, plus the staged paths the converter would use.
-fn previous_generation() -> (tempfile::TempDir, runtime::RuntimePaths) {
+/// What the previous Silo's interrupted operation left in the previous generation.
+#[derive(Clone, Copy, Default)]
+struct Leftovers {
+    /// The disk folder a released import claimed for `copy`, and the runtime's sandbox
+    /// record created over it, in this state. A released import leaves it `Created`.
+    released_import: Option<&'static str>,
+    /// The native snapshot load stages of the import group.
+    load_stages: bool,
+    /// The members of an export capture in the runtime's snapshot index.
+    capture: bool,
+}
+
+/// The runtime's database of the fixture: the sandbox records and snapshot members that
+/// `msb list` and `msb snapshot list` report. A file in `microsandbox/db`, so a copy of
+/// the generation holds a copy of the database.
+fn database(storage_home: &Path) -> PathBuf {
+    storage_home.join("db/fake-msb.json")
+}
+
+/// A previous generation with one saved sandbox and `leftovers`, plus the staged paths
+/// the converter would use.
+fn previous_generation(leftovers: Leftovers) -> (tempfile::TempDir, runtime::RuntimePaths) {
     // The runtime alias must keep Unix socket paths short, so use /tmp, not TMPDIR.
     let dir = tempfile::Builder::new()
         .prefix("si")
@@ -31,13 +57,34 @@ fn previous_generation() -> (tempfile::TempDir, runtime::RuntimePaths) {
     fs::create_dir_all(old.join("volumes/dev")).unwrap();
     runtime::write_metadata(&old.join("machines.json"), &one_vm("dev", VM_ID)).unwrap();
     fs::write(old.join("volumes/dev/workspace.raw"), b"workspace").unwrap();
-    fs::create_dir_all(old.join("volumes/copy")).unwrap();
-    fs::write(old.join("volumes/copy/workspace.raw"), b"partial disk").unwrap();
     fs::create_dir_all(old.join("microsandbox/db")).unwrap();
     fs::write(old.join("microsandbox/db/msb.db"), b"released database").unwrap();
-    let stage =
-        old.join("microsandbox/snapshots/.msb-snapshot-load-0123456789abcdef0123456789abcdef");
-    fs::create_dir_all(stage.join("partial")).unwrap();
+    let mut sandboxes = vec![serde_json::json!(["dev", VM_ID, "Stopped"])];
+    let mut snapshots = Vec::new();
+    if let Some(status) = leftovers.released_import {
+        fs::create_dir_all(old.join("volumes/copy")).unwrap();
+        fs::write(old.join("volumes/copy/.silo-restore-owner"), IMPORT_ID).unwrap();
+        fs::write(old.join("volumes/copy/workspace.raw"), b"partial disk").unwrap();
+        sandboxes.push(serde_json::json!(["copy", IMPORT_ID, status]));
+    }
+    if leftovers.load_stages {
+        for stage in [
+            format!("microsandbox/snapshots/.msb-snapshot-load-{SUFFIX}"),
+            format!("microsandbox/cache/tmp/snapshot-load-{SUFFIX}"),
+        ] {
+            fs::create_dir_all(old.join(&stage).join("partial")).unwrap();
+            fs::write(old.join(&stage).join("partial/data"), b"half a load").unwrap();
+        }
+    }
+    if leftovers.capture {
+        snapshots.push(serde_json::json!(["dev", MEMBER]));
+        snapshots.push(serde_json::json!(["other", "silo-backup-0-3-4"]));
+    }
+    fs::write(
+        database(&old.join("microsandbox")),
+        serde_json::json!({"sandboxes": sandboxes, "snapshots": snapshots}).to_string(),
+    )
+    .unwrap();
     let storage = app_data.join(CONVERTED);
     let storage_home = storage.join("microsandbox");
     let paths = runtime::RuntimePaths {
@@ -66,6 +113,12 @@ fn inert_paths(app_data: &Path) -> runtime::RuntimePaths {
         metadata: old.join("machines.json"),
         volumes: old.join("volumes"),
     })
+}
+
+/// The alias through which the runtime reaches the previous generation. Nothing may
+/// create it before the migration finished, and nothing after names it either.
+fn previous_alias(app_data: &Path) -> PathBuf {
+    runtime::runtime_home_alias(app_data, &app_data.join("runtime/microsandbox"))
 }
 
 /// Every entry under `root` with its bytes, link target or a directory marker.
@@ -119,8 +172,117 @@ impl runtime::RuntimeRunner for StagedRuntime {
     }
 }
 
+/// The runtime the launch after the migration uses: its own database file inside the
+/// storage it is given, which it refuses to be anything but the converted generation.
+struct ConvertedRuntime {
+    converted: PathBuf,
+    calls: Mutex<Vec<String>>,
+    fail_remove: Mutex<bool>,
+}
+impl ConvertedRuntime {
+    fn new(app_data: &Path) -> Self {
+        Self {
+            converted: app_data.join(CONVERTED),
+            calls: Mutex::new(Vec::new()),
+            fail_remove: Mutex::new(false),
+        }
+    }
+    fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+impl runtime::RuntimeRunner for ConvertedRuntime {
+    fn run(
+        &self,
+        paths: &runtime::RuntimePaths,
+        args: &[String],
+        _: Duration,
+    ) -> Result<runtime::CommandOutput, runtime::RuntimeError> {
+        let storage_home = paths.storage_home.as_deref().unwrap();
+        assert_eq!(
+            storage_home,
+            self.converted.join("microsandbox"),
+            "the runtime must never run against the previous generation: {args:?}"
+        );
+        self.calls.lock().unwrap().push(args.join(" "));
+        let file = database(storage_home);
+        let mut db: serde_json::Value = serde_json::from_slice(&fs::read(&file).unwrap()).unwrap();
+        let stdout = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+            ["list", "--format", "json"] => db["sandboxes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| serde_json::json!({"name": row[0]}))
+                .collect::<Vec<_>>()
+                .into(),
+            ["inspect", name, "--format", "json"] => {
+                let row = db["sandboxes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row[0] == *name)
+                    .expect("only a sandbox that is listed is inspected");
+                serde_json::json!({"name": name, "status": row[2], "config": {"labels": {"silo.managed": "true", "silo.machine-id": row[1]}}})
+            }
+            ["remove", "--force", "--quiet", name] => {
+                let row = db["sandboxes"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|row| row[0] == *name)
+                    .expect("only a sandbox that is listed is removed");
+                // MicroSandbox 0.7.4 removes only a sandbox that is Stopped or Crashed.
+                if row[2] == "Created" {
+                    return Err(runtime::RuntimeError::Failed {
+                        operation: "Removing the sandbox".into(),
+                        exit_code: Some(1),
+                        detail: format!("sandbox still running: cannot remove sandbox {name:?}: status is Created"),
+                    });
+                }
+                if *self.fail_remove.lock().unwrap() {
+                    return Err(runtime::RuntimeError::Invalid(
+                        "test removal refused".into(),
+                    ));
+                }
+                db["sandboxes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|row| row[0] != *name);
+                fs::write(&file, db.to_string()).unwrap();
+                serde_json::Value::Null
+            }
+            ["snapshot", "list", "--format", "json"] => db["snapshots"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .enumerate()
+                .map(|(index, row)| serde_json::json!({"snapshot_id": format!("snap_{index:032x}"), "group": row[0], "name": row[1]}))
+                .collect::<Vec<_>>()
+                .into(),
+            ["snapshot", "head", _, "--format", "json"] => serde_json::json!({"head": null}),
+            ["snapshot", "remove", selector, "--quiet"] => {
+                db["snapshots"]
+                    .as_array_mut()
+                    .unwrap()
+                    .retain(|row| format!("{}:{}", row[0].as_str().unwrap(), row[1].as_str().unwrap()) != *selector);
+                fs::write(&file, db.to_string()).unwrap();
+                serde_json::Value::Null
+            }
+            other => panic!("unexpected runtime command: {other:?}"),
+        };
+        Ok(runtime::CommandOutput {
+            stdout: if stdout.is_null() {
+                String::new()
+            } else {
+                stdout.to_string()
+            },
+            stderr: String::new(),
+        })
+    }
+}
+
 /// The journal a Silo build writes while an operation is unfinished.
-fn pending_journal(app_data: &Path, request: serde_json::Value) {
+fn pending_journal(app_data: &Path, request: serde_json::Value, cancelled: bool) {
     let archive = app_data.join("exports/dev.silo-backup");
     let journal = serde_json::json!({
         "version": 1,
@@ -134,65 +296,181 @@ fn pending_journal(app_data: &Path, request: serde_json::Value) {
             "sandboxes": ["dev"],
         },
         "request": request,
-        "cancelled": false,
+        "cancelled": cancelled,
         "terminal": null,
     });
     fs::write(app_data.join("backup-operation.json"), journal.to_string()).unwrap();
 }
 
+fn journal_file(app_data: &Path) -> serde_json::Value {
+    serde_json::from_slice(&fs::read(app_data.join("backup-operation.json")).unwrap()).unwrap()
+}
+
+/// Every call the backup service's `msb` received, with the runtime home it ran with.
+fn script_calls(scripts: &Path) -> Vec<String> {
+    fs::read_to_string(scripts.join("calls"))
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+struct Shape {
+    name: &'static str,
+    request: serde_json::Value,
+    cancelled: bool,
+    leftovers: Leftovers,
+    outcome: &'static str,
+    title: &'static str,
+    detail: String,
+}
+
+fn shapes() -> Vec<Shape> {
+    let capture = serde_json::json!({"workspaceId": VM_ID, "group": "dev", "member": MEMBER});
+    let released = Leftovers {
+        released_import: Some("Created"),
+        ..Leftovers::default()
+    };
+    let stopped = Leftovers {
+        released_import: Some("Stopped"),
+        ..Leftovers::default()
+    };
+    let taken = " Silo removed its disk but not its sandbox record, which this runtime cannot remove while the sandbox has never started, so the name copy stays taken.";
+    let stages = Leftovers {
+        load_stages: true,
+        ..Leftovers::default()
+    };
+    let capturing = Leftovers {
+        capture: true,
+        ..Leftovers::default()
+    };
+    vec![
+        Shape {
+            name: "import by the released 0.9.0 that wrote its disk",
+            request: serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":IMPORT_ID}),
+            cancelled: false,
+            leftovers: released,
+            outcome: "failed",
+            title: "Import interrupted",
+            detail: format!(
+                "No sandbox was added.{taken} Import the file again under another name."
+            ),
+        },
+        Shape {
+            name: "cancelled import by the released 0.9.0 that wrote its disk",
+            request: serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":IMPORT_ID}),
+            cancelled: true,
+            leftovers: released,
+            outcome: "cancelled",
+            title: "Import cancelled",
+            detail: format!("No sandbox was added.{taken}"),
+        },
+        Shape {
+            name: "import by a released Silo whose sandbox the runtime can remove",
+            request: serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":IMPORT_ID}),
+            cancelled: false,
+            leftovers: stopped,
+            outcome: "failed",
+            title: "Import interrupted",
+            detail: "No sandbox was added. Import the file again.".into(),
+        },
+        Shape {
+            name: "import of a development build that loaded a snapshot group",
+            request: serde_json::json!({"kind":"restore","name":"copy","source":"dev","group":GROUP}),
+            cancelled: false,
+            leftovers: stages,
+            outcome: "failed",
+            title: "Import interrupted",
+            detail: "No sandbox was added. Import the file again.".into(),
+        },
+        Shape {
+            name: "import of a development build that journaled its identity and group",
+            request: serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":IMPORT_ID,"group":GROUP}),
+            cancelled: false,
+            leftovers: stages,
+            outcome: "failed",
+            title: "Import interrupted",
+            detail: "No sandbox was added. Import the file again.".into(),
+        },
+        Shape {
+            name: "cancelled import of a development build that journaled its identity and group",
+            request: serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":IMPORT_ID,"group":GROUP}),
+            cancelled: true,
+            leftovers: stages,
+            outcome: "cancelled",
+            title: "Import cancelled",
+            detail: "No sandbox was added.".into(),
+        },
+        Shape {
+            name: "export of a development build in the middle of a capture",
+            request: serde_json::json!({"kind":"backup","names":["dev"],"machines":[],"running":[],"pending_capture":capture}),
+            cancelled: false,
+            leftovers: capturing,
+            outcome: "failed",
+            title: "Export interrupted",
+            detail: "No export file was saved. Export the sandbox again.".into(),
+        },
+        Shape {
+            name: "cancelled export of a development build in the middle of a capture",
+            request: serde_json::json!({"kind":"backup","names":["dev"],"machines":[],"running":[],"pending_capture":capture}),
+            cancelled: true,
+            leftovers: capturing,
+            outcome: "cancelled",
+            title: "Export cancelled",
+            detail: "No export file was saved.".into(),
+        },
+    ]
+}
+
 #[test]
-fn an_unfinished_operation_no_longer_blocks_the_conversion_and_is_never_converted() {
-    let cases = [
-        (
-            "import by the released 0.9.0 that wrote its disk",
-            serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":IMPORT_ID}),
-            "Import interrupted before the upgrade",
-            "No sandbox was added. Silo did not clean up the data it had started. Import the file again, under another name if Silo says the name is taken.",
-        ),
-        (
-            "import of a development build that loaded a snapshot group",
-            serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":IMPORT_ID,"group":GROUP}),
-            "Import interrupted before the upgrade",
-            "No sandbox was added. Silo did not clean up the data it had started. Import the file again, under another name if Silo says the name is taken.",
-        ),
-        (
-            "export of a development build in the middle of a capture",
-            serde_json::json!({"kind":"backup","names":["dev"],"machines":[],"running":[],"pending_capture":{"workspaceId":VM_ID,"group":"dev","member":"silo-backup-0-1-2"}}),
-            "Export interrupted before the upgrade",
-            "No export file was saved. Silo did not clean up the data it had started. Export the sandbox again.",
-        ),
-    ];
-    for (state, request, title, detail) in cases {
-        let (dir, paths) = previous_generation();
+fn what_only_the_runtime_can_remove_is_cleaned_from_the_converted_generation_after_the_migration() {
+    let _test_state = crate::test_support::global_state();
+    for shape in shapes() {
+        let state = shape.name;
+        let (dir, paths) = previous_generation(shape.leftovers);
         let app_data = dir.path();
         let old = app_data.join("runtime");
-        pending_journal(app_data, request);
+        pending_journal(app_data, shape.request.clone(), shape.cancelled);
         let runner = StagedRuntime {
             old_runtime: old.clone(),
             calls: Mutex::new(Vec::new()),
         };
-        // The safety net: a journal still pending refuses the conversion.
+        // The safety net: a journal nothing settled yet still refuses the conversion.
         let refusal = convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap_err();
         assert!(refusal.contains("interrupted backup"), "{state}: {refusal}");
         assert!(runner.calls.lock().unwrap().is_empty(), "{state}");
         let before = tree(&old);
 
-        // First launch of the upgrade: recovery settles it without the runtime.
-        let result = crate::backup_controller::settle_journal_before_migration(
+        // First launch of the upgrade: everything that needs no runtime is settled; the
+        // rest is not given up, and nothing is written to the previous generation.
+        let launch = crate::backup_controller::settle_journal_before_migration(
             app_data,
             &inert_paths(app_data),
-        )
-        .expect("the journal is pending");
-        assert_eq!(result["outcome"], "failed", "{state}");
-        assert_eq!(result["title"], title, "{state}");
-        assert_eq!(result["detail"], detail, "{state}");
+        );
+        assert!(matches!(launch, FirstLaunch::AwaitingUpgrade), "{state}");
         assert_eq!(
             tree(&old),
             before,
-            "{state}: recovery left the backup as it was"
+            "{state}: settling left the backup as it was"
         );
+        assert!(!previous_alias(app_data).exists(), "{state}");
+        let waiting = journal_file(app_data);
+        assert!(waiting["terminal"].is_null(), "{state}");
+        assert_eq!(waiting["awaitingUpgrade"], true, "{state}");
+        // Everything the journal recorded is still there, so recovery owns the cleanup.
+        for (field, value) in shape.request.as_object().unwrap() {
+            assert_eq!(
+                waiting["request"][field.as_str()],
+                *value,
+                "{state}: {field} is kept"
+            );
+        }
+        assert!(matches!(
+            crate::backup_controller::journal_state(app_data),
+            JournalState::Settled
+        ));
 
-        // The migration now proceeds, and only the saved sandbox is converted.
+        // The migration proceeds and converts only the sandbox saved in the settings.
         convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap();
         assert_eq!(
             *runner.calls.lock().unwrap(),
@@ -203,31 +481,356 @@ fn an_unfinished_operation_no_longer_blocks_the_conversion_and_is_never_converte
             ],
             "{state}"
         );
-        let converted =
-            runtime::read_metadata(&app_data.join(CONVERTED).join("machines.json")).unwrap();
-        assert_eq!(converted.machines.len(), 1, "{state}");
-        assert_eq!(converted.machines[0].name(), "dev", "{state}");
+        let converted = app_data.join(CONVERTED);
+        let metadata = runtime::read_metadata(&converted.join("machines.json")).unwrap();
+        assert_eq!(metadata.machines.len(), 1, "{state}");
         assert_eq!(
             selected_runtime_storage(app_data).unwrap(),
-            app_data.join(CONVERTED),
+            converted,
             "{state}"
         );
-        // The previous generation is byte-identical after the whole migration, and the
-        // result stays for the export and import page to show after the upgrade.
+        assert_eq!(tree(&old), before, "{state}: the backup is an exact copy");
+        // The journal is not quarantined: the launch that follows finishes it.
+        assert_eq!(journal_file(app_data), waiting, "{state}");
+        assert!(!old
+            .join("before-checkpoints-backup-operation.json")
+            .exists());
+        // The converted generation holds a copy of everything the operation left.
+        if shape.leftovers.released_import.is_some() {
+            assert!(
+                converted.join("volumes/copy/workspace.raw").exists(),
+                "{state}"
+            );
+        }
+        if shape.leftovers.load_stages {
+            assert!(
+                converted
+                    .join(format!(
+                        "microsandbox/snapshots/.msb-snapshot-load-{SUFFIX}/partial/data"
+                    ))
+                    .exists(),
+                "{state}"
+            );
+        }
+
+        // Launch after the migration: the ordinary recovery, against the converted
+        // generation. The previous process crashed or quit in between, so nothing but the
+        // journal and the files carries over.
+        let runtime = ConvertedRuntime::new(app_data);
+        let scripts = app_data.join("scripts");
+        let result = crate::backup_controller::recover_journal_after_migration(
+            app_data, &scripts, &paths, &runtime, GROUP,
+        )
+        .expect("the journal is still there")
+        .unwrap();
+        assert_eq!(result["outcome"], shape.outcome, "{state}");
+        assert_eq!(result["title"], shape.title, "{state}");
+        assert_eq!(result["detail"], shape.detail, "{state}");
+        let reported = journal_file(app_data);
+        assert_eq!(reported["terminal"]["title"], shape.title, "{state}");
+        assert!(reported.get("awaitingUpgrade").is_none(), "{state}");
+        assert!(matches!(
+            crate::backup_controller::journal_state(app_data),
+            JournalState::Settled
+        ));
+
+        // What the operation left is gone from the converted generation...
+        let db: serde_json::Value =
+            serde_json::from_slice(&fs::read(database(&converted.join("microsandbox"))).unwrap())
+                .unwrap();
+        let sandboxes: Vec<_> = db["sandboxes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row[0].as_str().unwrap().to_owned())
+            .collect();
+        if let Some(status) = shape.leftovers.released_import {
+            // The disk is gone either way. The runtime removes the sandbox's record when it
+            // is Stopped; a sandbox that never started stays, and the result says so.
+            assert!(!converted.join("volumes/copy").exists(), "{state}");
+            let mut calls = vec![
+                "list --format json",
+                "inspect copy --format json",
+                "remove --force --quiet copy",
+            ];
+            if status == "Created" {
+                assert_eq!(sandboxes, ["dev", "copy"], "{state}: the record stays");
+                calls.push("inspect copy --format json");
+            } else {
+                assert_eq!(sandboxes, ["dev"], "{state}: the orphan sandbox record");
+            }
+            assert_eq!(runtime.calls(), calls, "{state}");
+        } else {
+            assert_eq!(sandboxes, ["dev"], "{state}");
+        }
+        if shape.leftovers.load_stages {
+            for stage in [
+                format!("microsandbox/snapshots/.msb-snapshot-load-{SUFFIX}"),
+                format!("microsandbox/cache/tmp/snapshot-load-{SUFFIX}"),
+            ] {
+                assert!(!converted.join(&stage).exists(), "{state}: {stage}");
+            }
+            // The load's snapshot group was removed child first, root last, and every
+            // command ran against the converted generation's runtime home.
+            let calls = script_calls(&scripts);
+            assert_eq!(
+                calls,
+                [
+                    format!(
+                        "{home} snapshot list --format json",
+                        home = paths.home.display()
+                    ),
+                    format!(
+                        "{home} snapshot head {GROUP}:imported-parent",
+                        home = paths.home.display()
+                    ),
+                    format!(
+                        "{home} snapshot remove --quiet {GROUP}:imported-member",
+                        home = paths.home.display()
+                    ),
+                    format!(
+                        "{home} snapshot remove --quiet {GROUP}:imported-parent",
+                        home = paths.home.display()
+                    ),
+                ],
+                "{state}"
+            );
+        }
+        if shape.leftovers.capture {
+            assert_eq!(
+                db["snapshots"],
+                serde_json::json!([["other", "silo-backup-0-3-4"]]),
+                "{state}: only the journaled capture member was removed"
+            );
+        }
+        // ...and the previous generation is still byte-identical, never run against.
         assert_eq!(
             tree(&old),
             before,
             "{state}: the pre-upgrade backup is an exact copy"
         );
-        let journal: serde_json::Value =
-            serde_json::from_slice(&fs::read(app_data.join("backup-operation.json")).unwrap())
-                .unwrap();
-        assert_eq!(journal["terminal"]["title"], title, "{state}");
-        assert!(
-            !old.join("before-checkpoints-backup-operation.json")
-                .exists(),
+        assert!(!previous_alias(app_data).exists(), "{state}");
+        assert_eq!(
+            fs::read_link(&paths.home).unwrap(),
+            converted.join("microsandbox"),
+            "{state}: the runtime home is the converted generation"
+        );
+    }
+}
+
+#[test]
+fn only_what_the_journal_owns_is_cleaned_from_the_converted_generation() {
+    let _test_state = crate::test_support::global_state();
+    // A development build's import loaded a group. An earlier released import also left a
+    // disk folder and a sandbox record named `copy`: they are not this journal's.
+    let (dir, paths) = previous_generation(Leftovers {
+        released_import: Some("Created"),
+        load_stages: true,
+        capture: false,
+    });
+    let app_data = dir.path();
+    let old = app_data.join("runtime");
+    pending_journal(
+        app_data,
+        serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":IMPORT_ID,"group":GROUP}),
+        false,
+    );
+    let runner = StagedRuntime {
+        old_runtime: old.clone(),
+        calls: Mutex::new(Vec::new()),
+    };
+    let before = tree(&old);
+    assert!(matches!(
+        crate::backup_controller::settle_journal_before_migration(app_data, &inert_paths(app_data)),
+        FirstLaunch::AwaitingUpgrade
+    ));
+    convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap();
+    let runtime = ConvertedRuntime::new(app_data);
+    crate::backup_controller::recover_journal_after_migration(
+        app_data,
+        &app_data.join("scripts"),
+        &paths,
+        &runtime,
+        GROUP,
+    )
+    .unwrap()
+    .unwrap();
+    let converted = app_data.join(CONVERTED);
+    assert!(converted.join("volumes/copy/workspace.raw").exists());
+    assert!(runtime.calls().is_empty(), "no sandbox record was touched");
+    assert!(!converted
+        .join(format!(
+            "microsandbox/snapshots/.msb-snapshot-load-{SUFFIX}"
+        ))
+        .exists());
+    assert_eq!(tree(&old), before);
+}
+
+#[test]
+fn a_failed_cleanup_after_the_migration_keeps_the_journal_and_breaks_nothing() {
+    let _test_state = crate::test_support::global_state();
+    let (dir, paths) = previous_generation(Leftovers {
+        released_import: Some("Stopped"),
+        ..Leftovers::default()
+    });
+    let app_data = dir.path();
+    let old = app_data.join("runtime");
+    pending_journal(
+        app_data,
+        serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":IMPORT_ID}),
+        false,
+    );
+    let runner = StagedRuntime {
+        old_runtime: old.clone(),
+        calls: Mutex::new(Vec::new()),
+    };
+    let before = tree(&old);
+    assert!(matches!(
+        crate::backup_controller::settle_journal_before_migration(app_data, &inert_paths(app_data)),
+        FirstLaunch::AwaitingUpgrade
+    ));
+    convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap();
+    // The conversion verified every sandbox before it selected the generation.
+    let mut state = fresh("running", 1);
+    state.migrated_count = 1;
+    write(&app_data.join(FILE), &state).unwrap();
+    let waiting = journal_file(app_data);
+
+    // The cleanup fails: the removal of the orphan sandbox is refused.
+    let runtime = ConvertedRuntime::new(app_data);
+    *runtime.fail_remove.lock().unwrap() = true;
+    let scripts = app_data.join("scripts");
+    let error = crate::backup_controller::recover_journal_after_migration(
+        app_data, &scripts, &paths, &runtime, GROUP,
+    )
+    .unwrap()
+    .unwrap_err();
+    assert!(error.contains("test removal refused"), "{error}");
+    // The journal is kept as it was, still owning the cleanup, and nothing was removed.
+    assert_eq!(journal_file(app_data), waiting);
+    assert!(app_data
+        .join(CONVERTED)
+        .join("volumes/copy/workspace.raw")
+        .exists());
+    assert_eq!(tree(&old), before);
+
+    // The migration is complete and stays so: the failure is the recovery's alone, and a
+    // relaunch neither quarantines the journal nor reopens the migration.
+    for _launch in 0..2 {
+        let state = initial(&app_data.join(FILE), app_data).unwrap();
+        assert_eq!(state.status, "complete");
+        assert_eq!(state.stage, "Migration complete");
+        assert_eq!(journal_file(app_data), waiting);
+        assert!(!old
+            .join("before-checkpoints-backup-operation.json")
+            .exists());
+    }
+    assert!(previous_generation_is_backup(app_data));
+
+    // The next launch finishes the cleanup.
+    *runtime.fail_remove.lock().unwrap() = false;
+    let result = crate::backup_controller::recover_journal_after_migration(
+        app_data, &scripts, &paths, &runtime, GROUP,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(result["title"], "Import interrupted");
+    assert!(!app_data.join(CONVERTED).join("volumes/copy").exists());
+    assert_eq!(tree(&old), before);
+}
+
+#[test]
+fn an_unreadable_journal_is_set_aside_and_the_migration_proceeds() {
+    let _test_state = crate::test_support::global_state();
+    let journal_with_version = |version: u64| {
+        serde_json::json!({
+            "version": version,
+            "id": "5b0c8e3e-3b8e-4c4c-9a0b-1f0f5f2d2b77",
+            "archive": {"name": "dev.silo-backup", "archivePath": "/exports/dev.silo-backup", "completedLabel": "In progress", "size": "Unknown", "destination": "/exports", "sandboxes": ["dev"]},
+            "request": {"kind": "backup", "names": ["dev"]},
+            "cancelled": false,
+            "terminal": null,
+        })
+        .to_string()
+        .into_bytes()
+    };
+    let cases: [(&str, Vec<u8>); 4] = [
+        ("damaged", b"{\"version\":1,\"id\":".to_vec()),
+        ("empty", Vec::new()),
+        ("not a journal", b"[1, 2, 3]".to_vec()),
+        ("unsupported version", journal_with_version(2)),
+    ];
+    for (state, bytes) in cases {
+        let (dir, paths) = previous_generation(Leftovers::default());
+        let app_data = dir.path();
+        let old = app_data.join("runtime");
+        fs::write(app_data.join("backup-operation.json"), &bytes).unwrap();
+        let runner = StagedRuntime {
+            old_runtime: old.clone(),
+            calls: Mutex::new(Vec::new()),
+        };
+        let before = tree(&old);
+
+        // A refused migration changes nothing, not even this file: the refusals come
+        // before it is set aside, whether they precede or follow the journal's check.
+        let redirected = app_data.join("elsewhere");
+        fs::create_dir(&redirected).unwrap();
+        std::os::unix::fs::symlink(&redirected, app_data.join(CONVERTED)).unwrap();
+        let refusal = convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap_err();
+        assert!(refusal.contains("redirected"), "{state}: {refusal}");
+        assert_eq!(
+            fs::read(app_data.join("backup-operation.json")).unwrap(),
+            bytes,
             "{state}"
         );
+        assert_eq!(fs::read_dir(&redirected).unwrap().count(), 0, "{state}");
+        fs::remove_file(app_data.join(CONVERTED)).unwrap();
+        assert_eq!(tree(&old), before, "{state}");
+
+        // Otherwise it never holds the migration back.
+        convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap();
+        assert_eq!(
+            selected_runtime_storage(app_data).unwrap(),
+            app_data.join(CONVERTED),
+            "{state}"
+        );
+        let aside: Vec<_> = fs::read_dir(app_data)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("backup-operation.unreadable-"))
+            .collect();
+        assert_eq!(aside.len(), 1, "{state}: {aside:?}");
+        assert!(
+            aside[0].starts_with("backup-operation.unreadable-")
+                && aside[0].ends_with(".json")
+                && aside[0].len() == "backup-operation.unreadable-YYYY-MM-DD.json".len(),
+            "{state}: {}",
+            aside[0]
+        );
+        // Kept as it was, for diagnosis, beside the other files in app data.
+        assert_eq!(
+            fs::read(app_data.join(&aside[0])).unwrap(),
+            bytes,
+            "{state}"
+        );
+        // The export and import page shows a result in its place after the upgrade, and
+        // it stays there (the migration quarantines no journal that holds a result).
+        let notice = journal_file(app_data);
+        assert_eq!(
+            notice["terminal"]["title"], "Export or import record set aside",
+            "{state}"
+        );
+        assert_eq!(notice["terminal"]["outcome"], "failed", "{state}");
+        assert!(!old
+            .join("before-checkpoints-backup-operation.json")
+            .exists());
+        // Whatever the unknown operation did to the previous generation is copied like any
+        // other content, and the previous generation itself is untouched.
+        assert_eq!(tree(&old), before, "{state}");
+        assert!(matches!(
+            crate::backup_controller::journal_state(app_data),
+            JournalState::Settled
+        ));
     }
 }
 
@@ -238,27 +841,124 @@ fn a_journal_with_a_result_stays_for_the_export_page_but_pending_progress_is_iso
     let old = app_data.join("runtime");
     fs::create_dir(&old).unwrap();
     let journal = app_data.join("backup-operation.json");
-    fs::write(&journal, br#"{"terminal":{"outcome":"failed"}}"#).unwrap();
-    quarantine_previous_backup_state(app_data).unwrap();
-    assert!(
-        journal.exists(),
-        "a result nothing can resume is not hidden from the user"
-    );
-    assert!(!old
-        .join("before-checkpoints-backup-operation.json")
-        .exists());
+    let moved = old.join("before-checkpoints-backup-operation.json");
+    for selected in [CONVERTED, CLEAN] {
+        fs::write(&journal, br#"{"terminal":{"outcome":"failed"}}"#).unwrap();
+        quarantine_previous_backup_state(app_data, selected).unwrap();
+        assert!(
+            journal.exists(),
+            "a result nothing can resume is not hidden from the user"
+        );
+        assert!(!moved.exists());
 
-    fs::write(&journal, br#"{"terminal":null}"#).unwrap();
-    quarantine_previous_backup_state(app_data).unwrap();
-    assert!(!journal.exists());
-    assert_eq!(
-        fs::read(old.join("before-checkpoints-backup-operation.json")).unwrap(),
-        br#"{"terminal":null}"#
-    );
+        fs::write(&journal, br#"{"terminal":null}"#).unwrap();
+        quarantine_previous_backup_state(app_data, selected).unwrap();
+        assert!(!journal.exists());
+        assert_eq!(fs::read(&moved).unwrap(), br#"{"terminal":null}"#);
+        fs::remove_file(&moved).unwrap();
 
-    // An unreadable file is not known to be finished, so it is isolated too.
-    fs::remove_file(old.join("before-checkpoints-backup-operation.json")).unwrap();
-    fs::write(&journal, b"{not json").unwrap();
-    quarantine_previous_backup_state(app_data).unwrap();
+        // An unreadable file is not known to be finished, so it is isolated too.
+        fs::write(&journal, b"{not json").unwrap();
+        quarantine_previous_backup_state(app_data, selected).unwrap();
+        assert!(!journal.exists());
+        fs::remove_file(&moved).unwrap();
+    }
+}
+
+#[test]
+fn a_journal_waiting_for_the_upgrade_stays_only_in_the_converted_generation() {
+    let dir = tempfile::tempdir().unwrap();
+    let app_data = dir.path();
+    let old = app_data.join("runtime");
+    fs::create_dir(&old).unwrap();
+    let journal = app_data.join("backup-operation.json");
+    let moved = old.join("before-checkpoints-backup-operation.json");
+    let waiting = br#"{"terminal":null,"awaitingUpgrade":true}"#;
+
+    // The converted generation holds a copy of what it left, and removes it.
+    fs::write(&journal, waiting).unwrap();
+    quarantine_previous_backup_state(app_data, CONVERTED).unwrap();
+    assert_eq!(fs::read(&journal).unwrap(), waiting);
+    assert!(!moved.exists());
+
+    // The clean generation (Continue) holds none of it, and the previous generation holds
+    // the sandboxes that were not converted: nothing is ever cleaned there, so the journal
+    // is isolated like any unfinished one.
+    quarantine_previous_backup_state(app_data, CLEAN).unwrap();
     assert!(!journal.exists());
+    assert_eq!(fs::read(&moved).unwrap(), waiting);
+}
+
+#[test]
+fn an_operation_that_left_nothing_for_the_runtime_is_settled_and_reported_before_the_upgrade() {
+    let _test_state = crate::test_support::global_state();
+    let cases = [
+        (
+            "export of the released 0.9.0",
+            serde_json::json!({"kind":"backup","names":["dev"],"machines":[],"running":[]}),
+            false,
+            "failed",
+            "Export interrupted before the upgrade",
+            "No export file was saved. Export the sandbox again.",
+        ),
+        (
+            "import of the released 0.9.0 before it chose a sandbox identity",
+            serde_json::json!({"kind":"restore","name":"copy","source":"dev","id":null}),
+            false,
+            "failed",
+            "Import interrupted before the upgrade",
+            "No sandbox was added. Import the file again.",
+        ),
+        (
+            "cancelled import before it wrote anything",
+            serde_json::json!({"kind":"restore","name":"copy","source":"dev"}),
+            true,
+            "cancelled",
+            "Import cancelled",
+            "No sandbox was added.",
+        ),
+    ];
+    for (state, request, cancelled, outcome, title, detail) in cases {
+        let (dir, paths) = previous_generation(Leftovers::default());
+        let app_data = dir.path();
+        let old = app_data.join("runtime");
+        pending_journal(app_data, request, cancelled);
+        let runner = StagedRuntime {
+            old_runtime: old.clone(),
+            calls: Mutex::new(Vec::new()),
+        };
+        let before = tree(&old);
+        let FirstLaunch::Result(result) = crate::backup_controller::settle_journal_before_migration(
+            app_data,
+            &inert_paths(app_data),
+        ) else {
+            panic!("{state}: nothing is left for the runtime");
+        };
+        assert_eq!(result["outcome"], outcome, "{state}");
+        assert_eq!(result["title"], title, "{state}");
+        assert_eq!(result["detail"], detail, "{state}");
+        assert_eq!(tree(&old), before, "{state}");
+
+        // The result is recorded, the migration proceeds, and the result stays for the
+        // export and import page.
+        convert_with(&runner, app_data, &paths, &|_| Ok(())).unwrap();
+        let journal = journal_file(app_data);
+        assert_eq!(journal["terminal"]["title"], title, "{state}");
+        assert!(journal.get("awaitingUpgrade").is_none(), "{state}");
+        assert!(!old
+            .join("before-checkpoints-backup-operation.json")
+            .exists());
+        assert_eq!(tree(&old), before, "{state}");
+        // Nothing is left to recover after the upgrade: the result is final.
+        let runtime = ConvertedRuntime::new(app_data);
+        assert!(crate::backup_controller::recover_journal_after_migration(
+            app_data,
+            &app_data.join("scripts"),
+            &paths,
+            &runtime,
+            GROUP
+        )
+        .is_none());
+        assert!(runtime.calls().is_empty(), "{state}");
+    }
 }
