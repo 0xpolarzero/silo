@@ -65,7 +65,7 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
                 .vm(&vm_id, &name, &format!("Preparing access to {name}"))
                 .map_err(|e| e.to_string())?;
             let user = crate::working_account::inspect_user(&paths, &name)?;
-            crate::working_account::require_client_protocol(user, params)?;
+            crate::working_account::require_client_protocol(params)?;
             let public = crate::editor::authorize_remote(
                 &paths,
                 &name,
@@ -180,11 +180,8 @@ pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Res
     let name = vm_name(app, params)?;
     runtime::shutdown::ensure_accepting_operations()?;
     let paths = runtime::runtime_paths(app)?;
-    let inspected = crate::terminal::running_vm(&paths, &name)?;
-    crate::working_account::require_runtime(
-        &paths,
-        crate::working_account::working_user(&inspected.config)?,
-    )?;
+    crate::terminal::running_vm(&paths, &name)?;
+    crate::working_account::require_runtime(&paths)?;
     Command::new(&paths.executable)
         .env("MSB_HOME", &paths.home)
         .env("MSB_PATH", &paths.executable)

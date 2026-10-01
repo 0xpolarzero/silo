@@ -176,7 +176,7 @@ pub(crate) async fn list_workspace_directory(
             crate::runtime::VmRuntime::Present(state) => state,
         };
         ensure_managed(&state).map_err(|_| FAILED.to_owned())?;
-        let user = crate::working_account::working_user(&state.config)?;
+        let user = crate::working_account::USER;
         if state.status != "Running" {
             return Err("Start this VM to browse its files.".into());
         }

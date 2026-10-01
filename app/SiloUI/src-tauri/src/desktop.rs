@@ -188,7 +188,6 @@ pub(crate) fn configure_with(
 ) -> Result<(), RuntimeError> {
     let inspected = runtime::inspect_workspace(runner, paths, name)?;
     runtime::ensure_managed(&inspected)?;
-    crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Invalid)?;
     let mut script = String::new();
     if previous.is_none() {
         let capability = runner.run(
@@ -231,7 +230,6 @@ fn machine(
     let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, workspace)
         .map_err(|e| e.to_string())?;
     runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
-    crate::working_account::working_user(&inspected.config)?;
     if inspected.name != workspace
         || inspected
             .config
@@ -610,10 +608,7 @@ mod tests {
     }
 
     fn managed_vm() -> ExpectedCommand {
-        inspect(
-            "Stopped",
-            json!({"silo.managed":"true","silo.working-account":"1"}),
-        )
+        inspect("Stopped", json!({"silo.managed":"true"}))
     }
 
     fn configure_guest(script: String) -> ExpectedCommand {
@@ -658,27 +653,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("desktop startup"));
-        runner.assert_finished();
-    }
-
-    #[test]
-    fn working_account_desktop_rejects_old_vm_before_running_guest() {
-        let _test_state = crate::test_support::global_state();
-        let dir = tempfile::tempdir().unwrap();
-        let runner = ScriptedRunner::new([inspect("Running", json!({"silo.managed":"true"}))]);
-        let error = configure_with(
-            &runner,
-            &paths(dir.path()),
-            "dev",
-            Some(&DesktopConfiguration {
-                start_with_sandbox: true,
-            }),
-            &DesktopConfiguration {
-                start_with_sandbox: false,
-            },
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("Migrate"));
         runner.assert_finished();
     }
 

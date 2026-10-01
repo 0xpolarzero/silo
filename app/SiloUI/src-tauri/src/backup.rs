@@ -2506,18 +2506,6 @@ fn portable_export_network(name: &str, runtime_config: &mut Value) -> Result<(),
 
 /// Names the first runtime setting an export cannot carry, if any.
 fn unsupported_runtime_setting(config: &serde_json::Map<String, Value>) -> Option<String> {
-    // Preserve old VM backups so users can recover before migrating their account.
-    if let Some(labels) = config.get("labels") {
-        let Some(labels) = labels.as_object() else {
-            return Some("label".into());
-        };
-        if labels
-            .get(crate::working_account::LABEL)
-            .is_some_and(|version| version.as_str() != Some("1"))
-        {
-            return Some("working account".into());
-        }
-    }
     let expected = [
         (
             "runtime",
@@ -3672,7 +3660,7 @@ mod tests {
     fn managed_config(name: &str) -> Value {
         serde_json::json!({
             "name": name,
-            "labels": {"silo.working-account":"1"},
+            "labels": {"silo.managed":"true"},
             "image": {"Oci": {"reference": "alpine:3.20", "root_disk": {"kind": "managed", "size_mib": 81920}}},
             "mounts": [
                 {
@@ -4424,15 +4412,6 @@ mod tests {
         config["init"] = serde_json::json!({"cmd": ["/sbin/init"]});
         let error = export_with_runtime(config).err().unwrap().to_string();
         assert!(error.contains("custom init settings"), "{error}");
-    }
-
-    #[test]
-    fn working_account_backup_accepts_supported_policies_only() {
-        let mut config = managed_config("dev");
-        config["labels"] = serde_json::json!({"silo.working-account":"1"});
-        assert!(validate_snapshottable_config("dev", &config).is_ok());
-        config["labels"]["silo.working-account"] = serde_json::json!("unknown");
-        assert!(validate_snapshottable_config("dev", &config).is_err());
     }
 
     #[test]

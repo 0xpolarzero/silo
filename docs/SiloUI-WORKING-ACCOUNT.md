@@ -3,9 +3,9 @@
 Silo VMs use `silo` (UID/GID 1001, home `/home/silo`) for terminal, SSH,
 editor, repository, file-transfer and desktop work. Passwordless sudo provides
 guest administration. Root remains the runtime initialization and management
-identity. Older VMs must be migrated explicitly before working access, or
-recreated. Silo does not fall back to root or migrate accounts when installing
-the desktop. See [migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md).
+identity. Silo sets the account up after a boot whenever a VM lacks it, which
+also moves VMs from older Silo versions to it; see
+[older VMs](SiloUI-WORKING-ACCOUNT-MIGRATION.md). Silo never falls back to root.
 
 ## Single-account verification, 2026-09-21
 
@@ -14,31 +14,32 @@ using synthetic GitHub configuration and local socket access. The desktop
 subset passed again after tightening guest UID/GID validation: 21 passed.
 Guest lifecycle tests passed: 20. `git diff --check` and shell syntax passed.
 These are code and fixture checks; they do not validate an installed app.
-See [migration verification](SiloUI-WORKING-ACCOUNT-MIGRATION.md#verification)
-for the separate disposable ARM64 migration and disk-recovery proof.
+See [older VMs](SiloUI-WORKING-ACCOUNT-MIGRATION.md#history) for the separate
+live migration evidence.
 
-## Persisted policy and provisioning
+## Account record and setup
 
-The runtime label `silo.working-account=1` selects the unified account. Absence
-requires migration; unsupported values fail rather than fall back to root.
-Backup, restore and duplication preserve this policy. The desktop reads the
-root-owned `/var/lib/silo/working-account.json` marker, written only after
-provisioning succeeds. Its version, user and home must match the supported
-policy. Desktop installation does not choose or migrate the working account.
+The guest's root-owned `/var/lib/silo/working-account.json` record is the
+account policy. The setup writes it last, and its version, user and home must
+match the supported policy. It lives on the VM's disk, so checkpoints, forks
+and exports carry it. Silo keeps no copy of it on the host.
 
-`guest/setup-working-account.sh` runs as root only during new-VM creation or
-recovery of that creation. It verifies the `/workspace` ext4 mount, refuses
-unrelated account/UID/GID collisions, creates the account and sudo rule, changes
-only the workspace mount directory's owner, and verifies account access before
-publishing the marker. An installation marker supports interrupted setup;
-completed setup verifies without rewriting homes or workspace ownership.
+After every boot (start, restart, a temporary boot for a guest command, or a
+restore), Silo checks the record. When it is missing, Silo runs
+`guest/working-account.sh` and `guest/working-account.py` as root. The setup
+verifies the `/workspace` ext4 mount, refuses unrelated UID/GID collisions,
+creates the account and sudo rule (or moves an older VM's homes into it), takes
+ownership of `/workspace`, and verifies account access before writing the
+record. Each step checks what an interrupted earlier run already did. If the
+setup fails, Silo stops the VM, so a running VM always has the account. A
+record from an unknown policy is never overwritten. The desktop reads the same
+record, and desktop installation does not choose or set up the account.
 
 The v3 guest-image recipe bundles `sudo`, `python3` and
-`openssh-sftp-server`. New-VM account setup uses these bundled tools without
-network access or package installation. Missing tools fail setup with an image
-compatibility error; setup never repairs packages online or substitutes a root
-working session. Optional desktop installation still downloads its existing
-Ubuntu packages and KasmVNC archive.
+`openssh-sftp-server`, so a new VM's setup needs no network access or package
+installation. Only older images that lack them install them with apt. The
+setup never substitutes a root working session. Optional desktop installation
+still downloads its existing Ubuntu packages and KasmVNC archive.
 
 The [v3 image is public](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v3),
 and the checked-in lock records its exact published manifests and hashes.

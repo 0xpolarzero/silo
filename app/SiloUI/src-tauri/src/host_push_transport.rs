@@ -253,7 +253,7 @@ mod tests {
             metadata: directory.path().join("machines.json"),
             volumes: directory.path().join("volumes"),
         };
-        crate::working_account::test_runtime(&paths.executable, true);
+        crate::working_account::test_runtime(&paths.executable);
         let private = directory.path().join("operation with 'quotes' and %");
         let transport = prepare(&paths, "dev", &private).unwrap();
         assert!(!paths.home.join("ssh/dev.conf").exists());

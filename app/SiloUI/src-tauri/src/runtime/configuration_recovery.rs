@@ -312,8 +312,6 @@ fn reconcile(
                 .iter()
                 .any(|entry| entry.id() == machine.id())
             {
-                crate::working_account::working_user(&inspected.config)
-                    .map_err(RuntimeError::Malformed)?;
                 verify_guest_tools(runner, paths, machine.name())?;
                 if let Some(desktop) = crate::desktop::configuration(machine) {
                     crate::desktop::configure_with(runner, paths, machine.name(), None, desktop)?;
@@ -666,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn working_account_recovery_provisions_only_labelled_interrupted_creations() {
+    fn recovery_checks_the_tools_of_an_interrupted_creation_once() {
         let _test_state = crate::test_support::global_state();
         struct InterruptedRuntime {
             inspected: Value,
@@ -692,82 +690,65 @@ mod tests {
                 })
             }
         }
-        for unified in [false, true] {
-            let directory = tempfile::tempdir().unwrap();
-            let root = directory.path();
-            let paths = RuntimePaths {
-                executable: root.join("msb"),
-                library: root.join("library"),
-                home: root.join("home"),
-                storage_home: None,
-                guest_image: root.join("image"),
-                metadata: root.join("machines.json"),
-                volumes: root.join("volumes"),
-            };
-            let machine = MachineConfiguration::Vm {
-                id: uuid::Uuid::new_v4().to_string(),
-                name: "dev".into(),
-                cpus: 1,
-                max_cpus: 2,
-                memory_gib: 4,
-                max_memory_gib: 8,
-                workspace_storage_gib: 10,
-                runtime_storage_gib: 10,
-                desktop: None,
-            };
-            let request = MachineConfigurationRequest {
-                schema_version: 1,
-                machines: vec![machine.clone()],
-            };
-            begin(&paths, &request).unwrap();
-            claim(&paths, &machine).unwrap();
-            let mut inspected = json!({"name":"dev","status":"Stopped","config":{
-                "image":{"Oci":{"root_disk":{"kind":"managed","size_mib":10240}}},
-                "resources":{"cpus":1,"max_cpus":2,"memory_mib":4096,"max_memory_mib":8192},
-                "labels":{"silo.managed":"true","silo.machine-id":machine.id()},
-                "mounts":[{"type":"Owned","guest":"/workspace","storage":{"kind":"disk","capacity_mib":10240}}]
-            }});
-            if unified {
-                inspected["config"]["labels"]["silo.working-account"] = json!("1");
-            }
-            let runner = InterruptedRuntime {
-                inspected,
-                calls: Mutex::new(Vec::new()),
-            };
-            if !unified {
-                assert!(prepare_retry(&runner, &paths, None)
-                    .unwrap_err()
-                    .to_string()
-                    .contains("Migrate"));
-                assert!(!runner
-                    .calls
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .any(|args| args[0] == "exec"));
-                continue;
-            }
-            prepare_retry(&runner, &paths, None).unwrap();
-            assert_eq!(read_metadata(&paths.metadata).unwrap(), request);
-            let calls = runner.calls.lock().unwrap();
-            let commands: Vec<_> = calls.iter().filter(|args| args[0] == "exec").collect();
-            assert_eq!(commands.len(), 1);
-            assert!(commands[0]
-                .windows(2)
-                .any(|pair| pair == ["--user", "root"]));
-            let script = commands[0].last().unwrap();
-            assert!(script.contains(include_str!("../../guest/setup-working-account.sh")));
-            drop(calls);
-            // Metadata adoption makes a subsequent retry read-only for the supported policy.
-            runner.calls.lock().unwrap().clear();
-            prepare_retry(&runner, &paths, None).unwrap();
-            assert!(!runner
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|args| args[0] == "exec"));
-        }
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let paths = RuntimePaths {
+            executable: root.join("msb"),
+            library: root.join("library"),
+            home: root.join("home"),
+            storage_home: None,
+            guest_image: root.join("image"),
+            metadata: root.join("machines.json"),
+            volumes: root.join("volumes"),
+        };
+        let machine = MachineConfiguration::Vm {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "dev".into(),
+            cpus: 1,
+            max_cpus: 2,
+            memory_gib: 4,
+            max_memory_gib: 8,
+            workspace_storage_gib: 10,
+            runtime_storage_gib: 10,
+            desktop: None,
+        };
+        let request = MachineConfigurationRequest {
+            schema_version: 1,
+            machines: vec![machine.clone()],
+        };
+        begin(&paths, &request).unwrap();
+        claim(&paths, &machine).unwrap();
+        let inspected = json!({"name":"dev","status":"Stopped","config":{
+            "image":{"Oci":{"root_disk":{"kind":"managed","size_mib":10240}}},
+            "resources":{"cpus":1,"max_cpus":2,"memory_mib":4096,"max_memory_mib":8192},
+            "labels":{"silo.managed":"true","silo.machine-id":machine.id()},
+            "mounts":[{"type":"Owned","guest":"/workspace","storage":{"kind":"disk","capacity_mib":10240}}]
+        }});
+        let runner = InterruptedRuntime {
+            inspected,
+            calls: Mutex::new(Vec::new()),
+        };
+        prepare_retry(&runner, &paths, None).unwrap();
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), request);
+        let calls = runner.calls.lock().unwrap();
+        let commands: Vec<_> = calls.iter().filter(|args| args[0] == "exec").collect();
+        assert_eq!(commands.len(), 1);
+        assert!(commands[0]
+            .windows(2)
+            .any(|pair| pair == ["--user", "root"]));
+        let script = commands[0].last().unwrap();
+        // The account is set up by the boot of this exec, not by the script.
+        assert_eq!(script, include_str!("../../guest/verify-tools.sh"));
+        drop(calls);
+        // Metadata adoption makes a subsequent retry read-only.
+        runner.calls.lock().unwrap().clear();
+        prepare_retry(&runner, &paths, None).unwrap();
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| args[0] == "exec"));
     }
 
     #[test]

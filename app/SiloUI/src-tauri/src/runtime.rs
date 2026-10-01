@@ -955,7 +955,7 @@ fn run_msb_with_progress(
                 crate::network::reconcile_started(paths, workspace);
                 crate::ssh_access::reconcile(paths);
             }
-            return result;
+            return result.and_then(|output| prepare_booted(paths, workspace).map(|()| output));
         }
         // Finish a possible boot under the same lock as live access changes,
         // then release it before running arbitrary, possibly long guest commands.
@@ -988,7 +988,12 @@ fn run_msb_with_progress(
             crate::network::reconcile_started(paths, workspace);
             crate::ssh_access::reconcile(paths);
         }
-        let result = run_msb_process(paths, args, timeout, report);
+        let result = if temporary_boot {
+            crate::working_account::prepare(&Booted, paths, workspace)
+        } else {
+            Ok(())
+        }
+        .and_then(|()| run_msb_process(paths, args, timeout, report));
         if temporary_boot {
             // Preserve msb exec's temporary-boot behavior even on guest failure. The
             // stop runs even if a concurrent access update keeps the lock busy.
@@ -1020,7 +1025,52 @@ fn run_msb_with_progress(
     {
         crate::ssh_access::reconcile(paths);
     }
-    result
+    // A restore boots the restored VM under its new name.
+    let restored = args
+        .windows(2)
+        .find(|pair| args[0] == "restore" && pair[0] == "--name")
+        .map(|pair| pair[1].as_str());
+    match restored {
+        Some(name) => result.and_then(|output| prepare_booted(paths, name).map(|()| output)),
+        None => result,
+    }
+}
+
+/// Runs the account setup of a VM being booted. Unlike `ProcessRunner`, it does not
+/// wait for a pending checkpoint's explicit Start: the boot is that Start.
+struct Booted;
+
+impl RuntimeRunner for Booted {
+    fn run(
+        &self,
+        paths: &RuntimePaths,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<CommandOutput, RuntimeError> {
+        run_msb_with_progress(paths, args, timeout, &|_| {})
+    }
+}
+
+/// Make a VM Silo just booted ready for the silo account, or stop it again, so a running
+/// VM always has its account. The stop is not cancellable.
+fn prepare_booted(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeError> {
+    let prepared = crate::working_account::prepare(&Booted, paths, workspace);
+    if prepared.is_err() {
+        let _ = without_cancellation(|| {
+            let access = vm_access_state(&paths.home, workspace).ok();
+            let _guard = access.as_deref().and_then(|access| {
+                lock_vm_runtime(access, STOP_TIMEOUT, "Stopping the sandbox").ok()
+            });
+            run_msb_process(
+                paths,
+                &["stop".into(), workspace.into()],
+                STOP_TIMEOUT,
+                &|_| {},
+            )
+        });
+        crate::ssh_access::reconcile(paths);
+    }
+    prepared
 }
 
 thread_local! {
@@ -1825,9 +1875,7 @@ fn verify_workspace_identities_in(
         if inspected.status != "Running" {
             return Ok(false);
         }
-        let user = crate::working_account::working_user(&inspected.config)
-            .map_err(RuntimeError::Malformed)?;
-        if !verify_guest_identity(runner, paths, identity, user, GuestBoot::Never)? {
+        if !verify_guest_identity(runner, paths, identity, GuestBoot::Never)? {
             return Ok(false);
         }
     }
@@ -1913,11 +1961,9 @@ fn configure_workspace_identities_in(
         };
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
         ensure_managed(&inspected)?;
-        let user = crate::working_account::working_user(&inspected.config)
-            .map_err(RuntimeError::Malformed)?;
-        changed.push((identity, user, machine));
+        changed.push((identity, machine));
     }
-    for (identity, user, machine) in changed {
+    for (identity, machine) in changed {
         let _lane = lane(
             machine,
             &format!("Saving Git identity for {}", machine.name()),
@@ -1943,8 +1989,8 @@ fn configure_workspace_identities_in(
    jj config set --user -- user.name "$3"
    jj config set --user -- user.email "$4"
  fi"#;
-        run_identity_script(runner, paths, identity, script, user, GuestBoot::Temporary)?;
-        if !verify_guest_identity(runner, paths, identity, user, GuestBoot::Temporary)? {
+        run_identity_script(runner, paths, identity, script, GuestBoot::Temporary)?;
+        if !verify_guest_identity(runner, paths, identity, GuestBoot::Temporary)? {
             return Err(RuntimeError::Malformed(format!(
                 "Silo could not verify the saved Git identity for '{}'. Setup is not complete.",
                 identity.workspace
@@ -1968,11 +2014,11 @@ fn run_identity_script(
     paths: &RuntimePaths,
     identity: &WorkspaceIdentity,
     script: &str,
-    user: &str,
     boot: GuestBoot,
 ) -> Result<CommandOutput, RuntimeError> {
     // exec starts stopped sandboxes temporarily (unless `--no-start`) and preserves
     // already-running VMs. Values are positional arguments, never interpolated shell source.
+    let user = crate::working_account::USER;
     let mut args: Vec<String> = vec![
         "exec".into(),
         identity.workspace.clone(),
@@ -2012,7 +2058,6 @@ fn verify_guest_identity(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     identity: &WorkspaceIdentity,
-    user: &str,
     boot: GuestBoot,
 ) -> Result<bool, RuntimeError> {
     let script = r#"set -eu
@@ -2023,12 +2068,10 @@ fn verify_guest_identity(
    [ "$(jj config get user.email)" = "$2" ] || exit 0
  fi
  printf '%s' silo-identity-verified"#;
-    Ok(
-        run_identity_script(runner, paths, identity, script, user, boot)?
-            .stdout
-            .trim()
-            == "silo-identity-verified",
-    )
+    Ok(run_identity_script(runner, paths, identity, script, boot)?
+        .stdout
+        .trim()
+        == "silo-identity-verified")
 }
 
 /// GitHub tokens a VM's cached access profile still uses. Host-only retirement
@@ -4720,7 +4763,6 @@ fn start_at_launch_with(
     let result = (|| {
         let inspected = inspect_workspace(runner, paths, name)?;
         ensure_managed(&inspected)?;
-        crate::working_account::working_user(&inspected.config).map_err(RuntimeError::Invalid)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
             "created" | "stopped" => workspace_action_with(runner, paths, host, "start", name),
@@ -4969,11 +5011,6 @@ fn verify_guest_tools(
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<(), RuntimeError> {
-    let script = format!(
-        "{}\n{}",
-        include_str!("../guest/verify-tools.sh"),
-        include_str!("../guest/setup-working-account.sh")
-    );
     runner.run(
         paths,
         &[
@@ -4990,7 +5027,7 @@ fn verify_guest_tools(
             "--".into(),
             "sh".into(),
             "-c".into(),
-            script,
+            include_str!("../guest/verify-tools.sh").into(),
         ],
         Duration::from_secs(45),
     )?;
@@ -5096,8 +5133,6 @@ fn create_machine_with_progress(
         MANAGED_LABEL.into(),
         "--label".into(),
         format!("silo.machine-id={id}"),
-        "--label".into(),
-        crate::working_account::UNIFIED_LABEL.into(),
         "--label".into(),
         format!("silo.workspace-storage-gib={workspace_storage_gib}"),
         "--label".into(),
@@ -6050,12 +6085,63 @@ printf '%s\n' "$1" >> "$MSB_HOME/calls"
 case "$1" in
   inspect) state=$(cat "$MSB_HOME/state"); printf '{{"name":"cleanup","status":"%s","config":{{"labels":{{"silo.managed":"true"}}}},"active_config":{{}}}}\n' "$state" ;;
   start) printf Running > "$MSB_HOME/state" ;;
+  restore) printf Running > "$MSB_HOME/state" ;;
   stop) printf Stopped > "$MSB_HOME/state" ;;
+  exec) case "$*" in
+    *'echo missing'*) cat "$MSB_HOME/account" 2>/dev/null || echo ready ;;
+    *'apt-get update'*) echo 'set up' >> "$MSB_HOME/calls"
+      if [ -f "$MSB_HOME/setup-fails" ]; then echo 'RuntimeError: The reserved account ID 1001 belongs to another account.' >&2; exit 1; fi
+      echo ready > "$MSB_HOME/account" ;;
+  esac ;;
 esac
 if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
 "#
             ),
         );
+    }
+
+    #[test]
+    fn every_boot_sets_up_the_silo_account_and_a_failed_setup_stops_the_vm() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_lifecycle_msb(&paths, "never");
+        let run = |args: &[&str]| {
+            let args: Vec<String> = args.iter().map(|arg| (*arg).to_owned()).collect();
+            run_msb_with_progress(&paths, &args, Duration::from_secs(20), &|_| {})
+        };
+        let set_ups = || {
+            fs::read_to_string(paths.home.join("calls"))
+                .unwrap()
+                .matches("set up")
+                .count()
+        };
+        let state = || fs::read_to_string(paths.home.join("state")).unwrap();
+        // An older VM is set up at its first boot; later boots only check.
+        fs::write(paths.home.join("account"), "missing").unwrap();
+        run(&["start", "cleanup"]).unwrap();
+        run(&["stop", "cleanup"]).unwrap();
+        run(&["start", "cleanup"]).unwrap();
+        assert_eq!((set_ups(), state().as_str()), (1, "Running"));
+        run(&["stop", "cleanup"]).unwrap();
+        // A failed setup reports the guest's reason and leaves the VM stopped.
+        fs::write(paths.home.join("account"), "missing").unwrap();
+        fs::write(paths.home.join("setup-fails"), "").unwrap();
+        let error = run(&["start", "cleanup"]).unwrap_err().to_string();
+        assert!(error.contains("reserved account ID 1001"), "{error}");
+        assert_eq!(state(), "Stopped");
+        let error = run(&["exec", "cleanup", "--", "true"])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("reserved account ID 1001"), "{error}");
+        assert_eq!(state(), "Stopped");
+        fs::remove_file(paths.home.join("setup-fails")).unwrap();
+        // A temporary boot is set up before the guest command; a restore before it is used.
+        run(&["exec", "cleanup", "--", "true"]).unwrap();
+        assert_eq!((set_ups(), state().as_str()), (4, "Stopped"));
+        fs::write(paths.home.join("account"), "missing").unwrap();
+        run(&["restore", "source:snapshot", "--name", "cleanup"]).unwrap();
+        assert_eq!((set_ups(), state().as_str()), (5, "Running"));
     }
 
     #[test]
@@ -6204,10 +6290,11 @@ set -eu
 printf '%s\n' "$1" >> "$MSB_HOME/calls"
 case "$1" in
   --silo-desktop-protocol) printf '1\n' ;;
-  inspect) state=$(cat "$MSB_HOME/state"); printf '{"name":"desktop-preserve-test","status":"%s","config":{"labels":{"silo.managed":"true","silo.working-account":"1"}},"active_config":{}}\n' "$state" ;;
+  inspect) state=$(cat "$MSB_HOME/state"); printf '{"name":"desktop-preserve-test","status":"%s","config":{"labels":{"silo.managed":"true"}},"active_config":{}}\n' "$state" ;;
   start) printf Running > "$MSB_HOME/state" ;;
   stop) printf Stopped > "$MSB_HOME/state" ;;
-  exec) if [ -f "$MSB_HOME/fail" ]; then echo 'Synthetic desktop setup failure' >&2; exit 1; fi ;;
+  exec) case "$*" in *'echo missing'*) echo ready; exit ;; esac
+    if [ -f "$MSB_HOME/fail" ]; then echo 'Synthetic desktop setup failure' >&2; exit 1; fi ;;
   *) echo 'Unexpected runtime operation' >&2; exit 1 ;;
 esac
 "#).unwrap();
@@ -7380,7 +7467,7 @@ esac
                 "name": "dev",
                 "image": {"Oci": {"reference": "ubuntu", "root_disk": {"kind": "managed", "size_mib": 81920}}},
                 "resources": {"cpus": 4, "max_cpus": 6, "memory_mib": 16384, "max_memory_mib": 32768},
-                "labels": {"silo.managed": "true", "silo.working-account": "1", "silo.machine-id": vm().id()},
+                "labels": {"silo.managed": "true", "silo.machine-id": vm().id()},
                 "mounts": [{
                     "type":"Owned", "guest":WORKSPACE_MOUNT,
                     "storage":{"kind":"disk","capacity_mib":61440}
@@ -9135,15 +9222,10 @@ exit 9
         assert!(calls[3]
             .windows(2)
             .any(|pair| pair == ["--label", MANAGED_LABEL]));
-        assert!(calls[3]
-            .windows(2)
-            .any(|pair| pair == ["--label", "silo.working-account=1"]));
-        let setup = &calls[5];
-        assert!(setup.windows(2).any(|pair| pair == ["--user", "root"]));
-        assert!(setup
-            .last()
-            .unwrap()
-            .contains("/var/lib/silo/working-account.json"));
+        // The account is the guest's own, set up after each boot, never a label.
+        assert!(!calls[3].iter().any(|arg| arg.contains("working-account")));
+        let tools = &calls[5];
+        assert!(tools.windows(2).any(|pair| pair == ["--user", "root"]));
     }
 
     #[test]
@@ -9755,34 +9837,6 @@ exit 9
         let calls = runner.calls.lock().unwrap();
         assert_eq!(calls[1][0], "exec");
         assert!(!calls.iter().any(|args| args[0] == "modify"));
-    }
-
-    #[test]
-    fn working_account_old_vm_cannot_start_or_restart() {
-        let _test_state = crate::test_support::global_state();
-        for action in ["start", "restart", "launch"] {
-            let directory = tempfile::tempdir().unwrap();
-            let paths = paths(&directory);
-            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
-            let mut old_vm = inspect(&paths, "Stopped");
-            old_vm["config"]["labels"]
-                .as_object_mut()
-                .unwrap()
-                .remove(crate::working_account::LABEL);
-            let runner = StubRunner::successful_json(vec![old_vm]);
-            let result = if action == "launch" {
-                start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).map(drop)
-            } else {
-                workspace_action_with(&runner, &paths, &generous_host(), action, "dev")
-            };
-            assert!(result.unwrap_err().to_string().contains("Migrate"));
-            assert!(runner
-                .calls
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|args| args[0] == "inspect"));
-        }
     }
 
     #[test]

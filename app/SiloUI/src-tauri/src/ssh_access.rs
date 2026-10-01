@@ -304,8 +304,7 @@ fn inspect_running(paths: &RuntimePaths, config: &Configuration) -> Result<bool,
     {
         return Err("The sandbox identity changed. Configure SSH access again.".into());
     }
-    let user = crate::working_account::working_user(&inspected.config)?;
-    crate::working_account::require_runtime(paths, user)?;
+    crate::working_account::require_runtime(paths)?;
     Ok(inspected.status == "Running")
 }
 /// Bring the listeners in line with the saved settings and each sandbox's runtime
@@ -750,7 +749,7 @@ fn authorize_controller(
         .find(|c| c.machine_id == vm_id && c.enabled)
         .ok_or("Enable SSH access first.")?;
     let user = crate::working_account::inspect_user(paths, &config.workspace)?;
-    crate::working_account::require_client_protocol(user, request)?;
+    crate::working_account::require_client_protocol(request)?;
     let (Some(public), Some(controller)) = (
         request["publicKey"].as_str(),
         request["controllerId"].as_str(),
@@ -1245,7 +1244,7 @@ sys.stdin.buffer.read()
         fs::create_dir_all(&p.home).unwrap();
         let script = fs::read_to_string(&p.executable).unwrap().replace(
             "args = sys.argv[1:]",
-            "args = sys.argv[1:]\nif args[0] == 'inspect':\n    import json, os, pathlib\n    running = (pathlib.Path(os.environ['MSB_HOME'])/'running').exists()\n    print(json.dumps({'name':'dev','status':'Running' if running else 'Stopped','config':{'labels':{'silo.managed':'true','silo.working-account':'1','silo.machine-id':'00000000-0000-4000-8000-000000000001'}}}))\n    sys.exit(0)",
+            "args = sys.argv[1:]\nif args[0] == 'inspect':\n    import json, os, pathlib\n    running = (pathlib.Path(os.environ['MSB_HOME'])/'running').exists()\n    print(json.dumps({'name':'dev','status':'Running' if running else 'Stopped','config':{'labels':{'silo.managed':'true','silo.machine-id':'00000000-0000-4000-8000-000000000001'}}}))\n    sys.exit(0)",
         );
         fs::write(&p.executable, script).unwrap();
         fs::write(&p.library, "fixture").unwrap();
@@ -1273,10 +1272,6 @@ sys.stdin.buffer.read()
         fs::write(p.home.join("running"), "running").unwrap();
         let script = fs::read_to_string(&p.executable)
             .unwrap()
-            .replace(
-                "'silo.managed':'true'",
-                "'silo.managed':'true','silo.working-account':'1'",
-            )
             .replace("print('1')", "print('0')");
         fs::write(&p.executable, script).unwrap();
         let c = config();
@@ -1305,11 +1300,6 @@ sys.stdin.buffer.read()
         let dir = tempfile::tempdir().unwrap();
         let p = paths(&dir);
         remote_fixture(&p);
-        let script = fs::read_to_string(&p.executable).unwrap().replace(
-            "'silo.managed':'true'",
-            "'silo.managed':'true','silo.working-account':'1'",
-        );
-        fs::write(&p.executable, script).unwrap();
         let c = config();
         editor::write_private(&path(&p), &serde_json::to_vec(&vec![c.clone()]).unwrap()).unwrap();
         let (public, controller) = controller_identity(&dir, "laptop");

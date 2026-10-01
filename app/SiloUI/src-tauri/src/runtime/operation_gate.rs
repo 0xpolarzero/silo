@@ -327,6 +327,8 @@ thread_local! {
     /// Cancel token of the operation the current thread is executing, set while its
     /// guard is held and cleared on drop. Nesting is rejected, so at most one is set.
     static CURRENT: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
+    /// The gate and id of that operation, for `OperationGate::labelled`.
+    static RUNNING: Cell<Option<(*const OperationGate, u64)>> = const { Cell::new(None) };
     /// Depth of `uncancellable` sections on this thread.
     static MASKED: Cell<usize> = const { Cell::new(0) };
 }
@@ -726,6 +728,7 @@ impl OperationGate {
         drop(state);
         HELD.with(|held| held.set(held.get() + 1));
         CURRENT.with(|current| *current.borrow_mut() = Some(token.clone()));
+        RUNNING.set(Some((self, id)));
         self.notify();
         Ok(OperationGuard {
             gate: self,
@@ -769,6 +772,7 @@ impl OperationGate {
         drop(state);
         HELD.with(|held| held.set(held.get() + 1));
         CURRENT.with(|current| *current.borrow_mut() = Some(token.clone()));
+        RUNNING.set(Some((self, id)));
         self.notify();
         Ok(OperationGuard {
             gate: self,
@@ -986,6 +990,7 @@ impl OperationGate {
         drop(state);
         HELD.with(|held| held.set(held.get().saturating_sub(1)));
         CURRENT.with(|current| *current.borrow_mut() = None);
+        RUNNING.set(None);
         if finished.is_some_and(|(_, hidden)| !hidden) {
             self.signal_activity();
         }
@@ -1004,6 +1009,29 @@ impl OperationGate {
     }
 
     /// Change a running operation's queue label, for work that reports its progress.
+    /// Show `label` for the operation this thread runs on this gate while `work` runs, then
+    /// restore its label. For a long step in shared code that the operation's owner does
+    /// not know about, such as the account setup after a boot. Without one, runs `work`.
+    pub(crate) fn labelled<T>(&self, label: &str, work: impl FnOnce() -> T) -> T {
+        let own = RUNNING
+            .get()
+            .filter(|(gate, _)| std::ptr::eq(*gate, self))
+            .map(|(_, id)| id);
+        let previous = own.and_then(|id| {
+            let state = self.lock();
+            let entry = state.running.iter().find(|entry| entry.id == id)?;
+            Some(entry.label.clone())
+        });
+        if let Some(id) = own {
+            self.relabel(id, label);
+        }
+        let result = work();
+        if let (Some(id), Some(previous)) = (own, previous) {
+            self.relabel(id, &previous);
+        }
+        result
+    }
+
     fn relabel(&self, id: u64, label: &str) {
         let mut state = self.lock();
         if let Some(entry) = state.running.iter_mut().find(|entry| entry.id == id) {
@@ -1622,6 +1650,26 @@ mod tests {
         assert_eq!(gate.snapshot().running[0].since_ms, reported);
         assert!(gate.oldest_running().unwrap().1 >= Duration::from_millis(5));
         drop(second);
+    }
+
+    #[test]
+    fn shared_code_labels_the_operation_running_on_its_thread_while_it_works() {
+        let gate = leak();
+        let other = leak();
+        // Outside any operation the work still runs.
+        assert_eq!(gate.labelled("Setting up", || 1), 1);
+        let guard = gate.vm("a", "a", "Start a").unwrap();
+        let shown = gate.labelled("Setting up the silo account in a", || {
+            // Another gate's operation is not this thread's.
+            other.labelled("Elsewhere", || ());
+            gate.snapshot().running[0].label.clone()
+        });
+        assert_eq!(shown, "Setting up the silo account in a");
+        assert_eq!(gate.snapshot().running[0].label, "Start a");
+        drop(guard);
+        let _later = gate.vm("b", "b", "Start b").unwrap();
+        elsewhere(move || gate.labelled("Not this thread", || ()));
+        assert_eq!(gate.snapshot().running[0].label, "Start b");
     }
 
     #[test]

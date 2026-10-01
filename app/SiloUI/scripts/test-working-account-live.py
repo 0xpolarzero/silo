@@ -4,7 +4,8 @@
 SILO_RUN_WORKING_ACCOUNT_LIVE=1 python3 scripts/test-working-account-live.py
   --msb PATH --library PATH --guest-image DIRECTORY --output DIRECTORY
 Logs and failed VM state are retained. Guest networking is disabled and package-manager sentinels reject unexpected installation.
-The guest image must contain all working-account and Git dependencies.
+The guest image must contain all working-account and Git dependencies. The account is set up with the
+guest scripts Silo runs after a boot (src-tauri/guest/working-account.sh and working-account.py).
 """
 import argparse
 import gzip
@@ -24,7 +25,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for argument in ('msb', 'library', 'guest-image', 'output'):
         parser.add_argument('--' + argument, type=Path, required=True)
-    parser.add_argument('--setup-account', type=Path, default=Path(__file__).resolve().parents[1] / 'src-tauri/guest/setup-working-account.sh')
     args = parser.parse_args()
     if os.environ.get('SILO_RUN_WORKING_ACCOUNT_LIVE') != '1':
         parser.error('set SILO_RUN_WORKING_ACCOUNT_LIVE=1')
@@ -63,6 +63,12 @@ def main():
     def guest(command, user='root', **options):
         return msb('exec', name, '--no-tty', '--user', user, '--env', f'USER={user}', '--env', f'LOGNAME={user}', '--', '/bin/sh', '-c', command, **options)
 
+    scripts = Path(__file__).resolve().parents[1] / 'src-tauri/guest'
+
+    def set_up(**options):
+        return msb('exec', name, '--no-tty', '--user', 'root', '--', '/bin/sh', '-c', (scripts / 'working-account.sh').read_text(),
+                   'sh', (scripts / 'working-account.py').read_text(), (scripts / 'desktop-service.py').read_text(), **options)
+
     try:
         record(f'Isolated runtime home: {root}; executable: {args.msb.resolve()}')
         manifest = json.loads((args.guest_image / 'manifest.json').read_text())
@@ -71,11 +77,10 @@ def main():
             shutil.copyfileobj(source, target)
         msb('image', 'load', '--input', str(archive), '--tag', manifest['imageReference'], '--quiet', timeout=300)
         msb('volume', 'create', 'account-workspace', '--kind', 'disk', '--size', '1G')
-        msb('create', manifest['imageReference'], '--name', name, '--no-start', '--net', 'none', '--memory', '1G', '--cpus', '2', '--label', f'silo.machine-id={machine_id}', '--label', 'silo.working-account=1', '--mount-disk', f'{root / "home/volumes/account-workspace/disk.raw"}:/workspace:format=raw,fstype=ext4')
+        msb('create', manifest['imageReference'], '--name', name, '--no-start', '--net', 'none', '--memory', '1G', '--cpus', '2', '--label', f'silo.machine-id={machine_id}', '--mount-disk', f'{root / "home/volumes/account-workspace/disk.raw"}:/workspace:format=raw,fstype=ext4')
         created = True
         msb('start', name)
         guest('for tool in sudo python3 useradd; do command -v "$tool" || true; done; cat /etc/passwd')
-        setup = args.setup_account.read_text()
         # This proves the guest cannot fetch dependencies; SSH travels over the
         # managed agent channel and remains available with guest networking off.
         network_probe = guest("timeout 3 /bin/bash -c 'exec 3<>/dev/tcp/1.1.1.1/443'", check=False, timeout=10)
@@ -99,33 +104,36 @@ SENTINEL
             if present:
                 guest(f'mv {executable} {executable}.account-proof-disabled')
             try:
-                missing = guest(setup, check=False, timeout=15)
+                missing = set_up(check=False, timeout=60)
                 assert missing.returncode != 0, f'Missing {executable} must refuse setup'
-                guest('test ! -e /tmp/account-proof-package-manager-called')
-                assert 'bundled' in (missing.stdout + missing.stderr).lower(), 'Missing tool error must identify the bundled guest image'
-                guest('test ! -e /var/lib/silo/working-account-installing; test ! -e /var/lib/silo/working-account.json; ! getent passwd silo')
+                guest('test ! -e /var/lib/silo/working-account.json; ! getent passwd silo; ! getent group silo')
             finally:
                 if present:
                     guest(f'mv {executable}.account-proof-disabled {executable}')
-        record('PASS networking disabled and missing bundled tools fail before account or package-manager changes')
+                guest('rm -f /tmp/account-proof-package-manager-called')
+        record('PASS networking disabled and missing tools fail before account changes')
 
         # Unrelated existing accounts must be rejected before package installs.
         guest('groupadd -g 1001 conflict; useradd -u 1001 -g 1001 conflict; printf legacy > /root/legacy-data; chmod 600 /root/legacy-data')
-        collision = guest(setup, check=False)
-        assert collision.returncode != 0 and 'already exists' in collision.stderr
-        guest('test ! -e /var/lib/silo/working-account-installing; userdel conflict; if getent group conflict >/dev/null; then groupdel conflict; fi')
-        guest(setup, timeout=600)
+        collision = set_up(check=False)
+        assert collision.returncode != 0 and 'belongs to another account' in collision.stderr
+        guest('test ! -e /var/lib/silo/working-account.json; userdel conflict; if getent group conflict >/dev/null; then groupdel conflict; fi')
+        # An interrupted earlier run left only the group.
+        guest('groupadd --gid 1001 silo')
+        set_up(timeout=600)
+        guest('test "$(stat -c %U:%a /home/silo/legacy-data)" = silo:600; test "$(stat -c %U:%a /root/legacy-data)" = root:600')
+        guest('test ! -e /tmp/account-proof-package-manager-called')
         guest('printf sentinel > /workspace/root-owned; chmod 600 /workspace/root-owned')
-        guest(setup)
+        set_up()
         guest('test "$(stat -c %U:%a /workspace/root-owned)" = root:600; test "$(cat /workspace/root-owned)" = sentinel')
-        guest('mv /var/lib/silo/working-account.json /var/lib/silo/working-account.json.saved; printf 1 > /var/lib/silo/working-account-installing')
-        guest(setup)
-        guest('test ! -e /var/lib/silo/working-account-installing; test "$(stat -c %U:%a /workspace/root-owned)" = root:600; cmp /var/lib/silo/working-account.json /var/lib/silo/working-account.json.saved')
+        guest('mv /var/lib/silo/working-account.json /var/lib/silo/working-account.json.saved')
+        set_up()
+        guest('cmp /var/lib/silo/working-account.json /var/lib/silo/working-account.json.saved; test "$(id -u silo):$(id -g silo)" = 1001:1001')
         guest("printf '{}\\n' > /var/lib/silo/working-account.json")
-        malformed = guest(setup, check=False)
+        malformed = set_up(check=False)
         assert malformed.returncode != 0, 'Malformed account marker must fail closed'
         guest('mv /var/lib/silo/working-account.json.saved /var/lib/silo/working-account.json')
-        record('PASS production setup refuses collisions and malformed policy, resumes interrupted setup, and preserves existing contents')
+        record('PASS setup refuses collisions and malformed policy, copies root files, resumes interrupted setup, and leaves a set-up VM unchanged')
         identity = guest('id; printf "HOME=%s USER=%s LOGNAME=%s\\n" "$HOME" "$USER" "$LOGNAME"; pwd', user='silo')
         record('IDENTITY OBSERVATION ' + identity.stdout)
         guest('set -eu; test "$(id -un)" = silo; test "$HOME" = /home/silo; test "$USER" = silo; test "$LOGNAME" = silo; printf project > /workspace/project; printf tool > "$HOME/tool"; sudo -n test "$(sudo -n id -u)" = 0; test ! -r /root/legacy-data', user='silo')

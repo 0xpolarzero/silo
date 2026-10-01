@@ -16,7 +16,8 @@ use tauri::AppHandle;
 pub(crate) fn quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
-fn command(paths: &RuntimePaths, name: &str, user: &str) -> Result<String, String> {
+fn command(paths: &RuntimePaths, name: &str) -> Result<String, String> {
+    let user = crate::working_account::USER;
     runtime::validate_name(name).map_err(|e| e.to_string())?;
     let args = [
         "/usr/bin/env".to_string(),
@@ -97,9 +98,8 @@ pub(crate) fn open(app: &AppHandle, name: &str) -> Result<(), String> {
     {
         return Err("Choose a local Silo VM.".into());
     }
-    let inspected = running_vm(&paths, name)?;
-    let user = crate::working_account::working_user(&inspected.config)?;
-    applications::open_terminal(app, &application, &command(&paths, name, user)?)
+    running_vm(&paths, name)?;
+    applications::open_terminal(app, &application, &command(&paths, name)?)
 }
 
 pub(crate) fn command_file(command: &str) -> Result<std::path::PathBuf, String> {
@@ -173,13 +173,13 @@ mod tests {
             volumes: "/tmp/volumes".into(),
         };
         let user = "silo";
-        let text = command(&paths, "dev", user).unwrap();
+        let text = command(&paths, "dev").unwrap();
         assert!(text.contains("'--no-start' '--workdir' '/workspace' '--tty'"));
         assert!(text.contains("'MSB_HOME=/tmp/runtime home'"));
         assert!(text.contains(&format!(
             "'--user' '{user}' '--env' 'USER={user}' '--env' 'LOGNAME={user}'"
         )));
-        assert!(command(&paths, "bad;name", "silo").is_err());
+        assert!(command(&paths, "bad;name").is_err());
     }
     #[test]
     fn shell_arguments_stay_literal() {

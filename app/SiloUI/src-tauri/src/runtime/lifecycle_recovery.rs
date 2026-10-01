@@ -142,9 +142,6 @@ fn advance(
     if stopped(&observed) {
         let _ = crate::secrets::workspace_stopped(&intent.name);
     }
-    if matches!(intent.action.as_str(), "start" | "restart") {
-        crate::working_account::working_user(&observed.config).map_err(RuntimeError::Invalid)?;
-    }
     loop {
         // Honour a cancel between the discrete stop/start steps of a restart.
         if crate::runtime::operation_gate::check_cancelled().is_err() {
@@ -578,7 +575,7 @@ mod tests {
             }
             Ok(CommandOutput {
                 stdout: if action == "inspect" {
-                    json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{"labels":{"silo.managed":"true","silo.working-account":"1","silo.machine-id":if self.replaced {"different"} else {ID}},"resources":{"cpus":1,"max_cpus":1,"memory_mib":1024,"max_memory_mib":1024}}}).to_string()
+                    json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{"labels":{"silo.managed":"true","silo.machine-id":if self.replaced {"different"} else {ID}},"resources":{"cpus":1,"max_cpus":1,"memory_mib":1024,"max_memory_mib":1024}}}).to_string()
                 } else {
                     "null".into()
                 },

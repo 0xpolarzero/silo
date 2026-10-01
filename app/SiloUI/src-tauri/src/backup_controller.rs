@@ -2383,7 +2383,7 @@ mod tests {
             "image":{"Oci":{"reference":"ubuntu","root_disk":{"kind":"managed"}}},
             "resources":{"cpus":1,"max_cpus":1,"memory_mib":1024,"max_memory_mib":1024},
             "runtime":{"workdir":null,"shell":"/bin/sh","scripts":{},"entrypoint":null,"cmd":["/bin/bash"],"hostname":null,"user":null,"log_level":null,"metrics_sample_interval_ms":1000,"disable_metrics_sample":false},
-            "env":[],"labels":{"silo.managed":"true","silo.working-account":"1"},"rlimits":[],
+            "env":[],"labels":{"silo.managed":"true"},"rlimits":[],
             "mounts":[{"type":"Owned","guest":"/workspace","storage":{"kind":"disk","capacity_mib":1024}}],
             "patches":[],"network":network,"init":null,"pull_policy":"IfMissing",
             "security_profile":"default","deployment_profile":"single_tenant",
@@ -3542,8 +3542,7 @@ mod tests {
             })
         );
         assert_eq!(restored.config["labels"]["silo.github-protocol"], "1");
-        assert_eq!(restored.config["labels"]["silo.working-account"], "1");
-        let restored_user = crate::working_account::working_user(&restored.config).unwrap();
+        let restored_user = crate::working_account::USER;
         assert_eq!(
             run(&[
                 "exec",

@@ -1354,7 +1354,8 @@ mod tests {
             volumes: root.join("volumes"),
         };
         let count = root.join("discoveries");
-        let inspected = json!({"name":"dev","status":"Running","config":{"labels":{"silo.managed":"true",crate::working_account::LABEL:"1"}}});
+        let inspected =
+            json!({"name":"dev","status":"Running","config":{"labels":{"silo.managed":"true"}}});
         fs::write(
             &paths.executable,
             format!(

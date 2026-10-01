@@ -1161,7 +1161,6 @@ pub(super) fn start_pending(
         MANAGED_LABEL.to_string(),
         format!("silo.machine-id={}", machine.id()),
         format!("silo.restore-attempt={attempt_id}"),
-        crate::working_account::UNIFIED_LABEL.into(),
         "silo.github-protocol=1".into(),
     ] {
         args.extend(["--label".into(), label]);
@@ -5648,7 +5647,7 @@ mod tests {
                 }
                 "inspect" if *self.exists.lock().unwrap() => ok(serde_json::json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{
                     // No SILO_GITHUB secret: this VM never passes restore verification.
-                    "labels":{"silo.managed":"true","silo.machine-id":ID,"silo.restore-attempt":self.attempt.lock().unwrap().clone(),"silo.working-account":"1"},
+                    "labels":{"silo.managed":"true","silo.machine-id":ID,"silo.restore-attempt":self.attempt.lock().unwrap().clone()},
                     "resources":{"max_cpus":1,"max_memory_mib":1024},
                     "network":{"policy":{"default_egress":"deny","default_ingress":"allow","rules":[]}}
                 }}).to_string()),

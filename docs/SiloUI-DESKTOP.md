@@ -26,9 +26,9 @@ failed state for explicit recovery.
 
 VMs use `silo`, with home `/home/silo`, for terminal, SSH, editor and desktop
 work, with passwordless sudo for administration. Installing the desktop later
-reuses that account and preserves existing workspace files. Older VMs require
-[explicit migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md) or recreation first.
-Adding a desktop never migrates accounts or file ownership.
+reuses that account and preserves existing workspace files. Older VMs move to
+it at their next start ([older VMs](SiloUI-WORKING-ACCOUNT-MIGRATION.md)).
+Adding a desktop never changes accounts or file ownership.
 
 Run graphical programs as the VM's desktop user with `DISPLAY=:1` and
 `XAUTHORITY` pointing to `.Xauthority` in that user's home. The session provides

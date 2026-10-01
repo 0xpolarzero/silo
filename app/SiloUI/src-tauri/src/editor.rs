@@ -56,8 +56,8 @@ pub(crate) fn open(app: &AppHandle, name: &str, path: Option<&str>) -> Result<()
     {
         return Err("This sandbox does not support local editor connections.".into());
     }
-    let inspected = crate::terminal::running_vm(&paths, name)?;
-    let user = crate::working_account::working_user(&inspected.config)?;
+    crate::terminal::running_vm(&paths, name)?;
+    let user = crate::working_account::USER;
     // Validate the exact folder inside the guest, as positional data, before handoff.
     runtime::run_msb(
         &paths,
@@ -577,8 +577,8 @@ pub(crate) fn authorize_remote(
     crate::runtime::shutdown::ensure_accepting_operations()?;
     validate_public_key(public)?;
     validate_path(path)?;
-    let inspected = crate::terminal::running_vm(paths, name)?;
-    let user = crate::working_account::working_user(&inspected.config)?;
+    crate::terminal::running_vm(paths, name)?;
+    let user = crate::working_account::USER;
     runtime::run_msb(
         paths,
         &[
@@ -1243,7 +1243,7 @@ mod tests {
             metadata: directory.path().join("machines.json"),
             volumes: directory.path().join("volumes"),
         };
-        crate::working_account::test_runtime(&paths.executable, true);
+        crate::working_account::test_runtime(&paths.executable);
         let (alias, config) = prepare(&paths, &home, "dev").unwrap();
         let once = fs::read(home.join(".ssh/config")).unwrap();
         prepare(&paths, &home, "dev").unwrap();

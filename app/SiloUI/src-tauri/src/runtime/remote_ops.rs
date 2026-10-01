@@ -280,7 +280,7 @@ mod tests {
                 })
             };
             match args[0].as_str() {
-                "inspect" => output(json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{"labels":{"silo.managed":"true","silo.working-account":"1","silo.machine-id":ID},"resources":{"cpus":1,"max_cpus":1,"memory_mib":1024,"max_memory_mib":1024}}}).to_string()),
+                "inspect" => output(json!({"name":"dev","status":*self.state.lock().unwrap(),"config":{"labels":{"silo.managed":"true","silo.machine-id":ID},"resources":{"cpus":1,"max_cpus":1,"memory_mib":1024,"max_memory_mib":1024}}}).to_string()),
                 "start" => {
                     self.mutations.lock().unwrap().push("start".into());
                     if let Some(started) = self.started.lock().unwrap().take() {
