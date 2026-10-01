@@ -21,7 +21,16 @@ test -x /usr/bin/selkies || { echo "Guest image is missing the Selkies streamer"
 test -x /usr/bin/xfce4-session || { echo "Guest image is missing the Xfce session" >&2; exit 1; }
 python3 -c 'import json; m = json.load(open("/usr/local/share/silo/guest-image.json")); assert m["schemaVersion"] == 1 and m["version"] == "'${GUEST_IMAGE_VERSION}'" and {"desktop", "accessibility"} <= set(m["capabilities"]) and m["streamerVersion"] == "2.0.0"'
 test -x /usr/local/libexec/silo-accessibility
+python3 -c 'import py_compile; py_compile.compile("/usr/local/libexec/silo-accessibility", cfile="/tmp/silo-accessibility.pyc", doraise=True)' || { echo "The accessibility poller does not compile" >&2; exit 1; }
 test -f /etc/xdg/autostart/silo-accessibility.desktop
+autostart_exec=$(sed -n 's/^Exec=//p' /etc/xdg/autostart/silo-accessibility.desktop | head -n 1 | cut -d' ' -f1)
+test -n "$autostart_exec" && test -x "$autostart_exec" || { echo "The accessibility autostart entry does not name an executable" >&2; exit 1; }
+leftovers=$(find / -xdev \\( -name '*.deb' -o -name 'selkies*.tar*' \\) -not -path '/proc/*' 2>/dev/null; find /var/cache/apt/archives /var/lib/apt/lists -type f 2>/dev/null)
+test -z "$leftovers" || { echo "Guest image keeps package files: $leftovers" >&2; exit 1; }
+# A disposable account in a fresh session bus must see accessibility enabled by the image defaults alone.
+useradd --create-home --shell /bin/sh silo-verify-a11y
+trap 'userdel --remove silo-verify-a11y >/dev/null 2>&1 || true' EXIT
+test "$(sudo -n -u silo-verify-a11y -H dbus-launch --exit-with-session gsettings get org.gnome.desktop.interface toolkit-accessibility)" = true || { echo "toolkit-accessibility is not enabled by default for new accounts" >&2; exit 1; }
 grep -qx 'toolkit-accessibility=true' /etc/dconf/db/local.d/00-silo-accessibility
 test -f /etc/dconf/db/local && test "$(xdg-mime query default text/plain)" = org.gnome.TextEditor.desktop
 if dpkg -s mousepad >/dev/null 2>&1; then echo "Mousepad crashes under AT-SPI paste and must not be installed" >&2; exit 1; fi

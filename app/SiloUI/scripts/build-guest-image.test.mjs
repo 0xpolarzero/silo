@@ -75,6 +75,10 @@ for (const [name, mutation] of [
   ["missing Python", "rm -f /usr/bin/python3"],
   ["SFTP executable unavailable to normal users", "chmod 0700 /usr/lib/openssh/sftp-server"],
   ["preinstalled working account", "useradd --no-create-home silo"],
+  ["missing dconf user profile", "rm -f /etc/dconf/profile/user"],
+  ["invalid accessibility poller", "echo 'def (' > /usr/local/libexec/silo-accessibility"],
+  ["autostart entry naming a missing program", "sed -i 's#^Exec=.*#Exec=/usr/local/libexec/missing#' /etc/xdg/autostart/silo-accessibility.desktop"],
+  ["leftover package file", "touch /var/cache/selkies.deb"],
 ]) {
   test(`offline image check rejects ${name}`, { skip: !image }, () => {
     assert.throws(() => verifyGuestImage(architecture, image, {

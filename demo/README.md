@@ -137,7 +137,7 @@ outside the frame. The app remains interactive so folders and menus can be
 staged before capture.
 
 The Linux desktop leads with the production viewer and an illustrated Linux desktop with a quiet gradient wallpaper.
-The browser and agent terminal are HTML illustrations of an example Luda task,
+The browser and agent terminal are HTML illustrations of an example computer-use task,
 not a recording or proof of a completed agent run. Sandboxes establishes local
 and remote management; GitHub shows per-sandbox repository permissions. All project
 names and state are simulated. Two sandboxes are local; `lab` runs on the fixture
