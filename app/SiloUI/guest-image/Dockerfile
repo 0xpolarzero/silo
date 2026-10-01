@@ -1,13 +1,79 @@
 # syntax=docker/dockerfile:1
 FROM ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254
 LABEL org.opencontainers.image.title="Silo Ubuntu guest" \
-      org.opencontainers.image.description="Ubuntu 24.04 with Silo's Git integration and offline working-account tools. No credentials." \
+      org.opencontainers.image.description="Ubuntu 24.04 with Silo's Git integration, offline working-account tools, an Xfce desktop with the Selkies streamer, and the system libraries for Linux computer use. No credentials." \
       org.opencontainers.image.source="https://github.com/0xpolarzero/silo" \
-      org.opencontainers.image.version="ubuntu-24.04-v3"
+      org.opencontainers.image.version="ubuntu-24.04-v4"
+
+# v3 content. Unchanged: working-account tools and the Git/GitHub setup.
 COPY src-tauri/guest/setup-github.sh /tmp/silo-setup-github.sh
 RUN sh /tmp/silo-setup-github.sh \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends sudo python3 openssh-sftp-server \
     && dpkg-query -W > /usr/local/share/silo-packages.txt \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/silo-setup-github.sh
+
+# v4 content: the desktop, computer-use dependencies and accessibility defaults.
+#
+# Packages, in groups:
+#  1. Desktop: the list of src-tauri/guest/setup-desktop.sh, minus mousepad
+#     (GTK 3.24's AT-SPI PasteText use-after-free crashes every GTK3 text view),
+#     plus gnome-text-editor (GTK4) as the text editor.
+#  2. Accessibility: gsettings schemas, the dconf stack and python3-pyatspi for
+#     the poller in src-tauri/guest/silo-accessibility.py.
+#  3. LCU v0.7.0 SYSTEM_PACKAGES, a superset of the ChatGPT Linux .deb's
+#     dependencies on Ubuntu 24.04, so LCU installs with --skip-system --offline.
+#     Source: https://github.com/0xpolarzero/lcu/blob/v0.7.0/scripts/install.py
+#     Packages already named in an earlier group are not repeated.
+#
+# The pinned Selkies .deb is downloaded, SHA-256 verified, installed and deleted
+# inside this one RUN so no package file stays in any layer; the lock and the
+# poller are bind-mounted, never COPYed. Apt lists and caches are cleaned here.
+#
+# TODO(LCU): stage the pinned, hash-checked LCU release archive (for example under
+# /usr/local/share/silo/) here once the new LCU release is published. Do not add
+# LCU itself or any OpenAI file before then.
+ARG TARGETARCH
+RUN --mount=type=bind,source=src-tauri/guest/desktop-streamer-lock.json,target=/mnt/desktop-streamer-lock.json \
+    --mount=type=bind,source=src-tauri/guest/silo-accessibility.py,target=/mnt/silo-accessibility.py \
+    set -eu \
+    && export DEBIAN_FRONTEND=noninteractive \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl dbus-x11 at-spi2-core xfce4-session xfce4-panel xfce4-settings \
+        xfdesktop4 xfwm4 thunar xfce4-terminal greybird-gtk-theme fonts-dejavu-core xauth \
+        x11-utils procps xvfb pulseaudio gnome-text-editor \
+        gsettings-desktop-schemas dconf-service dconf-gsettings-backend dconf-cli python3-pyatspi \
+        bubblewrap ffmpeg libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+        libc6 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libexpat1 libgbm1 libgcc-s1 \
+        libgdk-pixbuf-2.0-0 libgl1 libglib2.0-bin libglib2.0-0t64 libgtk-3-0t64 libnotify4 \
+        libnspr4 libnss3 libpango-1.0-0 libssl3t64 libstdc++6 libtss2-esys-3.0.2-0t64 \
+        libtss2-mu-4.0.1-0t64 libtss2-tcti-device0t64 libudev1 libusb-1.0-0 libx11-6 \
+        libx11-xcb1 libxcb-dri3-0 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
+        libxi6 libxkbcommon0 libxrandr2 libxtst6 mesa-vulkan-drivers pulseaudio-utils \
+        xdg-utils xz-utils \
+    && set -- $(python3 -c "import json,re,sys; a=json.load(open('/mnt/desktop-streamer-lock.json'))['assets'][sys.argv[1]]; assert a['url'].startswith('https://github.com/selkies-project/selkies/releases/download/2.0.0/') and re.fullmatch('[0-9a-f]{64}', a['sha256']); print(a['url'], a['sha256'])" "$TARGETARCH") \
+    && url=$1 && sha256=$2 \
+    && curl --silent --show-error --fail --location --retry 2 --connect-timeout 30 --max-time 600 \
+        --proto '=https' --tlsv1.2 "$url" -o /tmp/selkies.deb \
+    && echo "$sha256  /tmp/selkies.deb" | sha256sum --check --status \
+    && apt-get install -y --no-install-recommends /tmp/selkies.deb \
+    && test -x /usr/bin/selkies \
+    && rm -f /tmp/selkies.deb \
+    && install -d -m 0755 /usr/local/libexec /etc/dconf/profile /etc/dconf/db/local.d /etc/xdg/autostart \
+    && install -m 0755 /mnt/silo-accessibility.py /usr/local/libexec/silo-accessibility \
+    && printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Silo accessibility' \
+        'Comment=Lets assistive tools read Chromium and Electron web content' \
+        'Exec=/usr/local/libexec/silo-accessibility' 'NoDisplay=true' \
+        'X-GNOME-Autostart-enabled=true' > /etc/xdg/autostart/silo-accessibility.desktop \
+    && printf '%s\n' 'user-db:user' 'system-db:local' > /etc/dconf/profile/user \
+    && printf '%s\n' '[org/gnome/desktop/interface]' 'toolkit-accessibility=true' > /etc/dconf/db/local.d/00-silo-accessibility \
+    && dconf update \
+    && printf '%s\n' '[Default Applications]' 'text/plain=org.gnome.TextEditor.desktop' \
+        'text/markdown=org.gnome.TextEditor.desktop' 'text/x-log=org.gnome.TextEditor.desktop' \
+        'text/x-python=org.gnome.TextEditor.desktop' 'text/x-shellscript=org.gnome.TextEditor.desktop' \
+        'application/json=org.gnome.TextEditor.desktop' 'application/xml=org.gnome.TextEditor.desktop' \
+        > /etc/xdg/mimeapps.list \
+    && dpkg-query -W > /usr/local/share/silo-packages.txt \
+    && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /tmp/*
 CMD ["/bin/bash"]
