@@ -8,6 +8,7 @@ mod channel;
 mod chatgpt_app;
 #[cfg(test)]
 mod command_permissions_tests;
+mod computer_use;
 mod dependencies;
 mod desktop;
 mod desktop_proxy;
@@ -114,6 +115,10 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             desktop::read_desktop_state,
             desktop::desktop_action,
+            desktop::set_computer_use_approval,
+            chatgpt_app::chatgpt_app_status,
+            chatgpt_app::chatgpt_app_accept_notice,
+            chatgpt_app::chatgpt_app_prepare,
             desktop_viewer::open_desktop,
             desktop_viewer::desktop_viewer_attach,
             desktop_viewer::desktop_viewer_detach,
@@ -251,6 +256,7 @@ fn main() {
                     let _ = queue_app.emit("silo://operation-queue-changed", ());
                 });
                 runtime_migration::install(app.handle())?;
+                computer_use::install(app.handle());
                 pre_upgrade_backup::install(app.handle());
                 remote::start(app.handle().clone());
                 secrets::install(app.handle())?;

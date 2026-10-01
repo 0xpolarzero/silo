@@ -80,7 +80,8 @@ fn planted_staging_and_version_symlinks_never_redirect_writes() {
     fs::write(outside.join("keep"), b"keep").unwrap();
     let base = chatgpt_root(&dir);
     std::os::unix::fs::symlink(&outside, base.join(".staging-evil")).unwrap();
-    std::os::unix::fs::symlink(&outside, base.join("1.2.3-arm64")).unwrap();
+    fs::create_dir_all(base.join("published")).unwrap();
+    std::os::unix::fs::symlink(&outside, base.join("published/1.2.3-arm64")).unwrap();
     std::os::unix::fs::symlink(&outside, base.join(".rejected-evil")).unwrap();
     let path = run(&dir, &package, &lock_for(&package)).0.unwrap();
     assert!(fs::symlink_metadata(&path).unwrap().is_dir());
@@ -103,7 +104,7 @@ fn a_symlinked_storage_root_or_subdirectory_is_refused() {
     let (result, calls) = again(&dir, &package, &lock);
     assert!(result.is_err() && calls == 0);
     assert!(RootLock::take(&chatgpt_root(&dir)).is_err());
-    assert!(real.join("1.2.3-arm64").exists() && !path.starts_with("/nonexistent"));
+    assert!(real.join("published/1.2.3-arm64").exists() && !path.starts_with("/nonexistent"));
     // A symlinked downloads folder: nothing is written through it.
     let dir = root();
     let outside = dir.path().join("outside");
@@ -141,7 +142,8 @@ fn a_preseeded_version_folder_is_never_accepted() {
     let dir = root();
     let package = deb(&good_items());
     let lock = lock_for(&package);
-    plant_fake_tree(&chatgpt_root(&dir).join("1.2.3-arm64"));
+    fs::create_dir_all(chatgpt_root(&dir).join("published")).unwrap();
+    plant_fake_tree(&chatgpt_root(&dir).join("published/1.2.3-arm64"));
     assert!(!verified(&dir, &lock));
     assert_eq!(
         current_status(&chatgpt_root(&dir), &lock, DebArch::Arm64),
@@ -180,7 +182,7 @@ fn the_record_binds_the_lock_version_architecture_and_package_hash() {
     // A record copied under another architecture's name is refused.
     let record = fs::read(root.join("1.2.3-arm64.published.json")).unwrap();
     fs::write(root.join("1.2.3-amd64.published.json"), record).unwrap();
-    fs::create_dir_all(root.join("1.2.3-amd64")).unwrap();
+    fs::create_dir_all(root.join("published/1.2.3-amd64")).unwrap();
     assert!(verify_published(&root, &lock, DebArch::Amd64).is_none());
 }
 
@@ -544,4 +546,51 @@ fn consent_files_are_exclusive_and_links_are_not_followed() {
     std::os::unix::fs::symlink(&victim, root.join("t.tmp")).unwrap();
     assert!(handle.create_file("t.tmp", 0o600).is_err());
     assert_eq!(fs::read(&victim).unwrap(), b"precious");
+}
+
+#[test]
+fn the_published_folder_always_exists_and_only_holds_verified_trees() {
+    let dir = root();
+    let base = chatgpt_root(&dir);
+    // Created empty before anything is consented or downloaded.
+    let mounted = ensure_published_dir(&base).unwrap();
+    assert_eq!(mounted, fs::canonicalize(base.join("published")).unwrap());
+    assert_eq!(fs::read_dir(&mounted).unwrap().count(), 0);
+    let package = deb(&good_items());
+    let lock = lock_for(&package);
+    let path = run(&dir, &package, &lock).0.unwrap();
+    assert_eq!(path, mounted.join("1.2.3-arm64"));
+    // Records, consent, downloads and staging stay outside the mounted folder.
+    let names: Vec<_> = fs::read_dir(&mounted)
+        .unwrap()
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, ["1.2.3-arm64"]);
+    assert!(base.join("1.2.3-arm64.published.json").is_file());
+    // A symlinked published folder is refused.
+    let dir = root();
+    let base = chatgpt_root(&dir);
+    fs::create_dir_all(&base).unwrap();
+    let elsewhere = dir.path().join("elsewhere");
+    fs::create_dir(&elsewhere).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, base.join("published")).unwrap();
+    assert!(ensure_published_dir(&base).is_err());
+}
+
+#[test]
+fn a_tree_published_at_the_old_location_moves_and_is_still_verified() {
+    let (dir, package, lock, path) = published();
+    let base = chatgpt_root(&dir);
+    // Recreate the old layout: tree directly under the root, no published folder.
+    fs::rename(&path, base.join("1.2.3-arm64")).unwrap();
+    fs::remove_dir(base.join("published")).unwrap();
+    assert!(!verified(&dir, &lock), "nothing is published before the move");
+    let mounted = ensure_published_dir(&base).unwrap();
+    assert!(!base.join("1.2.3-arm64").exists());
+    assert!(mounted.join("1.2.3-arm64/ChatGPT").is_file());
+    // The moved tree is accepted only because the record and digests match.
+    let (result, calls) = again(&dir, &package, &lock);
+    assert_eq!(result.unwrap(), mounted.join("1.2.3-arm64"));
+    assert_eq!(calls, 0);
 }

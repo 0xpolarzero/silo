@@ -23,6 +23,10 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "read_desktop_state",
             "desktop_action",
+            "set_computer_use_approval",
+            "chatgpt_app_status",
+            "chatgpt_app_accept_notice",
+            "chatgpt_app_prepare",
             "open_desktop",
             "desktop_viewer_attach",
             "desktop_viewer_detach",

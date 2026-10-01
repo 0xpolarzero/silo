@@ -1268,6 +1268,8 @@ fn backup_work(
         let mut inspected = inspect(&paths, name)?;
         runtime::ensure_managed(&inspected).map_err(|error| error.to_string())?;
         canonicalize_backup_runtime(&mut inspected.config)?;
+        // The computer-use mount is host-specific and rebuilt on import; `builtIn` carries it.
+        crate::computer_use::strip_mount_for_export(&mut inspected.config)?;
         backup_volumes(machine, &mut inspected)?;
         // A checkpoint export reuses the checkpoint's immutable member from its
         // lineage group; a state export captures the sandbox's current disk.

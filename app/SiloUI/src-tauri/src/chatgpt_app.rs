@@ -13,10 +13,16 @@
 //! chatgpt/consent.json               the accepted notice
 //! chatgpt/downloads/*.deb[.part]     resumable download, deleted after success
 //! chatgpt/.staging-*/                extraction in progress, never mounted
-//! chatgpt/<version>-<debarch>/       published, immutable app tree
+//! chatgpt/published/                 mounted read-only into VMs; only verified trees
+//! chatgpt/published/<version>-<debarch>/
+//!                                    published, immutable app tree
 //! chatgpt/<version>-<debarch>.published.json
 //!                                    publication record, written last
 //! ```
+//!
+//! Records, staging, downloads and consent stay outside `published/`: that folder
+//! is what every VM mounts, so it holds nothing but verified trees (which also keeps
+//! MicroSandbox's first walk of the mount small).
 //!
 //! A folder is only "ready" when its publication record matches the lock and
 //! the tree (see `verify_published`). The storage root and every directory
@@ -24,9 +30,6 @@
 //! be real directories owned by the current user; files are created exclusively
 //! and relative to those directory handles.
 //!
-//! The package is not wired into VM creation or the UI yet, so the module is
-//! allowed to be unused.
-#![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -69,6 +72,8 @@ const MAX_COMPONENT_BYTES: usize = 255;
 /// Total size of the PAX extended header records of one entry.
 const MAX_PAX_BYTES: usize = 64 * 1024;
 const RECORD_SUFFIX: &str = ".published.json";
+/// The folder VMs mount, directly under the storage root.
+const PUBLISHED_DIR: &str = "published";
 const RECORD_SCHEMA: u32 = 1;
 const MAX_RECORD_BYTES: u64 = 4096;
 const STATUS_EVENT: &str = "chatgpt-app-status";
@@ -82,7 +87,7 @@ pub(crate) struct Lock {
     pub(crate) package: String,
     pub(crate) version: String,
     pub(crate) cua_runtime_version: String,
-    /// The LCU release tested with this app; filled in at integration.
+    /// The LCU release tested with this app (must equal `guest/lcu-lock.json`).
     pub(crate) lcu_version: Option<String>,
     architectures: HashMap<String, Asset>,
 }
@@ -405,6 +410,13 @@ impl Dir {
     fn rename(&self, from: &str, to: &str) -> std::io::Result<()> {
         let (from, to) = (c_name(from)?, c_name(to)?);
         check(unsafe { libc::renameat(self.fd(), from.as_ptr(), self.fd(), to.as_ptr()) })
+            .map(|_| ())
+    }
+
+    /// Renames `from` in this directory to `to` inside `other` (same filesystem).
+    fn rename_into(&self, from: &str, other: &Dir, to: &str) -> std::io::Result<()> {
+        let (from, to) = (c_name(from)?, c_name(to)?);
+        check(unsafe { libc::renameat(self.fd(), from.as_ptr(), other.fd(), to.as_ptr()) })
             .map(|_| ())
     }
 
@@ -1393,9 +1405,9 @@ type Stamp = (u64, u64, i64, i64, u64, u64);
 /// they had then. A later call re-hashes only if the stamp or stat digest moved.
 static VERIFIED: Mutex<Option<HashMap<PathBuf, (Stamp, String)>>> = Mutex::new(None);
 
-fn stamp(root: &Dir, name: &str) -> Option<Stamp> {
+fn stamp(root: &Dir, published: &Dir, name: &str) -> Option<Stamp> {
     let record = root.stat(&record_name(name), false).ok()?;
-    let tree = root.stat(name, false).ok()?;
+    let tree = published.stat(name, false).ok()?;
     Some((
         record.st_dev as u64,
         record.st_ino as u64,
@@ -1438,13 +1450,14 @@ fn verify_published(root: &Path, lock: &Lock, arch: DebArch) -> Option<PathBuf> 
     {
         return None;
     }
-    let (tree, _) = root_dir.subdir(&name, false).ok()?;
+    let (published_dir, _) = root_dir.subdir(PUBLISHED_DIR, false).ok()?;
+    let (tree, _) = published_dir.subdir(&name, false).ok()?;
     if tree.stat_self().ok()?.st_mode & 0o022 != 0 {
         return None;
     }
     check_executables(&tree).ok()?;
-    let path = root.join(&name);
-    let identity = stamp(&root_dir, &name)?;
+    let path = published_path(root).join(&name);
+    let identity = stamp(&root_dir, &published_dir, &name)?;
     let stat_digest = digest_tree(&path, false).ok()?.stat;
     let cached = VERIFIED
         .lock()
@@ -1580,13 +1593,14 @@ fn ensure_inner(
     }
     let prepare =
         |_: std::io::Error| Error::retry("Silo could not prepare its ChatGPT app folder.");
-    let root_dir = Dir::open_root(root, true).map_err(prepare)?;
+    let (root_dir, published_dir) = open_storage(root, true).map_err(prepare)?;
+    let published_path = published_path(root);
     // Whatever sits under the published name is not something Silo published
     // (no valid record, wrong tree, damaged): remove it, record first, so a
     // crash can never leave a record pointing at a half-deleted tree.
     root_dir
         .remove_entry(root, &record_name(&name))
-        .and_then(|()| root_dir.remove_entry(root, &name))
+        .and_then(|()| published_dir.remove_entry(&published_path, &name))
         .map_err(prepare)?;
     clean_staging(root, &root_dir);
 
@@ -1657,9 +1671,9 @@ fn ensure_inner(
 
     // Publish: one atomic rename, then the parent is synced, then the record,
     // which is the last durable step. Until it exists the folder is not ready.
-    let target = root.join(&name);
-    let renamed = if root_dir.absent_entry(&name) {
-        root_dir.rename(&staging.name, &name)
+    let target = published_path.join(&name);
+    let renamed = if published_dir.absent_entry(&name) {
+        root_dir.rename_into(&staging.name, &published_dir, &name)
     } else {
         Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
     };
@@ -1676,20 +1690,76 @@ fn ensure_inner(
     staging.armed = false;
     let published = (|| -> std::io::Result<()> {
         root_dir.sync()?;
+        published_dir.sync()?;
         write_file_atomically(&root_dir, &record_name(&name), &record_bytes)
     })();
     if published.is_err() {
         let _ = root_dir.remove_entry(root, &record_name(&name));
-        let _ = root_dir.remove_entry(root, &name);
+        let _ = published_dir.remove_entry(&published_path, &name);
         return Err(Error::retry(
             "Silo could not finish publishing the ChatGPT app. Check disk access and retry.",
         ));
     }
-    if let Some(identity) = stamp(&root_dir, &name) {
+    if let Some(identity) = stamp(&root_dir, &published_dir, &name) {
         remember(target.clone(), identity, digests.stat);
     }
     let _ = fs::remove_file(&deb);
     ready(target)
+}
+
+/// `<root>/published`: the folder VMs mount.
+pub(crate) fn published_path(root: &Path) -> PathBuf {
+    root.join(PUBLISHED_DIR)
+}
+
+/// Opens the storage root and its `published/` folder, creating both with
+/// `create`. Trees an earlier build published directly under the root move
+/// into `published/` (they are verified like any other tree before use).
+fn open_storage(root: &Path, create: bool) -> std::io::Result<(Dir, Dir)> {
+    let root_dir = Dir::open_root(root, create)?;
+    let (published, created) = root_dir.subdir(PUBLISHED_DIR, create)?;
+    if created {
+        root_dir.sync()?;
+    }
+    if create {
+        migrate_legacy_trees(root, &root_dir, &published);
+    }
+    Ok((root_dir, published))
+}
+
+/// Moves version folders left at the old location (`<root>/<version>-<arch>`)
+/// into `published/`; one that already exists there is removed instead.
+fn migrate_legacy_trees(root: &Path, root_dir: &Dir, published: &Dir) {
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_version_dir(&name) || !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        if published.absent_entry(&name) {
+            let _ = root_dir.rename_into(&name, published, &name);
+        } else {
+            let _ = root_dir.remove_entry(root, &name);
+        }
+    }
+}
+
+fn is_version_dir(name: &str) -> bool {
+    ["-arm64", "-amd64"]
+        .iter()
+        .any(|suffix| name.strip_suffix(suffix).is_some_and(valid_version))
+}
+
+/// Creates the storage root and `published/` (empty is fine), migrates trees from
+/// the old layout and returns the canonical folder to mount into VMs.
+pub(crate) fn ensure_published_dir(root: &Path) -> Result<PathBuf, Error> {
+    let failed = || Error::retry("Silo could not prepare its ChatGPT app folder.");
+    Dir::open_root(root, true).map_err(|_| failed())?;
+    let _lock = RootLock::take(root)?;
+    open_storage(root, true).map_err(|_| failed())?;
+    fs::canonicalize(published_path(root)).map_err(|_| failed())
 }
 
 impl Dir {
@@ -1745,33 +1815,32 @@ pub(crate) fn collect_garbage(
         return Ok(Vec::new());
     }
     let _lock = RootLock::take(root)?;
-    let root_dir = Dir::open_root(root, true)
-        .map_err(|_| Error::retry("Could not list ChatGPT app versions."))?;
+    let list_failed = || Error::retry("Could not list ChatGPT app versions.");
+    let (root_dir, published_dir) = open_storage(root, true).map_err(|_| list_failed())?;
     clean_staging(root, &root_dir);
     let pinned = lock.directory_name(arch);
-    let is_version = |name: &str| {
-        ["-arm64", "-amd64"]
-            .iter()
-            .any(|suffix| name.strip_suffix(suffix).is_some_and(valid_version))
-    };
+    let published = published_path(root);
     let mut removed = Vec::new();
-    let entries =
-        fs::read_dir(root).map_err(|_| Error::retry("Could not list ChatGPT app versions."))?;
-    for entry in entries.flatten() {
+    // A record of a version that is going away goes with it (or alone).
+    for entry in fs::read_dir(root).map_err(|_| list_failed())?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        // A record of a version that is going away goes with it (or alone).
         if let Some(stem) = name.strip_suffix(RECORD_SUFFIX) {
-            if is_version(stem) && stem != pinned && !in_use.contains(stem) {
+            if is_version_dir(stem) && stem != pinned && !in_use.contains(stem) {
                 let _ = root_dir.remove_entry(root, &name);
             }
-            continue;
         }
-        if !is_version(&name) || name == pinned || in_use.contains(&name) {
+    }
+    for entry in fs::read_dir(&published)
+        .map_err(|_| list_failed())?
+        .flatten()
+    {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !is_version_dir(&name) || name == pinned || in_use.contains(&name) {
             continue;
         }
         if entry.file_type().is_ok_and(|t| t.is_dir()) {
             let _ = root_dir.remove_entry(root, &record_name(&name));
-            if root_dir.remove_entry(root, &name).is_ok() {
+            if published_dir.remove_entry(&published, &name).is_ok() {
                 removed.push(name);
             }
         }
@@ -1799,70 +1868,255 @@ pub(crate) fn storage_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
         .map_err(|error| format!("Silo could not locate its application storage: {error}"))
 }
 
-static LIVE_STATUS: Mutex<Option<Status>> = Mutex::new(None);
+/// The last status this process settled on or reported. Status reads that must stay
+/// cheap (every desktop state read) use this; verifying the app tree the first time
+/// reads every byte (seconds), so only `compute_status` and `refresh_status_blocking`
+/// may do that, off the main thread.
+static CACHE: Mutex<Option<Status>> = Mutex::new(None);
+/// True while this process downloads or extracts the app.
+static PREPARING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn set_cache(status: &Status) {
+    *CACHE.lock().unwrap_or_else(|p| p.into_inner()) = Some(status.clone());
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_CACHE: std::cell::RefCell<Option<Status>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Pins the status `cached_status` reports on this thread (tests of status mapping).
+#[cfg(test)]
+pub(crate) fn set_test_cache(status: Option<Status>) {
+    TEST_CACHE.with(|slot| *slot.borrow_mut() = status);
+}
+
+/// The cached status, or `None` before the first check.
+pub(crate) fn cached_status() -> Option<Status> {
+    #[cfg(test)]
+    if let Some(status) = TEST_CACHE.with(|slot| slot.borrow().clone()) {
+        return Some(status);
+    }
+    CACHE.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
 
 fn publish(app: &tauri::AppHandle, status: Status) {
     use tauri::Emitter;
-    *LIVE_STATUS.lock().unwrap_or_else(|p| p.into_inner()) = Some(status.clone());
+    set_cache(&status);
     let _ = app.emit(STATUS_EVENT, status);
 }
 
-#[tauri::command]
-pub(crate) fn chatgpt_app_status(app: tauri::AppHandle) -> Result<Status, String> {
-    let live = LIVE_STATUS
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .clone();
-    if let Some(status @ (Status::Downloading { .. } | Status::Verifying | Status::Extracting)) =
-        live
-    {
-        return Ok(status);
+fn in_progress(status: &Status) -> bool {
+    matches!(
+        status,
+        Status::Downloading { .. } | Status::Verifying | Status::Extracting
+    )
+}
+
+/// Status from disk (verifies the tree: slow the first time in a process).
+fn compute_status(app: &tauri::AppHandle) -> Result<Status, String> {
+    if let Some(status) = cached_status().filter(|status| in_progress(status)) {
+        if PREPARING.load(Ordering::SeqCst) {
+            return Ok(status);
+        }
     }
-    let root = storage_root(&app)?;
+    let root = storage_root(app)?;
     let lock = Lock::bundled().map_err(|e| e.message)?;
     let arch = DebArch::host().map_err(|e| e.message)?;
-    Ok(match current_status(&root, &lock, arch) {
-        Status::Idle => LIVE_STATUS
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+    let status = match current_status(&root, &lock, arch) {
+        Status::Idle => cached_status()
             .filter(|s| matches!(s, Status::Failed { .. }))
             .unwrap_or(Status::Idle),
         other => other,
-    })
-}
-
-#[tauri::command]
-pub(crate) fn chatgpt_app_accept_notice(app: tauri::AppHandle) -> Result<Status, String> {
-    let root = storage_root(&app)?;
-    accept_notice(&root).map_err(|e| e.message)?;
-    let status = chatgpt_app_status(app.clone())?;
-    publish(&app, status.clone());
+    };
+    set_cache(&status);
     Ok(status)
 }
 
-/// Ensures the pinned app, reporting progress through the `chatgpt-app-status`
-/// event. Resolves with the final status (never rejects for expected failures).
+/// Recomputes and reports the status (blocking; startup and after changes).
+pub(crate) fn refresh_status_blocking(app: &tauri::AppHandle) -> Status {
+    use tauri::Emitter;
+    let status = compute_status(app).unwrap_or(Status::Idle);
+    let _ = app.emit(STATUS_EVENT, status.clone());
+    status
+}
+
+/// Removes published versions other than the pinned one, unless a VM runs (a running
+/// guest may still use the previous version until it next syncs).
+pub(crate) fn collect_unused(app: &tauri::AppHandle) {
+    let Ok(root) = storage_root(app) else { return };
+    let (Ok(lock), Ok(arch)) = (Lock::bundled(), DebArch::host()) else {
+        return;
+    };
+    if crate::runtime::update_recovery::running_names(app).is_ok_and(|names| names.is_empty()) {
+        let _ = collect_garbage(&root, &lock, arch, &HashSet::new());
+    }
+}
+
+/// Downloads and publishes the pinned app (blocking), reporting progress. Returns the
+/// final status; a second concurrent call waits for the first.
+fn run_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
+    let root = storage_root(app)?;
+    let lock = Lock::bundled().map_err(|e| e.message)?;
+    let arch = DebArch::host().map_err(|e| e.message)?;
+    if PREPARING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        while PREPARING.load(Ordering::SeqCst) {
+            std::thread::sleep(Duration::from_millis(500));
+        }
+        return compute_status(app);
+    }
+    struct Done;
+    impl Drop for Done {
+        fn drop(&mut self) {
+            PREPARING.store(false, Ordering::SeqCst);
+        }
+    }
+    let done = Done;
+    publish(app, Status::Verifying);
+    let announcer = app.clone();
+    let report = move |status: Status| publish(&announcer, status);
+    let status = match ensure(&root, &lock, arch, &HttpDownloader::default(), &report) {
+        Ok(path) => Status::Ready {
+            path,
+            version: lock.version.clone(),
+        },
+        Err(error) => error.status(),
+    };
+    set_cache(&status);
+    drop(done);
+    if matches!(status, Status::Ready { .. }) {
+        crate::computer_use::app_ready(app);
+        collect_unused(app);
+    }
+    Ok(status)
+}
+
+/// Starts preparing in the background and returns the status at once (used when this
+/// computer is managed remotely: the controller polls the status).
+pub(crate) fn start_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
+    if !PREPARING.load(Ordering::SeqCst) {
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let _ = run_prepare(&app);
+        });
+        // The worker publishes `Verifying` first; report it without waiting.
+        set_cache(&Status::Verifying);
+        return Ok(Status::Verifying);
+    }
+    Ok(cached_status().unwrap_or(Status::Verifying))
+}
+
+pub(crate) fn local_status(app: &tauri::AppHandle) -> Result<Status, String> {
+    compute_status(app)
+}
+
+pub(crate) fn local_accept_notice(app: &tauri::AppHandle) -> Result<Status, String> {
+    let root = storage_root(app)?;
+    accept_notice(&root).map_err(|e| e.message)?;
+    let status = compute_status(app)?;
+    publish(app, status.clone());
+    Ok(status)
+}
+
+/// The computer that owns `workspace`, when it is a remote VM.
+fn owner(workspace: Option<&str>) -> Result<Option<String>, String> {
+    match workspace {
+        Some(workspace) => Ok(crate::remote_access::target(workspace)?.map(|(host, _)| host)),
+        None => Ok(None),
+    }
+}
+
+/// Calls the computer that owns the VM. An older Silo there does not serve these
+/// methods: say so instead of the generic remote error.
+pub(crate) fn call_owner(
+    app: &tauri::AppHandle,
+    host: &str,
+    method: &str,
+    params: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    crate::remote::call_remote_typed(app, host, method, params).map_err(owner_error)
+}
+
+/// The message for a failed call to the owning computer.
+fn owner_error(error: crate::bridge_error::BridgeError) -> String {
+    if error.code == crate::bridge_error::ErrorCode::UnsupportedRemoteOperation {
+        "Update Silo on that computer to use computer use.".to_owned()
+    } else {
+        error.message
+    }
+}
+
+fn blocking<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> impl std::future::Future<Output = Result<T, String>> {
+    let task = tauri::async_runtime::spawn_blocking(work);
+    async move {
+        task.await
+            .map_err(|_| "The ChatGPT app task stopped unexpectedly.".to_owned())?
+    }
+}
+
+fn to_value(status: Status) -> Result<serde_json::Value, String> {
+    serde_json::to_value(status).map_err(|_| "Could not encode the ChatGPT app status.".into())
+}
+
+/// The ChatGPT app status of this computer, or of the computer that owns `workspace`.
 #[tauri::command]
-pub(crate) async fn chatgpt_app_prepare(app: tauri::AppHandle) -> Result<Status, String> {
-    let root = storage_root(&app)?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let lock = Lock::bundled().map_err(|e| e.message)?;
-        let arch = DebArch::host().map_err(|e| e.message)?;
-        let announcer = app.clone();
-        let report = move |status: Status| publish(&announcer, status);
-        Ok(
-            match ensure(&root, &lock, arch, &HttpDownloader::default(), &report) {
-                Ok(path) => Status::Ready {
-                    path,
-                    version: lock.version.clone(),
-                },
-                Err(error) => error.status(),
-            },
-        )
+pub(crate) async fn chatgpt_app_status(
+    app: tauri::AppHandle,
+    workspace: Option<String>,
+) -> Result<serde_json::Value, String> {
+    blocking(move || match owner(workspace.as_deref())? {
+        Some(host) => call_owner(&app, &host, "chatgpt.status", serde_json::json!({})),
+        None => to_value(local_status(&app)?),
     })
     .await
-    .map_err(|_| "The ChatGPT app task stopped unexpectedly.".to_owned())?
+}
+
+#[tauri::command]
+pub(crate) async fn chatgpt_app_accept_notice(
+    app: tauri::AppHandle,
+    workspace: Option<String>,
+) -> Result<serde_json::Value, String> {
+    blocking(move || match owner(workspace.as_deref())? {
+        Some(host) => call_owner(&app, &host, "chatgpt.accept", serde_json::json!({})),
+        None => to_value(local_accept_notice(&app)?),
+    })
+    .await
+}
+
+/// Ensures the pinned app, reporting progress through the `chatgpt-app-status` event.
+/// Resolves with the final status (never rejects for expected failures). For a
+/// remote computer, the owner downloads and this polls its status.
+#[tauri::command]
+pub(crate) async fn chatgpt_app_prepare(
+    app: tauri::AppHandle,
+    workspace: Option<String>,
+) -> Result<serde_json::Value, String> {
+    blocking(move || {
+        let Some(host) = owner(workspace.as_deref())? else {
+            return to_value(run_prepare(&app)?);
+        };
+        use tauri::Emitter;
+        let mut last = call_owner(&app, &host, "chatgpt.prepare", serde_json::json!({}))?;
+        let deadline = Instant::now() + Duration::from_secs(45 * 60);
+        loop {
+            let _ = app.emit(STATUS_EVENT, last.clone());
+            let state = last["state"].as_str().unwrap_or("");
+            if !matches!(state, "downloading" | "verifying" | "extracting") {
+                return Ok(last);
+            }
+            if Instant::now() >= deadline {
+                return Err("The ChatGPT download on the other computer took too long.".into());
+            }
+            std::thread::sleep(Duration::from_secs(2));
+            last = call_owner(&app, &host, "chatgpt.status", serde_json::json!({}))?;
+        }
+    })
+    .await
 }
 
 // ---------------------------------------------------------------- tests
