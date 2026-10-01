@@ -48,15 +48,15 @@ The September 9 experiment above predates the current published image. Reading
 
 These are archive lengths, not measured allocated disk use inside a VM. The
 base includes Ubuntu and the CLI/account tools described in
-[guest images](SiloUI-GUEST-IMAGES.md). Xfce, KasmVNC and desktop tools are
-installed separately by `src-tauri/guest/setup-desktop.sh`. Local candidate
+[guest images](SiloUI-GUEST-IMAGES.md). Xfce, the Selkies streamer and desktop
+tools are installed separately by `src-tauri/guest/setup-desktop.sh`. Local candidate
 archives have different hashes; the table uses the published lock, not those
 candidates.
 
 The [desktop research](SiloUI-LINUX-DESKTOP-RESEARCH.md#costs-and-limits) budgets
 an additional 0.5–1.5 GB download and 2–5 GB installed for the desktop plus light
-browser use. Both ranges are explicitly unmeasured estimates, excluding
-profiles and caches. They do not establish the current recipe's actual size.
+browser use. Both ranges were unmeasured estimates; the
+[October 1 measurement](#desktop-recipe-measurement-2026-10-01) below supersedes them.
 
 [Bluefin's installation documentation](https://docs.projectbluefin.io/installation/#disk-usage),
 checked September 22, reports approximately 12.4 GB installed for Bluefin and
@@ -64,7 +64,43 @@ checked September 22, reports approximately 12.4 GB installed for Bluefin and
 mode raises these to 17.4 GB and 14.5 GB respectively. These are upstream disk
 usage figures, not compressed download sizes or measurements made in Silo.
 
-An exact desktop-to-desktop ratio remains unmeasured. A valid comparison needs
-fresh installations with the same applications, separate compressed transfer
-and installed-space measurements, and explicit treatment of shared image
-caches and per-VM writable data. No VM was launched or changed for this check.
+## Desktop recipe measurement, 2026-10-01
+
+Measured on Apple Silicon with Docker/OrbStack, linux/arm64. The base was built
+from the unchanged `app/SiloUI/guest-image/Dockerfile`; its gzip archive was
+86,067,079 bytes, within 0.4% of the published v3 lock. A candidate image added
+the exact package list from `src-tauri/guest/setup-desktop.sh` and the pinned
+Selkies 2.0.0 ARM64 package, then removed apt lists and downloaded packages.
+Luda and LCU agent tools, the official desktop app LCU requires, and user applications
+were not included. No x86-64 image was measured.
+
+| Measurement | Bytes |
+| --- | ---: |
+| Desktop apt downloads (271 packages, onto plain Ubuntu plus base tools) | ~135,000,000 |
+| Selkies 2.0.0 ARM64 package download | ~59,600,000 |
+| Base image, `docker save` / gzip -9 | 301,947,392 / 86,067,079 |
+| Base plus desktop, `docker save` / gzip -9 | 991,276,032 / 307,815,538 |
+| Added by the desktop, uncompressed / gzip | 689,328,640 / 221,748,459 |
+| Selkies `Installed-Size` alone | ~173,000,000 |
+
+Running memory remains the [September 18 observation](SiloUI-DESKTOP.md#verification-2026-09-18)
+(about 123–233 MiB, depending on the quantity).
+
+### Shared image storage in MicroSandbox 0.7.4
+
+The candidate image was loaded with `msb load` into a disposable `MSB_HOME`, and
+two sandboxes (8 GiB root disk) were created and booted with the signed `msb`
+from the local `Silo Dev.app`. No Silo app, settings or user VM was involved.
+
+- The image occupied 1,019,104 KiB once, in the content-addressed `cache/`.
+- Each sandbox added 4,280 KiB of host allocation, before and after boot; its
+  8 GiB `upper.ext4` is sparse.
+- The guest root was an overlay with the cached image as `lowerdir` and the
+  sandbox's `upper.ext4` as `upperdir`. Both guests saw `/usr/bin/selkies` and
+  `xfce4-session`, with 56 KiB of the root disk used.
+
+An image-baked desktop therefore costs its size once per host and image version,
+and does not consume the sandbox's root-disk allowance. The current per-VM recipe
+instead writes about 690 MB into each sandbox's own upper disk, against its
+quota, and repeats the downloads for every VM. During an image upgrade, hosts
+keep both image versions cached while older VMs use the previous one.
