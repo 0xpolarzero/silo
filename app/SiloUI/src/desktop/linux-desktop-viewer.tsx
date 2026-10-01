@@ -11,7 +11,7 @@ import { DesktopActionsMenu, NativeDesktopActionsMenu, type DesktopMenuProps } f
 // including dialogs that look like Silo's, comes from the sandbox (G-20).
 const GUEST_CONTENT_NOTICE = "Everything inside the amber frame comes from the sandbox. Silo's own controls are only in this bar."
 
-export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry, onFullscreen, screenRef, toolsUpdated = false, lcuUpdated = false, MenuComponent = DesktopActionsMenu }: {
+export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry, onFullscreen, screenRef, lcuUpdated = false, MenuComponent = DesktopActionsMenu }: {
   name: string
   state: LinuxDesktopState | null
   busy: boolean
@@ -20,7 +20,6 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
   onRetry: () => void
   onFullscreen: () => void
   screenRef?: React.RefObject<HTMLDivElement | null>
-  toolsUpdated?: boolean
   lcuUpdated?: boolean
   MenuComponent?: ComponentType<DesktopMenuProps>
 }) {
@@ -33,7 +32,6 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
   const updateRequired = state?.state === "stopped" && state.updateRequired === true
   const updateAvailable = state?.installed && state.state === "stopped"
     && (state.updateRequired === true || state.backend === "kasm")
-  const toolsUnavailable = state?.installed && state.state !== "vm-stopped" && (state.ludaState === "missing" || state.ludaState === "failed")
   const lcuStatus = state?.lcuState === "needs-runtime" ? "LCU requires the official ChatGPT app in this sandbox"
     : state?.lcuState === "not-installed" ? "LCU is not set up"
       : state?.lcuState === "installing" ? "Setting up LCU…"
@@ -52,10 +50,9 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
         <Button size="xs" variant="ghost" onClick={() => setConfirm(null)}>Cancel</Button>
         <Button size="xs" disabled={busy} onClick={() => { onAction(confirm); setConfirm(null) }}>{confirm === "stop" ? "Stop desktop" : "Restart desktop"}</Button>
       </div> : <>
-        {(toolsUnavailable || problem) && <div role="alert" className="flex min-w-0 items-center gap-1 text-xs text-destructive">
-          <CircleAlert aria-hidden="true" className="size-3.5 shrink-0" /><span className="truncate" title={problem ?? undefined}>{toolsUnavailable ? "Agent tools unavailable" : problem}</span>
-          {toolsUnavailable ? <Button size="xs" variant="ghost" disabled={busy} aria-label="Repair agent tools" onClick={() => onAction("setup-tools")}>Repair</Button>
-            : error && <Button size="xs" variant="ghost" disabled={busy} onClick={onRetry}>Reconnect</Button>}
+        {problem && <div role="alert" className="flex min-w-0 items-center gap-1 text-xs text-destructive">
+          <CircleAlert aria-hidden="true" className="size-3.5 shrink-0" /><span className="truncate" title={problem ?? undefined}>{problem}</span>
+          {error && <Button size="xs" variant="ghost" disabled={busy} onClick={onRetry}>Reconnect</Button>}
         </div>}
         {state?.installed && state.state !== "vm-stopped" && lcuStatus && <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
           <span role={state.lcuState === "installing" ? "status" : undefined} title={state.lcuReason ?? undefined} className="truncate">{lcuStatus}</span>
@@ -66,8 +63,6 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
           <Button size="xs" variant="ghost" disabled={busy} onClick={() => onAction("restart-streamer")}>Reconnect display</Button>
         </div>}
         {streamStarting && <span role="status" className="text-xs text-muted-foreground">Connecting display…</span>}
-        {state?.installed && state.state !== "vm-stopped" && state.ludaState === "installing" && <span role="status" className="text-xs text-muted-foreground">Setting up agent tools…</span>}
-        {toolsUpdated && state?.ludaState === "ready" && <span role="status" className="text-xs text-muted-foreground">Reconnect agent sessions to load the tools.</span>}
         {lcuUpdated && state?.lcuState === "ready" && <span role="status" className="text-xs text-muted-foreground">Reconnect agent sessions to load LCU.</span>}
       </>}
       <Button variant="ghost" size="icon-xs" aria-label="Toggle fullscreen" onClick={onFullscreen}><Maximize /></Button>
@@ -79,7 +74,7 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
     </section> : <div className="grid min-h-0 flex-1 place-items-center p-6 text-center" aria-busy={busy}>
       <div className="grid max-w-sm justify-items-center gap-3">
         <Monitor aria-hidden="true" className="size-8 text-muted-foreground" />
-        <p className="text-sm">{busy && state?.ludaState === "installing" ? "Setting up agent tools…" : busy || state?.state === "starting" ? "Connecting to desktop…" : !state ? "Desktop unavailable" : state.state === "uninstalled" ? "Desktop is not installed" : state.state === "failed" ? "Desktop needs attention" : state.state === "vm-stopped" ? "Sandbox is stopped" : "Desktop is stopped"}</p>
+        <p className="text-sm">{busy || state?.state === "starting" ? "Connecting to desktop…" : !state ? "Desktop unavailable" : state.state === "uninstalled" ? "Desktop is not installed" : state.state === "failed" ? "Desktop needs attention" : state.state === "vm-stopped" ? "Sandbox is stopped" : "Desktop is stopped"}</p>
         {state && state.state !== "uninstalled" && state.state !== "starting" && <Button disabled={busy} size="sm" onClick={() => onAction(primaryAction)}>{actionLabel}</Button>}
         {updateAvailable && !updateRequired && <Button disabled={busy} size="sm" variant="ghost" onClick={() => onAction("update-streamer")}>Update desktop</Button>}
         {state?.state === "uninstalled" && <p className="text-xs text-muted-foreground">Choose Add Linux desktop in the sandbox’s actions menu.</p>}
@@ -91,7 +86,6 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
 export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: string; name: string }) {
   const [state, setState] = useState<LinuxDesktopState | null>(null)
   const [busy, setBusy] = useState(true)
-  const [toolsUpdated, setToolsUpdated] = useState(false)
   const [lcuUpdated, setLcuUpdated] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [connectionError, setConnectionError] = useState<string | null>(null)
@@ -156,23 +150,21 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
     revision.current += 1
     setBusy(true)
     const previous = state
-    if (action === "setup-tools") { setToolsUpdated(false); setState(current => current ? { ...current, ludaState: "installing" } : current) }
     if (action === "setup-lcu") { setLcuUpdated(false); setState(current => current ? { ...current, lcuState: "installing" } : current) }
     setError(null)
     try {
       const result = parseLinuxDesktopState(await invoke("desktop_action", { workspace, action }))
       setState(result)
-      if (action === "setup-tools") setToolsUpdated(result.ludaState === "ready")
-      if (action === "setup-lcu") setLcuUpdated(result.lcuState === "ready")
+        if (action === "setup-lcu") setLcuUpdated(result.lcuState === "ready")
       if (action === "restart-streamer") {
         setConnectionError(null)
         setConnection(value => value + 1)
       }
     }
-    catch (cause) { setError(String(cause)); if (action === "setup-tools" || action === "setup-lcu") setState(previous) }
+    catch (cause) { setError(String(cause)); if (action === "setup-lcu") setState(previous) }
     finally { operation.current = false; setBusy(false) }
   }
-  return <LinuxDesktopViewer name={name} state={state} busy={busy} error={error ?? connectionError} screenRef={screenRef} toolsUpdated={toolsUpdated} lcuUpdated={lcuUpdated} MenuComponent={NativeDesktopActionsMenu}
+  return <LinuxDesktopViewer name={name} state={state} busy={busy} error={error ?? connectionError} screenRef={screenRef} lcuUpdated={lcuUpdated} MenuComponent={NativeDesktopActionsMenu}
     onAction={action => { void handleAction(action) }}
     onRetry={() => { setConnection(value => value + 1); void refresh() }}
     onFullscreen={() => { const window = getCurrentWindow(); void window.isFullscreen().then(value => window.setFullscreen(!value)).catch(cause => setError(String(cause))) }} />

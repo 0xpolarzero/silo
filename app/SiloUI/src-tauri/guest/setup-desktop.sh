@@ -2,7 +2,7 @@
 # Guest-only optional desktop recipe 1. Never run on the host.
 set -eu
 action=${1:-install}
-case "$action" in install|setup-tools|update-streamer) ;; *) echo 'Usage: setup-desktop.sh install|setup-tools|update-streamer' >&2; exit 2 ;; esac
+case "$action" in install|update-streamer) ;; *) echo 'Usage: setup-desktop.sh install|update-streamer' >&2; exit 2 ;; esac
 [ "$(id -u)" = 0 ] || { echo 'Desktop installation requires guest root' >&2; exit 1; }
 . /etc/os-release
 [ "$ID" = ubuntu ] && [ "$VERSION_ID" = 24.04 ] || { echo 'Desktop requires Ubuntu 24.04' >&2; exit 1; }
@@ -12,11 +12,8 @@ case "$(dpkg --print-architecture)" in
     *) echo 'Desktop requires ARM64 or AMD64' >&2; exit 1 ;;
 esac
 helper=${SILO_DESKTOP_SERVICE_SOURCE:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)/desktop-service.py}
-luda_helper=${SILO_LUDA_SETUP_SOURCE:-$(dirname -- "$helper")/setup-luda.py}
-luda_lock=${SILO_LUDA_LOCK_SOURCE:-$(dirname -- "$helper")/luda-lock.json}
 streamer_lock=${SILO_DESKTOP_STREAMER_LOCK_SOURCE:-$(dirname -- "$helper")/desktop-streamer-lock.json}
 selkies_web_client_patch=${SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE:-$(dirname -- "$helper")/patch-selkies-web-client.py}
-[ -f "$luda_helper" ] && [ -f "$luda_lock" ] || { echo 'Desktop tools recipe is missing' >&2; exit 1; }
 [ -f "$helper" ] || { echo 'Desktop lifecycle helper is missing' >&2; exit 1; }
 mkdir -p /var/lib/silo-desktop
 chmod 0700 /var/lib/silo-desktop
@@ -157,8 +154,6 @@ account=$(python3 "$helper" prepare-install)
 desktop_user=silo
 desktop_home=/home/silo
 mkdir -p /usr/local/libexec /usr/local/share/silo
-install -m 0755 "$luda_helper" /usr/local/libexec/silo-setup-luda.py
-install -m 0644 "$luda_lock" /usr/local/share/silo/luda-lock.json
 # Reapply the managed session recipe during upgrades, without closing live apps.
 # Existing sessions adopt this environment on their next desktop restart.
 configure_session() {
@@ -180,20 +175,10 @@ ensure_theme() {
         apt-get -o DPkg::Lock::Timeout=120 -o Acquire::Retries=2 -o Acquire::http::Timeout=30 install -y --no-install-recommends greybird-gtk-theme
     fi
 }
-if [ "$action" = setup-tools ]; then
-    [ -f /var/lib/silo-desktop/installed.json ] || { echo 'Install the Linux desktop first' >&2; exit 1; }
-    install -m 0755 "$helper" /usr/local/bin/silo-desktop
-    configure_session
-    ensure_theme
-    python3 /usr/local/libexec/silo-setup-luda.py --repair
-    /usr/local/bin/silo-desktop status
-    exit 0
-fi
 if [ -f /var/lib/silo-desktop/installed.json ]; then
     install -m 0755 "$helper" /usr/local/bin/silo-desktop
     configure_session
     ensure_theme
-    python3 /usr/local/libexec/silo-setup-luda.py
     python3 "$helper" status
     exit 0
 fi
@@ -229,5 +214,4 @@ dpkg-query -W > /var/lib/silo-desktop/packages.txt
 printf '%s\n' '{"version":"1","desktopRecipeVersion":1}' > /var/lib/silo-desktop/installed.json
 printf '%s\n' installed > /var/lib/silo-desktop/install-stage
 rm -f "$package"
-python3 /usr/local/libexec/silo-setup-luda.py
 /usr/local/bin/silo-desktop boot

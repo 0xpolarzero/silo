@@ -27,7 +27,7 @@ has been exercised.
 | Platform verification | [Linux](SiloUI-LINUX-VERIFICATION.md), [Linux verification session, 2026-09-30](research/linux-verification-2026-09-30.md), [Linux acceptance, 2026-09-25](research/silo-linux-acceptance-2026-09-25.md), [macOS VM library loading](SiloUI-LIBRARY-CONSTRAINTS.md), [dependencies, export and import testing](SiloUI-DEPENDENCIES-BACKUP-TESTING.md) |
 | Remote management | [Remote computers and Quit behavior](SiloUI-REMOTE-COMPUTERS.md), [managed SSH access](SiloUI-MANAGED-SSH.md) |
 | GitHub and secrets | [GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md), [personal GitHub tokens](SiloUI-GITHUB-PERSONAL-TOKENS.md), [secrets](SiloUI-SECRETS.md), [secret placeholders in agent requests](SiloUI-AGENT-PLACEHOLDER-STALL.md), [0.4.4 authentication investigation](SiloUI-GITHUB-044-AUTH-INVESTIGATION.md) |
-| Sandbox tools | [Working account](SiloUI-WORKING-ACCOUNT.md), [VM migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md), [Linux desktop](SiloUI-DESKTOP.md), [agent desktop tools](SiloUI-LUDA.md), [Files](SiloUI-FILES.md), [network](SiloUI-NETWORK-PLAN.md), [terminal handoff](SiloUI-TERMINAL-HANDOFF.md), [editor and browser handoff](SiloUI-EDITOR-HANDOFF.md) |
+| Sandbox tools | [Working account](SiloUI-WORKING-ACCOUNT.md), [VM migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md), [Linux desktop](SiloUI-DESKTOP.md), [computer-use plan](SiloUI-COMPUTER-USE-PLAN.md), [Files](SiloUI-FILES.md), [network](SiloUI-NETWORK-PLAN.md), [terminal handoff](SiloUI-TERMINAL-HANDOFF.md), [editor and browser handoff](SiloUI-EDITOR-HANDOFF.md) |
 | Logs | [Retained history, search and export](SiloUI-LOGS.md), [sandbox failure reporting](SiloUI-FAILURE-REPORTING.md) |
 | Storage | [Workspace reclamation policy and verification](SiloUI-STORAGE-RECLAMATION.md), [disk discard regression](SiloUI-STORAGE-DISCARD-RESEARCH.md) |
 | Desktop | [Built-in desktop and computer use plan](SiloUI-COMPUTER-USE-PLAN.md): approved 2026-10-01, replaces optional desktops and Luda for new VMs. [Detached desktop implementation plan](SiloUI-DETACHED-DESKTOP-IMPLEMENTATION-PLAN.md): current Selkies-backed rollout. Existing Kasm guests remain supported until explicit update. [Viewer direction](SiloUI-DESKTOP-VIEWER-DIRECTION.md) and [experience research](SiloUI-DESKTOP-EXPERIENCE-RESEARCH.md) record rationale and limits. |
@@ -63,8 +63,8 @@ above for current behavior and build commands.
 - [Linux desktops for agents](SiloUI-LINUX-DESKTOP-RESEARCH.md): the original guest desktop proposal, agent compatibility, estimated costs and prototype acceptance.
 - [Codex, E2B and Luda computer use](research/codex-e2b-luda-computer-use-2026-09-22.md): observed native Codex interface, public API distinction, simplicity hypothesis and controlled comparison.
 - [Codex Linux engine probe](research/codex-linux-engine-probe-2026-09-22.md): official package distribution and a passing ARM64/X11 accessibility, input and screenshot test.
-- Luda agent evidence: [acceptance tests](SiloUI-LUDA-AGENT-TESTS.md), [initial skill evaluation](SiloUI-LUDA-SKILL-EVALUATION.md), [accepted skill benchmark](SiloUI-LUDA-SKILL-BENCHMARK.md), and [upstream handoff](SiloUI-LUDA-UPSTREAM-HANDOFF.md).
-- Luda upgrade verification: [0.3.1](SiloUI-LUDA-031-VERIFICATION.md), [0.3.2](SiloUI-LUDA-032-VERIFICATION.md), [0.3.3](SiloUI-LUDA-033-VERIFICATION.md) with its [selection-completion diagnosis](SiloUI-LUDA-033-DIAGNOSIS.md), and the currently pinned [0.3.4](SiloUI-LUDA-034-VERIFICATION.md).
+- Historical Luda agent evidence: [acceptance tests](SiloUI-LUDA-AGENT-TESTS.md), [initial skill evaluation](SiloUI-LUDA-SKILL-EVALUATION.md), [accepted skill benchmark](SiloUI-LUDA-SKILL-BENCHMARK.md), and [upstream handoff](SiloUI-LUDA-UPSTREAM-HANDOFF.md).
+- Historical Luda upgrade verification: [0.3.1](SiloUI-LUDA-031-VERIFICATION.md), [0.3.2](SiloUI-LUDA-032-VERIFICATION.md), [0.3.3](SiloUI-LUDA-033-VERIFICATION.md) with its [selection-completion diagnosis](SiloUI-LUDA-033-DIAGNOSIS.md), and the last pinned [0.3.4](SiloUI-LUDA-034-VERIFICATION.md).
 
 ### GitHub, logging and tooling
 
@@ -97,12 +97,22 @@ frontend build output belongs in the ignored `app/SiloUI/dist/` tree.
 These no longer describe current behavior or active plans. They are kept for
 their evidence and reasoning.
 
+### Removed Luda integration
+
+Silo no longer installs Luda; [LCU](SiloUI-COMPUTER-USE-PLAN.md) replaces it. The
+[agent desktop tools](SiloUI-LUDA.md) description, [acceptance tests](SiloUI-LUDA-AGENT-TESTS.md),
+[skill evaluation](SiloUI-LUDA-SKILL-EVALUATION.md), [skill benchmark](SiloUI-LUDA-SKILL-BENCHMARK.md),
+[upstream handoff](SiloUI-LUDA-UPSTREAM-HANDOFF.md) and upgrade verification
+([0.3.1](SiloUI-LUDA-031-VERIFICATION.md), [0.3.2](SiloUI-LUDA-032-VERIFICATION.md),
+[0.3.3](SiloUI-LUDA-033-VERIFICATION.md), [0.3.3 diagnosis](SiloUI-LUDA-033-DIAGNOSIS.md),
+[0.3.4](SiloUI-LUDA-034-VERIFICATION.md)) are historical evidence.
+
 ### Archived plans
 
 Superseded plans live in [`archive/`](archive/):
 
 - [Optional Kasm desktop plan](archive/SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md): the original Kasm rollout; the detached desktop plan above replaced it.
-- [Luda integration plan](archive/SiloUI-LUDA-IMPLEMENTATION-PLAN.md): the original pinned-installer research and verification gates; [agent desktop tools](SiloUI-LUDA.md) documents the implementation.
+- [Luda integration plan](archive/SiloUI-LUDA-IMPLEMENTATION-PLAN.md): the original pinned-installer research and verification gates; [agent desktop tools](SiloUI-LUDA.md) documents the removed implementation.
 - [E2B replacement plan](archive/SiloUI-E2B-REPLACEMENT-PLAN.md): the proposed breaking replacement of Silo's backend, superseded on 2026-09-25 by MicroSandbox checkpoints and forks.
 - [E2B PoC investigation and completion handoff](archive/SiloUI-E2B-QUALIFICATION-HANDOFF.md): the 2026-09-23 brief for the E2B PoC, with its failure reproductions, evidence corrections and qualification gates.
 

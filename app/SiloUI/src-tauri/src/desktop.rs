@@ -85,18 +85,6 @@ fn installer_script(action: &str) -> String {
             "SILO_DESKTOP_SERVICE_EOF",
         ),
         (
-            "SILO_LUDA_SETUP_SOURCE",
-            "setup-luda.py",
-            include_str!("../guest/setup-luda.py"),
-            "SILO_LUDA_SETUP_EOF",
-        ),
-        (
-            "SILO_LUDA_LOCK_SOURCE",
-            "luda-lock.json",
-            include_str!("../guest/luda-lock.json"),
-            "SILO_LUDA_LOCK_EOF",
-        ),
-        (
             "SILO_DESKTOP_STREAMER_LOCK_SOURCE",
             "desktop-streamer-lock.json",
             include_str!("../guest/desktop-streamer-lock.json"),
@@ -152,7 +140,7 @@ python3 /usr/local/libexec/silo-setup-lcu.py setup
 fn action_script(action: &str) -> String {
     if action == "setup-lcu" {
         lcu_setup_script()
-    } else if matches!(action, "setup-tools" | "update-streamer") {
+    } else if action == "update-streamer" {
         installer_script(action)
     } else {
         format!("/usr/local/bin/silo-desktop {action}")
@@ -160,7 +148,7 @@ fn action_script(action: &str) -> String {
 }
 
 fn action_timeout(action: &str) -> Duration {
-    if matches!(action, "setup-tools" | "update-streamer" | "setup-lcu") {
+    if matches!(action, "update-streamer" | "setup-lcu") {
         Duration::from_secs(1800)
     } else if action == "restart-streamer" {
         Duration::from_secs(120)
@@ -176,7 +164,7 @@ fn action_expected_duration(action: &str) -> Duration {
 }
 
 fn action_starts_vm(action: &str) -> bool {
-    matches!(action, "start" | "setup-tools")
+    action == "start"
 }
 
 pub(crate) fn configure_with(
@@ -368,8 +356,7 @@ fn public_status(value: Value) -> Result<Value, String> {
         json!({"installed":installed,"state":state,"autoStart":auto_start,
         "version":safe_version(value["version"].as_str()),"user":safe_user(value["user"].as_str()),
         "display":safe_display(value["display"].as_str()),
-        "ludaState":value["ludaState"].as_str().filter(|state| matches!(*state, "missing" | "installing" | "ready" | "failed")),
-        "ludaVersion":safe_version(value["ludaVersion"].as_str()), "lcuState":lcu_state,
+        "lcuState":lcu_state,
         "lcuReason":lcu_reason, "lcuVersion":lcu_version,
         "lcuAppVersion":lcu_app_version, "lcuRuntimeVersion":lcu_runtime_version,
         "lcuAgents":lcu_agents, "lcuReadiness":lcu_readiness, "backend":backend,
@@ -477,13 +464,7 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
         runtime::shutdown::ensure_accepting_operations()?;
         if !matches!(
             action,
-            "start"
-                | "stop"
-                | "restart"
-                | "setup-tools"
-                | "restart-streamer"
-                | "update-streamer"
-                | "setup-lcu"
+            "start" | "stop" | "restart" | "restart-streamer" | "update-streamer" | "setup-lcu"
         ) {
             return Err("Unsupported desktop action.".into());
         }
@@ -704,8 +685,7 @@ mod tests {
         runner.assert_finished();
         let calls = runner.calls();
         let script = calls.last().unwrap().last().unwrap();
-        assert!(script.contains("SILO_LUDA_SETUP_SOURCE"));
-        assert!(script.contains("SILO_LUDA_LOCK_SOURCE"));
+        assert!(!script.to_lowercase().contains("luda"));
         assert!(script.contains("SILO_DESKTOP_STREAMER_LOCK_SOURCE"));
         assert!(script.contains("desktop-streamer-lock.json"));
         assert!(script.contains("SILO_SELKIES_WEB_CLIENT_PATCH_SOURCE"));
@@ -747,10 +727,7 @@ mod tests {
         assert!(!setup.contains("SILO_DESKTOP_LCU_LOCK_SOURCE"));
         assert_eq!(action_timeout("setup-lcu"), Duration::from_secs(1800));
         assert!(!action_starts_vm("setup-lcu"));
-        assert!(action_starts_vm("setup-tools"));
-        let ordinary_tools = action_script("setup-tools");
-        assert!(!ordinary_tools.contains("setup-lcu.py"));
-        assert!(!ordinary_tools.contains("lcu-lock.json"));
+        assert!(action_starts_vm("start"));
     }
 
     #[test]
@@ -760,7 +737,6 @@ mod tests {
             "start",
             "stop",
             "restart",
-            "setup-tools",
             "restart-streamer",
             "update-streamer",
             "setup-lcu",
@@ -779,31 +755,29 @@ mod tests {
         let long = "9".repeat(65);
         let status = public_status(json!({
             "installed":true,"autoStart":false,"state":"running",
-            "version":long,"user":"silo\u{1b}[31m","display":":1; echo",
-            "ludaVersion":"<script>"
+            "version":long,"user":"silo\u{1b}[31m","display":":1; echo"
         }))
         .unwrap();
         assert!(status["version"].is_null());
         assert!(status["user"].is_null());
         assert!(status["display"].is_null());
-        assert!(status["ludaVersion"].is_null());
         let status = public_status(json!({
             "installed":true,"autoStart":false,"state":"running",
-            "version":"1.2.3","user":"silo","display":":1.0","ludaVersion":"0.3.0"
+            "version":"1.2.3","user":"silo","display":":1.0"
         }))
         .unwrap();
         assert_eq!(status["version"], "1.2.3");
         assert_eq!(status["user"], "silo");
         assert_eq!(status["display"], ":1.0");
-        assert_eq!(status["ludaVersion"], "0.3.0");
     }
 
     #[test]
     fn status_projects_only_valid_agent_tool_fields() {
         let _test_state = crate::test_support::global_state();
+        // A guest that still reports Luda fields is ignored.
         let status = public_status(json!({"installed":true,"autoStart":false,"state":"stopped","ludaState":"ready","ludaVersion":"0.3.0","ludaError":"private"})).unwrap();
-        assert_eq!(status["ludaState"], "ready");
-        assert_eq!(status["ludaVersion"], "0.3.0");
+        assert!(status.get("ludaState").is_none());
+        assert!(status.get("ludaVersion").is_none());
         assert_eq!(status["backend"], "kasm");
         assert_eq!(status["sessionState"], "stopped");
         assert_eq!(status["streamState"], "stopped");
@@ -811,7 +785,6 @@ mod tests {
         assert!(!status.to_string().contains("private"));
         let old =
             public_status(json!({"installed":true,"autoStart":false,"state":"stopped"})).unwrap();
-        assert!(old["ludaState"].is_null());
         assert_eq!(old["backend"], "kasm");
         assert!(old["lcuState"].is_null());
         let split = public_status(json!({
@@ -863,8 +836,6 @@ mod tests {
         assert_eq!(prerequisite["state"], "running");
         assert_eq!(prerequisite["lcuState"], "needs-runtime");
         assert_eq!(prerequisite["lcuReason"], "chatgpt-app-required");
-        let unknown = public_status(json!({"installed":true,"autoStart":false,"state":"stopped","ludaState":"future-state"})).unwrap();
-        assert!(unknown["ludaState"].is_null());
     }
 
     #[test]

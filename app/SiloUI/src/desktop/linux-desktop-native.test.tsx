@@ -107,23 +107,8 @@ it("updates the native inset when the viewport changes even if display bounds ar
   expect(invoke.mock.calls.filter(([command]) => command === "desktop_viewer_attach")).toHaveLength(1)
 })
 
-it("repairs a confirmed remote tool failure without starting a stopped desktop", async () => {
-  invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: false, state: "stopped", ludaState: "failed" }
-    : command === "desktop_action" ? { installed: true, autoStart: false, state: "stopped", ludaState: "ready", ludaVersion: "0.3.0" } : undefined)
-  const user = userEvent.setup()
-  render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
-  await screen.findByRole("button", { name: "Repair agent tools" })
-  expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
-  await user.click(screen.getByRole("button", { name: "Repair agent tools" }))
-  await screen.findByText(/Reconnect agent sessions/)
-  expect(screen.queryByRole("button", { name: /agent tools/ })).not.toBeInTheDocument()
-  expect(invoke).toHaveBeenCalledWith("desktop_action", { workspace: "owner/vm-id", action: "setup-tools" })
-  expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
-  expect(screen.getByRole("button", { name: "Start desktop" })).toBeVisible()
-})
-
 it("uses a native dropdown without reconnecting or resizing the guest", async () => {
-  invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: true, state: "running", ludaState: "ready" } : undefined)
+  invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: true, state: "running" } : undefined)
   const user = userEvent.setup()
   const view = render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
   await screen.findByRole("button", { name: "Desktop actions" })
@@ -146,7 +131,7 @@ it("uses a native dropdown without reconnecting or resizing the guest", async ()
   expect(nativeMenu.close).toHaveBeenCalledOnce()
 })
 
-it("does not turn a guest status error into a Luda failure", async () => {
+it("does not turn a guest status error into a tool failure", async () => {
   invoke.mockImplementation(async command => {
     if (command === "read_desktop_state") throw new Error("Computer disconnected")
   })
@@ -198,7 +183,7 @@ it("attaches once the stream becomes ready", async () => {
 it("keeps the desktop usable when the guest reports a failed or unknown diagnostic", async () => {
   invoke.mockImplementation(async command => command === "read_desktop_state" ? {
     installed: true, autoStart: true, state: "running", backend: "selkies", sessionState: "running", streamState: "running",
-    lcuState: "failed", lcuReadiness: "failed", lcuReason: 42, ludaVersion: { bad: true },
+    lcuState: "failed", lcuReadiness: "failed", lcuReason: 42,
   } : undefined)
   render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
   expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
