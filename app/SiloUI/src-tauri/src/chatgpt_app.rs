@@ -14,7 +14,15 @@
 //! chatgpt/downloads/*.deb[.part]     resumable download, deleted after success
 //! chatgpt/.staging-*/                extraction in progress, never mounted
 //! chatgpt/<version>-<debarch>/       published, immutable app tree
+//! chatgpt/<version>-<debarch>.published.json
+//!                                    publication record, written last
 //! ```
+//!
+//! A folder is only "ready" when its publication record matches the lock and
+//! the tree (see `verify_published`). The storage root and every directory
+//! Silo writes through are opened without following symlinks and are checked to
+//! be real directories owned by the current user; files are created exclusively
+//! and relative to those directory handles.
 //!
 //! The package is not wired into VM creation or the UI yet, so the module is
 //! allowed to be unused.
@@ -24,15 +32,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
+    ffi::CString,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::unix::{
-        fs::{OpenOptionsExt, PermissionsExt},
-        io::AsRawFd,
+        ffi::OsStrExt,
+        fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+        io::{AsRawFd, FromRawFd, OwnedFd},
     },
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
     time::{Duration, Instant},
 };
 
@@ -40,11 +53,24 @@ const LOCK_JSON: &str = include_str!("../guest/chatgpt-app-lock.json");
 const DOWNLOAD_HOST: &str = "persistent.oaistatic.com";
 /// The directory dpkg would fill, relative to the archive root.
 const TREE_PREFIX: [&str; 3] = ["usr", "lib", "chatgpt"];
-/// A file every real app tree has; a published folder without it is damaged.
-const SENTINEL: &str = "ChatGPT";
+/// Executables the app and the LCU runtime need (relative to the tree). A tree
+/// where any of them is missing, not a regular file or not executable is damaged.
+const REQUIRED_EXECUTABLES: [&str; 3] = [
+    "ChatGPT",
+    "resources/cua_node/bin/node",
+    "resources/cua_node/bin/node_repl",
+];
 const NOTICE_VERSION: u32 = 1;
 const MAX_ENTRIES: usize = 200_000;
 const MAX_UNPACKED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+/// Longest path or link target (bytes), and longest single component.
+const MAX_NAME_BYTES: usize = 4096;
+const MAX_COMPONENT_BYTES: usize = 255;
+/// Total size of the PAX extended header records of one entry.
+const MAX_PAX_BYTES: usize = 64 * 1024;
+const RECORD_SUFFIX: &str = ".published.json";
+const RECORD_SCHEMA: u32 = 1;
+const MAX_RECORD_BYTES: u64 = 4096;
 const STATUS_EVENT: &str = "chatgpt-app-status";
 
 // ----------------------------------------------------------------- lock
@@ -219,6 +245,221 @@ impl std::fmt::Display for Error {
     }
 }
 
+// ------------------------------------------------- directory-relative I/O
+
+static UNIQUE: AtomicU64 = AtomicU64::new(0);
+
+/// A name no other process or call uses: `<pid>-<nanos>-<counter>`.
+fn unique_suffix() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!(
+        "{}-{nanos:x}-{}",
+        std::process::id(),
+        UNIQUE.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn c_name(name: &str) -> std::io::Result<CString> {
+    CString::new(name)
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in name"))
+}
+
+fn c_name_path(path: &Path) -> std::io::Result<CString> {
+    CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidInput, "NUL in path"))
+}
+
+fn check(result: libc::c_int) -> std::io::Result<libc::c_int> {
+    if result < 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(result)
+    }
+}
+
+fn effective_uid() -> u32 {
+    unsafe { libc::geteuid() }
+}
+
+fn denied(why: &'static str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::PermissionDenied, why)
+}
+
+/// A directory opened without following symlinks. Every operation takes a single
+/// name relative to it, so no path component can be swapped for a symlink
+/// between a check and the use.
+struct Dir(OwnedFd);
+
+impl Dir {
+    /// Opens `path` as a real directory owned by this user. A symlink, a file or
+    /// another owner's directory is refused. `create` makes a missing directory
+    /// (and its parents) and tightens the final one to 0700.
+    fn open_root(path: &Path, create: bool) -> std::io::Result<Self> {
+        let raw = c_name_path(path)?;
+        let open = || unsafe {
+            libc::open(
+                raw.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        };
+        let mut fd = open();
+        if fd < 0
+            && create
+            && std::io::Error::last_os_error().kind() == std::io::ErrorKind::NotFound
+        {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            // mkdir (not create_dir_all) so a symlink planted meanwhile is not followed.
+            if unsafe { libc::mkdir(raw.as_ptr(), 0o700) } != 0
+                && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            fd = open();
+        }
+        let dir = Self(unsafe { OwnedFd::from_raw_fd(check(fd)?) });
+        let meta = dir.stat_self()?;
+        if meta.st_uid != effective_uid() {
+            return Err(denied("directory is owned by another user"));
+        }
+        if create {
+            dir.chmod(0o700)?;
+        } else if meta.st_mode & 0o022 != 0 {
+            return Err(denied("directory is writable by others"));
+        }
+        Ok(dir)
+    }
+
+    fn fd(&self) -> libc::c_int {
+        self.0.as_raw_fd()
+    }
+
+    fn stat_self(&self) -> std::io::Result<libc::stat> {
+        let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+        check(unsafe { libc::fstat(self.fd(), &mut stat) })?;
+        Ok(stat)
+    }
+
+    /// `lstat` of `name`; with `follow`, `name` may be a relative path and
+    /// symlinks are resolved.
+    fn stat(&self, name: &str, follow: bool) -> std::io::Result<libc::stat> {
+        let name = c_name(name)?;
+        let mut stat = unsafe { std::mem::zeroed::<libc::stat>() };
+        let flags = if follow { 0 } else { libc::AT_SYMLINK_NOFOLLOW };
+        check(unsafe { libc::fstatat(self.fd(), name.as_ptr(), &mut stat, flags) })?;
+        Ok(stat)
+    }
+
+    /// Creates directory `name` (mode 0700) when `create` and missing, then opens
+    /// it. Returns whether it was created. A symlink or non-directory fails.
+    fn subdir(&self, name: &str, create: bool) -> std::io::Result<(Self, bool)> {
+        let raw = c_name(name)?;
+        let mut created = false;
+        if create {
+            if unsafe { libc::mkdirat(self.fd(), raw.as_ptr(), 0o700) } == 0 {
+                created = true;
+            } else if std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(std::io::Error::last_os_error());
+            }
+        }
+        let fd = check(unsafe {
+            libc::openat(
+                self.fd(),
+                raw.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            )
+        })?;
+        let dir = Self(unsafe { OwnedFd::from_raw_fd(fd) });
+        if dir.stat_self()?.st_uid != effective_uid() {
+            return Err(denied("directory is owned by another user"));
+        }
+        Ok((dir, created))
+    }
+
+    fn open_file(&self, name: &str, flags: libc::c_int, mode: u32) -> std::io::Result<File> {
+        let raw = c_name(name)?;
+        let fd = check(unsafe {
+            libc::openat(
+                self.fd(),
+                raw.as_ptr(),
+                flags | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                mode as libc::c_uint,
+            )
+        })?;
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+
+    /// A new file that must not exist yet (never follows a planted link).
+    fn create_file(&self, name: &str, mode: u32) -> std::io::Result<File> {
+        self.open_file(name, libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL, mode)
+    }
+
+    fn symlink(&self, target: &str, name: &str) -> std::io::Result<()> {
+        let (target, name) = (c_name(target)?, c_name(name)?);
+        check(unsafe { libc::symlinkat(target.as_ptr(), self.fd(), name.as_ptr()) }).map(|_| ())
+    }
+
+    fn rename(&self, from: &str, to: &str) -> std::io::Result<()> {
+        let (from, to) = (c_name(from)?, c_name(to)?);
+        check(unsafe { libc::renameat(self.fd(), from.as_ptr(), self.fd(), to.as_ptr()) })
+            .map(|_| ())
+    }
+
+    fn unlink(&self, name: &str) -> std::io::Result<()> {
+        let name = c_name(name)?;
+        check(unsafe { libc::unlinkat(self.fd(), name.as_ptr(), 0) }).map(|_| ())
+    }
+
+    fn chmod(&self, mode: u32) -> std::io::Result<()> {
+        check(unsafe { libc::fchmod(self.fd(), mode as libc::mode_t) }).map(|_| ())
+    }
+
+    /// Flushes this directory's entries to stable storage; errors propagate.
+    fn sync(&self) -> std::io::Result<()> {
+        // Through `File` so macOS uses F_FULLFSYNC like every other sync here.
+        let fd = check(unsafe { libc::dup(self.fd()) })?;
+        unsafe { File::from_raw_fd(fd) }.sync_all()
+    }
+
+    /// Removes `name` (inside the directory at `path`, which this handle
+    /// belongs to) whatever it is, without following it. A directory is renamed
+    /// aside first so a half-deleted tree never carries its old name.
+    fn remove_entry(&self, path: &Path, name: &str) -> std::io::Result<()> {
+        let stat = match self.stat(name, false) {
+            Ok(stat) => stat,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if stat.st_mode & libc::S_IFMT == libc::S_IFDIR {
+            let aside = format!(".rejected-{}", unique_suffix());
+            self.rename(name, &aside)?;
+            let aside = path.join(aside);
+            let _ = make_tree_deletable(&aside);
+            // std's remove_dir_all never follows symlinks.
+            fs::remove_dir_all(aside)
+        } else {
+            self.unlink(name)
+        }
+    }
+}
+
+/// Restores owner access on directories so a tampered tree (for example modes
+/// changed to 0500) can still be deleted.
+fn make_tree_deletable(path: &Path) -> std::io::Result<()> {
+    let meta = fs::symlink_metadata(path)?;
+    if !meta.is_dir() || meta.uid() != effective_uid() {
+        return Ok(());
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    for entry in fs::read_dir(path)?.flatten() {
+        let _ = make_tree_deletable(&entry.path());
+    }
+    Ok(())
+}
+
 // -------------------------------------------------------------- consent
 
 #[derive(Serialize, Deserialize)]
@@ -228,48 +469,58 @@ struct Consent {
     accepted_at_unix: u64,
 }
 
-fn consent_path(root: &Path) -> PathBuf {
-    root.join("consent.json")
+/// Reads a small regular file below `dir` (never through a symlink).
+fn read_small(dir: &Dir, name: &str) -> Option<Vec<u8>> {
+    let file = dir.open_file(name, libc::O_RDONLY, 0).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || meta.uid() != effective_uid() || meta.len() > MAX_RECORD_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_RECORD_BYTES).read_to_end(&mut bytes).ok()?;
+    Some(bytes)
 }
 
 /// Whether the user accepted the download notice on this computer and channel.
 pub(crate) fn consent_accepted(root: &Path) -> bool {
-    fs::read(consent_path(root))
+    Dir::open_root(root, false)
         .ok()
+        .and_then(|dir| read_small(&dir, "consent.json"))
         .and_then(|bytes| serde_json::from_slice::<Consent>(&bytes).ok())
         .is_some_and(|consent| consent.notice_version == NOTICE_VERSION)
 }
 
 pub(crate) fn accept_notice(root: &Path) -> Result<(), Error> {
-    private_directory(root)?;
+    let failed = || Error::retry("Silo could not save your choice. Check disk access and retry.");
+    let dir = Dir::open_root(root, true)
+        .map_err(|_| Error::retry("Silo could not prepare its ChatGPT app folder."))?;
     let consent = Consent {
         notice_version: NOTICE_VERSION,
         accepted_at_unix: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs()),
     };
-    let bytes =
-        serde_json::to_vec(&consent).map_err(|_| Error::fatal("Could not save consent."))?;
-    let temporary = root.join(format!(".consent-{}.tmp", std::process::id()));
+    let bytes = serde_json::to_vec(&consent).map_err(|_| failed())?;
+    write_file_atomically(&dir, "consent.json", &bytes).map_err(|_| failed())
+}
+
+/// Writes `bytes` to a fresh exclusive temporary, syncs it, renames it over
+/// `name` and syncs the directory.
+fn write_file_atomically(dir: &Dir, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    let temporary = format!(".{name}-{}.tmp", unique_suffix());
     let write = || -> std::io::Result<()> {
-        let mut file = File::create(&temporary)?;
-        file.write_all(&bytes)?;
+        let mut file = dir.create_file(&temporary, 0o600)?;
+        file.write_all(bytes)?;
         file.sync_all()?;
-        fs::rename(&temporary, consent_path(root))
+        dir.rename(&temporary, name)?;
+        dir.sync()
     };
-    write().map_err(|_| {
-        let _ = fs::remove_file(&temporary);
-        Error::retry("Silo could not save your choice. Check disk access and retry.")
+    write().inspect_err(|_| {
+        let _ = dir.unlink(&temporary);
     })
 }
 
 // ----------------------------------------------------------------- lock
-
-fn private_directory(path: &Path) -> Result<(), Error> {
-    let failed = || Error::retry("Silo could not prepare its ChatGPT app folder.");
-    fs::create_dir_all(path).map_err(|_| failed())?;
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|_| failed())
-}
 
 /// An exclusive cross-process lock (also excludes other threads, since every
 /// holder uses its own open file description).
@@ -277,19 +528,29 @@ struct RootLock(File);
 
 impl RootLock {
     fn take(root: &Path) -> Result<Self, Error> {
-        private_directory(root)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(root.join(".lock"))
-            .map_err(|_| Error::retry("Silo could not lock its ChatGPT app folder."))?;
+        let failed = || Error::retry("Silo could not lock its ChatGPT app folder.");
+        let dir = Dir::open_root(root, true)
+            .map_err(|_| Error::retry("Silo could not prepare its ChatGPT app folder."))?;
+        // Open the existing file; create it exclusively when missing and, when
+        // another caller wins that race, open the winner's file.
+        let mut opened = None;
+        for _ in 0..8 {
+            let attempt = dir.open_file(".lock", libc::O_RDWR, 0).or_else(|_| {
+                dir.open_file(".lock", libc::O_RDWR | libc::O_CREAT | libc::O_EXCL, 0o600)
+            });
+            if let Ok(file) = attempt {
+                opened = Some(file);
+                break;
+            }
+        }
+        let file = opened.ok_or_else(failed)?;
+        let meta = file.metadata().map_err(|_| failed())?;
+        if !meta.is_file() || meta.uid() != effective_uid() {
+            return Err(failed());
+        }
         while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
             if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
-                return Err(Error::retry("Silo could not lock its ChatGPT app folder."));
+                return Err(failed());
             }
         }
         Ok(Self(file))
@@ -305,6 +566,47 @@ impl Drop for RootLock {
 }
 
 // ------------------------------------------------------------- download
+
+/// The length of an existing resumable download, 0 when there is none. Anything
+/// that is not a plain single-link file of ours (a planted symlink, a hard link
+/// to another file) is removed, never followed.
+fn safe_part_len(part: &Path) -> std::io::Result<u64> {
+    match fs::symlink_metadata(part) {
+        Ok(meta) if meta.is_file() && meta.nlink() == 1 && meta.uid() == effective_uid() => {
+            Ok(meta.len())
+        }
+        Ok(_) => fs::remove_file(part).map(|()| 0),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(error) => Err(error),
+    }
+}
+
+/// Opens the download file without following a link at its name. A fresh
+/// download is created exclusively; a resume re-checks what it opened.
+fn open_part(part: &Path, append: bool) -> std::io::Result<File> {
+    if !append {
+        match fs::remove_file(part) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
+        return OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(part);
+    }
+    let file = OpenOptions::new()
+        .write(true)
+        .append(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(part)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.nlink() != 1 || meta.uid() != effective_uid() {
+        return Err(denied("download file is not a plain file"));
+    }
+    Ok(file)
+}
 
 /// Fetches `url` into `part` (resuming if the file already has a prefix) until
 /// it holds `total` bytes, reporting the byte count. Tests substitute this.
@@ -346,7 +648,7 @@ impl HttpDownloader {
                 "Silo could not write the ChatGPT download. Check free disk space and retry.",
             )
         };
-        let mut have = fs::metadata(part).map_or(0, |m| m.len());
+        let mut have = safe_part_len(part).map_err(|_| disk())?;
         if have > total {
             fs::remove_file(part).map_err(|_| disk())?;
             have = 0;
@@ -381,14 +683,7 @@ impl HttpDownloader {
                 )))
             }
         };
-        let mut file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .append(append)
-            .truncate(!append)
-            .mode(0o600)
-            .open(part)
-            .map_err(|_| disk())?;
+        let mut file = open_part(part, append).map_err(|_| disk())?;
         let mut written = if append { have } else { 0 };
         let mut buffer = vec![0u8; 256 * 1024];
         loop {
@@ -458,7 +753,10 @@ impl Downloader for HttpDownloader {
 }
 
 fn sha256_file(path: &Path) -> std::io::Result<String> {
-    let mut file = File::open(path)?;
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = vec![0u8; 1024 * 1024];
     loop {
@@ -661,32 +959,115 @@ fn check_link_target(target: &[u8], parent_depth: usize, path: &str) -> Result<(
     Ok(())
 }
 
+/// Hard limits for one extraction. Tests lower them.
+struct Limits {
+    max_entries: usize,
+    /// Bytes written to disk (the effective sizes of all entries, summed).
+    max_bytes: u64,
+    /// Longest entry path or link target, including GNU long names.
+    max_name: usize,
+    /// Total PAX extended header bytes of one entry.
+    max_pax: usize,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_entries: MAX_ENTRIES,
+            max_bytes: MAX_UNPACKED_BYTES,
+            max_name: MAX_NAME_BYTES,
+            max_pax: MAX_PAX_BYTES,
+        }
+    }
+}
+
+/// Fails once more than `left` bytes were read. Bounds everything the tar
+/// parser consumes, including metadata records it buffers by itself.
+struct Capped<R> {
+    inner: R,
+    left: u64,
+}
+
+impl<R: Read> Read for Capped<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        self.left = self.left.checked_sub(count as u64).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "package stream too large")
+        })?;
+        Ok(count)
+    }
+}
+
+/// Opens the parent directory of the tree path `rel` below `dest`, creating
+/// missing directories, one `openat` per component and never through a link.
+fn parent_of(dest: &Dir, rel: &[String]) -> std::io::Result<Option<Dir>> {
+    let mut current: Option<Dir> = None;
+    for part in &rel[..rel.len().saturating_sub(1)] {
+        let next = current.as_ref().unwrap_or(dest).subdir(part, true)?.0;
+        current = Some(next);
+    }
+    Ok(current)
+}
+
+fn extract_tree(reader: impl Read, dest: &Dir) -> Result<(), Error> {
+    extract_tree_with(reader, dest, &Limits::default())
+}
+
 /// Validates and writes the `usr/lib/chatgpt` entries of a tar stream into the
-/// empty directory `dest`. The first violation aborts; the caller discards `dest`.
-fn extract_tree(reader: impl Read, dest: &Path) -> Result<(), Error> {
+/// empty directory `dest`. The first violation aborts at once (nothing after
+/// it is read); the caller discards `dest`. Every directory and file is synced
+/// before this returns.
+fn extract_tree_with(reader: impl Read, dest: &Dir, limits: &Limits) -> Result<(), Error> {
     let io = |_: std::io::Error| {
         Error::retry("Silo could not write the ChatGPT app. Check free disk space and retry.")
     };
-    let mut archive = tar::Archive::new(reader);
-    let entries = archive
-        .entries()
-        .map_err(|_| Error::fatal("The ChatGPT package could not be read."))?;
+    let unreadable = |_: std::io::Error| Error::fatal("The ChatGPT package could not be read.");
+    let mut archive = tar::Archive::new(Capped {
+        inner: reader,
+        left: limits.max_bytes.saturating_mul(2).saturating_add(1 << 20),
+    });
+    let entries = archive.entries().map_err(unreadable)?;
     // Lower-cased relative path -> (exact path, kind).
     let mut seen: HashMap<String, (String, Kind)> = HashMap::new();
     let mut symlinks: HashSet<String> = HashSet::new();
-    let mut directories: Vec<PathBuf> = Vec::new();
     let (mut count, mut unpacked) = (0usize, 0u64);
     for entry in entries {
-        let mut entry =
-            entry.map_err(|_| Error::fatal("The ChatGPT package could not be read."))?;
+        let mut entry = entry.map_err(unreadable)?;
         count += 1;
-        if count > MAX_ENTRIES {
+        if count > limits.max_entries {
             return Err(reject("archive", "too many entries"));
         }
         let raw = entry.path_bytes().into_owned();
+        if raw.len() > limits.max_name {
+            return Err(reject("long name", "entry name is too long"));
+        }
+        if entry
+            .link_name_bytes()
+            .is_some_and(|l| l.len() > limits.max_name)
+        {
+            return Err(reject("long link", "link target is too long"));
+        }
+        let mut pax_bytes = 0usize;
+        if let Some(extensions) = entry.pax_extensions().map_err(unreadable)? {
+            for extension in extensions {
+                let extension = extension.map_err(|_| reject("pax", "invalid extended header"))?;
+                pax_bytes = pax_bytes
+                    .saturating_add(extension.key_bytes().len())
+                    .saturating_add(extension.value_bytes().len());
+            }
+        }
+        if pax_bytes > limits.max_pax {
+            return Err(reject("pax", "extended header is too large"));
+        }
         let Some(rel) = tree_components(&raw)? else {
             continue; // Outside usr/lib/chatgpt: never extracted.
         };
+        if rel.iter().any(|part| part.len() > MAX_COMPONENT_BYTES) {
+            return Err(reject(
+                &String::from_utf8_lossy(&raw),
+                "name component is too long",
+            ));
+        }
         let shown = String::from_utf8_lossy(&raw).into_owned();
         let kind = match entry.header().entry_type() {
             tar::EntryType::Regular | tar::EntryType::Continuous => Kind::File,
@@ -701,6 +1082,11 @@ fn extract_tree(reader: impl Read, dest: &Path) -> Result<(), Error> {
             .map_err(|_| reject(&shown, "invalid mode"))?;
         if mode & 0o6000 != 0 {
             return Err(reject(&shown, "setuid or setgid bit"));
+        }
+        // The effective size (a PAX `size` record overrides the header's).
+        let size = entry.size();
+        if kind != Kind::File && size != 0 {
+            return Err(reject(&shown, "directory or link with data"));
         }
         if rel.is_empty() {
             if kind != Kind::Directory {
@@ -742,47 +1128,40 @@ fn extract_tree(reader: impl Read, dest: &Path) -> Result<(), Error> {
                 }
             }
         }
-        let target: PathBuf = rel
-            .iter()
-            .fold(dest.to_path_buf(), |path, part| path.join(part));
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent).map_err(io)?;
-        }
+        let name = rel.last().expect("not empty").as_str();
+        let parent = parent_of(dest, &rel).map_err(io)?;
+        let parent = parent.as_ref().unwrap_or(dest);
+        let collision = |error: std::io::Error| {
+            if matches!(
+                error.raw_os_error(),
+                Some(libc::EEXIST | libc::ENOTDIR | libc::ELOOP)
+            ) {
+                reject(&shown, "name collision")
+            } else {
+                io(error)
+            }
+        };
         match kind {
-            Kind::Directory => match fs::create_dir(&target) {
-                Ok(()) => directories.push(target),
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if !fs::symlink_metadata(&target).is_ok_and(|m| m.is_dir()) {
-                        return Err(reject(&shown, "name collision"));
-                    }
-                }
-                Err(error) => return Err(io(error)),
-            },
+            Kind::Directory => {
+                parent.subdir(name, true).map_err(collision)?;
+            }
             Kind::File => {
-                unpacked += entry.header().size().unwrap_or(0);
-                if unpacked > MAX_UNPACKED_BYTES {
-                    return Err(reject(&shown, "package is too large"));
-                }
+                unpacked = unpacked
+                    .checked_add(size)
+                    .filter(|total| *total <= limits.max_bytes)
+                    .ok_or_else(|| reject(&shown, "package is too large"))?;
                 let permissions = if mode & 0o111 != 0 { 0o755 } else { 0o644 };
-                // create_new refuses an existing name, including a name the
-                // filesystem folds together (case or normalization).
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(permissions)
-                    .custom_flags(libc::O_NOFOLLOW)
-                    .open(&target)
-                    .map_err(|error| {
-                        if error.kind() == std::io::ErrorKind::AlreadyExists {
-                            reject(&shown, "name collision")
-                        } else {
-                            io(error)
-                        }
-                    })?;
-                std::io::copy(&mut entry, &mut file).map_err(io)?;
+                // O_EXCL refuses an existing name, including a name the
+                // filesystem folds together (case or normalization); O_NOFOLLOW
+                // never follows a link planted at that name.
+                let mut file = parent.create_file(name, permissions).map_err(collision)?;
+                let written = std::io::copy(&mut (&mut entry).take(size), &mut file).map_err(io)?;
+                if written != size {
+                    return Err(reject(&shown, "entry is shorter than its size"));
+                }
                 file.set_permissions(fs::Permissions::from_mode(permissions))
                     .map_err(io)?;
-                file.sync_data().map_err(io)?;
+                file.sync_all().map_err(io)?;
             }
             Kind::Symlink => {
                 let link = entry
@@ -791,48 +1170,331 @@ fn extract_tree(reader: impl Read, dest: &Path) -> Result<(), Error> {
                     .into_owned();
                 check_link_target(&link, rel.len() - 1, &shown)?;
                 let link = std::str::from_utf8(&link).expect("checked");
-                std::os::unix::fs::symlink(link, &target).map_err(|error| {
-                    if error.kind() == std::io::ErrorKind::AlreadyExists {
-                        reject(&shown, "name collision")
-                    } else {
-                        io(error)
-                    }
-                })?;
+                parent.symlink(link, name).map_err(collision)?;
             }
         }
     }
-    // Created directories get a fixed mode; nothing in the tree is group/world writable.
-    for directory in directories.iter().rev() {
-        fs::set_permissions(directory, fs::Permissions::from_mode(0o755)).map_err(io)?;
+    // Created directories get a fixed mode (nothing in the tree is group/world
+    // writable) and are synced bottom-up so a published tree is fully durable.
+    let mut directories: Vec<Vec<String>> = seen
+        .values()
+        .filter(|(_, kind)| *kind == Kind::Directory)
+        .map(|(exact, _)| exact.split('/').map(str::to_owned).collect())
+        .collect();
+    directories.sort_by_key(|parts| std::cmp::Reverse(parts.len()));
+    for parts in &directories {
+        let mut current: Option<Dir> = None;
+        for part in parts {
+            let next = current
+                .as_ref()
+                .unwrap_or(dest)
+                .subdir(part, false)
+                .map_err(io)?
+                .0;
+            current = Some(next);
+        }
+        let directory = current.expect("not empty");
+        directory.chmod(0o755).map_err(io)?;
+        directory.sync().map_err(io)?;
     }
-    fs::set_permissions(dest, fs::Permissions::from_mode(0o755)).map_err(io)?;
-    if !fs::symlink_metadata(dest.join(SENTINEL)).is_ok_and(|m| m.is_file()) {
-        return Err(reject(SENTINEL, "the package has no ChatGPT executable"));
+    dest.chmod(0o755).map_err(io)?;
+    dest.sync().map_err(io)?;
+    check_executables(dest)
+}
+
+/// Every executable LCU needs must be a regular file with an execute bit.
+fn check_executables(tree: &Dir) -> Result<(), Error> {
+    for relative in REQUIRED_EXECUTABLES {
+        let ok = tree.stat(relative, true).is_ok_and(|stat| {
+            stat.st_mode & libc::S_IFMT == libc::S_IFREG && stat.st_mode & 0o111 != 0
+        });
+        if !ok {
+            return Err(reject(
+                relative,
+                "a required executable is missing or not executable",
+            ));
+        }
     }
     Ok(())
 }
 
-fn sync_directory(path: &Path) {
-    if let Ok(directory) = File::open(path) {
-        let _ = directory.sync_all();
+// --------------------------------------------------- tree digest and record
+
+struct Item {
+    relative: String,
+    path: PathBuf,
+    kind: u8,
+    mode: u32,
+    size: u64,
+    mtime: (i64, i64),
+    link: Vec<u8>,
+}
+
+/// What `digest_tree` computes: a cheap digest over the tree's shape and file
+/// metadata, and (when asked) one over every file's content.
+struct Digests {
+    stat: String,
+    content: Option<String>,
+    entries: u64,
+    bytes: u64,
+}
+
+fn collect_items(directory: &Path, prefix: &str, out: &mut Vec<Item>) -> std::io::Result<()> {
+    let invalid = |why: &'static str| std::io::Error::new(std::io::ErrorKind::InvalidData, why);
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| invalid("name is not UTF-8"))?;
+        let relative = if prefix.is_empty() {
+            name
+        } else {
+            format!("{prefix}/{name}")
+        };
+        let meta = fs::symlink_metadata(entry.path())?;
+        let mode = meta.mode() & 0o7777;
+        if mode & 0o6000 != 0 || (!meta.file_type().is_symlink() && mode & 0o022 != 0) {
+            return Err(invalid("unsafe mode"));
+        }
+        let kind = if meta.is_dir() {
+            1
+        } else if meta.is_file() {
+            if meta.nlink() != 1 {
+                return Err(invalid("hard link"));
+            }
+            2
+        } else if meta.file_type().is_symlink() {
+            3
+        } else {
+            return Err(invalid("special file"));
+        };
+        let link = if kind == 3 {
+            fs::read_link(entry.path())?.as_os_str().as_bytes().to_vec()
+        } else {
+            Vec::new()
+        };
+        out.push(Item {
+            relative: relative.clone(),
+            path: entry.path(),
+            kind,
+            mode: if kind == 3 { 0 } else { mode },
+            size: if kind == 2 { meta.len() } else { 0 },
+            mtime: if kind == 2 {
+                (meta.mtime(), meta.mtime_nsec())
+            } else {
+                (0, 0)
+            },
+            link,
+        });
+        if out.len() > MAX_ENTRIES {
+            return Err(invalid("too many entries"));
+        }
+        if kind == 1 {
+            collect_items(&entry.path(), &relative, out)?;
+        }
     }
+    Ok(())
+}
+
+fn hash_file(item: &Item) -> std::io::Result<[u8; 32]> {
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(&item.path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || meta.len() != item.size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file changed",
+        ));
+    }
+    let mut hash = Sha256::new();
+    let mut buffer = vec![0u8; 1024 * 1024];
+    let mut total = 0u64;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        total += count as u64;
+        hash.update(&buffer[..count]);
+    }
+    if total != item.size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "file changed",
+        ));
+    }
+    Ok(hash.finalize().into())
+}
+
+/// Digests of the tree at `directory`: sorted (path, type, mode, size, link
+/// target) and, with `content`, each file's SHA-256. The stat digest also
+/// covers file mtimes. Any entry that is not a plain file, directory or
+/// symlink, any set-id or group/other-writable mode and any hard link fails.
+fn digest_tree(directory: &Path, content: bool) -> std::io::Result<Digests> {
+    let mut items = Vec::new();
+    collect_items(directory, "", &mut items)?;
+    items.sort_by(|a, b| a.relative.cmp(&b.relative));
+    let mut stat = Sha256::new();
+    let mut full = Sha256::new();
+    stat.update(b"silo-chatgpt-tree-stat-v1\0");
+    full.update(b"silo-chatgpt-tree-content-v1\0");
+    let mut bytes = 0u64;
+    for item in &items {
+        let mut head = Vec::new();
+        head.extend((item.relative.len() as u64).to_le_bytes());
+        head.extend(item.relative.as_bytes());
+        head.push(item.kind);
+        head.extend(item.mode.to_le_bytes());
+        head.extend(item.size.to_le_bytes());
+        head.extend((item.link.len() as u64).to_le_bytes());
+        head.extend(&item.link);
+        stat.update(&head);
+        full.update(&head);
+        stat.update(item.mtime.0.to_le_bytes());
+        stat.update(item.mtime.1.to_le_bytes());
+        bytes += item.size;
+        if content && item.kind == 2 {
+            full.update(hash_file(item)?);
+        }
+    }
+    Ok(Digests {
+        stat: format!("{:x}", stat.finalize()),
+        content: content.then(|| format!("{:x}", full.finalize())),
+        entries: items.len() as u64,
+        bytes,
+    })
+}
+
+/// Written after the tree is durable; binds the tree to the lock.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Record {
+    schema_version: u32,
+    version: String,
+    arch: String,
+    deb_sha256: String,
+    tree_sha256: String,
+    stat_sha256: String,
+    entries: u64,
+    bytes: u64,
+}
+
+fn record_name(name: &str) -> String {
+    format!("{name}{RECORD_SUFFIX}")
+}
+
+/// Identity of the record file and tree directory as of the last full check.
+type Stamp = (u64, u64, i64, i64, u64, u64);
+
+/// Trees whose content was fully verified in this process, with the stat digest
+/// they had then. A later call re-hashes only if the stamp or stat digest moved.
+static VERIFIED: Mutex<Option<HashMap<PathBuf, (Stamp, String)>>> = Mutex::new(None);
+
+fn stamp(root: &Dir, name: &str) -> Option<Stamp> {
+    let record = root.stat(&record_name(name), false).ok()?;
+    let tree = root.stat(name, false).ok()?;
+    Some((
+        record.st_dev as u64,
+        record.st_ino as u64,
+        record.st_mtime,
+        record.st_mtime_nsec,
+        tree.st_dev as u64,
+        tree.st_ino as u64,
+    ))
+}
+
+fn remember(path: PathBuf, stamp: Stamp, stat_digest: String) {
+    VERIFIED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(path, (stamp, stat_digest));
+}
+
+/// The published folder for the lock, only if it is exactly what Silo
+/// published: a valid publication record that matches the lock and the .deb
+/// hash, a real directory owned by this user, the required executables, and a
+/// tree whose digest matches the record.
+///
+/// Every call checks the record, ownership, executables and the stat digest
+/// (shape, modes, sizes, mtimes; a few thousand `lstat`s). The full content
+/// digest (every byte) runs the first time a process sees this tree, and again
+/// whenever the stat digest or the record/tree identity changes.
+fn verify_published(root: &Path, lock: &Lock, arch: DebArch) -> Option<PathBuf> {
+    let name = lock.directory_name(arch);
+    let asset = lock.asset(arch).ok()?;
+    let root_dir = Dir::open_root(root, false).ok()?;
+    let record: Record =
+        serde_json::from_slice(&read_small(&root_dir, &record_name(&name))?).ok()?;
+    if record.schema_version != RECORD_SCHEMA
+        || record.version != lock.version
+        || record.arch != arch.name()
+        || record.deb_sha256 != asset.sha256
+        || !valid_sha256(&record.tree_sha256)
+        || !valid_sha256(&record.stat_sha256)
+    {
+        return None;
+    }
+    let (tree, _) = root_dir.subdir(&name, false).ok()?;
+    if tree.stat_self().ok()?.st_mode & 0o022 != 0 {
+        return None;
+    }
+    check_executables(&tree).ok()?;
+    let path = root.join(&name);
+    let identity = stamp(&root_dir, &name)?;
+    let stat_digest = digest_tree(&path, false).ok()?.stat;
+    let cached = VERIFIED
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .as_ref()
+        .and_then(|map| map.get(&path).cloned());
+    let trusted = stat_digest == record.stat_sha256
+        && cached.is_some_and(|(seen, digest)| seen == identity && digest == stat_digest);
+    if !trusted {
+        let full = digest_tree(&path, true).ok()?;
+        if full.content.as_deref() != Some(record.tree_sha256.as_str()) {
+            return None;
+        }
+        remember(path.clone(), identity, stat_digest);
+    }
+    Some(path)
 }
 
 // --------------------------------------------------------------- ensure
 
-fn published(root: &Path, name: &str) -> Option<PathBuf> {
-    let path = root.join(name);
-    let meta = fs::symlink_metadata(&path).ok()?;
-    (meta.is_dir() && fs::symlink_metadata(path.join(SENTINEL)).is_ok_and(|m| m.is_file()))
-        .then_some(path)
-}
-
-fn clean_staging(root: &Path) {
+/// Removes leftovers of interrupted or rejected work: staging folders, folders
+/// moved aside and half-written temporaries.
+fn clean_staging(root: &Path, dir: &Dir) {
     if let Ok(entries) = fs::read_dir(root) {
         for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(".staging-") {
-                let _ = fs::remove_dir_all(entry.path());
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(".staging-")
+                || name.starts_with(".rejected-")
+                || (name.starts_with('.') && name.ends_with(".tmp"))
+            {
+                let _ = make_tree_deletable(&entry.path());
+                let _ = dir.remove_entry(root, &name);
             }
+        }
+    }
+}
+
+/// A staging directory that deletes itself unless published.
+struct Staging<'a> {
+    root_path: &'a Path,
+    root: &'a Dir,
+    name: String,
+    armed: bool,
+}
+
+impl Drop for Staging<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = make_tree_deletable(&self.root_path.join(&self.name));
+            let _ = self.root.remove_entry(self.root_path, &self.name);
         }
     }
 }
@@ -844,6 +1506,25 @@ fn throttled<'a>(mut report: impl FnMut(u64) + 'a) -> impl FnMut(u64) + 'a {
             last = Instant::now();
             report(bytes);
         }
+    }
+}
+
+/// Deletes a download file that is not a plain single-link file of ours (for
+/// example a planted symlink) without following it. Returns whether a usable
+/// file remains.
+fn discard_unsafe_file(dir: &Dir, name: &str) -> Result<bool, Error> {
+    let failed = || Error::retry("Silo could not prepare the ChatGPT download folder.");
+    match dir.stat(name, false) {
+        Ok(stat)
+            if stat.st_mode & libc::S_IFMT == libc::S_IFREG
+                && stat.st_nlink == 1
+                && stat.st_uid == effective_uid() =>
+        {
+            Ok(true)
+        }
+        Ok(_) => dir.unlink(name).map(|()| false).map_err(|_| failed()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(failed()),
     }
 }
 
@@ -882,8 +1563,8 @@ fn ensure_inner(
         });
         Ok(path)
     };
-    // Fast path without the lock: a published folder is immutable.
-    if let Some(path) = published(root, &name) {
+    // Fast path without the lock: a published, verified folder is immutable.
+    if let Some(path) = verify_published(root, lock, arch) {
         return ready(path);
     }
     if !consent_accepted(root) {
@@ -894,24 +1575,31 @@ fn ensure_inner(
         });
     }
     let _lock = RootLock::take(root)?;
-    if let Some(path) = published(root, &name) {
+    if let Some(path) = verify_published(root, lock, arch) {
         return ready(path);
     }
-    // A damaged folder (no executable) is not a published version; replace it.
-    let target = root.join(&name);
-    if fs::symlink_metadata(&target).is_ok() {
-        let _ = fs::remove_dir_all(&target);
-        let _ = fs::remove_file(&target);
-    }
-    clean_staging(root);
+    let prepare =
+        |_: std::io::Error| Error::retry("Silo could not prepare its ChatGPT app folder.");
+    let root_dir = Dir::open_root(root, true).map_err(prepare)?;
+    // Whatever sits under the published name is not something Silo published
+    // (no valid record, wrong tree, damaged): remove it, record first, so a
+    // crash can never leave a record pointing at a half-deleted tree.
+    root_dir
+        .remove_entry(root, &record_name(&name))
+        .and_then(|()| root_dir.remove_entry(root, &name))
+        .map_err(prepare)?;
+    clean_staging(root, &root_dir);
 
-    let downloads = root.join("downloads");
-    private_directory(&downloads)?;
-    let deb = downloads.join(format!("chatgpt_{}_{}.deb", lock.version, arch.name()));
-    let part = deb.with_extension("deb.part");
+    let (downloads, _) = root_dir.subdir("downloads", true).map_err(prepare)?;
+    let deb_name = format!("chatgpt_{}_{}.deb", lock.version, arch.name());
+    let part_name = format!("{deb_name}.part");
+    let deb = root.join("downloads").join(&deb_name);
+    let part = root.join("downloads").join(&part_name);
     free_space_check(root, asset.bytes)?;
 
-    if !deb.exists() {
+    let have_deb = discard_unsafe_file(&downloads, &deb_name)?;
+    discard_unsafe_file(&downloads, &part_name)?;
+    if !have_deb {
         report(Status::Downloading {
             received_bytes: fs::metadata(&part).map_or(0, |m| m.len()),
             total_bytes: asset.bytes,
@@ -923,39 +1611,93 @@ fn ensure_inner(
             })
         });
         downloader.fetch(&asset.url, &part, asset.bytes, &mut progress)?;
-        fs::rename(&part, &deb)
+        downloads
+            .rename(&part_name, &deb_name)
             .map_err(|_| Error::retry("Silo could not finish the ChatGPT download."))?;
     }
     report(Status::Verifying);
     verify_package(&deb, asset)?;
 
     report(Status::Extracting);
-    let staging = tempfile::Builder::new()
-        .prefix(".staging-")
-        .tempdir_in(root)
+    let staging_name = format!(".staging-{}", unique_suffix());
+    let (staging_dir, _) = root_dir
+        .subdir(&staging_name, true)
         .map_err(|_| Error::retry("Silo could not prepare space for the ChatGPT app."))?;
+    let mut staging = Staging {
+        root_path: root,
+        root: &root_dir,
+        name: staging_name,
+        armed: true,
+    };
     let mut stream = TarStream::open(&deb)?;
-    let extracted = extract_tree(&mut stream, staging.path());
-    let finished = stream.finish();
-    extracted?;
-    finished?;
+    if let Err(error) = extract_tree(&mut stream, &staging_dir) {
+        // Abort on the first rejected entry: dropping the stream kills the
+        // unpacking tools instead of draining the rest of the package.
+        drop(stream);
+        return Err(error);
+    }
+    stream.finish()?;
 
-    // Publish: flush the staged tree's directory, then one atomic rename.
-    sync_directory(staging.path());
-    let staged = staging.keep();
-    if let Err(error) = fs::rename(&staged, &target) {
-        let _ = fs::remove_dir_all(&staged);
-        // Another actor published it (never expected under the lock): accept it.
-        return match published(root, &name) {
+    // The tree is complete and synced; take its digests from what is on disk.
+    let staged_path = root.join(&staging.name);
+    let digests = digest_tree(&staged_path, true)
+        .map_err(|_| Error::fatal("The extracted ChatGPT app could not be verified."))?;
+    let record = Record {
+        schema_version: RECORD_SCHEMA,
+        version: lock.version.clone(),
+        arch: arch.name().to_owned(),
+        deb_sha256: asset.sha256.clone(),
+        tree_sha256: digests.content.clone().unwrap_or_default(),
+        stat_sha256: digests.stat.clone(),
+        entries: digests.entries,
+        bytes: digests.bytes,
+    };
+    let record_bytes = serde_json::to_vec_pretty(&record)
+        .map_err(|_| Error::fatal("Silo could not record the ChatGPT app."))?;
+
+    // Publish: one atomic rename, then the parent is synced, then the record,
+    // which is the last durable step. Until it exists the folder is not ready.
+    let target = root.join(&name);
+    let renamed = if root_dir.absent_entry(&name) {
+        root_dir.rename(&staging.name, &name)
+    } else {
+        Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists))
+    };
+    if let Err(error) = renamed {
+        drop(staging);
+        // Never trust a folder that appeared meanwhile without verifying it.
+        return match verify_published(root, lock, arch) {
             Some(path) => ready(path),
             None => Err(Error::retry(format!(
                 "Silo could not publish the ChatGPT app: {error}"
             ))),
         };
     }
-    sync_directory(root);
+    staging.armed = false;
+    let published = (|| -> std::io::Result<()> {
+        root_dir.sync()?;
+        write_file_atomically(&root_dir, &record_name(&name), &record_bytes)
+    })();
+    if published.is_err() {
+        let _ = root_dir.remove_entry(root, &record_name(&name));
+        let _ = root_dir.remove_entry(root, &name);
+        return Err(Error::retry(
+            "Silo could not finish publishing the ChatGPT app. Check disk access and retry.",
+        ));
+    }
+    if let Some(identity) = stamp(&root_dir, &name) {
+        remember(target.clone(), identity, digests.stat);
+    }
     let _ = fs::remove_file(&deb);
     ready(target)
+}
+
+impl Dir {
+    /// Whether `name` does not exist (without following it).
+    fn absent_entry(&self, name: &str) -> bool {
+        self.stat(name, false)
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    }
 }
 
 fn free_space_check(root: &Path, download_bytes: u64) -> Result<(), Error> {
@@ -980,7 +1722,7 @@ fn free_space_check(root: &Path, download_bytes: u64) -> Result<(), Error> {
 
 /// The status for a computer where no operation is running.
 pub(crate) fn current_status(root: &Path, lock: &Lock, arch: DebArch) -> Status {
-    match published(root, &lock.directory_name(arch)) {
+    match verify_published(root, lock, arch) {
         Some(path) => Status::Ready {
             path: fs::canonicalize(path).unwrap_or_default(),
             version: lock.version.clone(),
@@ -990,34 +1732,48 @@ pub(crate) fn current_status(root: &Path, lock: &Lock, arch: DebArch) -> Status 
     }
 }
 
-/// Removes version folders that are neither the pinned one nor named in
-/// `in_use` (folder names like `26.928.31416-arm64`), plus stale staging and
-/// downloads of other versions. Returns the removed folder names.
+/// Removes version folders (and their records) that are neither the pinned one
+/// nor named in `in_use` (folder names like `26.928.31416-arm64`), plus stale
+/// staging and downloads of other versions. Returns the removed folder names.
 pub(crate) fn collect_garbage(
     root: &Path,
     lock: &Lock,
     arch: DebArch,
     in_use: &HashSet<String>,
 ) -> Result<Vec<String>, Error> {
-    if !root.exists() {
+    if fs::symlink_metadata(root).is_err() {
         return Ok(Vec::new());
     }
     let _lock = RootLock::take(root)?;
-    clean_staging(root);
+    let root_dir = Dir::open_root(root, true)
+        .map_err(|_| Error::retry("Could not list ChatGPT app versions."))?;
+    clean_staging(root, &root_dir);
     let pinned = lock.directory_name(arch);
+    let is_version = |name: &str| {
+        ["-arm64", "-amd64"]
+            .iter()
+            .any(|suffix| name.strip_suffix(suffix).is_some_and(valid_version))
+    };
     let mut removed = Vec::new();
     let entries =
         fs::read_dir(root).map_err(|_| Error::retry("Could not list ChatGPT app versions."))?;
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        let is_version = ["-arm64", "-amd64"]
-            .iter()
-            .any(|suffix| name.strip_suffix(suffix).is_some_and(valid_version));
-        if !is_version || name == pinned || in_use.contains(&name) {
+        // A record of a version that is going away goes with it (or alone).
+        if let Some(stem) = name.strip_suffix(RECORD_SUFFIX) {
+            if is_version(stem) && stem != pinned && !in_use.contains(stem) {
+                let _ = root_dir.remove_entry(root, &name);
+            }
             continue;
         }
-        if entry.file_type().is_ok_and(|t| t.is_dir()) && fs::remove_dir_all(entry.path()).is_ok() {
-            removed.push(name);
+        if !is_version(&name) || name == pinned || in_use.contains(&name) {
+            continue;
+        }
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            let _ = root_dir.remove_entry(root, &record_name(&name));
+            if root_dir.remove_entry(root, &name).is_ok() {
+                removed.push(name);
+            }
         }
     }
     if let Ok(entries) = fs::read_dir(root.join("downloads")) {

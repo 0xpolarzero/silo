@@ -102,6 +102,18 @@ fn good_items() -> Vec<Item<'static>> {
         Item::Dir("./usr/lib/chatgpt/", 0o755),
         Item::File("./usr/lib/chatgpt/ChatGPT", 0o755, b"#!/bin/sh\n"),
         Item::Dir("./usr/lib/chatgpt/resources/", 0o700),
+        Item::Dir("./usr/lib/chatgpt/resources/cua_node/", 0o755),
+        Item::Dir("./usr/lib/chatgpt/resources/cua_node/bin/", 0o755),
+        Item::File(
+            "./usr/lib/chatgpt/resources/cua_node/bin/node",
+            0o755,
+            b"node",
+        ),
+        Item::File(
+            "./usr/lib/chatgpt/resources/cua_node/bin/node_repl",
+            0o755,
+            b"repl",
+        ),
         Item::File("./usr/lib/chatgpt/resources/app.asar", 0o644, b"data"),
         Item::Link("./usr/lib/chatgpt/resources/current", "app.asar"),
         Item::Link("./usr/lib/chatgpt/res", "resources"),
@@ -447,7 +459,8 @@ fn malicious_entries_are_refused_and_publish_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("tree");
         fs::create_dir(&dest).unwrap();
-        let error = extract_tree(&data_tar(&items)[..], &dest).expect_err(label);
+        let dest_dir = Dir::open_root(&dest, false).unwrap();
+        let error = extract_tree(&data_tar(&items)[..], &dest_dir).expect_err(label);
         assert!(!error.retryable, "{label}: {error}");
         // Nothing was written outside the destination.
         let outside: Vec<_> = fs::read_dir(dir.path()).unwrap().flatten().collect();
@@ -490,8 +503,7 @@ fn damaged_published_folder_is_replaced_and_good_one_is_never_touched() {
     let (result, _) = run(&dir, &package, &lock);
     let path = result.unwrap();
     assert!(path.join("ChatGPT").is_file() && !path.join("partial").exists());
-    // A published folder is returned as is, even if something was added to it.
-    fs::write(path.join("marker"), b"kept").unwrap();
+    // A verified folder is returned as is, with no download.
     let fake = Fake::new(Vec::new());
     let again = ensure(
         &dir.path().join("chatgpt"),
@@ -502,7 +514,6 @@ fn damaged_published_folder_is_replaced_and_good_one_is_never_touched() {
     )
     .unwrap();
     assert_eq!(again, path);
-    assert_eq!(fs::read(path.join("marker")).unwrap(), b"kept");
     assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
 }
 
@@ -616,6 +627,8 @@ fn status_serializes_for_the_ui() {
     );
 }
 
+mod hardening;
+
 /// Opt-in: downloads the real pinned arm64 package from OpenAI (453 MB) into a
 /// temporary directory and checks the extracted layout. Run with
 /// `SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures cargo test --locked
@@ -666,4 +679,20 @@ fn live_download_of_the_pinned_arm64_package() {
     )
     .unwrap();
     assert_eq!(again, path);
+    // Reuse costs: cheap check in this session, then the full digest as a new
+    // process would run it for the first time.
+    let lock = Lock::bundled().unwrap();
+    let started = Instant::now();
+    assert!(verify_published(&root, &lock, DebArch::Arm64).is_some());
+    println!("cheap reuse check: {:?}", started.elapsed());
+    hardening::forget_session();
+    let started = Instant::now();
+    assert!(verify_published(&root, &lock, DebArch::Arm64).is_some());
+    let full = digest_tree(&path, true).unwrap();
+    println!(
+        "full digest verification: {:?} ({} entries, {} bytes)",
+        started.elapsed(),
+        full.entries,
+        full.bytes
+    );
 }
