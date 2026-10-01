@@ -192,7 +192,7 @@ fn initial(path: &Path, app_data: &Path) -> Result<MigrationState, String> {
             }
         }
         if state.status != "complete" {
-            quarantine_previous_backup_state(app_data)?;
+            quarantine_previous_backup_state(app_data, &selected)?;
         }
         state.status = "complete".into();
         state.stage = if selected == CLEAN {
@@ -236,19 +236,23 @@ fn initial(path: &Path, app_data: &Path) -> Result<MigrationState, String> {
     Ok(state)
 }
 
-fn quarantine_previous_backup_state(app_data: &Path) -> Result<(), String> {
-    // Backup controller is installed after this gate. Keep the previous
-    // generation's journal/history from being replayed against a fresh home.
+/// Keep the previous generation's export history and unfinished export journal from being
+/// replayed against the generation `selected`, by moving them into the previous one.
+///
+/// A journal that recorded its result stays, so the export and import page still reports
+/// it after the upgrade. So does one that waits for the upgrade to finish its cleanup,
+/// but only when the converted generation was selected: recovery removes what the
+/// interrupted operation left from that generation, which holds a copy of it. The clean
+/// generation holds none of it, and the previous generation, where the sandboxes that
+/// could not be converted remain, is never cleaned.
+fn quarantine_previous_backup_state(app_data: &Path, selected: &str) -> Result<(), String> {
     let old = app_data.join("runtime");
     for name in ["backup-operation.json", "backup-history.json"] {
         let source = app_data.join(name);
         if !source.exists() {
             continue;
         }
-        // A journal that recorded its result cannot be resumed. It stays, so the
-        // export and import page still reports it after the upgrade, such as an
-        // operation interrupted before it.
-        if name == "backup-operation.json" && journal_is_finished(&source) {
+        if name == "backup-operation.json" && journal_stays(&source, selected == CONVERTED) {
             continue;
         }
         let destination = old.join(format!("before-checkpoints-{name}"));
@@ -271,8 +275,10 @@ fn quarantine_previous_backup_state(app_data: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether the export/import journal at `path` recorded a result (`terminal`).
-fn journal_is_finished(path: &Path) -> bool {
+/// Whether the export/import journal at `path` is one nothing resumes against the previous
+/// runtime: it recorded a result (`terminal`), or, when `awaiting_upgrade` is allowed, it
+/// waits for the upgrade to finish its cleanup.
+fn journal_stays(path: &Path, awaiting_upgrade: bool) -> bool {
     fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -280,6 +286,8 @@ fn journal_is_finished(path: &Path) -> bool {
             journal
                 .get("terminal")
                 .is_some_and(|result| !result.is_null())
+                || (awaiting_upgrade
+                    && journal.get("awaitingUpgrade") == Some(&serde_json::Value::Bool(true)))
         })
 }
 
@@ -709,18 +717,14 @@ fn convert_with(
                 .into(),
         );
     }
-    let backup_journal = app_data.join("backup-operation.json");
-    if backup_journal.exists() {
-        let bytes =
-            fs::read(&backup_journal).map_err(|_| "Previous backup progress could not be read.")?;
-        let value: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|_| "Previous backup progress is invalid; it was preserved.")?;
-        if value.get("terminal").is_none_or(serde_json::Value::is_null) {
-            return Err(
-                "An interrupted backup must finish before sandbox migration. No data was changed."
-                    .into(),
-            );
-        }
+    // An unreadable journal is not waited for, since nothing can settle it. It is set
+    // aside after every refusal below, so a refused migration still changes nothing.
+    let journal = crate::backup_controller::journal_state(app_data);
+    if matches!(journal, crate::backup_controller::JournalState::Pending) {
+        return Err(
+            "An interrupted backup must finish before sandbox migration. No data was changed."
+                .into(),
+        );
     }
     let staged = app_data.join(CONVERTED);
     if staged.exists() || fs::symlink_metadata(&staged).is_ok() {
@@ -734,6 +738,13 @@ fn convert_with(
         let _guard = runtime::configuration_recovery::command_lock(paths, Duration::from_secs(30))
             .map_err(|_| "A previous conversion command is still finishing. Retry later.")?;
         fs::remove_dir_all(&staged).map_err(|_| "Prior staged conversion could not be cleared.")?;
+    }
+    if matches!(journal, crate::backup_controller::JournalState::Unreadable) {
+        let aside = crate::backup_controller::set_aside_unreadable_journal(app_data)?;
+        eprintln!(
+            "An export or import record could not be read and was set aside as {}.",
+            aside.display()
+        );
     }
     progress(Step::Copying)?;
     // Each workspace disk is adopted straight from the previous generation, so a
@@ -787,7 +798,7 @@ fn convert_with(
     // and verified new generation. A crash before the quarantine below is
     // finished by `initial` at the next launch.
     select_generation(app_data, CONVERTED)?;
-    quarantine_previous_backup_state(app_data)?;
+    quarantine_previous_backup_state(app_data, CONVERTED)?;
     Ok(())
 }
 
@@ -998,7 +1009,7 @@ fn continue_after_migration_failure_blocking(app: AppHandle) -> Result<Migration
     // if a previous VM process has them open.
     prepare_clean_generation(&controller.app_data)?;
     select_generation(&controller.app_data, CLEAN)?;
-    quarantine_previous_backup_state(&controller.app_data)?;
+    quarantine_previous_backup_state(&controller.app_data, CLEAN)?;
     let result = update(&app, |state| {
         state.status = "running".into();
         state.stage = "Restarting into a fresh runtime".into();
@@ -1293,7 +1304,7 @@ mod tests {
         select_generation(app_data, CLEAN).unwrap();
         let failed = fresh("failed", 1);
         write(&app_data.join(FILE), &failed).unwrap();
-        quarantine_previous_backup_state(app_data).unwrap();
+        quarantine_previous_backup_state(app_data, CLEAN).unwrap();
         assert_eq!(
             selected_runtime_storage(app_data).unwrap(),
             app_data.join(CLEAN)
@@ -1515,14 +1526,19 @@ mod tests {
                 .unwrap();
             }),
             ("interrupted backup", |app_data| {
+                // A journal an interrupted export wrote and no launch has settled yet.
                 fs::write(
                     app_data.join("backup-operation.json"),
-                    br#"{"terminal":null}"#,
+                    br#"{"version":1,"id":"5b0c8e3e-3b8e-4c4c-9a0b-1f0f5f2d2b77","archive":{"name":"dev.silo-backup","archivePath":"/exports/dev.silo-backup","completedLabel":"In progress","size":"Unknown","destination":"/exports","sandboxes":["dev"]},"request":{"kind":"backup","names":["dev"],"machines":[],"running":[]},"cancelled":false,"terminal":null}"#,
                 )
                 .unwrap()
             }),
-            ("backup progress is invalid", |app_data| {
-                fs::write(app_data.join("backup-operation.json"), b"{not json").unwrap()
+            // An unreadable journal is set aside only once nothing else refuses: it never
+            // changes the data directory of a migration that does not start.
+            ("redirected", |app_data| {
+                fs::write(app_data.join("backup-operation.json"), b"{not json").unwrap();
+                std::os::unix::fs::symlink(app_data.join("elsewhere"), app_data.join(CONVERTED))
+                    .unwrap()
             }),
             ("redirected", |app_data| {
                 std::os::unix::fs::symlink(app_data.join("elsewhere"), app_data.join(CONVERTED))

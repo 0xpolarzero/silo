@@ -18,6 +18,11 @@ use tauri_plugin_dialog::DialogExt;
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const RESTORE_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+/// The export folder setting in the app data folder. The journal of an unfinished export
+/// or import sits beside it.
+const HISTORY_FILE: &str = "backup-history.json";
+
+pub(crate) use recovery::{journal_state, set_aside_unreadable_journal, JournalState};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -231,7 +236,7 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?
-        .join("backup-history.json");
+        .join(HISTORY_FILE);
     let Saved {
         destination,
         journal,
@@ -290,6 +295,18 @@ fn wait_for_recovery_with(app: &AppHandle, migration: bool) -> Result<(), String
     })
 }
 
+/// Whether the journal still has to be settled before startup or the migration goes on.
+/// The migration does not wait for a journal that only waits for it: its cleanup needs
+/// the converted storage the migration produces.
+fn settles_first(journal: &recovery::Journal, migration: bool) -> bool {
+    journal.is_pending()
+        && if migration {
+            !journal.is_awaiting_upgrade()
+        } else {
+            journal.blocks_startup()
+        }
+}
+
 fn wait_for_controller_recovery(
     controller: &Controller,
     migration: bool,
@@ -302,7 +319,7 @@ fn wait_for_controller_recovery(
             "Export and import recovery status could not be read. Relaunch Silo and retry."
         })?
         .as_ref()
-        .filter(|journal| journal.is_pending() && (migration || journal.blocks_startup()))
+        .filter(|journal| settles_first(journal, migration))
         .map(|journal| journal.identity().to_string());
     let Some(identity) = pending else {
         return Ok(());
@@ -319,7 +336,9 @@ fn wait_for_controller_recovery(
                 "Export and import recovery status could not be read. Relaunch Silo and retry."
             })?
             .as_ref()
-            .is_some_and(|journal| journal.identity() == identity && journal.is_pending());
+            .is_some_and(|journal| {
+                journal.identity() == identity && settles_first(journal, migration)
+            });
         if !pending {
             return Ok(());
         }
@@ -1994,31 +2013,115 @@ fn dismiss_finished_operation(
 }
 
 #[cfg(test)]
-pub(crate) use tests::settle_journal_before_migration;
+pub(crate) use tests::{
+    recover_journal_after_migration, settle_journal_before_migration, FirstLaunch,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// What the first launch of an upgrade made of the journal the previous version left
+    /// in `app_data`.
+    pub(crate) enum FirstLaunch {
+        NoJournal,
+        /// Nothing was left for the runtime: the result as the export and import page
+        /// receives it, already recorded in the journal.
+        Result(Value),
+        /// Data only the runtime can remove is left: the journal waits for the upgrade.
+        AwaitingUpgrade,
+    }
+
     /// What the first launch of an upgrade does with the journal the previous version
-    /// left in `app_data`: settle it with `paths`, which cannot start `msb`, and record
-    /// the result. Returns the result as the export and import page receives it.
+    /// left in `app_data`: settle it with `paths`, which cannot start `msb`.
     pub(crate) fn settle_journal_before_migration(
         app_data: &Path,
         paths: &runtime::RuntimePaths,
-    ) -> Option<Value> {
+    ) -> FirstLaunch {
         let controller = history_controller(app_data.join("backup-history.json"));
-        let journal = recovery::load(&controller.history_path).unwrap()?;
+        let Some(journal) = recovery::load(&controller.history_path).unwrap() else {
+            return FirstLaunch::NoJournal;
+        };
         *controller.journal.lock().unwrap() = Some(journal.clone());
-        let operation = recovery::settle_before_migration(
+        match recovery::settle_before_migration(
             paths,
             &controller,
             &journal,
             &backup::Cancellation::default(),
         )
+        .unwrap()
+        {
+            recovery::Settlement::Settled(operation) => {
+                let operation = recovery::complete(&controller, operation);
+                FirstLaunch::Result(serde_json::to_value(operation).unwrap())
+            }
+            recovery::Settlement::AfterUpgrade => FirstLaunch::AwaitingUpgrade,
+        }
+    }
+
+    /// What the launch after the migration does with the journal in `app_data`: ordinary
+    /// recovery with `paths` of the converted generation. `runner` is the runtime for the
+    /// sandboxes it removes, and a script in `scripts` stands for the `msb` the backup
+    /// service runs for snapshot data: it logs the runtime home of every call to
+    /// `scripts/calls` and lists the two members of an import group. `None` when there is
+    /// no journal to recover or it already holds its result, as `resume` finds it; the
+    /// error is a recovery that failed and kept its journal.
+    pub(crate) fn recover_journal_after_migration(
+        app_data: &Path,
+        scripts: &Path,
+        paths: &runtime::RuntimePaths,
+        runner: &dyn runtime::RuntimeRunner,
+        group: &str,
+    ) -> Option<Result<Value, String>> {
+        use std::os::unix::fs::PermissionsExt;
+        fs::create_dir_all(scripts).unwrap();
+        let script = scripts.join("scripted-msb");
+        fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s %s\\n' \"$MSB_HOME\" \"$*\" >> '{calls}'\ncase \"$1 $2\" in\n  'snapshot list') cat '{list}' ;;\nesac\nexit 0\n",
+                calls = scripts.join("calls").display(),
+                list = scripts.join("snapshots.json").display(),
+            ),
+        )
         .unwrap();
-        let operation = recovery::complete(&controller, operation);
-        Some(serde_json::to_value(operation).unwrap())
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(
+            scripts.join("snapshots.json"),
+            serde_json::json!([
+                {"group": group, "name": "imported-parent", "snapshot_id": format!("snap_{}", "0".repeat(32)), "digest": format!("sha256:{}", "a".repeat(64)), "parent_digest": null, "availability": "ready"},
+                {"group": group, "name": "imported-member", "snapshot_id": format!("snap_{}", "1".repeat(32)), "digest": format!("sha256:{}", "b".repeat(64)), "parent_digest": format!("snap_{}", "0".repeat(32)), "availability": "ready"}
+            ])
+            .to_string(),
+        )
+        .unwrap();
+        let controller = Controller {
+            service: backup::BackupService::new(
+                backup::MsbCommand {
+                    executable: script,
+                    home: paths.home.clone(),
+                    storage_home: paths.storage_home.clone(),
+                    library: paths.library.clone(),
+                },
+                app_data.join("scratch"),
+            ),
+            ..history_controller(app_data.join("backup-history.json"))
+        };
+        let journal = recovery::load(&controller.history_path).unwrap()?;
+        if !journal.is_pending() {
+            return None;
+        }
+        *controller.journal.lock().unwrap() = Some(journal.clone());
+        let recovered = recovery::recover_at_paths_with(
+            runner,
+            paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        );
+        Some(recovered.map(|operation| {
+            serde_json::to_value(recovery::complete(&controller, operation)).unwrap()
+        }))
     }
 
     pub(super) fn history_controller(path: PathBuf) -> Controller {
@@ -3268,6 +3371,55 @@ mod tests {
             .contains("Relaunch Silo to try again"));
         wait_for_controller_recovery(&controller, false, &|| false).unwrap();
         assert!(recovery::pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn the_migration_does_not_wait_for_a_journal_that_only_waits_for_the_upgrade() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
+        recovery::begin(
+            &controller,
+            recovery::Journal::restore(completed_archive(), "copy".into(), None),
+        )
+        .unwrap();
+        recovery::save_restore_group(&controller, "silo-import-0123456789abcdef0123456789abcdef")
+            .unwrap();
+        // Unsettled, it holds the migration back as before.
+        assert!(wait_for_controller_recovery(&controller, true, &|| false).is_err());
+
+        // The first launch of the upgrade settles what needs no runtime and leaves the
+        // rest to the converted storage.
+        let paths = runtime::RuntimePaths {
+            guest_image: PathBuf::new(),
+            executable: PathBuf::new(),
+            home: directory.path().join("home"),
+            storage_home: Some(directory.path().join("storage")),
+            library: PathBuf::new(),
+            metadata: directory.path().join("machines.json"),
+            volumes: directory.path().join("volumes"),
+        };
+        let journal = recovery::load(&controller.history_path).unwrap().unwrap();
+        let settlement = recovery::settle_before_migration(
+            &paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
+        assert!(matches!(settlement, recovery::Settlement::AfterUpgrade));
+        assert!(recovery::pending(&controller).unwrap());
+        wait_for_controller_recovery(&controller, true, &|| false).unwrap();
+        // Nothing else treats it as settled: a new operation and an update still wait for
+        // it, and so does the next startup's recovery.
+        assert!(recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None)
+        )
+        .is_err());
+        assert!(update_guard_for(controller.clone()).is_err());
     }
 
     #[test]

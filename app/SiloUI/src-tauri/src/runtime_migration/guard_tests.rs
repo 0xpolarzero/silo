@@ -170,7 +170,7 @@ fn continuing_into_a_fresh_runtime_never_names_the_previous_generation_again() {
     fs::write(app_data.join("backup-operation.json"), b"old journal").unwrap();
     prepare_clean_generation(app_data).unwrap();
     select_generation(app_data, CLEAN).unwrap();
-    quarantine_previous_backup_state(app_data).unwrap();
+    quarantine_previous_backup_state(app_data, CLEAN).unwrap();
     let before = snapshot(&old);
 
     // In this process (restart pending) and in the next (complete), the previous

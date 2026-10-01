@@ -5309,7 +5309,10 @@ pub(crate) fn start_disposable_test_import(
     checkpoints::start_pending(&ProcessRunner, paths, &machine)
 }
 
-fn cleanup_failed_create(
+/// Remove the runtime's sandbox `name` when it is Silo's own with `machine_id`, then the
+/// managed disk of the sandbox's workspace. Used after a failed create, and by recovery
+/// for a sandbox an import created and never saved.
+pub(crate) fn cleanup_failed_create(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,

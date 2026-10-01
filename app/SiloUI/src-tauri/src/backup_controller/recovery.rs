@@ -13,6 +13,12 @@ pub(super) struct Journal {
     request: Request,
     cancelled: bool,
     terminal: Option<Terminal>,
+    /// Set by the first launch of an upgrade for an operation that left data only the
+    /// runtime can remove. Everything else it left was removed without the runtime; this
+    /// cleanup waits for the converted storage, where recovery finishes it (see
+    /// `settle_before_migration`). Omitted when false, so older builds can still read it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    awaiting_upgrade: bool,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
@@ -86,6 +92,7 @@ impl Journal {
             },
             cancelled: false,
             terminal: None,
+            awaiting_upgrade: false,
         }
     }
     pub(super) fn restore(archive: Archive, name: String, source: Option<String>) -> Self {
@@ -101,7 +108,13 @@ impl Journal {
             },
             cancelled: false,
             terminal: None,
+            awaiting_upgrade: false,
         }
+    }
+    /// Whether the first launch of an upgrade settled everything it could without the
+    /// runtime and left the rest for recovery in the converted storage.
+    pub(super) fn is_awaiting_upgrade(&self) -> bool {
+        self.terminal.is_none() && self.awaiting_upgrade
     }
     /// Whether startup should let this operation's recovery finish before
     /// other sandbox recovery and automatic starts. Only an import touches
@@ -196,6 +209,92 @@ pub(super) fn load(history: &Path) -> Result<Option<Journal>, String> {
     validate(&journal)?;
     Ok(Some(journal))
 }
+/// How the export and import journal in `app_data` bears on the storage migration.
+pub(crate) enum JournalState {
+    /// There is none, or it recorded its result, or it only waits for the upgrade to
+    /// finish its cleanup: the migration may proceed and leaves it in place.
+    Settled,
+    /// An interrupted operation no launch has settled yet.
+    Pending,
+    /// It cannot be read, or a version this one does not support wrote it. Nothing can
+    /// settle it, so the migration sets it aside instead of waiting for it.
+    Unreadable,
+}
+
+pub(crate) fn journal_state(app_data: &Path) -> JournalState {
+    match load(&app_data.join(HISTORY_FILE)) {
+        Ok(None) => JournalState::Settled,
+        Ok(Some(journal)) if !journal.is_pending() || journal.is_awaiting_upgrade() => {
+            JournalState::Settled
+        }
+        Ok(Some(_)) => JournalState::Pending,
+        Err(_) => JournalState::Unreadable,
+    }
+}
+
+/// Set the journal in `app_data` aside as `backup-operation.unreadable-<UTC date>.json`
+/// and return where it went. The file is only renamed, never read, changed or deleted, so
+/// it stays for diagnosis. A result in its place tells the user an export or import
+/// record was set aside and may need to be run again; failing to save that result never
+/// fails the setting aside.
+pub(crate) fn set_aside_unreadable_journal(app_data: &Path) -> Result<PathBuf, String> {
+    let journal = journal_path(&app_data.join(HISTORY_FILE));
+    let today = time::OffsetDateTime::now_utc();
+    let date = format!(
+        "{:04}-{:02}-{:02}",
+        today.year(),
+        today.month() as u8,
+        today.day()
+    );
+    let aside = (1_u32..)
+        .map(|attempt| match attempt {
+            1 => app_data.join(format!("backup-operation.unreadable-{date}.json")),
+            _ => app_data.join(format!("backup-operation.unreadable-{date}-{attempt}.json")),
+        })
+        .find(|path| {
+            matches!(fs::symlink_metadata(path), Err(error) if error.kind() == std::io::ErrorKind::NotFound)
+        })
+        .ok_or("The unreadable export or import record could not be set aside.")?;
+    fs::rename(&journal, &aside)
+        .and_then(|()| fs::File::open(app_data).and_then(|directory| directory.sync_all()))
+        .map_err(|_| "The unreadable export or import record could not be set aside.")?;
+    let notice = Journal {
+        version: 1,
+        id: uuid::Uuid::new_v4().to_string(),
+        archive: Archive {
+            name: "Export or import record".into(),
+            archive_path: aside.to_string_lossy().into_owned(),
+            completed_label: "Set aside".into(),
+            size: "Unknown".into(),
+            destination: app_data.to_string_lossy().into_owned(),
+            sandboxes: Vec::new(),
+            checkpoint_name: None,
+        },
+        request: Request::Backup {
+            names: Vec::new(),
+            machines: Vec::new(),
+            running: Vec::new(),
+            checkpoint_id: None,
+            pending_capture: None,
+        },
+        cancelled: false,
+        terminal: Some(Terminal {
+            outcome: "failed".into(),
+            title: "Export or import record set aside".into(),
+            message: "An export or import record couldn\u{2019}t be read and was set aside.".into(),
+            detail: Some(
+                "If an export or import was running before the upgrade, run it again.".into(),
+            ),
+            running: Vec::new(),
+        }),
+        awaiting_upgrade: false,
+    };
+    if let Err(error) = write(&app_data.join(HISTORY_FILE), &notice) {
+        eprintln!("Silo could not record that an export or import record was set aside: {error}");
+    }
+    Ok(aside)
+}
+
 /// The rules a saved journal must meet to be loaded. `begin` applies them too,
 /// so Silo never saves a journal the next launch would refuse (E-51).
 fn validate(journal: &Journal) -> Result<(), String> {
@@ -609,6 +708,8 @@ pub(super) fn complete(controller: &Controller, mut operation: Operation) -> Ope
     {
         if let Err(error) = update(controller, |j| {
             j.archive = archive.clone();
+            // Whatever waited for the upgrade has been settled or is reported now.
+            j.awaiting_upgrade = false;
             j.terminal = Some(Terminal {
                 outcome: (*outcome).into(),
                 title: title.clone(),
@@ -652,10 +753,14 @@ pub(super) fn resume(
     let (outer_app, outer_controller) = (app.clone(), controller.clone());
     let work = move || {
         let operation = match recover(&app, &controller, &journal, &cancellation) {
-            Ok(operation) => complete(&controller, operation),
+            Ok(Settlement::Settled(operation)) => Some(complete(&controller, operation)),
+            // Nothing is running and nothing is reported yet: the upgrade converts the
+            // storage first, and the relaunch that follows finishes the cleanup and
+            // reports it.
+            Ok(Settlement::AfterUpgrade) => None,
             // Retain the journal: never discard ownership after an uncertain
             // cleanup. The next launch retries; dismissing abandons it (E-43).
-            Err(error) => Operation::Result {
+            Err(error) => Some(Operation::Result {
                 operation: journal.kind(),
                 archive: journal.archive.clone(),
                 target_name: journal.target(),
@@ -667,9 +772,20 @@ pub(super) fn resume(
                     "Saved progress was preserved. Relaunch Silo to retry, or dismiss this to stop retrying. Dismissing keeps any files it left."
                         .into(),
                 ),
-            },
+            }),
         };
-        let _ = set_operation(&controller, operation);
+        match operation {
+            Some(operation) => {
+                let _ = set_operation(&controller, operation);
+            }
+            None => {
+                controller
+                    .view
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .operation = None;
+            }
+        }
         finish(&controller);
         publish(&app, &controller);
     };
@@ -685,11 +801,13 @@ fn recover(
     controller: &Controller,
     journal: &Journal,
     cancellation: &backup::Cancellation,
-) -> Result<Operation, String> {
+) -> Result<Settlement, String> {
     // The storage migration refuses to start while a journal is pending (E-50), so an
     // interrupted operation settles before it. Until the migration finishes, the
     // previous generation is a pre-upgrade backup: nothing may start `msb` against it
-    // or write to it, so the operation is settled without the runtime.
+    // or write to it, so the operation is settled without the runtime, and whatever
+    // only the runtime can clean up waits for the converted storage. After the
+    // migration, this is the ordinary recovery in the storage in use.
     if crate::runtime_migration::blocks_operations(app) {
         let paths = runtime::inert_runtime_paths(app)?;
         return settle_before_migration(&paths, controller, journal, cancellation);
@@ -700,6 +818,7 @@ fn recover(
         journal,
         cancellation,
     )
+    .map(Settlement::Settled)
 }
 
 /// The result of an interrupted operation. `archive` is the file the result names.
@@ -756,21 +875,33 @@ fn left_export(
     })
 }
 
+/// What settling an operation interrupted before the storage migration left to do.
+pub(super) enum Settlement {
+    /// Nothing is left: this is the result to report.
+    Settled(Operation),
+    /// Data only the runtime can remove is left. The journal keeps owning it until the
+    /// migration has converted the storage, where recovery removes it and reports.
+    AfterUpgrade,
+}
+
 /// Settle an operation interrupted before the storage migration, without the runtime
 /// and without writing to the previous generation: until the migration finishes it is
 /// a pre-upgrade backup, which the migration copies and never edits. What the
 /// operation left outside that folder is handled as in [`recover_at_paths`]: its
 /// working files and partial export file are removed, and a finished export file is
-/// kept. What only the runtime could clean up (an export capture, a loaded import
-/// group, the sandbox of an unfinished import) is left as it is and reported: the
-/// migration converts only the sandboxes saved in the settings, so an import that
-/// never saved its sandbox is never converted.
+/// kept. What only the runtime can clean up (an export capture, a loaded import
+/// group, the sandbox of an unfinished import) is not given up: the migration copies it
+/// into the converted storage with everything else, so the journal stays pending,
+/// marked as waiting for the upgrade, and recovery removes it from that copy once the
+/// converted storage is selected (see [`Settlement::AfterUpgrade`]). The migration
+/// converts only the sandboxes saved in the settings, so an import that never saved its
+/// sandbox is never converted.
 pub(super) fn settle_before_migration(
     paths: &runtime::RuntimePaths,
     controller: &Controller,
     journal: &Journal,
     cancellation: &backup::Cancellation,
-) -> Result<Operation, String> {
+) -> Result<Settlement, String> {
     let _guard = runtime::OPERATIONS
         .computer("Recovering export or import")
         .map_err(|_| "Sandbox operations unavailable.")?;
@@ -787,18 +918,39 @@ pub(super) fn settle_before_migration(
     let staging = controller.service.cleanup_interrupted_staging();
     let partial = cleanup_archive_partial(journal);
     drop(command);
-    let leftover = match &journal.request {
+    let archive = journal.archive.clone();
+    if let Request::Restore { id: Some(id), .. } = &journal.request {
+        // Saved settings are the import's commit point: a sandbox saved under the
+        // journaled identity is complete and is converted like any other.
+        let saved = runtime::read_metadata(&paths.metadata)
+            .map_err(|e| e.to_string())?
+            .machines
+            .iter()
+            .any(|machine| machine.id() == id);
+        if saved {
+            let message = "Silo verified this import after relaunching.";
+            return Ok(Settlement::Settled(settled(
+                journal,
+                archive,
+                "success",
+                "Import complete",
+                message,
+                None,
+            )));
+        }
+    }
+    let needs_runtime = match &journal.request {
         Request::Backup {
             pending_capture, ..
         } => pending_capture.is_some(),
         Request::Restore { id, group, .. } => id.is_some() || group.is_some(),
     };
-    let kept = if leftover {
-        " Silo did not clean up the data it had started."
-    } else {
-        ""
-    };
-    let archive = journal.archive.clone();
+    if needs_runtime {
+        // Durable before the migration starts: the migration leaves a journal marked
+        // like this in place, and the next launch finishes it.
+        update(controller, |journal| journal.awaiting_upgrade = true)?;
+        return Ok(Settlement::AfterUpgrade);
+    }
     let result = match &journal.request {
         Request::Backup { names, .. } => left_export(
             journal,
@@ -828,79 +980,125 @@ pub(super) fn settle_before_migration(
             } else {
                 ""
             };
-            let detail = format!("No export file was saved.{kept}{files}{again}");
+            let detail = format!("No export file was saved.{files}{again}");
             settled(journal, archive, outcome, title, message, Some(&detail))
         }),
-        Request::Restore { id, .. } => {
-            // Saved settings are the import's commit point: a sandbox saved under the
-            // journaled identity is complete and is converted like any other.
-            let saved = match id {
-                Some(id) => runtime::read_metadata(&paths.metadata)
-                    .map_err(|e| e.to_string())?
-                    .machines
-                    .iter()
-                    .any(|machine| machine.id() == id),
-                None => false,
-            };
-            if saved {
-                let message = "Silo verified this import after relaunching.";
-                settled(
-                    journal,
-                    archive,
-                    "success",
-                    "Import complete",
-                    message,
-                    None,
+        Request::Restore { .. } => {
+            let (outcome, title, message, again) = if journal.cancelled {
+                (
+                    "cancelled",
+                    "Import cancelled",
+                    "The import was cancelled.",
+                    "",
                 )
             } else {
-                let (outcome, title, message, again) = if journal.cancelled {
-                    (
-                        "cancelled",
-                        "Import cancelled",
-                        "The import was cancelled.",
-                        "",
-                    )
-                } else {
-                    (
-                        "failed",
-                        "Import interrupted before the upgrade",
-                        "Silo closed before this import finished.",
-                        if leftover {
-                            " Import the file again, under another name if Silo says the name is taken."
-                        } else {
-                            " Import the file again."
-                        },
-                    )
-                };
-                let detail = format!("No sandbox was added.{kept}{again}");
-                settled(journal, archive, outcome, title, message, Some(&detail))
-            }
+                (
+                    "failed",
+                    "Import interrupted before the upgrade",
+                    "Silo closed before this import finished.",
+                    " Import the file again.",
+                )
+            };
+            let detail = format!("No sandbox was added.{again}");
+            settled(journal, archive, outcome, title, message, Some(&detail))
         }
     };
-    // The cleanup only the runtime could do is given up, so the result can be recorded.
-    if leftover {
-        give_up_runtime_cleanup(controller)?;
-    }
-    Ok(result)
+    Ok(Settlement::Settled(result))
 }
 
-/// Stop owning the cleanup of an export capture or an unfinished import, which only
-/// the runtime can do, so the journal may record its result (see `complete`).
-fn give_up_runtime_cleanup(controller: &Controller) -> Result<(), String> {
-    update(controller, |journal| match &mut journal.request {
-        Request::Backup {
-            pending_capture, ..
-        } => *pending_capture = None,
-        Request::Restore { id, group, .. } => {
-            *id = None;
-            *group = None;
+/// The marker a released Silo (0.9.0 and earlier) wrote into the managed disk folder it
+/// claimed for an import. It holds the identity journaled for the new sandbox.
+const RELEASED_DISK_MARKER: &str = ".silo-restore-owner";
+
+/// Remove what an import by a released Silo left when it stopped after journaling the
+/// new sandbox's identity and before saving the sandbox: the managed disk folder it
+/// claimed in `volumes/<name>`, and the runtime's sandbox it created over that disk.
+/// Only what carries the import's own identity is removed: the folder must hold the
+/// marker with it, and the runtime's sandbox must be Silo's own with it. A folder
+/// without it is left alone unless it is empty, and nothing is removed when a saved
+/// sandbox uses the name. The current import never leaves these: it records a native
+/// snapshot group in the journal instead, which [`discard_uncommitted_import`] removes.
+///
+/// Returns whether the runtime's sandbox had to stay. A released import leaves it in the
+/// `Created` state, and MicroSandbox 0.7.4 removes only a sandbox that is `Stopped` or
+/// `Crashed` (`msb remove` fails with "status is Created", with or without `--force`),
+/// so the disk is removed and the sandbox's name stays taken. Starting it to change that
+/// would run guest code over a partial disk.
+fn discard_released_import(
+    runner: &dyn runtime::RuntimeRunner,
+    paths: &runtime::RuntimePaths,
+    metadata: &runtime::MachineConfigurationRequest,
+    name: &str,
+    identity: &str,
+) -> Result<bool, String> {
+    if metadata
+        .machines
+        .iter()
+        .any(|machine| machine.name() == name)
+    {
+        return Ok(false);
+    }
+    let folder = paths.volumes.join(name);
+    match fs::symlink_metadata(&folder) {
+        Ok(found) if found.is_dir() => {}
+        Ok(_) => {
+            return Err(format!(
+                "The disk storage for {name} is not a folder. No files were removed."
+            ))
         }
-    })
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(format!(
+                "Silo could not inspect the incomplete import's disk storage: {error}"
+            ))
+        }
+    }
+    let owner = fs::read_to_string(folder.join(RELEASED_DISK_MARKER)).ok();
+    if owner.as_deref() != Some(identity) {
+        return fs::remove_dir(&folder).map(|()| false).map_err(|_| {
+            format!("Silo could not verify who owns the disk storage for {name}. No files were removed.")
+        });
+    }
+    let kept = match runtime::cleanup_failed_create(runner, paths, name, identity) {
+        Ok(()) => false,
+        // The sandbox is Silo's own (the identity check came first) and never started.
+        Err(error) => {
+            let never_started = runtime::inspect_workspace(runner, paths, name)
+                .is_ok_and(|inspected| inspected.status == "Created");
+            if !never_started {
+                return Err(error.to_string());
+            }
+            true
+        }
+    };
+    fs::remove_dir_all(&folder).map_err(|error| {
+        format!("Silo could not remove the incomplete import's disk storage: {error}")
+    })?;
+    Ok(kept)
 }
+
 /// Settle an operation interrupted by a relaunch without repeating it (E-31):
 /// remove this operation's partial output and return the result to report.
 /// An error means cleanup is uncertain and the journal must be kept.
 pub(super) fn recover_at_paths(
+    paths: &runtime::RuntimePaths,
+    controller: &Controller,
+    journal: &Journal,
+    cancellation: &backup::Cancellation,
+) -> Result<Operation, String> {
+    recover_at_paths_with(
+        &runtime::ProcessRunner,
+        paths,
+        controller,
+        journal,
+        cancellation,
+    )
+}
+
+/// [`recover_at_paths`] with the runner that removes the runtime's own records. The
+/// backup service of `controller` removes native snapshot data through its own runner.
+pub(super) fn recover_at_paths_with(
+    runner: &dyn runtime::RuntimeRunner,
     paths: &runtime::RuntimePaths,
     controller: &Controller,
     journal: &Journal,
@@ -923,7 +1121,7 @@ pub(super) fn recover_at_paths(
     // The previous process's command has finished. Release the lock so the
     // snapshot commands that remove an unfinished import can take it.
     drop(command);
-    settle_export_capture(&runtime::ProcessRunner, paths, controller)?;
+    settle_export_capture(runner, paths, controller)?;
     let result = |archive: Archive,
                   outcome: &'static str,
                   title: &str,
@@ -960,7 +1158,10 @@ pub(super) fn recover_at_paths(
                 )
             })
         }
-        Request::Restore { id, group, .. } => {
+        Request::Restore {
+            name, id, group, ..
+        } => {
+            let mut note = String::new();
             if let Some(id) = id {
                 let metadata =
                     runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
@@ -974,7 +1175,13 @@ pub(super) fn recover_at_paths(
                         None,
                     ));
                 }
+                // An identity without a group is the journal of a released Silo.
+                let kept =
+                    group.is_none() && discard_released_import(runner, paths, &metadata, name, id)?;
                 discard_uncommitted_import(paths, controller, id, group.as_deref())?;
+                if kept {
+                    note = format!(" Silo removed its disk but not its sandbox record, which this runtime cannot remove while the sandbox has never started, so the name {name} stays taken.");
+                }
             } else if group.is_some() {
                 discard_pending_import(paths, controller)?;
             }
@@ -984,15 +1191,20 @@ pub(super) fn recover_at_paths(
                     "cancelled",
                     "Import cancelled",
                     "The import was cancelled.",
-                    Some("No sandbox was added."),
+                    Some(&format!("No sandbox was added.{note}")),
                 )
             } else {
+                let again = if note.is_empty() {
+                    "Import the file again."
+                } else {
+                    "Import the file again under another name."
+                };
                 result(
                     journal.archive.clone(),
                     "failed",
                     "Import interrupted",
                     "Silo closed before this import finished.",
-                    Some("No sandbox was added. Import the file again."),
+                    Some(&format!("No sandbox was added.{note} {again}")),
                 )
             })
         }
@@ -2403,25 +2615,37 @@ mod tests {
         serde_json::json!({"kind": "restore", "name": "copy", "source": "dev", "id": id})
     }
 
-    /// Settle the journal the way the first launch of an upgrade does and record the
-    /// result, as `resume` does.
+    /// Settle the journal the way the first launch of an upgrade does when the operation
+    /// left nothing for the runtime, and record the result, as `resume` does.
     fn settle(
         paths: &runtime::RuntimePaths,
         controller: &Controller,
         journal: &Journal,
     ) -> (&'static str, String, String, Option<String>) {
-        let settled =
+        let Settlement::Settled(settled) =
             settle_before_migration(paths, controller, journal, &backup::Cancellation::default())
-                .unwrap();
+                .unwrap()
+        else {
+            panic!("this journal leaves data only the runtime can remove");
+        };
         let result = result_of(&settled);
         complete(controller, settled);
         result
     }
 
+    /// The first launch of an upgrade for an operation that owns data only the runtime can
+    /// remove: nothing is reported, and the journal waits for the upgrade.
+    fn settle_for_later(paths: &runtime::RuntimePaths, controller: &Controller, journal: &Journal) {
+        let settlement =
+            settle_before_migration(paths, controller, journal, &backup::Cancellation::default())
+                .unwrap();
+        assert!(matches!(settlement, Settlement::AfterUpgrade));
+    }
+
     #[test]
     fn every_journal_a_release_can_leave_settles_before_the_upgrade_without_touching_it() {
         let _test_state = crate::test_support::global_state();
-        let cases: [(&str, Value, &str, &str, &str); 4] = [
+        let cases: [(&str, Value, &str, &str, &str); 3] = [
             (
                 "export before its sandboxes were saved",
                 released_export(serde_json::json!([])),
@@ -2442,13 +2666,6 @@ mod tests {
                 "failed",
                 "Import interrupted before the upgrade",
                 "No sandbox was added. Import the file again.",
-            ),
-            (
-                "import that wrote its disk but never saved its sandbox",
-                released_import(Some(IMPORT_ID)),
-                "failed",
-                "Import interrupted before the upgrade",
-                "No sandbox was added. Silo did not clean up the data it had started. Import the file again, under another name if Silo says the name is taken.",
             ),
         ];
         for (state, request, outcome, title, detail) in cases {
@@ -2522,13 +2739,49 @@ mod tests {
         assert!(!pending(&controller).unwrap());
     }
 
-    #[test]
-    fn journals_from_development_builds_are_abandoned_instead_of_waiting_for_the_runtime() {
-        let _test_state = crate::test_support::global_state();
-        type Prepare = fn(&Controller);
-        let cases: [(&str, bool, Prepare, &str, &str); 4] = [
+    /// A journal that owns data only the runtime can remove, as each Silo that writes one
+    /// leaves it: `prepare` writes it through the journal's own functions, or by hand as the
+    /// released Silo 0.9.0 did.
+    type Prepare = fn(&Controller);
+    fn journal_cases() -> Vec<(&'static str, bool, Prepare)> {
+        vec![
             (
-                "export with a native capture in progress",
+                "import by the released 0.9.0 that wrote its disk",
+                false,
+                |controller| {
+                    // A released import had journaled only the identity.
+                    begin(
+                        controller,
+                        Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+                    )
+                    .unwrap();
+                    update(controller, |journal| {
+                        if let Request::Restore { id, .. } = &mut journal.request {
+                            *id = Some(IMPORT_ID.into());
+                        }
+                    })
+                    .unwrap();
+                },
+            ),
+            (
+                "cancelled import by the released 0.9.0 that wrote its disk",
+                true,
+                |controller| {
+                    begin(
+                        controller,
+                        Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+                    )
+                    .unwrap();
+                    update(controller, |journal| {
+                        if let Request::Restore { id, .. } = &mut journal.request {
+                            *id = Some(IMPORT_ID.into());
+                        }
+                    })
+                    .unwrap();
+                },
+            ),
+            (
+                "export of a development build in the middle of a capture",
                 false,
                 |controller| {
                     begin(
@@ -2543,11 +2796,26 @@ mod tests {
                     )
                     .unwrap();
                 },
-                "Export interrupted before the upgrade",
-                "No export file was saved. Silo did not clean up the data it had started. Export the sandbox again.",
             ),
             (
-                "import that loaded a native snapshot group",
+                "cancelled export of a development build in the middle of a capture",
+                true,
+                |controller| {
+                    begin(
+                        controller,
+                        Journal::backup(completed_archive(), vec!["dev".into()], None),
+                    )
+                    .unwrap();
+                    export_capture_intent(
+                        controller,
+                        &export_source(OLD_VM),
+                        Some("silo-backup-0-1-2"),
+                    )
+                    .unwrap();
+                },
+            ),
+            (
+                "import of a development build that loaded a snapshot group",
                 false,
                 |controller| {
                     begin(
@@ -2557,11 +2825,9 @@ mod tests {
                     .unwrap();
                     save_restore_group(controller, IMPORT_GROUP).unwrap();
                 },
-                "Import interrupted before the upgrade",
-                "No sandbox was added. Silo did not clean up the data it had started. Import the file again, under another name if Silo says the name is taken.",
             ),
             (
-                "import that journaled its sandbox identity and group",
+                "import of a development build that journaled its sandbox identity and group",
                 false,
                 |controller| {
                     begin(
@@ -2571,11 +2837,9 @@ mod tests {
                     .unwrap();
                     save_restore_identity(controller, IMPORT_ID, IMPORT_GROUP).unwrap();
                 },
-                "Import interrupted before the upgrade",
-                "No sandbox was added. Silo did not clean up the data it had started. Import the file again, under another name if Silo says the name is taken.",
             ),
             (
-                "cancelled import that journaled its sandbox identity and group",
+                "cancelled import of a development build that journaled its sandbox identity and group",
                 true,
                 |controller| {
                     begin(
@@ -2585,11 +2849,14 @@ mod tests {
                     .unwrap();
                     save_restore_identity(controller, IMPORT_ID, IMPORT_GROUP).unwrap();
                 },
-                "Import cancelled",
-                "No sandbox was added. Silo did not clean up the data it had started.",
             ),
-        ];
-        for (state, cancelled, prepare, title, detail) in cases {
+        ]
+    }
+
+    #[test]
+    fn data_only_the_runtime_can_remove_waits_for_the_upgrade_instead_of_being_given_up() {
+        let _test_state = crate::test_support::global_state();
+        for (state, cancelled, prepare) in journal_cases() {
             let directory = tempfile::tempdir().unwrap();
             let app_data = directory.path();
             let paths = previous_generation(app_data, &[("dev", OLD_VM)]);
@@ -2600,48 +2867,638 @@ mod tests {
             }
             // The next launch reloads only the durable journal.
             let journal = load(&controller.history_path).unwrap().unwrap();
-            assert!(
+            assert!(!journal.is_awaiting_upgrade(), "{state}");
+            let owned = |request: &Request| {
                 matches!(
-                    &journal.request,
+                    request,
                     Request::Backup {
                         pending_capture: Some(_),
                         ..
-                    } | Request::Restore { group: Some(_), .. }
-                ),
-                "{state}: the journal owns cleanup that needs the runtime"
-            );
+                    } | Request::Restore { id: Some(_), .. }
+                        | Request::Restore { group: Some(_), .. }
+                )
+            };
+            assert!(owned(&journal.request), "{state}");
+            // What it left outside the previous generation is its own.
+            let staging = app_data.join("scratch/restore-interrupted");
+            fs::create_dir_all(&staging).unwrap();
+            fs::write(staging.join("payload"), b"incomplete").unwrap();
             let before = tree(&app_data.join("runtime"));
-            let (outcome, got_title, _, got_detail) = settle(&paths, &controller, &journal);
-            assert_eq!(
-                (outcome, got_title.as_str(), got_detail.as_deref()),
-                (
-                    if cancelled { "cancelled" } else { "failed" },
-                    title,
-                    Some(detail)
+
+            for launch in 1..=2 {
+                *controller.journal.lock().unwrap() =
+                    Some(load(&controller.history_path).unwrap().unwrap());
+                let journal = load(&controller.history_path).unwrap().unwrap();
+                settle_for_later(&paths, &controller, &journal);
+                // The previous generation is byte-identical, not even a runtime alias or a
+                // worker lock was added, and the working files are gone.
+                assert_eq!(
+                    tree(&app_data.join("runtime")),
+                    before,
+                    "{state}: launch {launch}"
+                );
+                assert!(!app_data.join("alias").exists(), "{state}");
+                assert!(!staging.exists(), "{state}");
+                // Nothing was given up: the journal still owns the cleanup, and it is
+                // marked so the migration leaves it in place.
+                let saved = load(&controller.history_path).unwrap().unwrap();
+                assert!(saved.is_awaiting_upgrade(), "{state}");
+                assert!(saved.terminal.is_none(), "{state}");
+                assert_eq!(saved.cancelled, cancelled, "{state}");
+                assert!(owned(&saved.request), "{state}: ownership was kept");
+                assert!(pending(&controller).unwrap(), "{state}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_journal_waiting_for_the_upgrade_is_recognised_by_its_marker_alone() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        begin(
+            &controller,
+            Journal::restore(completed_archive(), "copy".into(), None),
+        )
+        .unwrap();
+        let text = |controller: &Controller| {
+            fs::read_to_string(journal_path(&controller.history_path)).unwrap()
+        };
+        // Written only once set, so a build that does not know it still reads the file.
+        assert!(!text(&controller).contains("awaitingUpgrade"));
+        update(&controller, |journal| journal.awaiting_upgrade = true).unwrap();
+        assert!(text(&controller).contains("\"awaitingUpgrade\":true"));
+        assert!(load(&controller.history_path)
+            .unwrap()
+            .unwrap()
+            .is_awaiting_upgrade());
+        // A result ends the wait, whatever the marker says.
+        complete(
+            &controller,
+            Operation::Result {
+                operation: "restore",
+                archive: completed_archive(),
+                running_names: vec![],
+                target_name: Some("copy".into()),
+                outcome: "failed",
+                title: "Import interrupted".into(),
+                message: "Silo closed before this import finished.".into(),
+                detail: None,
+            },
+        );
+        let saved = load(&controller.history_path).unwrap().unwrap();
+        assert!(saved.terminal.is_some());
+        assert!(!saved.is_awaiting_upgrade());
+        assert!(!pending(&controller).unwrap());
+        // And the marker goes with it, so a recorded result is the same as ever.
+        assert!(!text(&controller).contains("awaitingUpgrade"));
+    }
+
+    /// The runtime's sandboxes as `msb list` and `msb inspect` report them. Removing one
+    /// goes through `remove`, which can be made to fail.
+    struct Sandboxes {
+        present: Mutex<Vec<(String, String)>>,
+        calls: Mutex<Vec<String>>,
+        fail_remove: bool,
+        /// What `msb inspect` reports for every sandbox. MicroSandbox 0.7.4 removes only a
+        /// `Stopped` or `Crashed` one: `msb remove` fails for a sandbox that is `Created`.
+        status: &'static str,
+    }
+    impl Sandboxes {
+        fn with(sandboxes: &[(&str, &str)]) -> Self {
+            Self {
+                present: Mutex::new(
+                    sandboxes
+                        .iter()
+                        .map(|(name, id)| (name.to_string(), id.to_string()))
+                        .collect(),
                 ),
+                calls: Mutex::new(Vec::new()),
+                fail_remove: false,
+                status: "Stopped",
+            }
+        }
+        /// As a released import leaves its sandbox: created, never started.
+        fn never_started(mut self) -> Self {
+            self.status = "Created";
+            self
+        }
+        fn names(&self) -> Vec<String> {
+            self.present
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect()
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+    impl runtime::RuntimeRunner for Sandboxes {
+        fn run(
+            &self,
+            _: &runtime::RuntimePaths,
+            arguments: &[String],
+            _: Duration,
+        ) -> Result<runtime::CommandOutput, runtime::RuntimeError> {
+            self.calls.lock().unwrap().push(arguments.join(" "));
+            let present = self.present.lock().unwrap().clone();
+            let stdout = match arguments
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .as_slice()
+            {
+                ["list", "--format", "json"] => serde_json::Value::Array(
+                    present
+                        .iter()
+                        .map(|(name, _)| serde_json::json!({ "name": name }))
+                        .collect(),
+                )
+                .to_string(),
+                ["inspect", name, "--format", "json"] => {
+                    let (_, id) = present
+                        .iter()
+                        .find(|(candidate, _)| candidate == name)
+                        .expect("only a sandbox that is listed is inspected");
+                    serde_json::json!({"name": name, "status": self.status, "config": {"labels": {"silo.managed": "true", "silo.machine-id": id}}}).to_string()
+                }
+                ["remove", "--force", "--quiet", name] => {
+                    if self.status == "Created" {
+                        return Err(runtime::RuntimeError::Failed {
+                            operation: "Removing the sandbox".into(),
+                            exit_code: Some(1),
+                            detail: format!("sandbox still running: cannot remove sandbox {name:?}: status is Created"),
+                        });
+                    }
+                    if self.fail_remove {
+                        return Err(runtime::RuntimeError::Invalid(
+                            "test removal refused".into(),
+                        ));
+                    }
+                    self.present
+                        .lock()
+                        .unwrap()
+                        .retain(|(candidate, _)| candidate != name);
+                    String::new()
+                }
+                other => panic!("unexpected runtime command: {other:?}"),
+            };
+            Ok(runtime::CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    /// Storage as recovery finds it once the converted generation is selected: the saved
+    /// sandbox `dev`, and the disk folder a released import claimed and wrote for `copy`.
+    fn storage_with_released_import(directory: &Path) -> runtime::RuntimePaths {
+        let paths = temp_paths(directory);
+        save_machine(&paths, "dev", OLD_VM);
+        fs::create_dir_all(paths.volumes.join("dev")).unwrap();
+        fs::write(paths.volumes.join("dev/workspace.raw"), b"workspace").unwrap();
+        fs::create_dir_all(paths.volumes.join("copy")).unwrap();
+        fs::write(paths.volumes.join("copy/.silo-restore-owner"), IMPORT_ID).unwrap();
+        fs::write(paths.volumes.join("copy/workspace.raw"), b"partial disk").unwrap();
+        paths
+    }
+
+    fn recover_released_import(
+        runtime: &Sandboxes,
+        directory: &Path,
+        paths: &runtime::RuntimePaths,
+    ) -> (Controller, Result<Operation, String>) {
+        let (controller, journal) = released_journal(
+            directory,
+            &directory.join("dev.silo-backup"),
+            released_import(Some(IMPORT_ID)),
+        );
+        let recovered = recover_at_paths_with(
+            runtime,
+            paths,
+            &controller,
+            &journal,
+            &backup::Cancellation::default(),
+        );
+        (controller, recovered)
+    }
+
+    #[test]
+    fn recovery_removes_what_an_import_by_a_released_silo_left() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = storage_with_released_import(directory.path());
+        let runtime = Sandboxes::with(&[("dev", OLD_VM), ("copy", IMPORT_ID)]);
+        let (controller, recovered) = recover_released_import(&runtime, directory.path(), &paths);
+        let recovered = recovered.unwrap();
+        let (outcome, title, message, detail) = result_of(&recovered);
+        assert_eq!((outcome, title.as_str()), ("failed", "Import interrupted"));
+        assert_eq!(message, "Silo closed before this import finished.");
+        assert_eq!(
+            detail.as_deref(),
+            Some("No sandbox was added. Import the file again.")
+        );
+        // Its sandbox record and its disk are gone, and the saved sandbox is untouched.
+        assert!(!paths.volumes.join("copy").exists());
+        assert_eq!(runtime.names(), ["dev"]);
+        assert_eq!(
+            runtime.calls(),
+            [
+                "list --format json",
+                "inspect copy --format json",
+                "remove --force --quiet copy"
+            ]
+        );
+        assert_eq!(
+            fs::read(paths.volumes.join("dev/workspace.raw")).unwrap(),
+            b"workspace"
+        );
+        complete(&controller, recovered);
+        let saved = load(&controller.history_path).unwrap().unwrap();
+        assert!(saved.terminal.is_some());
+        assert!(matches!(saved.request, Request::Restore { id: None, .. }));
+    }
+
+    #[test]
+    fn recovery_removes_the_disk_of_a_released_import_whose_sandbox_cannot_be_removed_yet() {
+        let _test_state = crate::test_support::global_state();
+        // A released import leaves its sandbox created and never started, which
+        // MicroSandbox 0.7.4 refuses to remove.
+        for cancelled in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = storage_with_released_import(directory.path());
+            let runtime = Sandboxes::with(&[("dev", OLD_VM), ("copy", IMPORT_ID)]).never_started();
+            let (controller, journal) = released_journal(
+                directory.path(),
+                &directory.path().join("dev.silo-backup"),
+                released_import(Some(IMPORT_ID)),
+            );
+            let journal = if cancelled {
+                cancel(&controller).unwrap();
+                load(&controller.history_path).unwrap().unwrap()
+            } else {
+                journal
+            };
+            let recovered = recover_at_paths_with(
+                &runtime,
+                &paths,
+                &controller,
+                &journal,
+                &backup::Cancellation::default(),
+            )
+            .unwrap();
+            let (outcome, title, _, detail) = result_of(&recovered);
+            let detail = detail.unwrap();
+            // The disk, which is what takes the space, is gone; the sandbox's record stays
+            // and the result says its name is taken.
+            assert!(!paths.volumes.join("copy").exists());
+            assert_eq!(runtime.names(), ["dev", "copy"]);
+            assert!(
+                detail.starts_with(
+                    "No sandbox was added. Silo removed its disk but not its sandbox record"
+                ),
+                "{detail}"
+            );
+            assert!(detail.contains("the name copy stays taken."), "{detail}");
+            if cancelled {
+                assert_eq!((outcome, title.as_str()), ("cancelled", "Import cancelled"));
+                assert!(!detail.contains("Import the file again"), "{detail}");
+            } else {
+                assert_eq!((outcome, title.as_str()), ("failed", "Import interrupted"));
+                assert!(
+                    detail.ends_with("Import the file again under another name."),
+                    "{detail}"
+                );
+            }
+            // Recovery is complete: the journal no longer owns anything.
+            complete(&controller, recovered);
+            let saved = load(&controller.history_path).unwrap().unwrap();
+            assert!(saved.terminal.is_some());
+            assert!(matches!(saved.request, Request::Restore { id: None, .. }));
+            assert_eq!(
+                fs::read(paths.volumes.join("dev/workspace.raw")).unwrap(),
+                b"workspace"
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_of_a_released_import_removes_a_disk_whose_sandbox_was_never_created() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = storage_with_released_import(directory.path());
+        let runtime = Sandboxes::with(&[("dev", OLD_VM)]);
+        let (_, recovered) = recover_released_import(&runtime, directory.path(), &paths);
+        assert_eq!(result_of(&recovered.unwrap()).0, "failed");
+        assert!(!paths.volumes.join("copy").exists());
+        assert_eq!(runtime.calls(), ["list --format json"]);
+        assert_eq!(runtime.names(), ["dev"]);
+    }
+
+    #[test]
+    fn recovery_of_a_released_import_leaves_everything_it_cannot_prove_is_its_own() {
+        let _test_state = crate::test_support::global_state();
+        // The folder carries another identity, or none, and is not empty.
+        for marker in [Some("another-identity"), None] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = storage_with_released_import(directory.path());
+            let marker_path = paths.volumes.join("copy/.silo-restore-owner");
+            match marker {
+                Some(owner) => fs::write(&marker_path, owner).unwrap(),
+                None => fs::remove_file(&marker_path).unwrap(),
+            }
+            let runtime = Sandboxes::with(&[("dev", OLD_VM), ("copy", IMPORT_ID)]);
+            let (controller, recovered) =
+                recover_released_import(&runtime, directory.path(), &paths);
+            let error = recovered.err().expect("ownership is not proven");
+            assert!(error.contains("No files were removed"), "{error}");
+            assert_eq!(
+                fs::read(paths.volumes.join("copy/workspace.raw")).unwrap(),
+                b"partial disk"
+            );
+            assert_eq!(runtime.names(), ["dev", "copy"]);
+            assert!(runtime.calls().is_empty());
+            assert!(pending(&controller).unwrap());
+        }
+        // An empty folder is nothing to keep.
+        let directory = tempfile::tempdir().unwrap();
+        let paths = storage_with_released_import(directory.path());
+        fs::remove_dir_all(paths.volumes.join("copy")).unwrap();
+        fs::create_dir(paths.volumes.join("copy")).unwrap();
+        let runtime = Sandboxes::with(&[("dev", OLD_VM)]);
+        let (_, recovered) = recover_released_import(&runtime, directory.path(), &paths);
+        assert_eq!(result_of(&recovered.unwrap()).0, "failed");
+        assert!(!paths.volumes.join("copy").exists());
+    }
+
+    #[test]
+    fn recovery_of_a_released_import_keeps_a_sandbox_that_carries_another_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = storage_with_released_import(directory.path());
+        let other = uuid::Uuid::new_v4().to_string();
+        let runtime = Sandboxes::with(&[("dev", OLD_VM), ("copy", other.as_str())]);
+        let (controller, recovered) = recover_released_import(&runtime, directory.path(), &paths);
+        recovered.err().expect("another sandbox is never removed");
+        assert_eq!(runtime.names(), ["dev", "copy"]);
+        assert!(!runtime
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("remove")));
+        assert!(paths.volumes.join("copy/workspace.raw").exists());
+        assert!(pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn recovery_of_a_released_import_leaves_the_folder_of_a_saved_sandbox_with_that_name() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = storage_with_released_import(directory.path());
+        // The name is a saved sandbox's now, so the folder belongs to it.
+        let saved = uuid::Uuid::new_v4().to_string();
+        let request: runtime::MachineConfigurationRequest = serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "machines": [{"kind":"vm","id":saved,"name":"copy","cpus":1,"maxCPUs":1,"memoryGiB":1,"maxMemoryGiB":1,"workspaceStorageGiB":1,"runtimeStorageGiB":1}]
+        }))
+        .unwrap();
+        runtime::write_metadata(&paths.metadata, &request).unwrap();
+        let runtime = Sandboxes::with(&[("copy", saved.as_str())]);
+        let (_, recovered) = recover_released_import(&runtime, directory.path(), &paths);
+        assert_eq!(result_of(&recovered.unwrap()).0, "failed");
+        assert_eq!(
+            fs::read(paths.volumes.join("copy/workspace.raw")).unwrap(),
+            b"partial disk"
+        );
+        assert!(runtime.calls().is_empty());
+    }
+
+    #[test]
+    fn a_failed_removal_keeps_the_released_import_for_the_next_launch() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = storage_with_released_import(directory.path());
+        let mut runtime = Sandboxes::with(&[("dev", OLD_VM), ("copy", IMPORT_ID)]);
+        runtime.fail_remove = true;
+        let (controller, recovered) = recover_released_import(&runtime, directory.path(), &paths);
+        recovered.err().expect("the sandbox could not be removed");
+        // Nothing was removed before the sandbox, and the journal still owns the import.
+        assert!(paths.volumes.join("copy/workspace.raw").exists());
+        assert_eq!(runtime.names(), ["dev", "copy"]);
+        let saved = load(&controller.history_path).unwrap().unwrap();
+        assert!(saved.terminal.is_none());
+        assert!(matches!(
+            saved.request,
+            Request::Restore { id: Some(_), .. }
+        ));
+
+        // The next launch finishes it.
+        let retry = Sandboxes::with(&[("dev", OLD_VM), ("copy", IMPORT_ID)]);
+        let recovered = recover_at_paths_with(
+            &retry,
+            &paths,
+            &controller,
+            &saved,
+            &backup::Cancellation::default(),
+        )
+        .unwrap();
+        assert_eq!(result_of(&recovered).0, "failed");
+        assert!(!paths.volumes.join("copy").exists());
+        assert_eq!(retry.names(), ["dev"]);
+    }
+
+    /// A journal as the previous Silo left it, then the file in `app_data` (not written
+    /// through the journal, which would refuse an unsupported one).
+    fn journal_text(version: u64, extra: Option<(&str, Value)>) -> String {
+        let mut journal = serde_json::json!({
+            "version": version,
+            "id": JOURNAL_ID,
+            "archive": {
+                "name": "dev.silo-backup",
+                "archivePath": "/backups/dev.silo-backup",
+                "completedLabel": "In progress",
+                "size": "Unknown",
+                "destination": "/backups",
+                "sandboxes": ["dev"],
+            },
+            "request": released_export(serde_json::json!([])),
+            "cancelled": false,
+            "terminal": null,
+        });
+        if let Some((key, value)) = extra {
+            journal[key] = value;
+        }
+        journal.to_string()
+    }
+
+    fn utc_date() -> String {
+        let today = time::OffsetDateTime::now_utc();
+        format!(
+            "{:04}-{:02}-{:02}",
+            today.year(),
+            today.month() as u8,
+            today.day()
+        )
+    }
+
+    #[test]
+    fn the_migration_sorts_journals_by_whether_it_must_wait_for_them() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let journal = app_data.join("backup-operation.json");
+        let state = |expected: &str| {
+            let found = match journal_state(app_data) {
+                JournalState::Settled => "settled",
+                JournalState::Pending => "pending",
+                JournalState::Unreadable => "unreadable",
+            };
+            assert_eq!(found, expected);
+        };
+        state("settled");
+        let pending_text = journal_text(1, None);
+        fs::write(&journal, &pending_text).unwrap();
+        state("pending");
+        fs::write(
+            &journal,
+            journal_text(1, Some(("awaitingUpgrade", true.into()))),
+        )
+        .unwrap();
+        state("settled");
+        fs::write(
+            &journal,
+            journal_text(
+                1,
+                Some((
+                    "terminal",
+                    serde_json::json!({"outcome":"failed","title":"t","message":"m","detail":null,"running":[]}),
+                )),
+            ),
+        )
+        .unwrap();
+        state("settled");
+        // Unreadable: damaged, empty, written by another version, or with unknown content.
+        for text in [
+            "{not json".to_string(),
+            String::new(),
+            journal_text(2, None),
+            journal_text(1, Some(("unknown", true.into()))),
+            pending_text.replace(JOURNAL_ID, "not-an-identity"),
+            pending_text.replace("/backups/dev.silo-backup", "relative.silo-backup"),
+        ] {
+            fs::write(&journal, &text).unwrap();
+            state("unreadable");
+        }
+        // A file that cannot be read at all, such as a folder in its place.
+        fs::remove_file(&journal).unwrap();
+        fs::create_dir(&journal).unwrap();
+        state("unreadable");
+    }
+
+    #[test]
+    fn an_unreadable_journal_is_set_aside_with_a_notice_and_never_deleted() {
+        let _test_state = crate::test_support::global_state();
+        let cases = [
+            ("damaged", "{not json".to_string()),
+            ("empty", String::new()),
+            ("another version", journal_text(2, None)),
+            (
+                "unknown content",
+                journal_text(1, Some(("unknown", true.into()))),
+            ),
+        ];
+        for (state, text) in cases {
+            let directory = tempfile::tempdir().unwrap();
+            let app_data = directory.path();
+            fs::write(app_data.join("backup-operation.json"), &text).unwrap();
+            fs::write(app_data.join("backup-history.json"), b"history").unwrap();
+            let first = utc_date();
+            let aside = set_aside_unreadable_journal(app_data).unwrap();
+            let second = utc_date();
+            // Only renamed: the same bytes, in the app data folder, named for the day.
+            assert_eq!(fs::read_to_string(&aside).unwrap(), text, "{state}");
+            assert_eq!(aside.parent().unwrap(), app_data, "{state}");
+            let name = aside.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                [first, second]
+                    .iter()
+                    .any(|date| name == format!("backup-operation.unreadable-{date}.json")),
+                "{state}: {name}"
+            );
+            // In its place the export page has a result that says what happened, and the
+            // migration no longer waits for anything.
+            assert!(
+                matches!(journal_state(app_data), JournalState::Settled),
                 "{state}"
             );
-            assert_eq!(tree(&app_data.join("runtime")), before, "{state}");
-            assert!(!app_data.join("alias").exists(), "{state}");
-            assert!(!pending(&controller).unwrap(), "{state}");
-            let saved = load(&controller.history_path).unwrap().unwrap();
-            assert!(saved.terminal.is_some(), "{state}");
-            // The journal no longer claims data it did not clean up.
-            assert!(
-                matches!(
-                    saved.request,
-                    Request::Backup {
-                        pending_capture: None,
-                        ..
-                    } | Request::Restore {
-                        id: None,
-                        group: None,
-                        ..
-                    }
-                ),
+            let saved = load(&app_data.join("backup-history.json"))
+                .unwrap()
+                .unwrap();
+            assert!(!saved.is_pending(), "{state}");
+            match saved.operation() {
+                Operation::Result {
+                    outcome,
+                    title,
+                    message,
+                    detail,
+                    ..
+                } => {
+                    assert_eq!(outcome, "failed", "{state}");
+                    assert_eq!(title, "Export or import record set aside", "{state}");
+                    assert_eq!(
+                        message,
+                        "An export or import record couldn\u{2019}t be read and was set aside.",
+                        "{state}"
+                    );
+                    assert_eq!(
+                        detail.as_deref(),
+                        Some(
+                            "If an export or import was running before the upgrade, run it again."
+                        ),
+                        "{state}"
+                    );
+                }
+                Operation::Running { .. } => panic!("{state}: the notice is a result"),
+            }
+            assert_eq!(
+                fs::read(app_data.join("backup-history.json")).unwrap(),
+                b"history",
                 "{state}"
             );
         }
+    }
+
+    #[test]
+    fn setting_unreadable_journals_aside_never_replaces_an_earlier_one() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let mut kept = Vec::new();
+        for attempt in 1..=3 {
+            let text = format!("unreadable record {attempt}");
+            fs::write(app_data.join("backup-operation.json"), &text).unwrap();
+            let aside = set_aside_unreadable_journal(app_data).unwrap();
+            kept.push((aside, text));
+            // The notice that replaced it is dismissed before the next one is written.
+            fs::remove_file(app_data.join("backup-operation.json")).unwrap();
+        }
+        let names: std::collections::BTreeSet<_> =
+            kept.iter().map(|(path, _)| path.clone()).collect();
+        assert_eq!(names.len(), 3, "every record has a file of its own");
+        for (path, text) in kept {
+            assert_eq!(fs::read_to_string(path).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn setting_a_journal_aside_fails_without_losing_it_when_it_cannot_be_renamed() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        // No journal to set aside: nothing is created.
+        assert!(set_aside_unreadable_journal(app_data).is_err());
+        assert_eq!(fs::read_dir(app_data).unwrap().count(), 0);
     }
 
     #[test]
@@ -2718,7 +3575,10 @@ mod tests {
             &backup::Cancellation::default(),
         );
         fs::set_permissions(&exports, fs::Permissions::from_mode(0o700)).unwrap();
-        let (outcome, _, _, detail) = result_of(&settled.expect("the journal settles anyway"));
+        let Settlement::Settled(settled) = settled.expect("the journal settles anyway") else {
+            panic!("an export that left no capture has nothing to wait for");
+        };
+        let (outcome, _, _, detail) = result_of(&settled);
         assert_eq!(outcome, "failed");
         assert_eq!(
             detail.as_deref(),
