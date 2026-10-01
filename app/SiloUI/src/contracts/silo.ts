@@ -34,6 +34,8 @@ export const siloBootstrapConfigurationSchema = z.object({
 
 export const desktopConfigurationSchema = z.object({
   startWithSandbox: z.boolean(),
+  // Reported for VMs whose desktop is built into the image (v4). Read-only: the desktop always starts.
+  builtIn: z.boolean().optional(),
 }).strict()
 
 export const setupWorkspaceConfigurationSchema = z.object({

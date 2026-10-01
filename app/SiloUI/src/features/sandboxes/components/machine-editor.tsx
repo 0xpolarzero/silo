@@ -19,6 +19,8 @@ import {
   type MachineValidationErrors,
 } from "@/features/onboarding/model/machine-configuration"
 import { divergentMachineFields, sameMachineConfiguration } from "@/features/application/model/machine-change"
+import { ChatGptAppFlow } from "@/desktop/computer-use-panel"
+import { useComputerUseBridge } from "@/desktop/computer-use-bridge"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 import { machineFieldLabel, type MachineReview } from "@/features/sandboxes/model/machine-review"
 import { parseWholeNumber, presetsWithin, resourceFields, resourceMaximums, runtimeLimits, validateMachineResources, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
@@ -142,6 +144,9 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   const deletedElsewhere = Boolean(editor.originalID) && baselineMachine !== undefined && !original
   const divergent = Boolean(baselineMachine && original && !sameMachineConfiguration(baselineMachine, original))
   const changedFields = divergent && baselineMachine && original ? divergentMachineFields(baselineMachine, original) : []
+  // A VM whose desktop is built into its image always starts it; only older VMs are configured here.
+  const builtInDesktop = created && original?.kind === "vm" && original.desktop?.builtIn === true
+  const computerUse = useComputerUseBridge()
   const desktopInstalled = created && original?.kind === "vm" && Boolean(original.desktop)
   const desktopOnlyChange = original?.kind === "vm" && draft.kind === "vm"
     && JSON.stringify(original.desktop) !== JSON.stringify(draft.desktop)
@@ -289,7 +294,11 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         </div>
       )}
 
-      {draft.kind === "vm" && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
+      {draft.kind === "vm" && (builtInDesktop || (!created && computerUse)) && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
+        <div className="text-xs">Linux desktop and computer use<p className="mt-1 text-[11px] text-muted-foreground">{builtInDesktop ? "Built in. The desktop starts with the sandbox." : "Built in. Agents in this sandbox can use graphical applications."}</p></div>
+        {!created && <ChatGptAppFlow store={computerUse?.chatGpt} />}
+      </section>}
+      {draft.kind === "vm" && !builtInDesktop && !(!created && computerUse) && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
         {desktopInstalled ? <label className="flex items-center justify-between gap-3 text-xs">
           <span>Start desktop with sandbox<span className="mt-1 block text-[11px] text-muted-foreground">When off, start the desktop from its viewer.</span></span>
           <Switch aria-label="Start desktop with sandbox" checked={draft.desktop?.startWithSandbox ?? true} disabled={saving} onCheckedChange={startWithSandbox => update({ desktop: { startWithSandbox } })} />

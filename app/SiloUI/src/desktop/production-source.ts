@@ -125,7 +125,7 @@ const machineShape = z.discriminatedUnion("kind", [
     kind: z.literal("vm"), id: z.string().min(1), name: z.string().min(1),
     cpus: z.number().int().positive(), maxCPUs: z.number().int().positive(), memoryGiB: z.number().int().positive(), maxMemoryGiB: z.number().int().positive(),
     workspaceStorageGiB: z.number().int().positive(), runtimeStorageGiB: z.number().int().positive(),
-    desktop: z.object({ startWithSandbox: z.boolean() }).optional(),
+    desktop: z.object({ startWithSandbox: z.boolean(), builtIn: z.boolean().optional() }).optional(),
   }).passthrough(),
   z.object({ kind: z.literal("ssh"), id: z.string().min(1), name: z.string().min(1), host: z.string().min(1), user: z.string().min(1), port: z.number().int().min(1).max(65535) }).passthrough(),
 ]).transform(machine => machine as SetupMachineConfiguration)
