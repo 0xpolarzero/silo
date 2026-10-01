@@ -347,29 +347,6 @@ pub(super) fn dismiss_crashed_intent(
     Ok(())
 }
 
-/// Retire this VM's saved action, for work that takes over its lifecycle and leaves it
-/// stopped (account migration): a saved Start must not resume at the next launch.
-pub(super) fn retire_for(
-    paths: &RuntimePaths,
-    machine: &MachineConfiguration,
-) -> Result<(), RuntimeError> {
-    let target = path(paths, machine.id());
-    if let Some(mut intent) = load(&target)? {
-        if intent.machine_id != machine.id() || intent.name != machine.name() {
-            return Err(error(
-                "Saved sandbox action has a different identity; it was preserved.",
-            ));
-        }
-        runtime_activity::retire(paths, &mut intent.event).map_err(error)?;
-        fs::remove_file(target)
-            .map_err(|_| error("The saved sandbox action could not be retired."))?;
-        File::open(directory(paths))
-            .and_then(|f| f.sync_all())
-            .map_err(|_| error("The retired sandbox action could not be synced."))?;
-    }
-    Ok(())
-}
-
 // Called only after configuration deletion verified this exact ID and removed
 // it from saved metadata, including its crash-recovery path.
 pub(super) fn forget_removed(
@@ -764,26 +741,6 @@ mod tests {
         let history = runtime_activity::read(&paths).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0]["tone"], "success");
-    }
-    #[test]
-    fn work_taking_over_a_vm_retires_its_failed_start() {
-        let _test_state = crate::test_support::global_state();
-        let (_dir, paths, machine) = setup();
-        let mut runner = Fake::new("Stopped");
-        runner.fail_start = true;
-        assert!(perform(&runner, &paths, &host(), "start", "dev").is_err());
-        assert!(path(&paths, ID).exists());
-        retire_for(&paths, &machine).unwrap();
-        assert!(!path(&paths, ID).exists());
-        // Nothing is left for the next launch to resume.
-        let relaunch = Fake::new("Stopped");
-        assert_eq!(
-            recover_with(&relaunch, &paths, &host()).unwrap(),
-            Recovered::default()
-        );
-        assert!(relaunch.mutations().is_empty());
-        // Retiring a VM without a saved action is a no-op.
-        retire_for(&paths, &machine).unwrap();
     }
     #[test]
     fn cancelled_start_retires_its_intent_so_launch_does_not_resume_it() {

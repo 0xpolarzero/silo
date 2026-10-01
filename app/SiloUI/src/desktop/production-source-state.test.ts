@@ -541,29 +541,6 @@ describe("overlapping state reads", () => {
     } finally { store.dispose() }
   })
 
-  it("shows a running account migration on a row that is still settling", async () => {
-    let reads = 0
-    const mock = bridge(command => {
-      if (command !== "read_application_state") return undefined
-      const result = withState("stopped", ++reads === 1 ? "Before" : "Old runtime reading")
-      if (reads === 1) result.workspaces[0].accountMigration = { status: "required" }
-      if (reads === 2) {
-        result.workspaces[0].settling = true
-        result.workspaces[0].accountMigration = { status: "running", stage: "Backing up the disks" }
-      }
-      return result
-    })
-    const store = createProductionSource(mock.native)
-    try {
-      await store.initialize()
-      await store.refresh()
-      // The runtime fields keep the last settled reading; the migration step is current.
-      expect(store.getSnapshot().source!.workspaces[0]).toMatchObject({ stateDetail: "Before", settling: true, accountMigration: { status: "running", stage: "Backing up the disks" } })
-      await store.refresh()
-      expect(store.getSnapshot().source!.workspaces[0].accountMigration).toBeUndefined()
-    } finally { store.dispose() }
-  })
-
   it("propagates local stale status, host capacity, and the published website host", async () => {
     const local = withState("running", "Last known status")
     local.workspaces[0].freshness = "stale"

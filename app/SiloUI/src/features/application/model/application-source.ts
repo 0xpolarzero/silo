@@ -157,49 +157,6 @@ export interface ApplicationActivity {
   cancelled?: boolean
 }
 
-/**
- * A sandbox that still uses the old guest account layout, where agent files live under root.
- * Silo opens only sandboxes that use the `silo` account, so this one must be migrated first.
- */
-export interface AccountMigrationState {
-  /** `required`: nothing started yet; `failed`: the last attempt failed or was interrupted. */
-  status: "required" | "running" | "failed"
-  /** The step a running migration is on, e.g. "Backing up the disks". */
-  stage?: string
-  error?: string
-  /** Runtime output for a Details disclosure; never inline summary text. */
-  diagnostic?: string
-  /** Where the backup is, on the sandbox's own computer, once one was written. */
-  backupDirectory?: string
-}
-
-/** The dry run shown before migrating: the steps, the backup and the free space it needs. */
-export interface AccountMigrationPlan {
-  sandbox: string
-  running: boolean
-  /** An earlier attempt's backup is reused and the migration continues from it. */
-  resume: boolean
-  steps: string[]
-  backupDirectory: string
-  /** Upper bound of the new backup's size; zero when an existing backup is reused. */
-  backupBytes: number
-  availableBytes: number
-  requiredBytes: number
-  enoughSpace: boolean
-  /** The sandbox's memory; copying its home folders can fill all of it. */
-  memoryBytes?: number
-  /** Memory the computer has available now, where Silo can measure it (Linux). */
-  availableMemoryBytes?: number
-}
-
-/** The result of a migration attempt that ran. A cancelled one rejects instead. */
-export interface AccountMigrationOutcome {
-  succeeded: boolean
-  backupDirectory?: string
-  error?: string
-  diagnostic?: string
-}
-
 export interface ApplicationWorkspace {
   computer?: WorkspaceComputer
   machine: SetupMachineConfiguration
@@ -221,8 +178,6 @@ export interface ApplicationWorkspace {
     level: "warning" | "error"
     message: string
   }
-  /** Present while the sandbox still uses the old account layout. */
-  accountMigration?: AccountMigrationState
   freshness: "fresh" | "stale"
   /** The native read overlapped an operation; runtime fields retain their last settled values. */
   settling?: boolean
@@ -404,10 +359,6 @@ export interface ApplicationActions {
   startWorkspace: (workspace: string) => void
   stopWorkspace: (workspace: string) => void
   restartWorkspace: (workspace: string) => void
-  /** The dry run of moving a sandbox (`workspaceTarget`) to the silo account. */
-  planAccountMigration?: (workspace: string) => Promise<AccountMigrationPlan>
-  /** Move a sandbox (`workspaceTarget`) to the silo account, in its computer's operation queue. */
-  migrateAccount?: (workspace: string) => Promise<AccountMigrationOutcome>
   /** Cancel a queued or cancellable running operation by its operation-queue id. */
   cancelOperation?: (id: number) => void
   dismissWorkspaceError: (workspace: string) => void

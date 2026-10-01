@@ -71,7 +71,7 @@ export function ActionsMenu({ label, items, onClose, disabled = false, ref, popo
       })}
     </DropdownMenu.Content></DropdownMenu.Portal>
     </DropdownMenu.Root>
-    <PopoverContent align="end" className="w-64 p-3 text-xs has-[[data-popover-wide]]:w-96" onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus() }}>
+    <PopoverContent align="end" className="w-64 p-3 text-xs" onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus() }}>
       {render?.(close)}
     </PopoverContent>
   </Popover>

@@ -171,7 +171,7 @@ fn verify(machine: &MachineConfiguration, observed: &InspectedSandbox) -> Result
 /// The owned `/workspace` volume's directory. A fresh VM keeps one `disk.raw` there; a full
 /// checkpoint rolls it onto qcow2 layers, and a VM restored from a checkpoint has only sealed
 /// layers and a writable qcow2 head (MicroSandbox `restore/owned.rs`).
-pub(super) fn workspace_disk_dir(paths: &RuntimePaths, machine: &MachineConfiguration) -> PathBuf {
+fn workspace_disk_dir(paths: &RuntimePaths, machine: &MachineConfiguration) -> PathBuf {
     let mut mount_id = String::from("workspace_");
     for byte in Sha256::digest(WORKSPACE_MOUNT.as_bytes()).iter().take(4) {
         use std::fmt::Write as _;
@@ -232,18 +232,6 @@ fn workspace_host_bytes(
             Ok(total.saturating_add(allocated(file)?))
         })
         .map(Some)
-}
-/// Host bytes allocated to a VM's root and workspace disks: the most a full disk
-/// snapshot of the stopped VM can occupy.
-pub(super) fn disks_host_bytes(
-    paths: &RuntimePaths,
-    machine: &MachineConfiguration,
-) -> Result<u64, RuntimeError> {
-    let workspace = workspace_host_bytes(paths, machine)?
-        .ok_or_else(|| failure("The sandbox's workspace disk could not be found."))?;
-    let root = runtime_allocated(paths, machine.name())?
-        .ok_or_else(|| failure("The sandbox's root disk could not be found."))?;
-    Ok(workspace.saturating_add(root))
 }
 fn workspace_mount(
     paths: &RuntimePaths,

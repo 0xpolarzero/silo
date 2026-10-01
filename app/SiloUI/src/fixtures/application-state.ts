@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useState } from "react"
 
 import type { ApplicationSecret, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
-import { accountMigrationFixtureModeFromSearch, fixtureAccountMigrationPlan, fixtureMigrationOutcome, fixtureMigrationStages } from "./account-migration"
 
 export function useApplicationFixture(source: ApplicationSource) {
   const [workspaceSnapshot, setWorkspaceSnapshot] = useState(source.workspaces)
@@ -57,29 +56,6 @@ export function useApplicationFixture(source: ApplicationSource) {
       : workspace))
   }, [])
 
-  // The migration fixture reads the latest rows when asked, not the ones it was created with.
-  const latest = useRef(workspaces)
-  useEffect(() => { latest.current = workspaces })
-  const planAccountMigration = useCallback(async (target: string) => {
-    const workspace = latest.current.find(({ machine }) => machine.name === target)
-    if (!workspace) throw new Error("This sandbox is unavailable. Refresh and try again.")
-    await new Promise((resolve) => window.setTimeout(resolve, 300))
-    return fixtureAccountMigrationPlan(workspace, accountMigrationFixtureModeFromSearch(window.location.search))
-  }, [])
-  const migrateAccount = useCallback(async (target: string) => {
-    const mode = accountMigrationFixtureModeFromSearch(window.location.search)
-    const stages = mode === "fails" ? fixtureMigrationStages.slice(0, 5) : fixtureMigrationStages
-    for (const stage of stages) {
-      setWorkspaces((current) => current.map((workspace) => workspace.machine.name === target ? { ...workspace, accountMigration: { status: "running", stage } } : workspace))
-      await new Promise((resolve) => window.setTimeout(resolve, 700))
-    }
-    const outcome = fixtureMigrationOutcome(target, mode)
-    setWorkspaces((current) => current.map((workspace) => workspace.machine.name !== target ? workspace : outcome.succeeded
-      ? { ...workspace, state: "stopped", stateDetail: "Stopped", accountMigration: undefined }
-      : { ...workspace, state: "stopped", stateDetail: "Stopped", accountMigration: { status: "failed", error: outcome.error, diagnostic: outcome.diagnostic, backupDirectory: outcome.backupDirectory } }))
-    return outcome
-  }, [])
-
   const saveSecret = useCallback((request: SecretConfigurationRequest) => {
     // The preview retains metadata only; entered values are deliberately discarded.
     const secret: ApplicationSecret = {
@@ -94,5 +70,5 @@ export function useApplicationFixture(source: ApplicationSource) {
       : [...current, secret])
   }, [])
 
-  return { source: { ...source, workspaces, secrets }, saveSecret, removeSecret, onRestoreComplete, createCheckpoint, forkCheckpoint, restoreCheckpoint, deleteCheckpoint, planAccountMigration, migrateAccount }
+  return { source: { ...source, workspaces, secrets }, saveSecret, removeSecret, onRestoreComplete, createCheckpoint, forkCheckpoint, restoreCheckpoint, deleteCheckpoint }
 }

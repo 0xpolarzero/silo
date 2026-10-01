@@ -23,7 +23,6 @@ function blockedReason(workspace: ApplicationWorkspace, source: ApplicationSourc
   }
   if (workspace.lifecycleAction) return `${machine.name} is ${lifecycleProgress[workspace.lifecycleAction]}.`
   if (workspace.checkpointOperation?.status === "running") return "Wait for the checkpoint to finish."
-  if (workspace.accountMigration?.status === "running") return `Wait for ${machine.name} to finish moving to the silo account.`
   if (computer?.busy) return `${computer.name} is updating. Wait before changing this sandbox.`
   if (workspace.state === "starting") return `Wait for ${machine.name} to finish ${workspace.stateDetail === "Stopping" ? "stopping" : "starting"}.`
   if (source.activities.some((activity) => activity.category === "sandbox" && activity.workspace === workspaceTarget(workspace) && activity.status === "running")) return "Wait for the current operation to finish."
@@ -39,27 +38,18 @@ function blockedReason(workspace: ApplicationWorkspace, source: ApplicationSourc
  */
 export function workspaceAvailability(workspace: ApplicationWorkspace, source: ApplicationSource): WorkspaceAvailability {
   const { state, machine } = workspace
-  const busy = Boolean(workspace.computer?.busy) || Boolean(workspace.lifecycleAction) || workspace.checkpointOperation?.status === "running" || workspace.accountMigration?.status === "running" || state === "starting"
+  const busy = Boolean(workspace.computer?.busy) || Boolean(workspace.lifecycleAction) || workspace.checkpointOperation?.status === "running" || state === "starting"
     || source.activities.some((activity) => activity.category === "sandbox" && activity.workspace === workspaceTarget(workspace) && activity.status === "running")
   const blocked = blockedReason(workspace, source)
   const error = workspace.attention?.level === "error" ? workspace.attention.message : undefined
-  // Silo opens and starts only sandboxes that use the silo account; stopping stays possible.
-  const migrate = workspace.accountMigration ? accountMigrationReason(workspace) : undefined
-  const canOpen = !blocked && !error && !migrate && state === "running"
-  const canStart = !blocked && !migrate && (state === "stopped" || state === "failed")
+  const canOpen = !blocked && !error && state === "running"
+  const canStart = !blocked && (state === "stopped" || state === "failed")
   const canStop = !blocked && state === "running"
-  const canRestart = !blocked && !migrate && (state === "running" || state === "failed")
+  const canRestart = !blocked && (state === "running" || state === "failed")
   const reasons: WorkspaceAvailability["reasons"] = {}
-  if (!canOpen) reasons.open = blocked ?? error ?? migrate ?? `Start ${machine.name} to open it.`
-  if (!canStart) reasons.start = blocked ?? migrate ?? `${machine.name} is already running.`
+  if (!canOpen) reasons.open = blocked ?? error ?? `Start ${machine.name} to open it.`
+  if (!canStart) reasons.start = blocked ?? `${machine.name} is already running.`
   if (!canStop) reasons.stop = blocked ?? `${machine.name} isn’t running.`
-  if (!canRestart) reasons.restart = blocked ?? migrate ?? `${machine.name} isn’t running.`
+  if (!canRestart) reasons.restart = blocked ?? `${machine.name} isn’t running.`
   return { busy, canOpen, canStart, canStop, canRestart, reasons }
-}
-
-/** Why a sandbox on the old account layout cannot be started or opened yet. */
-export function accountMigrationReason(workspace: ApplicationWorkspace): string {
-  return workspace.accountMigration?.status === "failed"
-    ? `The migration of ${workspace.machine.name} to the silo account did not finish. Retry it first.`
-    : `Migrate ${workspace.machine.name} to the silo account first.`
 }

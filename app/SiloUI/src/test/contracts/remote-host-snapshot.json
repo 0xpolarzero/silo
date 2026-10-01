@@ -28,9 +28,6 @@
     "secrets": [],
     "workspaces": [
       {
-        "accountMigration": {
-          "status": "required"
-        },
         "canDismissError": false,
         "checkpointOperation": {
           "error": "Checkpoint storage is unavailable.",
@@ -140,9 +137,6 @@
     "secrets": [],
     "workspaces": [
       {
-        "accountMigration": {
-          "status": "required"
-        },
         "canDismissError": false,
         "checkpointOperation": {
           "error": "Checkpoint storage is unavailable.",
@@ -252,9 +246,6 @@
     "secrets": [],
     "workspaces": [
       {
-        "accountMigration": {
-          "status": "required"
-        },
         "canDismissError": false,
         "checkpointOperation": {
           "error": "Checkpoint storage is unavailable.",
@@ -364,9 +355,6 @@
     "secrets": [],
     "workspaces": [
       {
-        "accountMigration": {
-          "status": "required"
-        },
         "attention": {
           "level": "error",
           "message": "The sandbox runtime crashed. Restart it to retry."

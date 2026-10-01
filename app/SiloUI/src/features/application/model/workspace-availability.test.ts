@@ -53,24 +53,3 @@ it("explains that a stopped sandbox must be started before opening it", () => {
   expect(availability).toMatchObject({ canOpen: false, canStart: true, canStop: false, canRestart: false })
   expect(availability.reasons.open).toBe("Start dev to open it.")
 })
-
-it("keeps a sandbox on the old account layout from starting or opening, but lets it stop", () => {
-  const running = scenario((workspace) => { workspace.accountMigration = { status: "required" } })
-  expect(running).toMatchObject({ busy: false, canOpen: false, canStop: true, canRestart: false })
-  expect(running.reasons.open).toBe("Migrate dev to the silo account first.")
-  const stopped = scenario((workspace) => {
-    workspace.state = "stopped"
-    workspace.accountMigration = { status: "failed", error: "Stopped." }
-  })
-  expect(stopped).toMatchObject({ canStart: false, canOpen: false })
-  expect(stopped.reasons.start).toBe("The migration of dev to the silo account did not finish. Retry it first.")
-})
-
-it("marks a sandbox busy while it moves to the silo account", () => {
-  const availability = scenario((workspace) => {
-    workspace.state = "stopped"
-    workspace.accountMigration = { status: "running", stage: "Backing up the disks" }
-  })
-  expect(availability).toMatchObject({ busy: true, canStart: false, canOpen: false, canStop: false })
-  expect(availability.reasons.start).toBe("Wait for dev to finish moving to the silo account.")
-})

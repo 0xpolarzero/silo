@@ -92,18 +92,6 @@ const checkpointOperationShape = z.object({
 const unfinishedRestoreShape = z.object({
   checkpointId: z.string().min(1), checkpointName: z.string().nullish(), phase: z.enum(["capturing", "secured"]),
 })
-const accountMigrationShape = z.object({
-  status: z.enum(["required", "running", "failed"]),
-  stage: z.string().optional(), error: z.string().optional(), diagnostic: z.string().optional(), backupDirectory: z.string().optional(),
-})
-const accountMigrationPlanShape = z.object({
-  sandbox: z.string(), running: z.boolean(), resume: z.boolean(), steps: z.array(z.string()), backupDirectory: z.string(),
-  backupBytes: z.number().nonnegative(), availableBytes: z.number().nonnegative(), requiredBytes: z.number().nonnegative(), enoughSpace: z.boolean(),
-  memoryBytes: z.number().nonnegative().optional().catch(undefined), availableMemoryBytes: z.number().nonnegative().optional().catch(undefined),
-})
-const accountMigrationOutcomeShape = z.object({
-  succeeded: z.boolean(), backupDirectory: z.string().optional(), error: z.string().optional(), diagnostic: z.string().optional(),
-})
 const pendingCheckpointRestoreShape = z.object({
   checkpointId: z.string().min(1), sourceWorkspace: z.string().min(1), state: z.enum(["full", "disk"]),
 })
@@ -161,8 +149,6 @@ const workspaceShape = z.object({
   checkpointOperation: checkpointOperationShape.nullable().optional().catch(null),
   pendingCheckpointRestore: pendingCheckpointRestoreShape.nullable().optional().catch(null),
   unfinishedRestore: unfinishedRestoreShape.nullable().optional().catch(null),
-  // A status from a newer Silo is left out rather than rejecting the sandbox.
-  accountMigration: accountMigrationShape.optional().catch(undefined),
   settling: z.boolean().optional(),
 }).passthrough().transform(workspace => (workspaceStates as readonly string[]).includes(workspace.state)
   ? { ...workspace, state: workspace.state as (typeof workspaceStates)[number] }
@@ -766,7 +752,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
             const previous = new Map((remoteSnapshots.get(hostId)?.workspaces ?? []).map(row => [row.machine.id, row]))
             remoteSnapshots.set(hostId, { ...outcome.source, workspaces: outcome.source.workspaces.map(row => {
               const known = previous.get(row.machine.id)
-              return row.settling && known ? { ...known, accountMigration: row.accountMigration, settling: true } : row
+              return row.settling && known ? { ...known, settling: true } : row
             }) })
             setComputer({ ...host, connected: true, lastSeen: Date.now() })
           } else if (isUpdateInProgress(outcome.cause)) setComputer({ ...host, connected: true, busy: true, lastSeen })
@@ -944,8 +930,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const previous = previousRows.get(row.machine.id)
         if (!incoming) return row
         if (incoming.settling && !applicationCurrent) return row
-        // Silo's own migration record is current even while the runtime reading settles.
-        if (incoming.settling) return previous ? { ...previous, accountMigration: incoming.accountMigration, settling: true } : incoming
+        if (incoming.settling) return previous ? { ...previous, settling: true } : incoming
         if (sequence <= (appliedWorkspaceReads.get(row.machine.id) ?? 0)) return previous ?? row
         appliedWorkspaceReads.set(row.machine.id, sequence)
         return incoming
@@ -1452,13 +1437,6 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
   }
 
-  /** The local VM a sandbox action names, by name or ID. */
-  function localVm(target: string) {
-    const workspace = snapshot.source?.workspaces.find(item => !item.computer && item.machine.kind === "vm" && (item.machine.name === target || item.machine.id === target))
-    if (!workspace) throw new Error("This sandbox is unavailable. Refresh and try again.")
-    return workspace
-  }
-
   async function checkpointAction(command: string, target: string, arguments_: Record<string, unknown>) {
     const remote = parseRemoteWorkspaceTarget(target)
     const localWorkspace = remote ? undefined : snapshot.source?.workspaces.find(item => !item.computer && item.machine.kind === "vm" && (item.machine.name === target || item.machine.id === target))
@@ -1569,27 +1547,6 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     saveSecret: (request: SecretConfigurationRequest) => changeSecret("save_secret", { request }),
     removeSecret: (id: string) => changeSecret("remove_secret", { id }),
     retrySecret: (id: string) => changeSecret("retry_secret", { id }),
-    planAccountMigration: async (target) => {
-      const remote = parseRemoteWorkspaceTarget(target)
-      const plan = remote
-        ? await native.invoke("remote_plan_account_migration", { hostId: remote.hostId, vmId: remote.vmId })
-        : await native.invoke("plan_account_migration", { workspaceId: localVm(target).machine.id })
-      return accountMigrationPlanShape.parse(plan)
-    },
-    migrateAccount: async (target) => {
-      const remote = parseRemoteWorkspaceTarget(target)
-      try {
-        const outcome = remote
-          ? await native.invoke("remote_migrate_account", { hostId: remote.hostId, vmId: remote.vmId })
-          : await native.invoke("migrate_account", { workspaceId: localVm(target).machine.id })
-        return accountMigrationOutcomeShape.parse(outcome)
-      } finally {
-        if (remote) {
-          bumpRemote(remote.hostId)
-          void refreshComputers()
-        } else void refresh()
-      }
-    },
     readWorkspaceStorage: async workspaceId => workspaceStorageStateSchema.parse(await native.invoke("read_workspace_storage", { workspaceId })),
     reclaimWorkspaceStorage: async workspaceId => workspaceStorageStateSchema.parse(await native.invoke("reclaim_workspace_storage", { workspaceId })),
     refreshSshAccess,

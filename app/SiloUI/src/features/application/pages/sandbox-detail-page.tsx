@@ -20,9 +20,8 @@ import { CheckpointPanel } from "@/features/application/components/checkpoint-pa
 import { StatusSeparator, WorkspaceStatus } from "@/features/application/components/workspace-status"
 import { DisabledReason } from "@/features/application/components/disabled-reason"
 import { LifecycleControl } from "@/features/application/components/lifecycle-control"
-import { AccountMigrationNotice } from "@/features/application/components/account-migration"
 import type { LifecycleGuard } from "@/features/application/model/lifecycle-guard"
-import type { AccountMigrationPlan, NetworkPort, ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
+import type { NetworkPort, ApplicationActions, ApplicationSource, ApplicationWorkspace, SandboxDetailTab, SshAccessWorkspace } from "@/features/application/model/application-source"
 import { sandboxNamesOnComputer, type WorkspaceCheckpoint } from "@/features/application/model/checkpoint-source"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import { workspaceAvailability } from "@/features/application/model/workspace-availability"
@@ -88,13 +87,6 @@ export interface SandboxDetailControls {
   // Toast a created fork (with Open) and a restored checkpoint (with Start).
   onCheckpointForkedAction?: (name: string) => { label: string; onClick: () => void }
   onCheckpointRestoredAction?: (checkpoint: WorkspaceCheckpoint) => { label: string; onClick: () => void }
-  /** Present while the sandbox uses the old account layout: its dry run and migration. */
-  accountMigration?: {
-    /** Why migration cannot be requested right now. */
-    disabledReason?: string
-    plan: () => Promise<AccountMigrationPlan>
-    migrate: () => Promise<unknown>
-  }
 }
 
 const Sep = StatusSeparator
@@ -434,15 +426,6 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
             </LifecycleControl>}
           {menuActions.length > 0 && menu}
         </div>}
-      />
-
-      <AccountMigrationNotice
-        workspace={workspace}
-        disabled={Boolean(controls.accountMigration?.disabledReason)}
-        disabledReason={controls.accountMigration?.disabledReason}
-        plan={controls.accountMigration?.plan}
-        onMigrate={controls.accountMigration?.migrate}
-        onRetry={controls.accountMigration ? () => { void controls.accountMigration!.migrate() } : undefined}
       />
 
       {Boolean(workspace.pendingSecretRevocations?.length) && <div role="note" aria-label="Pending secret revocation" className="flex items-center gap-2 border-b border-amber-500/20 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">

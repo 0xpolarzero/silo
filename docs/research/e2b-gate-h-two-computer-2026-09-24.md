@@ -63,17 +63,23 @@ after orchestrator restart before it can place):
 ## Limits
 
 - The devbox was reverted at teardown (compose down, ufw restored from
-  backup, hugepages zeroed); `/var/lib/e2b` and `~/silo-e2b-gateh` remain on
-  that machine — the compose `purge` profile removes them fully if desired.
+  backup, hugepages zeroed until the next boot); `/var/lib/e2b` and
+  `~/silo-e2b-gateh` remained on that machine until 2026-10-01 (see below).
 - Owner-restart with live credential/session revocation and stale-session
   denial were not exercised (PoC control plane runs on the Mac; bringing the
   full PoC to the second machine is future work).
 - Desktop (GUI) flows on x86_64 untested; only the small SDK template.
 
-## Re-deploy recipe (user decision: keep the installation for future runs)
+## Re-deploy recipe (installation removed on 2026-10-01)
 
-The devbox E2B data is retained (`/var/lib/e2b`, `~/silo-e2b-gateh`). The
-stack is currently **down**. To re-run future tests:
+On 2026-10-01 the owner removed the remaining installation from the devbox:
+`/var/lib/e2b`, `~/silo-e2b-gateh`, the ufw backup, and the boot-time
+`/etc/sysctl.d/90-e2b.conf` and `/etc/modules-load.d/e2b.conf`. The teardown
+above had zeroed hugepages only until the next boot. After the 2026-09-26 reboot,
+that sysctl file reserved 4 GiB of the 15 GiB host as unused hugepages again.
+This contributed to a host out-of-memory kill of a Silo VM during an account
+migration. A re-run now needs a fresh deployment, which writes these files
+again; the recipe below assumed the retained data:
 
 ```sh
 ssh devbox '

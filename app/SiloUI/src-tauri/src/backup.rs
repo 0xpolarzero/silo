@@ -2951,7 +2951,7 @@ fn same_volume(left: &Path, right: &Path) -> bool {
 
 /// `statvfs` of the nearest existing ancestor: space available to this
 /// account (f_bavail), so a path that is not created yet still resolves.
-pub(crate) fn available_bytes(path: &Path) -> io::Result<u64> {
+fn available_bytes(path: &Path) -> io::Result<u64> {
     use std::os::unix::ffi::OsStrExt;
     let existing = path
         .ancestors()
@@ -2972,7 +2972,7 @@ pub(crate) fn available_bytes(path: &Path) -> io::Result<u64> {
 }
 
 /// Binary units, labelled as such.
-pub(crate) fn format_bytes(bytes: u64) -> String {
+fn format_bytes(bytes: u64) -> String {
     const GIB: u64 = 1024 * 1024 * 1024;
     if bytes >= GIB {
         format!("{:.1} GiB", bytes as f64 / GIB as f64)

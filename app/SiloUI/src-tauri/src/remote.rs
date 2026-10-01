@@ -199,8 +199,6 @@ const METHODS: &[(&str, Access)] = &[
     ("checkpoint.create", Access::Change),
     ("checkpoint.fork", Access::Change),
     ("checkpoint.restore", Access::Change),
-    ("runtime.account.plan", Access::Read),
-    ("runtime.account.migrate", Access::Change),
 ];
 /// The error an older or newer computer reports for a method it does not serve.
 const UNSUPPORTED: &str = "This Silo version does not support that remote operation.";
@@ -797,10 +795,6 @@ fn silo_public_key() -> Option<String> {
     Some(public.trim().to_owned())
 }
 fn request_timeout(request: &Value) -> Duration {
-    // A migration backs up both disks and rewrites the guest home and workspace owners.
-    if request["method"] == "runtime.account.migrate" {
-        return Duration::from_secs(3 * 60 * 60);
-    }
     if (request["method"] == "runtime.upsert"
         && request
             .pointer("/params/machine/desktop")
@@ -1029,40 +1023,6 @@ fn send_change(
             result => return result.map_err(Failure::error),
         }
     }
-}
-
-/// Dry run of an account migration on the computer that owns the sandbox.
-#[tauri::command]
-pub async fn remote_plan_account_migration(
-    app: AppHandle,
-    host_id: String,
-    vm_id: String,
-) -> Result<Value, BridgeError> {
-    account_migration_request(app, host_id, vm_id, "runtime.account.plan").await
-}
-
-/// Account migration on the computer that owns the sandbox, in that computer's queue.
-#[tauri::command]
-pub async fn remote_migrate_account(
-    app: AppHandle,
-    host_id: String,
-    vm_id: String,
-) -> Result<Value, BridgeError> {
-    account_migration_request(app, host_id, vm_id, "runtime.account.migrate").await
-}
-
-async fn account_migration_request(
-    app: AppHandle,
-    host_id: String,
-    vm_id: String,
-    method: &'static str,
-) -> Result<Value, BridgeError> {
-    uuid::Uuid::parse_str(&vm_id).map_err(|_| "Invalid sandbox identity.")?;
-    tauri::async_runtime::spawn_blocking(move || {
-        call_remote_typed(&app, &host_id, method, json!({"vmId": vm_id}))
-    })
-    .await
-    .map_err(|_| BridgeError::from("Silo lost track of the migration on the other computer. Reconnect to it and refresh the sandbox before retrying."))?
 }
 
 fn checkpoint_remote_request(
@@ -1858,10 +1818,6 @@ mod tests {
         assert_eq!(
             request_timeout(&json!({"method":"desktop.action","params":{"action":"start"}})),
             Duration::from_secs(600)
-        );
-        assert_eq!(
-            request_timeout(&json!({"method":"runtime.account.migrate","params":{}})),
-            Duration::from_secs(3 * 60 * 60)
         );
     }
 
@@ -2972,7 +2928,6 @@ mod dispatch_tests {
                 "checkpoint.create",
                 "checkpoint.fork",
                 "checkpoint.restore",
-                "runtime.account.migrate",
             ]
         );
         assert_eq!(methods(Access::Stream), ["guest.ssh"]);

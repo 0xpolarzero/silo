@@ -3,10 +3,9 @@
 Silo VMs use `silo` (UID/GID 1001, home `/home/silo`) for terminal, SSH,
 editor, repository, file-transfer and desktop work. Passwordless sudo provides
 guest administration. Root remains the runtime initialization and management
-identity. Older VMs must be migrated explicitly before working access, with
-**Migrate to the silo account** in Silo, or recreated. Silo does not fall back
-to root or migrate accounts when installing the desktop. See
-[migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md).
+identity. Older VMs must be migrated explicitly before working access, or
+recreated. Silo does not fall back to root or migrate accounts when installing
+the desktop. See [migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md).
 
 ## Single-account verification, 2026-09-21
 
@@ -16,7 +15,7 @@ subset passed again after tightening guest UID/GID validation: 21 passed.
 Guest lifecycle tests passed: 20. `git diff --check` and shell syntax passed.
 These are code and fixture checks; they do not validate an installed app.
 See [migration verification](SiloUI-WORKING-ACCOUNT-MIGRATION.md#verification)
-for the migration tests and the earlier live proofs of its guest payload.
+for the separate disposable ARM64 migration and disk-recovery proof.
 
 ## Persisted policy and provisioning
 

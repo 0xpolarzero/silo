@@ -32,10 +32,6 @@ export function WorkspaceStatus({ workspace, source, readOnly, onCancel }: { wor
       ? <WorkspaceWaitingStatus queue={source.operationQueue} vmId={queueVmId} onCancel={cancel} />
       : <span role="status" className="text-amber-700 dark:text-amber-400">{lifecycleLabels[lifecycle]}</span>
   }
-  if (workspace.accountMigration?.status === "running") {
-    const { stage } = workspace.accountMigration
-    return <span role="status" className="text-amber-700 dark:text-amber-400">Moving to the silo account{stage ? ` · ${stage}` : ""}…</span>
-  }
   if (workspace.computer?.busy) return <span role="status">Updating…</span>
   if (workspace.computer && !workspace.computer.connected) return <span>Offline · last known status</span>
   return <span className="inline-flex items-center gap-1.5 align-middle">
