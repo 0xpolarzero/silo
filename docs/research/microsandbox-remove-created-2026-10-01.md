@@ -3,8 +3,8 @@
 Draft of an upstream issue and pull request for
 [superradcompany/microsandbox](https://github.com/superradcompany/microsandbox).
 Nothing here has been published. The change is carried downstream as
-`app/SiloUI/patches/microsandbox-remove-created-0.7.4.patch` (SHA-256
-`d42071128d10d80c1b950aefbc3c673d1d2bf0115ef7534a9075c50cce83c355`); how it is pinned,
+`app/SiloUI/patches/microsandbox-remove-created-0.7.6.patch` (SHA-256
+`18b5dd57f15175fc4eae5824690cb9c5246d919a7f3dacc781af87bfa1a1bdbf` (`d42071128d10d80c1b950aefbc3c673d1d2bf0115ef7534a9075c50cce83c355` as `-0.7.4.patch`)); how it is pinned,
 built and verified is in
 [Removing a sandbox that never started](../SiloUI-RUNTIME-PACKAGING.md#removing-a-sandbox-that-never-started-2026-10-01).
 

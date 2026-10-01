@@ -87,7 +87,7 @@ index e2f70d2e..0c002d58 100644
 +    true
 +}
 diff --git a/sdk/rust/lib/backend/local/sandbox/create.rs b/sdk/rust/lib/backend/local/sandbox/create.rs
-index db7cbf05..e9fa9de3 100644
+index f6608cc4..ca01e916 100644
 --- a/sdk/rust/lib/backend/local/sandbox/create.rs
 +++ b/sdk/rust/lib/backend/local/sandbox/create.rs
 @@ -132,6 +132,7 @@ impl LocalBackend {
@@ -98,7 +98,7 @@ index db7cbf05..e9fa9de3 100644
          mode: SpawnMode,
          progress: Option<PullProgressSender>,
      ) -> MicrosandboxResult<Sandbox> {
-@@ -286,6 +287,10 @@ impl LocalBackend {
+@@ -287,6 +288,10 @@ impl LocalBackend {
                  &mut config,
                  &materialized.manifest.root_disk,
              )?;
@@ -109,7 +109,7 @@ index db7cbf05..e9fa9de3 100644
              if let Some(restore) = materialized.checkpoint_restore {
                  let state = match &materialized.manifest.state {
                      crate::snapshot::SnapshotState::Checkpoint(state) => state,
-@@ -395,6 +400,10 @@ impl LocalBackend {
+@@ -396,6 +401,10 @@ impl LocalBackend {
                          &config.restore_resources,
                      )
                      .await?;
@@ -120,7 +120,7 @@ index db7cbf05..e9fa9de3 100644
                      config.checkpoint_restore = Some(materialized.restore);
                      crate::snapshot::apply_additional_disks(&mut config, materialized.disk_mounts);
                      config.snapshot_upper_layers = materialized.upper_layers;
-@@ -408,6 +417,10 @@ impl LocalBackend {
+@@ -409,6 +418,10 @@ impl LocalBackend {
                          &config.restore_resources,
                      )
                      .await?;
@@ -131,7 +131,7 @@ index db7cbf05..e9fa9de3 100644
                      crate::snapshot::apply_additional_disks(&mut config, materialized.disk_mounts);
                      config.snapshot_upper_layers = materialized.upper_layers;
                  }
-@@ -437,6 +450,10 @@ impl LocalBackend {
+@@ -441,6 +454,10 @@ impl LocalBackend {
                  &root_layout,
              )
              .await?;
@@ -142,7 +142,7 @@ index db7cbf05..e9fa9de3 100644
              config.snapshot_upper_layers = materialized.upper_layers;
          }
          if let Some((source, owned)) = config.snapshot_owned_source.take() {
-@@ -826,7 +843,15 @@ impl LocalBackend {
+@@ -839,7 +856,15 @@ impl LocalBackend {
          let sandbox_id = match timing::measure(
              &timing_name,
              "persist_start",
@@ -159,7 +159,7 @@ index db7cbf05..e9fa9de3 100644
          )
          .await
          {
-@@ -849,6 +874,39 @@ impl LocalBackend {
+@@ -862,6 +887,39 @@ impl LocalBackend {
          }
          tracing::debug!(sandbox_id, sandbox = %config.spec.name, "create_local: db record inserted");
  
@@ -199,7 +199,7 @@ index db7cbf05..e9fa9de3 100644
          // Spawn the sandbox process and create the bridge. On failure, mark the sandbox
          // from Starting to Stopped so it cannot remain as a phantom boot.
          let restore_closure = config
-@@ -1162,6 +1220,28 @@ impl LocalBackend {
+@@ -1175,6 +1233,28 @@ impl LocalBackend {
              }
          };
  
@@ -228,7 +228,7 @@ index db7cbf05..e9fa9de3 100644
          if let Ok(ready) = client.ready() {
              tracing::info!(
                  sandbox_name = %config.spec.name,
-@@ -1929,6 +2009,7 @@ impl LocalBackend {
+@@ -1942,6 +2022,7 @@ impl LocalBackend {
      }
  
      /// Insert a provisional local create record that remains non-connectable until ready.
@@ -236,7 +236,7 @@ index db7cbf05..e9fa9de3 100644
      async fn insert_starting_sandbox_record(
          db: &DbWriteConnection,
          config: &SandboxConfig,
-@@ -2294,7 +2375,7 @@ mod tests {
+@@ -2307,7 +2388,7 @@ mod tests {
                  .image("registry.invalid/review-never-pulled:missing")
                  .pull_policy(crate::sandbox::PullPolicy::Never);
              let error = backend
@@ -245,7 +245,7 @@ index db7cbf05..e9fa9de3 100644
                  .await
                  .err()
                  .unwrap();
-@@ -2353,7 +2434,7 @@ mod tests {
+@@ -2366,7 +2447,7 @@ mod tests {
              .cpus(8)
              .max_cpus(3);
          let error = backend
@@ -254,7 +254,7 @@ index db7cbf05..e9fa9de3 100644
              .await
              .err()
              .expect("missing rootfs must fail without starting a VM");
-@@ -2396,7 +2477,7 @@ mod tests {
+@@ -2409,7 +2490,7 @@ mod tests {
              .cpus(2)
              .replace();
          let error = backend
@@ -263,7 +263,7 @@ index db7cbf05..e9fa9de3 100644
              .await
              .err()
              .expect("invalid managed CPU count must fail");
-@@ -2860,7 +2941,7 @@ mod tests {
+@@ -2873,7 +2954,7 @@ mod tests {
          config.replace_existing = true;
  
          let error = match backend
@@ -272,7 +272,7 @@ index db7cbf05..e9fa9de3 100644
              .await
          {
              Ok(_) => panic!("snapshot descriptor must be validated before replacement"),
-@@ -2898,7 +2979,7 @@ mod tests {
+@@ -2911,7 +2992,7 @@ mod tests {
          ));
  
          let error = match backend
@@ -281,7 +281,16 @@ index db7cbf05..e9fa9de3 100644
              .await
          {
              Ok(_) => panic!("stored snapshot references must be resolved before ordinary creation"),
-@@ -2945,7 +3026,7 @@ mod tests {
+@@ -2959,7 +3040,7 @@ mod tests {
+         config.snapshot_upper_source = Some(temp.path().join("upper.ext4"));
+ 
+         let error = match backend
+-            .create_sandbox(backend.clone(), config, SpawnMode::Attached, None)
++            .create_sandbox(backend.clone(), config, true, SpawnMode::Attached, None)
+             .await
+         {
+             Ok(_) => panic!("patches must be rejected when combined with from_snapshot"),
+@@ -3008,7 +3089,7 @@ mod tests {
          ];
  
          let err = match backend
@@ -290,7 +299,7 @@ index db7cbf05..e9fa9de3 100644
              .await
          {
              Ok(_) => panic!("expected invalid direct-config mounts to be rejected"),
-@@ -2974,7 +3055,7 @@ mod tests {
+@@ -3037,7 +3118,7 @@ mod tests {
          config.spec.runtime.hostname = Some("y".repeat(MAX_HOSTNAME_BYTES + 1));
  
          let err = match backend
@@ -313,7 +322,7 @@ index a29aa20c..d91ffb56 100644
      {
          Ok(_) => panic!("unsupported archive must not launch"),
 diff --git a/sdk/rust/lib/backend/local/sandbox/create/cleanup.rs b/sdk/rust/lib/backend/local/sandbox/create/cleanup.rs
-index 07db0804..57a61318 100644
+index c4a15238..3096e888 100644
 --- a/sdk/rust/lib/backend/local/sandbox/create/cleanup.rs
 +++ b/sdk/rust/lib/backend/local/sandbox/create/cleanup.rs
 @@ -328,6 +328,7 @@ mod tests {
@@ -325,7 +334,7 @@ index 07db0804..57a61318 100644
                  None,
              )
 diff --git a/sdk/rust/lib/backend/local/sandbox/mod.rs b/sdk/rust/lib/backend/local/sandbox/mod.rs
-index fe9db176..a19b9ad3 100644
+index 1ee5d70b..03321f43 100644
 --- a/sdk/rust/lib/backend/local/sandbox/mod.rs
 +++ b/sdk/rust/lib/backend/local/sandbox/mod.rs
 @@ -1194,12 +1194,10 @@ impl SandboxBackend for LocalBackend {
@@ -383,10 +392,10 @@ index 6d5aee4f..f0f9cf08 100644
          &'a self,
          backend: Arc<dyn Backend>,
 diff --git a/sdk/rust/lib/sandbox/builder.rs b/sdk/rust/lib/sandbox/builder.rs
-index d3e3b024..6aee1c29 100644
+index fcbd905a..ea2d969d 100644
 --- a/sdk/rust/lib/sandbox/builder.rs
 +++ b/sdk/rust/lib/sandbox/builder.rs
-@@ -1462,6 +1462,7 @@ impl SandboxBuilder {
+@@ -1488,6 +1488,7 @@ impl SandboxBuilder {
          // compose multiple creates in a single async task.
          Box::pin(self.create_with_mode(
              detached,
@@ -394,7 +403,7 @@ index d3e3b024..6aee1c29 100644
              #[cfg(feature = "local")]
              None,
          ))
-@@ -1504,6 +1505,7 @@ impl SandboxBuilder {
+@@ -1530,6 +1531,7 @@ impl SandboxBuilder {
      /// Create the sandbox for detached/background use.
      pub async fn create_detached(self) -> MicrosandboxResult<Sandbox> {
          Box::pin(self.create_with_mode(
@@ -402,7 +411,7 @@ index d3e3b024..6aee1c29 100644
              true,
              #[cfg(feature = "local")]
              None,
-@@ -1517,7 +1519,29 @@ impl SandboxBuilder {
+@@ -1543,7 +1545,29 @@ impl SandboxBuilder {
      /// result; dropping the progress receiver does not cancel it. Abort the task to cancel.
      #[cfg(feature = "local")]
      pub fn create_with_progress(
@@ -432,7 +441,7 @@ index d3e3b024..6aee1c29 100644
      ) -> crate::MicrosandboxResult<(
          crate::CreationProgressHandle,
          tokio::task::JoinHandle<crate::MicrosandboxResult<super::Sandbox>>,
-@@ -1532,7 +1556,7 @@ impl SandboxBuilder {
+@@ -1560,7 +1584,7 @@ impl SandboxBuilder {
              }
              let (mut pull, pull_sender) = microsandbox_image::progress_channel();
              let detached = self.detached;
@@ -441,24 +450,25 @@ index d3e3b024..6aee1c29 100644
              let forward = async {
                  while let Some(event) = pull.recv().await {
                      let _ = sender.try_send(crate::CreationProgress::Pull(event));
-@@ -1574,7 +1598,7 @@ impl SandboxBuilder {
+@@ -1604,7 +1628,7 @@ impl SandboxBuilder {
          let (handle, sender) = microsandbox_image::progress_channel();
-         let task = tokio::spawn(async move {
+         let task = tokio::spawn(crate::backend::with_backend(backend, async move {
              let detached = self.detached;
 -            self.create_with_mode(detached, Some(sender)).await
 +            self.create_with_mode(detached, true, Some(sender)).await
-         });
+         }));
          Ok((handle, task))
      }
-@@ -1589,13 +1613,14 @@ impl SandboxBuilder {
-         tokio::task::JoinHandle<crate::MicrosandboxResult<Sandbox>>,
-     )> {
+@@ -1622,7 +1646,7 @@ impl SandboxBuilder {
+         self.capture_host_paths(backend.as_ref())?;
          let (handle, sender) = microsandbox_image::progress_channel();
--        let task = tokio::spawn(async move { self.create_with_mode(true, Some(sender)).await });
-+        let task = tokio::spawn(async move { self.create_with_mode(true, true, Some(sender)).await });
+         let task = tokio::spawn(crate::backend::with_backend(backend, async move {
+-            self.create_with_mode(true, Some(sender)).await
++            self.create_with_mode(true, true, Some(sender)).await
+         }));
          Ok((handle, task))
      }
- 
+@@ -1630,6 +1654,7 @@ impl SandboxBuilder {
      async fn create_with_mode(
          mut self,
          detached: bool,
@@ -466,7 +476,7 @@ index d3e3b024..6aee1c29 100644
          #[cfg(feature = "local")] progress: Option<PullProgressSender>,
      ) -> MicrosandboxResult<Sandbox> {
          let backend = default_backend();
-@@ -1607,7 +1632,7 @@ impl SandboxBuilder {
+@@ -1641,7 +1666,7 @@ impl SandboxBuilder {
                  SpawnMode::Attached
              };
              // Keep the local restore future off callers' stacks, including cloud callers.
@@ -475,7 +485,7 @@ index d3e3b024..6aee1c29 100644
          }
  
          // Cloud doesn't transmit progress information yet.
-@@ -1615,7 +1640,7 @@ impl SandboxBuilder {
+@@ -1649,7 +1674,7 @@ impl SandboxBuilder {
          drop(progress);
          #[cfg(feature = "cloud")]
          if let Some(cloud) = backend.as_cloud() {
@@ -484,7 +494,7 @@ index d3e3b024..6aee1c29 100644
          }
          self.prepare(backend.clone()).await?;
  
-@@ -1625,7 +1650,7 @@ impl SandboxBuilder {
+@@ -1659,7 +1684,7 @@ impl SandboxBuilder {
          if detached || config.resumed_from_full_snapshot() {
              sandboxes.create_detached(backend.clone(), config).await
          } else {
@@ -494,10 +504,10 @@ index d3e3b024..6aee1c29 100644
      }
  }
 diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
-index 943f72cf..f505a1db 100644
+index b1f066fb..19ded39a 100644
 --- a/sdk/rust/lib/sandbox/mod.rs
 +++ b/sdk/rust/lib/sandbox/mod.rs
-@@ -404,7 +404,7 @@ impl Sandbox {
+@@ -418,7 +418,7 @@ impl Sandbox {
                          crate::MicrosandboxError::local_only(Operation::SandboxCreate)
                      })?;
                      local
@@ -506,7 +516,7 @@ index 943f72cf..f505a1db 100644
                          .await
                  }
                  crate::backend::BackendKind::Cloud => {
-@@ -531,6 +531,21 @@ impl Default for SandboxListBuilder {
+@@ -545,6 +545,21 @@ impl Default for SandboxListBuilder {
  //--------------------------------------------------------------------------------------------------
  
  impl Sandbox {
@@ -528,7 +538,7 @@ index 943f72cf..f505a1db 100644
      /// Build an outer `Sandbox` from local-variant inner state.
      #[cfg(feature = "local")]
      pub(crate) fn from_local(
-@@ -631,6 +646,7 @@ impl Sandbox {
+@@ -645,6 +660,7 @@ impl Sandbox {
      pub fn id(&self) -> SandboxId {
          match self.inner.as_ref() {
              crate::backend::SandboxInner::Local(state) => SandboxId::local(state.db_id),
@@ -536,7 +546,7 @@ index 943f72cf..f505a1db 100644
              crate::backend::SandboxInner::Cloud(state) => SandboxId::cloud(&state.id),
          }
      }
-@@ -638,6 +654,7 @@ impl Sandbox {
+@@ -652,6 +668,7 @@ impl Sandbox {
      fn identity(&self) -> SandboxIdentity {
          match self.inner.as_ref() {
              crate::backend::SandboxInner::Local(state) => SandboxIdentity::Local(state.db_id),
@@ -544,7 +554,7 @@ index 943f72cf..f505a1db 100644
              crate::backend::SandboxInner::Cloud(state) => SandboxIdentity::Cloud(state.id.clone()),
          }
      }
-@@ -698,7 +715,7 @@ impl Sandbox {
+@@ -712,7 +729,7 @@ impl Sandbox {
      pub fn local(&self) -> Option<&crate::backend::SandboxLocalState> {
          match self.inner.as_ref() {
              crate::backend::SandboxInner::Local(s) => Some(s),
@@ -553,7 +563,7 @@ index 943f72cf..f505a1db 100644
          }
      }
  
-@@ -707,7 +724,7 @@ impl Sandbox {
+@@ -721,7 +738,7 @@ impl Sandbox {
      pub fn cloud(&self) -> Option<&crate::backend::SandboxCloudState> {
          match self.inner.as_ref() {
              crate::backend::SandboxInner::Cloud(s) => Some(s),

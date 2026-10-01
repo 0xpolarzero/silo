@@ -1,8 +1,8 @@
 diff --git a/crates/cli/lib/commands/common.rs b/crates/cli/lib/commands/common.rs
-index 65a694e1..36a1206f 100644
+index a2a0466d..c7e45fcd 100644
 --- a/crates/cli/lib/commands/common.rs
 +++ b/crates/cli/lib/commands/common.rs
-@@ -2966,7 +2966,7 @@ fn extend_unique(target: &mut Vec<String>, values: impl IntoIterator<Item = Stri
+@@ -2998,7 +2998,7 @@ fn extend_unique(target: &mut Vec<String>, values: impl IntoIterator<Item = Stri
  }
  
  #[cfg(feature = "net")]
@@ -12,7 +12,7 @@ index 65a694e1..36a1206f 100644
      host: &str,
  ) -> microsandbox::sandbox::SecretBuilder {
 diff --git a/crates/cli/lib/commands/restore.rs b/crates/cli/lib/commands/restore.rs
-index 41a0cc73..2aa3a88c 100644
+index 0756be9a..4f19a27d 100644
 --- a/crates/cli/lib/commands/restore.rs
 +++ b/crates/cli/lib/commands/restore.rs
 @@ -8,6 +8,8 @@ use microsandbox::sandbox::{
@@ -24,7 +24,7 @@ index 41a0cc73..2aa3a88c 100644
  use crate::ui;
  
  //--------------------------------------------------------------------------------------------------
-@@ -40,6 +42,16 @@ pub struct RestoreArgs {
+@@ -43,6 +45,16 @@ pub struct RestoreArgs {
      /// Destination controls applied before the restored workload can run.
      #[command(flatten)]
      pub controls: RestoreControlArgs,
@@ -41,7 +41,7 @@ index 41a0cc73..2aa3a88c 100644
      /// Suppress progress output, but not unavailable-resource warnings.
      #[arg(short, long)]
      pub quiet: bool,
-@@ -95,6 +107,14 @@ pub struct RestoreControlArgs {
+@@ -102,6 +114,14 @@ pub struct RestoreControlArgs {
      #[cfg(feature = "net")]
      #[arg(long, value_parser = ["allow", "deny"])]
      pub net_default: Option<String>,
@@ -56,7 +56,7 @@ index 41a0cc73..2aa3a88c 100644
      /// Destination host policy rules, using the same syntax as create/run (repeatable).
      /// Requires --net-default or --no-net so the complete replacement policy is explicit.
      #[cfg(feature = "net")]
-@@ -162,14 +182,21 @@ impl RestoreControlArgs {
+@@ -169,14 +189,21 @@ impl RestoreControlArgs {
      fn network_policy(
          &self,
      ) -> anyhow::Result<Option<microsandbox_network::policy::NetworkPolicy>> {
@@ -80,7 +80,7 @@ index 41a0cc73..2aa3a88c 100644
              net_rule: self.net_rule.clone(),
              ..Default::default()
          }
-@@ -204,6 +231,49 @@ pub async fn run(
+@@ -214,6 +241,49 @@ pub async fn run(
      }
      builder = args.resources.apply_restore(builder)?;
      builder = args.controls.apply(builder)?;
@@ -130,7 +130,7 @@ index 41a0cc73..2aa3a88c 100644
      let (mut progress, task) = builder.restore_with_progress()?;
      let mut display = if args.quiet {
          ui::PullProgressDisplay::quiet(&args.snapshot)
-@@ -457,8 +527,18 @@ mod tests {
+@@ -504,8 +574,18 @@ mod tests {
                  .network_policy()
                  .unwrap_err()
                  .to_string()
@@ -151,7 +151,7 @@ index 41a0cc73..2aa3a88c 100644
              no_net: true,
              ..rule_only
 diff --git a/sdk/rust/lib/sandbox/restore_builder.rs b/sdk/rust/lib/sandbox/restore_builder.rs
-index e18a55ad..8f541d35 100644
+index 8e0c921f..e0352839 100644
 --- a/sdk/rust/lib/sandbox/restore_builder.rs
 +++ b/sdk/rust/lib/sandbox/restore_builder.rs
 @@ -112,6 +112,29 @@ impl RestoreBuilder {

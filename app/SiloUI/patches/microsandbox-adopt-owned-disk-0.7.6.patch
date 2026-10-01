@@ -40,7 +40,7 @@ index 95255d9e..57bde463 100644
  pub mod common;
  pub mod completion;
 diff --git a/crates/cli/lib/commands/sandbox.rs b/crates/cli/lib/commands/sandbox.rs
-index c49ef82b..392e9e34 100644
+index e6f8a031..85a3d8fd 100644
 --- a/crates/cli/lib/commands/sandbox.rs
 +++ b/crates/cli/lib/commands/sandbox.rs
 @@ -4,8 +4,8 @@ use clap::{Args, Subcommand};
@@ -64,7 +64,7 @@ index c49ef82b..392e9e34 100644
      /// Start a stopped sandbox.
      Start(start::StartArgs),
  
-@@ -115,6 +118,7 @@ pub async fn run(command: SandboxCommands, log_level: Option<LogLevel>) -> anyho
+@@ -116,6 +119,7 @@ pub async fn run(command: SandboxCommands, log_level: Option<LogLevel>) -> anyho
          SandboxCommands::Create(args) => create::run(args, log_level).await,
          SandboxCommands::Restore(args) => restore::run(args, log_level).await,
          SandboxCommands::Modify(args) => modify::run(args).await,
@@ -73,10 +73,10 @@ index c49ef82b..392e9e34 100644
          SandboxCommands::Stop(args) => stop::run(args).await,
          SandboxCommands::Pause(args) => pause::run(args, false).await,
 diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
-index f505a1db..ce70d662 100644
+index 19ded39a..93bdc517 100644
 --- a/sdk/rust/lib/sandbox/mod.rs
 +++ b/sdk/rust/lib/sandbox/mod.rs
-@@ -445,6 +445,12 @@ impl Sandbox {
+@@ -459,6 +459,12 @@ impl Sandbox {
          backend.sandboxes().get(backend.clone(), name).await
      }
  
@@ -90,7 +90,7 @@ index f505a1db..ce70d662 100644
      pub async fn list() -> MicrosandboxResult<SandboxPage> {
          Self::list_with(|list| list).await
 diff --git a/sdk/rust/lib/sandbox/modify.rs b/sdk/rust/lib/sandbox/modify.rs
-index 5558c08e..c27221d1 100644
+index 79e9953d..d6b62f54 100644
 --- a/sdk/rust/lib/sandbox/modify.rs
 +++ b/sdk/rust/lib/sandbox/modify.rs
 @@ -1,9 +1,10 @@
@@ -106,7 +106,7 @@ index 5558c08e..c27221d1 100644
  };
  use sea_orm::{ColumnTrait, EntityTrait, QueryFilter, Set, sea_query::Expr};
  
-@@ -1689,6 +1690,99 @@ fn resolve_secret_source_value(
+@@ -1570,6 +1571,99 @@ fn resolve_secret_source_value(
      }
  }
  
@@ -206,7 +206,7 @@ index 5558c08e..c27221d1 100644
  async fn persist_config(
      backend: &Arc<dyn Backend>,
      handle: &super::SandboxHandle,
-@@ -2894,6 +2988,132 @@ mod tests {
+@@ -2775,6 +2869,132 @@ mod tests {
      use crate::backend::LocalBackend;
      use crate::size::SizeExt;
  

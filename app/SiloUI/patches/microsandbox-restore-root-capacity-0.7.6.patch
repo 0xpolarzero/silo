@@ -196,7 +196,7 @@ index 6a375206..fef136a0 100644
  
          assert_eq!(materialized.upper_layers.len(), 2);
 diff --git a/sdk/rust/lib/sandbox/builder.rs b/sdk/rust/lib/sandbox/builder.rs
-index 6aee1c29..effa9df9 100644
+index ea2d969d..7fb9e1fc 100644
 --- a/sdk/rust/lib/sandbox/builder.rs
 +++ b/sdk/rust/lib/sandbox/builder.rs
 @@ -15,7 +15,7 @@ use microsandbox_network::policy::Rule;
@@ -208,7 +208,7 @@ index 6aee1c29..effa9df9 100644
      VsockSocketType,
  };
  #[cfg(feature = "net")]
-@@ -2134,6 +2134,42 @@ pub(crate) fn apply_snapshot_root_layout(
+@@ -2168,6 +2168,42 @@ pub(crate) fn apply_snapshot_root_layout(
      Ok(())
  }
  
@@ -251,7 +251,7 @@ index 6aee1c29..effa9df9 100644
  fn validate_config_script_name(name: &str) -> Result<(), String> {
      let path = std::path::Path::new(name);
      if name.is_empty()
-@@ -2384,7 +2420,8 @@ impl From<SandboxConfig> for SandboxBuilder {
+@@ -2418,7 +2454,8 @@ impl From<SandboxConfig> for SandboxBuilder {
  #[cfg(all(test, feature = "local"))]
  mod tests {
      use super::{
@@ -261,7 +261,7 @@ index 6aee1c29..effa9df9 100644
          checkpoint_network_override_conflicts,
      };
      use crate::LogLevel;
-@@ -2425,8 +2462,8 @@ mod tests {
+@@ -2459,8 +2496,8 @@ mod tests {
      #[cfg(feature = "net")]
      use microsandbox_network::secrets::config::{HostPattern, SecretEntry, SecretSubstitution};
      use microsandbox_types::{
@@ -272,7 +272,7 @@ index 6aee1c29..effa9df9 100644
      };
      #[cfg(feature = "net")]
      use microsandbox_types::{PortProtocol, SecretSource};
-@@ -2435,6 +2472,49 @@ mod tests {
+@@ -2469,6 +2506,49 @@ mod tests {
      use crate::backend::with_backend;
      use crate::snapshot::SnapshotReference;
  
@@ -323,10 +323,10 @@ index 6aee1c29..effa9df9 100644
          vcpus: u8,
          max_vcpus: u8,
 diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
-index ce70d662..ecb99fdb 100644
+index 93bdc517..4716612d 100644
 --- a/sdk/rust/lib/sandbox/mod.rs
 +++ b/sdk/rust/lib/sandbox/mod.rs
-@@ -112,7 +112,7 @@ pub(crate) fn reserved_label_prefix(key: &str) -> Option<&'static str> {
+@@ -116,7 +116,7 @@ pub(crate) fn reserved_label_prefix(key: &str) -> Option<&'static str> {
  // `mod patch` and `mod types` are private; re-export the entry points the
  // local backend's lifecycle and create methods under `backend/local/` call.
  #[cfg(feature = "local")]

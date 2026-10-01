@@ -1,5 +1,5 @@
 diff --git a/crates/cli/lib/commands/snapshot.rs b/crates/cli/lib/commands/snapshot.rs
-index e839ff77..5fb0c4ae 100644
+index 124312d3..1b54c9e4 100644
 --- a/crates/cli/lib/commands/snapshot.rs
 +++ b/crates/cli/lib/commands/snapshot.rs
 @@ -250,6 +250,10 @@ pub struct SnapshotLoadArgs {
@@ -22,10 +22,10 @@ index e839ff77..5fb0c4ae 100644
      )
      .await?;
 diff --git a/sdk/go/native/src/lib.rs b/sdk/go/native/src/lib.rs
-index c7ca9c4e..f42ce19c 100644
+index aa751011..80248a13 100644
 --- a/sdk/go/native/src/lib.rs
 +++ b/sdk/go/native/src/lib.rs
-@@ -6979,6 +6979,7 @@ pub unsafe extern "C" fn msb_snapshot_import_with_options(
+@@ -6968,6 +6968,7 @@ pub unsafe extern "C" fn msb_snapshot_import_with_options(
                      base: opts.base,
                      group: opts.group,
                      set_head: opts.set_head,
@@ -33,7 +33,7 @@ index c7ca9c4e..f42ce19c 100644
                  },
              )
              .await
-@@ -7012,6 +7013,7 @@ pub unsafe extern "C" fn msb_snapshot_import_many(
+@@ -7001,6 +7002,7 @@ pub unsafe extern "C" fn msb_snapshot_import_many(
                      base: opts.base,
                      group: opts.group,
                      set_head: opts.set_head,
@@ -235,7 +235,7 @@ index 18266c55..79549334 100644
      fn member_alias_cannot_refer_to_snapshot_outside_its_archive() {
          let existing = SnapshotId::new(format!("snap_{:032x}", 1)).unwrap();
 diff --git a/sdk/rust/lib/backend/local/snapshot/archive/delta.rs b/sdk/rust/lib/backend/local/snapshot/archive/delta.rs
-index f13f98fa..3f6cb11c 100644
+index 012fd49e..6a57d231 100644
 --- a/sdk/rust/lib/backend/local/snapshot/archive/delta.rs
 +++ b/sdk/rust/lib/backend/local/snapshot/archive/delta.rs
 @@ -1113,6 +1113,14 @@ fn physical_layers(
@@ -252,8 +252,8 @@ index f13f98fa..3f6cb11c 100644
 +    stage_root: Option<&Path>,
  ) -> MicrosandboxResult<BaseSnapshot> {
      let path = Path::new(input);
-     if !path.is_file() {
-@@ -1125,7 +1133,10 @@ pub(super) async fn open_base(
+     // Admission has already anchored archive filenames. A remaining bare selector
+@@ -1127,7 +1135,10 @@ pub(super) async fn open_base(
              _stage: None,
          });
      }

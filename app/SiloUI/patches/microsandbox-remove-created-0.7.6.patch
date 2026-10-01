@@ -1,12 +1,11 @@
 diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
+index 4716612d..670abd25 100644
 --- a/sdk/rust/lib/sandbox/mod.rs
 +++ b/sdk/rust/lib/sandbox/mod.rs
-@@ -1725,6 +1725,19 @@
-         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-         Err(err) => Err(err.into()),
+@@ -1741,6 +1741,19 @@ pub(super) fn remove_dir_if_exists(path: &Path) -> MicrosandboxResult<()> {
      }
-+}
-+
+ }
+ 
 +/// Whether a persisted local sandbox in `status` may be removed once its lifecycle locks are held.
 +///
 +/// `Created` is a sandbox that was prepared and never started. It has no run record, runtime
@@ -18,10 +17,12 @@ diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
 +        status,
 +        SandboxStatus::Created | SandboxStatus::Stopped | SandboxStatus::Crashed
 +    )
- }
- 
++}
++
  /// Remove one exact local sandbox identity after proving no runtime owns it.
-@@ -1757,10 +1770,7 @@
+ #[cfg(feature = "local")]
+ pub(super) async fn remove_local_persisted_sandbox(
+@@ -1771,10 +1784,7 @@ pub(super) async fn remove_local_persisted_sandbox(
              actual: format!("local:{}", current.id),
          });
      }
@@ -33,7 +34,7 @@ diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
          return Err(crate::MicrosandboxError::SandboxStillRunning(format!(
              "cannot remove sandbox {name:?}: status is {:?}",
              current.status
-@@ -1801,10 +1811,7 @@
+@@ -1815,10 +1825,7 @@ pub(super) async fn remove_local_persisted_sandbox(
              actual: format!("local:{}", current.id),
          });
      }
@@ -45,7 +46,7 @@ diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
          return Err(crate::MicrosandboxError::SandboxStillRunning(format!(
              "cannot remove sandbox {name:?}: status changed to {:?}",
              current.status
-@@ -1847,9 +1854,7 @@
+@@ -1861,9 +1868,7 @@ mod tests {
      #[cfg(unix)]
      use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
  
@@ -56,11 +57,10 @@ diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
      use tempfile::tempdir;
  
      use super::{
-@@ -2228,5 +2233,126 @@
-             .unwrap()
+@@ -2243,4 +2248,125 @@ mod tests {
              .unwrap();
          assert!(!sandbox_dir.exists());
-+    }
+     }
 +
 +    #[tokio::test]
 +    async fn persisted_removal_removes_a_sandbox_that_never_started() {
@@ -129,7 +129,7 @@ diff --git a/sdk/rust/lib/sandbox/mod.rs b/sdk/rust/lib/sandbox/mod.rs
 +                "{status:?} labels"
 +            );
 +        }
-     }
++    }
 +
 +    #[tokio::test]
 +    async fn persisted_removal_still_refuses_a_sandbox_that_may_own_a_runtime() {

@@ -1921,7 +1921,7 @@ fn bundled_runtime_version() -> &'static str {
 /// Earlier MicroSandbox versions whose snapshot archives the bundled runtime
 /// still loads. Add a version here only after loading one of its exports
 /// with the new runtime; archives from versions not listed are refused.
-const EARLIER_IMPORTABLE_RUNTIME_VERSIONS: &[&str] = &["0.7.2"];
+const EARLIER_IMPORTABLE_RUNTIME_VERSIONS: &[&str] = &["0.7.2", "0.7.4"];
 
 /// MicroSandbox names its archive format per minor release.
 fn snapshot_format_for(version: &str) -> String {
@@ -2473,7 +2473,7 @@ pub(crate) fn validate_snapshottable_config(name: &str, config: &Value) -> Resul
 // Only the exact credential-free profile installed during Silo VM creation is
 // restorable here. Custom policies, host secret references and values stay blocked.
 pub(crate) fn default_github_network(network: &Value) -> bool {
-    with_profile_strict(network) == github_network_defaults()
+    with_profile_defaults(network) == github_network_defaults()
 }
 
 fn github_network_defaults() -> Value {
@@ -2510,8 +2510,21 @@ fn strict_is_inert(network: &Value) -> bool {
 /// every sandbox with the profile's value anyway, such a network counts as
 /// having the profile's value. Anything else, such as a value that is not a
 /// boolean, stays as it is and fails the comparison.
-fn with_profile_strict(network: &Value) -> Value {
+fn with_profile_defaults(network: &Value) -> Value {
     let mut network = network.clone();
+    // MicroSandbox 0.7.5 and later save two more fields, both at their runtime
+    // defaults for a sandbox Silo created or restored: readable denial responses
+    // (opt-in, off) and the NAT64 prefix. Earlier runtimes save neither, so the
+    // profile omits them and a default value counts as absent. A changed value
+    // stays and fails the comparison as a custom network setting.
+    if let Some(object) = network.as_object_mut() {
+        if object.get("http") == Some(&serde_json::json!({"deny_response": false})) {
+            object.remove("http");
+        }
+        if object.get("nat64_prefixes") == Some(&serde_json::json!(["64:ff9b::/96"])) {
+            object.remove("nat64_prefixes");
+        }
+    }
     let boolean_or_missing = network.get("strict").is_none_or(Value::is_boolean);
     if boolean_or_missing && strict_is_inert(&network) {
         if let (Some(object), Some(strict)) = (
@@ -2537,7 +2550,7 @@ fn imported_deny_network_value() -> Value {
 }
 
 fn imported_deny_network(network: &Value) -> bool {
-    with_profile_strict(network) == imported_deny_network_value()
+    with_profile_defaults(network) == imported_deny_network_value()
 }
 
 /// An export carries no network authority: the importing Silo applies a
@@ -2551,7 +2564,7 @@ fn portable_export_network(name: &str, runtime_config: &mut Value) -> Result<(),
         return Ok(());
     };
     // The archive carries the profile's `strict`, whichever value the source had.
-    *network = with_profile_strict(network);
+    *network = with_profile_defaults(network);
     if default_github_network(network)
         || imported_deny_network(network)
         || network.get("policy").is_some_and(Value::is_null)
@@ -4544,13 +4557,19 @@ mod tests {
 
     /// The `network` section of real `msb inspect --format json` output
     /// (`test_support/msb-inspect`). `created`, `restored`, `forked` and
-    /// `imported` come from the bundled MicroSandbox 0.7.4 (a restore, a
-    /// forked full restore and an import-style deny-all restore of a
-    /// sandbox saved with `strict` off); `created-0.7.2` comes from 0.7.2 and
+    /// `imported` come from the bundled MicroSandbox (0.7.4 and 0.7.6): a
+    /// create with Silo's arguments, a restore, a forked full restore and an
+    /// import-style deny-all restore, the restores with Silo's policy
+    /// arguments. 0.7.6 also saves `http` and `nat64_prefixes`, at their
+    /// defaults. `created-0.7.2` comes from 0.7.2 and
     /// `migrated-from-*` from an old-layout sandbox after the 0.7.4 `adopt-disk`
     /// that migration runs.
     fn captured_network(origin: &str) -> Value {
         let text = match origin {
+            "created-0.7.6" => include_str!("test_support/msb-inspect/created-0.7.6.json"),
+            "restored-0.7.6" => include_str!("test_support/msb-inspect/restored-0.7.6.json"),
+            "forked-0.7.6" => include_str!("test_support/msb-inspect/forked-0.7.6.json"),
+            "imported-0.7.6" => include_str!("test_support/msb-inspect/imported-0.7.6.json"),
             "created-0.7.4" => include_str!("test_support/msb-inspect/created-0.7.4.json"),
             "restored-0.7.4" => include_str!("test_support/msb-inspect/restored-0.7.4.json"),
             "forked-0.7.4" => include_str!("test_support/msb-inspect/forked-0.7.4.json"),
@@ -4570,8 +4589,12 @@ mod tests {
         serde_json::from_str(text).unwrap()
     }
 
-    const CAPTURED_NETWORKS: [(&str, Option<bool>); 8] = [
+    const CAPTURED_NETWORKS: [(&str, Option<bool>); 12] = [
         // Created by Silo's own `msb create`: the runtime's current default.
+        ("created-0.7.6", Some(true)),
+        ("restored-0.7.6", Some(true)),
+        ("forked-0.7.6", Some(true)),
+        ("imported-0.7.6", Some(true)),
         ("created-0.7.4", Some(true)),
         ("restored-0.7.4", Some(true)),
         ("forked-0.7.4", Some(true)),
@@ -5067,10 +5090,13 @@ mod tests {
             "{message}"
         );
 
-        // 0.7.4 loads and verifies archives exported by Silo's 0.7.2 flow.
-        manifest.runtime.version = "0.7.2".into();
-        manifest.runtime.snapshot_format = snapshot_format_for("0.7.2");
-        validate_manifest(&manifest).unwrap();
+        // The bundled runtime loads and verifies archives exported by Silo's 0.7.2 and
+        // 0.7.4 flows (checked with the real binaries when 0.7.6 was bundled).
+        for earlier in ["0.7.2", "0.7.4"] {
+            manifest.runtime.version = earlier.into();
+            manifest.runtime.snapshot_format = snapshot_format_for(earlier);
+            validate_manifest(&manifest).unwrap();
+        }
         manifest.runtime.snapshot_format = "msb-snapshot-tar-zstd-v0.6".into();
         assert!(validate_manifest(&manifest).is_err());
     }
