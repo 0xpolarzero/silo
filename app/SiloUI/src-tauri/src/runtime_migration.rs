@@ -972,6 +972,15 @@ fn continue_after_migration_failure_blocking(app: AppHandle) -> Result<Migration
     Ok(result)
 }
 
+/// True when the migration finished and every sandbox lives in the converted generation.
+/// The previous generation (`<app_data>/runtime`) is then a pre-upgrade backup that nothing
+/// reads. Never true after "Continue" (the clean generation), where it holds the only copy
+/// of the unconverted sandboxes, or while the migration is unfinished.
+pub(crate) fn previous_generation_is_backup(app_data: &Path) -> bool {
+    matches!(generation(app_data), Ok(Some(selected)) if selected == CONVERTED)
+        && matches!(read(&app_data.join(FILE)), Ok(Some(state)) if state.status == "complete")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

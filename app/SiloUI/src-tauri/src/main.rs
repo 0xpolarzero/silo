@@ -32,6 +32,7 @@ mod log_export;
 mod log_retention;
 mod network;
 mod notifications;
+mod pre_upgrade_backup;
 mod remote;
 mod remote_access;
 mod remote_network;
@@ -200,6 +201,11 @@ fn main() {
             runtime_migration::read_runtime_migration_state,
             runtime_migration::retry_runtime_migration,
             runtime_migration::continue_after_migration_failure,
+            pre_upgrade_backup::read_pre_upgrade_backup,
+            pre_upgrade_backup::measure_pre_upgrade_backup,
+            pre_upgrade_backup::delete_pre_upgrade_backup,
+            pre_upgrade_backup::reveal_pre_upgrade_backup,
+            pre_upgrade_backup::acknowledge_pre_upgrade_backup_notice,
             backup_controller::choose_backup_destination,
             backup_controller::choose_backup_archive,
             backup_controller::inspect_backup_archive,
@@ -242,6 +248,7 @@ fn main() {
                     let _ = queue_app.emit("silo://operation-queue-changed", ());
                 });
                 runtime_migration::install(app.handle())?;
+                pre_upgrade_backup::install(app.handle());
                 remote::start(app.handle().clone());
                 secrets::install(app.handle())?;
                 github::install(app.handle());

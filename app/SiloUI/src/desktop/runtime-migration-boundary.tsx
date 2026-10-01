@@ -5,6 +5,9 @@ import { AlertCircle, LoaderCircle } from "lucide-react"
 import { z } from "zod"
 import { SiloWindow } from "@/components/silo-window"
 import { Button } from "@/components/ui/button"
+import { MigrationBackupGate } from "@/desktop/migration-backup-notice"
+import { desktopPreUpgradeBackupBackend } from "@/desktop/pre-upgrade-backup"
+import type { PreUpgradeBackupBackend } from "@/features/storage/pre-upgrade-backup"
 
 const migrationStateSchema = z.object({
   status: z.enum(["not-required", "scanning", "running", "failed", "complete"]),
@@ -24,6 +27,8 @@ export interface RuntimeMigrationBackend {
   retry: () => Promise<RuntimeMigrationState>
   continueAfterFailure: () => Promise<RuntimeMigrationState>
   subscribe: (refresh: () => void) => Promise<() => void>
+  /** The backup a finished migration leaves behind. Without it, a finished migration opens Silo at once. */
+  preUpgradeBackup?: PreUpgradeBackupBackend
 }
 
 const nativeBackend: RuntimeMigrationBackend = {
@@ -31,6 +36,7 @@ const nativeBackend: RuntimeMigrationBackend = {
   retry: async () => migrationStateSchema.parse(await invoke("retry_runtime_migration")),
   continueAfterFailure: async () => migrationStateSchema.parse(await invoke("continue_after_migration_failure")),
   subscribe: async (refresh) => listen("silo://application-state-changed", refresh),
+  preUpgradeBackup: desktopPreUpgradeBackupBackend,
 }
 
 function message(cause: unknown) {
@@ -79,7 +85,8 @@ export function RuntimeMigrationBoundary({ children, backend = nativeBackend }: 
     finally { setBusy(false) }
   }
 
-  if (state?.status === "not-required" || state?.status === "complete") return children
+  if (state?.status === "not-required") return children
+  if (state?.status === "complete") return backend.preUpgradeBackup ? <MigrationBackupGate backend={backend.preUpgradeBackup}>{children}</MigrationBackupGate> : children
   // Most launches need no migration: stay neutral until the first status arrives
   // instead of briefly announcing an update that is not happening.
   if (!state && !error) return <SiloWindow title="Silo" label="Silo">
