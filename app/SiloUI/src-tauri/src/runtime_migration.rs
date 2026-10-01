@@ -1029,6 +1029,27 @@ pub(crate) fn backup_locations(app_data: &Path) -> Option<BackupLocations> {
     })
 }
 
+/// The symlink in the account's state directory through which the runtime reached a
+/// generation's `microsandbox` directory, and the directory it points at.
+pub(crate) struct RuntimeAlias {
+    pub(crate) link: PathBuf,
+    pub(crate) target: PathBuf,
+}
+
+impl BackupLocations {
+    /// The alias the previous generation was reached through, derived exactly as the runtime
+    /// derives it. It dangles once the backup is deleted and nothing uses it after the
+    /// migration. The converted generation's alias hashes another storage path, so it is a
+    /// different entry that this never names.
+    pub(crate) fn previous_alias(&self, user_home: &Path) -> RuntimeAlias {
+        let target = self.previous.join("microsandbox");
+        RuntimeAlias {
+            link: runtime::runtime_home_alias(user_home, &target),
+            target,
+        }
+    }
+}
+
 #[cfg(test)]
 mod guard_tests;
 
