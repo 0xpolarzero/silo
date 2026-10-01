@@ -129,6 +129,14 @@ SFTP server) and adds, in one further layer:
   five children, which makes Chromium expose full web trees (Chrome 154: 4 to 242
   nodes; ChatGPT Electron: 2 to 28). It skips handled applications and backs off
   from 2 s to 10 s when nothing changes. It needs `python3-pyatspi`.
+  Applications are identified by process id (never by name, which is a call into the
+  application); AT-SPI calls time out after 1 s, a sweep is bounded to 6 s, and an
+  application that responds slowly is skipped for 60 s. Autostart never restarts
+  anything and libatspi aborts the process (exit 133) when the accessibility bus
+  cannot be activated, so the same file also acts as its own supervisor: by default it
+  waits (backoff up to 30 s, 10 minutes at most) until `org.a11y.Bus.GetAddress`
+  succeeds, then runs `--worker` as a child and restarts it after abnormal exits
+  (backoff 1 s to 30 s, giving up after 10 consecutive runs shorter than a minute).
 - **Text editor.** GNOME Text Editor (GTK4) replaces Mousepad and is the system
   default for `text/plain` and a few common text types in `/etc/xdg/mimeapps.list`
   (`xdg-mime query default text/plain` gives `org.gnome.TextEditor.desktop`). GTK
