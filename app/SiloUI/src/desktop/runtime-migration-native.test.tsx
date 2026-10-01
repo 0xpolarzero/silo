@@ -22,6 +22,8 @@ describe("native migration boundary", () => {
     native.invoke.mockImplementation(async command => {
       if (command === "read_runtime_migration_state") return failedJson
       if (command === "retry_runtime_migration") return completeJson
+      // A finished migration also asks for the backup it left behind; this one left none.
+      if (command === "read_pre_upgrade_backup") return null
       throw new Error(`Unexpected migration command: ${command}`)
     })
     renderNativeGate()
@@ -31,7 +33,7 @@ describe("native migration boundary", () => {
     expect(screen.getByText("Full log: /tmp/silo-migration.log")).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
     expect(await screen.findByText("Normal application")).toBeVisible()
-    expect(native.invoke.mock.calls).toEqual([["read_runtime_migration_state"], ["retry_runtime_migration"]])
+    expect(native.invoke.mock.calls).toEqual([["read_runtime_migration_state"], ["retry_runtime_migration"], ["read_pre_upgrade_backup"]])
     expect(native.listen).toHaveBeenCalledWith("silo://application-state-changed", expect.any(Function))
   })
 
@@ -39,6 +41,7 @@ describe("native migration boundary", () => {
     native.invoke.mockImplementation(async command => {
       if (command === "read_runtime_migration_state") return failedJson
       if (command === "continue_after_migration_failure") return completeJson
+      if (command === "read_pre_upgrade_backup") return null
       throw new Error(`Unexpected migration command: ${command}`)
     })
     renderNativeGate()
@@ -48,7 +51,58 @@ describe("native migration boundary", () => {
     fireEvent.click(screen.getByRole("checkbox"))
     fireEvent.click(continueButton)
     expect(await screen.findByText("Normal application")).toBeVisible()
-    expect(native.invoke.mock.calls).toEqual([["read_runtime_migration_state"], ["continue_after_migration_failure"]])
+    expect(native.invoke.mock.calls).toEqual([["read_runtime_migration_state"], ["continue_after_migration_failure"], ["read_pre_upgrade_backup"]])
+  })
+
+  it("tells the user about the pre-upgrade backup through the native commands, once", async () => {
+    // Matches pre_upgrade_backup::Status's serde camelCase JSON.
+    const backup = JSON.parse(`{"deleteAt":"2026-10-15T12:00:00Z","noticePending":true}`)
+    native.invoke.mockImplementation(async command => {
+      if (command === "read_runtime_migration_state") return completeJson
+      if (command === "read_pre_upgrade_backup") return backup
+      if (command === "measure_pre_upgrade_backup") return 13314398617
+      if (command === "acknowledge_pre_upgrade_backup_notice") return null
+      throw new Error(`Unexpected migration command: ${command}`)
+    })
+    renderNativeGate()
+    expect(await screen.findByRole("heading", { name: "Your sandboxes were updated" })).toBeVisible()
+    expect(screen.queryByText("Normal application")).not.toBeInTheDocument()
+    expect(await screen.findByText("12.40 GiB")).toBeVisible()
+    expect(screen.getByText("Silo deletes it automatically on October 15, 2026.")).toBeVisible()
+    expect(native.listen).toHaveBeenCalledWith("silo://pre-upgrade-backup-changed", expect.any(Function))
+    fireEvent.click(screen.getByRole("button", { name: "Open Silo" }))
+    expect(await screen.findByText("Normal application")).toBeVisible()
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("acknowledge_pre_upgrade_backup_notice"))
+  })
+
+  it("deletes the pre-upgrade backup through the native command", async () => {
+    let present = true
+    native.invoke.mockImplementation(async command => {
+      if (command === "read_runtime_migration_state") return completeJson
+      if (command === "read_pre_upgrade_backup") return present ? { deleteAt: null, noticePending: true } : null
+      if (command === "measure_pre_upgrade_backup") return 1048576
+      if (command === "delete_pre_upgrade_backup") { present = false; return null }
+      throw new Error(`Unexpected migration command: ${command}`)
+    })
+    renderNativeGate()
+    expect(await screen.findByText("Silo will not delete it automatically.")).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Delete now" }))
+    fireEvent.click(await screen.findByRole("button", { name: "Delete permanently" }))
+    expect(await screen.findByText("The pre-upgrade backup was deleted.")).toBeVisible()
+    expect(native.invoke).toHaveBeenCalledWith("delete_pre_upgrade_backup")
+  })
+
+  it.each([
+    ["a damaged date", { deleteAt: "someday", noticePending: true }],
+    ["a missing notice flag", { deleteAt: null }],
+  ])("opens Silo rather than blocking it on %s in the backup status", async (_case, backup) => {
+    native.invoke.mockImplementation(async command => {
+      if (command === "read_runtime_migration_state") return completeJson
+      if (command === "read_pre_upgrade_backup") return backup
+      throw new Error(`Unexpected migration command: ${command}`)
+    })
+    renderNativeGate()
+    expect(await screen.findByText("Normal application")).toBeVisible()
   })
 
   it.each([

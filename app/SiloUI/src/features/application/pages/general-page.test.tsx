@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 
@@ -7,6 +7,9 @@ import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { createMemorySettingsStore, createSettingsStore, SettingsProvider, type SettingsBackend, type SettingsSnapshot } from "@/features/preferences/settings-store"
 import { SystemIntegrationProvider } from "@/features/preferences/system-integrations-store"
 import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrations"
+import { PreUpgradeBackupProvider } from "@/features/storage/pre-upgrade-backup"
+import { createFixturePreUpgradeBackup } from "@/fixtures/pre-upgrade-backup"
+import { Toaster } from "@/components/ui/sonner"
 
 it.each(["default", "empty"] as const)("persists the %s startup selection when enabled without editing the selection", async (selection) => {
   const user = userEvent.setup()
@@ -73,4 +76,34 @@ it("searches a long startup sandbox list and preserves selections when startup i
   expect(screen.queryByRole("button", { name: "Remove sandbox-1" })).not.toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Clear" }))
   expect(screen.queryByRole("button", { name: "Remove sandbox-64" })).not.toBeInTheDocument()
+})
+
+function renderGeneralPage(backup?: ReturnType<typeof createFixturePreUpgradeBackup>) {
+  const source = applicationSourceForScenario("running")
+  const settings = createMemorySettingsStore(source.preferences)
+  const page = <GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} />
+  return render(<SettingsProvider store={settings}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(settings)}><Toaster />{backup ? <PreUpgradeBackupProvider backend={backup}>{page}</PreUpgradeBackupProvider> : page}</SystemIntegrationProvider></SettingsProvider>)
+}
+
+it("lists the pre-upgrade backup under Storage, after the other sections, until it is deleted", async () => {
+  const user = userEvent.setup()
+  const backup = createFixturePreUpgradeBackup()
+  renderGeneralPage(backup)
+  const storage = await screen.findByRole("region", { name: "Storage" })
+  const headings = screen.getAllByRole("heading", { level: 3 }).map(heading => heading.textContent)
+  expect(headings.slice(-2)).toEqual(["Accessibility", "Storage"])
+  expect(storage).toHaveTextContent("Pre-upgrade backup")
+  expect(await screen.findByText("12.40 GiB · deleted on October 15, 2026")).toBeVisible()
+  await user.click(screen.getByRole("button", { name: "Delete now" }))
+  await user.click(await screen.findByRole("button", { name: "Delete permanently" }))
+  await waitFor(() => expect(screen.queryByRole("region", { name: "Storage" })).not.toBeInTheDocument())
+  expect(backup.calls).toContain("remove")
+})
+
+it("has no Storage section without a pre-upgrade backup", async () => {
+  const backup = createFixturePreUpgradeBackup({ gone: true })
+  renderGeneralPage(backup)
+  await waitFor(() => expect(backup.calls).toEqual(["read"]))
+  expect(screen.queryByRole("region", { name: "Storage" })).not.toBeInTheDocument()
+  expect(screen.getByRole("heading", { name: "Accessibility" })).toBeVisible()
 })

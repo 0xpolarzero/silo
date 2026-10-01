@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 
 import { LinuxDesktopPreview } from "./linux-desktop-preview"
 import { ApplicationPreview } from "./application-preview"
@@ -27,6 +27,8 @@ import { settingsForFixture } from "./settings"
 import type { DependencyRuntime } from "@/desktop/dependencies"
 import { resourceFixtureModeFromSearch, withResourceFixture } from "./application-resources"
 import { operationQueueFromSearch } from "./operation-queue"
+import { RuntimeMigrationBoundary } from "@/desktop/runtime-migration-boundary"
+import { createFixtureMigrationBackend, fixtureBackupForMode, preUpgradeBackupFixtureModeFromSearch } from "./pre-upgrade-backup"
 
 export function FixtureApp({ nativeOnboardingComplete = false, nativeDependencies = null, nativeOperations = false, settingsStore }: { nativeOnboardingComplete?: boolean; nativeDependencies?: DependencyRuntime | null; nativeOperations?: boolean; settingsStore?: SettingsStore }) {
   const source = applicationSourceForScenario(scenarioFromSearch(window.location.search))
@@ -51,6 +53,11 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   const [activityStep, setActivityStep] = useState(0)
   const [dependencyFixtureRecovered, setDependencyFixtureRecovered] = useState(false)
   const operationQueue = operationQueueFromSearch(window.location.search)
+  // One backup per preview, so the migration screen and Settings, General agree about it.
+  // The migration view always has one; elsewhere it appears only when asked for.
+  const backupFixtureMode = preUpgradeBackupFixtureModeFromSearch(window.location.search) ?? (surface === "migration" ? "present" : undefined)
+  const preUpgradeBackup = useMemo(() => backupFixtureMode ? fixtureBackupForMode(backupFixtureMode, 1_500) : undefined, [backupFixtureMode])
+  const migrationBackend = useMemo(() => preUpgradeBackup ? createFixtureMigrationBackend(preUpgradeBackup) : undefined, [preUpgradeBackup])
   const baseSource = withResourceFixture(completedSetup ? applicationPreviewAfterSetup(completedSetup) : applicationSourceForScenario(scenario, githubState, workspaceMode, sandboxConfigurationMode, systemIssueMode, repositoryPushMode, activityMode, activityStep, githubManagementMode), resourceMode)
   const fixtureSource = operationQueue ? { ...baseSource, operationQueue } : baseSource
   useDesktopFixtures({ source: fixtureSource, mode: statusBarMode },
@@ -80,13 +87,24 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   }, [activityMode])
   return (
     <>
-      {surface === "desktop" ? <LinuxDesktopPreview /> : surface === "app" ? (
+      {surface === "desktop" ? <LinuxDesktopPreview /> : surface === "migration" && migrationBackend ? (
+        <RuntimeMigrationBoundary backend={migrationBackend}>
+          <ApplicationPreview
+            key={scenario}
+            source={fixtureSource}
+            backupPreviewMode={backupMode}
+            nativeOperations={nativeOperations}
+            preUpgradeBackup={preUpgradeBackup}
+          />
+        </RuntimeMigrationBoundary>
+      ) : surface === "app" ? (
         <ApplicationPreview
           key={`${scenario}:${githubState ?? "source"}:${workspaceMode ?? "source"}:${sandboxConfigurationMode ?? "source"}:${systemIssueMode ?? "source"}:${repositoryPushMode ?? "source"}:${activityMode ?? "source"}:${githubManagementMode ?? "source"}`}
           backupPreviewMode={backupMode}
           initialRoute={statusBarHandoff?.route}
           source={statusBarHandoff?.source ?? fixtureSource}
           nativeOperations={nativeOperations}
+          preUpgradeBackup={preUpgradeBackup}
         />
       ) : surface === "status-bar" ? (
         <StatusBarPreview

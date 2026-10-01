@@ -9,5 +9,6 @@ describe("surface fixtures", () => {
     expect(surfaceFromSearch("?view=onboarding")).toBe("onboarding")
     expect(surfaceFromSearch("?view=app")).toBe("app")
     expect(surfaceFromSearch("?view=status-bar")).toBe("status-bar")
+    expect(surfaceFromSearch("?view=migration")).toBe("migration")
   })
 })

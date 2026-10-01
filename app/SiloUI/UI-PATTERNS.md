@@ -37,7 +37,7 @@ and its `view` and `scenario` parameters (A-27/K-22).
 | GitHub | Connected, connecting, and disconnected account cards. |
 | Secrets | Secret records, sandbox badges, and restart notices. |
 | Sandbox page | Checkpoint history and its empty state on the Checkpoints tab, and the Overview tab's secret and port rows. Export and import progress and results are notifications, not rows. |
-| General | Startup, polling, application preferences, and accessibility settings. |
+| General | Startup, polling, application preferences, accessibility settings, and the Storage row for the pre-upgrade backup (present only while one exists). |
 | Notifications | Main toggle and alert categories. |
 | System issue | Repair header and expanded details; ordered repair steps share the icon tile. |
 | Status bar | Sandbox rows, status labels, secret-change tooltips, repair row, and inline lifecycle confirmation use the same app components. |
@@ -96,13 +96,14 @@ surface and its fixtures; there is no on-page selector, so edit the URL.
 
 | Parameter | Values | Source |
 | --- | --- | --- |
-| `view` | `onboarding` (default), `app`, `status-bar`, `desktop` | `src/fixtures/surfaces.ts` |
+| `view` | `onboarding` (default), `app`, `status-bar`, `desktop`, `migration` (the screen shown after a migration that kept a pre-upgrade backup, then the app) | `src/fixtures/surfaces.ts` |
 | `scenario` | `running`, `complete`, `dependency-failure`, `bootstrap-failure`, `stress-running`; the app and status bar default to `running`, onboarding to `complete` | `src/fixtures/scenarios.ts` |
 | `github` | `disconnected`, `connecting`, `connected` | `src/fixtures/scenarios.ts` |
 | `status-bar` | `stale`, `empty`, `long-list` | `src/fixtures/status-bar-scenarios.ts` |
 | `sandbox-state`, `sandbox-change`, `system-issue`, `repository-push`, `github-operation` | See each `…FixtureModes` list | `src/fixtures/application-scenarios.ts` |
 | `activity` | See `activityFixtureModes` | `src/fixtures/application-activity.ts` |
 | `backup-operation` | See `backupFixtureModes` | `src/fixtures/application-backup.ts` |
+| `pre-upgrade-backup` | `present`, `no-date`, `delete-fails`, `read-fails`; `view=migration` defaults to `present`, other views show none | `src/fixtures/pre-upgrade-backup.ts` |
 | `resource-notice` | `create-storage`, `start-memory` | `src/fixtures/application-resources.ts` |
 | `operations` | `running`, `stuck` | `src/fixtures/operation-queue.ts` |
 | `appearance` | `light`, `dark`; otherwise the fixture's theme preference | `src/fixtures/preview.tsx` |

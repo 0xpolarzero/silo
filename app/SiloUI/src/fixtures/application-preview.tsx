@@ -12,6 +12,7 @@ import { fixtureApplicationCatalog } from "@/fixtures/application-catalog"
 import { SettingsProvider, useSettings } from "@/features/preferences/settings-store"
 import { SystemIntegrationProvider } from "@/features/preferences/system-integrations-store"
 import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrations"
+import { PreUpgradeBackupProvider, type PreUpgradeBackupBackend } from "@/features/storage/pre-upgrade-backup"
 
 const inactiveApplicationActions: ApplicationActions = {
   openNetworkPort: async () => undefined,
@@ -31,19 +32,22 @@ const inactiveApplicationActions: ApplicationActions = {
   disconnectGitHub: () => undefined,
 }
 
-export function ApplicationPreview({ source, actions, backupPreviewMode, initialRoute, nativeOperations = false }: {
+export function ApplicationPreview({ source, actions, backupPreviewMode, initialRoute, nativeOperations = false, preUpgradeBackup }: {
   source: ApplicationSource
   actions?: Partial<ApplicationActions>
   backupPreviewMode?: BackupFixtureMode
   initialRoute?: ApplicationInitialRoute
   nativeOperations?: boolean
+  /** The previous storage an upgrade kept; Settings, General shows it when given. */
+  preUpgradeBackup?: PreUpgradeBackupBackend
 }) {
   const { store } = useSettings(source.preferences)
   const [systemIntegrations] = useState(() => createFixtureSystemIntegrationStore(store))
   const application = nativeOperations
     ? <UnavailableApplicationPreview source={source} actions={actions} initialRoute={initialRoute} />
     : <FixtureApplicationPreview source={source} actions={actions} backupPreviewMode={backupPreviewMode} initialRoute={initialRoute} />
-  return <SettingsProvider store={store}><SystemIntegrationProvider store={systemIntegrations}>{application}</SystemIntegrationProvider></SettingsProvider>
+  const withBackup = preUpgradeBackup ? <PreUpgradeBackupProvider backend={preUpgradeBackup}>{application}</PreUpgradeBackupProvider> : application
+  return <SettingsProvider store={store}><SystemIntegrationProvider store={systemIntegrations}>{withBackup}</SystemIntegrationProvider></SettingsProvider>
 }
 
 function FixtureApplicationPreview({ source, actions, backupPreviewMode, initialRoute }: Parameters<typeof ApplicationPreview>[0]) {

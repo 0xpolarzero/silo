@@ -1,4 +1,5 @@
 import { UpdatesCard } from "@/features/updates/updates"
+import { StorageSection } from "@/features/storage/storage-section"
 import { useLayoutEffect } from "react"
 import { Accessibility, Paintbrush, Power } from "lucide-react"
 
@@ -119,6 +120,7 @@ export function GeneralPage({
         <h3 className="text-xs font-medium">Accessibility</h3>
         <ListCard><SettingRow icon={Accessibility} title="Reduce motion" description="Disable nonessential interface animation." control={<Switch checked={reduceMotion} onCheckedChange={onReduceMotionChange} aria-label="Reduce motion" />} /></ListCard>
       </section>
+      <StorageSection />
     </div>
   )
 }
