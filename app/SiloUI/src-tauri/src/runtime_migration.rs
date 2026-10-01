@@ -324,7 +324,12 @@ fn prepare_clean_generation(app_data: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn copy_runtime_tree(source: &Path, destination: &Path) -> Result<(), String> {
+/// Copy `source` to `destination`, leaving out the regular files in `excluded`.
+fn copy_runtime_tree(
+    source: &Path,
+    destination: &Path,
+    excluded: &[PathBuf],
+) -> Result<(), String> {
     if destination.exists() {
         return Err("The staged runtime already exists.".into());
     }
@@ -346,6 +351,8 @@ fn copy_runtime_tree(source: &Path, destination: &Path) -> Result<(), String> {
                 .map_err(|_| "Runtime copy could not inspect an entry.")?;
             if metadata.is_dir() {
                 stack.push((path, target));
+            } else if metadata.is_file() && excluded.contains(&path) {
+                continue;
             } else if metadata.is_file() {
                 microsandbox_utils::copy::fast_copy(&path, &target)
                     .map_err(|_| "Runtime copy could not copy a file.")?;
@@ -524,18 +531,14 @@ fn record_migration_failure(state: &mut MigrationState, error: String) {
     state.logs.push(error);
 }
 
+/// Adoption reads the configured disk in the previous generation, verifies its
+/// owned copy, and never writes the source.
 fn convert_workspace_disk(
     runner: &dyn runtime::RuntimeRunner,
     paths: &runtime::RuntimePaths,
     name: &str,
-    source: &Path,
 ) -> Result<(), String> {
-    let args = vec![
-        "adopt-disk".into(),
-        name.into(),
-        "--source".into(),
-        source.to_string_lossy().into_owned(),
-    ];
+    let args = vec!["adopt-disk".into(), name.into()];
     runner
         .run(paths, &args, Duration::from_secs(60 * 30))
         .map(|_| ())
@@ -548,7 +551,7 @@ fn verify_staged_vm(
     name: &str,
     id: &str,
     old_runtime: &Path,
-) -> Result<PathBuf, String> {
+) -> Result<(), String> {
     let args = vec![
         "inspect".into(),
         name.into(),
@@ -601,18 +604,13 @@ fn verify_staged_vm(
         .and_then(serde_json::Value::as_str)
         .ok_or("A staged sandbox's external disk path is missing.")?;
     let original = Path::new(host);
-    let relative = original
-        .strip_prefix(old_runtime)
-        .map_err(|_| "A staged sandbox's external disk lies outside Silo storage.")?;
-    let source = paths
-        .metadata
-        .parent()
-        .ok_or("Staged runtime path is invalid.")?
-        .join(relative);
-    if !source.is_file() {
-        return Err("A staged workspace disk is unavailable.".into());
+    if !original.starts_with(old_runtime) {
+        return Err("A staged sandbox's external disk lies outside Silo storage.".into());
     }
-    Ok(source)
+    if !original.is_file() {
+        return Err("An existing workspace disk is unavailable.".into());
+    }
+    Ok(())
 }
 
 /// A conversion step reported to the migration state.
@@ -729,7 +727,15 @@ fn convert_with(
         fs::remove_dir_all(&staged).map_err(|_| "Prior staged conversion could not be cleared.")?;
     }
     progress(Step::Copying)?;
-    copy_runtime_tree(&old_runtime, &staged)?;
+    // Each workspace disk is adopted straight from the previous generation, so a
+    // staged copy would only remain as an unused duplicate of the workspace.
+    let mut previous = paths.clone();
+    previous.volumes = old_runtime.join("volumes");
+    let workspace_disks: Vec<_> = machines
+        .iter()
+        .map(|machine| runtime::disk_path(&previous, machine.name(), "workspace"))
+        .collect();
+    copy_runtime_tree(&old_runtime, &staged, &workspace_disks)?;
     // The copied image descriptors still name the old runtime's files by absolute path.
     // An image already broken in the old runtime stays as it was; it does not stop the rest.
     if let Err(message) = runtime::image_cache::repair(&staged.join("microsandbox/cache")) {
@@ -740,8 +746,8 @@ fn convert_with(
     let total = machines.len();
     for (index, machine) in machines.iter().enumerate() {
         progress(Step::Converting { index, total })?;
-        let source = verify_staged_vm(runner, paths, machine.name(), machine.id(), &old_runtime)?;
-        convert_workspace_disk(runner, paths, machine.name(), &source)?;
+        verify_staged_vm(runner, paths, machine.name(), machine.id(), &old_runtime)?;
+        convert_workspace_disk(runner, paths, machine.name())?;
         let inspect_args = vec![
             "inspect".into(),
             machine.name().into(),
@@ -1058,13 +1064,7 @@ mod tests {
             volumes: dir.path().join("volumes"),
         };
 
-        let error = convert_workspace_disk(
-            &runtime::ProcessRunner,
-            &paths,
-            "dev",
-            &dir.path().join("workspace.raw"),
-        )
-        .unwrap_err();
+        let error = convert_workspace_disk(&runtime::ProcessRunner, &paths, "dev").unwrap_err();
         let mut state = fresh("running", 2);
         record_migration_failure(&mut state, error);
 
@@ -1104,13 +1104,7 @@ mod tests {
             volumes: dir.path().join("volumes"),
         };
 
-        let error = convert_workspace_disk(
-            &runtime::ProcessRunner,
-            &paths,
-            "dev",
-            &dir.path().join("workspace.raw"),
-        )
-        .unwrap_err();
+        let error = convert_workspace_disk(&runtime::ProcessRunner, &paths, "dev").unwrap_err();
         let mut state = fresh("running", 2);
         record_migration_failure(&mut state, error);
 
@@ -1310,9 +1304,9 @@ mod tests {
             .unwrap();
         let app_data = dir.path();
         let old = app_data.join("runtime");
-        fs::create_dir_all(old.join("volumes")).unwrap();
+        fs::create_dir_all(old.join("volumes/dev")).unwrap();
         runtime::write_metadata(&old.join("machines.json"), &one_vm("dev", VM_ID)).unwrap();
-        fs::write(old.join("volumes/dev.raw"), b"workspace").unwrap();
+        fs::write(old.join("volumes/dev/workspace.raw"), b"workspace").unwrap();
         let storage = app_data.join(CONVERTED);
         let storage_home = storage.join("microsandbox");
         let paths = runtime::RuntimePaths {
@@ -1358,6 +1352,7 @@ mod tests {
         old_runtime: PathBuf,
         status: &'static str,
         calls: Mutex<Vec<String>>,
+        adoption: Mutex<Vec<String>>,
     }
     impl StagedRuntime {
         fn new(app_data: &Path, status: &'static str) -> Self {
@@ -1365,6 +1360,7 @@ mod tests {
                 old_runtime: app_data.join("runtime"),
                 status,
                 calls: Mutex::new(Vec::new()),
+                adoption: Mutex::new(Vec::new()),
             }
         }
     }
@@ -1377,10 +1373,13 @@ mod tests {
         ) -> Result<runtime::CommandOutput, runtime::RuntimeError> {
             let mut calls = self.calls.lock().unwrap();
             calls.push(args[0].clone());
+            if args[0] == "adopt-disk" {
+                *self.adoption.lock().unwrap() = args.to_vec();
+            }
             let mount = if calls.iter().any(|call| call == "adopt-disk") {
                 serde_json::json!({"guest":"/workspace","type":"Owned"})
             } else {
-                serde_json::json!({"guest":"/workspace","type":"DiskImage","host":self.old_runtime.join("volumes/dev.raw")})
+                serde_json::json!({"guest":"/workspace","type":"DiskImage","host":self.old_runtime.join("volumes/dev/workspace.raw")})
             };
             Ok(runtime::CommandOutput {
                 stdout: serde_json::json!({"name":"dev","status":self.status,"config":{"labels":{"silo.machine-id":VM_ID},"mounts":[mount]}}).to_string(),
@@ -1451,6 +1450,11 @@ mod tests {
             b"previous backup history",
         )
         .unwrap();
+        fs::write(
+            app_data.join("runtime/volumes/dev/.silo-configuration-owner"),
+            VM_ID,
+        )
+        .unwrap();
         let old_before = tree(&app_data.join("runtime"));
         let steps = Mutex::new(Vec::new());
         let runner = StagedRuntime::new(app_data, "Stopped");
@@ -1475,9 +1479,20 @@ mod tests {
             !app_data.join(CONVERTED).join("leftover").exists(),
             "the prior staged attempt was cleared"
         );
+        // Adoption reads the previous generation's disk; no duplicate is staged.
+        assert_eq!(*runner.adoption.lock().unwrap(), ["adopt-disk", "dev"]);
+        assert!(!app_data
+            .join(CONVERTED)
+            .join("volumes/dev/workspace.raw")
+            .exists());
         assert_eq!(
-            fs::read(app_data.join(CONVERTED).join("volumes/dev.raw")).unwrap(),
-            b"workspace"
+            fs::read(
+                app_data
+                    .join(CONVERTED)
+                    .join("volumes/dev/.silo-configuration-owner")
+            )
+            .unwrap(),
+            VM_ID.as_bytes()
         );
         assert_eq!(
             selected_runtime_storage(app_data).unwrap(),
@@ -1525,6 +1540,20 @@ mod tests {
             assert_eq!(*runner.calls.lock().unwrap(), ["inspect"], "{status}");
             assert_eq!(tree(&dir.path().join("runtime")), original, "{status}");
         }
+    }
+
+    #[test]
+    fn conversion_refuses_a_missing_workspace_disk_before_adoption() {
+        let (dir, paths) = previous_generation();
+        fs::remove_file(dir.path().join("runtime/volumes/dev/workspace.raw")).unwrap();
+        let runner = StagedRuntime::new(dir.path(), "Stopped");
+        let error = convert_with(&runner, dir.path(), &paths, &|_| Ok(())).unwrap_err();
+        assert!(error.contains("workspace disk is unavailable"), "{error}");
+        assert_eq!(*runner.calls.lock().unwrap(), ["inspect"]);
+        assert_eq!(
+            selected_runtime_storage(dir.path()).unwrap(),
+            dir.path().join("runtime")
+        );
     }
 
     #[test]
@@ -1580,9 +1609,17 @@ mod tests {
         fs::write(source.join("update-resume.json"), b"old starts").unwrap();
         fs::create_dir(source.join("sandboxes")).unwrap();
         fs::write(source.join("sandboxes/upper.ext4"), b"old root").unwrap();
-        copy_runtime_tree(&source, &stage).unwrap();
+        fs::create_dir_all(source.join("volumes/dev")).unwrap();
+        fs::write(source.join("volumes/dev/workspace.raw"), b"workspace").unwrap();
+        fs::write(source.join("volumes/dev/other.raw"), b"other").unwrap();
+        copy_runtime_tree(&source, &stage, &[source.join("volumes/dev/workspace.raw")]).unwrap();
         assert!(!stage.join("run").exists());
         assert!(!stage.join("update-resume.json").exists());
+        assert!(!stage.join("volumes/dev/workspace.raw").exists());
+        assert_eq!(
+            fs::read(stage.join("volumes/dev/other.raw")).unwrap(),
+            b"other"
+        );
         fs::write(stage.join("sandboxes/upper.ext4"), b"new root").unwrap();
         assert_eq!(
             fs::read(source.join("sandboxes/upper.ext4")).unwrap(),

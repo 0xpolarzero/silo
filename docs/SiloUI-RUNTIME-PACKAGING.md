@@ -358,6 +358,25 @@ execution and console budgets. Silo's migration regression likewise failed
 before admitting Crashed, then its 16-test migration suite passed. These are
 fixture, build and CLI results, not live migration or packaged-app qualification.
 
+### Adoption from the previous generation (2026-10-01)
+
+Migration no longer stages a copy of each `volumes/<name>/workspace.raw`. It
+runs `adopt-disk` without `--source`, so adoption reads the disk the staged
+sandbox already names in the previous generation and writes only the owned
+copy. The staged copy had stayed in the converted storage as an unused
+duplicate. On filesystems without reflinks, such as ext4, it held as much
+space as the workspace, and the upgrade briefly needed three copies.
+
+Silo's migration suite asserts the bare `adopt-disk <name>` call, no staged
+workspace disk, a copied configuration-ownership marker and an unchanged
+previous generation. The duplicate assertion failed with the old copy. On
+macOS ARM64, the bundled sidecar (SHA-256
+`101118e812ea79127c5ecff900100591b7d8cf569df66db590867643bef12576`) adopted a
+`--no-start` fixture's 8 MiB sparse disk without `--source`. The sandbox stayed
+Created and the mount became Owned. The owned copy matched byte for byte. The
+source's hash, size, mtime and inode were unchanged. No VM or Silo app was
+started; this is not live migration or packaged-app qualification.
+
 ### SFTP working-account identity
 
 The `sftp-user` patch runs nonroot SFTP sessions through the guest's bundled OpenSSH
