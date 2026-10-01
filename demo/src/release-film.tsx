@@ -101,7 +101,7 @@ function AgentDesktop({ frame }: { frame: number }) {
   const cursorX = move(frame, 78, 29, 1010, 730);
   const cursorY = move(frame, 78, 29, 386, 337);
   return <div className="r-desktop">
-    <LinuxDesktopViewer name="web · Linux desktop" state={{ installed: true, state: 'running', autoStart: true, ludaState: 'ready' }} busy={false} error={null} onAction={noop} onRetry={noop} onFullscreen={noop} />
+    <LinuxDesktopViewer name="web · Linux desktop" state={{ installed: true, state: 'running', autoStart: true }} busy={false} error={null} onAction={noop} onRetry={noop} onFullscreen={noop} />
     <div className="r-guest">
       <div className="r-guest-panel"><span>Applications</span><span>web · Linux desktop</span></div>
       <div className="r-guest-wallpaper"><div /><div /></div>
@@ -114,7 +114,7 @@ function AgentDesktop({ frame }: { frame: number }) {
       </div>
       <div className="r-agent-terminal" style={{ opacity: move(frame, 0, 20), transform: `translateX(${move(frame, 0, 30, -35, 0)}px)` }}>
         <div className="r-native-title">Agent terminal<span>−　□　×</span></div>
-        <div className="r-agent-body"><div className="r-mono-label">EXAMPLE AGENT SESSION</div><p><b>›</b> Open the app and test<br/>　the project creation flow.</p><div className="r-agent-tool"><MousePointer2 size={15} /> Luda · computer use</div>
+        <div className="r-agent-body"><div className="r-mono-label">EXAMPLE AGENT SESSION</div><p><b>›</b> Open the app and test<br/>　the project creation flow.</p><div className="r-agent-tool"><MousePointer2 size={15} /> LCU · computer use</div>
           {[{ ok: state.observe, text: 'Observe the Linux desktop' }, { ok: state.click, text: 'Click “Create a project”' }, { ok: state.created, text: 'Inspect the result' }].map(row => <div className="r-task-line" key={row.text} style={{ opacity: row.ok ? 1 : .26 }}><Check size={16} />{row.text}</div>)}
           <div className="r-task-result" style={{ opacity: move(frame, 190, 18) }}><Check size={17} /> Project creation verified.</div>
         </div>
