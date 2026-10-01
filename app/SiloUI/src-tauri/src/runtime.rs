@@ -5139,6 +5139,10 @@ fn create_machine_with_progress(
         format!("silo.runtime-storage-gib={runtime_storage_gib}"),
         "--secret".into(),
         secrets_runtime::SILO_GITHUB_SECRET_SPEC.into(),
+        // Explicit, so a sandbox does not depend on the runtime's default (off in
+        // 0.7.2, on since 0.7.4). It matches `guest/github-network-default.json`,
+        // which exports compare against; no hostname rule makes it observable.
+        "--net-strict=true".into(),
         "--env".into(),
         "GH_TOKEN=$MSB_SILO_GITHUB".into(),
         "--label".into(),
@@ -9330,6 +9334,17 @@ exit 9
         assert!(calls[3]
             .windows(2)
             .any(|pair| pair == ["--secret", secrets_runtime::SILO_GITHUB_SECRET_SPEC]));
+        // The network option is set explicitly, to the value an export compares against.
+        let profile: Value =
+            serde_json::from_str(include_str!("../guest/github-network-default.json")).unwrap();
+        assert_eq!(profile["strict"], true);
+        assert_eq!(
+            calls[3]
+                .iter()
+                .filter(|arg| arg.starts_with("--net-strict"))
+                .collect::<Vec<_>>(),
+            ["--net-strict=true"]
+        );
         assert!(!calls[3].iter().any(|arg| arg == "--mount-disk"));
         assert!(calls[3]
             .windows(2)

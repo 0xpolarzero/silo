@@ -5,7 +5,19 @@
     "rebind_protection": true
   },
   "enabled": true,
-  "interface": {},
+  "interface": {
+    "ipv4_address": "172.16.0.6",
+    "ipv6_address": "fd42:6d73:62:1::2",
+    "mac": [
+      2,
+      109,
+      115,
+      0,
+      1,
+      2
+    ],
+    "mtu": 1500
+  },
   "max_connections": null,
   "policy": {
     "default_egress": "deny",
@@ -41,7 +53,6 @@
   },
   "ports": [],
   "secrets": {
-    "violation_action": "block-and-log",
     "secrets": [
       {
         "allowed_hosts": [
@@ -56,21 +67,24 @@
           }
         ],
         "env_var": "SILO_GITHUB",
-        "substitution": {
-          "body": false,
-          "headers": true,
-          "query": false
-        },
-        "passthrough_hosts": ["any"],
+        "passthrough_hosts": [
+          "any"
+        ],
         "placeholder": "$MSB_SILO_GITHUB",
         "require_tls_identity": true,
         "source": {
           "kind": "env",
           "var": "SILO_GITHUB"
         },
+        "substitution": {
+          "body": false,
+          "headers": true,
+          "query": false
+        },
         "value": ""
       }
-    ]
+    ],
+    "violation_action": "block-and-log"
   },
   "strict": true,
   "tls": {
