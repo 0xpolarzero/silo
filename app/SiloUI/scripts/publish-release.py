@@ -23,6 +23,32 @@ def validate_version(version):
     return tuple(map(int, version.split(".")))
 
 
+DOWNLOADS = (
+    ("macOS (Apple Silicon)", (("DMG", "Silo-macos-arm64.dmg"),)),
+    ("Linux x86-64", (("AppImage", "Silo-linux-x64.AppImage"), ("Debian package", "Silo-linux-x64.deb"))),
+    ("Linux ARM64", (("AppImage", "Silo-linux-arm64.AppImage"), ("Debian package", "Silo-linux-arm64.deb"))),
+)
+CHANGE_LISTS = re.compile(r"^### (Major|Minor|Patch) Changes$", re.M)
+
+
+def release_page(version, repository, notes):
+    """GitHub release body: downloads first, then the notes with the full change lists collapsed.
+
+    The update feed keeps the plain notes; Silo shows them as text.
+    """
+    base = f"https://github.com/{repository}/releases/download/v{version}"
+    rows = [" · ".join(f"[{label}]({base}/{name})" for label, name in files) for _, files in DOWNLOADS]
+    downloads = "\n".join(["| Download | |", "| --- | --- |", *(f"| {platform} | {row} |" for (platform, _), row in zip(DOWNLOADS, rows))])
+    body = re.sub(r"\A# Silo [^\n]*\n+", "", notes.strip())
+    lists = CHANGE_LISTS.search(body)
+    if lists:
+        summary, changes = body[:lists.start()].rstrip(), body[lists.start():].rstrip()
+        count = len(re.findall(r"^- ", changes, re.M))
+        collapsed = f"<details>\n<summary>All changes ({count})</summary>\n\n{changes}\n\n</details>"
+        body = f"{summary}\n\n{collapsed}" if summary else collapsed
+    return f"{downloads}\n\n{body}\n"
+
+
 def prepare(root, version, repository, notes):
     validate_version(version)
     actual = {p.name for p in root.iterdir()}
@@ -101,7 +127,9 @@ def main():
         if not notes.is_file() or not notes.read_text().strip():
             raise RuntimeError("Release notes are required.")
         prepare(root, version, repository, notes.read_text())
-        gh("release", "create", tag, *[str(root / name) for name in sorted(EXPECTED | {"latest.json", "SHA256SUMS"})], "--verify-tag", "--draft", "--title", f"Silo {version}", "--notes-file", str(notes))
+        page = Path("release-page.md")
+        page.write_text(release_page(version, repository, notes.read_text()))
+        gh("release", "create", tag, *[str(root / name) for name in sorted(EXPECTED | {"latest.json", "SHA256SUMS"})], "--verify-tag", "--draft", "--title", f"Silo {version}", "--notes-file", str(page))
 
 
 if __name__ == "__main__":

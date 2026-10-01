@@ -52,8 +52,9 @@ adapter can update. A failed check changes nothing. Changesets then updates
 `package.json` and `CHANGELOG.md` and consumes the pending notes. Our adapter updates `package-lock.json`,
 `src-tauri/Cargo.toml`, and `src-tauri/Cargo.lock` to the same version without
 changing dependencies. It exports the new changelog entry to
-`docs/releases/VERSION.md`, which becomes the GitHub release body and app update
-notes. Tauri already reads its version from `package.json`.
+`docs/releases/VERSION.md`, which becomes the app update notes. The GitHub
+release page shows download links first, then those notes with the full change
+lists collapsed. Tauri already reads its version from `package.json`.
 
 Review all generated changes, including the removed changeset files. Several
 pending notes produce one release using the largest requested bump.
