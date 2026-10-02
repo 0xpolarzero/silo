@@ -1,6 +1,9 @@
 """CI test selection must include new ordinary suites and platform-specific tests."""
 import json
 import os
+import re
+import shlex
+import tomllib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -48,6 +51,26 @@ class ReleaseDiscoveryTests(unittest.TestCase):
         result = self.run_script(fail=True)
         self.assertNotEqual(result.returncode, 0, 'the newly added failing suites were ignored')
         self.assertIn('new suite failed', result.stdout + result.stderr)
+
+
+class CargoCoverageTests(unittest.TestCase):
+    def test_ci_selects_local_patched_packages_with_unit_tests(self):
+        manifest = tomllib.loads((APP / 'src-tauri/Cargo.toml').read_text())
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        selected = set()
+        for command in re.findall(r'(?m)^ +(?:- )?run: (cargo test .+)$', workflow):
+            arguments = shlex.split(command)
+            self.assertIn('--locked', arguments)
+            if '-p' in arguments:
+                selected.add(arguments[arguments.index('-p') + 1])
+            else:
+                selected.add(manifest['package']['name'])
+        self.assertIn(manifest['package']['name'], selected)
+        for name, patch in manifest['patch']['crates-io'].items():
+            directory = APP / 'src-tauri' / patch['path']
+            if any('#[test]' in source.read_text() for source in directory.rglob('*.rs')):
+                with self.subTest(package=name):
+                    self.assertIn(name, selected, 'dependency unit tests are not run by root cargo test')
 
 
 if __name__ == '__main__':
