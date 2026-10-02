@@ -19,6 +19,22 @@ function deferred<T>() {
 afterEach(() => vi.useRealTimers())
 
 describe("cached log history", () => {
+  it.each([false, true])("preserves a structured failure message and retries the failed read (older page: %s)", async older => {
+    const { options, workspace, loader } = fixture()
+    const message = "The connection was lost. Reconnect this computer, then retry."
+    if (!older) loader.mockRejectedValueOnce({ code: "internal", message })
+    const view = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    if (older) {
+      loader.mockRejectedValueOnce({ code: "internal", message })
+      await act(() => view.result.current.loadOlder())
+    }
+    expect(view.result.current.error).toBe(`${workspace.machine.name}: ${message}`)
+    await act(() => view.result.current.retry())
+    expect(view.result.current.error).toBe("")
+    expect(view.result.current.rows).toHaveLength(older ? 4 : 2)
+  })
+
   it("does not reorder log entries when workspace presentation refreshes", async () => {
     const { options, workspace } = fixture()
     const page = fixtureLogPage(workspace, { sandboxId: workspace.machine.id })
@@ -248,7 +264,7 @@ describe("cached log history", () => {
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     await act(() => view.result.current.loadOlder())
     expect(view.result.current.results.map(result => result.page.entries.length)).toEqual([4, 2])
-    expect(view.result.current.error).toContain("remote sandbox: Error: Offline")
+    expect(view.result.current.error).toContain("remote sandbox: Offline")
     fail = false
     await act(() => view.result.current.retry())
     expect(options.loader).toHaveBeenCalledTimes(5)
@@ -281,7 +297,7 @@ describe("cached log history", () => {
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     await act(() => view.result.current.loadOlder())
     expect(view.result.current.rows).toHaveLength(4)
-    expect(view.result.current.error).toContain("offline sandbox: Error: Disconnected")
+    expect(view.result.current.error).toContain("offline sandbox: Disconnected")
     act(() => view.result.current.setScrollTop(100))
     options.loader.mockRejectedValue(new Error("All disconnected"))
     await act(() => view.result.current.refresh())
