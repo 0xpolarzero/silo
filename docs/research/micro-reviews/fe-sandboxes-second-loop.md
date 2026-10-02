@@ -47,3 +47,12 @@ Scope: `app/SiloUI/src/features/sandboxes/` and adjacent sandbox configuration a
 - **Evidence:** Both rendered editor regressions failed because Save stayed enabled after freshness changed to stale. Lifecycle controls already reject this same status.
 - **Fix:** Reject VM settings mutations on stale status through the shared editing busy reason, preserving the draft until freshness recovers.
 - **Regression:** `overview-availability.test.tsx` covers list/detail editors, accessible blocking text, no save, and intact drafts after recovery.
+
+## FE-SANDBOXES-13: Invalidated stop confirmations reappear
+
+- **Priority:** P2.
+- **Trigger:** Open Stop and save, then observe the sandbox stop or a configuration lock appear; later it runs again or the lock clears.
+- **Consequence:** The hidden confirmation reappears automatically because only its derived visibility was cleared. The user returns to a question attached to the pre-interruption state instead of explicitly requesting a new save.
+- **Evidence:** Both rendered regressions failed because the stop confirmation returned when eligibility recovered.
+- **Fix:** Clear the pending confirmation state as soon as its eligibility disappears.
+- **Regression:** `machine-stop-confirmation.test.tsx` covers stopped/running and locked/unlocked transitions, preserving the unsaved resource edit without saving.
