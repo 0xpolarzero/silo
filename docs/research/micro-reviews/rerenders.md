@@ -58,3 +58,24 @@ focused computer-use, polling and desktop-viewer tests pass. Poll scheduling,
 backoff and event/read ordering remain independent of notification suppression.
 The same React external-store identity contract above applies. Only deterministic
 frontend data was used; no app bundle or real computer was inspected.
+
+## Repeated repository catalog scans
+
+Fixed in `features/github/components/github-access-editor.tsx`. Every repository
+picker previously filtered its whole catalog on each render, including while
+closed. An absent sandbox selection also supplied a new empty array each render,
+invalidating the selected-name cache.
+
+The `does not rescan an unchanged catalog during unrelated renders and picks from
+a replacement catalog` regression counts catalog-entry reads through a Proxy.
+With 1,000 repositories and ten unrelated notice changes, the old code read
+10,000 catalog entries. Cached search results and a stable empty selection reduce
+that to zero. A replacement catalog remains selectable with the keyboard.
+All 30 focused editor, GitHub-page and onboarding-GitHub tests pass, covering
+search, selected repository identity, and catalog replacement.
+
+React's [useMemo contract](https://react.dev/reference/react/useMemo) caches pure
+calculations while their dependencies retain identity. Consulted 2026-10-02.
+Filtering depends on the catalog, selected-name set, and query, and event-driven
+search still computes fresh results for new text. The measured result concerns
+catalog reads; option element construction and large-list DOM costs remain.
