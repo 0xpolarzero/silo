@@ -235,3 +235,26 @@ it.each(["local", "remote"])("isolates %s discovery errors from a healthy same-n
   expect(actions.openNetworkPort).toHaveBeenCalledWith(failing === "remote" ? "dev" : target, 3000)
   if (failing === "remote") expect(screen.getByRole("alert")).toHaveTextContent("dev (Office Mac): Remote discovery failed")
 })
+
+
+it("blocks a previous failure's Retry while another port save is pending", async () => {
+  let finish!: () => void
+  const save = vi.fn().mockRejectedValueOnce(new Error("Local port is already in use."))
+    .mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+    .mockResolvedValue(undefined)
+  const { user } = setup({ saveNetworkPort: save })
+  await user.click(screen.getByRole("button", { name: "Add port" }))
+  await user.type(screen.getByRole("spinbutton", { name: "Port" }), "9000")
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  await user.clear(screen.getByRole("spinbutton", { name: "Port" }))
+  await user.type(screen.getByRole("spinbutton", { name: "Port" }), "9001")
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
+  await act(async () => finish())
+  expect(await screen.findByText("Port 9001 added · dev")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Add port" })).toBeEnabled()
+})
