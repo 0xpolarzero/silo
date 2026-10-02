@@ -44,8 +44,12 @@ facts the plan depends on.
   by the host: writes fail with EROFS even after a guest remount. About 215
   test boots with Silo-like sizing and the 1.5 GB app mounted showed no hangs.
 - **v4 image size** (desktop, Selkies, ChatGPT and LCU system libraries,
-  accessibility defaults; no OpenAI files): arm64 389 MB gzip / 1.24 GB
-  uncompressed; amd64 400 MB / 1.31 GB. The v3 base is 86 / 89 MB gzip.
+  accessibility defaults; no OpenAI files). Final, as locked in
+  `app/SiloUI/guest-image/image-lock.json` (`archiveBytes` and `unpackedBytes`;
+  decimal): arm64 414.84 MB compressed / about 1.299 GB uncompressed; amd64
+  423.48 MB / about 1.370 GB. The planning estimates, from the recipe
+  measurement before publication, were arm64 389 MB / 1.24 GB and amd64
+  400 MB / 1.31 GB. The v3 base is 86 / 89 MB gzip.
 - **ChatGPT app.** OpenAI's apt repository
   (`https://persistent.oaistatic.com/codex-app-prod/linux/deb`, suite
   `stable`) is signed by key `3BFA0E4AE8B8CC16A2D9BA684A3B4A566C4660E4`
