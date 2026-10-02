@@ -276,6 +276,11 @@ npm --prefix app/SiloUI run test:release
 python3 -m unittest discover -s app/SiloUI/scripts -p 'test_*.py'
 ```
 
+`test:release` uses [Node's quoted recursive test glob](https://nodejs.org/docs/latest-v24.x/api/test.html#running-tests-from-the-command-line)
+`"scripts/**/*.test.mjs"`, so new script suites run without updating a filename
+list. `scripts/test_ci_coverage.py` verifies discovery and failure propagation
+with disposable new root and nested suites.
+
 Continuous integration runs the same checks. `.github/workflows/ci.yml` runs on
 every push to `main` and every pull request: frontend, script, website and demo
 checks; a blocking [Rust formatting check](https://github.com/rust-lang/rustfmt#verifying-code-is-formatted)
@@ -394,6 +399,15 @@ and restrict execution to version tags. Artifact-only verification uses a fresh
 ephemeral signing key in `release-verification`; these packages are for tests and
 cannot update production installations. The public key override only occurs in
 that isolated workflow checkout. These are not public releases.
+
+Final publication uses one shared concurrency group with `queue: max`, preserving
+up to 100 pending requests instead of replacing the pending request when a third
+arrives. Publications remain serialized, and their version checks still reject
+an obsolete or already published version. GitHub [released the larger queue on
+May 7, 2026](https://github.blog/changelog/2026-05-07-github-actions-concurrency-groups-now-allow-larger-queues/).
+Actionlint 1.7.12's unsupported-key diagnostic is a known
+[upstream validation gap](https://github.com/rhysd/actionlint/issues/680), as
+described in the [workflow fix audit](research/micro-reviews/workflows-fixes.md).
 
 macOS uses ad-hoc signing and no notarization. A downloaded installation can
 require System Settings → Privacy & Security → Open Anyway. Do not instruct users

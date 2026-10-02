@@ -493,15 +493,15 @@ pub(crate) async fn choose_backup_destination(
 ) -> Result<Option<String>, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
-    let starting_directory = controller
-        .view
-        .lock()
-        .map_err(|_| {
-            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
-        })?
-        .destination
-        .clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let starting_directory = controller
+            .view
+            .lock()
+            .map_err(|_| {
+                "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+            })?
+            .destination
+            .clone();
         let mut dialog = app
             .dialog()
             .file()

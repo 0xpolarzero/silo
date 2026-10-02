@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Stop registering application listeners when their source closes during startup and release each listener once.
+Prevent late background events from updating an app view that has already closed during startup.

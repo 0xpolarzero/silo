@@ -5,6 +5,8 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -111,6 +113,23 @@ class DependencyBenchmarkTests(unittest.TestCase):
         self.assertTrue(stdout.getvalue().startswith(noise.decode('utf-8', errors='replace')))
         self.assertEqual(messages.read_text(), json.dumps(row) + '\n')
         self.assertTrue(json.loads(report.read_text())['configurationVerified'])
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX signal exit status')
+    def test_build_cli_preserves_signal_in_report_and_maps_shell_exit_status(self):
+        metadata, messages, report = [self.root / name for name in ('metadata', 'messages', 'report')]
+        metadata.write_text(json.dumps({'resolve': {'root': 'app'}, 'packages': []}))
+        runner = self.root / 'node_modules/.bin/tauri'
+        runner.parent.mkdir(parents=True)
+        runner.write_text(f'#!{sys.executable}\nimport signal\nsignal.raise_signal(signal.SIGTERM)\n')
+        runner.chmod(0o755)
+        result = subprocess.run([sys.executable, BENCHMARK.__file__, 'build',
+                                 '--app-root', str(self.root), '--metadata', str(metadata),
+                                 '--messages', str(messages), '--report', str(report),
+                                 '--target', 'fixture', '--role', 'producer'],
+                                env=dict(os.environ, CARGO_TARGET_DIR=str(self.root / 'src-tauri/target/release-compile')),
+                                capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 128 + signal.SIGTERM, result.stderr)
+        self.assertEqual(json.loads(report.read_text())['exitCode'], -signal.SIGTERM)
 
 
 if __name__ == '__main__':

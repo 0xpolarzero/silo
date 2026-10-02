@@ -351,17 +351,21 @@ fn policy_for_apply(paths: &RuntimePaths, id: &str) -> Policy {
 
 /// A fork starts with its source's approval mode and nothing else: its guest disk
 /// carries the source's configuration, so no attempt is known and its first boot applies.
-pub(crate) fn inherit_settings(paths: &RuntimePaths, from: &str, to: &str) {
+pub(crate) fn inherit_settings(
+    paths: &RuntimePaths,
+    from: &str,
+    to: &str,
+) -> Result<(), RuntimeError> {
     let _lock = lock_policies();
     let approval = read_policy(paths, from).approval;
-    let _ = write_atomic(
+    write_atomic(
         paths,
         policy_path(paths, to),
         &Policy {
             approval,
             ..Policy::default()
         },
-    );
+    )
 }
 
 /// Removes the settings of a deleted VM, or of an imported one: an import or transfer

@@ -1,5 +1,5 @@
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
+import { useEffect, useEffectEvent, useId, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
 import { CopyPlus, GripVertical, Pencil, Plus, Trash2 } from "lucide-react"
 import { DropdownMenu } from "radix-ui"
 
@@ -102,6 +102,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   const addSelected = useRef<"editor" | "external" | null>(null)
   const [draggedID, setDraggedID] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState("")
+  const reorderHelpId = useId()
   const addButton = useRef<HTMLButtonElement>(null)
   const editorTriggers = useRef(new Map<string, HTMLButtonElement>())
   const previousEditor = useRef(editor)
@@ -324,6 +325,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                         tabIndex={reorderDisabled ? -1 : 0}
                         draggable={!reorderDisabled}
                         aria-label={`Reorder ${machine.name}`}
+                        aria-describedby={reorderHelpId}
                         aria-disabled={reorderDisabled || undefined}
                         className="grid size-7 shrink-0 cursor-grab place-items-center rounded-md text-muted-foreground outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:cursor-grabbing aria-disabled:cursor-default aria-disabled:opacity-40"
                         onKeyDown={(event) => { if (!reorderDisabled) handleReorderKey(event, machine) }}
@@ -389,6 +391,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
             })}
         </SandboxList>
         {footer && <div className="mt-3 shrink-0">{footer}</div>}
+        <p id={reorderHelpId} className="sr-only">Use the Up and Down arrow keys to reorder.</p>
         <p className="sr-only" aria-live="polite">{announcement}</p>
       </div>
     </>

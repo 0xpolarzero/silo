@@ -326,7 +326,7 @@ impl<T: Clone + PartialEq> SessionSecret<T> {
             .map_err(|_| "Credential state is unavailable.")?;
         self.write_locked(&mut state, value, write)
     }
-    /// Replace an explicitly submitted secret only after secure storage succeeds.
+    /// Explicit replacements become visible only after durable storage succeeds.
     fn replace(&self, value: T, write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
         let mut state = self
             .0

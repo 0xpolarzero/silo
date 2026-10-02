@@ -1,3 +1,4 @@
+import { setupFakeTimerUser } from "@/test/fake-timer-user"
 import { createApplicationActionsMock } from "@/test/application-actions"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
@@ -364,11 +365,12 @@ it("dispatches available sandbox commands and removes them when status becomes s
 
 it("runs an import to completion and reflects the new stopped sandbox", async () => {
   vi.useFakeTimers()
+  const user = setupFakeTimerUser()
   const application = renderApplication()
   try {
     const overviewNav = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: "All sandboxes" })
-    fireEvent.click(screen.getByRole("button", { name: "Add" }))
-    fireEvent.click(screen.getByRole("menuitem", { name: "Import sandbox…" }))
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("menuitem", { name: "Import sandbox…" }))
     await act(async () => { await Promise.resolve() })
     // The import review popover opens anchored to Add; the import starts from it, then continues as a toast.
     fireEvent.click(screen.getByRole("button", { name: "Import" }))

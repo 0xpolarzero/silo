@@ -81,3 +81,20 @@ decode the stream as UTF-8 with replacement, matching the guest computer-use
 command helper's existing treatment of diagnostic output.
 The dependency-tool suite passed 33 tests on Python 3.12 with
 `ResourceWarning` promoted to an error.
+
+## Build CLI signal statuses wrap into unrelated exit codes
+
+Both dependency build wrappers returned the negative `Popen.wait()` status
+directly to `sys.exit`. A child terminating itself with SIGTERM made each CLI
+exit 241 instead of 143. The
+[Python subprocess contract](https://docs.python.org/3.12/library/subprocess.html#subprocess.Popen.returncode)
+defines `-N` as termination by signal N; the shell convention is 128 + N.
+
+Use the same conversion already used by `measure-command.py` and
+`retry-bundle.py`. Keep the benchmark report's raw subprocess status intact.
+CLI regressions run temporary self-terminating executables, assert exit 143,
+and check benchmark `exitCode: -15`. Both failed with actual exit 241 before the
+fix. The tests neither identify nor signal an external process.
+The dependency-tool group passed 35 tests on Python 3.12 with resource warnings
+treated as errors; the release-workflow group passed nine tests. Format,
+typecheck, lint, and whitespace checks also passed before each fix commit.

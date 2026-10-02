@@ -59,6 +59,33 @@ fn executable_file(path: &Path) -> bool {
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
 }
 
+fn with_exec_prefix(
+    argv: &[String],
+    index: usize,
+    command: EditorCommand,
+    find_program: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Result<EditorCommand, String> {
+    if index == 0 {
+        return Ok(command);
+    }
+    let program = if Path::new(&argv[0]).is_absolute() {
+        PathBuf::from(&argv[0])
+    } else {
+        find_program(&argv[0]).ok_or("The selected editor is unavailable.")?
+    };
+    if !executable_file(&program) {
+        return Err("The selected editor is unavailable.".into());
+    }
+    let mut args: Vec<_> = argv[1..index].iter().map(OsString::from).collect();
+    args.push(command.program.into_os_string());
+    args.extend(command.args);
+    Ok(EditorCommand {
+        program,
+        args,
+        zed: command.zed,
+    })
+}
+
 /// Resolves a Linux editor entry to its command-line launcher (G-06, G-25).
 ///
 /// The Microsoft package's entry runs the Electron app (`/usr/share/code/code`),
@@ -95,15 +122,20 @@ pub(crate) fn linux_editor_command(
         if !executable_file(&program) {
             return Err("The selected editor is unavailable.".into());
         }
-        return Ok(EditorCommand {
-            program,
-            args: args
-                .iter()
-                .filter(|argument| argument.as_str() != "--file-forwarding")
-                .map(OsString::from)
-                .collect(),
-            zed,
-        });
+        return with_exec_prefix(
+            argv,
+            index,
+            EditorCommand {
+                program,
+                args: args
+                    .iter()
+                    .filter(|argument| argument.as_str() != "--file-forwarding")
+                    .map(OsString::from)
+                    .collect(),
+                zed,
+            },
+            find_program,
+        );
     }
     let token = exec_program(argv).ok_or("The selected editor is unavailable.")?;
     let index = argv.iter().position(|argument| argument == token).unwrap();
@@ -128,11 +160,16 @@ pub(crate) fn linux_editor_command(
     if !executable_file(&program) {
         return Err("The selected editor is unavailable.".into());
     }
-    Ok(EditorCommand {
-        program,
-        args: argv[index + 1..].iter().map(OsString::from).collect(),
-        zed,
-    })
+    with_exec_prefix(
+        argv,
+        index,
+        EditorCommand {
+            program,
+            args: argv[index + 1..].iter().map(OsString::from).collect(),
+            zed,
+        },
+        find_program,
+    )
 }
 
 /// Commands that run the user's preferred terminal (G-07). The freedesktop
@@ -296,6 +333,42 @@ mod tests {
     }
 
     #[test]
+    fn editor_entries_preserve_their_environment_wrapper_at_launch() {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, app) in [("code", None), ("flatpak", Some("com.visualstudio.code"))] {
+            let program = directory.path().join(name);
+            executable(&program);
+            std::fs::write(
+                &program,
+                "#!/bin/sh\nprintf '%s\\n' \"$SILO_EDITOR_ENTRY_TEST\" \"$@\"\n",
+            )
+            .unwrap();
+            let mut argv = vec![
+                "/usr/bin/env".into(),
+                "SILO_EDITOR_ENTRY_TEST=selected environment".into(),
+                program.to_str().unwrap().into(),
+            ];
+            if app.is_some() {
+                argv.extend(["run".into(), "com.visualstudio.code".into()]);
+            }
+            let command = linux_editor_command(&argv, app, &nowhere).unwrap();
+            let output = Command::new(command.program)
+                .env_remove("SILO_EDITOR_ENTRY_TEST")
+                .args(command.args)
+                .arg("fixture.code-workspace")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                text.starts_with("selected environment\n"),
+                "{name}: {text:?}"
+            );
+            assert!(text.ends_with("fixture.code-workspace\n"));
+        }
+    }
+
+    #[test]
     fn env_wrapped_editors_reject_missing_or_non_executable_launchers() {
         let directory = tempfile::tempdir().unwrap();
         let program = directory.path().join("code");
@@ -392,13 +465,21 @@ mod tests {
         let snap_program = directory.path().join("snap/bin/code");
         executable(&snap_program);
         let snap = tokens(&format!(
-            "env BAMF_DESKTOP_FILE_HINT=x {} --force-user-env %F",
+            "/usr/bin/env BAMF_DESKTOP_FILE_HINT=x {} --force-user-env %F",
             snap_program.display()
         ));
         let command = linux_editor_command(&snap, None, &nowhere).unwrap();
         assert_eq!(
             (command.program, command.args, command.zed),
-            (snap_program, vec!["--force-user-env".into()], false)
+            (
+                PathBuf::from("/usr/bin/env"),
+                vec![
+                    "BAMF_DESKTOP_FILE_HINT=x".into(),
+                    snap_program.into_os_string(),
+                    "--force-user-env".into()
+                ],
+                false
+            )
         );
 
         let launcher = directory.path().join("flatpak");

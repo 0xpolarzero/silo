@@ -34,3 +34,13 @@
 - Correction: check cancellation after the query completes, then propagate uncancelled errors.
 - Evidence: the production writer regression failed with the remote query error for the cancelled request. It also checks that an uncancelled query retains the same error and neither path writes page data.
 - Verification: all ten extracted log-export tests, Rust formatting, and whitespace checks passed.
+
+## Log export cancellation before publication
+
+- Trigger: cancel after all pages have been written, before the atomic save publishes the temporary file.
+- Cause: the last cancellation check preceded the file synchronization; publication did not recheck it.
+- Consequence: an export could replace the existing destination after cancellation during this interval.
+- Correction: check cancellation after synchronizing the temporary file and before its rename.
+- Evidence: a fixture cancelled immediately after the production writer completed. The regression failed because the existing file was replaced; after correction it returns the cancelled result and retains only the previous file.
+- Boundary: publication itself is the commit step; cancellation after its final check can still complete successfully.
+- Verification: all eleven extracted log-export tests, Rust formatting, and whitespace checks passed. Full Cargo verification remains queued on the shared artifact lock; the harness does not establish whole-application compilation.
