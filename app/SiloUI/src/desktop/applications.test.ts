@@ -46,6 +46,23 @@ it("rejects malformed catalog entries before changing application defaults", asy
   expect(store.getSnapshot().settings.terminal).toBe("Terminal")
 })
 
+it("does not let an older discovery replace newer system application defaults", async () => {
+  let completeOlder!: (value: typeof catalog) => void
+  native.invoke.mockImplementationOnce(() => new Promise<typeof catalog>((resolve) => { completeOlder = resolve }))
+  const nextBrowser = { name: "Chromium", path: "/Applications/Chromium.app" }
+  native.invoke.mockResolvedValueOnce({ ...catalog, browser: [nextBrowser], defaults: { browser: nextBrowser.path } })
+  const store = createMemorySettingsStore()
+  const service = createApplicationService(store)
+  const older = service.read()
+  await service.read()
+  expect(store.getSnapshot().settings.browserPath).toBe(nextBrowser.path)
+
+  completeOlder(catalog)
+  await older
+
+  expect(store.getSnapshot().settings).toMatchObject({ browser: nextBrowser.name, browserPath: nextBrowser.path, browserUseSystemDefault: true })
+})
+
 it("resolves the same exact default in both windows while retaining legacy name-only choices", async () => {
   const first = { name: "Editor", path: "/Applications/Editor.app" }
   const preferred = { name: "Editor", path: "/Users/example/Applications/Editor.app" }
