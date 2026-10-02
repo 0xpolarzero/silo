@@ -93,6 +93,7 @@ recorded revisions; check current code before treating an item as open.
 - [Streaming build inputs, 2026-10-02](research/stream-build-inputs-2026-10-02.md): verified file staging, bounded downloads, synthetic memory measurements and regression coverage; full runtime preparation was not measured.
 - [Application launch selection, 2026-10-02](research/application-launch-selection-2026-10-02.md): preserving Flatpak desktop-entry selectors and targeting the selected Ghostty bundle, with resolver and escaping tests rather than live application launches.
 - [Editor folder identity, 2026-10-02](research/editor-folder-identity-2026-10-02.md): rejecting control characters that URI serialization would discard, with extracted-function regression evidence and no live editor qualification.
+- [Editor environment wrapper follow-up, 2026-10-02](research/editor-env-directory-2026-10-02.md): preserving `env` working-directory operands when resolving and launching a supported Linux editor, with a temporary CLI regression and no GUI or live VM.
 - [Guest image size experiment](SiloUI-GUEST-IMAGE-SIZE.md): measured image-size tradeoffs.
 - [Codex skills and context audit](CODEX-CONTEXT-AUDIT-2026-09-14.md): agent instruction and skill-trigger recommendations for working on this repository.
 - [Jev for natural-language commands](SiloUI-JEV-RESEARCH.md): primary-source findings, command-palette fit, limitations and proposed evaluation.
