@@ -98,3 +98,22 @@ fix. The tests neither identify nor signal an external process.
 The dependency-tool group passed 35 tests on Python 3.12 with resource warnings
 treated as errors; the release-workflow group passed nine tests. Format,
 typecheck, lint, and whitespace checks also passed before each fix commit.
+
+## Checkout source validation assumes input order
+
+The final merged-tree Python run executed 397 tests and found one failure:
+`test_all_checkout_jobs_use_validated_source` extracted zero of four checkouts
+after credential hardening inserted `persist-credentials: false` before `ref`.
+The regular expression required `ref` to be the first input, although input
+order does not change a checkout's selected revision.
+The [YAML mapping-order contract](https://yaml.org/spec/1.2.2/#3221-mapping-key-order)
+makes key order a serialization detail.
+
+Allow preceding inputs within the same indented `with` block. Keep the existing
+assertions that every checkout has a ref and that all refs match their validated
+source. The regression exercises four release and three platform checkouts;
+it failed before the change and passed afterwards. The full run's other 382
+executed tests passed and 14 were skipped. All tests use fixtures; no app,
+installed bundle, guest VM, or release publication was exercised.
+The focused source-validation and release-workflow groups passed five and ten
+tests on Python 3.12; Node 24 typecheck/lint and Rust formatting passed.
