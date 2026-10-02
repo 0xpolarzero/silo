@@ -43,6 +43,7 @@ export function listenForNotices(handler: (notice: Notice) => void): () => void 
   let stopped = false
   let stop: (() => void) | undefined
   void listen(NOTICE_EVENT, (event) => {
+    if (stopped) return
     const parsed = noticeSchema.safeParse(event.payload)
     if (parsed.success) handler(parsed.data)
     else console.error("Silo notice: ignored malformed notice", parsed.error.message)

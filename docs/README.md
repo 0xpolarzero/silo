@@ -43,6 +43,7 @@ above for current behavior and build commands.
 
 ### Review remediation
 
+- [Desktop contract fix-loop findings](research/micro-reviews/fe-desktop-contracts-fixes.md): status-event ordering, saved CPU bounds, notice disposal, and the pinned native menu checks.
 - [Release dry run, 2026-09-30](research/release-dry-run-2026-09-30.md): non-publishing all-target release verification for A-01, A-04, A-08 and A-09.
 - [Review remediation plan](SiloUI-REVIEW-REMEDIATION-PLAN.md): ledger of the 2026-09-29 review findings with landed-fix statuses and verification, plus the original work packages, phases, merge-queue orchestration and live verification sessions.
 - [Review remediation design notes](SiloUI-REVIEW-DESIGN-NOTES.md): Phase 0 decision records (options checked against upstream tools, recommended decision, implementation outline, owner questions) for the review items marked design.
