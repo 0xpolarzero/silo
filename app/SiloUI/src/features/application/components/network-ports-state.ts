@@ -27,7 +27,7 @@ export function networkPortState(workspace: ApplicationWorkspace, port: NetworkP
 
 interface PortOperationIdentity { computer?: { id: string; name: string }; sandboxId: string; displayName: string }
 
-interface PortDraft { workspace: string; port: string; hostPort: string; scheme: string; editing: boolean }
+interface PortDraft { workspace: string; sandboxId: string; port: string; hostPort: string; scheme: string; editing: boolean }
 
 /** Shared state and operations for adding, editing, connecting, and removing forwarded ports.
  * Both the full Network page and a sandbox's Ports section drive identical behaviour from it. */
@@ -39,7 +39,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   active: boolean
 }) {
   const [draft, setDraft] = useState<PortDraft | null>(null)
-  const [fieldErrors, setFieldErrors] = useState<{ port?: string; hostPort?: string }>({})
+  const [fieldErrors, setFieldErrors] = useState<{ port?: string; hostPort?: string; workspace?: string }>({})
   const [connecting, setConnecting] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const pending = useRef(false)
@@ -128,11 +128,11 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     : localWorkspaces.length > 1 ? "Start a sandbox to add ports" : null
 
   function add(workspace = runningLocalWorkspaces[0] ? workspaceTarget(runningLocalWorkspaces[0]) : "", port = "") {
-    setFieldErrors({}); setDraft({ workspace, port, hostPort: "", scheme: "http", editing: false })
+    setFieldErrors({}); setDraft({ workspace, sandboxId: localWorkspaces.find(item => workspaceTarget(item) === workspace)?.machine.id ?? "", port, hostPort: "", scheme: "http", editing: false })
   }
   function startEdit(workspace: ApplicationWorkspace, port: NetworkPort) {
     setFieldErrors({})
-    setDraft({ workspace: workspaceTarget(workspace), port: String(port.port), hostPort: port.configuredHostPort == null ? "" : String(port.configuredHostPort), scheme: port.scheme ?? "tcp", editing: true })
+    setDraft({ workspace: workspaceTarget(workspace), sandboxId: workspace.machine.id, port: String(port.port), hostPort: port.configuredHostPort == null ? "" : String(port.configuredHostPort), scheme: port.scheme ?? "tcp", editing: true })
   }
   function cancelDraft() { setDraft(null) }
 
