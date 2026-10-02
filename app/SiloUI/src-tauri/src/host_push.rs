@@ -801,6 +801,7 @@ fn perform(
         push_target(
             &paths,
             workspace,
+            &vm_id,
             path,
             target,
             credential.repository(),
@@ -1026,6 +1027,13 @@ pub(crate) fn push_committed(
     executable: &Path,
     support: &Path,
 ) -> Result<u64, String> {
+    let metadata = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
+    let vm_id = metadata
+        .machines
+        .iter()
+        .find(|m| m.is_vm() && m.name() == workspace)
+        .map(|m| m.id().to_owned())
+        .ok_or("Choose a managed Silo VM.")?;
     let head = guest(
         paths,
         workspace,
@@ -1040,7 +1048,7 @@ pub(crate) fn push_committed(
     };
     target.validate()?;
     push_target(
-        paths, workspace, path, &target, repo, token, None, executable, support,
+        paths, workspace, &vm_id, path, &target, repo, token, None, executable, support,
     )
 }
 
@@ -1050,6 +1058,7 @@ pub(crate) fn push_committed(
 fn push_target(
     paths: &RuntimePaths,
     workspace: &str,
+    vm_id: &str,
     path: &str,
     target: &PushTarget,
     repo: &str,
