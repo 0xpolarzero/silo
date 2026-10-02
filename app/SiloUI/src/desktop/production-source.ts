@@ -413,6 +413,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let refreshRepositoriesOnReturn = false
   let githubMutationSequence = 0
   let githubMutationPending = false
+  let secretMutationSequence = 0
+  let appliedSecretMutation = 0
   const unlisten: Array<() => void> = []
   const listeners = new Set<() => void>()
   const pendingWorkspaceActions = new Set<string>()
@@ -585,9 +587,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function changeSecret(command: string, arguments_: Record<string, unknown>) {
+    const sequence = ++secretMutationSequence
     const secrets = z.array(secretShape).parse(await native.invoke(command, arguments_))
-    ++refreshSequence
-    if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
+    if (disposed) return
+    // An older whole-list reply cannot undo a later successful secret mutation.
+    if (sequence > appliedSecretMutation) {
+      appliedSecretMutation = sequence
+      ++refreshSequence
+      if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
+    }
     void refresh()
   }
 
