@@ -48,6 +48,24 @@ it("blocks a deletion if the VM starts before confirmation", async () => {
   expect(save).not.toHaveBeenCalled()
 })
 
+it.each(["configuration lock", "offline computer"])("blocks deletion when a %s appears before confirmation", async reason => {
+  const machine = productionMachineDefaults[0]
+  const save = vi.fn()
+  const view = (blocked: boolean) => <TooltipProvider><MachineList machines={[machine]} onMachinesChange={vi.fn()} onDeleteMachine={save}
+    interactionDisabled={reason === "configuration lock" && blocked}
+    getComputerId={() => "office"}
+    validateOperation={() => reason === "offline computer" && blocked ? "Office is offline." : undefined}
+    isMachineRunning={() => false} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>
+  const { rerender } = render(view(false))
+  const user = userEvent.setup()
+  await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
+  await user.click(screen.getByRole("menuitem", { name: `Delete ${machine.name}` }))
+  await screen.findByText(`Delete ${machine.name} permanently?`)
+  rerender(view(true))
+  await user.click(popoverButton("Delete permanently"))
+  expect(save).not.toHaveBeenCalled()
+})
+
 it("closes the hover-action delete confirmation on one Escape after hovering its trigger", async () => {
   const machine = productionMachineDefaults[0]
   const save = vi.fn()
