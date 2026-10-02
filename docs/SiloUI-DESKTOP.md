@@ -8,6 +8,16 @@ operation is provided. Sandboxes from v4 on have the desktop built in; see
 
 ## Lifecycle
 
+The guest helper saves JSON through a unique temporary file in the destination
+directory, flushes and fsyncs the file, replaces the destination, then fsyncs the
+directory before reporting success. A file-sync failure preserves the previous
+JSON; a directory-sync failure reports an error after publication. This uses
+Python's [standard file operations](https://docs.python.org/3/library/os.html#os.fsync)
+and the existing Selkies patcher's sequence: Linux [fsync](https://man7.org/linux/man-pages/man2/fsync.2.html)
+requires a separate directory sync to persist the renamed entry. No new storage
+dependency is required. Fixture tests inject both sync failures and inspect
+the data and permissions at each boundary; they do not simulate a power loss.
+
 `Start desktop with sandbox` defaults on. A managed VM boot starts the installed
 desktop when that setting is enabled. Switching it off leaves a running desktop
 alone. Switching it on starts the desktop immediately when the VM is running.
