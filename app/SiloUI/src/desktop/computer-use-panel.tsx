@@ -123,7 +123,7 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
   const mayActWithoutAsking = computerUse.approval === "ask" && (applied === "auto" || apply === "partial" || (apply === "failed" && applied !== "ask"))
   const mayStillAsk = computerUse.approval === "auto" && (apply === "partial" || apply === "failed" || applied === "ask")
   const problem = apply === "failed" ? "Silo could not apply the approval change." : apply === "partial" ? "Silo changed the approval setting for only some agents." : null
-  // An older owner does not report `approvalApply` (read as `applied`) but still reports both modes: whatever the
+  // An older owner does not report `approvalApply` but still reports both modes: whatever the
   // result says, a chosen mode that differs from the applied one is not in place yet.
   const differs = !unknownApproval && applied !== "unknown" && applied !== computerUse.approval
   const showApproval = !unknownApproval && (problem || ((apply === "pending" || differs) && (mayActWithoutAsking || mayStillAsk)))

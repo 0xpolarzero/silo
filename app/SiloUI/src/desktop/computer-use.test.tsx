@@ -630,9 +630,9 @@ describe("chosen and applied approval", () => {
     expect(parse({ state: "ready", approval: "ask" })?.appliedApproval).toBe("unknown")
     expect(parse({ state: "ready", approval: "ask", appliedApproval: 3 })?.appliedApproval).toBe("unknown")
     expect(parse({ state: "ready", approval: "ask", appliedApproval: "auto" })).toMatchObject({ approval: "ask", appliedApproval: "auto" })
-    // An older Silo does not report how applying stands: it reads as applied, never as pending forever.
-    expect(parse({ state: "ready", approval: "ask" })?.approvalApply).toBe("applied")
-    expect(parse({ state: "ready", approval: "ask", approvalApply: "sometime" })?.approvalApply).toBe("applied")
+    // An older Silo does not report how applying stands; absent or malformed status is unknown.
+    expect(parse({ state: "ready", approval: "ask" })?.approvalApply).toBe("unknown")
+    expect(parse({ state: "ready", approval: "ask", approvalApply: "sometime" })?.approvalApply).toBe("unknown")
     for (const value of ["applied", "pending", "failed", "partial"]) expect(parse({ state: "ready", approval: "ask", approvalApply: value, approvalApplyReason: "why" })).toMatchObject({ approvalApply: value, approvalApplyReason: "why" })
     expect(parse({ state: "ready", approvalApplyReason: 4 })?.approvalApplyReason).toBeNull()
   })
@@ -692,9 +692,9 @@ describe("chosen and applied approval", () => {
     expect(screen.queryByText(/still act without asking/)).toBeNull()
   })
   it("warns for an older owner that omits approvalApply when the chosen mode differs from the applied one", () => {
-    // Parsed from a payload without `approvalApply`, which reads as `applied`.
+    // Parsed from a payload without an apply status.
     const older = (approval: string, appliedApproval: string) => parse({ state: "ready", approval, appliedApproval })!
-    expect(older("ask", "auto").approvalApply).toBe("applied")
+    expect(older("ask", "auto").approvalApply).toBe("unknown")
     const { unmount } = render_(older("ask", "auto"))
     expect(screen.getByRole("note")).toHaveTextContent("Some agents in this sandbox may still act without asking.")
     expect(screen.queryByText("Applying…")).toBeNull()
@@ -707,6 +707,22 @@ describe("chosen and applied approval", () => {
       const { unmount: done } = render_(computerUse)
       expect(screen.queryByRole("note")).toBeNull()
       done()
+    }
+  })
+  it.each([undefined, null, "sometime", 3, "unknown", "applied", "pending", "failed", "partial"])("preserves both mismatch warnings for approvalApply %j", approvalApply => {
+    for (const [approval, appliedApproval, warning] of [
+      ["ask", "auto", "Some agents in this sandbox may still act without asking"],
+      ["auto", "ask", "Some agents in this sandbox may still ask first"],
+    ]) {
+      const parsed = parse({ state: "ready", approval, appliedApproval, ...(approvalApply === undefined ? {} : { approvalApply }) })!
+      expect(parsed.approvalApply).toBe(["applied", "pending", "failed", "partial"].includes(String(approvalApply)) ? approvalApply : "unknown")
+      const { unmount } = render_(parsed)
+      expect(screen.getByRole("note")).toHaveTextContent(warning)
+      expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeEnabled()
+      expect(screen.getByRole("switch", { name: /Allow without asking/ })).toHaveAttribute("aria-checked", String(approval === "auto"))
+      expect(screen.getByText(/The switch configures the agents' approval prompts; it is not a security boundary/)).toBeVisible()
+      if (approvalApply !== "pending") expect(screen.queryByText("Applying…")).toBeNull()
+      unmount()
     }
   })
   it("shows no approval note when applied, or while a first apply waits with nothing known", () => {
