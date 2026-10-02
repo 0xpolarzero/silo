@@ -55,3 +55,13 @@ Scope: `app/SiloUI/src/components/` and adjacent frontend modules. Findings use 
 ## Deferred — Popup and inline-confirmation Escape ordering
 
 The integrated `d7f7da17` moved inline Escape handling to document capture so cancelling the status panel's quit confirmation does not also hide the panel. A fixture that keyboard-opens a separate Radix popup while an inline confirmation remains active now reproduces the reverse ordering problem: inline capture prevents Escape before Radix can close the popup. The red evidence is `/tmp/silo-fe-components-13-red.log`. Simply moving back to document bubble reintroduces the integrated status-panel defect; resolving ownership needs a coordinated dismissal boundary, outside this minimal fix. No skipped test was committed.
+
+## FE-COMPONENTS-14 — P2 — IME keys change GitHub permissions or commit identity fields
+
+- **File:line at discovery:** `app/SiloUI/src/features/github/components/github-access-editor.tsx:140–154,357–358,372–373`.
+- **Trigger:** Confirm an IME candidate with Enter in repository search or Git name/email, or navigate/cancel a candidate with Arrow/Escape in repository search.
+- **Evidence:** Six red fixtures show composing keys executing repository commands or blurring and committing identity fields. Repository Enter calls the permission selection callback; identity Enter calls the commit callback before composition finishes.
+- **Consequence:** Text entry can add a repository permission, clear or dismiss search, or persist an unfinished identity and move focus away from the field.
+- **Fix:** Ignore composing repository commands and identity Enter; prevent Radix's default Escape dismissal during composition.
+- **Tests:** Four repository keys retain selection and list visibility, then ordinary ArrowDown/Enter adds the intended repository. Two identity fields retain focus and avoid commits for composing Enter, then ordinary Enter commits once.
+- **Primary evidence:** [UI Events composition keyboard contract](https://w3c.github.io/uievents/#dom-keyboardevent-iscomposing); the same supported Radix Escape callback is used by the shared filter fix above.
