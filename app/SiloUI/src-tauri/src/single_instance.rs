@@ -1,11 +1,6 @@
-//! Only one Silo runs at a time, across builds (F-09 and the owner answer in
-//! `docs/SiloUI-REVIEW-DESIGN-NOTES.md`). Every Silo build shares the bundle
-//! identifier, so `tauri-plugin-single-instance` keys them together: a later
-//! launch hands its arguments to the running Silo and exits while the plugins
-//! initialize, before the setup hook runs any migration, remote-management or
-//! VM work. The running Silo brings its main window forward (including when it
-//! is hidden to the tray) and, when the other launch came from a different
-//! build, explains why that build did not open.
+//! One Silo instance runs per channel. The single-instance plugin keys its
+//! claim by bundle identifier before setup can touch channel state. A second
+//! launch focuses the running copy and explains if its executable differs.
 use std::{
     ffi::OsString,
     fs::File,
@@ -14,8 +9,6 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-
-pub(crate) const ALREADY_RUNNING: &str = "Silo is already running. Quit it first.";
 
 /// Register this before every other plugin: the plugin exits a second instance
 /// while plugins initialize, and plugins initialize in registration order.
@@ -43,13 +36,14 @@ fn second_launch(app: &AppHandle, argv: Vec<String>, cwd: String) {
     if same_build(&own_executable(), &other) {
         return;
     }
+    let name = crate::channel::current().product_name();
     let mut dialog = app
         .dialog()
         .message(format!(
-            "{ALREADY_RUNNING}\n\nThe other copy of Silo was not opened: {}",
+            "{name} is already running. Quit it first.\n\nThe other copy of {name} was not opened: {}",
             other.display()
         ))
-        .title("Silo")
+        .title(name)
         .kind(MessageDialogKind::Warning);
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.parent(&window);

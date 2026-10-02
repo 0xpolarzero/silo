@@ -338,7 +338,9 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
     };
     if !only_fields(machine, fields, optional)
         || machine.get("desktop").is_some_and(|desktop| {
-            serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone()).is_err()
+            desktop.get("startWithSandbox").is_none()
+                || serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone())
+                    .is_err()
         })
         || !valid_uuid(&machine["id"])
         || !(if unfinished {
@@ -399,7 +401,7 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
         .is_some_and(|port| port.fract() == 0. && (1. ..=65535.).contains(&port))
 }
 
-// This boundary accepts unfinished text, but never accepts auth, runtime state, or arbitrary fields.
+// This boundary accepts unfinished text, but never accepts credentials, runtime state, or arbitrary fields.
 // TypeScript applies the existing domain validation before a draft is used as configuration.
 fn valid_draft(value: &Value) -> bool {
     if value.is_null() {
@@ -429,7 +431,7 @@ fn valid_draft(value: &Value) -> bool {
     ) || !draft["machines"].as_array().is_some_and(|machines| {
         let mut ids = HashSet::new();
         let mut names = HashSet::new();
-        (1..=64).contains(&machines.len())
+        machines.len() <= 64
             && machines.iter().all(|machine| {
                 valid_machine(machine, false)
                     && ids.insert(machine["id"].as_str().unwrap())
@@ -466,9 +468,12 @@ fn valid_draft(value: &Value) -> bool {
                         only_fields(
                             policy,
                             &["repositoryMode", "allRepositoriesAllowChanges"],
-                            &[],
+                            &["authenticationMethod"],
                         ) && matches!(policy["repositoryMode"].as_str(), Some("selected" | "all"))
                             && policy["allRepositoriesAllowChanges"].is_boolean()
+                            && policy.get("authenticationMethod").is_none_or(|method| {
+                                matches!(method.as_str(), Some("oauth" | "token"))
+                            })
                     })
                 })
             })
@@ -631,10 +636,18 @@ impl ShutdownState {
             .phase
             == Self::APPROVED
     }
-    fn cancel(&self) {
+    #[cfg(test)]
+    fn cancel(&self) -> bool {
+        self.cancel_with(|| {})
+    }
+    fn cancel_with(&self, reopen: impl FnOnce()) -> bool {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.session_deadline.is_some() || state.phase == Self::APPROVED {
+            return false;
+        }
+        reopen();
         state.phase = 0;
-        state.session_deadline = None;
+        true
     }
     /// Keep the earliest deadline when the session end is reported twice.
     fn begin_session_end(&self, deadline: Instant) {
@@ -651,11 +664,25 @@ impl ShutdownState {
             .unwrap_or_else(|error| error.into_inner())
             .session_deadline
     }
-    fn allow_exit(&self) {
-        self.0
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .phase = Self::APPROVED;
+    fn expire_session(&self, now: Instant) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.phase == Self::APPROVED
+            || !state
+                .session_deadline
+                .is_some_and(|deadline| now >= deadline)
+        {
+            return false;
+        }
+        state.phase = Self::APPROVED;
+        true
+    }
+    fn allow_exit(&self) -> bool {
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        if state.phase == Self::APPROVED {
+            return false;
+        }
+        state.phase = Self::APPROVED;
+        true
     }
     fn mark_restart(&self) {
         self.0
@@ -875,6 +902,9 @@ fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64
         return;
     }
     let stopped = stop_local_vms(app, state.session_deadline());
+    if state.approved() {
+        return;
+    }
     // Read the session state again: logout can begin while a Quit is stopping VMs.
     let session_end = state.session_deadline().is_some();
     if let Err(error) = stopped {
@@ -902,15 +932,19 @@ fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64
         eprintln!("Silo is exiting because the session ended; settings were not saved: {error}");
     }
     crate::remote_network::close_all();
-    state.allow_exit();
-    crate::system_shutdown::exit(app);
+    if state.allow_exit() {
+        crate::system_shutdown::exit(app);
+    }
 }
 
 fn cancel_exit(app: &AppHandle, message: String) {
-    crate::runtime::shutdown::cancel();
-    app.state::<ShutdownState>().cancel();
-    crate::system_shutdown::cancel(app);
-    let _ = app.emit("silo://shutdown-state-changed", false);
+    if !app.state::<ShutdownState>().cancel_with(|| {
+        crate::runtime::shutdown::cancel();
+        crate::system_shutdown::cancel(app);
+        let _ = app.emit("silo://shutdown-state-changed", false);
+    }) {
+        return;
+    }
     // Startup remains cancelled: a failed Quit must not automatically restart VMs
     // that have already stopped. Manual controls become available again.
     if let Some(window) = app.get_webview_window("main") {
@@ -977,6 +1011,20 @@ pub(crate) fn end_session(app: &AppHandle, budget: Duration) {
         return;
     }
     state.begin_session_end(Instant::now() + budget);
+    let deadline = state.session_deadline().unwrap();
+    // A user Quit may already be blocked stopping VMs or saving settings. Its
+    // worker stays the sole stop owner; session termination cannot wait for it.
+    let deadline_app = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(deadline.saturating_duration_since(Instant::now()));
+        if deadline_app
+            .state::<ShutdownState>()
+            .expire_session(Instant::now())
+        {
+            eprintln!("Silo is exiting because the session shutdown deadline elapsed.");
+            crate::system_shutdown::exit(&deadline_app);
+        }
+    });
     // An open Quit prompt no longer applies; its answer is ignored.
     app.state::<QuitConfirmation>().close();
     begin_exit(app);
@@ -1554,6 +1602,34 @@ mod tests {
     }
 
     #[test]
+    fn authentication_method_survives_draft_restart_and_rejects_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(path.clone()));
+        let mut draft = unfinished_draft();
+        for method in ["token", "oauth"] {
+            draft["workspaceRepositoryAccess"] = json!({"dev":{
+                "repositoryMode":"selected","allRepositoriesAllowChanges":false,
+                "authenticationMethod":method
+            }});
+            store.update_draft(draft.clone()).unwrap();
+            assert_eq!(
+                SettingsStore::load(Some(path.clone()))
+                    .snapshot()
+                    .onboarding_draft,
+                draft
+            );
+        }
+        for invalid in [json!("unknown"), json!(null), json!(true), json!(1)] {
+            draft["workspaceRepositoryAccess"]["dev"]["authenticationMethod"] = invalid;
+            assert!(!valid_draft(&draft));
+        }
+        draft["workspaceRepositoryAccess"]["dev"]["authenticationMethod"] = json!("token");
+        draft["workspaceRepositoryAccess"]["dev"]["token"] = json!("secret");
+        assert!(!valid_draft(&draft));
+    }
+
+    #[test]
     fn all_repository_intent_survives_restart_and_rejects_malformed_access() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -1591,6 +1667,23 @@ mod tests {
         let snapshot = SettingsStore::load(Some(path)).snapshot();
         assert!(snapshot.onboarding_draft.is_null());
         assert_eq!(snapshot.settings["theme"], "dark");
+    }
+
+    #[test]
+    fn deleting_the_last_onboarding_machine_survives_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(path.clone()));
+        let mut draft = unfinished_draft();
+        store.update_draft(draft.clone()).unwrap();
+        draft["machines"] = json!([]);
+        for editor in [Value::Null, draft["unfinishedMachineEditor"].clone()] {
+            draft["unfinishedMachineEditor"] = editor;
+            store.update_draft(draft.clone()).unwrap();
+            let snapshot = SettingsStore::load(Some(path.clone())).snapshot();
+            assert_eq!(snapshot.onboarding_draft, draft);
+            assert!(snapshot.save_error.is_none());
+        }
     }
 
     #[test]
@@ -1704,9 +1797,9 @@ mod tests {
     #[test]
     fn invalid_saved_machine_semantics_protect_the_entire_original_file() {
         let mut candidates = Vec::new();
-        let mut empty = unfinished_draft();
-        empty["machines"] = json!([]);
-        candidates.push(empty);
+        let mut malformed = unfinished_draft();
+        malformed["machines"] = json!({});
+        candidates.push(malformed);
         for (field, invalid) in [
             ("id", json!("not-a-uuid")),
             ("name", json!("Invalid name")),
@@ -1759,6 +1852,38 @@ mod tests {
         saved["maxCPUs"] = json!(12);
         saved["maxMemoryGiB"] = json!(48);
         assert!(valid_machine(&saved, false));
+    }
+
+    #[test]
+    fn malformed_saved_desktop_policy_protects_the_original_draft() {
+        let mut draft = unfinished_draft();
+        draft["machines"][0] = json!({
+            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "kind":"vm", "name":"dev",
+            "cpus":2,"maxCPUs":4,"memoryGiB":4,"maxMemoryGiB":8,
+            "workspaceStorageGiB":60,"runtimeStorageGiB":80
+        });
+        for desktop in [json!({}), json!({"builtIn":true})] {
+            draft["machines"][0]["desktop"] = desktop;
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let original = serde_json::to_vec(&json!({
+                "schemaVersion":1,"settings":{"theme":"dark"},"onboardingDraft":draft
+            }))
+            .unwrap();
+            fs::write(&path, &original).unwrap();
+            let mut store = SettingsStore::load(Some(path.clone()));
+            assert!(store.snapshot().write_protected);
+            assert!(store.snapshot().save_error.is_some());
+            store.update_draft(unfinished_draft()).unwrap();
+            assert_eq!(fs::read(path).unwrap(), original);
+        }
+        for desktop in [
+            json!({"startWithSandbox":false}),
+            json!({"startWithSandbox":true,"builtIn":true}),
+        ] {
+            draft["machines"][0]["desktop"] = desktop;
+            assert!(valid_draft(&draft));
+        }
     }
 
     #[test]
@@ -1932,7 +2057,7 @@ mod tests {
     }
 
     #[test]
-    fn session_end_can_start_before_any_quit_and_cancel_clears_it() {
+    fn session_end_can_start_before_any_quit_and_cannot_be_cancelled() {
         let state = ShutdownState::default();
         state.begin_session_end(Instant::now());
         assert!(
@@ -1940,9 +2065,67 @@ mod tests {
             "a session end starts the ordinary exit phases"
         );
         assert!(state.session_deadline().is_some());
-        state.cancel();
-        assert_eq!(state.session_deadline(), None);
-        assert!(!state.active());
+        assert!(!state.cancel());
+        assert!(state.session_deadline().is_some());
+        assert!(state.active());
+    }
+
+    #[test]
+    fn session_deadline_ends_a_quit_whose_stop_worker_is_blocked() {
+        let state = std::sync::Arc::new(ShutdownState::default());
+        assert!(state.request());
+        assert!(state.begin_flush());
+        let (stopping, started) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let worker_state = state.clone();
+        let worker = std::thread::spawn(move || {
+            assert!(worker_state.claim_exit(true));
+            stopping.send(()).unwrap();
+            blocked.recv().unwrap();
+        });
+        started.recv().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(20);
+        state.begin_session_end(deadline);
+        assert!(!state.expire_session(deadline - Duration::from_millis(1)));
+        let expired = state.expire_session(deadline);
+        release.send(()).unwrap();
+        worker.join().unwrap();
+        assert!(
+            expired,
+            "session termination must not wait for the stop worker"
+        );
+        assert!(state.approved());
+        assert!(
+            !state.expire_session(deadline),
+            "exit is approved only once"
+        );
+    }
+
+    #[test]
+    fn session_deadline_never_expires_an_ordinary_quit() {
+        let state = ShutdownState::default();
+        assert!(state.request());
+        assert!(state.begin_flush());
+        assert!(state.claim_exit(true));
+        assert!(!state.expire_session(Instant::now()));
+        assert!(!state.approved());
+    }
+
+    #[test]
+    fn session_deadline_cannot_be_cancelled_by_a_failed_quit() {
+        let state = ShutdownState::default();
+        assert!(state.request());
+        assert!(state.claim_exit(false));
+        let deadline = Instant::now();
+        state.begin_session_end(deadline);
+        let mut reopened = false;
+        assert!(!state.cancel_with(|| reopened = true));
+        assert!(
+            !reopened,
+            "session termination must not reopen VM admission"
+        );
+        assert_eq!(state.session_deadline(), Some(deadline));
+        assert!(state.expire_session(deadline));
     }
 
     #[test]

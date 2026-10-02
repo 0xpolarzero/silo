@@ -47,6 +47,20 @@ afterEach(() => {
 })
 
 describe("native settings transport", () => {
+  it.each(["cpus", "maxCPUs"])("does not restore a saved %s count the native command cannot deserialize", async field => {
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    const machine = { ...fixtureMachineDefaults[0], cpus: 1, maxCPUs: 255, [field]: 256 }
+    if (field === "cpus") machine.maxCPUs = 256
+    native.invoke.mockResolvedValue({ ...snapshot(1, { theme: "dark" }), onboardingDraft: {
+      currentStep: "review", machines: [machine], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {},
+    } })
+    const settings = store()
+    await settings.initialize()
+    expect(settings.getSnapshot().onboardingDraft).toBeNull()
+    expect(settings.getSnapshot().settings.theme).toBe("dark")
+    expect(settings.getSnapshot().saveError).toBeNull()
+  })
+
   it("imports a saved legacy theme only when absent, keeping its original storage key", async () => {
     localStorage.setItem("silo-theme", "dark")
     native.invoke.mockImplementation(async (command: string) => command === "import_legacy_theme"
@@ -58,6 +72,27 @@ describe("native settings transport", () => {
     expect(localStorage.getItem("silo-theme")).toBe("dark")
     await settings.refresh()
     expect(native.invoke.mock.calls.filter(([command]) => command === "import_legacy_theme")).toHaveLength(1)
+  })
+
+  it("retries legacy theme delivery after a transport failure without requiring another launch", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    localStorage.setItem("silo-theme", "dark")
+    let attempts = 0
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "import_legacy_theme") {
+        if (++attempts === 1) throw new Error("Theme delivery unavailable")
+        return snapshot(1, { theme: "dark" })
+      }
+      return snapshot()
+    })
+    const settings = store()
+    await settings.initialize()
+    expect(settings.getSnapshot().saveError).toBe("Theme delivery unavailable")
+    await settings.refresh()
+    expect(attempts).toBe(2)
+    expect(settings.getSnapshot().settings.theme).toBe("dark")
+    expect(settings.getSnapshot().saveError).toBeNull()
+    expect(localStorage.getItem("silo-theme")).toBe("dark")
   })
 
   it.each([
@@ -138,6 +173,26 @@ describe("native settings transport", () => {
     cleanups.push(stop)
     window.dispatchEvent(new Event("focus"))
     await vi.waitFor(() => expect(native.handlers.has("settings:flush-request")).toBe(true))
+  })
+
+  it("ignores a flush request when native shutdown no longer accepts its acknowledgment", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "begin_settings_flush") throw new Error("No shutdown is awaiting acknowledgment")
+      return snapshot()
+    })
+    const settings = store()
+    await settings.initialize()
+    const beforeFlush = vi.fn(async () => {})
+    cleanups.push(await connectSettingsLifecycle(settings, true, beforeFlush))
+    native.invoke.mockClear()
+    native.handlers.get("settings:flush-request")?.({ payload: null })
+    await vi.waitFor(() => expect(logged).toHaveBeenCalledWith(
+      "Silo settings shutdown acknowledgment:", expect.any(Error),
+    ))
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(beforeFlush).not.toHaveBeenCalled()
+    expect(native.invoke.mock.calls.map(([command]) => command)).toEqual(["begin_settings_flush"])
   })
 
   it("waits for setup work after claiming shutdown and before flushing settings", async () => {
@@ -244,6 +299,7 @@ describe("native settings transport", () => {
   })
 
   it("includes changes made while the final native flush is running before acknowledging Quit", async () => {
+    vi.useFakeTimers()
     const flushStarted = deferred<void>()
     const finishFlush = deferred<void>()
     const finishWrite = deferred<ReturnType<typeof snapshot>>()
@@ -261,7 +317,7 @@ describe("native settings transport", () => {
     const updating = settings.updateSettings({ browser: "Firefox" })
     finishFlush.resolve()
     // Let the resolved flush and read promises finish while the write is held.
-    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    await vi.advanceTimersByTimeAsync(0)
     try {
       expect(native.invoke).not.toHaveBeenCalledWith("complete_settings_flush")
     } finally {

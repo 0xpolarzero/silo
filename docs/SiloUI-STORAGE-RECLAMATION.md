@@ -155,3 +155,12 @@ build logs remain in the local temporary directory.
 The Storage panel uses a responsive grid of host allocation and guest usage measurements. Tooltips explain each metric. Refresh is an icon action; manual reclamation uses the shared indeterminate progress component because the runtime does not report a meaningful completion percentage.
 
 Each sandbox retains its latest 50 reclaim attempts, newest first, in its existing atomic maintenance record. History starts collapsed and scrolls within a bounded area. Entries identify manual, scheduled, after-start and before-stop attempts, with measured reclaimed bytes or the recorded failure. An interrupted attempt retains an incomplete-operation error. Existing records preserve the previous successful reclaim as one legacy entry; older attempts cannot be reconstructed.
+
+Maintenance records and their history entries retain additional JSON fields through
+load/save, so additive metadata from a newer build does not disable Storage after
+a downgrade. Known fields still require their declared types; malformed records
+remain untouched. This uses Serde's supported [flattened map](https://serde.rs/attr-flatten.html)
+instead of [rejecting unknown fields](https://serde.rs/container-attrs.html).
+Fixture regressions cover additional fields, an unfamiliar trigger, save/reload,
+legacy records without history, and rejection of malformed known fields. These
+tests exercise persistence without a live VM.

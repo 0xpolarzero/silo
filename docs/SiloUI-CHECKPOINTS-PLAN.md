@@ -2,8 +2,12 @@
 
 Date: 2026-09-25. Product decisions are accepted and the Silo-side checkpoint,
 fork, restore, and migration implementation is complete for this qualification
-pass. MicroSandbox 0.7.2 is pinned. This document records evidence and remaining
-platform qualification; it is not a release approval.
+pass, which used MicroSandbox 0.7.2. Later sections record their own revisions
+and verification dates. Current runtime pins come from
+[`runtime-inputs.json`](../app/SiloUI/runtime-inputs.json); upgrade checks and
+qualification limits are recorded in [runtime packaging](SiloUI-RUNTIME-PACKAGING.md).
+This document preserves the original evidence and remaining platform qualification;
+it is not a release approval.
 
 ## Direction and accepted decisions
 
@@ -59,7 +63,7 @@ For a stopped source, use disk state and identify that the first start boots
 normally. Forking a running source captures its state while preserving the source.
 
 This is Silo lifecycle integration around upstream immutable snapshots, not a
-new snapshot format or memory implementation. The pinned 0.7.2 source has no
+new snapshot format or memory implementation. The 0.7.2 source reviewed for the initial qualification has no
 public full-state restore mode that leaves a stopped sandbox. `msb restore`
 calls `RestoreBuilder::restore_with_progress`, awaits the sandbox, and detaches
 it; its options are RAM-preserving `--cow-mem` (`--forked` before 0.7.6) and disk-only cold boot. The
@@ -67,7 +71,7 @@ it; its options are RAM-preserving `--cow-mem` (`--forked` before 0.7.6) and dis
 deferred-activation or paused-result option. Internally the VM restore starts
 paused during construction, then the relay activates the restored guest before
 it publishes readiness. That construction barrier is not a user-selectable
-stopped state. See the pinned upstream [`restore` command options and flow](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/crates/cli/lib/commands/restore.rs#L19-L43),
+stopped state. See that revision's [`restore` command options and flow](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/crates/cli/lib/commands/restore.rs#L19-L43),
 [`RestoreBuilder` API](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/sandbox/restore_builder.rs#L56-L79),
 [builder restore methods](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/sandbox/restore_builder.rs#L166-L195),
 and [restore activation](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/crates/runtime/lib/runner/relay.rs#L1460-L1518).
@@ -611,3 +615,24 @@ changes capture limits, not this selection contract.
 A deterministic production Start test covers all three combinations. The
 opt-in full-checkpoint export/import test also checks a changed boot ID and
 absence of a captured process and RAM-only file; it remains unexecuted here.
+
+### Checkpoint environment defaults, 2026-10-02
+
+Every checkpoint Start sends `GH_TOKEN=$MSB_SILO_GITHUB`, matching fresh
+creation. The [bundled restore-policy patch](../app/SiloUI/patches/microsandbox-restore-policy-0.7.6.patch)
+supports destination `--env` arguments for new exec commands; resumed processes
+retain their captured environments. The placeholder resolves through the
+current target's host-side GitHub profile, including the disabled profile.
+Neither the restore arguments nor the imported pending record carry an old
+`GH_TOKEN` value.
+
+Other environment entries accepted by backup validation are portable key/value
+defaults. Import persists them before committing sandbox settings, checks their
+shape and NUL-free values, and passes them as individual `--env` arguments on
+Start. Forks retain those imported defaults. Current GitHub identity
+reconciliation still owns author/committer settings. Arbitrary environment
+values remain archive contents, so export warnings about sensitive data apply.
+
+Deterministic tests exercise disk/full Start with denied and synthetic authorized
+profiles, imported environment persistence and argument boundaries, and invalid
+entries. They do not prove a live GitHub CLI request.

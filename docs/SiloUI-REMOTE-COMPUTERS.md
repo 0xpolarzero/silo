@@ -76,6 +76,16 @@ fixture tests verify controller termination, listener closure, descendant exit,
 and survival of an unrelated process; real OpenSSH/ProxyCommand crash behavior
 still requires separate platform qualification.
 
+## Remote settings
+
+Remote settings commands run on Tauri's blocking pool, including configuration
+lock waits, file reads, fsync writes, bridge-link setup, and control-socket setup.
+The desktop viewer already runs on a blocking worker and reads saved hosts through
+the synchronous helper. The regression holds the configuration mutex and requires
+an independent future to run before releasing it. This follows
+[Tauri's async command execution](https://v2.tauri.app/develop/calling-rust/#async-commands)
+and [Tokio's blocking-work boundary](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
+
 ## Validation
 
 Commands, counts, and final build evidence are recorded after the final verification run below. Automated tests use controlled subprocesses, sockets, and runtime responses; browser inspection uses deterministic fixture data. They do not prove real two-computer hypervisor operation.

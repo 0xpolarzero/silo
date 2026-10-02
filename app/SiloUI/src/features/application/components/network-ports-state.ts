@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
+import { bridgeErrorMessage } from "@/contracts/bridge-error"
 import { errorMessage, showActionFailure, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import type { ApplicationActions, ApplicationWorkspace, NetworkPort, NetworkState } from "@/features/application/model/application-source"
@@ -19,10 +20,14 @@ export function networkLoopbackAddress(port: NetworkPort) {
 
 /** The human-readable state of a port, accounting for VM lifecycle and stale/failed discovery. */
 export function networkPortState(workspace: ApplicationWorkspace, port: NetworkPort, error?: string | null) {
-  if (workspace.state !== "running") return workspace.state === "starting" ? "Sandbox starting" : workspace.state === "failed" ? "Sandbox failed" : "Sandbox stopped"
-  if (workspace.freshness === "stale" || error) return "Unknown"
+  if (workspace.freshness === "stale") return "Unknown"
+  if (workspace.state === "starting") return workspace.stateDetail === "Stopping" ? "Sandbox stopping" : "Sandbox starting"
+  if (workspace.state !== "running") return workspace.state === "failed" ? "Sandbox failed" : "Sandbox stopped"
+  if (error) return "Unknown"
   return ({ reachable: "Reachable", waiting: "Waiting for service", unpublished: "Not forwarded", unknown: "Unknown" })[port.state]
 }
+
+interface PortOperationIdentity { computer?: { id: string; name: string }; sandboxId: string; displayName: string }
 
 interface PortDraft { workspace: string; port: string; hostPort: string; scheme: string; editing: boolean }
 
@@ -39,6 +44,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   const [fieldErrors, setFieldErrors] = useState<{ port?: string; hostPort?: string }>({})
   const [connecting, setConnecting] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const pending = useRef(false)
   const [confirm, setConfirm] = useState<string | null>(null)
   const refreshNetwork = actions.refreshNetwork
 
@@ -53,36 +59,39 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   }, [active, refreshNetwork])
 
   /** Runs a port operation with the shared loading → success/failure notifications. Failures offer Retry. */
-  async function run(id: string, copy: { loading: string; step?: string; success: string; failure: string }, operation: () => Promise<void>, onSuccess?: () => void): Promise<boolean> {
+  async function run(id: string, identity: PortOperationIdentity, copy: { loading: string; step?: string; success: string; failure: string }, operation: () => Promise<void>, onSuccess?: () => void): Promise<boolean> {
+    if (pending.current) return false
+    pending.current = true
     setBusy(true)
-    // Ids read `network-port:<target>:…`; a local target is the sandbox name (see `workspaceTarget`).
-    const sandbox = id.split(":")[1]
-    const machine = workspaces.find(workspace => workspaceTarget(workspace) === sandbox)?.machine
-    const noticeSandbox = machine ? { id: machine.id, name: machine.name } : undefined
-    showOperationProgress(id, { title: copy.loading, step: copy.step ?? `${copy.loading}…`, progress: null, sandbox })
+    const sandbox = identity.displayName
+    const location = identity.computer ? `${sandbox} · ${identity.computer.name}` : sandbox
+    const noticeSandbox = { id: identity.sandboxId, name: sandbox }
+    showOperationProgress(id, { title: `${copy.loading} · ${location}`, step: `${copy.step ?? copy.loading} · ${location}`, progress: null, sandbox })
     try {
       await operation()
-      showOperationSuccess(id, copy.success, { sandbox, noticeSandbox })
+      showOperationSuccess(id, `${copy.success} · ${location}`, { sandbox, noticeSandbox })
       setConfirm(null)
       onSuccess?.()
       return true
     } catch (cause) {
-      const message = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated."
-      showOperationFailure(id, copy.failure, { description: message, retry: () => void run(id, copy, operation, onSuccess), sandbox, noticeSandbox })
+      const message = bridgeErrorMessage(cause) ?? (typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated.")
+      showOperationFailure(id, `${copy.failure} · ${location}`, { description: message, retry: () => void run(id, identity, copy, operation, onSuccess), sandbox, noticeSandbox })
       return false
-    } finally { setBusy(false) }
+    } finally { pending.current = false; setBusy(false) }
   }
 
   /** Opening is instant, so it has no loading phase: a failure stays until closed, with Retry. */
-  async function open(workspace: string, port: number) {
+  async function open(workspace: ApplicationWorkspace, port: number) {
+    const location = workspace.computer ? `${workspace.machine.name} · ${workspace.computer.name}` : workspace.machine.name
     const attempt = async () => {
-      try { await actions.openNetworkPort!(workspace, port) }
-      catch (cause) { showActionFailure(`Could not open port ${port}`, typeof cause === "string" ? cause : errorMessage(cause), () => void attempt(), { noticeSandbox: (() => { const machine = workspaces.find(item => workspaceTarget(item) === workspace)?.machine; return machine ? { id: machine.id, name: machine.name } : undefined })() }) }
+      try { await actions.openNetworkPort!(workspaceTarget(workspace), port) }
+      catch (cause) { showActionFailure(`Could not open port ${port} · ${location}`, typeof cause === "string" ? cause : errorMessage(cause), () => void attempt(), { id: `network-port-open:${workspace.machine.id}:${port}`, noticeSandbox: { id: workspace.machine.id, name: workspace.machine.name } }) }
     }
     await attempt()
   }
 
   const localWorkspaces = workspaces.filter(workspace => workspace.machine.kind === "vm")
+  const loading = Boolean(refreshNetwork) && localWorkspaces.some(workspace => !network?.workspaces.some(item => item.workspace === workspaceTarget(workspace)))
   const rows = workspaces.flatMap(workspace => {
     const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))
     return (item?.ports ?? []).map(port => ({ workspace, port, host: item?.host ?? null, error: item?.error ?? (workspace.computer ? null : error) }))
@@ -115,7 +124,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     error: workspaces.some(workspace => !workspace.computer) ? error : null, draft, setDraft, fieldErrors, setFieldErrors, connecting, setConnecting, busy,
     /** Always null: operation failures are shown as notifications, not rendered inline. */
     confirm, setConfirm,
-    run, open, add, startEdit, cancelDraft, localWorkspaces, runningLocalWorkspaces, addDisabledReason, rows, errors, actions,
+    run, open, add, startEdit, cancelDraft, loading, localWorkspaces, runningLocalWorkspaces, addDisabledReason, rows, errors, actions,
   }
 }
 

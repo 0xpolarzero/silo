@@ -334,14 +334,21 @@ const SANDBOX_OUTPUT: &str = "Output from the sandbox (not from Silo or GitHub):
 const CREDENTIAL_EXPIRED: &str =
     "The push took longer than its GitHub credential allows. Push again to continue.";
 const STEP_TIMED_OUT: &str = "Git operation timed out. Check the remote before retrying.";
+const FREE_SPACE_STOP: &str = "Host push stopped to preserve free disk space.";
+const PROCESS_STATUS_UNAVAILABLE: &str = "Cannot read Git process status.";
 /// Reported as an unknown result: GitHub may or may not have updated the branch.
 const PUBLICATION_UNKNOWN: &str =
     "The push stopped while GitHub was receiving it. Check this branch on GitHub before pushing again.";
-/// A final push that Silo stopped (cancel or time limit) may already have
-/// updated the branch; any other failure means it did not.
+/// A final push interrupted by the host may already have updated the branch.
 fn final_push_error(error: String) -> String {
     match error.lines().next() {
-        Some(CANCELLED | CREDENTIAL_EXPIRED | STEP_TIMED_OUT) => PUBLICATION_UNKNOWN.into(),
+        Some(
+            CANCELLED
+            | CREDENTIAL_EXPIRED
+            | STEP_TIMED_OUT
+            | FREE_SPACE_STOP
+            | PROCESS_STATUS_UNAVAILABLE,
+        ) => PUBLICATION_UNKNOWN.into(),
         _ => error,
     }
 }
@@ -378,9 +385,18 @@ fn credential_origin(remote: &str) -> Result<&str, String> {
 }
 impl HostGit {
     fn run(&self, args: &[&str], token: Option<&str>, remote: &str) -> Result<String, String> {
+        self.run_with_budget(args, token, remote, temporary_budget)
+    }
+    fn run_with_budget(
+        &self,
+        args: &[&str],
+        token: Option<&str>,
+        remote: &str,
+        budget: impl Fn(&Path) -> Result<u64, String>,
+    ) -> Result<String, String> {
         let mut command = Command::new(&self.executable);
         command.process_group(0);
-        let file_budget = temporary_budget(&self.directory)? as libc::rlim_t;
+        let file_budget = budget(&self.directory)? as libc::rlim_t;
         let cache_lock_fd = self.cache_lock_fd;
         let credential = token.map(credential_pipe).transpose()?;
         let credential_fd = credential.as_ref().map(|reader| reader.as_raw_fd());
@@ -517,7 +533,7 @@ impl HostGit {
         let outcome = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
-                Err(_) => break Err("Cannot read Git process status."),
+                Err(_) => break Err(PROCESS_STATUS_UNAVAILABLE),
                 Ok(None) if runtime::operation_gate::cancel_requested() => break Err(CANCELLED),
                 Ok(None) if Instant::now() >= deadline => {
                     break Err(if deadline < step_deadline {
@@ -528,8 +544,8 @@ impl HostGit {
                 }
                 Ok(None) => {
                     if space_check.elapsed() >= Duration::from_secs(1) {
-                        if temporary_budget(&self.directory).is_err() {
-                            break Err("Host push stopped to preserve free disk space.");
+                        if budget(&self.directory).is_err() {
+                            break Err(FREE_SPACE_STOP);
                         }
                         space_check = Instant::now();
                     }
@@ -583,6 +599,22 @@ impl HostGit {
         };
         match outcome {
             Ok(status) if !status.success() => {
+                if stage == "push" && command_args.contains(&"--porcelain") {
+                    // Only an explicit per-ref rejection proves no update.
+                    // Missing status and remote failures can follow acceptance.
+                    let rejected = !overflow
+                        && std::str::from_utf8(&output).is_ok_and(|output| {
+                            output.lines().any(|line| {
+                                let fields: Vec<_> = line.splitn(3, '\t').collect();
+                                matches!(fields.as_slice(), ["!", _, summary]
+                                    if summary.starts_with("[rejected]")
+                                        || summary.starts_with("[remote rejected]"))
+                            })
+                        });
+                    if !rejected {
+                        return Err(PUBLICATION_UNKNOWN.into());
+                    }
+                }
                 // The first line is the summary; the rest becomes diagnostic details.
                 return Err(if from_sandbox {
                     format!("Reading committed data from the sandbox failed (Git {stage}, {status}).\n{diagnostic}")
@@ -1732,6 +1764,86 @@ mod tests {
             Err(PUBLICATION_UNKNOWN.into()),
         );
         assert_eq!(unknown["status"], "unknown");
+    }
+
+    #[test]
+    fn a_publication_stopped_for_disk_space_has_an_unknown_outcome() {
+        let directory = tempfile::tempdir().unwrap();
+        let git = sleeping_git(directory.path());
+        fs::write(
+            &git.executable,
+            "#!/bin/sh\nprintf updated >published\nexec /bin/sleep 30\n",
+        )
+        .unwrap();
+        let error = git
+            .run_with_budget(&["push"], None, "", |path| {
+                if path.join("published").exists() {
+                    Err("Cannot check free space for host push.".into())
+                } else {
+                    Ok(1024 * 1024 * 1024)
+                }
+            })
+            .unwrap_err();
+        assert_eq!(
+            fs::read_to_string(directory.path().join("published")).unwrap(),
+            "updated"
+        );
+        let target = PushTarget {
+            repository: "owner/repo".into(),
+            branch: "main".into(),
+            commit: "d".repeat(40),
+        };
+        // Before publication, this interruption remains an ordinary failure.
+        let before_push = finished_result("dev", "/workspace/repo", &target, Err(error.clone()));
+        assert_eq!(before_push["status"], "failed");
+        let result = finished_result(
+            "dev",
+            "/workspace/repo",
+            &target,
+            Err(final_push_error(error)),
+        );
+        assert_eq!(result["status"], "unknown");
+        assert_eq!(result["message"], PUBLICATION_UNKNOWN);
+    }
+
+    #[test]
+    fn publication_failures_require_an_explicit_rejection_to_be_known() {
+        let directory = tempfile::tempdir().unwrap();
+        let git = sleeping_git(directory.path());
+        for (summary, unknown) in [
+            ("", true),
+            ("[remote failure] (remote failed to report status)", true),
+            ("[rejected] (non-fast-forward)", false),
+            ("[remote rejected] (hook declined)", false),
+        ] {
+            let script = if summary.is_empty() {
+                "#!/bin/sh\nprintf updated >published\nexit 128\n".to_owned()
+            } else {
+                format!("#!/bin/sh\nprintf '!\\trefs/silo/push:refs/heads/main\\t%s\\n' '{summary}'\nexit 1\n")
+            };
+            fs::write(&git.executable, script).unwrap();
+            let error = git
+                .run(
+                    &[
+                        "push",
+                        "--porcelain",
+                        "origin",
+                        "refs/silo/push:refs/heads/main",
+                    ],
+                    None,
+                    "",
+                )
+                .unwrap_err();
+            if unknown {
+                assert_eq!(error, PUBLICATION_UNKNOWN);
+            } else {
+                assert!(error.starts_with("Git push failed"), "{error}");
+            }
+        }
+        assert_eq!(
+            fs::read_to_string(directory.path().join("published")).unwrap(),
+            "updated"
+        );
     }
 
     #[test]

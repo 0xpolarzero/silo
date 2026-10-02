@@ -1,9 +1,10 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { CopyButton } from "@/components/copy-button"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { showActionFailure } from "@/lib/operation-toast"
+import { restoreFocus } from "@/lib/focus"
 import { useChatGptApp, useComputerUseBridge } from "@/desktop/computer-use-bridge"
 import { CHATGPT_DOWNLOAD_NOTE } from "@/desktop/computer-use-panel"
 import { chatGptStatusText } from "@/desktop/computer-use-labels"
@@ -15,13 +16,14 @@ const alreadySaved = "is already saved at"
 
 export function ConnectComputerForm({ connect, authorize, setupKey, onClose }: { setupKey?: (address: string) => Promise<void>; authorize?: (address: string) => Promise<void>; connect: (address: string, options?: { replaceAddress?: boolean }) => Promise<void>; onClose: () => void }) {
   const [address, setAddress] = useState("")
-  const [busy, setBusy] = useState(false)
+  const [operation, setOperation] = useState<"connect" | "authorize" | "setupKey" | null>(null)
+  const busy = operation !== null
   // Connection failures stay inline: the form is where the user corrects the address, and the
   // SSH recovery actions below only make sense next to the error. Onboarding has no toaster.
   const [error, setError] = useState("")
-  async function attempt(action: () => Promise<void>) {
-    setBusy(true)
-    try { await action() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusy(false) }
+  async function attempt(action: () => Promise<void>, kind: "connect" | "authorize" | "setupKey" = "connect") {
+    setOperation(kind)
+    try { await action() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setOperation(null) }
   }
   return <form aria-label="Connect computer" className="grid gap-3 rounded-lg border p-3" onSubmit={async event => {
     event.preventDefault()
@@ -33,9 +35,9 @@ export function ConnectComputerForm({ connect, authorize, setupKey, onClose }: {
     <p className="text-xs text-muted-foreground">Open Silo on that computer and enable remote management. Uses your existing SSH keys and configuration.</p>
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     {error.includes(alreadySaved) && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(async () => { await connect(address.trim(), { replaceAddress: true }); onClose() }) }}>Use this address</Button><p className="text-xs text-muted-foreground">Only if that computer now uses this address. Its sandboxes and connections stay as they are.</p></div>}
-    {error && !error.includes(alreadySaved) && authorize && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => authorize(address.trim())) }}>Authorize SSH in Terminal…</Button><p className="text-xs text-muted-foreground">Confirm the computer’s fingerprint and unlock your SSH key, then connect again.</p></div>}
-    {error && !error.includes(alreadySaved) && setupKey && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => setupKey(address.trim())) }}>Set up Silo SSH key…</Button><p className="text-xs text-muted-foreground">Adds Silo’s public SSH key to your account on the other computer. You may be asked for its password. Then connect again.</p></div>}
-    <div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button><Button size="sm" disabled={busy || !address.trim()}>{busy ? "Connecting…" : "Connect"}</Button></div>
+    {error && !error.includes(alreadySaved) && authorize && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => authorize(address.trim()), "authorize") }}>{operation === "authorize" ? "Opening Terminal…" : "Authorize SSH in Terminal…"}</Button><p className="text-xs text-muted-foreground">Confirm the computer’s fingerprint and unlock your SSH key, then connect again.</p></div>}
+    {error && !error.includes(alreadySaved) && setupKey && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => setupKey(address.trim()), "setupKey") }}>{operation === "setupKey" ? "Setting up SSH key…" : "Set up Silo SSH key…"}</Button><p className="text-xs text-muted-foreground">Adds Silo’s public SSH key to your account on the other computer. You may be asked for its password. Then connect again.</p></div>}
+    <div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button><Button size="sm" disabled={busy || !address.trim()}>{operation === "connect" ? "Connecting…" : "Connect"}</Button></div>
   </form>
 }
 
@@ -69,8 +71,8 @@ function ChatGptAppRow({ name, computer, connected = true, active }: { name: str
   const failed = status?.state === "failed"
   const working = !stale && (status?.state === "downloading" || status?.state === "verifying" || status?.state === "extracting")
   return <li className="flex items-start justify-between gap-3">
-    <div className="min-w-0">
-      <p className="truncate text-xs font-medium">{name}</p>
+    <div className="min-w-0 [overflow-wrap:anywhere]">
+      <p className="truncate text-xs font-medium" title={name}>{name}</p>
       <p role={working ? "status" : undefined} className="text-xs text-muted-foreground">{lastKnown ? `Last known: ${text}` : text}{!connected && " · offline"}</p>
       {failed && <p role="alert" className="break-words text-xs text-destructive">{status.reason}{status.retryable ? " Silo tries again automatically." : ""}</p>}
       {error && <p role="alert" className="break-words text-xs text-destructive">{error}</p>}
@@ -108,10 +110,25 @@ export function RemoteComputersSettings({ source, actions, active = true }: { so
 function ComputersSection({ source, actions }: { source: ApplicationSource; actions: ApplicationActions }) {
   const [connecting, setConnecting] = useState(false)
   const [busy, setBusy] = useState(false)
+  const connectButton = useRef<HTMLButtonElement>(null)
+  const shouldRestoreFocus = useRef(false)
+  useEffect(() => {
+    if (!connecting && shouldRestoreFocus.current) {
+      shouldRestoreFocus.current = false
+      restoreFocus(connectButton.current)
+    }
+  }, [connecting])
+  function closeConnectionForm() {
+    shouldRestoreFocus.current = true
+    setConnecting(false)
+  }
+  const pending = useRef(false)
   async function perform(operation: () => Promise<void>) {
+    if (pending.current) return
+    pending.current = true
     setBusy(true)
     try { await operation() } catch (cause) { showActionFailure("Computer setting not changed", cause, () => { void perform(operation) }, { native: false }) }
-    finally { setBusy(false) }
+    finally { pending.current = false; setBusy(false) }
   }
   if (!actions.connectComputer) return null
   return <section aria-label="Computers" className="grid gap-3">
@@ -121,9 +138,9 @@ function ComputersSection({ source, actions }: { source: ApplicationSource; acti
       {source.remoteManagement?.error && <p role="alert" className="text-xs text-destructive">{source.remoteManagement.error}</p>}
       {source.remoteManagement?.enabled && <p className="text-xs text-muted-foreground">Enable Remote Login on macOS or the SSH server on Linux so other computers can connect.</p>}
       {source.remoteManagement?.enabled && <ManagementAddresses management={source.remoteManagement} />}
-      {source.remoteComputers?.map(computer => <div key={computer.id} className="flex items-center justify-between gap-3 border-t pt-3"><div className="min-w-0"><p className="truncate text-xs font-medium">{computer.name}</p><p className="text-xs text-muted-foreground">{computer.busy ? "Updating…" : computer.connected ? "Connected" : "Offline · last known status"} · {computer.address}</p>{computer.error && <p className="text-xs text-destructive">{computer.error}</p>}<p className="text-xs text-muted-foreground">Removing the connection leaves sandboxes on {computer.name} unchanged.</p></div><Button size="xs" variant="ghost" disabled={busy} aria-label={`Remove connection to ${computer.name}`} onClick={() => { void perform(() => actions.removeComputer!(computer.id)) }}>Remove connection</Button></div>)}
-      {!connecting && <Button size="sm" variant="outline" className="justify-self-start" onClick={() => setConnecting(true)}>Connect computer…</Button>}
-      {connecting && <ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} />}
+      {source.remoteComputers?.map(computer => <div key={computer.id} className="flex items-center justify-between gap-3 border-t pt-3"><div className="min-w-0 [overflow-wrap:anywhere]"><p className="truncate text-xs font-medium" title={computer.name}>{computer.name}</p><p className="text-xs text-muted-foreground">{computer.busy ? "Updating…" : computer.connected ? "Connected" : "Offline · last known status"} · {computer.address}</p>{computer.error && <p className="text-xs text-destructive">{computer.error}</p>}<p className="text-xs text-muted-foreground">Removing the connection leaves sandboxes on {computer.name} unchanged.</p></div><Button size="xs" variant="ghost" disabled={busy} aria-label={`Remove connection to ${computer.name}`} onClick={() => { void perform(() => actions.removeComputer!(computer.id)) }}>Remove connection</Button></div>)}
+      {!connecting && <Button ref={connectButton} size="sm" variant="outline" className="justify-self-start" onClick={() => setConnecting(true)}>Connect computer…</Button>}
+      {connecting && <ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={closeConnectionForm} />}
       {source.remoteComputersError && <p role="alert" className="text-xs text-destructive">{source.remoteComputersError}</p>}
       {source.remoteManagementError && <p role="alert" className="text-xs text-destructive">{source.remoteManagementError}</p>}
     </div>

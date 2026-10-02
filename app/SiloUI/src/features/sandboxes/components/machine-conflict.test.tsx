@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -73,6 +73,44 @@ it("notices when the VM is changed elsewhere while the editor is open", async ()
     isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
   expect(await screen.findByRole("status")).toHaveTextContent("This sandbox was changed elsewhere.")
   expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+})
+
+it("keeps the edit's original baseline when another row receives a reorder key", async () => {
+  const second = { ...machine, id: "00000000-0000-4000-8000-000000000002", name: "second" }
+  const props = { onCommitMachine: vi.fn().mockResolvedValue(undefined), onReorder: vi.fn(), getComputerId: () => "" }
+  const { user, view } = await openEditor([machine, second], props)
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
+  const latest = { ...machine, maxMemoryGiB: 64 }
+  view.rerender(<TooltipProvider><MachineList machines={[latest, second]} onMachinesChange={vi.fn()}
+    isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} {...props} /></TooltipProvider>)
+  const reorder = screen.getByRole("button", { name: "Reorder second" })
+  expect(reorder).toHaveAttribute("aria-disabled", "true")
+  expect(reorder).toHaveAttribute("tabindex", "-1")
+  reorder.focus()
+  // This is a no-op at the end of the list, so the editor stays open.
+  await user.keyboard("{ArrowDown}")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(props.onReorder).not.toHaveBeenCalled()
+  expect(props.onCommitMachine).toHaveBeenCalledExactlyOnceWith({ ...machine, cpus: 4 }, machine, "", [machine, second])
+})
+
+it("keeps the edit's original baseline when another sandbox is deleted", async () => {
+  const second = { ...machine, id: "00000000-0000-4000-8000-000000000002", name: "second" }
+  const props = { onCommitMachine: vi.fn().mockResolvedValue(undefined), onDeleteMachine: vi.fn().mockResolvedValue(undefined), getComputerId: () => "" }
+  const { user, view } = await openEditor([machine, second], props)
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
+  const latest = { ...machine, maxMemoryGiB: 64 }
+  const renderMachines = (machines: SetupVirtualMachineConfiguration[]) => <TooltipProvider><MachineList machines={machines} onMachinesChange={vi.fn()}
+    isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} {...props} /></TooltipProvider>
+  view.rerender(renderMachines([latest, second]))
+  await user.click(screen.getByRole("button", { name: "More actions for second" }))
+  await user.click(screen.getByRole("menuitem", { name: "Delete second" }))
+  const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
+  await user.click(popover.getByRole("button", { name: "Delete permanently" }))
+  await waitFor(() => expect(props.onDeleteMachine).toHaveBeenCalledExactlyOnceWith(second, [latest, second]))
+  view.rerender(renderMachines([latest]))
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(props.onCommitMachine).toHaveBeenCalledExactlyOnceWith({ ...machine, cpus: 4 }, machine, "", [machine, second])
 })
 
 it("reports a stale rejection of Add Linux desktop, which has no editor to show it", async () => {

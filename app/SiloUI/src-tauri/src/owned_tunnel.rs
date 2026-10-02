@@ -9,13 +9,20 @@ use std::{
 /// and its ProxyCommand) when Silo's end of stdin closes: on Drop, and also
 /// when Silo crashes or is force-quit, since the kernel closes it then.
 /// `kill 0` is safe only because the group is the tunnel's own.
-const WATCHDOG: &str = r#"exec 3<&0 </dev/null
+const WATCHDOG: &str = r#"stop_group() {
+  trap '' TERM
+  exec 3<&-
+  kill -s TERM 0
+  /bin/sleep 0.5
+  kill -s KILL 0
+}
+exec 3<&0 </dev/null
 "$@" 3<&- &
 child=$!
-{ read -r _ <&3; kill -s TERM 0; } &
+{ read -r _ <&3; stop_group; } &
 exec 3<&-
 wait "$child"
-kill -s TERM 0
+stop_group
 "#;
 
 /// The ssh forward and the private directory holding its Unix socket.
@@ -58,6 +65,11 @@ impl Tunnel {
         drop(self.stdin.take());
     }
 
+    #[cfg(test)]
+    pub(crate) fn group_id(&self) -> i32 {
+        self.child.id() as i32
+    }
+
     pub(crate) fn running(&mut self) -> bool {
         if !self.exited && !matches!(self.child.try_wait(), Ok(None)) {
             self.exited = true;
@@ -71,10 +83,10 @@ impl Drop for Tunnel {
         if !self.running() {
             return;
         }
-        // The unreaped leader keeps the group id reserved, so this reaches only
-        // the tunnel's own processes. ssh and the shell exit on TERM at once.
+        // Closing stdin asks the watchdog to send TERM, then KILL after 500 ms.
+        // Let its cleanup process survive the leader so stubborn children also
+        // stop after a crash. The unreaped leader reserves the id for our fallback.
         let group = self.child.id() as i32;
-        unsafe { libc::killpg(group, libc::SIGTERM) };
         let deadline = Instant::now() + Duration::from_millis(500);
         while Instant::now() < deadline {
             if !self.running() {

@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::Path,
     sync::{Arc, Condvar, Mutex, MutexGuard},
     time::{Duration, Instant, SystemTime},
@@ -26,6 +27,8 @@ pub(super) const RECONNECT_GRACE: Duration = Duration::from_secs(10);
 const FINISHED_LIMIT: usize = 256;
 /// How often the on-disk markers are pruned.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
+/// Allows older records containing full request and result frames.
+const MAX_MARKER_BYTES: u64 = 16 * 1024 * 1024;
 
 pub(super) const EXPIRED: &str = "This change did not start on the other computer before the request expired, so nothing changed. Try again.";
 pub(super) const REUSED: &str = "Remote request identity was reused for a different operation.";
@@ -172,19 +175,25 @@ impl Registry {
         if !allowed() {
             return false;
         }
-        let now = Instant::now();
         let mut state = self.lock();
         let Some(operation) = state.operations.get_mut(id) else {
             return false;
         };
-        if now >= operation.deadline {
-            return false;
-        }
         operation.connections.retain(|(_, open)| open());
         if !operation.connections.is_empty() {
-            operation.connected_at = now;
+            operation.connected_at = Instant::now();
         }
-        now.duration_since(operation.connected_at) < operation.reconnect_grace
+        let (deadline, connected_at, reconnect_grace) = (
+            operation.deadline,
+            operation.connected_at,
+            operation.reconnect_grace,
+        );
+        drop(state);
+        if !allowed() {
+            return false;
+        }
+        let now = Instant::now();
+        now < deadline && now.duration_since(connected_at) < reconnect_grace
     }
 
     fn run(
@@ -317,11 +326,20 @@ fn prune_markers(journal: &Path, now: SystemTime) {
 /// The status a marker records: "accepted", "finished" or "expired". Records written by
 /// earlier versions hold the full request, and a result once finished.
 fn read_marker(path: &Path) -> Option<String> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
         Err(_) => return Some("accepted".into()),
     };
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_MARKER_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_MARKER_BYTES
+    {
+        return Some("accepted".into());
+    }
     let record: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     Some(match record["status"].as_str() {
         Some(status) => status.to_owned(),
@@ -346,6 +364,21 @@ fn write_marker(journal: &Path, path: &Path, method: &str, status: &str) -> Resu
 mod tests {
     use super::*;
     use crate::runtime::operation_gate::OperationGate;
+
+    #[test]
+    fn marker_limit_preserves_legacy_records_and_treats_oversized_records_as_uncertain() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("marker.json");
+        assert_eq!(read_marker(&path), None);
+        let mut bytes = br#"{"request":{"params":{}},"result":{"Ok":{}}}"#.to_vec();
+        bytes.resize(16 * 1024 * 1024, b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_marker(&path).as_deref(), Some("finished"));
+        bytes.push(b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_marker(&path).as_deref(), Some("accepted"));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;
@@ -493,6 +526,72 @@ mod tests {
             *order.lock().unwrap(),
             ["first started", "first finished", "second started"]
         );
+    }
+
+    #[test]
+    fn access_revoked_during_the_connection_check_prevents_the_change() {
+        let gate = gate();
+        let registry = registry();
+        let fixture = Fixture::new();
+        let (enabled, allowed) = flag(true);
+        let checked = AtomicUsize::new(0);
+        let connection = Arc::new(move || {
+            if checked.fetch_add(1, Ordering::SeqCst) == 1 {
+                enabled.store(false, Ordering::SeqCst);
+            }
+            true
+        });
+        let runs = counter();
+
+        let result = registry.submit(
+            fixture.submission(connection, allowed),
+            change_on(gate, fixture.vm(), runs),
+        );
+
+        assert_eq!(result, Err(EXPIRED.into()));
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_connection_check_that_outlasts_the_deadline_never_starts_the_change() {
+        let gate = gate();
+        let registry = registry();
+        let fixture = Fixture::new();
+        let checked = Arc::new(AtomicUsize::new(0));
+        let deadline = Arc::new(std::sync::OnceLock::<Instant>::new());
+        let connection = {
+            let checked = checked.clone();
+            let deadline = deadline.clone();
+            Arc::new(move || {
+                if checked.fetch_add(1, Ordering::SeqCst) == 1 {
+                    // Pause the admission check until the accepted request has expired.
+                    let deadline = *deadline.get().unwrap();
+                    thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                }
+                true
+            }) as Probe
+        };
+        let submission = fixture.submission(connection, always());
+        registry
+            .accept(
+                &submission,
+                json!({"method": submission.method, "params": submission.params}),
+            )
+            .unwrap();
+        let cutoff = Instant::now() + Duration::from_millis(300);
+        registry
+            .lock()
+            .operations
+            .get_mut(&fixture.id)
+            .unwrap()
+            .deadline = cutoff;
+        deadline.set(cutoff).unwrap();
+        let runs = counter();
+
+        let result = registry.run(&submission, change_on(gate, fixture.vm(), runs));
+
+        assert_eq!(result, Err(EXPIRED.into()));
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
     }
 
     #[test]

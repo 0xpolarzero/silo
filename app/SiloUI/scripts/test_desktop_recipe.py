@@ -23,7 +23,15 @@ args = sys.argv[1:]
 root = pathlib.Path(os.environ['RECIPE_ROOT'])
 with (root / 'calls.jsonl').open('a') as output:
     output.write(json.dumps([name, args]) + '\n')
-if name == 'dconf':
+if name == 'cat':
+    if args and os.environ.get('V4_PACKAGE_READ_FAIL_ONCE') and not (root / 'package-read-failed').exists():
+        (root / 'package-read-failed').touch()
+        sys.exit(23)
+    for argument in args:
+        sys.stdout.write(pathlib.Path(argument).read_text())
+    if not args:
+        sys.stdout.write(sys.stdin.read())
+elif name == 'dconf':
     if args == ['update']:
         database = root / 'etc/dconf/db/local'
         database.parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +132,7 @@ class DesktopRecipe(unittest.TestCase):
         binaries.mkdir()
         stub = '#!' + sys.executable + '\n' + STUB
         for name in ('id', 'dpkg', 'dpkg-query', 'apt-get', 'python3', 'install',
-                     'curl', 'sha256sum', 'usermod', 'chown', 'flock', 'df', 'dconf'):
+                     'curl', 'sha256sum', 'usermod', 'chown', 'flock', 'df', 'dconf', 'cat'):
             path = binaries / name
             path.write_text(stub)
             path.chmod(0o755)
@@ -421,6 +429,10 @@ class PreinstalledImageDesktop(DesktopRecipe):
         stderr = self.run_fallback({'V4_MISSING_PACKAGE': 'gnome-text-editor'})
         self.assertIn('guest image package gnome-text-editor is missing', stderr)
 
+    def test_v4_unreadable_package_list_cannot_skip_package_verification(self):
+        stderr = self.run_fallback({'V4_PACKAGE_READ_FAIL_ONCE': '1'})
+        self.assertIn('desktop package list is unreadable', stderr)
+
     def test_v4_wrong_streamer_version_falls_back(self):
         stderr = self.run_fallback({'V4_SELKIES_VERSION': '1.6.2-1'})
         self.assertIn('does not contain Selkies 2.0.0', stderr)
@@ -441,8 +453,14 @@ class PreinstalledImageDesktop(DesktopRecipe):
         self.assertNotIn('guest image', stderr)
 
     def test_v4_missing_runtime_command_falls_back(self):
-        if shutil.which('xauth', path='/usr/bin:/bin'):
-            self.skipTest('The host provides xauth outside the stubbed PATH')
+        tools = self.root / 'fallback-tools'
+        tools.mkdir()
+        for name in ('awk', 'cat', 'chmod', 'dirname', 'mkdir', 'mv', 'rm'):
+            executable = shutil.which(name, path='/usr/bin:/bin')
+            self.assertIsNotNone(executable, name)
+            (tools / name).symlink_to(executable)
+        # Keep the recipe's real command lookup, without host desktop binaries.
+        self.env['PATH'] = str(self.root / 'bin') + ':' + str(tools)
         (self.root / 'bin/xauth').unlink()
         stderr = self.run_fallback()
         self.assertIn('missing xauth', stderr)

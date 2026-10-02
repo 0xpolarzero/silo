@@ -58,7 +58,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
           const selected = event.target.value
           setCustomSelected(selected === "custom")
           if (selected === "custom") setCustomText(value ? String(value) : "")
-          else onChange(Number(selected))
+          else { setCustomText(selected); onChange(Number(selected)) }
         }}
       >
         {values.map((option) => <option key={option} value={option}>{option} {suffix}</option>)}
@@ -79,7 +79,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
     </div>
   )
   return readOnly ? (
-    <TooltipProvider><Tooltip><TooltipTrigger asChild><span tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`}>{field}</span></TooltipTrigger>
+    <TooltipProvider><Tooltip><TooltipTrigger asChild><div role="group" tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`} className="rounded-lg outline-none focus-visible:ring-3 focus-visible:ring-ring/50">{field}</div></TooltipTrigger>
       <TooltipContent>Disk size is read-only.</TooltipContent>
     </Tooltip></TooltipProvider>
   ) : field
@@ -194,12 +194,21 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   }
   // Offer only what the computer can run; the runtime rejects ceilings above it.
   const maximums = resourceMaximums(capacity)
-  const cpuPresets = presetsWithin(supportedCPUs, capacity?.logicalCPUs)
-  const memoryPresets = presetsWithin(supportedMemoryGiB, capacity?.memoryGiB)
+  const cpuPresets = presetsWithin(supportedCPUs, capacity ? maximums.cpus : undefined)
+  const memoryPresets = presetsWithin(supportedMemoryGiB, capacity ? maximums.memoryGiB : undefined)
 
   useEffect(() => {
-    firstField.current?.focus()
-    firstField.current?.scrollIntoView?.({ block: "nearest" })
+    function focusFirstField() {
+      firstField.current?.focus()
+      firstField.current?.scrollIntoView?.({ block: "nearest" })
+    }
+    focusFirstField()
+    // A closing menu can restore focus after the editor mounts.
+    const frame = requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active === document.body || active?.getAttribute("aria-haspopup") === "menu") focusFirstField()
+    })
+    return () => cancelAnimationFrame(frame)
   }, [focusRequest])
 
   useEffect(() => {
@@ -338,6 +347,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
       </section>}
       </fieldset>
 
+      <p role={saving ? "status" : undefined} aria-live="polite" aria-atomic="true" className="sr-only">{saving ? `Saving ${draft.name}…` : ""}</p>
       {blockedReason && !saving && <p id={blockedReasonId} role="status" className="text-right text-[11px] text-muted-foreground">{blockedReason}</p>}
       {stopPending ? <InlineConfirmation active onDismiss={dismissStop}>
         <div role="group" aria-label={`Stop ${stopTarget} and save?`} className="grid gap-2 rounded-md border border-border px-3 py-2">

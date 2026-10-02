@@ -6,10 +6,7 @@
 
 use super::Status;
 use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Condvar, Mutex,
-    },
+    sync::{Condvar, Mutex},
     time::Duration,
 };
 
@@ -43,7 +40,7 @@ pub(super) fn settle(
                 return status;
             }
             // A hash mismatch or a pinned version OpenAI no longer serves: retrying
-            // unprompted changes nothing. A manual retry starts a new worker.
+            // unprompted changes nothing. A manual Retry requests another attempt.
             status @ Status::Failed {
                 retryable: false, ..
             } => return status,
@@ -60,25 +57,50 @@ pub(super) fn settle(
 }
 
 /// At most one worker per process.
-pub(super) struct Slot(AtomicBool);
+pub(super) struct Slot(Mutex<bool>);
 
-pub(super) struct Claim<'a>(&'a Slot);
+pub(super) struct Claim<'a>(Option<&'a Slot>);
+
+impl Claim<'_> {
+    /// A Retry racing with terminal failure either keeps this worker running or
+    /// claims its successor. Claiming and releasing share the slot lock.
+    pub(super) fn run(mut self, wake: &Wake, mut work: impl FnMut() -> Status) -> Status {
+        loop {
+            let status = work();
+            let slot = self.0.expect("worker owns its slot");
+            let mut claimed = slot.0.lock().unwrap_or_else(|p| p.into_inner());
+            let mut woken = wake.woken.lock().unwrap_or_else(|p| p.into_inner());
+            let retry = std::mem::take(&mut *woken);
+            if !retry || matches!(status, Status::Ready { .. }) {
+                *claimed = false;
+                self.0 = None;
+                return status;
+            }
+        }
+    }
+}
 
 impl Slot {
     pub(super) const fn new() -> Self {
-        Self(AtomicBool::new(false))
+        Self(Mutex::new(false))
     }
-    pub(super) fn claim(&self) -> Option<Claim<'_>> {
-        self.0
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .ok()
-            .map(|_| Claim(self))
+    pub(super) fn claim(&self, wake: &Wake) -> Option<Claim<'_>> {
+        let mut claimed = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if *claimed {
+            wake.wake();
+            None
+        } else {
+            *claimed = true;
+            Some(Claim(Some(self)))
+        }
     }
 }
 
 impl Drop for Claim<'_> {
     fn drop(&mut self) {
-        (self.0).0.store(false, Ordering::SeqCst);
+        if let Some(slot) = self.0 {
+            *slot.0.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        }
     }
 }
 
@@ -250,11 +272,101 @@ mod tests {
     #[test]
     fn only_one_worker_runs_at_a_time() {
         let slot = Slot::new();
-        let first = slot.claim();
+        let wake = Wake::new();
+        let first = slot.claim(&wake);
         assert!(first.is_some());
-        assert!(slot.claim().is_none());
+        assert!(slot.claim(&wake).is_none());
         drop(first);
-        assert!(slot.claim().is_some());
+        assert!(slot.claim(&wake).is_some());
+    }
+
+    #[test]
+    fn retry_during_terminal_failure_starts_another_attempt() {
+        let slot = Slot::new();
+        let wake = Wake::new();
+        let claim = slot.claim(&wake).unwrap();
+        std::thread::scope(|threads| {
+            let (failed, failure_seen) = std::sync::mpsc::channel();
+            let (proceed, proceed_seen) = std::sync::mpsc::channel();
+            let wake_ref = &wake;
+            let worker = threads.spawn(move || {
+                let mut attempts = 0;
+                let status = claim.run(wake_ref, || {
+                    attempts += 1;
+                    if attempts == 1 {
+                        failed.send(()).unwrap();
+                        proceed_seen.recv().unwrap();
+                        Status::Failed {
+                            reason: "checksum".into(),
+                            retryable: false,
+                        }
+                    } else {
+                        ready()
+                    }
+                });
+                (status, attempts)
+            });
+            // Retry after failure publication, before the worker releases its slot.
+            failure_seen.recv().unwrap();
+            assert!(slot.claim(&wake).is_none());
+            proceed.send(()).unwrap();
+            let (status, attempts) = worker.join().unwrap();
+            assert_eq!(status, ready());
+            assert_eq!(attempts, 2);
+        });
+        assert!(slot.claim(&wake).is_some());
+    }
+
+    #[test]
+    fn a_terminal_worker_releases_its_slot_when_no_retry_was_requested() {
+        let slot = Slot::new();
+        let wake = Wake::new();
+        let attempts = Cell::new(0);
+        let status = slot.claim(&wake).unwrap().run(&wake, || {
+            attempts.set(attempts.get() + 1);
+            Status::Failed {
+                reason: "checksum".into(),
+                retryable: false,
+            }
+        });
+        assert!(matches!(
+            status,
+            Status::Failed {
+                retryable: false,
+                ..
+            }
+        ));
+        assert_eq!(attempts.get(), 1);
+        let successor = slot.claim(&wake).unwrap();
+        assert_eq!(successor.run(&wake, ready), ready());
+        assert!(slot.claim(&wake).is_some());
+    }
+
+    #[test]
+    fn a_retry_consumed_by_backoff_does_not_repeat_the_ready_hook() {
+        let slot = Slot::new();
+        let wake = Wake::new();
+        let attempts = Cell::new(0);
+        let readied = Cell::new(0);
+        let status = slot.claim(&wake).unwrap().run(&wake, || {
+            settle(
+                || {
+                    attempts.set(attempts.get() + 1);
+                    if attempts.get() == 1 {
+                        assert!(slot.claim(&wake).is_none());
+                        offline()
+                    } else {
+                        ready()
+                    }
+                },
+                |delay| wake.wait(delay),
+                || readied.set(readied.get() + 1),
+            )
+        });
+        assert_eq!(status, ready());
+        assert_eq!(attempts.get(), 2);
+        assert_eq!(readied.get(), 1);
+        assert!(slot.claim(&wake).is_some());
     }
 
     #[test]

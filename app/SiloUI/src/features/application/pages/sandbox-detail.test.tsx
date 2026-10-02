@@ -18,9 +18,9 @@ function localVm(source: ApplicationSource): ApplicationWorkspace {
 
 async function openDetail(source: ApplicationSource, actions: Partial<ApplicationActions> = {}, workspace = localVm(source)) {
   const user = userEvent.setup()
-  render(<OverviewPage source={source} actions={actions as ApplicationActions} onMachinesChange={vi.fn()} />)
+  const view = render(<OverviewPage source={source} actions={actions as ApplicationActions} onMachinesChange={vi.fn()} />)
   await user.click(screen.getByRole("button", { name: `Open ${workspace.machine.name}` }))
-  return { user, workspace }
+  return { ...view, user, workspace }
 }
 
 it.each([false, true])("shows pending secret revocation on the sandbox row and detail, routing Restart to its owner (remote=%s)", async remote => {
@@ -490,4 +490,47 @@ it("keeps a remote sandbox's Ports section reachable when the local computer's d
   expect(screen.queryByText("Could not check network services.")).not.toBeInTheDocument()
   await user.click(screen.getByRole("button", { name: "Open port 3000 in browser" }))
   expect(openNetworkPort).toHaveBeenCalledExactlyOnceWith(workspaceTarget(workspace), 3000)
+})
+
+
+it.each([false, true])("does not claim there are no ports after failed discovery (remote=%s)", async remote => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  workspace.state = "running"
+  workspace.freshness = "fresh"
+  if (remote) workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  source.network = { workspaces: [{ workspace: workspaceTarget(workspace), error: "Could not check services.", ports: [] }] }
+  const refreshNetwork = vi.fn(async () => {})
+  const actions = { refreshNetwork } as unknown as ApplicationActions
+  const { user, rerender } = await openDetail(source, actions, workspace)
+  expect(screen.getByRole("alert")).toHaveTextContent("Could not check services.")
+  expect(screen.queryByText("No ports")).not.toBeInTheDocument()
+  refreshNetwork.mockClear()
+  await user.click(within(screen.getByRole("alert")).getByRole("button", { name: "Retry" }))
+  expect(refreshNetwork).toHaveBeenCalledOnce()
+  const refreshed = { ...source, network: { workspaces: [{ workspace: workspaceTarget(workspace), error: null, ports: [] }] } }
+  rerender(<OverviewPage source={refreshed} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  expect(screen.getByText("No ports")).toBeVisible()
+})
+
+
+it.each([false, true])("waits for this sandbox's port discovery when another computer has already loaded (cached=%s)", async cached => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  workspace.state = "running"
+  workspace.freshness = "fresh"
+  workspace.ports = cached ? [{ port: 3000, hostPort: 43000, scheme: "http", listening: true, configured: true }] : []
+  workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  source.network = { workspaces: [{ workspace: workspace.machine.name, error: null, ports: [] }] }
+  const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
+  const { rerender } = await openDetail(source, actions, workspace)
+  expect(screen.getByRole("status", { name: "Loading ports" })).toBeVisible()
+  expect(screen.queryByText("No ports")).not.toBeInTheDocument()
+  if (cached) expect(screen.getByText("http://127.0.0.1:43000")).toBeVisible()
+  const refreshed = { ...source, network: { workspaces: [...source.network.workspaces, { workspace: workspaceTarget(workspace), error: null, ports: [] }] } }
+  rerender(<OverviewPage source={refreshed} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(screen.queryByRole("status", { name: "Loading ports" })).not.toBeInTheDocument()
+  expect(screen.getByText("No ports")).toBeVisible()
+  expect(screen.queryByText("http://127.0.0.1:43000")).not.toBeInTheDocument()
 })

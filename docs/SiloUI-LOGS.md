@@ -46,8 +46,14 @@ the loaded pages, expanded rows and vertical scroll position from an in-memory s
 use Refresh or Follow to fetch the latest records. Cache keys include the data
 source, computer/sandbox identities, search and filters. Inactive views expire
 after ten minutes and share limits of eight views and 8 MiB of estimated log text.
-Active history remains available while
-browsing. Cached log text is never written to browser storage.
+Each active view retains at most 5,000 records and 8 MiB of estimated record text
+and metadata. Paging advances this window toward older records and removes newer
+loaded records, adjusting the scroll position and discarding their expansion
+state. Refresh returns to the latest records. The view reports when records
+leave the window; Save logs still exports every match. A response whose records
+exceed the window budget can omit records from the list; narrow the search or
+export to read them. These limits bound retained frontend history, not native
+indexes or responses in flight. Cached log text is never written to browser storage.
 
 The sandbox badge preserves its state dot and adds the existing remote-VM server
 icon when its owner is another computer. Hovering or focusing the badge shows
@@ -57,7 +63,7 @@ column. Narrow windows scroll horizontally instead of cropping metadata. Copy
 and the rotating disclosure chevron occupy the trailing actions column. Expanded
 rows use the shared collapsible animation and measured heights; virtual scroll
 offsets include their full height. Loading another page preserves the
-visible history, deduplicates concurrent requests, and stops on an error or a
+scroll anchor, deduplicates concurrent requests, and stops on an error or a
 non-advancing cursor. Retry repeats failed page requests; Refresh starts a new
 snapshot.
 
@@ -98,6 +104,11 @@ has its own 125 MiB retention budget. Execution floods cannot evict console
 records either. Retention runs in the pinned runtime patch, whose
 `logging_retention.rs` matches Silo's `log_retention.rs` byte for byte, including
 regressions for floods in both directions and shared runtime/kernel eviction.
+Age-marker filenames append `.started` to the native
+[`Path::as_os_str`](https://doc.rust-lang.org/std/path/struct.Path.html#method.as_os_str)
+bytes, preserving non-UTF-8 runtime directories instead of replacing bytes through
+display text. The shared module tests this boundary on Unix and actual expiry in
+such a directory on Linux.
 
 Copy copies the records currently fetched, with identifying context.
 Export… saves all matching pages through the native save dialog as JSON
@@ -112,6 +123,23 @@ state beside its offset; paging, context, Follow and export therefore hide body
 lines even when the requested page starts inside a block. An unterminated block
 remains hidden through the retained end of that session. Other execution
 sessions keep their ordinary multiline output.
+
+Lines containing URL user information are hidden before search results, context,
+pagination, lifecycle diagnostics, and exports reach the UI. The existing
+`reqwest::Url` parser identifies [usernames](https://docs.rs/url/latest/url/struct.Url.html#method.username)
+and [passwords](https://docs.rs/url/latest/url/struct.Url.html#method.password),
+including token-only usernames and percent-encoded credentials. Public URLs and
+email addresses remain readable. This filtering runs after runtime persistence.
+Command lines with password, passphrase, token, secret, key, credential, or user
+options are also hidden. The filter recognizes separated long-option words
+and [curl's `-u` credential option](https://curl.se/docs/manpage.html#-u),
+because its username/password value does not need an assignment or URL.
+URL query names are decoded before applying the assignment markers, so
+percent-encoded names such as `%74oken` cannot bypass filtering. Signature
+parameters are hidden too, including
+[Azure SAS `sig`](https://learn.microsoft.com/en-us/rest/api/storageservices/create-service-sas#specifying-the-signature-field),
+[Amazon S3 `X-Amz-Signature`](https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sigv4-query-string-auth.html),
+and [Cloud Storage `X-Goog-Signature`](https://cloud.google.com/storage/docs/authentication/canonical-requests).
 
 The pinned runtime's [retention patch](../app/SiloUI/patches/microsandbox-log-retention-desktop-start-0.7.6.patch)
 renames older segments to increasing numeric suffixes. Silo uses numeric suffix
@@ -147,7 +175,26 @@ The viewport responds to element size changes through
 including when a hidden panel becomes visible. Scroll and resize checks share a
 request guard, so they cannot issue the same page concurrently.
 
+Chronological ordering depends on immutable history results, independently of
+sandbox names and state refreshes, following React's
+[useMemo dependency contract](https://react.dev/reference/react/useMemo).
+Workspace presentation updates still reach the rows. Copy formats the current
+window only when clicked, and per-row Copy formats only that record. Paging
+requests only the owners at the newest unread frontier, so quieter owners' older
+pages stay buffered until they can appear in chronological order. Each owner
+retains at most 64 recent cursor keys; monotonic record ordering also rejects
+cycles whose cursors or records have already left the window.
+
 ## Verification
+
+O-05 follow-up on 2026-10-02 adds deterministic tests for paging all 50,000
+synthetic records while retaining at most 5,000, text-budget eviction, navigation
+after eviction, scroll compensation including expanded rows, quiet-owner
+buffering, oversized responses, and cursor cycles after eviction. Workspace
+presentation refreshes read no record timestamps for ordering; clipboard tests
+verify zero formatting before a click and that Copy uses the current window.
+These checks use frontend fixtures and do not establish installed-app or live VM
+performance.
 
 Computer badge follow-up on 2026-09-22 removes the Computer column and reuses
 `ConnectionIcon`'s remote-VM server silhouette inside `WorkspaceBadge`, retaining

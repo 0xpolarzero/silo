@@ -100,3 +100,42 @@ it("restarts a crashed sandbox without asking, since nothing is running", async 
   await user.click(restart)
   expect(actions.restartWorkspace).toHaveBeenCalledExactlyOnceWith("dev")
 })
+
+
+it.each(["busy", "replaced"])("drops a palette confirmation when its sandbox becomes %s", async change => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const actions = lifecycleActions()
+  const user = userEvent.setup()
+  const view = render(<ApplicationPreview source={source} actions={actions} />)
+  await user.click(screen.getByRole("button", { name: "Search or jump to" }))
+  await user.type(screen.getByRole("combobox", { name: "Search commands" }), "stop dev")
+  await user.click(screen.getByRole("option", { name: "Stop dev…" }))
+  expect(within(screen.getByRole("dialog", { name: "Commands" })).getByText("Stop dev?")).toBeVisible()
+
+  const changed = structuredClone(source)
+  const dev = changed.workspaces.find(({ machine }) => machine.name === "dev")!
+  if (change === "replaced") dev.machine.id = "replacement-vm"
+  else dev.lifecycleAction = "restart"
+  view.rerender(<ApplicationPreview source={changed} actions={actions} />)
+  const dialog = within(screen.getByRole("dialog", { name: "Commands" }))
+  expect(dialog.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument()
+  expect(dialog.getByRole("combobox", { name: "Search commands" })).toBeVisible()
+  expect(actions.stopWorkspace).not.toHaveBeenCalled()
+})
+
+it("uses the current sandbox name when confirming a palette command after a rename", async () => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const actions = lifecycleActions()
+  const user = userEvent.setup()
+  const view = render(<ApplicationPreview source={source} actions={actions} />)
+  await user.click(screen.getByRole("button", { name: "Search or jump to" }))
+  await user.type(screen.getByRole("combobox", { name: "Search commands" }), "stop dev")
+  await user.click(screen.getByRole("option", { name: "Stop dev…" }))
+  const renamed = structuredClone(source)
+  renamed.workspaces.find(({ machine }) => machine.name === "dev")!.machine.name = "renamed"
+  view.rerender(<ApplicationPreview source={renamed} actions={actions} />)
+  const dialog = within(screen.getByRole("dialog", { name: "Commands" }))
+  expect(dialog.getByText("Stop renamed?")).toBeVisible()
+  await user.click(dialog.getByRole("button", { name: "Stop" }))
+  expect(actions.stopWorkspace).toHaveBeenCalledExactlyOnceWith("renamed")
+})

@@ -297,7 +297,7 @@ pub(crate) async fn open_desktop(
             // Verify the remote identity before creating a shell.
             let state = remote::call_remote(&app, &host, "desktop.status", json!({"vmId":vm}))?;
             let machine = state["name"].as_str().unwrap_or(&vm);
-            let computer = remote::remote_host_list()?
+            let computer = remote::saved_hosts()?
                 .into_iter()
                 .find(|h| h.id == host)
                 .map(|h| h.name);
@@ -826,6 +826,43 @@ mod transport_tests {
         while tunnel.running() {
             assert!(Instant::now() < deadline, "the watchdog outlived Silo");
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn closing_or_crashing_reaps_term_ignoring_forward_processes() {
+        for (script, crashed) in [
+            ("trap '' TERM; echo $$ > \"$1\"; exec sleep 30", false),
+            ("trap '' TERM; echo $$ > \"$1\"; exec sleep 30", true),
+            (
+                "sh -c 'trap \"\" TERM; echo $$ > \"$1\"; exec sleep 30' forward \"$1\" & wait",
+                false,
+            ),
+            (
+                "sh -c 'trap \"\" TERM; echo $$ > \"$1\"; exec sleep 30' forward \"$1\" & wait",
+                true,
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let pid_file = directory.path().join("forward.pid");
+            let mut forward = Command::new("/bin/sh");
+            forward.args(["-c", script, "forward"]).arg(&pid_file);
+            let mut tunnel = Tunnel::spawn(&forward, None).unwrap();
+            let group = tunnel.group_id();
+            let pid = recorded_pid(&pid_file);
+            assert_eq!(unsafe { libc::getpgid(pid) }, group);
+            if crashed {
+                tunnel.close_lifetime_pipe();
+            } else {
+                drop(tunnel);
+            }
+            let reaped = ended(pid);
+            if !reaped && unsafe { libc::getpgid(pid) } == group {
+                // Clean up only the recorded fixture's still-reserved group.
+                unsafe { libc::killpg(group, libc::SIGKILL) };
+                assert!(ended(pid));
+            }
+            assert!(reaped, "the TERM-ignoring forward outlived its tunnel");
         }
     }
 
