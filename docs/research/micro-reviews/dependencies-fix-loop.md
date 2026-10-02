@@ -35,3 +35,13 @@ The dependency-store Vitest file passed 11 tests. Node 24.11.1 typecheck, touche
 - **Fix:** Open bundled inputs nonblocking, validate the opened descriptor as a regular file, and use the same guard when decompression reopens the archive.
 - **Regression:** Two parent-bounded child-process tests exercise the actual MicroSandbox check with manifest/archive FIFOs. Both failed with `Timeout` before the fix; each child must reject the input as bundle damage and report exactly one passing test after the fix. Existing valid-image and corruption fixtures still run.
 - **Verification:** Rust fixtures use exact dependency/guest-validator source in the shared-target harness. The native Cargo run is queued with synthetic GitHub configuration; no app or VM launch is involved.
+
+
+## DEPENDENCIES-4 · P2 · Linux integrity hashing blocks before checking its deadline
+
+- **File:line:** `app/SiloUI/src-tauri/src/dependencies.rs:301` in the reviewed source, `sha256_file`'s blocking `File::open`.
+- **Trigger:** Replace a bundled Git executable/helper with a FIFO without a writer. Unlike the runtime preflight, the Git hash loop reaches the hasher without a preceding readable-file check.
+- **Consequence:** The native Linux dependency check waits indefinitely before its first deadline check. The frontend abandons the request while its blocking worker remains alive.
+- **Fix:** Share the opened-descriptor regular-file guard across manifests, readable-file checks, and hashing. Its nonblocking open rejects FIFO inputs, and descriptor-based validation also removes the old readability check's metadata/open race.
+- **Regression:** Parent-bounded FIFO hashing and directory classification tests failed before implementation; the hasher must also accept an ordinary file and return the SHA-256 `abc` test vector. The pure file hasher is now compiled in unit tests on macOS as well as Linux production builds.
+- **Verification:** Exact-source Rust fixtures cover the file boundary locally. This is not a Linux package or host execution result.
