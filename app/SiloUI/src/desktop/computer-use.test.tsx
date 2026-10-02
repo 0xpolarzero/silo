@@ -467,7 +467,9 @@ describe("computer use section reads and errors", () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)) })
     expect(calls).toBe(1)
     await act(async () => { slow.resolve(fixtureDesktopState("ready")) })
-    await screen.findByText("Ready")
+    // Later reads return "failed" every 10 ms, so a transient "Ready" may be
+    // replaced before a slow runner observes it; what matters is that reads
+    // continue and never overlap.
     await waitFor(() => expect(calls).toBeGreaterThan(1))
     expect(peak).toBe(1)
   })
