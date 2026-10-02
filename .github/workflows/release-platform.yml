@@ -48,6 +48,7 @@ jobs:
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 45
     env:
+      GOTOOLCHAIN: local
       RUNTIME_TARGET: ${{ inputs.target }}
     outputs:
       artifact-name: ${{ steps.archive.outputs.artifact-name }}
@@ -114,6 +115,7 @@ jobs:
         working-directory: app/SiloUI
         shell: bash
     env:
+      GOTOOLCHAIN: local
       RUNTIME_TARGET: ${{ inputs.target }}
       SILO_GITHUB_APP_SLUG: silo-unit-test
       SILO_GITHUB_CLIENT_ID: synthetic-unit-client
@@ -179,6 +181,7 @@ jobs:
     # compile Silo see the App configuration, and only the steps that sign see
     # the updater key. npm, Homebrew, Python tests and other build scripts never do.
     env:
+      GOTOOLCHAIN: local
       RUNTIME_TARGET: ${{ inputs.target }}
       RELEASE_BUNDLES: ${{ inputs.bundles }}
       RELEASE_ASSET: ${{ inputs.asset }}

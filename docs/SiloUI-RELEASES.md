@@ -589,7 +589,8 @@ otherwise valid source, patch, compiler, and capability checks.
 Release validation checks exact runtime-cache availability for each target using
 `lookup-only` on the existing validation runner. Go setup runs before this lookup
 so a newer 1.25.x patch release cannot count as an exact hit for older executables;
-CI uses `GOTOOLCHAIN=local` consistently for lookup and preparation. Warm platforms start their native
+CI sets `GOTOOLCHAIN=local` at job scope in every job that prepares resources, so lookup,
+preparation and the later Tauri build hook record the same toolchain policy. Warm platforms start their native
 and package jobs directly, without an extra producer runner or artifact transfer.
 A missing exact cache starts one credential-free runtime producer inside that
 platform's `release-platform.yml` invocation. Its native and package jobs wait for
