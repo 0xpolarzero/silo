@@ -95,3 +95,9 @@ The standalone Rust verification extracts the production retry helper, failure c
 - Evidence: `wait_for_session` checked its wait deadline only after the repair branch. A deterministic three-second budget still started repairs at simulated seconds 2, 10, and 22; a one-second budget slept through all 2/4/8-second delays and started three repairs.
 - Change: check the remaining budget before admitting a repair and after its bounded backoff. This stops additional starts after expiration; an already-started desktop command retains its existing subprocess timeout and ownership.
 - Verification: both clock regressions failed before the fix and pass afterward. Existing tests cover three attempts within budget, boot recovery, manual desktops, and starting sessions.
+
+## Background ticks during pending service reads
+
+- Evidence: joining a pending network or SSH read marked it dirty even for a background tick. On failure the dirty loop immediately repeated the read, bypassing the newly established deadline. Both deferred production-source regressions observed two requests from one failed read plus its overlapping background tick.
+- Change: background ticks attach to the pending result without requesting a follow-up. Explicit refresh, native events, and mutation reconciliation still mark the owner dirty so newer intent is observed.
+- Verification: deferred-read regressions cover both adapters and the first backoff floor. Existing service concurrency tests preserve immediate trailing reads for explicit refreshes and safe publication around saves.

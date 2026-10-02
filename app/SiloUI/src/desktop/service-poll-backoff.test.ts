@@ -54,3 +54,38 @@ it.each(["network", "ssh"] as const)("backs off failed %s owners without delayin
     expect(reads("broken")).toBe(++calls)
   } finally { store.dispose() }
 })
+
+it.each(["network", "ssh"] as const)("does not queue an immediate %s retry from a background tick during a pending read", async service => {
+  vi.useFakeTimers()
+  const local = applicationSourceForScenario("running")
+  const command = service === "network" ? "read_network_state" : "read_ssh_access_state"
+  let reject!: (cause: Error) => void
+  const pending = new Promise<unknown>((_, fail) => { reject = fail })
+  let hold = false
+  const invoke = nativeBridgeMock({
+    read_application_state: () => local,
+    read_backup_state: () => ({ snapshotId: "fixture", availability: "available", archives: [], operation: null }),
+    read_operation_queue: () => ({ running: [], waiting: [] }),
+    read_setup_activity: () => [],
+    remote_host_list: () => [],
+    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+    read_network_state: () => hold && service === "network" ? pending : { workspaces: [] },
+    read_ssh_access_state: () => hold && service === "ssh" ? pending : { workspaces: [] },
+  })
+  const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
+  const refresh = store.applicationActions[service === "network" ? "refreshNetwork" : "refreshSshAccess"]!
+  try {
+    await store.initialize()
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
+    const initial = invoke.mock.calls.filter(([name]) => name === command).length
+    hold = true
+    const first = refresh({ background: true })
+    const overlapping = refresh({ background: true })
+    reject(new Error("Unavailable"))
+    await Promise.all([first, overlapping])
+    expect(invoke.mock.calls.filter(([name]) => name === command)).toHaveLength(initial + 1)
+    await vi.advanceTimersByTimeAsync(9999)
+    await refresh({ background: true })
+    expect(invoke.mock.calls.filter(([name]) => name === command)).toHaveLength(initial + 1)
+  } finally { store.dispose() }
+})
