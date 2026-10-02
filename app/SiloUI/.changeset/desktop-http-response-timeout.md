@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Close stalled desktop HTTP requests after two minutes so they cannot exhaust the viewer's connection slots.
+Release desktop viewer connections after two minutes when a page request or upload stalls, so you can reconnect.
