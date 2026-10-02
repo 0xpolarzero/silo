@@ -301,8 +301,8 @@ const NOTIFICATIONS_BUS: &str = "org.freedesktop.Notifications";
 
 /// Server-assigned id per notice key. Sending the previous id as `replaces_id` makes a
 /// newer notice replace the older one, and lets deletion close it.
-static SERVER_IDS: std::sync::Mutex<Option<std::collections::HashMap<String, u32>>> =
-    std::sync::Mutex::new(None);
+static SERVER_IDS: super::notification_ids::NotificationIds =
+    super::notification_ids::NotificationIds::new();
 
 fn notifications_proxy() -> Result<gio::DBusProxy, gio::glib::Error> {
     gio::DBusProxy::for_bus_sync(
@@ -326,64 +326,51 @@ pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(),
     if proxy.name_owner().is_none() {
         return Ok(());
     }
-    let replaces = SERVER_IDS
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .as_ref()
-        .and_then(|ids| ids.get(&notice.key).copied())
-        .unwrap_or(0);
-    // The standard has no permission prompt. The desktop controls suppression/DND.
-    let hints = std::collections::HashMap::from([
-        (
-            "desktop-entry",
-            super::notification_desktop_entry().to_variant(),
-        ),
-        ("urgency", 1u8.to_variant()),
-    ]);
-    let parameters = (
-        crate::channel::current().tray_title(),
-        replaces,
-        super::NOTIFICATION_ICON,
-        notice.title.as_str(),
-        notice.body.as_str(),
-        Vec::<String>::new(),
-        hints,
-        -1i32,
-    )
-        .to_variant();
-    let reply = proxy
-        .call_sync(
-            "Notify",
-            Some(&parameters),
-            gio::DBusCallFlags::NO_AUTO_START,
-            5000,
-            None::<&gio::Cancellable>,
+    SERVER_IDS.deliver(&notice.key, |replaces| {
+        // The standard has no permission prompt. The desktop controls suppression/DND.
+        let hints = std::collections::HashMap::from([
+            (
+                "desktop-entry",
+                super::notification_desktop_entry().to_variant(),
+            ),
+            ("urgency", 1u8.to_variant()),
+        ]);
+        let parameters = (
+            crate::channel::current().tray_title(),
+            replaces,
+            super::NOTIFICATION_ICON,
+            notice.title.as_str(),
+            notice.body.as_str(),
+            Vec::<String>::new(),
+            hints,
+            -1i32,
         )
-        .map_err(|_| "The desktop could not deliver the notification")?;
-    if let Some((id,)) = reply.get::<(u32,)>() {
-        SERVER_IDS
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .get_or_insert_with(Default::default)
-            .insert(notice.key.clone(), id);
-    }
-    Ok(())
+            .to_variant();
+        let reply = proxy
+            .call_sync(
+                "Notify",
+                Some(&parameters),
+                gio::DBusCallFlags::NO_AUTO_START,
+                5000,
+                None::<&gio::Cancellable>,
+            )
+            .map_err(|_| "The desktop could not deliver the notification")?;
+        reply
+            .get::<(u32,)>()
+            .map(|(id,)| id)
+            .ok_or_else(|| "The desktop returned an invalid notification ID".into())
+    })
 }
 
 pub fn clear_notifications(keys: &[String]) {
     use gio::glib::variant::ToVariant;
-    let ids: Vec<u32> = {
-        let mut guard = SERVER_IDS.lock().unwrap_or_else(|error| error.into_inner());
-        let Some(map) = guard.as_mut() else { return };
-        keys.iter().filter_map(|key| map.remove(key)).collect()
-    };
     let Ok(proxy) = notifications_proxy() else {
         return;
     };
     if proxy.name_owner().is_none() {
         return;
     }
-    for id in ids {
+    SERVER_IDS.clear(keys, |id| {
         let _ = proxy.call_sync(
             "CloseNotification",
             Some(&(id,).to_variant()),
@@ -391,7 +378,7 @@ pub fn clear_notifications(keys: &[String]) {
             5000,
             None::<&gio::Cancellable>,
         );
-    }
+    });
 }
 
 pub fn open_settings(_integration: &str) -> Result<(), String> {
