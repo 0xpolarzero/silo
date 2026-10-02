@@ -2,12 +2,14 @@
 
 Audited `codex/r14-website-docs` after merging `codex/integration` at
 `88d6289f`; checked the classifications again after the test fix and integration
-merge at `4c8e11c1`. This is a source and fixture audit, not live qualification.
+merge at `4c8e11c1`. A final sync at `b8e6fa62` added the notice race below.
+This is a source and fixture audit, not live qualification.
 No production code changed.
 
 The requested patterns (`#[ignore`, `it.skip`, `test.skip`, `describe.skip`,
 `it.todo`, `.fails(`) found 25 Rust ignores and no Vitest exclusions or expected
-failures. The wider audit also checked Node's `{ skip: ... }`, Python's
+failures at the initial snapshot. The final sync added one `it.fails` case.
+The wider audit also checked Node's `{ skip: ... }`, Python's
 `skipUnless` and `skipTest`. Rust iterator `.skip()` calls are not test exclusions.
 
 ## Re-enabled hermetic test
@@ -85,7 +87,20 @@ lifecycle parent is
 
 ## Bugs and verification limits
 
-No new Silo bug was established by this audit.
+[`notices.test.ts`](../app/SiloUI/src/desktop/notices.test.ts) contains
+`it.fails("bug: disposed notice subscription forwards events before pending registration completes", ...)`,
+introduced by integration commit `ae2c0f51`. It hides a real Silo bug:
+[`listenForNotices`](../app/SiloUI/src/desktop/notices.ts) sets `stopped` on
+disposal, but its event callback never checks that flag. A backend event received
+before the pending registration resolves still reaches the disposed handler.
+
+Temporarily changing only `it.fails` to `it` produced four passes and one failure:
+the handler was called once after disposal (`notices.test.ts:78`). The expected
+failure annotation was restored. This cannot be re-enabled by correcting the
+test without weakening its disposal contract; production changes were outside
+this task. Next action: guard event delivery after disposal, then remove
+`it.fails` and keep this regression.
+
 The ZCode TLS test intentionally reproduces a documented third-party bug and
 checks the trust-propagation repair; see the
 [TLS investigation](SiloUI-ZCODE-TLS-INVESTIGATION.md). Its negative controls
