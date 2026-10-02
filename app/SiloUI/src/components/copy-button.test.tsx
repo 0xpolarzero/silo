@@ -6,6 +6,19 @@ import { CopyButton } from "./copy-button"
 
 const labels = { idle: "Copy command", copied: "Command copied", failed: "Copy failed" }
 describe("CopyButton icons and feedback", () => {
+  it("resolves the current text only when copying", async () => {
+    const user = userEvent.setup()
+    const value = vi.fn(() => "first page")
+    const view = render(<CopyButton value={value} labels={labels} />)
+    expect(value).not.toHaveBeenCalled()
+    const latest = vi.fn(() => "older page")
+    view.rerender(<CopyButton value={latest} labels={labels} />)
+    expect(latest).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "Copy command" }))
+    expect(value).not.toHaveBeenCalled()
+    expect(latest).toHaveBeenCalledOnce()
+    expect(await navigator.clipboard.readText()).toBe("older page")
+  })
   it.each([undefined, Terminal])("copies and reports success with either idle icon", async icon => {
     const user = userEvent.setup()
     render(<CopyButton icon={icon} value="ssh -p 2222 root@127.0.0.1" labels={labels} />)

@@ -46,8 +46,14 @@ the loaded pages, expanded rows and vertical scroll position from an in-memory s
 use Refresh or Follow to fetch the latest records. Cache keys include the data
 source, computer/sandbox identities, search and filters. Inactive views expire
 after ten minutes and share limits of eight views and 8 MiB of estimated log text.
-Active history remains available while
-browsing. Cached log text is never written to browser storage.
+Each active view retains at most 5,000 records and 8 MiB of estimated record text
+and metadata. Paging advances this window toward older records and removes newer
+loaded records, adjusting the scroll position and discarding their expansion
+state. Refresh returns to the latest records. The view reports when records
+leave the window; Save logs still exports every match. A response whose records
+exceed the window budget can omit records from the list; narrow the search or
+export to read them. These limits bound retained frontend history, not native
+indexes or responses in flight. Cached log text is never written to browser storage.
 
 The sandbox badge preserves its state dot and adds the existing remote-VM server
 icon when its owner is another computer. Hovering or focusing the badge shows
@@ -57,7 +63,7 @@ column. Narrow windows scroll horizontally instead of cropping metadata. Copy
 and the rotating disclosure chevron occupy the trailing actions column. Expanded
 rows use the shared collapsible animation and measured heights; virtual scroll
 offsets include their full height. Loading another page preserves the
-visible history, deduplicates concurrent requests, and stops on an error or a
+scroll anchor, deduplicates concurrent requests, and stops on an error or a
 non-advancing cursor. Retry repeats failed page requests; Refresh starts a new
 snapshot.
 
@@ -147,7 +153,26 @@ The viewport responds to element size changes through
 including when a hidden panel becomes visible. Scroll and resize checks share a
 request guard, so they cannot issue the same page concurrently.
 
+Chronological ordering depends on immutable history results, independently of
+sandbox names and state refreshes, following React's
+[useMemo dependency contract](https://react.dev/reference/react/useMemo).
+Workspace presentation updates still reach the rows. Copy formats the current
+window only when clicked, and per-row Copy formats only that record. Paging
+requests only the owners at the newest unread frontier, so quieter owners' older
+pages stay buffered until they can appear in chronological order. Each owner
+retains at most 64 recent cursor keys; monotonic record ordering also rejects
+cycles whose cursors or records have already left the window.
+
 ## Verification
+
+O-05 follow-up on 2026-10-02 adds deterministic tests for paging all 50,000
+synthetic records while retaining at most 5,000, text-budget eviction, navigation
+after eviction, scroll compensation including expanded rows, quiet-owner
+buffering, oversized responses, and cursor cycles after eviction. Workspace
+presentation refreshes read no record timestamps for ordering; clipboard tests
+verify zero formatting before a click and that Copy uses the current window.
+These checks use frontend fixtures and do not establish installed-app or live VM
+performance.
 
 Computer badge follow-up on 2026-09-22 removes the Computer column and reuses
 `ConnectionIcon`'s remote-VM server silhouette inside `WorkspaceBadge`, retaining
