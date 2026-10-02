@@ -56,6 +56,42 @@ it("keeps a transport failure visible when subsequent guest health checks succee
   expect(screen.getByRole("alert")).toHaveTextContent("Desktop connection unavailable")
 })
 
+it("backs off failed desktop health reads, resets after recovery, and stops on close", async () => {
+  vi.useFakeTimers()
+  let reachable = false
+  invoke.mockImplementation(async command => {
+    if (command === "read_desktop_state") {
+      if (!reachable) throw new Error("Computer disconnected")
+      return { installed: true, autoStart: true, state: "vm-stopped" }
+    }
+  })
+  const reads = () => invoke.mock.calls.filter(([command]) => command === "read_desktop_state").length
+  const advance = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms) }) }
+  const view = render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
+  try {
+    await advance(0)
+    expect(reads()).toBe(1)
+    for (const delay of [10000, 20000, 30000, 30000]) {
+      const calls = reads()
+      await advance(delay - 1)
+      expect(reads()).toBe(calls)
+      await advance(1)
+      expect(reads()).toBe(calls + 1)
+    }
+    reachable = true
+    await advance(30000)
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    const calls = reads()
+    await advance(4999)
+    expect(reads()).toBe(calls)
+    await advance(1)
+    expect(reads()).toBe(calls + 1)
+    view.unmount()
+    await advance(60000)
+    expect(reads()).toBe(calls + 1)
+  } finally { view.unmount(); vi.useRealTimers() }
+})
+
 it("reattaches a retired transport when the computer recovers with unchanged guest state", async () => {
   vi.useFakeTimers()
   let reachable = true
@@ -79,7 +115,7 @@ it("reattaches a retired transport when the computer recovers with unchanged gue
     expect(screen.getByRole("alert")).toHaveTextContent("Computer disconnected")
     expect(connected).toBe(false)
     reachable = true
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(connected).toBe(true)
     expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
