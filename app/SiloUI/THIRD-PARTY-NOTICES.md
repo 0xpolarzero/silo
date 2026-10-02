@@ -55,8 +55,8 @@ source and redistribution review remain part of release preparation.
 Silo's guest image (v4 and later) stages the unextracted LCU release archive for the sandbox's built-in computer use. LCU is MIT-licensed; the license text is inside the archive. The image holds only the archive, in `/usr/local/share/silo/lcu/`; LCU itself is installed from it in the sandbox when computer use is set up.
 
 - Project: https://github.com/0xpolarzero/lcu
-- Release: https://github.com/0xpolarzero/lcu/releases/tag/v0.8.0
-- Linux ARM64 archive SHA-256: `3f9ddd89745a16e2451a316b3a789f7c2813e4117f6ae61b3a7b27646ce4bd43`
-- Linux x86-64 archive SHA-256: `55833a1eb0d827a370511d6dc49a7ec782bf620e3cb68a3cebb0e2d0d0c7f477`
+- Release: https://github.com/0xpolarzero/lcu/releases/tag/v0.8.1
+- Linux ARM64 archive SHA-256: `441649e7afe14dc948caaa5bd94034567e4404fc8c0bb6a450bd692b73161806`
+- Linux x86-64 archive SHA-256: `8b0934f8c0c79d40a5073f180db33db8f1568af00177befa4b8da677694731bc`
 
 The pinned URL and hashes are in `app/SiloUI/src-tauri/guest/lcu-lock.json`. The image contains no ChatGPT application.
