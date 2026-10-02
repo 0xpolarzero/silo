@@ -63,6 +63,11 @@ SESSION_WAIT = 90
 SESSION_REPAIR_ATTEMPTS = 3
 SESSION_REPAIR_BASE = 2
 LOCK_WAIT = 1800
+# The LCU download: waits between attempts (so five attempts), the longest one curl
+# attempt may take, and the total time after which no new attempt starts.
+DOWNLOAD_BACKOFF = (5, 10, 20, 40)
+DOWNLOAD_MAX_TIME = 240
+DOWNLOAD_BUDGET = 420
 
 
 class Failure(Exception):
@@ -268,6 +273,38 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def download(url, target):
+    """Downloads `url` over HTTPS with bounded exponential backoff.
+
+    curl retries transient errors itself (an empty reply, a reset, a refused connection);
+    the outer loop covers what it gives up on, such as a DNS timeout. Every attempt is logged.
+    Only a failure to fetch is retried here: the caller verifies the hash and never retries
+    a mismatch. Raises `lcu-archive-unavailable` once the attempts or the time run out.
+    """
+    attempts = len(DOWNLOAD_BACKOFF) + 1
+    deadline = time.monotonic() + DOWNLOAD_BUDGET
+    for attempt in range(1, attempts + 1):
+        log(f'downloading the LCU archive (attempt {attempt} of {attempts})')
+        try:
+            run(['curl', '--silent', '--show-error', '--fail', '--location',
+                 '--retry', '3', '--retry-delay', '2', '--retry-all-errors', '--retry-connrefused',
+                 '--connect-timeout', '30', '--max-time', str(DOWNLOAD_MAX_TIME),
+                 '--proto', '=https', '--tlsv1.2', url, '--output', str(target)],
+                timeout=DOWNLOAD_MAX_TIME + 60)
+            return
+        except Failure as failure:
+            log(f'LCU download attempt {attempt} failed: {failure}')
+        target.unlink(missing_ok=True)
+        if attempt == attempts:
+            break
+        delay = DOWNLOAD_BACKOFF[attempt - 1]
+        if time.monotonic() + delay >= deadline:
+            break
+        log(f'retrying the LCU download in {delay}s')
+        time.sleep(delay)
+    raise Failure('lcu-archive-unavailable', 'could not download the LCU archive (network)')
+
+
 def archive_path(pinned, stage):
     """The pinned archive: the one staged in the image when it matches, else a hash-checked download."""
     lcu = pinned['lcu']
@@ -275,12 +312,7 @@ def archive_path(pinned, stage):
     if staged.is_file() and not staged.is_symlink() and sha256_file(staged) == lcu['sha256']:
         return staged
     target = stage / lcu['archive']
-    try:
-        run(['curl', '--silent', '--show-error', '--fail', '--location', '--retry', '2',
-             '--connect-timeout', '30', '--max-time', '600', '--proto', '=https',
-             '--tlsv1.2', lcu['url'], '--output', str(target)], timeout=700)
-    except Failure:
-        raise Failure('lcu-archive-unavailable') from None
+    download(lcu['url'], target)
     if sha256_file(target) != lcu['sha256']:
         target.unlink(missing_ok=True)
         raise Failure('lcu-archive-mismatch')
