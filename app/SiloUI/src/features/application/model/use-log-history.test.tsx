@@ -390,22 +390,25 @@ describe("cached log history", () => {
     expect(view.result.current.rows).toHaveLength(2)
   })
 
-  it("expires inactive views before retained backend cursors expire", async () => {
+  it.each([10 * 60_000 - 1, 10 * 60_000, 10 * 60_000 + 1])("expires inactive views before retained backend cursors expire (%i ms)", async elapsed => {
+    const now = new Date("2026-10-02T12:00:00Z").getTime()
+    vi.useFakeTimers({ now, toFake: ["Date"] })
     const { options, loader } = fixture()
     const first = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(first.result.current.ready).toBe(true))
     first.unmount()
-    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 11 * 60 * 1000)
-    try {
-      const second = renderHook(() => useLogHistory(options))
-      await waitFor(() => expect(second.result.current.ready).toBe(true))
-      expect(loader).toHaveBeenCalledTimes(2)
-    } finally { vi.restoreAllMocks() }
+    vi.setSystemTime(now + elapsed)
+    const second = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(second.result.current.ready).toBe(true))
+    expect(loader).toHaveBeenCalledTimes(elapsed < 10 * 60_000 ? 1 : 2)
   })
 
   it("evicts the least recently used inactive view after the cache fills", async () => {
+    const now = new Date("2026-10-02T12:00:00Z").getTime()
+    vi.useFakeTimers({ now, toFake: ["Date"] })
     const { options, loader } = fixture()
     for (let index = 0; index < 10; index++) {
+      vi.setSystemTime(now + index * 1000)
       const view = renderHook(() => useLogHistory({ ...options, query: String(index) }))
       await waitFor(() => expect(view.result.current.ready).toBe(true))
       view.unmount()
