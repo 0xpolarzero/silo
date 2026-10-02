@@ -26,6 +26,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   const [store] = useState(() => createDirectoryStore(listDirectory))
   useLayoutEffect(() => { store.setLoader(listDirectory) }, [store, listDirectory])
   const target = workspaceTarget(workspace)
+  useEffect(() => () => store.invalidateWorkspace(target), [store, target])
   const path = ["/workspace", ...segments].join("/")
   const key = directoryKey(target, path)
   const subscribe = useCallback((listener: () => void) => store.subscribe(key, listener), [store, key])
