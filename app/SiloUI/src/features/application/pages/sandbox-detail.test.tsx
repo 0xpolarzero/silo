@@ -474,3 +474,20 @@ it("resets per-sandbox edit state when the page switches to another sandbox", as
   expect(screen.queryByRole("heading", { name: `Edit ${second.machine.name}` })).not.toBeInTheDocument()
   expect(screen.queryByRole("heading", { name: `Edit ${first.machine.name}` })).not.toBeInTheDocument()
 })
+
+it("keeps a remote sandbox's Ports section reachable when the local computer's discovery fails", async () => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  source.networkError = "Could not check network services."
+  source.network = { workspaces: [
+    { workspace: workspace.machine.name, error: "Local discovery failed", ports: [] },
+    { workspace: workspaceTarget(workspace), error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", state: "reachable", configured: true }] },
+  ] }
+  const openNetworkPort = vi.fn(async () => {})
+  const { user } = await openDetail(source, { openNetworkPort, refreshNetwork: vi.fn(async () => {}) }, workspace)
+  expect(screen.getByText("Reachable")).toBeVisible()
+  expect(screen.queryByText("Could not check network services.")).not.toBeInTheDocument()
+  await user.click(screen.getByRole("button", { name: "Open port 3000 in browser" }))
+  expect(openNetworkPort).toHaveBeenCalledExactlyOnceWith(workspaceTarget(workspace), 3000)
+})

@@ -18,9 +18,9 @@ export function networkLoopbackAddress(port: NetworkPort) {
 }
 
 /** The human-readable state of a port, accounting for VM lifecycle and stale/failed discovery. */
-export function networkPortState(workspace: ApplicationWorkspace, port: NetworkPort, error?: string | null, errors: string[] = []) {
+export function networkPortState(workspace: ApplicationWorkspace, port: NetworkPort, error?: string | null) {
   if (workspace.state !== "running") return workspace.state === "starting" ? "Sandbox starting" : workspace.state === "failed" ? "Sandbox failed" : "Sandbox stopped"
-  if (workspace.freshness === "stale" || error || errors.some(e => e.startsWith(`${workspace.machine.name}:`))) return "Unknown"
+  if (workspace.freshness === "stale" || error) return "Unknown"
   return ({ reachable: "Reachable", waiting: "Waiting for service", unpublished: "Not forwarded", unknown: "Unknown" })[port.state]
 }
 
@@ -85,13 +85,15 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   const localWorkspaces = workspaces.filter(workspace => workspace.machine.kind === "vm")
   const rows = workspaces.flatMap(workspace => {
     const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))
-    return (item?.ports ?? []).map(port => ({ workspace, port, host: item?.host ?? null }))
+    return (item?.ports ?? []).map(port => ({ workspace, port, host: item?.host ?? null, error: item?.error ?? (workspace.computer ? null : error) }))
   })
     .sort((a, b) => a.workspace.machine.name.localeCompare(b.workspace.machine.name) || a.port.port - b.port.port)
   const errors = workspaces.flatMap(workspace => {
     const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))
     // A stopped sandbox has no live services to observe; its saved ports show as "Sandbox stopped".
-    return item?.error && workspace.state !== "stopped" ? [`${workspace.machine.name}: ${item.error}`] : []
+    const ambiguous = workspaces.some(other => other !== workspace && other.machine.name === workspace.machine.name)
+    const name = ambiguous ? `${workspace.machine.name} (${workspace.computer?.name ?? "This computer"})` : workspace.machine.name
+    return item?.error && workspace.state !== "stopped" ? [`${name}: ${item.error}`] : []
   })
 
   const runningLocalWorkspaces = localWorkspaces.filter(workspace => workspace.state === "running")
@@ -110,7 +112,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   function cancelDraft() { setDraft(null) }
 
   return {
-    error, draft, setDraft, fieldErrors, setFieldErrors, connecting, setConnecting, busy,
+    error: workspaces.some(workspace => !workspace.computer) ? error : null, draft, setDraft, fieldErrors, setFieldErrors, connecting, setConnecting, busy,
     /** Always null: operation failures are shown as notifications, not rendered inline. */
     confirm, setConfirm,
     run, open, add, startEdit, cancelDraft, localWorkspaces, runningLocalWorkspaces, addDisabledReason, rows, errors, actions,
