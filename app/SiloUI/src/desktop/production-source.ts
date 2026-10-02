@@ -467,7 +467,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function readSshOwner(owner: string, background = false): Promise<void> {
     if (background && (sshFailures.get(owner)?.nextRead ?? 0) > Date.now()) return Promise.resolve()
     const pending = sshReads.get(owner)
-    if (pending) { pending.dirty = true; return pending.promise }
+    if (pending) { if (!background) pending.dirty = true; return pending.promise }
     const entry = { dirty: false, promise: Promise.resolve() }
     entry.promise = (async () => { do {
       entry.dirty = false
@@ -520,7 +520,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function readNetworkOwner(owner: string, background = false): Promise<void> {
     if (background && (networkFailures.get(owner)?.nextRead ?? 0) > Date.now()) return Promise.resolve()
     const pending = networkReads.get(owner)
-    if (pending) { pending.dirty = true; return pending.promise }
+    if (pending) { if (!background) pending.dirty = true; return pending.promise }
     const entry = { dirty: false, promise: Promise.resolve() }
     entry.promise = (async () => { do {
       entry.dirty = false
