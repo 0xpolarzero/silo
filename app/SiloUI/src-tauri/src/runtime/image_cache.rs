@@ -89,7 +89,8 @@ fn is_descriptor(path: &Path) -> bool {
 
 /// Whether any image descriptor in `cache` still names a file below `runtime`, so removing
 /// that runtime would break the VMs that boot from this cache. A descriptor that cannot be
-/// read counts as unverifiable and fails, since it might name such a file.
+/// read, is redirected, or exceeds the descriptor size limit counts as unverifiable
+/// and fails, since it might name such a file.
 pub(crate) fn reads_from(cache: &Path, runtime: &Path) -> Result<bool, String> {
     let entries = match fs::read_dir(cache.join("vmdk")) {
         Ok(entries) => entries,
@@ -103,6 +104,14 @@ pub(crate) fn reads_from(cache: &Path, runtime: &Path) -> Result<bool, String> {
             .map_err(|_| "Silo could not read the runtime's image cache.")?
             .path();
         if !is_descriptor(&path) {
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "vmdk")
+            {
+                return Err(
+                    "Silo could not verify an image descriptor in the runtime's cache.".into(),
+                );
+            }
             continue;
         }
         let descriptor = fs::read_to_string(&path)
@@ -381,6 +390,42 @@ mod tests {
             format!("RW 1 FLAT \"{}\" 0\n", missing.display()),
         )
         .unwrap();
+        assert!(reads_from(&cache, &previous).is_err());
+    }
+
+    #[test]
+    fn an_oversized_descriptor_cannot_prove_independence() {
+        let (directory, cache) = cache();
+        let previous = directory.path().join("runtime");
+        fs::create_dir_all(&previous).unwrap();
+        let extent = previous.join("image.erofs");
+        fs::write(&extent, [0; 512]).unwrap();
+        let text = format!(
+            "{}RW 1 FLAT \"{}\" 0\n",
+            "# comment\n".repeat(7_000),
+            extent.display()
+        );
+        assert!(text.len() > 64 * 1024);
+        fs::write(cache.join("vmdk/large.vmdk"), text).unwrap();
+        assert!(reads_from(&cache, &previous).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_redirected_descriptor_cannot_prove_independence() {
+        let (directory, cache) = cache();
+        let previous = directory.path().join("runtime");
+        fs::create_dir_all(&previous).unwrap();
+        let descriptor = directory.path().join("external.vmdk");
+        fs::write(
+            &descriptor,
+            format!(
+                "RW 1 FLAT \"{}\" 0\n",
+                previous.join("image.erofs").display()
+            ),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&descriptor, cache.join("vmdk/redirected.vmdk")).unwrap();
         assert!(reads_from(&cache, &previous).is_err());
     }
 
