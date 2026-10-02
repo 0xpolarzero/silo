@@ -784,8 +784,16 @@ fn restrict_authorized_keys(contents: &str, blob: &str) -> Option<String> {
     changed.then_some(rewritten)
 }
 fn restrict_authorized_keys_file(path: &std::path::Path, public: &str) -> Result<bool, String> {
-    use std::os::unix::fs::OpenOptionsExt;
     let blob = silo_key_blob(public)?;
+    rewrite_authorized_keys_file(path, |contents| restrict_authorized_keys(contents, blob))
+}
+static AUTHORIZED_KEYS_LOCK: Mutex<()> = Mutex::new(());
+fn rewrite_authorized_keys_file(
+    path: &Path,
+    rewrite: impl FnOnce(&str) -> Option<String>,
+) -> Result<bool, String> {
+    // Every controller must transform the latest committed key list.
+    let _guard = crate::sync::lock_or_recover(&AUTHORIZED_KEYS_LOCK, "authorized SSH keys");
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -796,26 +804,21 @@ fn restrict_authorized_keys_file(path: &std::path::Path, public: &str) -> Result
         return Ok(false);
     }
     let contents = fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let Some(rewritten) = restrict_authorized_keys(&contents, blob) else {
+    let Some(rewritten) = rewrite(&contents) else {
         return Ok(false);
     };
-    let temporary = path.with_file_name(".authorized_keys.silo-restrict");
-    let _ = fs::remove_file(&temporary);
-    let mut file = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(metadata.permissions().mode() & 0o7777)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(&temporary)
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(path.parent().ok_or("SSH key directory is unavailable.")?)
+            .map_err(|e| e.to_string())?;
+    temporary
+        .as_file()
+        .set_permissions(metadata.permissions())
         .map_err(|e| e.to_string())?;
-    let written = file
+    temporary
         .write_all(rewritten.as_bytes())
-        .and_then(|()| file.sync_all())
-        .and_then(|()| fs::rename(&temporary, path));
-    if let Err(error) = written {
-        let _ = fs::remove_file(&temporary);
-        return Err(error.to_string());
-    }
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|e| e.to_string())?;
+    temporary.persist(path).map_err(|e| e.to_string())?;
     Ok(true)
 }
 /// Owner side: restrict the calling controller's previously installed Silo key.
@@ -2567,6 +2570,51 @@ mod authorized_key_tests {
         );
         assert_eq!(restrict_authorized_keys(&rewritten, BLOB), None);
         assert_eq!(restrict_authorized_keys(&contents, "AAAAother"), None);
+    }
+
+    #[test]
+    fn concurrent_key_migrations_preserve_both_restrictions() {
+        let _test_state = crate::test_support::global_state();
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("authorized_keys");
+        let first = format!("ssh-ed25519 {BLOB} {}", silo_key_comment());
+        let second = format!("ssh-ed25519 AAAAsecond {}", silo_key_comment());
+        let sentinel = "ssh-ed25519 AAAApersonal personal";
+        fs::write(&path, format!("{first}\n{second}\n{sentinel}\n")).unwrap();
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let first_path = path.clone();
+        let first_worker = thread::spawn(move || {
+            rewrite_authorized_keys_file(&first_path, |contents| {
+                read_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                restrict_authorized_keys(contents, BLOB)
+            })
+        });
+        read_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let second_path = path.clone();
+        let second_worker = thread::spawn(move || {
+            let result = restrict_authorized_keys_file(
+                &second_path,
+                "ssh-ed25519 AAAAsecond ignored-comment",
+            );
+            done_tx.send(()).unwrap();
+            result
+        });
+        // A concurrent rewrite must wait until the first snapshot has been committed.
+        let _ = done_rx.recv_timeout(Duration::from_millis(200));
+        release_tx.send(()).unwrap();
+        assert!(first_worker.join().unwrap().unwrap());
+        assert!(second_worker.join().unwrap().unwrap());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            format!(
+                "{} {first}\n{} {second}\n{sentinel}\n",
+                authorized_key_options(),
+                authorized_key_options()
+            )
+        );
     }
 
     #[test]

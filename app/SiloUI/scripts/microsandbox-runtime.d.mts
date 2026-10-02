@@ -1,3 +1,5 @@
+import type { FetchStream } from "./build-input.mjs"
+
 export interface RuntimeTarget {
   platform: string
   arch: string
@@ -37,7 +39,7 @@ export function verifySha256(bytes: ArrayBufferView, expected: string, label: st
 export function buildPatchedExecutable(options: {
   targetTriple: string
   hostTriple: string
-  sourceArchive: ArrayBufferView
+  sourceArchive: string
   patches: ArrayBufferView[]
   agentd: ArrayBufferView
   cacheRoot: string
@@ -46,7 +48,7 @@ export function stageRuntime(options: {
   appRoot: string
   targetTriple: string
   hostTriple?: string
-  fetchBytes: (url: string) => Promise<ArrayBufferView>
+  fetchStream: FetchStream
   selected?: RuntimeTarget
   licenses?: LicenseArtifact[]
   sourceArtifact?: { url: string; sha256: string }
@@ -54,7 +56,7 @@ export function stageRuntime(options: {
     appRoot: string
     targetTriple: string
     hostTriple: string
-    sourceArchive: ArrayBufferView
+    sourceArchive: string
     patches: ArrayBufferView[]
     agentd: ArrayBufferView
     cacheRoot: string

@@ -48,6 +48,13 @@ const stepIcon: Record<OperationStepState, React.ReactNode> = {
   failed: <CircleAlertIcon className="size-3 text-destructive" aria-hidden />,
 }
 
+const stepStatus: Record<OperationStepState, string> = {
+  done: "Completed",
+  current: "In progress",
+  pending: "Pending",
+  failed: "Failed",
+}
+
 /** Body of a progress toast (rendered as the Sonner description). Use `showOperationProgress`. */
 /**
  * True when a step line only repeats the title ("Creating checkpoint…" under "Creating
@@ -85,8 +92,8 @@ export function OperationToastBody({ title, step, steps, progress, startedAt, ca
       <span className="shrink-0 tabular-nums" data-slot="operation-elapsed">{elapsed}</span>
     </div>
     {steps && steps.length > 0 && <ul className="grid gap-0.5" aria-label="Steps">
-      {steps.map((entry) => <li key={entry.label} data-state={entry.state} className={`flex items-center gap-1.5 ${entry.state === "pending" ? "text-muted-foreground/70" : entry.state === "failed" ? "text-destructive" : ""}`}>
-        {stepIcon[entry.state]}<span className="min-w-0 truncate">{entry.label}</span>
+      {steps.map((entry) => <li key={entry.label} data-state={entry.state} aria-current={entry.state === "current" ? "step" : undefined} className={`flex items-center gap-1.5 ${entry.state === "pending" ? "text-muted-foreground/70" : entry.state === "failed" ? "text-destructive" : ""}`}>
+        {stepIcon[entry.state]}<span className="min-w-0 truncate">{entry.label}<span className="sr-only">: {stepStatus[entry.state]}</span></span>
       </li>)}
     </ul>}
     {cancel && <div className="flex justify-end"><Button type="button" variant="outline" size="xs" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button></div>}

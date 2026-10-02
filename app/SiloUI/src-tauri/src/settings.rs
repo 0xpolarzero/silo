@@ -429,7 +429,7 @@ fn valid_draft(value: &Value) -> bool {
     ) || !draft["machines"].as_array().is_some_and(|machines| {
         let mut ids = HashSet::new();
         let mut names = HashSet::new();
-        (1..=64).contains(&machines.len())
+        machines.len() <= 64
             && machines.iter().all(|machine| {
                 valid_machine(machine, false)
                     && ids.insert(machine["id"].as_str().unwrap())
@@ -1591,6 +1591,23 @@ mod tests {
         let snapshot = SettingsStore::load(Some(path)).snapshot();
         assert!(snapshot.onboarding_draft.is_null());
         assert_eq!(snapshot.settings["theme"], "dark");
+    }
+
+    #[test]
+    fn deleting_the_last_onboarding_machine_survives_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(path.clone()));
+        let mut draft = unfinished_draft();
+        store.update_draft(draft.clone()).unwrap();
+        draft["machines"] = json!([]);
+        for editor in [Value::Null, draft["unfinishedMachineEditor"].clone()] {
+            draft["unfinishedMachineEditor"] = editor;
+            store.update_draft(draft.clone()).unwrap();
+            let snapshot = SettingsStore::load(Some(path.clone())).snapshot();
+            assert_eq!(snapshot.onboarding_draft, draft);
+            assert!(snapshot.save_error.is_none());
+        }
     }
 
     #[test]

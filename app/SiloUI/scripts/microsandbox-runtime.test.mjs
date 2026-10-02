@@ -52,11 +52,10 @@ async function fixture(t) {
   for (const tool of ["rustc", "cargo"]) await writeFile(join(bin, tool), toolScript, { mode: 0o755 })
   const worker = join(root, "worker.mjs")
   await writeFile(worker, `
-import { readFile } from "node:fs/promises"
 import { buildPatchedExecutable } from ${JSON.stringify(runtimeModule)}
 const bytes = await buildPatchedExecutable({
   targetTriple: "aarch64-apple-darwin", hostTriple: "aarch64-apple-darwin",
-  sourceArchive: await readFile(${JSON.stringify(archive)}), patches: [],
+  sourceArchive: ${JSON.stringify(archive)}, patches: [],
   agentd: Buffer.from("fixture agent"), cacheRoot: ${JSON.stringify(join(root, "cache"))},
 })
 if (!bytes.length) throw new Error("No executable returned")

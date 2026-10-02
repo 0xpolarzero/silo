@@ -3120,6 +3120,25 @@ pub async fn save_github_configuration(
     .await
     .map_err(|_| "GitHub operation failed.")?
 }
+fn prepare_retry(d: &mut Document, workspace: Option<&str>) {
+    let names: Vec<String> = d
+        .workspaces
+        .iter()
+        .filter_map(|w| w["workspace"].as_str())
+        .filter(|name| workspace.is_none_or(|target| target == *name))
+        .map(str::to_owned)
+        .collect();
+    for name in &names {
+        if d.identity_errors.contains_key(name) && !d.identity_pending.contains(name) {
+            d.identity_pending.push(name.clone());
+        }
+        if !d.access_pending.contains(name) {
+            d.access_pending.push(name.clone());
+        }
+    }
+    mark_pending_for(d, &names);
+}
+
 #[tauri::command]
 pub async fn retry_github_configuration(
     app: tauri::AppHandle,
@@ -3135,20 +3154,7 @@ pub async fn retry_github_configuration(
         let _update = crate::updates::operation_guard()?;
         let _state = serialize(&STATE);
         let mut d = load(&app)?;
-        for w in &d.workspaces {
-            if let Some(name) = w["workspace"].as_str() {
-                if workspace.as_deref().is_none_or(|target| target == name)
-                    && d.identity_errors.contains_key(name)
-                    && !d.identity_pending.iter().any(|n| n == name)
-                {
-                    d.identity_pending.push(name.into());
-                }
-            }
-        }
-        mark_pending(&mut d);
-        if let Some(target) = &workspace {
-            d.access_pending.retain(|name| name == target);
-        }
+        prepare_retry(&mut d, workspace.as_deref());
         save(&app, &d)?;
         schedule(Duration::ZERO);
         snapshot(&app)
@@ -4067,6 +4073,36 @@ mod tests {
         .unwrap();
         assert_eq!(calls, vec![false, true]);
     }
+    #[test]
+    fn targeted_retry_preserves_other_pending_grants_and_verified_operations() {
+        let _test_state = crate::test_support::global_state();
+        let mut d = Document {
+            session: session().into(),
+            refresh_at: now() + 3600,
+            workspaces: vec![
+                saved_policy("retry", false),
+                saved_policy("pending", false),
+                saved_policy("healthy", false),
+            ],
+            access_pending: vec!["pending".into()],
+            operations: vec![
+                json!({"workspace":"retry","status":"failed"}),
+                json!({"workspace":"pending","status":"applying"}),
+                json!({"workspace":"healthy","status":"succeeded"}),
+            ],
+            ..Default::default()
+        };
+        let healthy = d.operations[2].clone();
+        prepare_retry(&mut d, Some("retry"));
+        assert!(access_update_due(&d, "pending", now(), false, &[]));
+        assert!(access_update_due(&d, "retry", now(), false, &[]));
+        assert_eq!(
+            d.operations.iter().find(|op| op["workspace"] == "healthy"),
+            Some(&healthy)
+        );
+        assert!(!access_update_due(&d, "healthy", now(), false, &[]));
+    }
+
     #[test]
     fn unrelated_owner_and_vm_status_stays_unchanged() {
         let _test_state = crate::test_support::global_state();

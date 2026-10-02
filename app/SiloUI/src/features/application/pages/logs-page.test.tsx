@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
+import userEvent from "@testing-library/user-event"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
 import { fixtureLogPage, logPageSchema, type LogPage, type LogQuery } from "../model/logs"
+import * as logFormatting from "../model/logs"
 import { Toaster } from "@/components/ui/sonner"
 import { Logs } from "./logs-page"
 
@@ -23,6 +25,41 @@ function scrollNearEnd() {
   return viewport
 }
 describe("retained logs", () => {
+  it("formats clipboard text on click and copies the current loaded window", async () => {
+    const user = userEvent.setup()
+    const { workspace, actions } = fixture(401)
+    const format = vi.spyOn(logFormatting, "formatLog")
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    await screen.findByText(/Showing 200 of 401/)
+    expect(format).not.toHaveBeenCalled()
+    scrollNearEnd()
+    await screen.findByText(/Showing 400 of 401/)
+    expect(format).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "Copy logs" }))
+    const text = await navigator.clipboard.readText()
+    expect(text.split("\n")).toHaveLength(400)
+    expect(text).toContain("record 400")
+    expect(text).toContain("record 1")
+    expect(text).not.toContain("old diagnostic needle")
+    expect(format).toHaveBeenCalledTimes(400)
+  })
+
+  it("explains the bounded window and exports all matches after records leave the list", async () => {
+    const { workspace, actions } = fixture(6001)
+    actions.queryLogs = vi.fn(async request => fixtureLogPage(workspace, { ...request, limit: 3000 }))
+    actions.exportLogs = vi.fn(async () => true)
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    await screen.findByText(/Showing 3000 of 6001/)
+    scrollNearEnd()
+    await screen.findByText(/Showing 5000 of 6001/)
+    expect(screen.getByText(/Some loaded records have left this list/)).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Save logs…" }))
+    expect(actions.exportLogs).toHaveBeenCalledWith([expect.objectContaining({ sandboxId: workspace.machine.id, query: "" })])
+    expect(vi.mocked(actions.exportLogs!).mock.calls[0][0][0]).not.toHaveProperty("cursor")
+    fireEvent.click(screen.getByRole("button", { name: "Refresh logs" }))
+    await screen.findByText(/Showing 3000 of 6001/)
+    expect(screen.queryByText(/Some loaded records have left this list/)).not.toBeInTheDocument()
+  })
   it("says when records could not be read and labels times the sandbox reported", async () => {
     const { workspace, actions } = fixture()
     const occurredAt = "2020-01-01T00:00:00.000000000Z"

@@ -860,6 +860,7 @@ def supervise_selkies():
             return requested
 
         def should_stop():
+            trim_logs()
             # Reap exited session children even while only the stream is retried.
             for child in session_children:
                 child.poll()

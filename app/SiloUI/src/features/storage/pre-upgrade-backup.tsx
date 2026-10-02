@@ -82,8 +82,9 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
     void backend.subscribe(() => { void refresh.current() }).then(stop => {
       if (live) unsubscribe = stop
       else stop()
-    }).catch((cause: unknown) => console.error("Silo pre-upgrade backup:", message(cause)))
-    void refresh.current()
+    }).catch((cause: unknown) => console.error("Silo pre-upgrade backup:", message(cause))).then(() => {
+      if (live) void refresh.current()
+    })
     return () => { live = false; unsubscribe?.() }
   }, [backend])
 

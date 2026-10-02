@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
 import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
+import { fetchVerifiedFile, isVerifiedFile } from "./build-input.mjs"
 
 const inputs = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../runtime-inputs.json"), "utf8"))
 export const MICRO_SANDBOX_VERSION = inputs.microsandboxVersion
@@ -52,23 +53,6 @@ function assertInside(root, candidate) {
   throw new Error(`Refusing to stage outside ${resolve(root)}: ${resolve(candidate)}`)
 }
 
-async function validCachedFile(path, expectedSha256) {
-  try {
-    return (await stat(path)).isFile() && sha256(await readFile(path)) === expectedSha256
-  } catch {
-    return false
-  }
-}
-
-async function fetchVerified(fetchBytes, url, expectedSha256, label, cachePath) {
-  if (await validCachedFile(cachePath, expectedSha256)) return readFile(cachePath)
-  const bytes = Buffer.from(await fetchBytes(url))
-  verifySha256(bytes, expectedSha256, label)
-  await mkdir(dirname(cachePath), { recursive: true })
-  await writeFile(cachePath, bytes)
-  return bytes
-}
-
 function runBuildTool(executable, args, options = {}) {
   return execFileSync(executable, args, {
     encoding: "utf8",
@@ -114,6 +98,11 @@ export async function buildPatchedExecutable({
     throw new Error(`Patched MicroSandbox cross-builds are not supported: host ${hostTriple}, target ${targetTriple}`)
   }
   const rustcVersion = runBuildTool("rustc", [`+${MICROSANDBOX_BUILD_TOOLCHAIN}`, "--version"]).trim()
+  const targetEnvironment = targetTriple.toUpperCase().replaceAll("-", "_")
+  const compilerFlags = Object.fromEntries([
+    "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS",
+    `CARGO_TARGET_${targetEnvironment}_RUSTFLAGS`,
+  ].map(name => [name, process.env[name] ?? null]))
   const cacheKey = sha256(Buffer.from([
     MICROSANDBOX_SOURCE_SHA256,
     ...MICROSANDBOX_PATCHES.map(({ sha256: digest }) => digest),
@@ -121,11 +110,13 @@ export async function buildPatchedExecutable({
     rustcVersion,
     targetTriple,
     MICROSANDBOX_BUILD_FEATURES,
+    sha256(await readFile(new URL(import.meta.url))),
+    JSON.stringify(compilerFlags),
   ].join("\n")))
   const buildRoot = join(cacheRoot, "patched-builds", cacheKey)
   const cachedExecutable = join(buildRoot, "msb")
   const cachedDigest = join(buildRoot, "msb.sha256")
-  if (await validCachedFile(cachedExecutable, (await readFile(cachedDigest, "utf8").catch(() => "")).trim())) {
+  if (await isVerifiedFile(cachedExecutable, (await readFile(cachedDigest, "utf8").catch(() => "")).trim(), "Compiled MicroSandbox")) {
     const version = runBuildTool(cachedExecutable, ["--version"]).trim()
     const createHelp = runBuildTool(cachedExecutable, ["create", "--help"])
     const execHelp = runBuildTool(cachedExecutable, ["exec", "--help"])
@@ -137,11 +128,9 @@ export async function buildPatchedExecutable({
 
   await mkdir(buildRoot, { recursive: true })
   const workRoot = await mkdtemp(join(buildRoot, "work-"))
-  const archivePath = join(workRoot, "source.tar.gz")
   const cargoTarget = join(buildRoot, "cargo-target")
   try {
-    await writeFile(archivePath, sourceArchive)
-    runBuildTool("/usr/bin/tar", ["-xzf", archivePath, "-C", workRoot])
+    runBuildTool("/usr/bin/tar", ["-xzf", sourceArchive, "-C", workRoot])
     const entries = await import("node:fs/promises").then(({ readdir }) => readdir(workRoot, { withFileTypes: true }))
     const source = entries.filter((entry) => entry.isDirectory()).map((entry) => join(workRoot, entry.name))
     if (source.length !== 1) throw new Error("Pinned MicroSandbox source archive has an unexpected layout")
@@ -194,7 +183,7 @@ export async function stageRuntime({
   appRoot,
   targetTriple,
   hostTriple = targetTriple,
-  fetchBytes,
+  fetchStream,
   selected = selectRuntime(targetTriple),
   licenses = licenseArtifacts,
   sourceArtifact = { url: MICROSANDBOX_SOURCE_URL, sha256: MICROSANDBOX_SOURCE_SHA256 },
@@ -216,22 +205,22 @@ export async function stageRuntime({
   await rm(stagedRoot, { recursive: true, force: true })
   await mkdir(dirname(libraryPath), { recursive: true })
 
-  await fetchVerified(
-    fetchBytes,
+  await fetchVerifiedFile(
+    fetchStream,
     `${RELEASE_BASE_URL}/${selected.executableAsset}`,
     selected.executableSha256,
     selected.executableAsset,
     join(cacheRoot, selected.executableAsset),
   )
-  const sourceArchive = await fetchVerified(
-    fetchBytes,
+  const sourceArchive = await fetchVerifiedFile(
+    fetchStream,
     sourceArtifact.url,
     sourceArtifact.sha256,
     "MicroSandbox pinned source",
     join(cacheRoot, `microsandbox-${MICROSANDBOX_COMMIT}.tar.gz`),
   )
-  const agentd = await fetchVerified(
-    fetchBytes,
+  const agentdPath = await fetchVerifiedFile(
+    fetchStream,
     `${RELEASE_BASE_URL}/${selected.agentdAsset}`,
     selected.agentdSha256,
     selected.agentdAsset,
@@ -251,11 +240,11 @@ export async function stageRuntime({
     hostTriple,
     sourceArchive,
     patches,
-    agentd,
+    agentd: await readFile(agentdPath),
     cacheRoot,
   }))
-  const library = await fetchVerified(
-    fetchBytes,
+  const library = await fetchVerifiedFile(
+    fetchStream,
     `${RELEASE_BASE_URL}/${selected.libraryAsset}`,
     selected.librarySha256,
     selected.libraryAsset,
@@ -289,19 +278,22 @@ export async function stageRuntime({
     await rm(isolatedHome, { recursive: true, force: true })
   }
   await rename(executableTemporary, executablePath)
-  await writeFile(libraryPath, library, { mode: 0o644 })
+  await copyFile(library, libraryPath)
+  await chmod(libraryPath, 0o644)
 
   const licensesRoot = join(stagedRoot, "licenses")
   await mkdir(licensesRoot, { recursive: true })
   for (const license of licenses) {
-    const bytes = await fetchVerified(
-      fetchBytes,
+    const licensePath = await fetchVerifiedFile(
+      fetchStream,
       license.url,
       license.sha256,
       license.name,
       join(cacheRoot, "licenses", basename(license.url)),
+      { maxBytes: 4 * 1024 * 1024 },
     )
-    await writeFile(join(licensesRoot, license.name), bytes, { mode: 0o644 })
+    await copyFile(licensePath, join(licensesRoot, license.name))
+    await chmod(join(licensesRoot, license.name), 0o644)
   }
 
   const manifest = {

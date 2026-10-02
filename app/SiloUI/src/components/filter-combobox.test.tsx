@@ -1,0 +1,53 @@
+import { useState } from "react"
+import { render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import { describe, expect, it, vi } from "vitest"
+
+import { FilterCombobox } from "./filter-combobox"
+
+const options = Array.from({ length: 30 }, (_, index) => ({ value: `sandbox-${index}`, label: `Sandbox ${index}` }))
+
+function Filter() {
+  const [selectedValues, onChange] = useState(new Set<string>())
+  return <FilterCombobox
+    options={options} selectedValues={selectedValues} onChange={onChange}
+    label="Sandbox filters" inputLabel="Add sandbox" placeholder="Choose a sandbox"
+    listLabel="Available sandboxes" selectedLabel="Selected sandboxes" emptyMessage="No matches"
+  />
+}
+
+describe("FilterCombobox keyboard navigation", () => {
+  it("reveals the active option in both directions while keeping focus in the input", async () => {
+    const user = userEvent.setup()
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
+    render(<Filter />)
+    const input = screen.getByRole("combobox", { name: "Add sandbox" })
+    await user.click(input)
+    await user.keyboard("{ArrowDown>20/}")
+    const active = screen.getByRole("option", { name: "Sandbox 20", selected: true })
+    expect(input).toHaveAttribute("aria-activedescendant", active.id)
+    expect(input).toHaveFocus()
+    expect(scroll.mock.contexts.at(-1)).toBe(active)
+    expect(scroll).toHaveBeenLastCalledWith({ block: "nearest", inline: "nearest" })
+
+    await user.keyboard("{ArrowUp>15/}")
+    const previous = screen.getByRole("option", { name: "Sandbox 5", selected: true })
+    expect(scroll.mock.contexts.at(-1)).toBe(previous)
+    expect(input).toHaveFocus()
+    await user.keyboard("{Enter}")
+    expect(screen.getByRole("button", { name: "Remove Sandbox 5" })).toBeInTheDocument()
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+    expect(input).toHaveFocus()
+  })
+
+  it("reveals the first matching option when the search results change", async () => {
+    const user = userEvent.setup()
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
+    render(<Filter />)
+    await user.click(screen.getByRole("combobox"))
+    await user.keyboard("{ArrowDown>20/}")
+    await user.type(screen.getByRole("combobox"), "Sandbox 29")
+    const match = screen.getByRole("option", { name: "Sandbox 29", selected: true })
+    expect(scroll.mock.contexts.at(-1)).toBe(match)
+  })
+})
