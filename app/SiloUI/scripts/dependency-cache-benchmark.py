@@ -78,18 +78,22 @@ def build(args):
     root_artifacts = []
     args.messages.parent.mkdir(parents=True, exist_ok=True)
     with args.messages.open('w') as messages:
-        process = subprocess.Popen(invocation, cwd=app, stdout=subprocess.PIPE, text=True)
+        process = subprocess.Popen(invocation, cwd=app, stdout=subprocess.PIPE, text=True,
+                                   encoding='utf-8', errors='replace')
         for line in process.stdout:
             print(line, end='', flush=True)
             try:
                 item = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if not isinstance(item, dict):
+                continue
             messages.write(json.dumps(item) + '\n')
             if item.get('reason') == 'compiler-artifact' and item.get('package_id') in registry_ids:
                 registry_units['fresh' if item.get('fresh') else 'compiled'] += 1
             if item.get('reason') == 'compiler-artifact' and item.get('package_id') == root_id and item.get('executable'):
                 root_artifacts.append(item)
+        process.stdout.close()
         code = process.wait()
     marker = PRODUCER if args.role == 'producer' else CONSUMER
     forbidden = CONSUMER if args.role == 'producer' else PRODUCER

@@ -3,10 +3,13 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SPEC = importlib.util.spec_from_file_location('benchmark', Path(__file__).with_name('dependency-cache-benchmark.py'))
 BENCHMARK = importlib.util.module_from_spec(SPEC)
@@ -85,6 +88,29 @@ class DependencyBenchmarkTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'dedicated'):
             BENCHMARK.restore(args)
         self.assertEqual(sentinel.read_text(), 'preserve')
+
+    def test_build_accepts_non_object_json_tool_output_before_artifacts(self):
+        metadata, messages, report = [self.root / name for name in ('metadata', 'messages', 'report')]
+        metadata.write_text(json.dumps({'resolve': {'root': 'app'}, 'packages': []}))
+        executable = self.root / 'fixture-app'
+        executable.write_bytes(BENCHMARK.PRODUCER.encode())
+        runner = self.root / 'node_modules/.bin/tauri'
+        runner.parent.mkdir(parents=True)
+        row = {'reason': 'compiler-artifact', 'package_id': 'app',
+               'executable': str(executable), 'fresh': False}
+        noise = b'null\n[]\n"tool output"\n42\ntrue\nbad\xff\n'
+        runner.write_text(f'#!{sys.executable}\nimport sys\n'
+                          f'sys.stdout.buffer.write({noise!r})\nprint({json.dumps(row)!r})\n')
+        runner.chmod(0o755)
+        args = argparse.Namespace(app_root=self.root, metadata=metadata, messages=messages,
+                                  report=report, role='producer', target='fixture')
+        stdout = io.StringIO()
+        with (patch.dict(os.environ, {'CARGO_TARGET_DIR': str(self.root / 'src-tauri/target/release-compile')}),
+              patch.object(BENCHMARK.sys, 'stdout', stdout)):
+            self.assertEqual(BENCHMARK.build(args), 0)
+        self.assertTrue(stdout.getvalue().startswith(noise.decode('utf-8', errors='replace')))
+        self.assertEqual(messages.read_text(), json.dumps(row) + '\n')
+        self.assertTrue(json.loads(report.read_text())['configurationVerified'])
 
 
 if __name__ == '__main__':
