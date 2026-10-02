@@ -208,10 +208,11 @@ const DISCOVERY_SECONDS: u64 = 20;
 pub(crate) fn discover(
     paths: &RuntimePaths,
     name: &str,
+    vm_id: &str,
     refresh: bool,
 ) -> Result<Vec<Value>, String> {
     let requested = Instant::now();
-    let key = format!("{}:{name}", paths.home.display());
+    let key = format!("{}:{vm_id}", paths.home.display());
     let (lock, changed) = discoveries();
     let wait_until = requested
         + if refresh {
@@ -1120,7 +1121,7 @@ printf '%s\n' "$commit"
         });
         // The next state refresh reads the repository again.
         if let Ok(mut entries) = discoveries().0.lock() {
-            if let Some(entry) = entries.get_mut(&format!("{}:{workspace}", paths.home.display())) {
+            if let Some(entry) = entries.get_mut(&format!("{}:{vm_id}", paths.home.display())) {
                 entry.last = None;
             }
         }
@@ -1193,11 +1194,17 @@ pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_
     runtime::runtime_paths(app)
         .ok()
         .and_then(|paths| {
+            let metadata = runtime::read_metadata(&paths.metadata).ok()?;
+            let vm_id = metadata
+                .machines
+                .iter()
+                .find(|machine| machine.is_vm() && machine.name() == workspace)?
+                .id();
             discoveries()
                 .0
                 .lock()
                 .ok()?
-                .get(&format!("{}:{workspace}", paths.home.display()))?
+                .get(&format!("{}:{vm_id}", paths.home.display()))?
                 .last
                 .as_ref()?
                 .1
@@ -1276,6 +1283,38 @@ mod tests {
 
     use super::*;
     #[test]
+    fn recreated_vm_cannot_receive_the_previous_vms_repository_discovery() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = RuntimePaths {
+            executable: root.path().join("missing-msb"),
+            home: root.path().to_path_buf(),
+            guest_image: root.path().join("image"),
+            storage_home: None,
+            library: root.path().join("library"),
+            metadata: root.path().join("metadata"),
+            volumes: root.path().join("volumes"),
+        };
+        let key = format!("{}:vm-old", paths.home.display());
+        let cached = vec![json!({"path": "previous-vm-private-repository"})];
+        discoveries().0.lock().unwrap().insert(
+            key.clone(),
+            Discovery {
+                last: Some((Instant::now(), Ok(cached.clone()))),
+                running: false,
+            },
+        );
+        assert_eq!(discover(&paths, "dev", "vm-old", false).unwrap(), cached);
+        let replacement = discover(&paths, "dev", "vm-new", false);
+        discoveries().0.lock().unwrap().remove(&key);
+        discoveries()
+            .0
+            .lock()
+            .unwrap()
+            .remove(&format!("{}:vm-new", paths.home.display()));
+        assert!(replacement.is_err(), "The replacement VM must discover its own repositories instead of returning the previous VM's cached rows: {replacement:?}");
+    }
+
+    #[test]
     fn manual_discovery_bypasses_cached_rows() {
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("missing-msb");
@@ -1288,7 +1327,7 @@ mod tests {
             metadata: root.path().join("metadata"),
             volumes: root.path().join("volumes"),
         };
-        let key = format!("{}:test", paths.home.display());
+        let key = format!("{}:vm-1", paths.home.display());
         let cached = vec![json!({"path": "removed-repository"})];
         discoveries().0.lock().unwrap().insert(
             key.clone(),
@@ -1297,12 +1336,12 @@ mod tests {
                 running: false,
             },
         );
-        assert_eq!(discover(&paths, "test", false).unwrap(), cached);
+        assert_eq!(discover(&paths, "test", "vm-1", false).unwrap(), cached);
         // A forced read must reach the missing runtime instead of returning
         // the fresh cached rows. No real VM or runtime is involved.
-        let refreshed = discover(&paths, "test", true);
+        let refreshed = discover(&paths, "test", "vm-1", true);
         assert!(refreshed.is_err());
-        assert_eq!(discover(&paths, "test", false), refreshed);
+        assert_eq!(discover(&paths, "test", "vm-1", false), refreshed);
         discoveries().0.lock().unwrap().remove(&key);
     }
 
@@ -1431,7 +1470,7 @@ mod tests {
         let readers: Vec<_> = (0..3)
             .map(|_| {
                 let paths = paths.clone();
-                thread::spawn(move || discover(&paths, "dev", false))
+                thread::spawn(move || discover(&paths, "dev", "vm-1", false))
             })
             .collect();
         wait_until("the guest read never started", &|| runs(&count) >= 1);
@@ -1442,7 +1481,7 @@ mod tests {
         }
         assert_eq!(runs(&count), 1);
         // Once stale, the known rows are returned at once while a new read runs.
-        let key = format!("{}:dev", paths.home.display());
+        let key = format!("{}:vm-1", paths.home.display());
         discoveries()
             .0
             .lock()
@@ -1454,7 +1493,7 @@ mod tests {
             .unwrap()
             .0 = Instant::now() - Duration::from_secs(60);
         fs::remove_file(&gate).unwrap();
-        assert_eq!(discover(&paths, "dev", false).unwrap().len(), 1);
+        assert_eq!(discover(&paths, "dev", "vm-1", false).unwrap().len(), 1);
         // The call returned while the new read is still blocked in the guest: it served
         // the known rows instead of waiting for it.
         wait_until("background discovery never started", &|| runs(&count) >= 2);
@@ -1472,20 +1511,20 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (paths, count) = slow_discovery_runtime(root.path(), "sleep 6");
         let started = Instant::now();
-        assert!(discover(&paths, "dev", false).unwrap().is_empty());
+        assert!(discover(&paths, "dev", "vm-1", false).unwrap().is_empty());
         assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
         // Later refreshes do not start another read or wait for this one.
         let started = Instant::now();
-        assert!(discover(&paths, "dev", false).unwrap().is_empty());
+        assert!(discover(&paths, "dev", "vm-1", false).unwrap().is_empty());
         assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
         assert_eq!(runs(&count), 1);
         // An explicit refresh waits for the read to finish.
-        assert_eq!(discover(&paths, "dev", true).unwrap().len(), 1);
+        assert_eq!(discover(&paths, "dev", "vm-1", true).unwrap().len(), 1);
         discoveries()
             .0
             .lock()
             .unwrap()
-            .remove(&format!("{}:dev", paths.home.display()));
+            .remove(&format!("{}:vm-1", paths.home.display()));
     }
 
     #[test]

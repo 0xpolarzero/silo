@@ -2746,8 +2746,10 @@ fn enrich_application_state(
                     && workspace.freshness == Freshness::Fresh
                 {
                     let name = workspace.machine.name();
-                    let key = format!("{}:{name}", paths.home.display());
-                    match single_flight(key, || crate::host_push::discover(paths, name, refresh)) {
+                    let key = format!("{}:{}", paths.home.display(), workspace.machine.id());
+                    match single_flight(key, || {
+                        crate::host_push::discover(paths, name, workspace.machine.id(), refresh)
+                    }) {
                         Ok(repositories) => workspace.repositories = repositories,
                         Err(message) => {
                             if workspace.attention.is_none() {
