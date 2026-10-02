@@ -53,3 +53,13 @@ Read-only source review. Checked the specified first, second, and third pass rep
 - **Consequence:** Short Linux shutdown budgets can end Silo without even starting its local-VM stop transaction.
 - **Fix:** Cap frontend waiting at half the remaining session budget, retaining the existing two-second ceiling. Schedule immediately when the deadline has elapsed.
 - **Regression:** Require native fallback admission to be scheduled strictly before a one-second deadline, preserve the two-second wait for the ordinary twenty-second session budget, and require zero wait for elapsed deadlines. No live shutdown or VM was exercised.
+
+## SETTINGS-7: The logind minimum budget exceeds the actual inhibitor limit
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/system_shutdown.rs`, `logind_budget`.
+- **Trigger:** `InhibitDelayMaxUSec` is below 1.75 seconds, particularly a subsecond configured limit.
+- **Evidence:** After subtracting a 750 ms exit margin, the old calculation clamped native shutdown to at least one second. A 500 ms limit therefore became a one-second budget; a one-second limit lost its exit margin. The regression failed for a one-microsecond limit. Systemd v255 documents that [delay inhibitors are ignored after their configured maximum](https://github.com/systemd/systemd/blob/v255/man/logind.conf.xml#L163-L169); its [D-Bus documentation](https://github.com/systemd/systemd/blob/v255/man/org.freedesktop.login1.xml#L674-L689) identifies the microsecond property as the corresponding configuration value.
+- **Consequence:** Silo schedules native cleanup beyond the protection granted by logind and can still be stopping VMs when shutdown proceeds.
+- **Fix:** Preserve the actual upper limit. Reserve half of very short limits for exit, retain the existing 750 ms margin for ordinary limits, and keep the twenty-second maximum.
+- **Regression:** Require positive subsecond limits to retain a positive VM-stop budget strictly below the inhibitor limit, require a zero budget for a zero limit, and preserve existing default/long-limit behavior. No live logind session was exercised.
