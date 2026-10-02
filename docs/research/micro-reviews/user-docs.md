@@ -60,7 +60,17 @@ Scope: `app/SiloUI/docs/silo-help.html`, checked against app code. The initial a
 - **Consequence:** Users bypass the recovery action and the displayed host-specific fix; quitting to relaunch also stops local sandboxes.
 - **Fix:** Direct users to follow the displayed recovery instructions and choose Retry checks.
 - **Test:** The bundled-help regression failed on the old relaunch instruction; existing recovery tests cover the action it now names.
-- **Status:** Fixed in the accompanying `docs(help): use current system recovery instructions` commit.
+- **Status:** Fixed and folded, `b1e072ec`; 21 focused help/production-recovery tests passed, plus typecheck, focused lint and whitespace checks.
+
+## USER-DOCS-7 — P3 — Checkpoint deletion instructions omit local dependencies and overstate retention
+
+- **File:line:** `app/SiloUI/docs/silo-help.html:18`.
+- **Trigger:** Delete a checkpoint with no forks while the owning sandbox's lineage or a later checkpoint still needs it; alternatively delete the last dependent checkpoint after its source sandbox was deleted.
+- **Evidence:** `runtime/checkpoints.rs:2386–2417` reports same-sandbox lineage and later-checkpoint/export blockers. The deterministic `checkpoints_that_forks_later_checkpoints_or_pending_starts_depend_on_are_refused` test at line 5606 covers both local blockers with no fork. `deleting_the_last_dependent_checkpoint_releases_the_deleted_sources_member` at line 5960 releases retained data while the dependent sandbox remains configured. `checkpoint-panel.tsx:244,269` displays the reason and disables Delete.
+- **Consequence:** The help tells users to select Delete when it is disabled for local dependencies and incorrectly says retained fork data stays until the last dependent sandbox is deleted.
+- **Fix:** Qualify Delete availability, name same-sandbox and saved-state dependencies, and explain that removing the final dependency releases retained data.
+- **Test:** A new bundled-help regression failed before the correction; the checkpoint panel suite verifies disabled Delete and visible reasons. Native dependency tests were inspected, not rerun, because only help text changed.
+- **Status:** Fixed in the accompanying `docs(help): explain checkpoint data dependencies` commit.
 
 Final verification used Node.js 24.11.1: `npm --prefix app/SiloUI test -- src/test/bundled-help.test.ts src/features/application/components/checkpoint-panel.test.tsx src/features/application/pages/network-page.test.tsx src/features/updates/updates.test.tsx --maxWorkers=1` passed all 76 tests. `npm --prefix app/SiloUI run typecheck`, focused oxlint for `src/test/bundled-help.test.ts`, and `git diff --check` passed. No Rust files changed, so Rust formatting and native tests were not applicable. No packaged bundle or live data was inspected.
 
