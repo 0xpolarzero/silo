@@ -643,7 +643,6 @@ fn app_status_maps_to_the_computer_use_state() {
         })
     };
     assert_eq!(map(None)["state"], "preparing");
-    assert_eq!(map(Some(&Status::NotConsented))["state"], "needs-consent");
     assert_eq!(map(Some(&Status::Idle))["state"], "preparing");
     for status in [
         Status::Downloading {
@@ -659,9 +658,22 @@ fn app_status_maps_to_the_computer_use_state() {
         reason: "No space left.".into(),
         retryable: true,
     }));
+    // Silo retries by itself, so a retryable failure is still "preparing".
+    assert_eq!(failed["state"], "preparing");
+    assert!(failed["reason"]
+        .as_str()
+        .unwrap()
+        .starts_with("No space left."));
+    let final_failure = map(Some(&Status::Failed {
+        reason: "The checksum did not match.".into(),
+        retryable: false,
+    }));
     assert_eq!(
-        (failed["state"].as_str(), failed["reason"].as_str()),
-        (Some("failed"), Some("No space left."))
+        (
+            final_failure["state"].as_str(),
+            final_failure["reason"].as_str()
+        ),
+        (Some("failed"), Some("The checksum did not match."))
     );
     // Ready app, running VM, no helper yet.
     let waiting = map(Some(&ready()));
@@ -794,13 +806,16 @@ fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
     assert_eq!(fresh["approval"], "auto");
     // App problems still win for a stopped VM.
     let (consent, _) = computer_use_state(&Inputs {
-        app: Some(&Status::NotConsented),
+        app: Some(&Status::Failed {
+            reason: "The checksum did not match.".into(),
+            retryable: false,
+        }),
         vm_running: false,
         guest: None,
         settings: &settings,
         approval_failed: false,
     });
-    assert_eq!(consent["state"], "needs-consent");
+    assert_eq!(consent["state"], "failed");
     assert_eq!(consent["approval"], "auto");
 }
 

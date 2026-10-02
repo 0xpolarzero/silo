@@ -5,15 +5,15 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
 import { MachineList } from "@/features/sandboxes/components/machine-list"
 import { computerUseFixtureNames, createFixtureComputerUseBackend, fixtureComputerUse, fixtureDesktopState } from "@/fixtures/computer-use"
-import { ComputerUseProvider, computerWorkspace, createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
-import { ChatGptAppFlow, ComputerUsePanel, ComputerUseSection, OPENAI_TERMS_URL, computerUseLabel } from "./computer-use-panel"
+import { ComputerUseProvider, computerOfWorkspace, createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
+import { CHATGPT_DOWNLOAD_NOTE, ChatGptAppProgress, ChatGptAppStatusView, ComputerUsePanel, ComputerUseSection, chatGptStatusText, computerUseLabel } from "./computer-use-panel"
 import { LinuxDesktopViewer } from "./linux-desktop-viewer"
-import { chatGptAppStatusSchema, parseLinuxDesktopState, type ComputerUseState, type LinuxDesktopState } from "./linux-desktop-state"
+import { chatGptAppStatusSchema, parseChatGptAppStatus, parseLinuxDesktopState, type ComputerUseState, type LinuxDesktopState } from "./linux-desktop-state"
 
 const ready = fixtureComputerUse("ready")
 
 function backend(overrides: Partial<ComputerUseBackend> = {}): ComputerUseBackend {
-  const base = createFixtureComputerUseBackend("ready", "notConsented")
+  const base = createFixtureComputerUseBackend("ready", "idle")
   return { ...base, ...overrides }
 }
 const wrap = (bridgeBackend: ComputerUseBackend, children: React.ReactNode) =>
@@ -35,12 +35,22 @@ describe("computer use schemas", () => {
     expect(parseLinuxDesktopState({ ...desktop, computerUse: "broken" }).computerUse).toBeNull()
   })
   it.each([
-    [{ state: "notConsented" }], [{ state: "idle" }], [{ state: "downloading", receivedBytes: 1, totalBytes: 2 }], [{ state: "verifying" }],
+    [{ state: "unknown" }], [{ state: "idle" }], [{ state: "downloading", receivedBytes: 1, totalBytes: 2 }], [{ state: "verifying" }],
     [{ state: "extracting" }], [{ state: "ready", path: "/p", version: "1" }], [{ state: "failed", reason: "x", retryable: true }],
   ])("parses ChatGPT app status %j", status => { expect(chatGptAppStatusSchema.parse(status)).toMatchObject(status) })
   it("tolerates detail fields but rejects an unknown status", () => {
     expect(chatGptAppStatusSchema.parse({ state: "downloading", receivedBytes: "many" })).toMatchObject({ receivedBytes: 0 })
     expect(chatGptAppStatusSchema.safeParse({ state: "mystery" }).success).toBe(false)
+  })
+  it("reads a state it does not know, such as an older Silo's notConsented, as unknown rather than an error", () => {
+    expect(parseChatGptAppStatus({ state: "notConsented" })).toEqual({ state: "unknown" })
+    expect(parseChatGptAppStatus({ state: "from-the-future" })).toEqual({ state: "unknown" })
+    expect(parseChatGptAppStatus({ state: "idle" })).toEqual({ state: "idle" })
+    expect(parseChatGptAppStatus("garbage")).toBeNull()
+  })
+  it("has no consent state in computer use either", () => {
+    expect(parseLinuxDesktopState({ installed: true, autoStart: true, state: "running", computerUse: { state: "needs-consent" } }).computerUse?.state).toBe("unavailable")
+    expect(computerUseFixtureNames).not.toContain("needs-consent")
   })
 })
 
@@ -107,46 +117,27 @@ describe("computer use panel", () => {
   })
 })
 
-describe("one-time ChatGPT notice", () => {
+describe("ChatGPT app progress, read-only", () => {
   it("shows nothing without a store", () => {
-    render(wrap(backend(), <ChatGptAppFlow store={undefined} />))
+    render(wrap(backend(), <ChatGptAppStatusView store={undefined} />))
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
     expect(screen.queryByRole("group")).not.toBeInTheDocument()
   })
-  it("accepts, records consent, then prepares", async () => {
-    const calls: string[] = []
-    const b = backend({ acceptNotice: async () => { calls.push("accept") }, prepare: async () => { calls.push("prepare") } })
-    const bridge = createComputerUseBridge(b)
-    render(<ChatGptAppFlow store={bridge.chatGptFor()} />)
-    const notice = await screen.findByRole("group", { name: "Download ChatGPT for Linux?" })
-    expect(notice).toHaveTextContent("official ChatGPT app for Linux from OpenAI")
-    expect(notice).toHaveTextContent("450 MB")
-    expect(notice).toHaveTextContent("1.5 GB")
-    expect(within(notice).getByRole("link", { name: "OpenAI terms of use" })).toHaveAttribute("href", OPENAI_TERMS_URL)
-    await userEvent.setup().click(within(notice).getByRole("button", { name: "Accept" }))
-    await waitFor(() => expect(calls).toEqual(["accept", "prepare"]))
+  it("has no notice, consent or buttons to accept, whatever the state", async () => {
+    for (const status of [{ state: "idle" }, { state: "downloading", receivedBytes: 1, totalBytes: 2 }, { state: "failed", reason: "Offline.", retryable: true }, { state: "unknown" }]) {
+      const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => status }))
+      const { unmount } = render(<ChatGptAppStatusView store={bridge.chatGptFor()} />)
+      await waitFor(() => expect(bridge.chatGptFor().getSnapshot().status).not.toBeNull())
+      expect(screen.queryByRole("button")).not.toBeInTheDocument()
+      expect(screen.queryByText(/Accept|Not now|terms of use|Download ChatGPT for Linux\?/)).not.toBeInTheDocument()
+      unmount()
+    }
   })
-  it("does not prepare when recording consent fails", async () => {
-    const prepare = vi.fn()
-    const bridge = createComputerUseBridge(backend({ acceptNotice: async () => { throw new Error("Disk is full") }, prepare }))
-    render(<ChatGptAppFlow store={bridge.chatGptFor()} />)
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Accept" }))
-    expect(await screen.findByRole("alert")).toHaveTextContent("Disk is full")
-    expect(prepare).not.toHaveBeenCalled()
-  })
-  it("Not now dismisses the notice without calling the backend", async () => {
-    const accept = vi.fn()
-    const bridge = createComputerUseBridge(backend({ acceptNotice: accept }))
-    render(<ChatGptAppFlow store={bridge.chatGptFor()} />)
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Not now" }))
-    expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument()
-    expect(accept).not.toHaveBeenCalled()
-  })
-  it("follows chatgpt-app-status events through to ready, then failure with retry", async () => {
+  it("follows chatgpt-app-status events from waiting through download to ready", async () => {
     let emit!: (status: unknown) => void
-    const prepare = vi.fn()
-    const bridge = createComputerUseBridge(backend({ prepare, chatGptStatus: async () => ({ state: "idle" }), listenStatus: async handler => { emit = handler; return () => {} } }))
-    render(<ChatGptAppFlow store={bridge.chatGptFor()} showReady />)
-    await screen.findByText("ChatGPT for Linux has not been downloaded yet.")
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "idle" }), listenStatus: async handler => { emit = handler; return () => {} } }))
+    render(<ChatGptAppStatusView store={bridge.chatGptFor()} />)
+    await screen.findByText("ChatGPT for Linux will download shortly.")
     await waitFor(() => expect(emit).toBeDefined())
     act(() => emit({ state: "downloading", receivedBytes: 100_000_000, totalBytes: 450_000_000 }))
     expect(screen.getByRole("status")).toHaveTextContent("100 MB of 450 MB")
@@ -157,19 +148,30 @@ describe("one-time ChatGPT notice", () => {
     expect(screen.getByRole("status")).toHaveTextContent("Unpacking")
     act(() => emit({ state: "failed", reason: "The connection was interrupted.", retryable: true }))
     expect(screen.getByRole("alert")).toHaveTextContent("The connection was interrupted.")
-    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
-    expect(prepare).toHaveBeenCalledOnce()
-    act(() => emit({ state: "ready", path: "/p", version: "26.928.31416" }))
-    expect(screen.getByRole("status")).toHaveTextContent("ChatGPT for Linux is ready (26.928.31416)")
-  })
-  it("offers no retry for a failure that cannot be retried and ignores unknown statuses", async () => {
-    let emit!: (status: unknown) => void
-    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "failed", reason: "Checksum mismatch.", retryable: false }), listenStatus: async handler => { emit = handler; return () => {} } }))
-    render(<ChatGptAppFlow store={bridge.chatGptFor()} />)
-    expect(await screen.findByRole("alert")).toHaveTextContent("Checksum mismatch.")
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+    act(() => emit({ state: "ready", path: "/p", version: "26.928.31416" }))
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  })
+  it("offers Retry only where the caller provides it, and ignores events it cannot read", async () => {
+    const onRetry = vi.fn()
+    render(<ChatGptAppProgress status={{ state: "failed", reason: "Checksum mismatch.", retryable: false }} onRetry={onRetry} />)
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
+    expect(onRetry).toHaveBeenCalledOnce()
+    let emit!: (status: unknown) => void
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "failed", reason: "Offline.", retryable: true }), listenStatus: async handler => { emit = handler; return () => {} } }))
+    render(<ChatGptAppStatusView store={bridge.chatGptFor()} />)
+    await screen.findByText("Offline.")
     act(() => emit({ state: "from-the-future" }))
-    expect(screen.getByRole("alert")).toHaveTextContent("Checksum mismatch.")
+    expect(screen.getByText("Offline.")).toBeVisible()
+  })
+  it("summarizes each state in one line", () => {
+    expect(chatGptStatusText({ state: "ready", path: null, version: "26.928.31416" })).toBe("Ready 26.928.31416")
+    expect(chatGptStatusText({ state: "downloading", receivedBytes: 42, totalBytes: 100 })).toBe("Downloading 42%")
+    expect(chatGptStatusText({ state: "failed", reason: "x", retryable: true })).toBe("Failed")
+    expect(chatGptStatusText({ state: "unknown" })).toBe("Unknown")
+    expect(chatGptStatusText(null)).toBe("Unknown")
+    expect(CHATGPT_DOWNLOAD_NOTE).toBe("Silo downloads ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux desktop.")
   })
 })
 
@@ -200,10 +202,10 @@ describe("computer use section", () => {
     await waitFor(() => expect(screen.getByText("Ready")).toBeVisible())
     expect(setup).toHaveBeenCalledWith("office/vm-1")
   })
-  it("shows the consent notice when the app is waiting for approval", async () => {
-    section(backend({ readDesktopState: async () => fixtureDesktopState("needs-consent") }))
-    expect(await screen.findByRole("button", { name: "Accept" })).toBeVisible()
-    expect(screen.queryByRole("button", { name: "Not now" })).not.toBeInTheDocument()
+  it("shows the read-only download progress while the app is preparing, with no buttons to accept", async () => {
+    section(backend({ readDesktopState: async () => fixtureDesktopState("preparing"), chatGptStatus: async () => ({ state: "downloading", receivedBytes: 187_000_000, totalBytes: 453_000_000 }) }))
+    expect(await screen.findByText(/187 MB of 453 MB/)).toBeVisible()
+    expect(screen.queryByRole("button", { name: /Accept|Not now|Retry|Download/ })).not.toBeInTheDocument()
   })
   it("renders nothing for a pre-v4 sandbox", async () => {
     const read = vi.fn(async () => fixtureDesktopState("pre-v4"))
@@ -274,12 +276,11 @@ describe("sandbox settings for v3 and v4", () => {
     editor(machine, true, true)
     expect(screen.getByRole("button", { name: "Add Linux desktop" })).toBeVisible()
   })
-  it("shows the notice instead of the desktop checkbox when creating a sandbox, and Not now does not block saving", async () => {
-    const user = userEvent.setup()
+  it("shows no download notice or consent when creating a sandbox, and saving is never blocked", async () => {
     editor(machine, false, true)
     expect(screen.queryByRole("checkbox", { name: "Linux desktop" })).not.toBeInTheDocument()
-    await screen.findByRole("group", { name: "Download ChatGPT for Linux?" })
-    await user.click(screen.getByRole("button", { name: "Not now" }))
+    expect(screen.queryByRole("group", { name: "Download ChatGPT for Linux?" })).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Accept|Not now/ })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
   })
   it("keeps the desktop checkbox without computer use support", () => {
@@ -298,54 +299,70 @@ const HOST = "11111111-1111-4111-8111-111111111111"
 const OTHER = "22222222-2222-4222-8222-222222222222"
 const VM = "33333333-3333-4333-8333-333333333333"
 const remoteVm = `silo-remote:${HOST}:${VM}`
-const NO_VM = "00000000-0000-0000-0000-000000000000"
 
 describe("ChatGPT app store per computer", () => {
-  it("routes commands to the owning computer and keeps one store per computer", async () => {
+  it("addresses a computer by its host id, never a placeholder sandbox, and keeps one store per computer", async () => {
     const calls: Array<[string, string | undefined]> = []
     const bridge = createComputerUseBridge(backend({
-      chatGptStatus: async workspace => { calls.push(["status", workspace]); return { state: "notConsented" } },
-      acceptNotice: async workspace => { calls.push(["accept", workspace]) },
-      prepare: async workspace => { calls.push(["prepare", workspace]) },
+      chatGptStatus: async computer => { calls.push(["status", computer]); return { state: "failed", reason: "Offline.", retryable: true } },
+      retry: async computer => { calls.push(["retry", computer]) },
     }))
     expect(bridge.chatGptFor()).toBe(bridge.chatGptFor())
-    expect(bridge.chatGptFor(remoteVm)).toBe(bridge.chatGptFor(computerWorkspace(HOST)))
-    expect(bridge.chatGptFor(remoteVm)).not.toBe(bridge.chatGptFor())
-    expect(bridge.chatGptFor(remoteVm)).not.toBe(bridge.chatGptFor(computerWorkspace(OTHER)))
-    await bridge.chatGptFor(remoteVm).accept()
+    expect(bridge.chatGptFor(HOST)).toBe(bridge.chatGptFor(computerOfWorkspace(remoteVm)))
+    expect(bridge.chatGptFor(HOST)).not.toBe(bridge.chatGptFor())
+    expect(bridge.chatGptFor(HOST)).not.toBe(bridge.chatGptFor(OTHER))
+    await bridge.chatGptFor(HOST).retry()
     await bridge.chatGptFor().refresh()
-    expect(calls.filter(([name]) => name !== "status")).toEqual([["accept", computerWorkspace(HOST)], ["prepare", computerWorkspace(HOST)]])
-    expect(computerWorkspace(HOST)).toBe(`silo-remote:${HOST}:${NO_VM}`)
+    expect(calls.filter(([name]) => name === "retry")).toEqual([["retry", HOST]])
     expect(calls.at(-1)).toEqual(["status", undefined])
+    expect(JSON.stringify(calls)).not.toContain("silo-remote")
   })
-  it("applies a status event only to the computer it names", async () => {
+  it("finds the owning computer of a sandbox", () => {
+    expect(computerOfWorkspace(remoteVm)).toBe(HOST)
+    expect(computerOfWorkspace("dev")).toBeUndefined()
+    expect(computerOfWorkspace(undefined)).toBeUndefined()
+  })
+  it("applies a status event only to this computer", async () => {
     const handlers: Array<(payload: unknown) => void> = []
     const emit = (payload: unknown) => handlers.forEach(handler => handler(payload))
-    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "idle" }), listenStatus: async handler => { handlers.push(handler); return () => {} } }))
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "idle" }), listenStatus: async handler => { handlers.push(handler); return () => {} } }), { busy: 60_000, idle: 60_000 })
     const local = bridge.chatGptFor()
-    const remote = bridge.chatGptFor(remoteVm)
-    const other = bridge.chatGptFor(computerWorkspace(OTHER))
-    for (const store of [local, remote, other]) store.subscribe(() => {})
+    const remote = bridge.chatGptFor(HOST)
+    const unsubscribe = [local, remote].map(store => store.subscribe(() => {}))
     await waitFor(() => expect(remote.getSnapshot().status).toEqual({ state: "idle" }))
-    act(() => emit({ state: "downloading", receivedBytes: 5, totalBytes: 10, computer: HOST }))
-    expect(remote.getSnapshot().status).toMatchObject({ state: "downloading" })
-    expect(local.getSnapshot().status).toEqual({ state: "idle" })
-    expect(other.getSnapshot().status).toEqual({ state: "idle" })
-    act(() => emit({ state: "ready", computer: null }))
-    expect(local.getSnapshot().status).toMatchObject({ state: "ready" })
-    expect(remote.getSnapshot().status).toMatchObject({ state: "downloading" })
-    act(() => emit({ state: "verifying" }))
-    expect(local.getSnapshot().status).toMatchObject({ state: "verifying" })
+    act(() => emit({ state: "downloading", receivedBytes: 5, totalBytes: 10 }))
+    expect(local.getSnapshot().status).toMatchObject({ state: "downloading" })
+    expect(remote.getSnapshot().status).toEqual({ state: "idle" })
+    unsubscribe.forEach(stop => stop())
   })
-  it("never lets one computer's form show another computer's consent", async () => {
-    const bridge = createComputerUseBridge(backend({
-      chatGptStatus: async workspace => workspace ? { state: "ready", path: "/p", version: "1" } : { state: "notConsented" },
-    }))
-    const { unmount } = render(<ChatGptAppFlow store={bridge.chatGptFor(computerWorkspace(HOST))} showReady />)
-    expect(await screen.findByRole("status")).toHaveTextContent("ready")
-    unmount()
-    render(<ChatGptAppFlow store={bridge.chatGptFor()} />)
-    expect(await screen.findByRole("group", { name: "Download ChatGPT for Linux?" })).toBeVisible()
+  it("reads a remote computer's status again on a schedule, faster while it works", async () => {
+    const statuses: unknown[] = [{ state: "downloading", receivedBytes: 1, totalBytes: 10 }, { state: "downloading", receivedBytes: 5, totalBytes: 10 }, { state: "ready", path: "/p", version: "1" }]
+    const read = vi.fn(async () => statuses.shift() ?? { state: "ready", path: "/p", version: "1" })
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 10, idle: 10_000 })
+    const store = bridge.chatGptFor(HOST)
+    const stop = store.subscribe(() => {})
+    await waitFor(() => expect(store.getSnapshot().status).toMatchObject({ state: "ready" }))
+    expect(read.mock.calls.length).toBeGreaterThanOrEqual(3)
+    const settled = read.mock.calls.length
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)) })
+    // Ready: the next read waits for the long interval.
+    expect(read.mock.calls.length).toBe(settled)
+    stop()
+  })
+  it("does not poll this computer: it has events", async () => {
+    const read = vi.fn(async () => ({ state: "idle" }))
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 10, idle: 10 })
+    const stop = bridge.chatGptFor().subscribe(() => {})
+    await waitFor(() => expect(read).toHaveBeenCalledOnce())
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)) })
+    expect(read).toHaveBeenCalledOnce()
+    stop()
+  })
+  it("shows an owner running an older Silo as unknown, without an error", async () => {
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "notConsented" }) }))
+    const store = bridge.chatGptFor(HOST)
+    await store.refresh()
+    expect(store.getSnapshot()).toMatchObject({ status: { state: "unknown" }, loadError: null, error: null })
   })
 })
 
@@ -360,18 +377,19 @@ describe("ChatGPT status ordering", () => {
     registration.resolve(() => {})
     await waitFor(() => expect(read).toHaveBeenCalledOnce())
   })
-  it("drops a read superseded by an event, so a late notConsented cannot restore the notice", async () => {
+  it("drops a read superseded by an event, so a late older status cannot replace it", async () => {
     const read = deferred<unknown>()
     let emit!: (payload: unknown) => void
     const bridge = createComputerUseBridge(backend({ chatGptStatus: () => read.promise, listenStatus: async handler => { emit = handler; return () => {} } }))
-    render(<ChatGptAppFlow store={bridge.chatGptFor()} showReady />)
+    const store = bridge.chatGptFor()
+    const stop = store.subscribe(() => {})
     await waitFor(() => expect(emit).toBeDefined())
     await new Promise(resolve => setTimeout(resolve, 0))
     act(() => emit({ state: "ready", path: "/p", version: "1.2" }))
-    expect(screen.getByRole("status")).toHaveTextContent("ready (1.2)")
-    await act(async () => { read.resolve({ state: "notConsented" }) })
-    expect(screen.queryByRole("group", { name: "Download ChatGPT for Linux?" })).not.toBeInTheDocument()
-    expect(screen.getByRole("status")).toHaveTextContent("ready (1.2)")
+    expect(store.getSnapshot().status).toMatchObject({ state: "ready", version: "1.2" })
+    await act(async () => { read.resolve({ state: "idle" }) })
+    expect(store.getSnapshot().status).toMatchObject({ state: "ready", version: "1.2" })
+    stop()
   })
   it("lets the latest of overlapping reads win", async () => {
     const first = deferred<unknown>()
@@ -383,19 +401,18 @@ describe("ChatGPT status ordering", () => {
     const b = store.refresh()
     second.resolve({ state: "idle" })
     await b
-    first.resolve({ state: "notConsented" })
+    first.resolve({ state: "failed", reason: "x", retryable: true })
     await a
     expect(store.getSnapshot().status).toEqual({ state: "idle" })
   })
-  it("reconciles with a read after each command", async () => {
-    const statuses: unknown[] = [{ state: "notConsented" }, { state: "idle" }, { state: "ready", path: "/p", version: "9" }]
-    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => statuses.shift(), prepare: async () => {} }))
+  it("reconciles with a read after Retry", async () => {
+    const statuses: unknown[] = [{ state: "failed", reason: "Offline.", retryable: true }, { state: "downloading", receivedBytes: 1, totalBytes: 2 }]
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => statuses.shift(), retry: async () => {} }))
     const store = bridge.chatGptFor()
     await store.refresh()
-    await store.accept()
-    expect(store.getSnapshot().status).toMatchObject({ state: "idle" })
-    await store.prepare()
-    expect(store.getSnapshot().status).toMatchObject({ state: "ready", version: "9" })
+    expect(store.getSnapshot().status).toMatchObject({ state: "failed" })
+    await store.retry()
+    expect(store.getSnapshot().status).toMatchObject({ state: "downloading" })
   })
   it("does not leak listeners when subscriptions change quickly", async () => {
     const pending: Array<ReturnType<typeof deferred<() => void>>> = []
@@ -413,37 +430,23 @@ describe("ChatGPT status ordering", () => {
   })
 })
 
-describe("ChatGPT notice persistence and errors", () => {
-  it("keeps Not now for the app session across remounts of the creation form", async () => {
-    const bridge = createComputerUseBridge(backend())
-    const first = render(<ChatGptAppFlow store={bridge.chatGptFor()} />)
-    await userEvent.setup().click(await first.findByRole("button", { name: "Not now" }))
-    first.unmount()
-    render(<ChatGptAppFlow store={bridge.chatGptFor()} />)
-    expect(await screen.findByText(/Silo asks again from the sandbox's details/)).toBeVisible()
-    expect(screen.queryByRole("button", { name: "Accept" })).not.toBeInTheDocument()
+describe("ChatGPT app errors", () => {
+  it("shows a rejected Retry and keeps it until dismissed", async () => {
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "failed", reason: "Offline.", retryable: true }), retry: async () => { throw new Error("Silo could not reach the other computer.") } }))
+    const store = bridge.chatGptFor(HOST)
+    await store.refresh()
+    await store.retry()
+    expect(store.getSnapshot().error).toBe("Silo could not reach the other computer.")
+    store.dismissError()
+    expect(store.getSnapshot().error).toBeNull()
   })
-  it("keeps the dismissal per computer", () => {
-    const bridge = createComputerUseBridge(backend())
-    bridge.chatGptFor().dismiss()
-    expect(bridge.chatGptFor().getSnapshot().dismissed).toBe(true)
-    expect(bridge.chatGptFor(computerWorkspace(HOST)).getSnapshot().dismissed).toBe(false)
-  })
-  it("shows a rejected Download and keeps it until dismissed", async () => {
-    const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "idle" }), prepare: async () => { throw new Error("Silo could not reach the other computer.") } }))
-    render(<ChatGptAppFlow store={bridge.chatGptFor()} />)
-    await userEvent.setup().click(await screen.findByRole("button", { name: "Download" }))
-    expect(await screen.findByRole("alert")).toHaveTextContent("could not reach the other computer")
-    await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss error" }))
-    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
-  })
-  it("shows a failed first status read with a way to try again", async () => {
-    const reads = [() => Promise.reject(new Error("Computer disconnected.")), () => Promise.resolve({ state: "idle" })]
+  it("keeps a failed first status read for this computer, and recovers with the next", async () => {
+    const reads = [() => Promise.reject(new Error("Silo could not read the status.")), () => Promise.resolve({ state: "idle" })]
     const bridge = createComputerUseBridge(backend({ chatGptStatus: () => reads.shift()!() }))
-    render(<ChatGptAppFlow store={bridge.chatGptFor()} />)
-    expect(await screen.findByRole("alert")).toHaveTextContent("Computer disconnected.")
-    await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }))
-    expect(await screen.findByText("ChatGPT for Linux has not been downloaded yet.")).toBeVisible()
+    render(<ChatGptAppStatusView store={bridge.chatGptFor()} />)
+    expect(await screen.findByRole("alert")).toHaveTextContent("Silo could not read the status.")
+    await act(async () => { await bridge.chatGptFor().refresh() })
+    expect(await screen.findByText("ChatGPT for Linux will download shortly.")).toBeVisible()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
 })
@@ -494,11 +497,11 @@ describe("computer use section reads and errors", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("Connection lost")
     expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeVisible()
   })
-  it("shows the consent flow of the computer that owns the sandbox", async () => {
-    const status = vi.fn(async (_workspace?: string) => ({ state: "notConsented" }))
-    render(wrap(backend({ readDesktopState: async () => fixtureDesktopState("needs-consent"), chatGptStatus: status }), <ComputerUseSection workspace={remoteVm} pollMs={60_000} />))
-    expect(await screen.findByRole("button", { name: "Accept" })).toBeVisible()
-    expect(status).toHaveBeenCalledWith(computerWorkspace(HOST))
+  it("reads the download progress of the computer that owns the sandbox", async () => {
+    const status = vi.fn(async (_computer?: string) => ({ state: "downloading", receivedBytes: 100_000_000, totalBytes: 200_000_000 }))
+    render(wrap(backend({ readDesktopState: async () => fixtureDesktopState("preparing"), chatGptStatus: status }), <ComputerUseSection workspace={remoteVm} pollMs={60_000} />))
+    expect(await screen.findByText(/100 MB of 200 MB/)).toBeVisible()
+    expect(status).toHaveBeenCalledWith(HOST)
   })
 })
 

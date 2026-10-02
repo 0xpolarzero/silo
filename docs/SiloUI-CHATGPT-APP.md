@@ -2,17 +2,20 @@
 
 Implements section 4 of the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
 Code: `app/SiloUI/src-tauri/src/chatgpt_app.rs` (this folder) and
-`computer_use.rs` (VM integration); lock:
-`app/SiloUI/src-tauri/guest/chatgpt-app-lock.json`. Remote computers run it on
-the owning computer. [Linux desktop](SiloUI-DESKTOP.md#built-in-computer-use)
+`chatgpt_app/auto.rs` (the background worker), `computer_use.rs` (VM integration);
+lock: `app/SiloUI/src-tauri/guest/chatgpt-app-lock.json`. Every computer, remote
+ones included, prepares its own copy. [Linux desktop](SiloUI-DESKTOP.md#built-in-computer-use)
 describes what a VM does with the folder.
 
 ## Behavior
 
 The LCU computer-use runtime needs the official ChatGPT Linux app. Silo never
-publishes OpenAI files. After the user accepts a one-time notice, the computer
-that hosts VMs downloads the pinned `.deb` from OpenAI and keeps one read-only
-copy that all its VMs mount. Guest architecture equals host architecture, so
+publishes OpenAI files. There is no consent step (owner decision 2026-10-02):
+every computer running Silo downloads the pinned `.deb` from OpenAI by itself, in
+the background, and keeps one read-only copy that all its VMs mount. The only
+disclosure is one sentence in Settings and the bundled help: "Silo downloads
+ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux
+desktop." Guest architecture equals host architecture, so
 the Debian architecture is `arm64` on Apple Silicon and Arm Linux, `amd64` on
 x86-64.
 
@@ -20,25 +23,24 @@ x86-64.
 
 1. Returns the published folder at once if it is *verified* (below; no lock,
    no network).
-2. Refuses with a `notConsented` error unless the notice was accepted.
-3. Takes an exclusive `flock` on `<root>/.lock`; concurrent callers (threads or
+2. Takes an exclusive `flock` on `<root>/.lock`; concurrent callers (threads or
    processes) wait, then verify the folder again.
-4. Removes whatever is under the published name that failed verification (a
+3. Removes whatever is under the published name that failed verification (a
    folder without a valid record, a damaged or tampered tree, a symlink): the
    record first, then the folder, which is moved aside to `.rejected-*` and
    deleted. Nothing is ever trusted because of its name.
-5. Downloads the exact pool URL over HTTPS only (redirects must stay HTTPS)
+4. Downloads the exact pool URL over HTTPS only (redirects must stay HTTPS)
    into `downloads/chatgpt_<version>_<arch>.deb.part`, resuming with `Range`
    after a failure, up to 5 attempts with 2/4/8/16 s backoff, 20 s connect
    timeout and a 30 minute bound per attempt (the blocking `reqwest` client has
    no stall timeout; a retry resumes where it stopped).
-6. Verifies size, then SHA-256, against the lock. A failing file is deleted. A
+5. Verifies size, then SHA-256, against the lock. A failing file is deleted. A
    hash mismatch is not retryable.
-7. Streams the decompressed `data.tar` from an established tool, validates
+6. Streams the decompressed `data.tar` from an established tool, validates
    every entry and writes the `usr/lib/chatgpt` entries into `.staging-*` on the
    same volume. No maintainer script ever runs. The first rejected entry aborts
    at once and kills the unpacking tools without draining the package.
-8. Publishes in a crash-safe order: every file is synced as written; directories
+7. Publishes in a crash-safe order: every file is synced as written; directories
    are synced bottom-up; the tree digests are computed from what is on disk;
    the staging directory is renamed into `published/<version>-<debarch>` and
    both parents are synced; the **publication record** (next to `published/`,
@@ -46,7 +48,7 @@ x86-64.
    at any earlier point leaves a folder that is never reused. The `.deb` is
    deleted after the record is durable. Every sync error aborts publication
    (and removes a tree whose record could not be written).
-9. Returns the canonicalized absolute path (MicroSandbox refuses mount roots
+8. Returns the canonicalized absolute path (MicroSandbox refuses mount roots
    through symlinks, for example macOS `/tmp`).
 
 A published folder is never modified. If the rename fails, a folder that
@@ -65,7 +67,7 @@ previous version until its next boot sync.
 0755, so the guest's working account can enter the mount), moves a tree an
 earlier build published directly under the root into `published/` (it is
 verified like any other before use) and returns the canonical path VMs mount.
-The app calls it at start, so the folder exists before any consent.
+The app calls it at start, so the folder exists before the download finishes.
 
 ## Filesystem safety
 
@@ -76,7 +78,7 @@ folders in the storage directory, so nothing is trusted by path:
   current user; it is opened with `O_NOFOLLOW|O_DIRECTORY`, checked with
   `fstat` and, when Silo creates it, tightened to 0700. A root writable by
   others, owned by someone else or reached through a symlink refuses every
-  operation (consent, lock, status, ensure, garbage collection). Ancestors of
+  operation (lock, status, ensure, garbage collection). Ancestors of
   the root (for example `~/Library`) are the user's own and are not checked.
 - Subdirectories (`downloads`, `.staging-*`) are opened relative to that handle
   with `O_NOFOLLOW` and checked for ownership. All writes use `openat`-style
@@ -84,7 +86,7 @@ folders in the storage directory, so nothing is trusted by path:
   `renameat`, `unlinkat`) relative to those handles, one component at a time,
   so no component can be swapped for a link between a check and its use.
   Extraction opens each parent directory component by component the same way.
-- Files Silo creates (consent, record, download `.part`, tree files) are made
+- Files Silo creates (record, download `.part`, tree files) are made
   exclusively. A planted `.part` (a symlink, a hard link, someone else's file)
   is deleted, never opened through. A resumed download re-checks what it opened
   (regular file, one link, owned by the user).
@@ -138,7 +140,7 @@ so production (`org.silo.preview`) and Dev (`org.silo.dev`) never share it, as
 `~/Library/Application Support/<identifier>/chatgpt/`.
 
 ```text
-.lock  consent.json  downloads/  .staging-*/
+.lock  downloads/  .staging-*/
 <version>-<debarch>.published.json
 published/<version>-<debarch>/
 ```
@@ -147,37 +149,65 @@ Each `published/<version>-<debarch>` folder holds what dpkg would place in
 `/usr/lib/chatgpt`: `ChatGPT`, `resources/…`. `published/` is what VMs mount
 read-only at `/opt/silo/chatgpt`; it holds only verified trees and is
 garbage collected, which keeps MicroSandbox's first `statfs` walk of the mount
-small (#1701/#1702). Records, staging, downloads and consent stay outside it.
+small (#1701/#1702). Records, staging and downloads stay outside it. A `consent.json` left by an
+earlier build is ignored.
 
-## Consent
+## Automatic preparation
 
-`consent.json` records the accepted notice version (currently 1). Raising
-`NOTICE_VERSION` asks again. It is channel scoped by the directory above.
-`accept_notice` is the only writer.
+`chatgpt_app/auto.rs` runs one background worker per process (an in-process slot;
+`ensure` also holds the cross-process lock, and `PREPARING` covers a second
+caller in the process). `computer_use::install` starts it at app start on a
+background thread: read the status (the first full digest of a process runs
+here), collect unused versions, and, unless the pinned version is published, wait
+10 s and start the worker at low priority (utility QoS on macOS, nice 10 on
+Linux; the unpacking tools inherit it). The worker loops: run `ensure` (which
+itself retries a broken connection 5 times with 2 to 16 s backoff and resumes the
+`.part` file), then
+
+- ready: sync running built-in VMs at once and collect garbage; stop;
+- retryable failure (network, firewall, disk space): wait 30 s, 1, 2, 5, 10, 30
+  min, then hourly, and try again; the failure stays the reported status
+  meanwhile (the clear "firewall or network filter may be holding Silo's
+  connection" message is kept);
+- failure retrying cannot fix (hash mismatch, OpenAI no longer serves the
+  pinned version): stop; **Retry** starts a new worker.
+
+Retry (`chatgpt_app_retry`, below) wakes a waiting worker, which restarts the
+schedule, or starts a worker. Nothing waits for the download: VM creation, start
+and restore only need the (possibly empty) `published/` folder. Silo does not
+detect metered networks; an offline or filtered connection costs only the later
+retries. The status survives as the in-process cache until the next attempt and
+is recomputed from disk at every start.
 
 ## Status
 
-`Status` serializes with a `state` tag: `notConsented`, `idle`,
+`Status` serializes with a `state` tag: `idle` (waiting to download),
 `downloading {receivedBytes,totalBytes}`, `verifying`, `extracting`,
 `ready {path,version}`, `failed {reason,retryable}`. The reporter is called
-from the worker thread (downloads throttled to 4 per second).
+from the worker thread (downloads throttled to 4 per second). The controller
+adds `unknown` for a computer whose status it cannot read.
 
 ### Commands
 
-All three return the status object (`chatgpt_app_prepare` resolves with the
-final one) and take an optional `workspace`: for a remote VM they run on the
-computer that owns it (`chatgpt.status`, `chatgpt.accept` and `chatgpt.prepare`
-bridge methods; an older Silo there answers "Update Silo on that computer to use
-computer use."). `chatgpt_app_status` never blocks the UI thread and never
-re-verifies in the render path: status reads use a cache filled at app start, by
-the commands and by progress events. The first full digest of a process runs on
-a background thread at start. `chatgpt_app_prepare` emits `chatgpt-app-status`
-for every step; for a remote computer the owner downloads and the controller
-polls its status, emitting the same event.
+Both take an optional `computer`: the host id of a remote computer (omitted: this
+computer). A sandbox target is rejected; there is no placeholder sandbox routing.
 
-- `chatgpt_app_status { workspace? }`
-- `chatgpt_app_accept_notice { workspace? }`
-- `chatgpt_app_prepare { workspace? }`
+- `chatgpt_app_status { computer? }` returns the status. It never blocks the UI
+  thread and never re-verifies in the render path: reads use a cache filled at app
+  start and by progress events; the first full digest of a process runs on a
+  background thread at start. For a remote computer it calls the bridge method
+  `chatgpt.status`; an owner whose Silo lacks computer use answers `{"state":
+  "unknown"}` (not an error), and the frontend maps any state it does not know,
+  such as an older Silo's `notConsented`, to `unknown`.
+- `chatgpt_app_retry { computer? }` asks that computer to try now (bridge method
+  `chatgpt.retry`, a change, computer level) and returns its status at once; the
+  owner downloads. An older owner reports it unsupported.
+
+`chatgpt-app-status` events carry this computer's status for the UI (`computer:
+null`); a remote computer has no events and is polled by the frontend (3 s while
+it works, 15 s otherwise). Removed on 2026-10-02: `chatgpt_app_accept_notice`,
+`chatgpt_app_prepare`, bridge methods `chatgpt.accept` and `chatgpt.prepare`,
+`consent.json` and the `notConsented` state.
 
 When preparing finishes with `ready`, running built-in VMs on this computer set
 computer use up at once (see below); stopped ones do it when they start.
@@ -242,19 +272,18 @@ app lock and `lcu-lock.json` together.
 
 Unit tests (`cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked
 chatgpt_app`) build synthetic `.deb` files (ar container plus gzip data member)
-in the test and cover hash and size mismatch, consent, absolute, `..`,
+in the test and cover hash and size mismatch, a first call with no stored choice, absolute, `..`,
 escaping and chained symlinks, write-through-symlink, setuid/setgid, devices,
 hard links, case collisions, duplicates, missing or non-executable required
 files, atomic publish, reuse after interruption, concurrency, garbage
-collection and status JSON. `tests/hardening.rs` adds planted symlinks (download
-part file, staging folder, version folder, storage root, downloads folder,
-consent file), a preseeded fake version folder, a forged tree under a genuine
+collection and status JSON. `chatgpt_app/auto.rs` tests cover the retry schedule, retries until ready, stopping on a failure retrying cannot fix, the early-wake restart, the single worker, the ready hook running once, and that no consent path remains in the source, `build.rs` or the capabilities. `tests/hardening.rs` adds planted symlinks (download
+part file, staging folder, version folder, storage root, downloads folder), a preseeded fake version folder, a forged tree under a genuine
 record, tampering after publication (same-size edit seen by the full digest,
 size, added, removed, relinked and loosened-mode changes seen by the cheap
 check), an interrupted publish (no record, torn record, partial tree), record
 binding to the lock, PAX size larger than the header size, checked size sums,
 long-name, PAX and entry-count limits, abort at the first rejected entry, and
-exclusive consent files. They use temporary directories and no process-wide
+exclusive file creation. They use temporary directories and no process-wide
 Silo state (the in-memory verification cache is keyed by path).
 
 Opt-in live test, downloads 453 MB and unpacks about 1.5 GB into a temporary

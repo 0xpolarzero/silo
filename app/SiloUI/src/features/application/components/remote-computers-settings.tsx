@@ -4,6 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { showActionFailure } from "@/lib/operation-toast"
+import { useChatGptApp, useComputerUseBridge } from "@/desktop/computer-use-bridge"
+import { CHATGPT_DOWNLOAD_NOTE, chatGptStatusText } from "@/desktop/computer-use-panel"
 import type { ApplicationActions, ApplicationSource } from "../model/application-source"
 import type { RemoteManagement } from "../model/remote-computers"
 
@@ -52,7 +54,50 @@ function ManagementAddresses({ management }: { management: RemoteManagement }) {
   </div>
 }
 
+/** One computer's ChatGPT for Linux status. Every computer downloads it by itself; a failure can be retried here. */
+function ChatGptAppRow({ name, computer, connected = true }: { name: string; computer?: string; connected?: boolean }) {
+  const bridge = useComputerUseBridge()
+  const store = connected ? bridge?.chatGptFor(computer) : undefined
+  const { status, busy, error, loadError } = useChatGptApp(store)
+  // An offline computer, or one whose Silo is older, simply has no status to show: unknown, never an error.
+  const known = connected && status !== null && status.state !== "unknown"
+  const text = known ? chatGptStatusText(status) : "Unknown"
+  const failed = status?.state === "failed"
+  const working = status?.state === "downloading" || status?.state === "verifying" || status?.state === "extracting"
+  return <li className="flex items-start justify-between gap-3">
+    <div className="min-w-0">
+      <p className="truncate text-xs font-medium">{name}</p>
+      <p role={working ? "status" : undefined} className="text-xs text-muted-foreground">{text}{!connected && " · offline"}</p>
+      {failed && <p role="alert" className="break-words text-xs text-destructive">{status.reason}{status.retryable ? " Silo tries again automatically." : ""}</p>}
+      {error && <p role="alert" className="break-words text-xs text-destructive">{error}</p>}
+      {!computer && loadError && !status && <p role="alert" className="break-words text-xs text-destructive">{loadError}</p>}
+    </div>
+    {failed && <Button size="xs" variant="outline" disabled={busy} aria-label={`Retry ChatGPT for Linux on ${name}`} onClick={() => { void store?.retry() }}>Retry</Button>}
+  </li>
+}
+
+function ChatGptAppSettings({ source }: { source: ApplicationSource }) {
+  if (!useComputerUseBridge()) return null
+  return <section aria-label="ChatGPT for Linux" className="grid gap-3">
+    <h2 className="text-xs font-medium">ChatGPT for Linux</h2>
+    <div className="grid gap-3 rounded-lg border p-3">
+      <p className="text-xs text-muted-foreground">{CHATGPT_DOWNLOAD_NOTE}</p>
+      <ul aria-label="ChatGPT for Linux on each computer" className="grid gap-3">
+        <ChatGptAppRow name="This computer" />
+        {source.remoteComputers?.map(computer => <ChatGptAppRow key={computer.id} name={computer.name} computer={computer.id} connected={computer.connected} />)}
+      </ul>
+    </div>
+  </section>
+}
+
 export function RemoteComputersSettings({ source, actions }: { source: ApplicationSource; actions: ApplicationActions }) {
+  return <div className="grid gap-6">
+    {actions.connectComputer && <ComputersSection source={source} actions={actions} />}
+    <ChatGptAppSettings source={source} />
+  </div>
+}
+
+function ComputersSection({ source, actions }: { source: ApplicationSource; actions: ApplicationActions }) {
   const [connecting, setConnecting] = useState(false)
   const [busy, setBusy] = useState(false)
   async function perform(operation: () => Promise<void>) {

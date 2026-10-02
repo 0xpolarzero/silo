@@ -97,8 +97,9 @@ in the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
   (the tested app/LCU pair) and starts `silo-computer-use sync --boot --approval
   <mode>` detached; the boot never waits for it or fails because of it. Pushing
   the helper each time keeps it current with Silo, which the image cannot. The same
-  runs when the app becomes ready while the VM runs (after the one-time notice and
-  download), so a VM created before consent gains computer use without a restart.
+  runs when the app becomes ready while the VM runs (after the automatic
+  download), so a VM created before the app was published gains computer use
+  without a restart.
 - **`sync`** is idempotent and does nothing when the receipt matches the pinned
   pair and the approval mode. Otherwise: require the read-only mount and the
   app folder (else `needs-app`); use the staged archive if its hash matches the
@@ -124,7 +125,7 @@ in the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
   A fork starts with its source's mode; an import starts with `ask`.
 - **Desktop state.** `read_desktop_state` adds `computerUse` for built-in VMs,
   also while stopped (`state: "vm-stopped"` keeps the approval and the last
-  versions seen): `state` (`unavailable`, `needs-consent`, `preparing`,
+  versions seen): `state` (`unavailable`, `preparing`,
   `installing`, `ready`, `failed`), `reason`, `compatibility` (`tested`,
   `untested`, `unknown`), `warning`, `approval`, `appVersion`, `runtimeVersion`,
   `lcuVersion`, `agents`. The running read costs one guest command that also

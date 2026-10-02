@@ -617,10 +617,17 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
                 None,
             )
         }
-        Some(Status::NotConsented) => {
-            return (state_object("needs-consent", None, settings, known), None)
+        Some(Status::Idle) => {
+            return (
+                state_object(
+                    "preparing",
+                    Some("Waiting to download ChatGPT for Linux."),
+                    settings,
+                    known,
+                ),
+                None,
+            )
         }
-        Some(Status::Idle) => return (state_object("preparing", None, settings, known), None),
         Some(Status::Downloading { .. } | Status::Verifying | Status::Extracting) => {
             return (
                 state_object(
@@ -631,6 +638,17 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
                 ),
                 None,
             )
+        }
+        // Silo retries a retryable failure by itself, so the sandbox is still preparing.
+        Some(Status::Failed {
+            reason,
+            retryable: true,
+        }) => {
+            let reason = format!("{reason} Silo tries again automatically.");
+            return (
+                state_object("preparing", Some(&reason), settings, known),
+                None,
+            );
         }
         Some(Status::Failed { reason, .. }) => {
             return (state_object("failed", Some(reason), settings, known), None)
@@ -789,7 +807,8 @@ pub(crate) fn apply_approval_with(
     Ok(())
 }
 
-/// Prepares the shared folder and the status cache at app start.
+/// Prepares the shared folder and the status cache at app start, then downloads the
+/// pinned ChatGPT app in the background when it is not published yet.
 pub(crate) fn install(app: &AppHandle) {
     let Ok(root) = chatgpt_app::storage_root(app) else {
         return;
@@ -801,10 +820,7 @@ pub(crate) fn install(app: &AppHandle) {
     }
     // Verifying the app tree the first time reads every byte (seconds): off the main thread.
     let app = app.clone();
-    std::thread::spawn(move || {
-        chatgpt_app::refresh_status_blocking(&app);
-        chatgpt_app::collect_unused(&app);
-    });
+    std::thread::spawn(move || chatgpt_app::start_automatic(&app));
 }
 
 #[cfg(test)]

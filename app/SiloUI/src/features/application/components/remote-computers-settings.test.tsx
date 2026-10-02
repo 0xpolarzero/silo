@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 import { ConnectComputerForm, RemoteComputersSettings } from "./remote-computers-settings"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { remoteManagementSchema } from "../model/remote-computers"
+import { ComputerUseProvider, createComputerUseBridge, type ComputerUseBackend } from "@/desktop/computer-use-bridge"
 import type { ApplicationActions, ApplicationSource } from "../model/application-source"
 
 function source(remoteManagement: ApplicationSource["remoteManagement"]): ApplicationSource {
@@ -87,4 +88,56 @@ it("explains connection removal before it is selected", async () => {
   expect(screen.getByText("Removing the connection leaves sandboxes on Office unchanged.")).toBeVisible()
   fireEvent.click(screen.getByRole("button", { name: "Remove connection to Office" }))
   await waitFor(() => expect(removeComputer).toHaveBeenCalledExactlyOnceWith("office"))
+})
+
+describe("ChatGPT for Linux on each computer", () => {
+  const HOST = "11111111-1111-4111-8111-111111111111"
+  const OFFLINE = "22222222-2222-4222-8222-222222222222"
+  const computers = [
+    { id: HOST, name: "Office Mac", address: "ana@office", connected: true },
+    { id: OFFLINE, name: "Laptop", address: "ana@laptop", connected: false },
+  ]
+  function settings(statuses: Record<string, unknown>, retry = vi.fn(async (_computer?: string) => ({}))) {
+    const reads: Array<string | undefined> = []
+    const backend: ComputerUseBackend = {
+      readDesktopState: async () => ({}), setApproval: async () => ({}), setup: async () => ({}),
+      chatGptStatus: async computer => { reads.push(computer); return statuses[computer ?? "local"] },
+      retry, listenStatus: async () => () => {},
+    }
+    render(<ComputerUseProvider bridge={createComputerUseBridge(backend)}>
+      <RemoteComputersSettings source={{ ...source(undefined), remoteComputers: computers }} actions={actions()} />
+    </ComputerUseProvider>)
+    return { reads, retry }
+  }
+  const row = (name: string) => within(screen.getByRole("list", { name: "ChatGPT for Linux on each computer" })).getByText(name).closest("li")!
+
+  it("explains the download in one sentence and offers nothing to accept", async () => {
+    settings({ local: { state: "ready", path: "/p", version: "26.928.31416" } })
+    expect(await screen.findByText("Ready 26.928.31416")).toBeVisible()
+    expect(screen.getByText("Silo downloads ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux desktop.")).toBeVisible()
+    expect(screen.queryByRole("button", { name: /Accept|Not now|Download/ })).not.toBeInTheDocument()
+  })
+
+  it("shows each computer's own state, with progress and failure", async () => {
+    settings({ local: { state: "downloading", receivedBytes: 42, totalBytes: 100 }, [HOST]: { state: "failed", reason: "Silo could not reach OpenAI.", retryable: true } })
+    await waitFor(() => expect(within(row("This computer")).getByRole("status")).toHaveTextContent("Downloading 42%"))
+    await waitFor(() => expect(within(row("Office Mac")).getByRole("alert")).toHaveTextContent("Silo could not reach OpenAI."))
+    expect(within(row("Office Mac")).getByRole("alert")).toHaveTextContent("tries again automatically")
+  })
+
+  it("retries a failed computer by its host id and not through a sandbox", async () => {
+    const { retry } = settings({ local: { state: "ready", path: "/p", version: "1" }, [HOST]: { state: "failed", reason: "Offline.", retryable: true } })
+    fireEvent.click(await screen.findByRole("button", { name: "Retry ChatGPT for Linux on Office Mac" }))
+    await waitFor(() => expect(retry).toHaveBeenCalledWith(HOST))
+    expect(screen.getAllByRole("button", { name: /^Retry/ })).toHaveLength(1)
+  })
+
+  it("shows an owner on an older Silo, and an offline one, as unknown without errors", async () => {
+    const { reads } = settings({ local: { state: "ready", path: "/p", version: "1" }, [HOST]: { state: "notConsented" } })
+    await waitFor(() => expect(within(row("Office Mac")).getByText("Unknown")).toBeVisible())
+    expect(within(row("Laptop")).getByText(/Unknown · offline/)).toBeVisible()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    // An offline computer is not asked.
+    expect(reads).not.toContain(OFFLINE)
+  })
 })

@@ -16,9 +16,13 @@ own approvals, which a per-VM switch can turn off for computer use.
 
 - The desktop is part of every new VM, baked into a published v4 guest image.
   It starts with the VM because LCU needs a running Xfce session.
-- Silo never publishes OpenAI files. On each computer that hosts VMs, Silo
-  downloads the official ChatGPT Linux `.deb` from OpenAI, after a one-time
-  notice, and keeps one read-only copy shared by all VMs on that computer.
+- Silo never publishes OpenAI files. Every computer that runs Silo downloads
+  the official ChatGPT Linux `.deb` from OpenAI by itself, in the background,
+  and keeps one read-only copy shared by all VMs on that computer. Owner
+  decision 2026-10-02: no consent prompt, notice or setting. The app tells the
+  user in one sentence (Settings, bundled help) and shows the state per
+  computer in Settings, Computers. Downloading never blocks creating or
+  starting a VM; a failure retries with backoff and can be retried by hand.
 - Silo pins a tested pair: an LCU release and a ChatGPT app version with
   per-architecture SHA-256. The owner updates the pair by hand after testing.
   No automatic tracking of new ChatGPT releases.
@@ -121,19 +125,20 @@ absolute).
 
 - Lock: app version, per-architecture SHA-256 and runtime version, plus the
   LCU version and SHA-256.
-- One-time notice before the first download, linking OpenAI's terms.
+- No notice or consent: the download starts by itself (decision of 2026-10-02).
 - Download the exact pinned version from OpenAI's pool; verify SHA-256.
 - Extract only `usr/lib/chatgpt` (macOS `tar`, Linux `dpkg-deb -x`); never run
   maintainer scripts. Refuse case collisions, setuid/setgid files, absolute or
   escaping paths and links leaving the tree. One immutable folder per version
   in a per-channel Silo data directory; publish atomically; delete the `.deb`.
 - Pass canonical paths to MicroSandbox.
-- Remote computers do this on the owning computer.
+- Every computer does this itself at its own start, remote ones included; a
+  controller never prepares an app for another computer.
 
-Done: lock (`lcuVersion` 0.8.1), notice, download, verification, extraction and
-publication under `<app data>/chatgpt/published/`, with the three commands
-registered, cached status reads and routing to the owning computer. See
-[ChatGPT app](SiloUI-CHATGPT-APP.md).
+Done: lock (`lcuVersion` 0.8.1), download, verification, extraction and
+publication under `<app data>/chatgpt/published/`, started automatically at app
+start with retries (2026-10-02, replacing the one-time notice), cached status
+reads and a computer-level Retry. See [ChatGPT app](SiloUI-CHATGPT-APP.md).
 
 ### 5. VM integration
 
@@ -154,8 +159,8 @@ policy at launch time.
   `/opt/silo/chatgpt`. That folder holds only verified, published version
   folders (staging, downloads and records live elsewhere) and is garbage
   collected, which keeps the first-statfs walk (#1701/#1702) small. It exists,
-  possibly empty, before any VM starts, so a VM created before the one-time
-  notice was accepted gains computer use later, and a pinned-version change
+  possibly empty, before any VM starts, so a VM created before the automatic
+  download finished gains computer use later, and a pinned-version change
   reaches existing VMs at their next boot.
 - At boot, a guest helper installs LCU against the mounted app when the pinned
   pair changes, runs `lcu setup --agent auto`, and applies the VM's approval
@@ -191,30 +196,51 @@ change. Record final sizes and add a `minor` changeset.
 
 Backend (Rust, guest scripts) and frontend implement this together.
 
-- Host storage: `<app data>/chatgpt/` keeps `.lock`, consent, downloads,
-  staging and publication records; verified trees are published under
+- Host storage: `<app data>/chatgpt/` keeps `.lock`, downloads, staging and
+  publication records; verified trees are published under
   `<app data>/chatgpt/published/<version>-<debarch>/`. VMs mount
   `published/` read-only at `/opt/silo/chatgpt`; the guest uses
   `/opt/silo/chatgpt/<pinned version>-<debarch>` passed by the host.
-- Commands (Tauri, local and routed to the owning computer like other VM
-  operations): `chatgpt_app_status`, `chatgpt_app_accept_notice`,
-  `chatgpt_app_prepare` (asynchronous; emits `chatgpt-app-status` with the
-  status object), and `set_computer_use_approval { workspace, mode: "ask" |
-  "auto" }` returning the desktop state. `desktop_action` gains the action
+- Preparation is automatic and per computer. At app start, off the UI thread and
+  at low priority (utility QoS on macOS, nice 10 on Linux), the app reads the
+  status and, unless the pinned version is published, waits 10 s and runs the
+  download in one background worker (never two at once: an in-process slot plus
+  the storage lock). A retryable failure (network, firewall, disk space) is
+  retried after 30 s, 1, 2, 5, 10, 30 min, then hourly, until it succeeds or the
+  app quits; a failure retrying cannot fix (checksum mismatch, a pinned version
+  OpenAI no longer serves) stops the worker until Retry. Offline or metered
+  connections only mean later attempts: nothing waits for the download, and VM
+  creation, start and restore never depend on it (the mount folder exists,
+  possibly empty). When the app becomes ready the worker syncs running built-in
+  VMs at once (`computer_use::app_ready`) and collects unused versions.
+- Commands (Tauri): `chatgpt_app_status { computer? }` and
+  `chatgpt_app_retry { computer? }`, where `computer` is a remote computer's
+  host id (omitted: this computer; a sandbox target is rejected). Retry wakes a
+  waiting worker or starts one, and returns the status at once. Removed:
+  `chatgpt_app_accept_notice`, `chatgpt_app_prepare`, the consent file and the
+  consent state. Events: `chatgpt-app-status` carries this computer's status
+  object (`computer: null`); a remote computer has no events, the controller
+  reads `chatgpt.status` (about every 3 s while it works, 15 s otherwise).
+  Also `set_computer_use_approval { workspace, mode: "ask" | "auto" }`
+  returning the desktop state, and the `desktop_action` action
   `setup-computer-use`, which reruns LCU setup for agents installed later.
-  As implemented, the three `chatgpt_app_*` commands take an optional
-  `workspace` (no argument means this computer); for a remote VM they run on its
-  owner (bridge methods `chatgpt.status`, `chatgpt.accept`, `chatgpt.prepare`,
-  `computer.approval`; for a remote prepare the owner downloads and the
-  controller polls it, emitting `chatgpt-app-status` itself).
+- Bridge methods: `chatgpt.status` (read), `chatgpt.retry` (change, no VM id),
+  `computer.approval`. Removed: `chatgpt.accept`, `chatgpt.prepare` and the
+  placeholder `silo-remote:<host>:<nil-uuid>` routing. An owner on an older Silo
+  answers `chatgpt.retry` as unsupported and `chatgpt.status` with its own
+  consent-era states; the controller shows such a computer as `unknown`, not as
+  an error (`chatgpt_app_status` maps "unsupported" to `{"state":"unknown"}`,
+  and the frontend maps any state it does not know to `unknown`).
 - `desktop.builtIn: boolean` in a VM's saved/reported `desktop` object marks a VM
   created from a v4 image. Silo decides it; a written value is ignored.
-- App status object, tagged by `state`: `notConsented`, `idle`,
+- App status object, tagged by `state`: `idle` (waiting to download),
   `downloading { receivedBytes, totalBytes }`, `verifying`, `extracting`,
-  `ready { path, version }`, `failed { reason, retryable }`.
+  `ready { path, version }`, `failed { reason, retryable }`. The controller
+  adds `unknown` for a computer whose status it cannot read.
 - Desktop state (`read_desktop_state`) gains an optional `computerUse` object
-  for v4 VMs: `state` (`unavailable`, `needs-consent`, `preparing`,
-  `installing`, `ready`, `failed`), `reason`, `compatibility` (`tested`,
+  for v4 VMs: `state` (`unavailable`, `preparing`, `installing`, `ready`,
+  `failed`; `preparing` covers waiting, downloading and a failure Silo retries
+  by itself, with the reason; `failed` is a final failure), `reason`, `compatibility` (`tested`,
   `untested`, `unknown`, from `lcu status --json`), `warning`, `approval`
   (`ask` or `auto`), `appVersion`, `runtimeVersion`, `lcuVersion`, `agents`.
   The legacy `lcu*` fields remain for VMs created before v4.

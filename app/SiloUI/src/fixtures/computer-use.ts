@@ -3,19 +3,20 @@ import type { ApplicationSource } from "@/features/application/model/application
 import type { ChatGptAppStatus, ComputerUseState, LinuxDesktopState } from "@/desktop/linux-desktop-state"
 import { computerUseStates } from "@/desktop/linux-desktop-state"
 
-// Deterministic fixtures for built-in computer use. Select with `?computer-use=<name>` and
-// `&chatgpt=<name>` in the browser preview; nothing here reaches Silo services.
+// Deterministic fixtures for built-in computer use. Select with `?computer-use=<name>`,
+// `&chatgpt=<name>` (this computer's ChatGPT app) and `&chatgpt-remote=<name>` (every remote
+// computer's) in the browser preview; nothing here reaches Silo services.
 export const computerUseFixtureNames = [...computerUseStates, "untested", "auto", "unknown-approval", "pre-v4"] as const
 export type ComputerUseFixtureName = typeof computerUseFixtureNames[number]
-export const chatGptFixtureNames = ["notConsented", "idle", "downloading", "verifying", "extracting", "ready", "failed", "failed-final"] as const
+export const chatGptFixtureNames = ["idle", "downloading", "verifying", "extracting", "ready", "failed", "failed-final", "unknown"] as const
 export type ChatGptFixtureName = typeof chatGptFixtureNames[number]
 
 export function computerUseFixtureFromSearch(search: string): ComputerUseFixtureName | undefined {
   const requested = new URLSearchParams(search).get("computer-use")
   return computerUseFixtureNames.find(name => name === requested)
 }
-export function chatGptFixtureFromSearch(search: string): ChatGptFixtureName | undefined {
-  const requested = new URLSearchParams(search).get("chatgpt")
+export function chatGptFixtureFromSearch(search: string, parameter = "chatgpt"): ChatGptFixtureName | undefined {
+  const requested = new URLSearchParams(search).get(parameter)
   return chatGptFixtureNames.find(name => name === requested)
 }
 
@@ -26,8 +27,7 @@ export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseSta
   }
   switch (name) {
     case "unavailable": return { ...base, state: "unavailable", reason: "This sandbox was created before computer use was built in.", agents: null }
-    case "needs-consent": return { ...base, state: "needs-consent", appVersion: null, runtimeVersion: null, lcuVersion: null, agents: null }
-    case "preparing": return { ...base, state: "preparing", reason: "Waiting for ChatGPT for Linux.", agents: null }
+    case "preparing": return { ...base, state: "preparing", reason: "Preparing ChatGPT for Linux.", appVersion: null, runtimeVersion: null, lcuVersion: null, agents: null }
     case "installing": return { ...base, state: "installing", reason: "Configuring Claude Code and Codex." }
     case "failed": return { ...base, state: "failed", reason: "No supported agent was found. Install one, then choose Set up computer use.", agents: [] }
     case "untested": return { ...base, compatibility: "untested", warning: "ChatGPT for Linux 26.1002.1 has not been tested with this version of Silo. Computer use may not work as expected." }
@@ -50,7 +50,18 @@ export function fixtureChatGptStatus(name: ChatGptFixtureName): ChatGptAppStatus
     case "ready": return { state: "ready", path: "/chatgpt/26.928.31416-arm64", version: "26.928.31416" }
     case "failed": return { state: "failed", reason: "The connection to OpenAI was interrupted.", retryable: true }
     case "failed-final": return { state: "failed", reason: "The downloaded file did not match the expected checksum. It was removed.", retryable: false }
-    case "notConsented": case "idle": case "verifying": case "extracting": return { state: name }
+    case "idle": case "verifying": case "extracting": case "unknown": return { state: name }
+  }
+}
+
+/** Two connected computers for the per-computer ChatGPT status in Settings: one online, one offline. */
+export function withRemoteComputersFixture(source: ApplicationSource): ApplicationSource {
+  return {
+    ...source,
+    remoteComputers: [
+      { id: "11111111-1111-4111-8111-111111111111", name: "Office Mac", address: "ana@office.local", connected: true },
+      { id: "22222222-2222-4222-8222-222222222222", name: "Studio PC", address: "ana@studio.local", connected: false },
+    ],
   }
 }
 
@@ -64,28 +75,31 @@ export function withComputerUseFixture(source: ApplicationSource, name: Computer
   }
 }
 
-/** A backend that behaves like the native one against in-memory state, with timers for progress. */
-export function createFixtureComputerUseBackend(name: ComputerUseFixtureName, chatgpt: ChatGptFixtureName): ComputerUseBackend {
+/** A backend that behaves like the native one against in-memory state, with timers for progress.
+ * `chatgpt` is this computer's ChatGPT app, `remote` every remote computer's. */
+export function createFixtureComputerUseBackend(name: ComputerUseFixtureName, chatgpt: ChatGptFixtureName, remote: ChatGptFixtureName = chatgpt): ComputerUseBackend {
   let desktop = fixtureDesktopState(name)
-  let status = fixtureChatGptStatus(chatgpt)
+  const statuses = new Map<string, ChatGptAppStatus>()
+  const key = (computer?: string) => computer ?? ""
+  const statusOf = (computer?: string) => statuses.get(key(computer)) ?? fixtureChatGptStatus(computer ? remote : chatgpt)
   const handlers = new Set<(status: unknown) => void>()
-  const emit = (next: ChatGptAppStatus) => { status = next; handlers.forEach(handler => handler(next)) }
+  const emit = (computer: string | undefined, next: ChatGptAppStatus) => { statuses.set(key(computer), next); if (!computer) handlers.forEach(handler => handler(next)) }
   const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
   const setUse = (patch: Partial<ComputerUseState>) => { if (desktop.computerUse) desktop = { ...desktop, computerUse: { ...desktop.computerUse, ...patch } } }
   return {
     readDesktopState: async () => structuredClone(desktop),
     setApproval: async (_workspace, mode) => { setUse({ approval: mode }); return structuredClone(desktop) },
     setup: async () => { await delay(900); setUse({ state: "ready", reason: null }); return structuredClone(desktop) },
-    chatGptStatus: async () => status,
-    acceptNotice: async () => { status = { state: "idle" } },
-    prepare: async () => {
+    chatGptStatus: async computer => statusOf(computer),
+    retry: async computer => {
       void (async () => {
-        for (const received of [60_000_000, 190_000_000, 340_000_000, 453_000_000]) { emit({ state: "downloading", receivedBytes: received, totalBytes: 453_000_000 }); await delay(500) }
-        emit({ state: "verifying" }); await delay(500)
-        emit({ state: "extracting" }); await delay(500)
-        emit({ state: "ready", path: "/chatgpt/26.928.31416-arm64", version: "26.928.31416" })
-        setUse({ state: "ready", reason: null })
+        for (const received of [60_000_000, 190_000_000, 340_000_000, 453_000_000]) { emit(computer, { state: "downloading", receivedBytes: received, totalBytes: 453_000_000 }); await delay(500) }
+        emit(computer, { state: "verifying" }); await delay(500)
+        emit(computer, { state: "extracting" }); await delay(500)
+        emit(computer, { state: "ready", path: "/chatgpt/26.928.31416-arm64", version: "26.928.31416" })
+        if (!computer) setUse({ state: "ready", reason: null })
       })()
+      return statusOf(computer)
     },
     listenStatus: async handler => { handlers.add(handler); return () => { handlers.delete(handler) } },
   }

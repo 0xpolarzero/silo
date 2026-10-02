@@ -177,7 +177,7 @@ fn lock_for(bytes: &[u8]) -> Lock {
 
 fn root() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    accept_notice(&dir.path().join("chatgpt")).unwrap();
+    Dir::open_root(&dir.path().join("chatgpt"), true).unwrap();
     dir
 }
 
@@ -244,24 +244,24 @@ fn lock_rejects_plain_http_and_foreign_hosts() {
 }
 
 #[test]
-fn nothing_is_downloaded_without_consent() {
+fn a_fresh_computer_downloads_without_any_prior_step() {
+    // No notice, no stored choice: the first call on an empty storage directory
+    // downloads, verifies and publishes.
     let dir = tempfile::tempdir().unwrap();
     let package = deb(&good_items());
     let fake = Fake::new(package.clone());
     let root = dir.path().join("chatgpt");
     assert_eq!(
         current_status(&root, &lock_for(&package), DebArch::Arm64),
-        Status::NotConsented
-    );
-    let error = ensure(&root, &lock_for(&package), DebArch::Arm64, &fake, &|_| {}).unwrap_err();
-    assert!(error.not_consented);
-    assert_eq!(fake.calls.load(Ordering::SeqCst), 0);
-    accept_notice(&root).unwrap();
-    assert!(consent_accepted(&root));
-    assert_eq!(
-        current_status(&root, &lock_for(&package), DebArch::Arm64),
         Status::Idle
     );
+    let path = ensure(&root, &lock_for(&package), DebArch::Arm64, &fake, &|_| {}).unwrap();
+    assert_eq!(fake.calls.load(Ordering::SeqCst), 1);
+    assert!(matches!(
+        current_status(&root, &lock_for(&package), DebArch::Arm64),
+        Status::Ready { path: ready, .. } if ready == path
+    ));
+    assert!(!root.join("consent.json").exists());
 }
 
 #[test]
@@ -605,19 +605,33 @@ fn path_and_link_rules() {
 }
 
 #[test]
-fn commands_run_where_the_vm_lives() {
-    // No workspace, or a local one, means this computer.
-    assert_eq!(owner(None), Ok(None));
-    assert_eq!(owner(Some("dev")), Ok(None));
-    // A remote VM routes to the computer that owns it.
+fn commands_address_a_computer_not_a_sandbox() {
+    // No computer (or an empty one) means this computer.
+    assert_eq!(remote_host(None), Ok(None));
+    assert_eq!(remote_host(Some("")), Ok(None));
+    // A remote computer is addressed by its host id.
     let host = "00000000-0000-4000-8000-0000000000aa";
-    let vm = "00000000-0000-4000-8000-0000000000bb";
+    assert_eq!(remote_host(Some(host)), Ok(Some(host.to_owned())));
+    // Neither a sandbox target (the old placeholder routing) nor garbage falls back to this computer.
+    assert!(remote_host(Some(&format!("silo-remote:{host}:{host}"))).is_err());
+    assert!(remote_host(Some("dev")).is_err());
+}
+
+#[test]
+fn an_owner_without_computer_use_reports_unknown_not_an_error() {
+    use crate::bridge_error::BridgeError;
+    let older = Err(owner_error(BridgeError::unsupported()));
     assert_eq!(
-        owner(Some(&format!("silo-remote:{host}:{vm}"))),
-        Ok(Some(host.to_owned()))
+        remote_status(older),
+        Ok(serde_json::json!({"state": "unknown"}))
     );
-    // A malformed remote target never falls back to this computer.
-    assert!(owner(Some("silo-remote:nope")).is_err());
+    // Other failures are not hidden, and a real status passes through untouched.
+    assert_eq!(
+        remote_status(Err("Computer disconnected.".into())),
+        Err("Computer disconnected.".into())
+    );
+    let ready = serde_json::json!({"state": "ready", "path": "/p", "version": "1"});
+    assert_eq!(remote_status(Ok(ready.clone())), Ok(ready));
 }
 
 #[test]
@@ -640,7 +654,6 @@ fn the_cached_status_is_what_cheap_reads_see() {
     assert_eq!(cached_status(), Some(Status::Verifying));
     assert!(in_progress(&Status::Extracting));
     assert!(!in_progress(&Status::Idle));
-    assert!(!in_progress(&Status::NotConsented));
     set_test_cache(None);
 }
 
@@ -664,10 +677,13 @@ fn status_serializes_for_the_ui() {
         value,
         serde_json::json!({"state": "failed", "reason": "x", "retryable": true})
     );
-    assert_eq!(
-        serde_json::to_value(Status::NotConsented).unwrap(),
-        serde_json::json!({"state": "notConsented"})
-    );
+    // The consent state is gone: no status serializes as it.
+    for status in [Status::Idle, Status::Verifying, Status::Extracting] {
+        assert_ne!(
+            serde_json::to_value(status).unwrap()["state"],
+            "notConsented"
+        );
+    }
 }
 
 mod hardening;
@@ -685,7 +701,6 @@ fn live_download_of_the_pinned_arm64_package() {
     // `SILO_LIVE_CHATGPT_ROOT` keeps the published app for a manual VM check.
     let root = std::env::var_os("SILO_LIVE_CHATGPT_ROOT")
         .map_or_else(|| dir.path().join("chatgpt"), PathBuf::from);
-    accept_notice(&root).unwrap();
     let lock = Lock::bundled().unwrap();
     let started = Instant::now();
     let last = Mutex::new(None);
