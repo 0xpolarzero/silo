@@ -27,6 +27,8 @@ Scope: `app/SiloUI/src/features/sandboxes/`. Verification uses deterministic fro
 - Fix: schedule the initial editor focus for the next animation frame, with cancellation on unmount, matching the existing form-popover pattern.
 - Coverage: both row-menu Edit and Duplicate end with focus on Sandbox name.
 
+The broader onboarding adapter test caught a regression from deferring all initial focus: direct Edit did not focus Sandbox name immediately. Preserve synchronous focus and use the next frame only to recover focus left on the body or a menu trigger by menu dismissal. The existing onboarding regression and row-menu regressions verify both paths.
+
 ## Saving progress has no live announcement
 
 - Trigger: Save settings while the native commit remains pending.
