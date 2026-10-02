@@ -73,3 +73,16 @@ FIFO-reader regressions passed afterward. The exact-source harness includes the
 production runtime-path type and fixture, configuration types, validator,
 reader and writer, compiled with Rust 1.94.0 and warnings denied. It runs no
 runtime forwarding or Tauri adapter; root skips the permission fixture.
+
+## Authorized-key rewrites: fixed
+
+`remote.rs::rewrite_authorized_keys_file` published synchronized file bytes
+without synchronizing the SSH directory. It now syncs that directory before
+acknowledging a rewrite, including unchanged retries that must confirm a prior
+unacknowledged rename. A real permission fixture verifies complete private
+contents after publication while rejecting success; that regression failed
+before the fix. A second fixture rejects an unchanged retry until directory
+access is restored. Both passed in a harness containing the exact production
+writer, mutex recovery functions and test bodies, compiled with Rust 1.94.0 and
+warnings denied. These tests use temporary paths, access no live SSH keys and
+skip the permission boundary under root.

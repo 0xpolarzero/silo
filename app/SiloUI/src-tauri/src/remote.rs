@@ -892,12 +892,14 @@ fn rewrite_authorized_keys_file(
         return Ok(false);
     }
     let contents = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let parent = path.parent().ok_or("SSH key directory is unavailable.")?;
     let Some(rewritten) = rewrite(&contents) else {
+        fs::File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|e| e.to_string())?;
         return Ok(false);
     };
-    let mut temporary =
-        tempfile::NamedTempFile::new_in(path.parent().ok_or("SSH key directory is unavailable.")?)
-            .map_err(|e| e.to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     temporary
         .as_file()
         .set_permissions(metadata.permissions())
@@ -907,6 +909,9 @@ fn rewrite_authorized_keys_file(
         .and_then(|()| temporary.as_file().sync_all())
         .map_err(|e| e.to_string())?;
     temporary.persist(path).map_err(|e| e.to_string())?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|e| e.to_string())?;
     Ok(true)
 }
 /// Owner side: restrict the calling controller's previously installed Silo key.
@@ -4297,7 +4302,50 @@ pub(crate) fn log_identity() -> Result<(String, String), String> {
 mod config_io_limit_tests {
     use super::*;
 
+    #[test]
+    fn authorized_keys_rewrite_reports_an_unreadable_parent_after_publication() {
+        use std::os::unix::fs::MetadataExt;
+        let directory = tempfile::tempdir().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let path = directory.path().join("authorized_keys");
+        fs::write(&path, b"fixture removed key\nfixture retained key\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = rewrite_authorized_keys_file(&path, |_| Some("fixture retained key\n".into()));
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"fixture retained key\n");
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        assert!(
+            result.is_err(),
+            "an unsynchronized rename must not report success"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
     const LIMIT_BYTES: usize = 1024 * 1024;
+
+    #[test]
+    fn authorized_keys_noop_retry_requires_directory_synchronization() {
+        use std::os::unix::fs::MetadataExt;
+        let directory = tempfile::tempdir().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let path = directory.path().join("authorized_keys");
+        fs::write(&path, b"fixture retained key\n").unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = rewrite_authorized_keys_file(&path, |_| None);
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(
+            result.is_err(),
+            "a no-op retry must confirm the existing rename"
+        );
+        assert!(!rewrite_authorized_keys_file(&path, |_| None).unwrap());
+        assert_eq!(fs::read(&path).unwrap(), b"fixture retained key\n");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn remote_config_preserves_additive_preferences_when_management_changes() {
