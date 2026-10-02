@@ -1,4 +1,4 @@
-import { chmod, copyFile, mkdir, rm, stat } from "node:fs/promises"
+import { chmod, copyFile, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
 const TOOL_NAMES = [
@@ -18,9 +18,10 @@ export async function stageLinuxPackageTools({ appRoot, targetTriple }) {
   const tauriRoot = resolve(appRoot, "src-tauri")
   const sourceRoot = join(tauriRoot, "runtime")
   const binariesRoot = join(tauriRoot, "binaries")
-  const destination = join(sourceRoot, "linux-package", "tools")
-  await rm(destination, { recursive: true, force: true })
-  await mkdir(destination, { recursive: true })
+  const packageRoot = join(sourceRoot, "linux-package")
+  const destination = join(packageRoot, "tools")
+  await mkdir(packageRoot, { recursive: true })
+  const stagedRoot = await mkdtemp(join(packageRoot, ".tools-staging-"))
 
   const sources = [
     join(binariesRoot, `msb-${targetTriple}`),
@@ -31,10 +32,16 @@ export async function stageLinuxPackageTools({ appRoot, targetTriple }) {
     join(sourceRoot, "microsandbox", targetTriple, "lib", "libkrunfw.so.5.6.1"),
   ]
 
-  for (const [index, source] of sources.entries()) {
-    const target = join(destination, TOOL_NAMES[index])
-    await copyFile(source, target)
-    await chmod(target, (await stat(source)).mode & 0o777)
+  try {
+    for (const [index, source] of sources.entries()) {
+      const target = join(stagedRoot, TOOL_NAMES[index])
+      await copyFile(source, target)
+      await chmod(target, (await stat(source)).mode & 0o777)
+    }
+    await rm(destination, { recursive: true, force: true })
+    await rename(stagedRoot, destination)
+  } finally {
+    await rm(stagedRoot, { recursive: true, force: true })
   }
   return { targetTriple, directory: destination, files: TOOL_NAMES.map(name => join(destination, name)) }
 }

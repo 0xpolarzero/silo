@@ -30,3 +30,9 @@ The runtime staging follow-up checks passed after integration. One existing Vite
 Guest export checks: 10 ordinary tests passed, 11 Docker opt-in tests skipped; 18 publication/workflow Python tests passed. Touched JavaScript lint, typecheck, Rust formatting, and whitespace checks passed. The changes are internal tooling and need no application changeset.
 
 Merge verification retains streamed download inputs, deferred executable publication, and the CLI-level guest export tests. Guest cleanup waits for both the export process and gzip pipeline. The concurrency fixture uses generous bounded deadlines for the shared host.
+
+## RELEASE-SCRIPTS-5 — P2: Missing Linux inputs destroy the previous package tools
+
+- **Trigger and evidence:** `stageLinuxPackageTools` removes the published directory before copying its inputs. A temporary-directory fixture supplies the first new executable and omits the second; it reproduced a directory containing only the replacement `msb`, with all six prior tools lost. Failing output is preserved in ignored `target/verification/release-scripts/linux-package-before.log`.
+- **Fix:** Copy and set modes in an operation-owned staging directory, then publish only after every input succeeds. Always clean that staging directory. This preserves the previous tools on input or copy failures; final directory replacement is not crash-atomic.
+- **Verification:** All three Linux package-tool tests passed, including exact bytes/modes and the packaging overlay contract. Typecheck, touched-file oxlint, Rust formatting, CI-coverage tests (two), and whitespace checks passed. Internal tooling only; no changeset required.
