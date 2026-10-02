@@ -154,6 +154,33 @@ describe("verified system integration state", () => {
     expect(native.value.requestNotifications).not.toHaveBeenCalled()
   })
 
+  it.each(["authorized", "failure"] as const)("does not let an older %s notification preflight replace a newer permission refresh", async (result) => {
+    let finishRead!: (value: SystemIntegrations) => void
+    let failRead!: (error: Error) => void
+    const settings = createMemorySettingsStore({ notificationsEnabled: false })
+    const native = service(snapshot("enabled", "authorized"))
+    const store = createSystemIntegrationStore(native.value, settings)
+    await store.initialize()
+    vi.mocked(native.value.read).mockImplementationOnce(() => new Promise((resolve, reject) => {
+      finishRead = resolve
+      failRead = reject
+    }))
+
+    const enable = store.setNotificationsEnabled(true)
+    native.set(snapshot("enabled", "denied"))
+    await store.refresh()
+    if (result === "authorized") finishRead(snapshot("enabled", "authorized"))
+    else failRead(new Error("Old read failed"))
+    await enable
+
+    expect(store.getSnapshot().notifications.state).toBe("denied")
+    expect(store.getSnapshot().initialized).toBe(true)
+    expect(store.getSnapshot().notificationsPending).toBe(false)
+    expect(settings.getSnapshot().settings.notificationsEnabled).toBe(false)
+    expect(native.value.requestNotifications).not.toHaveBeenCalled()
+    expect(native.value.showError).not.toHaveBeenCalled()
+  })
+
   it("does not request permission after an explicit enable preflight read fails", async () => {
     const settings = createMemorySettingsStore({ notificationsEnabled: false })
     const native = service(snapshot("enabled", "authorized"))
