@@ -10,11 +10,13 @@ fn guest_file(fixture: &Fixture, name: &str, path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Installs Node, Codex and Claude Code in the guest from the public npm registry.
+/// Installs Node (the build for the guest's own architecture, from `uname -m` inside the
+/// guest), Codex and Claude Code in the guest from the public npm registry.
 fn install_harnesses(fixture: &Fixture, name: &str) -> bool {
     let output = fixture.exec_status(
         name,
-        "set -e; cd /tmp; curl -fsSL -m 180 https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-arm64.tar.xz -o node.tar.xz; \
+        "set -e; cd /tmp; case \"$(uname -m)\" in x86_64) node_arch=x64;; aarch64|arm64) node_arch=arm64;; *) echo \"unsupported guest architecture $(uname -m)\"; exit 1;; esac; \
+         curl -fsSL -m 180 \"https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-$node_arch.tar.xz\" -o node.tar.xz; \
          mkdir -p /tmp/nodejs; tar -xJf node.tar.xz -C /tmp/nodejs --strip-components=1; cp /tmp/nodejs/bin/node /usr/local/bin/node; \
          PATH=/tmp/nodejs/bin:$PATH npm install -g --prefix /usr/local @openai/codex @anthropic-ai/claude-code 2>&1 | tail -2; \
          which codex claude; runuser -u silo -- env HOME=/home/silo codex --version; runuser -u silo -- env HOME=/home/silo claude --version",

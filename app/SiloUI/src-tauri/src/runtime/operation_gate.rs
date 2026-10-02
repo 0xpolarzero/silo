@@ -590,6 +590,20 @@ impl OperationGate {
             .any(|entry| entry.removes.iter().any(|removed| removed == id))
     }
 
+    /// The dedup keys of lifecycle operations waiting for sandbox `id`, in admission order. A
+    /// lifecycle key is `vm:<id>:<action>`; `None` marks an entry admitted without one.
+    pub(crate) fn waiting_lifecycle_keys(&self, id: &str) -> Vec<Option<String>> {
+        self.lock()
+            .waiting
+            .iter()
+            .filter(|entry| {
+                entry.kind == OperationKind::Lifecycle
+                    && matches!(&entry.scope, Scope::Vm { id: scoped } if scoped == id)
+            })
+            .map(|entry| entry.key.clone())
+            .collect()
+    }
+
     /// Wait for a turn to change one VM, identified by its stable `id`. `name` is the
     /// current display name captured for the queue; ordering keys on `id` alone.
     pub(crate) fn vm(
