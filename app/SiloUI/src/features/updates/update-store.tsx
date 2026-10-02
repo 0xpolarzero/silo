@@ -56,7 +56,11 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
     let disposed = false
     let stop: (() => void) | undefined
     const receive = (next: UpdateSnapshot) => {
-      if (!disposed) { generation.current++; setSnapshot(next); setConnectionError(null) }
+      if (!disposed) {
+        generation.current++
+        setSnapshot(current => JSON.stringify(current) === JSON.stringify(next) ? current : next)
+        setConnectionError(null)
+      }
     }
     void (async () => {
       let before = generation.current
@@ -91,7 +95,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
         const next = await backend.read()
         if (!disposed && !inFlight.current && generation.current === before) {
           generation.current++
-          setSnapshot(next)
+          setSnapshot(current => JSON.stringify(current) === JSON.stringify(next) ? current : next)
           setConnectionError(null)
         }
       } catch {
@@ -113,7 +117,9 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
     const before = generation.current
     void action().then((next) => {
       // A command response must not replace newer progress emitted by the native updater.
-      if (mounted.current && next && generation.current === before) setSnapshot(next)
+      if (mounted.current && next && generation.current === before) {
+        setSnapshot(current => JSON.stringify(current) === JSON.stringify(next) ? current : next)
+      }
     }).catch(() => {
       if (mounted.current) setConnectionError("The update action could not finish. Try again.")
     }).finally(() => {
