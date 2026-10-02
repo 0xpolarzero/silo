@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -127,14 +127,23 @@ struct BackupHistory {
 }
 
 fn load_destination(path: &Path) -> Option<PathBuf> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
         Err(error) => {
             eprintln!("Silo ignored its unreadable export folder setting: {error}");
             return None;
         }
     };
+    let mut bytes = Vec::new();
+    if let Err(error) = file.take(1024 * 1024 + 1).read_to_end(&mut bytes) {
+        eprintln!("Silo ignored its unreadable export folder setting: {error}");
+        return None;
+    }
+    if bytes.len() > 1024 * 1024 {
+        eprintln!("Silo ignored its oversized export folder setting (limit: 1 MiB).");
+        return None;
+    }
     match serde_json::from_slice::<BackupHistory>(&bytes) {
         Ok(history) if history.schema_version == 1 => {
             history.destination.filter(|path| path.is_absolute())
@@ -2733,6 +2742,24 @@ mod tests {
         assert!(saved.journal_error.is_none());
         let bytes = fs::read_to_string(path).unwrap();
         assert!(!bytes.contains("silo-backup"), "{bytes}");
+    }
+
+    #[test]
+    fn oversized_backup_history_forgets_only_the_advisory_folder_without_rewriting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let mut bytes =
+            br#"{"schemaVersion":1,"destination":"/fixture-exports","archives":[]}"#.to_vec();
+        bytes.resize(1024 * 1024, b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            load_destination(&path),
+            Some(PathBuf::from("/fixture-exports"))
+        );
+        bytes.push(b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(load_destination(&path), None);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
     }
 
     #[test]
