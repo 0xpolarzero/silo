@@ -176,4 +176,64 @@ describe('directory store', () => {
     expect(store.getSnapshot(key)).toMatchObject({ entries: [entry('a')], errorOperation: 'refresh', error: 'Folder listing expired. Refresh this folder.' })
   })
 
+  it.each([0, 1])('rejects a nonadvancing next offset %s and retries the same cached page', async (nextOffset) => {
+    const loader = vi.fn().mockResolvedValueOnce(page(['a'], 1))
+      .mockResolvedValueOnce(page(['discarded'], nextOffset)).mockResolvedValueOnce(page(['b']))
+    const store = createDirectoryStore(loader)
+    await store.load('dev', '/workspace')
+    await store.load('dev', '/workspace', { more: true })
+    expect(store.getSnapshot(key)).toMatchObject({
+      entries: [entry('a')], nextOffset: 1, snapshotId: 'snapshot',
+      error: 'Could not load this folder.', errorOperation: 'more', loading: false, loadingMore: false,
+    })
+
+    await store.load('dev', '/workspace', { more: true })
+
+    expect(loader.mock.calls.map(call => [call[2], call[3]])).toEqual([[0, undefined], [1, 'snapshot'], [1, 'snapshot']])
+    expect(store.getSnapshot(key)).toMatchObject({ entries: [entry('a'), entry('b')], error: null, errorOperation: null })
+  })
+
+  it('merges overlapping pages by path while keeping the newest entry metadata', async () => {
+    const renamed = { ...entry('a'), name: 'updated label', kind: 'symlink' as const }
+    const loader = vi.fn().mockResolvedValueOnce(page(['a'], 1))
+      .mockResolvedValueOnce({ ...page(['b']), entries: [renamed, entry('b')] })
+    const store = createDirectoryStore(loader)
+    await store.load('dev', '/workspace')
+    await store.load('dev', '/workspace', { more: true })
+    expect(store.getSnapshot(key)).toMatchObject({ entries: [renamed, entry('b')], nextOffset: null, error: null })
+    await store.load('dev', '/workspace', { more: true })
+    expect(loader).toHaveBeenCalledTimes(2)
+  })
+
+  it('invalidates one owner without cancelling another owner with the same folder', async () => {
+    const local = deferred()
+    const remote = deferred()
+    const workspace = 'silo-remote:office:dev'
+    const loader = vi.fn().mockReturnValueOnce(local.promise).mockReturnValueOnce(remote.promise)
+    const store = createDirectoryStore(loader)
+    const localLoad = store.load('dev', '/workspace')
+    const remoteLoad = store.load(workspace, '/workspace')
+    store.invalidateWorkspace('dev')
+    remote.resolve(page(['remote']))
+    await remoteLoad
+    local.resolve(page(['stale']))
+    await localLoad
+    expect(store.getSnapshot(key).entries).toBeNull()
+    expect(store.getSnapshot(directoryKey(workspace, '/workspace')).entries).toEqual([entry('remote')])
+    expect(loader).toHaveBeenCalledWith(workspace, '/workspace', 0, undefined)
+  })
+
+  it('recovers an unavailable folder when a loader is installed and the load is retried', async () => {
+    const store = createDirectoryStore()
+    await store.load('dev', '/workspace')
+    expect(store.getSnapshot(key)).toMatchObject({ entries: null, loading: false, error: 'Files are unavailable.', errorOperation: 'load' })
+    const loader = vi.fn(async () => page(['available']))
+    store.setLoader(loader)
+
+    await store.load('dev', '/workspace')
+
+    expect(loader).toHaveBeenCalledOnce()
+    expect(store.getSnapshot(key)).toMatchObject({ entries: [entry('available')], error: null, errorOperation: null })
+  })
+
 })
