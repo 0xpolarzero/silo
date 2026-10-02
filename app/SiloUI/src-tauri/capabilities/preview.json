@@ -134,7 +134,6 @@
     "allow-open-desktop",
     "allow-set-computer-use-approval",
     "allow-chatgpt-app-status",
-    "allow-chatgpt-app-accept-notice",
-    "allow-chatgpt-app-prepare"
+    "allow-chatgpt-app-retry"
   ]
 }

@@ -1,7 +1,7 @@
 //! The pinned ChatGPT Linux app, kept once per computer for LCU.
 //!
-//! Silo never publishes OpenAI files. After a one-time notice this downloads the
-//! exact `.deb` pinned in `guest/chatgpt-app-lock.json` from OpenAI, verifies its
+//! Silo never publishes OpenAI files. Every computer that runs Silo downloads, by
+//! itself and in the background (see `auto`), the exact `.deb` pinned in `guest/chatgpt-app-lock.json` from OpenAI, verifies its
 //! size and SHA-256, extracts only `usr/lib/chatgpt` (never running maintainer
 //! scripts) into one immutable folder per version, and publishes it atomically.
 //! VMs later mount that folder read-only. See `docs/SiloUI-CHATGPT-APP.md`.
@@ -10,7 +10,6 @@
 //!
 //! ```text
 //! chatgpt/.lock                      cross-process lock (flock)
-//! chatgpt/consent.json               the accepted notice
 //! chatgpt/downloads/*.deb[.part]     resumable download, deleted after success
 //! chatgpt/.staging-*/                extraction in progress, never mounted
 //! chatgpt/published/                 mounted read-only into VMs; only verified trees
@@ -20,7 +19,7 @@
 //!                                    publication record, written last
 //! ```
 //!
-//! Records, staging, downloads and consent stay outside `published/`: that folder
+//! Records, staging, downloads stay outside `published/`: that folder
 //! is what every VM mounts, so it holds nothing but verified trees (which also keeps
 //! MicroSandbox's first walk of the mount small).
 //!
@@ -63,7 +62,6 @@ const REQUIRED_EXECUTABLES: [&str; 3] = [
     "resources/cua_node/bin/node",
     "resources/cua_node/bin/node_repl",
 ];
-const NOTICE_VERSION: u32 = 1;
 const MAX_ENTRIES: usize = 200_000;
 const MAX_UNPACKED_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// Longest path or link target (bytes), and longest single component.
@@ -188,8 +186,7 @@ impl Lock {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "camelCase")]
 pub(crate) enum Status {
-    NotConsented,
-    /// Consented, nothing present, nothing running.
+    /// Nothing present and nothing running: a download is waiting to start.
     Idle,
     #[serde(rename_all = "camelCase")]
     Downloading {
@@ -214,7 +211,6 @@ pub(crate) enum Status {
 pub(crate) struct Error {
     pub(crate) message: String,
     pub(crate) retryable: bool,
-    pub(crate) not_consented: bool,
 }
 
 impl Error {
@@ -222,24 +218,18 @@ impl Error {
         Self {
             message: message.into(),
             retryable: true,
-            not_consented: false,
         }
     }
     fn fatal(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             retryable: false,
-            not_consented: false,
         }
     }
     fn status(&self) -> Status {
-        if self.not_consented {
-            Status::NotConsented
-        } else {
-            Status::Failed {
-                reason: self.message.clone(),
-                retryable: self.retryable,
-            }
+        Status::Failed {
+            reason: self.message.clone(),
+            retryable: self.retryable,
         }
     }
 }
@@ -472,14 +462,7 @@ fn make_tree_deletable(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-// -------------------------------------------------------------- consent
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct Consent {
-    notice_version: u32,
-    accepted_at_unix: u64,
-}
+// ---------------------------------------------------------- small files
 
 /// Reads a small regular file below `dir` (never through a symlink).
 fn read_small(dir: &Dir, name: &str) -> Option<Vec<u8>> {
@@ -491,29 +474,6 @@ fn read_small(dir: &Dir, name: &str) -> Option<Vec<u8>> {
     let mut bytes = Vec::new();
     file.take(MAX_RECORD_BYTES).read_to_end(&mut bytes).ok()?;
     Some(bytes)
-}
-
-/// Whether the user accepted the download notice on this computer and channel.
-pub(crate) fn consent_accepted(root: &Path) -> bool {
-    Dir::open_root(root, false)
-        .ok()
-        .and_then(|dir| read_small(&dir, "consent.json"))
-        .and_then(|bytes| serde_json::from_slice::<Consent>(&bytes).ok())
-        .is_some_and(|consent| consent.notice_version == NOTICE_VERSION)
-}
-
-pub(crate) fn accept_notice(root: &Path) -> Result<(), Error> {
-    let failed = || Error::retry("Silo could not save your choice. Check disk access and retry.");
-    let dir = Dir::open_root(root, true)
-        .map_err(|_| Error::retry("Silo could not prepare its ChatGPT app folder."))?;
-    let consent = Consent {
-        notice_version: NOTICE_VERSION,
-        accepted_at_unix: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs()),
-    };
-    let bytes = serde_json::to_vec(&consent).map_err(|_| failed())?;
-    write_file_atomically(&dir, "consent.json", &bytes).map_err(|_| failed())
 }
 
 /// Writes `bytes` to a fresh exclusive temporary, syncs it, renames it over
@@ -1598,13 +1558,6 @@ fn ensure_inner(
     if let Some(path) = verify_published(root, lock, arch) {
         return ready(path);
     }
-    if !consent_accepted(root) {
-        return Err(Error {
-            message: "Accept the ChatGPT download notice first.".into(),
-            retryable: false,
-            not_consented: true,
-        });
-    }
     let _lock = RootLock::take(root)?;
     if let Some(path) = verify_published(root, lock, arch) {
         return ready(path);
@@ -1820,7 +1773,6 @@ pub(crate) fn current_status(root: &Path, lock: &Lock, arch: DebArch) -> Status 
             path: fs::canonicalize(path).unwrap_or_default(),
             version: lock.version.clone(),
         },
-        None if !consent_accepted(root) => Status::NotConsented,
         None => Status::Idle,
     }
 }
@@ -2022,7 +1974,8 @@ fn collect_unused_gated(
 }
 
 /// Downloads and publishes the pinned app (blocking), reporting progress. Returns the
-/// final status; a second concurrent call waits for the first.
+/// final status; a second concurrent call waits for the first. Only the background
+/// worker (`auto`) calls it, so nothing else starts a download.
 fn run_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
     let root = storage_root(app)?;
     let lock = Lock::bundled().map_err(|e| e.message)?;
@@ -2053,47 +2006,80 @@ fn run_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
         },
         Err(error) => error.status(),
     };
-    set_cache(&status);
+    publish(app, status.clone());
     drop(done);
-    if matches!(status, Status::Ready { .. }) {
-        crate::computer_use::app_ready(app);
-        collect_unused(app);
-    }
     Ok(status)
 }
 
-/// Starts preparing in the background and returns the status at once (used when this
-/// computer is managed remotely: the controller polls the status).
-pub(crate) fn start_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
-    if !PREPARING.load(Ordering::SeqCst) {
-        let app = app.clone();
-        std::thread::spawn(move || {
-            let _ = run_prepare(&app);
-        });
-        // The worker publishes `Verifying` first; report it without waiting.
-        set_cache(&Status::Verifying);
-        return Ok(Status::Verifying);
-    }
-    Ok(cached_status().unwrap_or(Status::Verifying))
+/// Makes sure the pinned app gets published, in the background and without blocking
+/// anything: starts the worker, or wakes it when it waits to retry. Returns whether a
+/// worker was started. Never needs the user: the app is downloaded on every computer
+/// that runs Silo.
+pub(crate) fn ensure_in_background(app: &tauri::AppHandle) -> bool {
+    let Some(claim) = auto::WORKER.claim() else {
+        auto::RETRY.wake();
+        return false;
+    };
+    let app = app.clone();
+    let spawned = std::thread::Builder::new()
+        .name("chatgpt-app".into())
+        .spawn(move || {
+            let _claim = claim;
+            auto::lower_priority();
+            let ready_app = app.clone();
+            auto::settle(
+                || {
+                    run_prepare(&app).unwrap_or_else(|error| Status::Failed {
+                        reason: error,
+                        retryable: true,
+                    })
+                },
+                |delay| auto::RETRY.wait(delay),
+                move || {
+                    // Running built-in VMs set computer use up now instead of at their next boot.
+                    crate::computer_use::app_ready(&ready_app);
+                    collect_unused(&ready_app);
+                },
+            );
+        })
+        .is_ok();
+    spawned
 }
 
 pub(crate) fn local_status(app: &tauri::AppHandle) -> Result<Status, String> {
     compute_status(app)
 }
 
-pub(crate) fn local_accept_notice(app: &tauri::AppHandle) -> Result<Status, String> {
-    let root = storage_root(app)?;
-    accept_notice(&root).map_err(|e| e.message)?;
+/// "Retry" (also what a remote controller asks for): wakes a waiting worker or starts a
+/// new one after a failure that is not retried by itself. Returns the status at once;
+/// progress arrives as `chatgpt-app-status` events.
+pub(crate) fn retry_now(app: &tauri::AppHandle) -> Result<Status, String> {
     let status = compute_status(app)?;
-    publish(app, status.clone());
-    Ok(status)
+    if !matches!(status, Status::Ready { .. }) {
+        ensure_in_background(app);
+    }
+    Ok(cached_status().unwrap_or(status))
 }
 
-/// The computer that owns `workspace`, when it is a remote VM.
-fn owner(workspace: Option<&str>) -> Result<Option<String>, String> {
-    match workspace {
-        Some(workspace) => Ok(crate::remote_access::target(workspace)?.map(|(host, _)| host)),
-        None => Ok(None),
+/// App start: reads the status (the first digest of a process reads every byte), then
+/// prepares the app in the background when the pinned version is not published.
+pub(crate) fn start_automatic(app: &tauri::AppHandle) {
+    let status = refresh_status_blocking(app);
+    collect_unused(app);
+    if matches!(status, Status::Ready { .. }) {
+        return;
+    }
+    // Let the app finish starting first; this is not urgent.
+    std::thread::sleep(auto::START_DELAY);
+    ensure_in_background(app);
+}
+
+/// The remote computer a command addresses: `None` for this computer, else its host id.
+fn remote_host(computer: Option<&str>) -> Result<Option<String>, String> {
+    match computer {
+        None | Some("") => Ok(None),
+        Some(host) if uuid::Uuid::parse_str(host).is_ok() => Ok(Some(host.to_owned())),
+        Some(_) => Err("Invalid computer.".into()),
     }
 }
 
@@ -2108,10 +2094,12 @@ pub(crate) fn call_owner(
     crate::remote::call_remote_typed(app, host, method, params).map_err(owner_error)
 }
 
+const UPDATE_OWNER: &str = "Update Silo on that computer to use computer use.";
+
 /// The message for a failed call to the owning computer.
 fn owner_error(error: crate::bridge_error::BridgeError) -> String {
     if error.code == crate::bridge_error::ErrorCode::UnsupportedRemoteOperation {
-        "Update Silo on that computer to use computer use.".to_owned()
+        UPDATE_OWNER.to_owned()
     } else {
         error.message
     }
@@ -2131,63 +2119,51 @@ fn to_value(status: Status) -> Result<serde_json::Value, String> {
     serde_json::to_value(status).map_err(|_| "Could not encode the ChatGPT app status.".into())
 }
 
-/// The ChatGPT app status of this computer, or of the computer that owns `workspace`.
+/// A remote computer's status as the UI shows it: one running a Silo without computer use
+/// has no status to report, which is `unknown`, not an error. Real failures (offline,
+/// disconnected) stay errors.
+fn remote_status(result: Result<serde_json::Value, String>) -> Result<serde_json::Value, String> {
+    match result {
+        Err(error) if error == UPDATE_OWNER => Ok(serde_json::json!({"state": "unknown"})),
+        other => other,
+    }
+}
+
+/// The ChatGPT app status of this computer, or of the remote computer `computer` (its
+/// host id). A remote computer running a Silo without computer use answers `unknown`.
 #[tauri::command]
 pub(crate) async fn chatgpt_app_status(
     app: tauri::AppHandle,
-    workspace: Option<String>,
+    computer: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    blocking(move || match owner(workspace.as_deref())? {
-        Some(host) => call_owner(&app, &host, "chatgpt.status", serde_json::json!({})),
+    blocking(move || match remote_host(computer.as_deref())? {
+        Some(host) => remote_status(call_owner(
+            &app,
+            &host,
+            "chatgpt.status",
+            serde_json::json!({}),
+        )),
         None => to_value(local_status(&app)?),
     })
     .await
 }
 
+/// Asks a computer to try the download again now. It prepares its own copy; this only
+/// wakes it. Resolves with its status at once, progress follows from the status reads.
 #[tauri::command]
-pub(crate) async fn chatgpt_app_accept_notice(
+pub(crate) async fn chatgpt_app_retry(
     app: tauri::AppHandle,
-    workspace: Option<String>,
+    computer: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    blocking(move || match owner(workspace.as_deref())? {
-        Some(host) => call_owner(&app, &host, "chatgpt.accept", serde_json::json!({})),
-        None => to_value(local_accept_notice(&app)?),
-    })
-    .await
-}
-
-/// Ensures the pinned app, reporting progress through the `chatgpt-app-status` event.
-/// Resolves with the final status (never rejects for expected failures). For a
-/// remote computer, the owner downloads and this polls its status.
-#[tauri::command]
-pub(crate) async fn chatgpt_app_prepare(
-    app: tauri::AppHandle,
-    workspace: Option<String>,
-) -> Result<serde_json::Value, String> {
-    blocking(move || {
-        let Some(host) = owner(workspace.as_deref())? else {
-            return to_value(run_prepare(&app)?);
-        };
-        use tauri::Emitter;
-        let mut last = call_owner(&app, &host, "chatgpt.prepare", serde_json::json!({}))?;
-        let deadline = Instant::now() + Duration::from_secs(45 * 60);
-        loop {
-            let _ = app.emit(STATUS_EVENT, event_payload(last.clone(), Some(&host)));
-            let state = last["state"].as_str().unwrap_or("");
-            if !matches!(state, "downloading" | "verifying" | "extracting") {
-                return Ok(last);
-            }
-            if Instant::now() >= deadline {
-                return Err("The ChatGPT download on the other computer took too long.".into());
-            }
-            std::thread::sleep(Duration::from_secs(2));
-            last = call_owner(&app, &host, "chatgpt.status", serde_json::json!({}))?;
-        }
+    blocking(move || match remote_host(computer.as_deref())? {
+        Some(host) => call_owner(&app, &host, "chatgpt.retry", serde_json::json!({})),
+        None => to_value(retry_now(&app)?),
     })
     .await
 }
 
 // ---------------------------------------------------------------- tests
 
+mod auto;
 #[cfg(test)]
 mod tests;

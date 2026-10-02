@@ -103,8 +103,7 @@ fn a_symlinked_storage_root_or_subdirectory_is_refused() {
     fs::rename(chatgpt_root(&dir), &real).unwrap();
     std::os::unix::fs::symlink(&real, chatgpt_root(&dir)).unwrap();
     assert!(!verified(&dir, &lock));
-    assert!(!consent_accepted(&chatgpt_root(&dir)));
-    assert!(accept_notice(&chatgpt_root(&dir)).is_err());
+    assert!(ensure_published_dir(&chatgpt_root(&dir)).is_err());
     let (result, calls) = again(&dir, &package, &lock);
     assert!(result.is_err() && calls == 0);
     assert!(RootLock::take(&chatgpt_root(&dir)).is_err());
@@ -531,22 +530,14 @@ fn a_rejected_package_leaves_nothing_behind_through_the_real_unpacker() {
 }
 
 #[test]
-fn consent_files_are_exclusive_and_links_are_not_followed() {
+fn exclusive_creation_refuses_existing_names_and_planted_links() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("chatgpt");
-    accept_notice(&root).unwrap();
-    // A planted consent.json link is neither read nor written through.
     let victim = dir.path().join("victim");
     fs::write(&victim, b"precious").unwrap();
-    fs::remove_file(root.join("consent.json")).unwrap();
-    std::os::unix::fs::symlink(&victim, root.join("consent.json")).unwrap();
-    assert!(!consent_accepted(&root));
-    accept_notice(&root).unwrap();
-    assert_eq!(fs::read(&victim).unwrap(), b"precious");
-    assert!(consent_accepted(&root));
-    // Exclusive creation refuses an existing name or a planted link.
-    let handle = Dir::open_root(&root, false).unwrap();
-    assert!(handle.create_file("consent.json", 0o600).is_err());
+    let handle = Dir::open_root(&root, true).unwrap();
+    drop(handle.create_file("existing", 0o600).unwrap());
+    assert!(handle.create_file("existing", 0o600).is_err());
     std::os::unix::fs::symlink(&victim, root.join("t.tmp")).unwrap();
     assert!(handle.create_file("t.tmp", 0o600).is_err());
     assert_eq!(fs::read(&victim).unwrap(), b"precious");
@@ -556,7 +547,7 @@ fn consent_files_are_exclusive_and_links_are_not_followed() {
 fn the_published_folder_always_exists_and_only_holds_verified_trees() {
     let dir = root();
     let base = chatgpt_root(&dir);
-    // Created empty before anything is consented or downloaded.
+    // Created empty before anything is downloaded.
     let mounted = ensure_published_dir(&base).unwrap();
     assert_eq!(mounted, fs::canonicalize(base.join("published")).unwrap());
     assert_eq!(fs::read_dir(&mounted).unwrap().count(), 0);
@@ -564,7 +555,7 @@ fn the_published_folder_always_exists_and_only_holds_verified_trees() {
     let lock = lock_for(&package);
     let path = run(&dir, &package, &lock).0.unwrap();
     assert_eq!(path, mounted.join("1.2.3-arm64"));
-    // Records, consent, downloads and staging stay outside the mounted folder.
+    // Records, downloads and staging stay outside the mounted folder.
     let names: Vec<_> = fs::read_dir(&mounted)
         .unwrap()
         .flatten()
