@@ -25,6 +25,11 @@ verify that both generations and the journal remain untouched, and restore it to
 verify recovery. An installation that needs no migration still uses `runtime/`
 without a marker.
 
+Export-folder preferences also preserve additive JSON fields through an explicit
+folder change using a flattened map. Their reader retains the 1 MiB limit and
+schema-version check; malformed destinations or archive arrays remain unreadable.
+The temporary-file tests verify that reads leave the saved bytes untouched.
+
 ## Process-wide state
 
 `test_support::global_state()` guards tests in modules that reach the global
