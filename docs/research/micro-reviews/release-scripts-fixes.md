@@ -43,3 +43,14 @@ fresh-build failures still propagate. Regressions cover lost permissions and a
 cached probe exiting 17, then require a runnable replacement and matching digest.
 Tests use temporary sources and synthetic compiler executables, with no runtime
 preparation, app launch, VM or network operation.
+
+
+## Guest lock architecture validation
+
+Guest staging accepted an x86_64 manifest from an `arm64` lock entry and an
+aarch64 manifest from `amd64`, because it checked schema, size and checksum but
+not the manifest architecture. Three rejecting target regressions failed before
+the correction. Staging now rejects this mismatch before fetching or replacing
+any artifact; approved ARM64 and x86_64 downloads and warm-cache reuse still
+pass. These synthetic archives establish the preparation policy, not the
+architecture of bytes supplied by an incorrectly authored trusted lock.
