@@ -186,6 +186,19 @@ it("reports a failed native action without exposing its raw rejection", async ()
   expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish. Try again.")
   expect(screen.queryByText("unfiltered internal paths")).not.toBeInTheDocument()
 })
+it.each([
+  ["macos", "ready", "Restart and update"],
+  ["debian", "available", "Update"],
+] as const)("retries %s installation after frontend preparation fails without checking again", async (packageKind, phase, label) => {
+  const user = userEvent.setup()
+  const { backend } = mount({ packageKind, phase, availableVersion: "0.2.0" })
+  vi.mocked(backend.install).mockRejectedValueOnce(new Error("Settings delivery failed"))
+  await user.click(await screen.findByRole("button", { name: label }))
+  expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish")
+  await user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(backend.install).toHaveBeenCalledTimes(2)
+  expect(backend.check).not.toHaveBeenCalled()
+})
 
 it("does not overwrite saved automatic-check settings with an older focus refresh", async () => {
   const user = userEvent.setup()

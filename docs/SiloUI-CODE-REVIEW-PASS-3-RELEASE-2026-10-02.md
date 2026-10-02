@@ -22,7 +22,8 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-02 | P2 | Linux verification seeds production paths for a Dev binary | Fixed and folded: `5a14fe19` |
 | RL-03 | P2 | Desktop smoke isolation leaves HOME-dependent state live | Fixed and folded: `024c8268` |
 | RL-04 | P2 | Direct publication bypasses the explicit stable-release opt-in | Fixed and folded: `5b18ec21` |
-| RL-05 | P3 | Release guide omits the implemented in-app Debian update | Corrected in this documentation update |
+| RL-05 | P3 | Release guide omits the implemented in-app Debian update | Corrected and folded: `17edafc6` |
+| RL-06 | P2 | Required minimum-macOS gate uses a runner with imminent brownouts | Open; replacement qualification required |
 
 ## Detailed findings
 
@@ -103,6 +104,22 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 **Correction.** Describe AppImage's signed updater and Debian's authenticated APT operation separately in both Linux rows, and link the in-app Debian procedure. Corrected in this update without changing application behavior.
 
 **Rejecting test.** Review the table against the package-kind branches in `install_update`: macOS uses the signed app archive, AppImage uses signed replacement, and Debian uses authenticated APT. Keep all three represented. This is a prose correction; no implementation-mirroring test was added and no package was installed.
+
+### RL-06 Required minimum-macOS gate uses a runner with imminent brownouts
+
+**P2; scheduled availability failure, not an observed hosted run.** Confirmed at `071ca883` against the primary runner announcement on 2026-10-02. Locations: [release.yml](../.github/workflows/release.yml), `macos-minimum-constraints` and the draft job's required dependencies; [SiloUI-RELEASES.md](SiloUI-RELEASES.md), minimum-version runner qualification.
+
+**Trigger.** Build a draft during a macOS 14 runner brownout, first October 5 at 14:00 UTC through October 6 at 00:00 UTC, or after runner retirement on November 2, 2026.
+
+**Evidence.** The required `macos-minimum-constraints` job runs only on `macos-14`; the draft job requires its success. GitHub's [runner retirement announcement](https://github.com/actions/runner-images/issues/13518) explicitly says brownout jobs fail, lists eight October windows, and says the image becomes unsupported November 2. The release guide correctly names the retirement date but misses the earlier brownout failure windows. There is no alternative minimum-version job or qualified runner in this workflow. Package/platform jobs can still complete while draft creation remains blocked.
+
+**Consequence.** Draft delivery predictably fails during the announced windows and becomes unavailable on this workflow after retirement. Successful macOS 15 package builds cannot satisfy the separate promised macOS 14 library-constraint evidence.
+
+**Correction.** Qualify and configure a maintained macOS 14 execution environment before the first brownout. Keep the minimum-version gate blocking. Until replacement is ready, document the brownout windows and rerun failed draft builds outside them; that workaround expires at retirement. Changing the runner to macOS 15 or skipping the job would discard the supported-minimum proof.
+
+**Rejecting test.** Run the exact constraint suite on the replacement's verified macOS 14 environment and attach its OS identity and results to a complete draft-verification run. Inject a gate failure and confirm draft creation stays blocked. A source assertion that merely changes `runs-on` or a newer-OS passing run rejects neither failure mode.
+
+**Status.** Left open because no qualified replacement runner or macOS 14 host was provided, and the shared task instructions prohibit app launches and network-heavy builds. Provisioning and qualifying a runner is not a small obvious source fix. No CI/environment configuration was changed to bypass this gate.
 
 ## Verification and reproducibility
 
