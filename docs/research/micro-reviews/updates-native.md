@@ -81,3 +81,15 @@ Repaired-preference verification: the rejecting test failed before the fix, then
 - Typecheck, lint, Rust formatting, and diff whitespace checks passed before each fix commit.
 - Full native Cargo validation remained blocked on the shared artifact lock and was stopped after checking the exact executable command, user, and worktree. It did not compile or run tests. Earlier superseded queued requests were also stopped. No other agent process was interrupted.
 - No application, real VM, package manager, production data, or credentials were exercised. The final scope pass confirmed the remaining post-go-ahead stall finding and found no further evidence-backed defect.
+
+## UPDATES-NATIVE-6: Missing metadata silently retires update recovery
+
+- **Priority:** P2.
+- **Scope:** Adjacent `runtime/update_recovery.rs:250–257` and the metadata reader in `runtime.rs`.
+- **Trigger:** An update resume journal exists, but `machines.json` is missing.
+- **Evidence:** `resume_unless_removed` treats a missing metadata path as an absent sandbox and returns success. `restore_pending` then removes that identity and deletes the journal. The new temporary-directory regression failed because recovery returned success with no metadata.
+- **Consequence:** The exact saved running set is discarded without evidence that those sandboxes were deleted. Restoring the configuration later cannot retry the lost update resume intent.
+- **Correction:** Preserve the metadata reader's missing-file result for recovery. Ordinary first-launch reads still default to an empty configuration; update recovery requires a readable saved configuration before retiring an absent identity. This also avoids an existence-check/read race.
+- **Regression:** `missing_metadata_preserves_the_update_resume_journal` requires an error and byte-identical journal preservation when metadata is absent, then installs a valid empty configuration and requires confirmed deleted entries to retire normally.
+
+UPDATES-NATIVE-6 verification: the regression failed on the original recovery decision, then 6 extracted journal/metadata-decision tests passed, covering missing metadata, confirmed deletion, interruption, failed resume, consent, and an empty running set. Journal and metadata-reader functions are production source; runtime path/type/validation collaborators are disposable fixtures. Typecheck, lint, formatting, and whitespace checks passed. Full native `update_recovery::tests::` validation is queued with the shared target and synthetic GitHub configuration.
