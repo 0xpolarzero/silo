@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { defaultStartupWorkspaceIds, startupWorkspaceCandidates } from "@/features/application/model/startup-workspaces"
 import { ApplicationPreferenceFields } from "@/features/preferences/components/application-preference-fields"
+import { SettingsSaveNotice } from "@/features/preferences/components/settings-save-notice"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 import { useTheme } from "@/features/preferences/theme"
 import { useSettings } from "@/features/preferences/settings-store"
@@ -59,6 +60,7 @@ export function GeneralPage({
 
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
+      <SettingsSaveNotice />
       <UpdatesCard />
       <section className="grid gap-2">
         <h3 className="text-xs font-medium">Appearance</h3>

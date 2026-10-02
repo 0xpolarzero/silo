@@ -73,7 +73,10 @@ def check_destination(destination):
 
 
 def relocate(value):
-    return value.replace('/home/silo-desktop/', '/home/silo/').replace('/root/', '/home/silo/')
+    for legacy in ('/home/silo-desktop', '/root'):
+        if value == legacy or value.startswith(legacy + '/'):
+            return '/home/silo' + value[len(legacy):]
+    return value
 
 
 def launcher_contents(path, relative):
@@ -191,6 +194,27 @@ def validate_account(entry):
         raise RuntimeError('The silo account does not match the layout Silo needs.')
 
 
+def write_text_atomic(path, contents, mode):
+    fd, temporary = tempfile.mkstemp(prefix=f'.{path.name}-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            output.write(contents)
+            output.flush()
+            os.fchmod(output.fileno(), mode)
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+
+
 def set_up(desktop_service):
     if os.geteuid() != 0 or run('sh', '-c', '. /etc/os-release; printf "%s %s" "$ID" "$VERSION_ID"') != 'ubuntu 24.04':
         raise RuntimeError('The silo account needs root inside an Ubuntu 24.04 Silo VM.')
@@ -244,22 +268,16 @@ def set_up(desktop_service):
     # Do not traverse other mounts or follow symlinks into system or host files.
     run('find', '/workspace', '-xdev', '-exec', 'chown', '-h', 'silo:silo', '{}', '+')
     sudoers = Path('/etc/sudoers.d/silo')
-    sudoers.write_text('silo ALL=(ALL:ALL) NOPASSWD: ALL\n')
-    sudoers.chmod(0o440)
+    write_text_atomic(sudoers, 'silo ALL=(ALL:ALL) NOPASSWD: ALL\n', 0o440)
     run('visudo', '-cf', str(sudoers))
     state = Path('/var/lib/silo-desktop')
     if (state / 'installed.json').exists():
         service = Path('/usr/local/bin/silo-desktop')
-        service.write_text(desktop_service)
-        service.chmod(0o755)
-        (state / 'configuration-managed.json').write_text('{"home":"/home/silo"}\n')
-        (state / 'configuration-managed.json').chmod(0o600)
+        write_text_atomic(service, desktop_service, 0o755)
+        write_text_atomic(state / 'configuration-managed.json', '{"home":"/home/silo"}\n', 0o600)
     run('runuser', '-u', 'silo', '--', 'env', 'HOME=/home/silo', 'USER=silo', 'LOGNAME=silo', 'sh', '-ec', 'test -w "$HOME"; test -w /workspace; sudo -n true; test -x /usr/lib/openssh/sftp-server')
     RECORD.parent.mkdir(parents=True, exist_ok=True)
-    temporary = RECORD.with_suffix('.tmp')
-    temporary.write_text(json.dumps(POLICY, separators=(',', ':')) + '\n')
-    temporary.chmod(0o644)
-    temporary.replace(RECORD)
+    write_text_atomic(RECORD, json.dumps(POLICY, separators=(',', ':')) + '\n', 0o644)
 
 
 if __name__ == '__main__':

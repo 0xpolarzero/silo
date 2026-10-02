@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import selectors
+import signal
 import subprocess
 import sys
 import time
@@ -73,7 +74,8 @@ def transient_appimage_download(lines):
 def run_attempt(command, log, stdout, stderr):
     output = bytearray()
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   start_new_session=True)
     except OSError as error:
         message = f"Could not start bundle command: {error.strerror}\n".encode()
         stderr.write(message)
@@ -99,9 +101,13 @@ def run_attempt(command, log, stdout, stderr):
                         output.extend(chunk)
             code = process.wait()
         except BaseException:
-            # Popen's context manager waits; stop the child before that wait
-            # when output forwarding fails or the wrapper is interrupted.
-            process.kill()
+            # The unreaped session leader reserves this group ID. Stop its
+            # bundling tools too before Popen's context manager waits.
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             raise
     return code if code >= 0 else 128 - code, bytes(output)
 

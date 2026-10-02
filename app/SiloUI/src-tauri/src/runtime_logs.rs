@@ -222,6 +222,9 @@ fn decode(segment: &Segment, raw: &[u8], oversized: bool) -> Decoded {
             let Ok(value) = serde_json::from_str::<Value>(&text) else {
                 return placeholder("system", "[Unreadable execution log record]");
             };
+            let Some(body) = value["d"].as_str() else {
+                return placeholder("system", "[Unreadable execution log record]");
+            };
             let time = value["t"].as_str().and_then(|time| stamp(time).ok());
             Decoded {
                 in_pem: false,
@@ -231,7 +234,7 @@ fn decode(segment: &Segment, raw: &[u8], oversized: bool) -> Decoded {
                 body: if value["e"] == "b64" {
                     "[Binary runtime output]".into()
                 } else {
-                    value["d"].as_str().unwrap_or("").to_string()
+                    body.to_string()
                 },
                 session: value["id"].as_u64().map(|id| id.to_string()),
                 guest_time: false,
@@ -1278,6 +1281,15 @@ mod tests {
             "git clone 'https://synthetic-url-token@example.test/repo'",
             "connect(postgresql://alice:synthetic-db-password@localhost/db)",
             "remote=https://alice:synthetic%2Dencoded%2Dpassword@example.test/repo",
+            "curl --user alice:synthetic-password https://example.test",
+            "curl -u alice:synthetic-password https://example.test",
+            "login --password synthetic-password",
+            "client --api-key synthetic-key",
+            "client --client-secret synthetic-secret",
+            "client --access_token synthetic-token",
+            "download https://example.test/blob?sv=2026-02-06&sp=r&sig=synthetic-signature",
+            "fetch https://example.test/?%74oken=synthetic-query-token",
+            "fetch https://example.test/?api%5Fkey=synthetic-query-key",
         ]
         .iter()
         .enumerate()
@@ -1307,10 +1319,7 @@ mod tests {
             serde_json::to_string(&context).unwrap(),
             String::from_utf8(exported).unwrap(),
         ] {
-            assert!(
-                !text.contains("synthetic"),
-                "URL credentials escaped: {text}"
-            );
+            assert!(!text.contains("synthetic"), "Credentials escaped: {text}");
         }
         assert!(context
             .entries
@@ -1869,6 +1878,48 @@ mod tests {
         ] {
             assert!(lines.contains(&expected), "{expected}: {lines:?}");
         }
+    }
+    #[test]
+    fn malformed_execution_body_is_flagged_even_when_its_json_is_valid() {
+        for record in [
+            "null",
+            "[]",
+            "{}",
+            "\"unexpected text\"",
+            r#"{"t":"2026-09-18T12:00:00Z","s":"stderr","d":42}"#,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            fs::write(
+                directory.path().join("exec.log"),
+                format!("{record}\n{}", line(1, "after")),
+            )
+            .unwrap();
+            let page = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+            assert!(page.unreadable_records, "{record}");
+            assert_eq!(page.total_matches, 2);
+            assert!(page
+                .entries
+                .iter()
+                .any(|entry| entry.line == "[Unreadable execution log record]"));
+            assert!(page.entries.iter().any(|entry| entry.line == "after"));
+        }
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("exec.log"),
+            format!(
+                "{}{}\n",
+                line(0, ""),
+                r#"{"t":"2026-09-18T12:00:00Z","s":"stdout","e":"b64","d":"AA=="}"#,
+            ),
+        )
+        .unwrap();
+        let page = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+        assert!(!page.unreadable_records);
+        assert!(page.entries.iter().any(|entry| entry.line.is_empty()));
+        assert!(page
+            .entries
+            .iter()
+            .any(|entry| entry.line == "[Binary runtime output]"));
     }
     #[test]
     fn oversized_record_ending_at_the_read_boundary_preserves_the_next_record() {

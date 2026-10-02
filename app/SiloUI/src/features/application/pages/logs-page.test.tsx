@@ -50,19 +50,23 @@ describe("retained logs", () => {
   })
 
   it("explains the bounded window and exports all matches after records leave the list", async () => {
-    const { workspace, actions } = fixture(6001)
-    actions.queryLogs = vi.fn(async request => fixtureLogPage(workspace, { ...request, limit: 3000 }))
+    const { workspace, actions } = fixture(100)
+    workspace.logs.forEach(log => { log.line += "x".repeat(64 * 1024) })
     actions.exportLogs = vi.fn(async () => true)
     render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
-    await screen.findByText(/Showing 3000 of 6001/)
-    scrollNearEnd()
-    await screen.findByText(/Showing 5000 of 6001/)
+    await screen.findByText(/Showing 15 of 100/)
+    for (let page = 2; page <= 5; page++) {
+      scrollNearEnd()
+      await screen.findByText(new RegExp(`Showing ${Math.min(63, page * 15)} of 100`))
+      await waitFor(() => expect(screen.getByRole("table", { name: "Logs" })).toHaveAttribute("aria-busy", "false"))
+    }
+    await screen.findByText(/Showing 63 of 100/)
     expect(screen.getByText(/Some loaded records have left this list/)).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "Save logs…" }))
     expect(actions.exportLogs).toHaveBeenCalledWith([expect.objectContaining({ sandboxId: workspace.machine.id, query: "" })])
     expect(vi.mocked(actions.exportLogs!).mock.calls[0][0][0]).not.toHaveProperty("cursor")
     fireEvent.click(screen.getByRole("button", { name: "Refresh logs" }))
-    await screen.findByText(/Showing 3000 of 6001/)
+    await screen.findByText(/Showing 15 of 100/)
     expect(screen.queryByText(/Some loaded records have left this list/)).not.toBeInTheDocument()
   })
   it("says when records could not be read and labels times the sandbox reported", async () => {
@@ -406,13 +410,15 @@ describe("retained logs", () => {
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
   })
 
-  it("uses the unsupported remote error code as an update hint", async () => {
+  it.each(["", "needle"])("uses the unsupported remote error code as an update hint without claiming empty logs (query: %s)", async query => {
     const { workspace, actions } = fixture()
     const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:zeronival:dev-zeronival", name: "dev-zeronival" }, computer: { id: "zeronival", vmId: "dev-zeronival", name: "zeronival", address: "zeronival.local", connected: true } }
     actions.queryLogs = vi.fn(async () => { throw { code: "unsupported_remote_operation", message: "This computer cannot query logs." } })
-    render(<Logs workspaces={[remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    render(<Logs workspaces={[remote]} actions={actions} active query={query} onQueryChange={vi.fn()} />)
     expect(await screen.findByText("Update Silo on zeronival to see logs for dev-zeronival.")).toBeVisible()
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
+    expect(screen.queryByText("No logs yet")).not.toBeInTheDocument()
+    expect(screen.queryByText("No results")).not.toBeInTheDocument()
   })
 
 })

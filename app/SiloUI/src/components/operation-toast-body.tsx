@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { CheckIcon, CircleAlertIcon, CircleIcon, Loader2Icon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { formatElapsed } from "@/lib/format-elapsed"
+import { restoreFocus } from "@/lib/focus"
 
 export type OperationStepState = "done" | "current" | "pending" | "failed"
 export interface OperationStep { label: string; state: OperationStepState }
@@ -71,11 +72,22 @@ function isRedundantStep(title: string | undefined, step: string | undefined): b
 export function OperationToastBody({ title, step, steps, progress, startedAt, cancel }: Omit<OperationProgressOptions, "title"> & { title?: string }) {
   const elapsed = useElapsed(startedAt)
   const [confirming, setConfirming] = useState(false)
+  const cancelButton = useRef<HTMLButtonElement>(null)
+  const wasConfirming = useRef(false)
+  useEffect(() => {
+    if (wasConfirming.current && !confirming) restoreFocus(cancelButton.current)
+    wasConfirming.current = confirming
+  }, [confirming])
   const value = progress == null ? null : Math.min(100, Math.max(0, progress * 100))
 
   if (confirming && cancel?.confirm) {
     const { prompt, confirmLabel, keepLabel = "Keep going" } = cancel.confirm
-    return <div className="grid gap-2 text-xs" role="group" aria-label="Confirm cancel">
+    return <div className="grid gap-2 text-xs" role="group" aria-label="Confirm cancel" onKeyDown={event => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing) return
+      event.preventDefault()
+      event.stopPropagation()
+      setConfirming(false)
+    }}>
       <p>{prompt}</p>
       <div className="flex gap-2">
         <Button type="button" variant="ghost" size="sm" autoFocus onClick={() => setConfirming(false)}>{keepLabel}</Button>
@@ -93,9 +105,9 @@ export function OperationToastBody({ title, step, steps, progress, startedAt, ca
     </div>
     {steps && steps.length > 0 && <ul className="grid gap-0.5" aria-label="Steps">
       {steps.map((entry) => <li key={entry.label} data-state={entry.state} aria-current={entry.state === "current" ? "step" : undefined} className={`flex items-center gap-1.5 ${entry.state === "pending" ? "text-muted-foreground" : entry.state === "failed" ? "text-destructive" : ""}`}>
-        {stepIcon[entry.state]}<span className="min-w-0 truncate">{entry.label}<span className="sr-only">: {stepStatus[entry.state]}</span></span>
+        {stepIcon[entry.state]}<span className="min-w-0 truncate" title={entry.label}>{entry.label}<span className="sr-only">: {stepStatus[entry.state]}</span></span>
       </li>)}
     </ul>}
-    {cancel && <div className="flex justify-end"><Button type="button" variant="outline" size="xs" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button></div>}
+    {cancel && <div className="flex justify-end"><Button ref={cancelButton} type="button" variant="outline" size="xs" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button></div>}
   </div>
 }

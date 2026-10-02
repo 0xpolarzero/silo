@@ -13,6 +13,8 @@ ROOT = Path(__file__).resolve().parents[3]
 WORKFLOW = (ROOT / '.github/workflows/apt-repository.yml').read_text()
 STEP = WORKFLOW.split('      - name: Sign update repository\n', 1)[1].split('\n      - name:', 1)[0]
 SIGN = textwrap.dedent(STEP.split('        run: |\n', 1)[1])
+STALE_STEP = WORKFLOW.split('      - name: Reject stale publication\n', 1)[1].split('\n      - uses:', 1)[0]
+STALE = textwrap.dedent(STALE_STEP.split('        run: |\n', 1)[1])
 
 
 class AptSigningShellTests(unittest.TestCase):
@@ -44,7 +46,7 @@ elif name == 'cat':
                            'SIGNING_HOME': str(home), 'SIGNING_LOG': str(log)}
             if fail_mktemp:
                 environment['FAIL_MKTEMP'] = '1'
-            result = subprocess.run(['bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', SIGN],
+            result = subprocess.run(['/bin/bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', SIGN],
                                     env=environment, text=True, capture_output=True)
             return result, [json.loads(line) for line in log.read_text().splitlines()], home
 
@@ -60,6 +62,31 @@ elif name == 'cat':
             if call[0] in ('gpg', 'python3'):
                 self.assertEqual(call[2], str(home))
         self.assertEqual(calls[-1][:2], ['rm', ['-rf', str(home)]])
+
+
+class AptPublicationGateShellTests(unittest.TestCase):
+    def run_gate(self, *, local=None, remote=None):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for name, value in (('cat', local), ('gh', remote)):
+                executable = root / name
+                body = 'exit 23' if value is None else f"printf '%s\\n' '{value}'"
+                executable.write_text('#!/bin/sh\n' + body + '\n')
+                executable.chmod(0o755)
+            return subprocess.run(['/bin/bash', '--noprofile', '--norc', '-eo', 'pipefail', '-c', STALE],
+                                  env={**os.environ, 'PATH': str(root), 'GH_REPO': 'test/repository'},
+                                  text=True, capture_output=True)
+
+    def test_missing_local_and_remote_versions_cannot_authorize_publication(self):
+        result = self.run_gate()
+        self.assertEqual(result.returncode, 23, result.stderr)
+
+    def test_publication_requires_matching_successfully_read_versions(self):
+        for local, remote, expected in [('v0.10.0', 'v0.10.0', 0), ('v0.10.0', 'v0.11.0', 1),
+                                        ('v0.10.0', None, 23), (None, 'v0.10.0', 23)]:
+            with self.subTest(local=local, remote=remote):
+                result = self.run_gate(local=local, remote=remote)
+                self.assertEqual(result.returncode, expected, result.stderr)
 
 
 if __name__ == '__main__':

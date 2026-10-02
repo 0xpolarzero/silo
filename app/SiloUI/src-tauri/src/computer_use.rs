@@ -18,6 +18,8 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -179,6 +181,7 @@ pub(crate) struct Settings {
 
 /// Serializes every read-modify-write of a policy file.
 static POLICY_LOCK: Mutex<()> = Mutex::new(());
+const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 
 fn directory(paths: &RuntimePaths) -> PathBuf {
     paths.metadata.with_file_name("computer-use")
@@ -195,8 +198,30 @@ fn observed_path(paths: &RuntimePaths, id: &str) -> Option<PathBuf> {
     policy_path(paths, id).map(|path| path.with_extension("observed.json"))
 }
 
+fn read_settings_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Computer-use settings must be a regular file.",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SETTINGS_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Computer-use settings exceed the 1 MiB safety limit.",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn read_json<T: serde::de::DeserializeOwned>(path: Option<PathBuf>) -> Option<T> {
-    path.and_then(|path| fs::read(path).ok())
+    path.and_then(|path| read_settings_bytes(&path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
@@ -210,7 +235,7 @@ fn read_policy_checked(paths: &RuntimePaths, id: &str) -> Option<Policy> {
     let Some(path) = policy_path(paths, id) else {
         return Some(Policy::default());
     };
-    match fs::read(path) {
+    match read_settings_bytes(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes).ok(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(Policy::default()),
         Err(_) => None,
@@ -335,30 +360,44 @@ fn policy_for_apply(paths: &RuntimePaths, id: &str) -> Policy {
 
 /// A fork starts with its source's approval mode and nothing else: its guest disk
 /// carries the source's configuration, so no attempt is known and its first boot applies.
-pub(crate) fn inherit_settings(paths: &RuntimePaths, from: &str, to: &str) {
+pub(crate) fn inherit_settings(
+    paths: &RuntimePaths,
+    from: &str,
+    to: &str,
+) -> Result<(), RuntimeError> {
     let _lock = lock_policies();
     let approval = read_policy(paths, from).approval;
-    let _ = write_atomic(
+    write_atomic(
         paths,
         policy_path(paths, to),
         &Policy {
             approval,
             ..Policy::default()
         },
-    );
+    )
 }
 
 /// Removes the settings of a deleted VM, or of an imported one: an import or transfer
 /// starts from the destination's default (ask) with no attempt known, so its first boot
 /// applies the default over whatever configuration the imported disk carries.
-pub(crate) fn forget(paths: &RuntimePaths, id: &str) {
+pub(crate) fn forget(paths: &RuntimePaths, id: &str) -> Result<(), RuntimeError> {
     let _lock = lock_policies();
+    let mut failure = None;
     for path in [policy_path(paths, id), observed_path(paths, id)]
         .into_iter()
         .flatten()
     {
-        let _ = fs::remove_file(path);
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                failure = Some(RuntimeError::Unavailable(
+                    "Silo could not remove the computer-use settings.".into(),
+                ));
+            }
+        }
     }
+    failure.map_or(Ok(()), Err)
 }
 
 /// Records what the guest last reported. Touches only the observation file.

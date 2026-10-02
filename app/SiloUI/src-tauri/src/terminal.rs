@@ -19,16 +19,18 @@ pub(crate) fn quote(value: &str) -> String {
 fn command(paths: &RuntimePaths, name: &str) -> Result<String, String> {
     let user = crate::working_account::USER;
     runtime::validate_name(name).map_err(|e| e.to_string())?;
+    let home = paths.home.to_str().ok_or("Invalid runtime home path.")?;
+    let executable = paths.executable.to_str().ok_or("Invalid runtime path.")?;
+    let library = paths
+        .library
+        .to_str()
+        .ok_or("Invalid runtime library path.")?;
     let args = [
         "/usr/bin/env".to_string(),
-        format!("MSB_HOME={}", paths.home.display()),
-        format!("MSB_PATH={}", paths.executable.display()),
-        format!("MSB_LIBKRUNFW_PATH={}", paths.library.display()),
-        paths
-            .executable
-            .to_str()
-            .ok_or("Invalid runtime path.")?
-            .into(),
+        format!("MSB_HOME={home}"),
+        format!("MSB_PATH={executable}"),
+        format!("MSB_LIBKRUNFW_PATH={library}"),
+        executable.into(),
         "exec".into(),
         name.into(),
         "--user".into(),
@@ -243,6 +245,25 @@ mod tests {
             "The bundled runtime returned invalid state for sandbox 'dev'."
         );
         malformed.assert_finished();
+    }
+
+    #[test]
+    fn terminal_command_rejects_non_utf8_runtime_paths() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let invalid =
+            std::path::PathBuf::from(std::ffi::OsString::from_vec(b"/tmp/runtime-\xff".to_vec()));
+        for field in ["home", "executable", "library"] {
+            let mut paths = crate::test_support::paths(dir.path());
+            match field {
+                "home" => paths.home = invalid.clone(),
+                "executable" => paths.executable = invalid.clone(),
+                "library" => paths.library = invalid.clone(),
+                _ => unreachable!(),
+            }
+            assert!(command(&paths, "dev").is_err(), "accepted lossy {field}");
+        }
     }
 
     #[test]

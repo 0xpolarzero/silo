@@ -40,7 +40,7 @@ No installed app, live VM, production HOME, Keychain, or remote computer is used
 
 ### GB-03 Management keys permit remote and Unix-socket forwarding outside bridge admission
 
-**Priority:** P2. **Status:** fixed in this commit; owner forwarding is disabled and published ports use pinned guest SSH.
+**Priority:** P2. **Status:** fixed, commit `2426f415`; fold reconciliation preserves integration’s reconnect-generation checks.
 
 **Trigger:** A holder of the dedicated Silo key requests `ssh -N -R` on an owner whose sshd permits remote forwarding. The holder need not invoke the bridge. With the default StreamLocal policy, the key can also request local forwarding to an owner Unix socket through `ssh -N -L local-port:/owner/socket`.
 

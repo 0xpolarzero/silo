@@ -272,22 +272,40 @@ npm --prefix app/SiloUI run lint
 npm --prefix app/SiloUI test
 cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check
 cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib
 npm --prefix app/SiloUI run test:release
 python3 -m unittest discover -s app/SiloUI/scripts -p 'test_*.py'
 ```
+
+`test:release` uses [Node's quoted recursive test glob](https://nodejs.org/docs/latest-v24.x/api/test.html#running-tests-from-the-command-line)
+`"scripts/**/*.test.mjs"`, so new script suites run without updating a filename
+list. `scripts/test_ci_coverage.py` verifies discovery and failure propagation
+with disposable new root and nested suites.
 
 Continuous integration runs the same checks. `.github/workflows/ci.yml` runs on
 every push to `main` and every pull request: frontend, script, website and demo
 checks; a blocking [Rust formatting check](https://github.com/rust-lang/rustfmt#verifying-code-is-formatted)
 using the pinned toolchain; the Rust
-suite with synthetic GitHub configuration; and a relative-link
+suites on Linux and macOS with synthetic GitHub configuration and the patched updater library tests;
+[Cargo's default package selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html#package-selection)
+runs only the root package, so the updater requires an explicit `-p` command; and a relative-link
 check of the Markdown documentation with [lychee](https://github.com/lycheeverse/lychee)
-in offline mode. To run that check locally, install lychee and run from the
-repository root:
+in offline mode. The macOS job also runs `test_macos_release.py` against
+ad hoc signed disposable binaries; the Linux discovery run skips these
+platform-specific cases. CI also explicitly runs Debian package lifecycle
+tests as root on its disposable Ubuntu runner, after ordinary non-root discovery.
+Local discovery keeps the lifecycle opt-in disabled because those tests install
+packages and write system APT paths. The jobs do not run the ignored live VM tests.
+The link check includes first-party source documentation, guest notices and
+changesets. A coverage regression compares its globs with tracked Markdown,
+excluding documentation in the partial upstream vendor tree.
+To run the link check locally, install lychee and run from the repository root:
 
 ```sh
 lychee --offline --no-progress README.md AGENTS.md 'docs/**/*.md' 'app/SiloUI/*.md' \
-  'app/SiloUI/tests/**/*.md' 'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
+  'app/SiloUI/tests/**/*.md' 'app/SiloUI/src/**/*.md' 'app/SiloUI/.changeset/*.md' \
+  'app/SiloUI/src-tauri/guest/**/*.md' 'app/SiloUI/docs/**/*.html' \
+  'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
 ```
 
 `.github/workflows/linux-packaging.yml` builds the Debian package and AppImage
@@ -395,6 +413,15 @@ ephemeral signing key in `release-verification`; these packages are for tests an
 cannot update production installations. The public key override only occurs in
 that isolated workflow checkout. These are not public releases.
 
+Final publication uses one shared concurrency group with `queue: max`, preserving
+up to 100 pending requests instead of replacing the pending request when a third
+arrives. Publications remain serialized, and their version checks still reject
+an obsolete or already published version. GitHub [released the larger queue on
+May 7, 2026](https://github.blog/changelog/2026-05-07-github-actions-concurrency-groups-now-allow-larger-queues/).
+Actionlint 1.7.12's unsupported-key diagnostic is a known
+[upstream validation gap](https://github.com/rhysd/actionlint/issues/680), as
+described in the [workflow fix audit](research/micro-reviews/workflows-fixes.md).
+
 macOS uses ad-hoc signing and no notarization. A downloaded installation can
 require System Settings → Privacy & Security → Open Anyway. Do not instruct users
 to disable Gatekeeper globally. Update signatures are separate and always checked.
@@ -417,7 +444,12 @@ restrictions and records the two signature-enforcement controls as skipped.
 A passing hosted result does not establish signature enforcement. Public release
 also requires the full suite on a Mac with SIP enabled, including the minimum
 supported macOS version. GitHub currently provides
-macOS 14 runners until November 2, 2026. Before their retirement, replace this
+macOS 14 runners until November 2, 2026, with
+[announced October brownouts](https://github.com/actions/runner-images/issues/13518)
+that fail jobs before retirement. The first window is October 5 at 14:00 UTC
+through October 6 at 00:00 UTC. Draft creation requires this job, so qualify a
+maintained replacement before that window; rerunning outside brownout windows
+is only a temporary workaround. Before their retirement, replace this
 minimum-version proof with a maintained runner rather than silently omitting it.
 This CI test checks library enforcement, not nested VM execution.
 
@@ -441,7 +473,9 @@ The `publish-release.py` tests cover missing/empty/unexpected assets, symlinks,
 invalid signature encoding, version bounds, complete checksums and platform URLs.
 `verify-release-metadata.py` also rejects an old signed package advertised under
 a new version. It reads macOS Info.plist/Mach-O headers, Debian control metadata,
-and the signed AppImage release-info resource without executing any package.
+and the signed Debian and AppImage release-info resources without executing any
+package. Debian data is inspected through `dpkg-deb --fsys-tarfile` as a stream;
+control fields and bundled release metadata must both match the release.
 
 ### Linux software source
 
@@ -689,9 +723,19 @@ and package validation are outside this retry boundary; other errors fail
 immediately. This handles transient upstream download failures without
 repeating the expensive build phases.
 
-If forwarding stdout/stderr or writing the local log fails, the wrapper kills
-and reaps its bundle command before propagating that error. Python's
+Each bundle attempt runs in its own process group. If forwarding stdout/stderr
+or writing the local log fails, the wrapper stops that group and reaps its
+bundle command before propagating the error. Python's
 [`Popen` context manager](https://docs.python.org/3/library/subprocess.html#subprocess.Popen)
 waits for the child on exit; it does not stop it on an exception. The synthetic
 stream-failure regression checks all three output destinations and verifies
-that the child is reaped. This does not test a real package build.
+that the child is reaped. A descendant fixture inherits a separate pipe; EOF
+verifies that it also exits after forwarding fails. This does not test a real
+package build.
+
+The release dependency-cache build also owns its command's process group.
+Reading compiler output, forwarding diagnostics, and recording artifact JSON
+must complete before the command can be released. An exception stops the group
+and reaps its leader before the metadata file closes. Its synthetic regression
+injects a forwarding failure after a fixture command starts, verifies a signal
+exit, and checks that `waitpid` reports no unreaped child.

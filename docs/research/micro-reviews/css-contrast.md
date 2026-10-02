@@ -64,3 +64,68 @@ Verification used static HTML fixtures in Chromium through Playwright, not a
 native bundle or live sandbox. Local evidence: `/tmp/silo-css-tooltip-before.html`
 and `/tmp/silo-css-tooltip-after.html`. No class-string unit assertion was added:
 the browser's measured text overflow is the relevant check.
+
+## Shared truncated string labels
+
+`ListRow`, `DisclosureHeader`, and `StatusBadge` truncate text but did not expose
+complete string labels on hover. Add native titles at the shared rendering seam
+for string details, headings, captions, and badge labels. React element content
+retains its existing rendering and caller-owned tooltip behavior.
+
+Regression: long string fixtures in `list-row.test.tsx`,
+`disclosure-header.test.tsx`, and `status-badge.test.tsx` failed for missing titles
+before the fix. Existing row action and disclosure keyboard tests still pass.
+
+## Secret restart notice
+
+The 10 px "Restart to apply" text used `amber-600` in light mode. The regression
+renders `SecretsPage` with a restart-required secret, reads the actual notice
+class and installed Tailwind palette, and reproduces 3.19:1 on white. Change the
+light class to the existing warning-text shade `amber-700`; retain `amber-400`
+in dark mode. Both shades now pass AA on every neutral theme surface.
+
+## Operation checklist labels
+
+The current-step line already exposed its full text through a title, but the
+checklist below it truncated each label without one. Add titles to checklist
+labels in all four states. The regression renders long completed, current,
+pending, and failed steps through the real toast and requires each full title.
+
+## Computer settings row overflow
+
+The connection row's `min-w-0` content container could shrink, but its address
+paragraph did not break an unbroken SSH account or hostname. A static Chromium
+fixture compiled from the row's actual Tailwind classes reproduced 1,352 px
+of scroll width in a 280 px row (158 px text column) using a 200-character
+account name. Add inherited `overflow-wrap: anywhere` to connection and
+download-status text containers. The same fixture now measures 280 px for
+both row client and scroll widths, and 158 px for both text-column widths.
+
+Both settings lists also truncate computer names without titles. Add complete
+name titles; two DOM tests failed before the change and now require the names
+to remain discoverable. The download-status test awaits its asynchronous read
+before checking the name, so it does not leave a pending React update.
+
+Browser evidence is in `/tmp/silo-css-computer-before.html` and
+`/tmp/silo-css-computer-after.html`. These are deterministic static fixtures;
+no remote connections, native app, or real sandbox data were used.
+
+## Selected filter labels
+
+Selected sandbox filter chips use `truncate` but did not expose the full label
+after closing the option list. Add a title to the shared chip label. The
+regression selects a long name with Enter and requires the complete title while
+retaining the independently named Remove button. Existing Tab and arrow-key
+navigation tests still pass.
+
+## Closing verification
+
+Node 24.21.0: 105 tests passed across the ten affected suites (theme contrast,
+operation toast, file tree, status folder picker, disclosure header, list row,
+status badge, secrets page, computer settings, and filter combobox).
+`tsc -b --pretty false`, focused `oxlint` on all touched TypeScript files, and
+`git diff --check` passed. The tooltip's existing reduced-motion and breadcrumb
+suites also passed (six tests). Each user-visible fix includes a patch changeset.
+
+No native bundle was built or inspected. All UI data was deterministic fixture
+data; browser geometry checks used compiled static HTML.

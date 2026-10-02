@@ -40,7 +40,7 @@ Ordered source patch pins (all `-0.7.6.patch`; "Feature" is a Silo-specific capa
 | `microsandbox-restore-policy-0.7.6.patch` | `46294a8e6a2b4913795f268b936b536721a21f33f32f7e3834a06d0480ef9555` | Feature | Restore-time labels, environment defaults, host-sourced secrets and asymmetric network defaults, applied before restored execution. |
 | `microsandbox-create-stopped-0.7.6.patch` | `7234d5319f05452e4cfc6355f21cedb0f50589df17bca13cdcaa2ed97816ca2c` | Feature | `create --no-start` and `--progress-json`: persist prepared storage as `Created` without running guest code, with credential-free progress. |
 | `microsandbox-adopt-owned-disk-0.7.6.patch` | `0ddba4cb88627548ffbace1c0bd041bb5c86eba99ebe81279fe934d62b75dbcb` | Feature | `adopt-disk`: convert a stopped sandbox's disk-image mount to an owned managed volume. |
-| `microsandbox-log-retention-desktop-start-0.7.6.patch` | `bef402e7e94c0c382d71db73f6a30e57b01d854de32c28b58e7f8cc80e268f74` | Feature | Log retention shared with stopped sandboxes and desktop-start log handling (`logging_retention.rs` is byte-identical to `src-tauri/src/log_retention.rs`, checked by a test). |
+| `microsandbox-log-retention-desktop-start-0.7.6.patch` | `2929930c703291efd45d5807f44888b4272e612d27bc270b26b001d88b2712e6` | Feature | Log retention shared with stopped sandboxes and desktop-start log handling (`logging_retention.rs` is byte-identical to `src-tauri/src/log_retention.rs`, checked by a test). |
 | `microsandbox-restore-root-capacity-0.7.6.patch` | `703df2e0330f45b653acb7027954ffff9f658ae7f9e86f6865d2ccba8e8608e9` | Feature | Restored managed and flat root disks declare the captured capacity (Silo's export check compares it). Rounds a non-MiB capacity up rather than rejecting it. |
 | `microsandbox-portable-image-cache-0.7.6.patch` | `4dcff8f9ea6f25d8c541a1625d7ac8796622c53f7692ce77e8a8442b32e50b9f` | Fix | Rebuild the imported image VMDK against the destination cache; upstream keeps the exporter's absolute extent paths (reproduced, see [upstream bugs](#upstream-defects-confirmed-against-v074)). |
 | `microsandbox-live-public-ports-0.7.6.patch` | `1a127057fbd0594ef6a08e3c7bd73143a4a123f73f3e293226dd84ab5525537f` | Feature | Add and remove public port publications on a running sandbox through the runtime control channel. |
@@ -841,6 +841,16 @@ Storage lists it with **Show** and **Delete now** until it is gone.
   one. A record that is damaged or has another `version` is kept untouched;
   the backup is still offered and can be deleted by hand, but Silo never
   deletes it automatically.
+- **Date bounds.** A saved start whose 14-day deadline or UTC conversion exceeds
+  the supported date range follows the damaged-record policy above. The reader
+  uses the `time` crate's [checked date addition](https://docs.rs/time/0.3.55/time/struct.OffsetDateTime.html#method.checked_add)
+  and [checked offset conversion](https://docs.rs/time/0.3.55/time/struct.OffsetDateTime.html#method.checked_to_offset).
+  Regressions cover overflow at `9999-12-31`, UTC overflow from a negative
+  offset, and a valid deadline at the end of year 9999. All use temporary data;
+  no app or VM is launched. The focused native suite passed all 28 tests on
+  2026-10-02, compiled directly with Rust 1.94.0 and the shared cached dependencies
+  while Cargo waited for its build lock. Formatting, frontend typechecking, and
+  lint also passed; this did not build or inspect an app bundle.
 - **Schedule.** Checked at launch and then hourly while Silo runs. A backup
   that came due while Silo was closed is deleted at the next launch. Hourly
   rather than daily because the sleep does not count time the computer spent
@@ -905,6 +915,15 @@ check. Frontend tests cover the migration screen, the Settings row, the confirma
 failure and retry against fixtures, and the native JSON contract. None of this
 deleted a real migrated install or booted a converted VM after deleting its
 backup.
+
+Migration-state reads and async runtime command admission wait on the progress
+mutex on Tauri's blocking pool. The
+writer retains that mutex while it commits the progress file and synchronizes the
+file and directory; a slow commit therefore cannot stall the main thread through
+a progress read. A held-lock regression requires an independent future to run
+before the writer releases the mutex and checks that the snapshot stays unchanged.
+This follows [Tauri's async command execution](https://v2.tauri.app/develop/calling-rust/#async-commands)
+and [Tokio's blocking-work boundary](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
 
 ### Editor connections after the migration (2026-10-01)
 

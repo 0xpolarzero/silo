@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Avoid reporting successful workspace reclamation as a failure when concurrent guest writes grow a checkpoint's writable qcow2 disk file.
+Avoid reporting successful storage reclamation as a failure when a sandbox writes to a checkpoint disk at the same time.

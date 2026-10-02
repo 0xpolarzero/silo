@@ -73,3 +73,84 @@ no real Quit request, app shutdown, or VM operation was exercised.
 Checks: all six Quit confirmation tests passed, including the existing
 main-window integration fixture. Frontend typecheck, touched-file oxlint,
 Rust formatting, and diff whitespace checks passed.
+
+## Import checking and rejection focus an available action
+
+The shared form popover always cancelled Radix's opening autofocus, even when
+there was no form field to focus. Checking and invalid import reviews have no
+fields, so focus stayed on the Add anchor instead of entering the popover.
+Both state regressions failed before the fix; output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/import-before.log`.
+
+The shell now defers to Radix's default autofocus when no preferred field or
+confirmation control exists. Checking focuses Cancel; a rejected export focuses
+Choose another file. The tests use Enter to activate these controls, then verify
+dismissal restores Add and no import starts. Field and confirmation autofocus
+still use the existing explicit targets. This uses the supported autofocus
+callbacks documented in the Radix source linked above.
+
+Checks: all 44 import, shared-popover, and sandbox-transfer tests passed.
+Frontend typecheck, touched-file oxlint, Rust formatting, and diff whitespace
+checks passed.
+
+## Repository picker suggestions stay out of the Tab sequence
+
+The GitHub repository picker has its own combobox implementation, separate from
+the shared filter already fixed in `a11y-application.md`. With no selected
+repositories, Tab from its input entered a popup button instead of leaving the
+picker. Both new regressions failed: one with a repository result and one with
+only the Add more repositories on GitHub action. Output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/repositories-before.log`.
+
+Both kinds of suggestion now have `tabIndex={-1}`, following the WAI-ARIA
+combobox pattern linked above. Arrow keys and Enter continue to select them
+through the focused input; pointer selection remains available. The regressions
+verify Tab leaves the last page control and closes the popup.
+
+Checks: all 19 repository editor and GitHub-page tests passed. Frontend
+typecheck, touched-file oxlint, Rust formatting, and diff whitespace checks
+passed.
+
+Folding encountered an overlapping test insertion from integration's repository
+scrolling fix. Both independent regressions were preserved; the merged suites
+passed all 20 tests, and typecheck, lint, formatting, and whitespace checks passed.
+
+## Shortcut and native-menu Commands restore the prior field
+
+Opening Commands with Ctrl+K or a native open request while editing a field,
+then pressing Escape, focused the palette's Search or jump to button instead
+of the interrupted field. Both fixture regressions failed before the fix.
+Output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/command-restore-before.log`.
+
+The palette records focus before opening and restores that connected, enabled
+control on dismissal. Recording precedes mounting because the search input now
+autofocuses on mount. Commands that open another panel retain the existing
+focus handoff; Radix's trigger restoration remains the fallback when the old
+control has disappeared. The tests resume typing into the original draft after
+both opening paths, following the modal-dialog restoration guidance linked above.
+
+Checks: all four command-menu tests and seven palette integration tests passed;
+seven of eight native-menu request tests passed. The existing VM-draft focus
+assertion also fails with the command-menu source restored to HEAD, as recorded
+in the baseline log. Frontend typecheck, touched-file oxlint, Rust formatting,
+and diff whitespace checks passed. Fixtures exercised both opening paths;
+no app bundle was launched.
+
+## Escape dismisses operation cancellation questions
+
+Integration already fixed focus restoration after Keep going, recorded in
+`fe-components-fix-loop.md`; that instance was skipped. A separate missing
+Escape handler remained: pressing Escape while focused in the cancellation
+question left it open. The new regression failed because the Confirm cancel
+group remained rendered. Output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/toast-before.log`.
+
+The question now consumes Escape locally and returns to progress through the
+existing Keep going state transition and focus restoration. It respects handled
+and composition events. The regression verifies Cancel regains focus, the
+operation continues, and Enter can reopen the question and activate cancellation.
+
+Checks: all 21 operation-toast body and toast integration tests passed.
+Frontend typecheck, touched-file oxlint, Rust formatting, and diff whitespace
+checks passed.

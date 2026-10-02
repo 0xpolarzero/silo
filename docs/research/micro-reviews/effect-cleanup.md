@@ -19,3 +19,19 @@ Cleanup now clears timers, dismisses owned progress, and clears tracking entries
 ## Production source startup subscriptions
 
 `startLiveUpdates` awaited six registrations before checking disposal. A registration completing after disposal stayed active until every later registration completed, and previously acquired handles were released twice. Startup now checks disposal immediately after each registration, stops the late handle, and skips subsequent registrations. Disposal drains the owned handle list, and callbacks ignore disposed sources. Deferred registration tests cover the first, middle, and final registration boundaries without invoking native reads.
+
+## Main route consumption after cleanup
+
+`useMainRoute` guarded state publication but still called `take_main_route` after disposal. The native command consumes the pending route with `Option::take` in `status_panel.rs`, so the obsolete listener discarded navigation intended for the active listener. A StrictMode regression with deferred registrations reproduces the missing route. The receiver now checks disposal before consuming native state.
+
+## Tray panel event lifetime
+
+`StatusPanel` forwarded open events after cleanup and left registration rejection unhandled. Under StrictMode, its obsolete listener could focus and reset the active view while registration was pending. The effect now guards callbacks, releases late registrations, and handles rejection. Fixture tests verify one live focus callback, disposal of both replayed registrations, no callback after unmount, and a handled registration error.
+
+## GitHub setup polling disposal
+
+`dispose` cleared periodic source polling but left an active GitHub setup delay running. After the delay it issued another `read_github_state` before noticing disposal, potentially waiting on a closed bridge. Disposal now wakes and clears setup delays, and verification checks disposal before the next read. The existing Quit-drain regression also covers disposal: accepted work rejects immediately, native read count stays unchanged, and no timer remains.
+
+## Notification reader callbacks after cleanup
+
+Editor include, transfer-result, and pre-upgrade backup readers guarded state publication but still started reads from disposed callbacks. The backup callback additionally used the latest refresh ref, letting an obsolete subscription trigger reads from its replacement backend. Early lifetime checks now reject that work. Seven fixture regressions cover pending registration, queued callbacks after registered cleanup, live refresh, and backend replacement.

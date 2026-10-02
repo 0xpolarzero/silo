@@ -13,6 +13,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::Path,
     sync::{Arc, Condvar, Mutex, MutexGuard},
     time::{Duration, Instant, SystemTime},
@@ -26,6 +27,8 @@ pub(super) const RECONNECT_GRACE: Duration = Duration::from_secs(10);
 const FINISHED_LIMIT: usize = 256;
 /// How often the on-disk markers are pruned.
 const PRUNE_INTERVAL: Duration = Duration::from_secs(60);
+/// Allows older records containing full request and result frames.
+const MAX_MARKER_BYTES: u64 = 16 * 1024 * 1024;
 
 pub(super) const EXPIRED: &str = "This change did not start on the other computer before the request expired, so nothing changed. Try again.";
 pub(super) const REUSED: &str = "Remote request identity was reused for a different operation.";
@@ -323,11 +326,28 @@ fn prune_markers(journal: &Path, now: SystemTime) {
 /// The status a marker records: "accepted", "finished" or "expired". Records written by
 /// earlier versions hold the full request, and a result once finished.
 fn read_marker(path: &Path) -> Option<String> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+    {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
         Err(_) => return Some("accepted".into()),
     };
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        return Some("accepted".into());
+    }
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_MARKER_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_MARKER_BYTES
+    {
+        return Some("accepted".into());
+    }
     let record: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     Some(match record["status"].as_str() {
         Some(status) => status.to_owned(),
@@ -352,6 +372,100 @@ fn write_marker(journal: &Path, path: &Path, method: &str, status: &str) -> Resu
 mod tests {
     use super::*;
     use crate::runtime::operation_gate::OperationGate;
+
+    #[test]
+    fn fifo_marker_is_uncertain_without_waiting_for_a_writer() {
+        const CHILD_PATH: &str = "SILO_TEST_REMOTE_FIFO_MARKER";
+        if let Some(path) = std::env::var_os(CHILD_PATH) {
+            assert_eq!(read_marker(Path::new(&path)).as_deref(), Some("accepted"));
+            return;
+        }
+        use std::os::unix::ffi::OsStrExt;
+        use std::process::{Command, Stdio};
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("marker.json");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("{module}::fifo_marker_is_uncertain_without_waiting_for_a_writer"),
+            ])
+            .env(CHILD_PATH, &path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                // The owned fixture cannot finish while the pre-fix reader waits for a writer.
+                assert_eq!(
+                    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
+                    0
+                );
+                child.wait().unwrap();
+                break None;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            status.is_some_and(|status| status.success()),
+            "marker inspection blocked on a FIFO"
+        );
+    }
+
+    #[test]
+    fn marker_symlinks_are_uncertain_without_following_the_target() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("external.json");
+        let bytes = br#"{"status":"finished"}"#;
+        fs::write(&target, bytes).unwrap();
+        let link = directory.path().join("marker.json");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(read_marker(&link).as_deref(), Some("accepted"));
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+        fs::remove_file(&target).unwrap();
+        assert_eq!(read_marker(&link).as_deref(), Some("accepted"));
+    }
+
+    #[test]
+    fn an_existing_dangling_marker_never_replays_the_change() {
+        let fixture = Fixture::new();
+        let marker = fixture.journal.path().join(format!("{}.json", fixture.id));
+        std::os::unix::fs::symlink(fixture.journal.path().join("missing"), &marker).unwrap();
+        let executions = AtomicUsize::new(0);
+        let result = registry().submit(fixture.submission(always(), always()), || {
+            executions.fetch_add(1, Ordering::SeqCst);
+            Ok(Value::Null)
+        });
+        assert!(result.is_err());
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+        assert!(fs::symlink_metadata(marker)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+    }
+
+    #[test]
+    fn marker_limit_preserves_legacy_records_and_treats_oversized_records_as_uncertain() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("marker.json");
+        assert_eq!(read_marker(&path), None);
+        let mut bytes = br#"{"request":{"params":{}},"result":{"Ok":{}}}"#.to_vec();
+        bytes.resize(16 * 1024 * 1024, b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_marker(&path).as_deref(), Some("finished"));
+        bytes.push(b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_marker(&path).as_deref(), Some("accepted"));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
 
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::thread;

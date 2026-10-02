@@ -176,13 +176,16 @@ terminal overrides, and no settings writes. The focused application/preferences
 suite passed 170 tests; status/settings/onboarding follow-up checks passed 33
 tests, including native menu and open folder-picker updates. Typecheck and lint
 passed. These are mocked discovery and UI checks, not native app launch evidence.
-The runtime currently rejects `open-editor`, `open-terminal`, and `open-site` as
-unknown workspace actions; preference propagation does not implement those
-separate launch handlers.
+That run verified preference propagation. The current native
+[`workspace_action` handler](../app/SiloUI/src-tauri/src/runtime.rs) dispatches
+`open-editor` and `open-terminal` to their launchers; website actions use
+[`open_network_port`](../app/SiloUI/src-tauri/src/network.rs), which checks the
+endpoint before invoking the chosen browser. See
+[editor and browser handoff](SiloUI-EDITOR-HANDOFF.md) and
+[terminal handoff](SiloUI-TERMINAL-HANDOFF.md) for implementation and verification.
 
-Browser and explicit native fixtures use a fixed catalog and disable the native
-picker. Native fixture storage is checked before consulting host applications or
-opening a dialog. Both native windows can read the catalog to resolve the same
+Browser previews and tests supply a fixed catalog. The native application uses
+host discovery and the native picker. Both native windows read the catalog to resolve the same
 installed defaults; only the main window can open the application picker.
 The picker uses the official [Tauri dialog plugin](https://v2.tauri.app/plugin/dialog/)
 behind those commands; the frontend receives no general filesystem permission.

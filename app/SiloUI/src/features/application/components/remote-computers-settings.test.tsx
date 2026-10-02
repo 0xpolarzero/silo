@@ -20,6 +20,13 @@ function actions(overrides: Partial<ApplicationActions> = {}): ApplicationAction
 afterEach(() => { toast.dismiss() })
 
 describe("RemoteComputersSettings", () => {
+  it("reveals the complete name of a computer with a long SSH address", () => {
+    const name = "Office workstation ".repeat(20).trim()
+    const remote = { id: "office-id", name, address: `${"account".repeat(30)}@office.example`, connected: false }
+    render(<RemoteComputersSettings source={{ ...source(undefined), remoteComputers: [remote] }} actions={actions()} />)
+    expect(screen.getByText(name)).toHaveAttribute("title", name)
+  })
+
   it.each(["cancel", "connect"])("returns focus to the opening button after %s", async (close) => {
     const user = userEvent.setup()
     const connectComputer = vi.fn().mockResolvedValue(undefined)
@@ -53,9 +60,9 @@ describe("RemoteComputersSettings", () => {
   })
 
   it.each([
-    ["authorize", "Authorize SSH in Terminal…"],
-    ["setupKey", "Set up Silo SSH key…"],
-  ] as const)("retries %s repair and requires an explicit reconnect afterwards", async (kind, label) => {
+    ["authorize", "Authorize SSH in Terminal…", "Opening Terminal…"],
+    ["setupKey", "Set up Silo SSH key…", "Setting up SSH key…"],
+  ] as const)("retries %s repair and requires an explicit reconnect afterwards", async (kind, label, progress) => {
     let fail!: (error: Error) => void
     const repair = vi.fn().mockImplementationOnce(() => new Promise<void>((_, reject) => { fail = reject })).mockResolvedValueOnce(undefined)
     const connect = vi.fn().mockRejectedValueOnce(new Error("SSH authentication failed")).mockResolvedValueOnce(undefined)
@@ -65,7 +72,9 @@ describe("RemoteComputersSettings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect" }))
     await screen.findByRole("alert")
     fireEvent.click(screen.getByRole("button", { name: label }))
-    expect(screen.getByRole("button", { name: label })).toBeDisabled()
+    expect(screen.getByRole("button", { name: progress })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled()
+    expect(screen.queryByRole("button", { name: "Connecting…" })).not.toBeInTheDocument()
     expect(repair).toHaveBeenCalledExactlyOnceWith("owner@office")
     await act(async () => fail(new Error("Repair unavailable")))
     expect(screen.getByRole("alert")).toHaveTextContent("Repair unavailable")
@@ -191,6 +200,12 @@ describe("ChatGPT for Linux on each computer", () => {
   }
   const row = (name: string) => within(screen.getByRole("list", { name: "ChatGPT for Linux on each computer" })).getByText(name).closest("li")!
 
+  it("reveals complete computer names in the download status rows", async () => {
+    settings({ local: { state: "ready", path: "/p", version: "26.928.31416" } })
+    await screen.findByText("Ready 26.928.31416")
+    expect(within(row("Office Mac")).getByText("Office Mac")).toHaveAttribute("title", "Office Mac")
+  })
+
   it("explains the download in one sentence and offers nothing to accept", async () => {
     settings({ local: { state: "ready", path: "/p", version: "26.928.31416" } })
     expect(await screen.findByText("Ready 26.928.31416")).toBeVisible()
@@ -278,4 +293,24 @@ it("stops subscription recovery timers when computer settings become inactive", 
     await act(async () => vi.advanceTimersByTimeAsync(0))
     expect(listen).toHaveBeenCalledTimes(2)
   } finally { view.unmount(); vi.useRealTimers() }
+})
+
+
+it("blocks removal Retry while a remote management change is pending", async () => {
+  let finish!: () => void
+  const setRemoteManagement = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  const removeComputer = vi.fn().mockRejectedValueOnce(new Error("Connection could not be removed")).mockResolvedValue(undefined)
+  const remote = { id: "office", name: "Office", address: "owner@office", connected: false }
+  const management = remoteManagementSchema.parse({ enabled: true, hostId: "local", name: "This computer", address: "owner@local" })
+  render(<><Toaster /><RemoteComputersSettings source={{ ...source(management), remoteComputers: [remote] }} actions={actions({ setRemoteManagement, removeComputer })} /></>)
+  fireEvent.click(screen.getByRole("button", { name: "Remove connection to Office" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  const toggle = screen.getByRole("switch", { name: "Allow remote management" })
+  fireEvent.click(toggle)
+  expect(toggle).toBeDisabled()
+  await act(async () => fireEvent.click(retry))
+  expect(removeComputer).toHaveBeenCalledOnce()
+  expect(toggle).toBeDisabled()
+  await act(async () => finish())
+  expect(toggle).toBeEnabled()
 })

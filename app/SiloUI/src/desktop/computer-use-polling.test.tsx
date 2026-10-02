@@ -1,12 +1,13 @@
 import { ComputerUseProvider } from "./computer-use-provider"
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { Profiler } from "react"
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
 import type { ApplicationActions } from "@/features/application/model/application-source"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { createFixtureComputerUseBackend, fixtureDesktopState } from "@/fixtures/computer-use"
-import { createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
+import { createComputerUseBridge, useChatGptApp, type ComputerUseBackend } from "./computer-use-bridge"
 import { ComputerUseSection } from "./computer-use-panel"
 
 const workspace = "silo-remote:11111111-1111-4111-8111-111111111111:33333333-3333-4333-8333-333333333333"
@@ -28,6 +29,81 @@ function section(b: ComputerUseBackend, active = true) {
 }
 beforeEach(() => { vi.useFakeTimers(); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible") })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+
+it("reads remote download status without waiting for local event registration", async () => {
+  const listen = vi.fn(() => new Promise<() => void>(() => {}))
+  const read = vi.fn(async () => ({ state: "downloading", receivedBytes: 1, totalBytes: 10 }))
+  const store = createComputerUseBridge(backend({ chatGptStatus: read, listenStatus: listen }), { busy: 1000, idle: 1000 }).chatGptFor("office")
+  const stop = store.subscribe(() => {})
+  try {
+    await advance(0)
+    expect(read).toHaveBeenCalledWith("office")
+    expect(store.getSnapshot().status).toMatchObject({ state: "downloading" })
+    await advance(1000)
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(listen).not.toHaveBeenCalled()
+    stop()
+    await advance(1000)
+    expect(read).toHaveBeenCalledTimes(2)
+  } finally { stop() }
+})
+
+it("does not commit the computer-use panel for equal reads but shows changed approval", async () => {
+  let state = fixtureDesktopState("ready")
+  const read = vi.fn(async () => structuredClone(state))
+  const bridge = createComputerUseBridge(backend({ readDesktopState: read }))
+  const commits = vi.fn()
+  const view = render(<ComputerUseProvider bridge={bridge}><Profiler id="computer-use" onRender={commits}>
+    <ComputerUseSection workspace={workspace} />
+  </Profiler></ComputerUseProvider>)
+  try {
+    await advance(0)
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
+    commits.mockClear()
+    for (let tick = 0; tick < 10; tick++) await advance(5000)
+    expect(read).toHaveBeenCalledTimes(11)
+    expect(commits).not.toHaveBeenCalled()
+    state = fixtureDesktopState("auto")
+    await advance(5000)
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeChecked()
+    expect(commits).toHaveBeenCalledOnce()
+  } finally { view.unmount() }
+})
+
+it("keeps remote download consumers stable until progress or a read error changes", async () => {
+  let receivedBytes = 1
+  let unavailable = false
+  const read = vi.fn(async () => {
+    if (unavailable) throw new Error("Computer disconnected")
+    return { state: "downloading", receivedBytes, totalBytes: 10 }
+  })
+  const store = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 1000, idle: 1000 }).chatGptFor("office")
+  let renders = 0
+  const view = renderHook(() => { renders++; return useChatGptApp(store) })
+  try {
+    await advance(0)
+    const first = view.result.current
+    const initialRenders = renders
+    for (let tick = 0; tick < 10; tick++) await advance(1000)
+    expect(read).toHaveBeenCalledTimes(11)
+    expect(renders - initialRenders).toBe(0)
+    expect(view.result.current).toBe(first)
+
+    receivedBytes = 2
+    await advance(1000)
+    expect(view.result.current.status).toMatchObject({ receivedBytes: 2 })
+    unavailable = true
+    await advance(1000)
+    expect(view.result.current.loadError).toBe("Computer disconnected")
+    const errorRenders = renders
+    await advance(2000)
+    expect(renders).toBe(errorRenders)
+    unavailable = false
+    await advance(4000)
+    expect(view.result.current.loadError).toBeNull()
+    expect(view.result.current.status).toMatchObject({ receivedBytes: 2 })
+  } finally { view.unmount() }
+})
 
 it("backs off failed remote download reads to a cap and restores polling after recovery", async () => {
   const read = vi.fn(async (): Promise<unknown> => { throw new Error("Computer disconnected") })

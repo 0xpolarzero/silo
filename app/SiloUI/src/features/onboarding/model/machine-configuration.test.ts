@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest"
-import { configurationRequest, machineCapacityError, productionMachineDefaults } from "./machine-configuration"
+import { configurationRequest, machineCapacityError, productionMachineDefaults, validateMachine } from "./machine-configuration"
+
+describe("machine validation errors", () => {
+  it("reports configuration fields this version cannot submit as a form error", () => {
+    const machine = { ...productionMachineDefaults[0], futurePolicy: { enabled: true } }
+    expect(() => configurationRequest([machine])).toThrow()
+    expect(validateMachine(machine, [machine], machine.id).form).toBeTruthy()
+  })
+
+  it("reports invalid IDs through the form rather than an undisplayed field", () => {
+    const machine = { ...productionMachineDefaults[0], id: "not-a-uuid" }
+    expect(validateMachine(machine, [machine], machine.id).form).toBeTruthy()
+    expect(validateMachine(machine, [machine], machine.id)).not.toHaveProperty("id")
+  })
+})
 
 describe("machine capacity", () => {
   it("allows a new sandbox in the last slot and rejects additions at or beyond 64", () => {

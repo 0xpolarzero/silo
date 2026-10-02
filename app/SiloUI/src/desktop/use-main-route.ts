@@ -20,6 +20,7 @@ export function useMainRoute(enabled: boolean) {
     let sequence = 0
     let applied = 0
     const receive = async () => {
+      if (disposed) return
       const request = ++sequence
       const parsed = routeShape.safeParse(await invoke("take_main_route"))
       if (!disposed && parsed.success && request > applied) {

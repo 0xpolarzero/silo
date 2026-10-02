@@ -1,4 +1,5 @@
 import { act, render, screen } from "@testing-library/react"
+import { StrictMode } from "react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -108,6 +109,29 @@ describe("status folder picker live directories", () => {
     expect(screen.queryByRole("button", { name: "projects" })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeDisabled()
   })
+  it("backs off failed reads, refreshes on focus, and restores the healthy interval", async () => {
+    vi.useFakeTimers()
+    try {
+      const loader = vi.fn().mockRejectedValue(new Error("unavailable"))
+      const { unmount } = setup(loader)
+      await act(async () => {})
+      let calls = 1
+      for (const delay of [20_000, 40_000, 60_000, 60_000]) {
+        await act(async () => vi.advanceTimersByTimeAsync(delay - 1))
+        expect(loader).toHaveBeenCalledTimes(calls)
+        await act(async () => vi.advanceTimersByTimeAsync(1))
+        expect(loader).toHaveBeenCalledTimes(++calls)
+      }
+      loader.mockResolvedValue(page([]))
+      await act(async () => window.dispatchEvent(new Event("focus")))
+      expect(loader).toHaveBeenCalledTimes(++calls)
+      await act(async () => vi.advanceTimersByTimeAsync(10_000))
+      expect(loader).toHaveBeenCalledTimes(++calls)
+      unmount()
+      await act(async () => vi.advanceTimersByTimeAsync(60_000))
+      expect(loader).toHaveBeenCalledTimes(calls)
+    } finally { vi.useRealTimers() }
+  })
   it("does not poll after the status panel loses focus or unmounts", async () => {
     vi.useFakeTimers()
     try {
@@ -123,5 +147,27 @@ describe("status folder picker live directories", () => {
       await act(async () => vi.advanceTimersByTime(20_000))
       expect(loader).toHaveBeenCalledTimes(2)
     } finally { vi.useRealTimers() }
+  })
+  it("cancels queued directory reads when the folder picker closes", async () => {
+    const waiting: ((value: DirectoryPage) => void)[] = []
+    const loader = vi.fn().mockResolvedValueOnce(page(["a", "b", "c"]))
+      .mockImplementation(() => new Promise<DirectoryPage>(resolve => { waiting.push(resolve) }))
+    const { user, unmount } = setup(loader)
+    await user.click(await screen.findByRole("button", { name: "a" }))
+    await user.click(screen.getByRole("button", { name: "/workspace" }))
+    await user.click(screen.getByRole("button", { name: "b" }))
+    await user.click(screen.getByRole("button", { name: "/workspace" }))
+    await user.click(screen.getByRole("button", { name: "c" }))
+    expect(loader.mock.calls.map(call => call[1])).toEqual(["/workspace", "/workspace/a", "/workspace", "/workspace/b"])
+    unmount()
+    await act(async () => waiting[0](page([], "/workspace/a")))
+    expect(loader.mock.calls.map(call => call[1])).not.toContain("/workspace/c")
+    await act(async () => waiting.slice(1).forEach(resolve => resolve(page([]))))
+  })
+  it("loads folders after StrictMode replays cleanup", async () => {
+    const loader = vi.fn().mockResolvedValue(page(["project"]))
+    render(<StrictMode><StatusFolderPicker workspace={workspace} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} /></StrictMode>)
+    expect(await screen.findByRole("button", { name: "project" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeEnabled()
   })
 })

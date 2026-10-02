@@ -26,6 +26,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   const [store] = useState(() => createDirectoryStore(listDirectory))
   useLayoutEffect(() => { store.setLoader(listDirectory) }, [store, listDirectory])
   const target = workspaceTarget(workspace)
+  useEffect(() => () => store.invalidateWorkspace(target), [store, target])
   const path = ["/workspace", ...segments].join("/")
   const key = directoryKey(target, path)
   const subscribe = useCallback((listener: () => void) => store.subscribe(key, listener), [store, key])
@@ -34,23 +35,36 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   useEffect(() => {
     if (!available) { store.invalidateWorkspace(target); return }
     let focused = true
-    const refresh = () => {
-      if (focused && document.visibilityState !== "hidden") void store.load(target, path, { refresh: true })
+    let disposed = false
+    let failureDelay = 0
+    let nextRead = 0
+    const refresh = (force = false) => {
+      if (disposed || !focused || document.visibilityState === "hidden") return
+      const current = store.getSnapshot(key)
+      if (!current.error) { failureDelay = 0; nextRead = 0 }
+      if (current.loading || (!force && nextRead > Date.now())) return
+      void store.load(target, path, { refresh: true }).then(() => {
+        if (disposed) return
+        failureDelay = store.getSnapshot(key).error ? Math.min((failureDelay || 10_000) * 2, 60_000) : 0
+        nextRead = Date.now() + failureDelay
+      })
     }
-    const focus = () => { focused = true; refresh() }
+    const focus = () => { focused = true; refresh(true) }
+    const onVisible = () => refresh(true)
     const blur = () => { focused = false }
     refresh()
     const timer = window.setInterval(refresh, 10_000)
     window.addEventListener("focus", focus)
     window.addEventListener("blur", blur)
-    document.addEventListener("visibilitychange", refresh)
+    document.addEventListener("visibilitychange", onVisible)
     return () => {
+      disposed = true
       window.clearInterval(timer)
       window.removeEventListener("focus", focus)
       window.removeEventListener("blur", blur)
-      document.removeEventListener("visibilitychange", refresh)
+      document.removeEventListener("visibilitychange", onVisible)
     }
-  }, [store, available, target, path])
+  }, [store, available, target, path, key])
   const folders = snapshot.entries?.filter((entry) => entry.kind === "folder") ?? []
   const filtered = folders.filter((entry) => entry.name.toLowerCase().includes(query.trim().toLowerCase()))
   const unavailable = workspace.machine.kind !== "vm" ? "Remote file browsing is unavailable." : workspace.freshness !== "fresh" ? "Reconnect to browse files." : workspace.state === "stopped" ? "Start this sandbox to browse its files." : "Files will be available when this sandbox is running."

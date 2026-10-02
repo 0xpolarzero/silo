@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { execFileSync, spawnSync } from "node:child_process"
 import { readFileSync } from "node:fs"
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { gunzipSync } from "node:zlib"
@@ -9,8 +9,20 @@ import { createHash } from "node:crypto"
 import test from "node:test"
 import { GUEST_IMAGE_VERSION, guestImageMetadata, lcuArchive, verifyGuestImage } from "./build-guest-image.mjs"
 
-for (const saveExit of [1, 0]) {
-  test(`guest archive publication preserves complete outputs when docker save exits ${saveExit}`, async t => {
+test("metadata CLI works through a symlink to the script", async t => {
+  const root = await mkdtemp(join(tmpdir(), "silo-guest-cli-link-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const entry = join(root, "guest-image.mjs")
+  await symlink(new URL("./build-guest-image.mjs", import.meta.url), entry)
+  const result = spawnSync(process.execPath, [entry, "metadata"], { encoding: "utf8",
+    env: { ...process.env, GITHUB_REPOSITORY: "fixture/silo" } })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, new RegExp(`^version=${GUEST_IMAGE_VERSION}$`, "m"))
+  assert.match(result.stdout, /^image=ghcr.io\/fixture\/silo-guest:/m)
+})
+
+for (const saveExit of [1, 0, "write-error"]) {
+  test(`guest archive publication preserves complete outputs for ${saveExit === "write-error" ? "an archive write failure" : `docker save exit ${saveExit}`}`, async t => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "silo-guest-save-")))
     t.after(() => rm(root, { recursive: true, force: true }))
     const scripts = join(root, "scripts")
@@ -25,19 +37,46 @@ for (const saveExit of [1, 0]) {
     await writeFile(join(root, "package.json"), '{"repository":{"url":"https://github.com/fixture/silo"}}')
     await writeFile(join(output, "image.tar.gz"), "previous verified archive")
     await writeFile(join(output, "manifest.json"), "previous manifest")
+    const writeError = saveExit === "write-error"
+    const preload = join(root, "fail-archive-write.mjs")
+    if (writeError) {
+      await writeFile(preload, `
+import fs from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
+import { Writable } from 'node:stream'
+fs.createWriteStream = () => new Writable({ write(chunk, encoding, callback) { callback(new Error('fixture ENOSPC')) } })
+syncBuiltinESMExports()
+`)
+    }
     const docker = `#!${process.execPath}
 const args = process.argv.slice(2)
 if (args[0] === 'image' && args[1] === 'inspect') console.log(JSON.stringify([{ Id: 'sha256:fixture' }]))
 if (args[0] === 'run' && args.at(-1) === '/usr/local/share/silo-packages.txt') console.log('fixture-package\\t1')
 if (args[0] === 'image' && args[1] === 'save') {
-  process.stdout.write('saved image fixture', () => process.exit(${saveExit}))
+  ${writeError ? `require('node:fs').writeFileSync(${JSON.stringify(join(root, "save.pid"))}, String(process.pid))
+  process.stdout.on('error', () => {})
+  process.stdout.write('saved image fixture')
+  setTimeout(() => process.exit(0), 15000)` : `process.stdout.write('saved image fixture', () => process.exit(${saveExit}))`}
 }
 `
     await writeFile(join(commands, "docker"), docker, { mode: 0o755 })
-    const result = spawnSync(process.execPath, [script, "arm64"], { encoding: "utf8", env: {
+    const result = spawnSync(process.execPath, [...(writeError ? ["--import", preload] : []), script, "arm64"], { encoding: "utf8", timeout: 8000, env: {
       ...process.env, PATH: `${commands}:${dirname(process.execPath)}`, GITHUB_REPOSITORY: "fixture/silo", GITHUB_SHA: "fixture",
     } })
-    assert.equal(result.status, saveExit, result.stderr)
+    if (writeError && result.error?.code === "ETIMEDOUT") {
+      try {
+        const pid = Number(await readFile(join(root, "save.pid"), "utf8"))
+        process.kill(pid, "SIGTERM")
+      } catch (error) {
+        if (!["ENOENT", "ESRCH"].includes(error.code)) throw error
+      }
+    }
+    assert.equal(result.status, writeError ? 1 : saveExit, result.stderr)
+    if (writeError) {
+      assert.match(result.stderr, /fixture ENOSPC/)
+      const pid = Number(await readFile(join(root, "save.pid"), "utf8"))
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" })
+    }
     if (saveExit) {
       assert.equal(await readFile(join(output, "image.tar.gz"), "utf8"), "previous verified archive")
       assert.equal(await readFile(join(output, "manifest.json"), "utf8"), "previous manifest")
@@ -47,6 +86,9 @@ if (args[0] === 'image' && args[1] === 'save') {
       const manifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"))
       assert.equal(manifest.archiveSha256, createHash("sha256").update(archive).digest("hex"))
       assert.equal(manifest.archiveBytes, archive.length)
+      assert.equal(manifest.unpackedBytes, Buffer.byteLength("saved image fixture"))
+      assert.equal(manifest.architecture, "aarch64")
+      assert.deepEqual(manifest.packages, { "fixture-package": "1" })
     }
     assert.deepEqual((await readdir(output)).sort(), ["image.tar.gz", "manifest.json"])
   })

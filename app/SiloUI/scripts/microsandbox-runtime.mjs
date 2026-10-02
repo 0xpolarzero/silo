@@ -117,12 +117,16 @@ export async function buildPatchedExecutable({
   const cachedExecutable = join(buildRoot, "msb")
   const cachedDigest = join(buildRoot, "msb.sha256")
   if (await isVerifiedFile(cachedExecutable, (await readFile(cachedDigest, "utf8").catch(() => "")).trim(), "Compiled MicroSandbox")) {
-    const version = runBuildTool(cachedExecutable, ["--version"]).trim()
-    const createHelp = runBuildTool(cachedExecutable, ["create", "--help"])
-    const execHelp = runBuildTool(cachedExecutable, ["exec", "--help"])
-    const sshHelp = runBuildTool(cachedExecutable, ["ssh", "serve", "--help"])
-    if (runBuildTool(cachedExecutable, ["snapshot", "load", "--help"]).includes("--stage-id") && sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && execHelp.includes("--no-stdin") && hasSiloProtocolProbes(cachedExecutable) && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--mount-owned") && createHelp.includes("--no-start") && createHelp.includes("--progress-json") && ["--from-sandbox", "--group", "--dest-dir", "--full", "--guest-flush", "--integrity"].every(flag => runBuildTool(cachedExecutable, ["snapshot", "create", "--help"]).includes(flag)) && ["--cow-mem", "--name"].every(flag => runBuildTool(cachedExecutable, ["restore", "--help"]).includes(flag))) {
-      return readFile(cachedExecutable)
+    try {
+      const version = runBuildTool(cachedExecutable, ["--version"]).trim()
+      const createHelp = runBuildTool(cachedExecutable, ["create", "--help"])
+      const execHelp = runBuildTool(cachedExecutable, ["exec", "--help"])
+      const sshHelp = runBuildTool(cachedExecutable, ["ssh", "serve", "--help"])
+      if (runBuildTool(cachedExecutable, ["snapshot", "load", "--help"]).includes("--stage-id") && sshHelp.includes("--no-start") && sshHelp.includes("--authorized-keys") && sshHelp.includes("--exit-on-stdin-close") && sshHelp.includes("--expected-machine-id") && execHelp.includes("--no-start") && execHelp.includes("--no-stdin") && hasSiloProtocolProbes(cachedExecutable) && version === `msb ${MICRO_SANDBOX_VERSION}` && createHelp.includes("--mount-owned") && createHelp.includes("--no-start") && createHelp.includes("--progress-json") && ["--from-sandbox", "--group", "--dest-dir", "--full", "--guest-flush", "--integrity"].every(flag => runBuildTool(cachedExecutable, ["snapshot", "create", "--help"]).includes(flag)) && ["--cow-mem", "--name"].every(flag => runBuildTool(cachedExecutable, ["restore", "--help"]).includes(flag))) {
+        return readFile(cachedExecutable)
+      }
+    } catch {
+      // A verified cache file can still be unusable; rebuild from pinned inputs.
     }
   }
 

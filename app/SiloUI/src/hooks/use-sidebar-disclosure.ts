@@ -45,6 +45,7 @@ export function useSidebarDisclosure() {
   useEffect(() => {
     if (!previewing) return
     function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || event.isComposing) return
       if (event.key === "Tab") keyboardNavigation.current = true
       if (event.key !== "Escape") return
       event.preventDefault()

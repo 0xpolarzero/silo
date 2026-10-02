@@ -266,13 +266,17 @@ pub(super) fn acknowledge_failure(
     paths: &RuntimePaths,
     machine_id: &str,
 ) -> Result<(), RuntimeError> {
-    if let Some(mut event) = events(paths)?
+    if let Some(mut event) = events(paths)
+        .unwrap_or_else(|error| {
+            warn(paths, &error.to_string());
+            Vec::new()
+        })
         .into_iter()
         .rev()
         .find(|event| event.machine_id == machine_id)
     {
         event.dismissed = true;
-        store(paths, &event).map_err(RuntimeError::Unavailable)?;
+        record(paths, &event);
     }
     Ok(())
 }
@@ -411,14 +415,53 @@ fn sensitive_assignment(lower: &str) -> bool {
 fn credential_url(line: &str) -> bool {
     line.match_indices("://").any(|(at, _)| {
         let start = line[..at]
-            .rfind(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '+' | '-' | '.'))
-            .map_or(0, |index| index + 1);
+            .char_indices()
+            .rfind(|(_, ch)| !ch.is_ascii_alphanumeric() && !matches!(ch, '+' | '-' | '.'))
+            .map_or(0, |(index, ch)| index + ch.len_utf8());
         let candidate = line[start..].split_whitespace().next().unwrap_or("");
         reqwest::Url::parse(candidate)
             .or_else(|_| {
                 reqwest::Url::parse(candidate.trim_end_matches(['"', '\'', '>', ')', ']', '}']))
             })
-            .is_ok_and(|url| !url.username().is_empty() || url.password().is_some())
+            .is_ok_and(|url| {
+                !url.username().is_empty()
+                    || url.password().is_some()
+                    || url.query_pairs().any(|(name, _)| {
+                        let name = name.to_ascii_lowercase();
+                        matches!(
+                            name.as_str(),
+                            "sig" | "signature" | "x-amz-signature" | "x-goog-signature"
+                        ) || sensitive_assignment(&format!("{name}="))
+                    })
+            })
+    })
+}
+
+fn sensitive_option(lower: &str) -> bool {
+    lower.split_whitespace().any(|word| {
+        let word = word.trim_matches(['"', '\'']);
+        if word == "-u" {
+            return true;
+        }
+        let Some(option) = word.strip_prefix("--") else {
+            return false;
+        };
+        if matches!(option, "user" | "proxy-user") {
+            return true;
+        }
+        option.split(['-', '_', '=']).any(|part| {
+            matches!(
+                part,
+                "password"
+                    | "passwd"
+                    | "passphrase"
+                    | "token"
+                    | "secret"
+                    | "key"
+                    | "credential"
+                    | "credentials"
+            )
+        })
     })
 }
 
@@ -441,6 +484,7 @@ pub(super) fn log_text_with_pem(body: &str, in_pem: &mut bool) -> String {
             }
             if pem
                 || sensitive_assignment(&lower)
+                || sensitive_option(&lower)
                 || credential_url(line)
                 || [
                     "authorization",
@@ -470,6 +514,51 @@ pub(super) fn log_text_with_pem(body: &str, in_pem: &mut bool) -> String {
 mod tests {
     use super::*;
     #[test]
+    fn command_line_secret_options_stay_out_of_failure_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        for line in [
+            "curl --user alice:synthetic-password https://example.test",
+            "curl -u alice:synthetic-password https://example.test",
+            "curl --proxy-user alice:synthetic-password https://example.test",
+            "login --password synthetic-password",
+            "client --api-key synthetic-key",
+            "client --client-secret synthetic-secret",
+            "client --access_token synthetic-token",
+            "client --passphrase synthetic-passphrase",
+        ] {
+            let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
+            finish(
+                &paths,
+                &mut event,
+                &Err(RuntimeError::Failed {
+                    operation: "Starting the sandbox".into(),
+                    exit_code: Some(1),
+                    detail: format!("connection failed\n{line}"),
+                }),
+            );
+            for text in [
+                fs::read_to_string(path(&paths)).unwrap(),
+                serde_json::to_string(&read(&paths).unwrap()).unwrap(),
+                serde_json::to_string(&failures(&paths).unwrap()).unwrap(),
+            ] {
+                assert!(
+                    !text.contains("synthetic"),
+                    "Command credentials escaped: {text}"
+                );
+                assert!(text.contains("connection failed"));
+            }
+        }
+        for line in [
+            "client --keyboard-layout us",
+            "client --monkey banana",
+            "client --output result",
+            "curl --user-agent Silo https://example.test",
+        ] {
+            assert_eq!(log_text(line), line);
+        }
+    }
+    #[test]
     fn log_text_hides_url_credentials_without_hiding_public_urls() {
         for line in [
             "fetch https://alice:synthetic-password@example.test/repo",
@@ -481,6 +570,12 @@ mod tests {
             "fetch https://alice:synthetic'password@example.test/repo",
             "fetch https://alice:synthetic)password@example.test/repo",
             "fetch https://alice:synthetic-password@[::1]",
+            "download https://example.test/blob?sv=2026-02-06&sp=r&sig=synthetic-signature",
+            "fetch https://example.test/?%74oken=synthetic-token",
+            "fetch https://example.test/?api%5Fkey=synthetic-key",
+            "fetch https://example.test/?X-Amz-Signature=synthetic-signature",
+            "fetch https://example.test/?X-Goog-Signature=synthetic-signature",
+            "🚨https://example.test/?sig=synthetic-signature",
         ] {
             assert_eq!(
                 log_text(line),
@@ -493,6 +588,8 @@ mod tests {
             "fetch https://example.test/team@main/repo",
             "fetch https://example.test/?contact=alice@example.test",
             "connection failed for alice@example.test",
+            "fetch https://example.test/?signature_status=valid",
+            "🚨https://example.test/public",
         ] {
             assert_eq!(log_text(line), line);
         }
@@ -661,6 +758,21 @@ mod tests {
         let values = read(&paths).unwrap();
         assert_eq!(values[0]["tone"], "warning");
         assert_eq!(values[0]["status"], "completed");
+    }
+
+    #[test]
+    fn acknowledging_a_crash_does_not_fail_when_activity_history_is_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let history = path(&paths);
+        let original = b"{unfinished activity history";
+        fs::write(&history, original).unwrap();
+
+        acknowledge_failure(&paths, "vm-1").unwrap();
+        assert_eq!(fs::read(&history).unwrap(), original);
+        assert!(read(&paths).unwrap().iter().any(|entry| {
+            entry["id"] == "sandbox-history-unavailable" && entry["tone"] == "warning"
+        }));
     }
 
     #[test]

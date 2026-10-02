@@ -247,12 +247,13 @@ fn resume_unless_removed(
     machine: &RunningMachine,
     resume: impl FnOnce(&RunningMachine) -> Result<(), String>,
 ) -> Result<(), String> {
-    let configured = paths.metadata.exists()
-        && read_metadata(&paths.metadata)
-            .map_err(|e| e.to_string())?
-            .machines
-            .iter()
-            .any(|m| m.is_vm() && m.id() == machine.id);
+    let saved = read_saved_metadata(&paths.metadata)
+        .map_err(|e| e.to_string())?
+        .ok_or("Silo's sandbox configuration is missing. Update recovery was preserved; restore the configuration before retrying.")?;
+    let configured = saved
+        .machines
+        .iter()
+        .any(|m| m.is_vm() && m.id() == machine.id);
     if !configured {
         return Ok(());
     }
@@ -464,6 +465,39 @@ mod tests {
         assert_eq!(load(&paths).unwrap().unwrap().machines, vec![first]);
     }
 
+    #[test]
+    fn missing_metadata_preserves_the_update_resume_journal() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let machine = RunningMachine {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "saved".into(),
+        };
+        save(&paths, &[machine]).unwrap();
+        let before = fs::read(path(&paths)).unwrap();
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        let error = restore_pending(&paths, |machine| {
+            resume_unless_removed(&paths, machine, |_| {
+                panic!("unknown configuration must not start a VM")
+            })
+        })
+        .unwrap_err();
+        assert!(error.contains("configuration"), "{error}");
+        assert_eq!(fs::read(path(&paths)).unwrap(), before);
+        let empty = MachineConfigurationRequest {
+            schema_version: 1,
+            machines: vec![],
+        };
+        write_metadata(&paths.metadata, &empty).unwrap();
+        restore_pending(&paths, |machine| {
+            resume_unless_removed(&paths, machine, |_| {
+                panic!("a confirmed removed VM must not start")
+            })
+        })
+        .unwrap();
+        assert!(!path(&paths).exists());
+    }
     #[test]
     fn removed_sandbox_entries_are_resolved_instead_of_blocking_every_launch() {
         let _test_state = crate::test_support::global_state();

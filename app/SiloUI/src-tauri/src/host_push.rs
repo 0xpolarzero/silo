@@ -599,6 +599,22 @@ impl HostGit {
         };
         match outcome {
             Ok(status) if !status.success() => {
+                if stage == "push" && command_args.contains(&"--porcelain") {
+                    // Only an explicit per-ref rejection proves no update.
+                    // Missing status and remote failures can follow acceptance.
+                    let rejected = !overflow
+                        && std::str::from_utf8(&output).is_ok_and(|output| {
+                            output.lines().any(|line| {
+                                let fields: Vec<_> = line.splitn(3, '\t').collect();
+                                matches!(fields.as_slice(), ["!", _, summary]
+                                    if summary.starts_with("[rejected]")
+                                        || summary.starts_with("[remote rejected]"))
+                            })
+                        });
+                    if !rejected {
+                        return Err(PUBLICATION_UNKNOWN.into());
+                    }
+                }
                 // The first line is the summary; the rest becomes diagnostic details.
                 return Err(if from_sandbox {
                     format!("Reading committed data from the sandbox failed (Git {stage}, {status}).\n{diagnostic}")
@@ -1130,7 +1146,15 @@ pub(crate) async fn push_repository(
     target: PushTarget,
 ) -> Result<Value, String> {
     let key = format!("{workspace}\0{repository_path}");
-    let planned_count = planned_count(&app, &workspace, &repository_path);
+    let planned_count = {
+        let (app, workspace, repository_path) =
+            (app.clone(), workspace.clone(), repository_path.clone());
+        runtime::operation_gate::spawn_blocking(move || {
+            planned_count(&app, &workspace, &repository_path)
+        })
+        .await
+        .map_err(|_| "Host push task failed.".to_string())?
+    };
     {
         let mut r = results().lock().map_err(|_| "Push state unavailable.")?;
         if r.get(&key).is_some_and(|(v, _)| v["status"] == "pushing") {
@@ -1788,6 +1812,46 @@ mod tests {
         );
         assert_eq!(result["status"], "unknown");
         assert_eq!(result["message"], PUBLICATION_UNKNOWN);
+    }
+
+    #[test]
+    fn publication_failures_require_an_explicit_rejection_to_be_known() {
+        let directory = tempfile::tempdir().unwrap();
+        let git = sleeping_git(directory.path());
+        for (summary, unknown) in [
+            ("", true),
+            ("[remote failure] (remote failed to report status)", true),
+            ("[rejected] (non-fast-forward)", false),
+            ("[remote rejected] (hook declined)", false),
+        ] {
+            let script = if summary.is_empty() {
+                "#!/bin/sh\nprintf updated >published\nexit 128\n".to_owned()
+            } else {
+                format!("#!/bin/sh\nprintf '!\\trefs/silo/push:refs/heads/main\\t%s\\n' '{summary}'\nexit 1\n")
+            };
+            fs::write(&git.executable, script).unwrap();
+            let error = git
+                .run(
+                    &[
+                        "push",
+                        "--porcelain",
+                        "origin",
+                        "refs/silo/push:refs/heads/main",
+                    ],
+                    None,
+                    "",
+                )
+                .unwrap_err();
+            if unknown {
+                assert_eq!(error, PUBLICATION_UNKNOWN);
+            } else {
+                assert!(error.starts_with("Git push failed"), "{error}");
+            }
+        }
+        assert_eq!(
+            fs::read_to_string(directory.path().join("published")).unwrap(),
+            "updated"
+        );
     }
 
     #[test]

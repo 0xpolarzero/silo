@@ -19,3 +19,31 @@ Scope: `remote_ops.rs`, `shutdown.rs`, `storage.rs`, `storage/tests.rs`, and `up
 Disposable Rust harnesses extract the unchanged production decision functions directly from source. The update-inventory and Storage-command harnesses stub their surrounding dependencies; the file-length harness uses the production guard and real temporary files. Each failed before its fix and passed afterward. These reproductions establish the reviewed decisions, not full application integration or live VM behavior.
 
 Full-crate Cargo regressions were queued with the shared `/tmp/silo-codex-target` and synthetic GitHub test configuration. Shared Cargo-lock contention delayed those runs; their results must be checked separately. Rust formatting, frontend typecheck, and lint passed before the first two commits. Failure outputs and disposable harnesses remain local in ignored verification storage or `/tmp/runtime-dir-c-*` files.
+
+## runtime-dir-c-4 — P1 — Failed restore falsely completes secret revocation
+
+- **Location:** `app/SiloUI/src-tauri/src/runtime.rs`, `observe_vm()` and `revoke_secret_with()`.
+- **Trigger:** A failed checkpoint restore leaves a running VM and its `pending_checkpoint_restore` record. Remove an assigned secret while that VM still exposes its binding.
+- **Evidence:** `observe_vm()` returned `Absent` solely because the pending selector existed. `revoke_secret_with()` interprets `Absent` as successful revocation and never calls the removal callback; the retry ledger can then retire while the running VM retains access. The pending-view rules already distinguish an unattempted selector from a restore attempt that created a VM.
+- **Consequence:** Secret removal reports success without revoking the preserved running VM. Terminal, file, and network observation also incorrectly treat that VM as absent.
+- **Fix:** Use pending-view rules to bypass runtime inspection only for an unattempted restore. After a restore attempt, inspect actual state and propagate errors; a genuinely missing runtime VM remains absent. Keep the original pending selector for explicit recovery.
+- **Regression test:** A pending attempted restore that still exposes a revoked binding must execute the removal callback and retain the pending revocation if post-removal inspection still exposes the binding. Extend the observation/terminal regression to cover a running attempted restore and a missing attempt. An unattempted restore still performs no runtime command.
+- **Focused reproduction:** The exact production observation function and pending-view predicate, extracted into a disposable Rust harness, failed the attempted-restore assertion before the fix while its unattempted no-query check passed. Both checks pass afterward. Full-crate native verification remains subject to the shared Cargo lock.
+
+## runtime-dir-c-5 — P2 — Launch accepts a running replacement by name
+
+- **Location:** `app/SiloUI/src-tauri/src/runtime.rs`, `start_at_launch_with()`.
+- **Trigger:** A launch-selected metadata VM has a managed runtime VM under the same name but a different immutable ID. The replacement is already Running.
+- **Evidence:** Launch inspected the name and checked only the managed label before returning `LaunchStart::Done`. The desired-state path never entered lifecycle recovery, where identity normally gets checked. The extracted production function returned `Ok(Done)` for a replacement ID in the failing regression.
+- **Consequence:** Startup reports the selected sandbox as ready and omits the replacement warning even though that exact sandbox is absent. The running replacement is not started or stopped by this branch.
+- **Fix:** Reuse `ensure_machine_identity()` before accepting any launch observation, including Running.
+- **Regression test:** Both a changed runtime ID under the selected name and an unexpected observed name must report an identity error without mutation. Existing matching-ID Running behavior remains successful and mutation-free. The extracted launch-function checks fail before and pass after the fix; native integration validation remains queued behind the shared Cargo lock.
+
+## runtime-dir-c-6 — P2 — A completed uncommitted stop still fails Quit
+
+- **Location:** `app/SiloUI/src-tauri/src/runtime/shutdown.rs`, `stop_uncommitted_vm()`.
+- **Trigger:** A VM created before metadata publication stops, but the runtime command client reports a timeout or other error after applying the stop.
+- **Evidence:** The Stop branch propagated the command error immediately with `?`, without another inspection. Committed lifecycle shutdown already verifies desired state after command failures. The extracted production helper returned the timeout in a fixture whose exact VM was Stopped after the command.
+- **Consequence:** Quit reports a shutdown failure and leaves the app open even though its owned VM stopped. A second Quit succeeds after inspecting the already-stopped VM.
+- **Fix:** After a command error, re-inspect the exact journal-owned identity. Accept only Stopped, Created, or Crashed; otherwise retain the command error. An unreadable or replaced VM still blocks Quit.
+- **Regression test:** The full uncommitted shutdown transaction must succeed when fake Stop commands set their VMs Stopped before returning timeout errors, and preserve the unfinished configuration journal. The same fixture must fail if the commands leave the VMs Running. Both extracted helper checks pass after the fix; the completed-stop assertion failed before it.

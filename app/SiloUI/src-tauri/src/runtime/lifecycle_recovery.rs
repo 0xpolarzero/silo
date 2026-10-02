@@ -48,11 +48,15 @@ fn store(paths: &RuntimePaths, intent: &Intent) -> Result<(), RuntimeError> {
         .map_err(|_| error("Sandbox action progress could not be synced."))
 }
 fn load(file: &Path) -> Result<Option<Intent>, RuntimeError> {
-    let bytes = match fs::read(file) {
-        Ok(bytes) => bytes,
+    let file = match File::open(file) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(error("Saved sandbox action could not be read.")),
     };
+    let mut bytes = Vec::new();
+    file.take(MAX_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| error("Saved sandbox action could not be read."))?;
     if bytes.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(error("Saved sandbox action is too large."));
     }
@@ -302,6 +306,7 @@ pub(super) fn perform(
         if matches!(action, "start" | "restart") {
             validate_inspected_resources(name, &initial.config, host)?;
         }
+        store(paths, &intent)?;
         Ok(initial)
     }) {
         Ok(initial) => initial,
@@ -311,7 +316,6 @@ pub(super) fn perform(
             return result;
         }
     };
-    store(paths, &intent)?;
     // Settle the superseded action only once the new intent replaced its file;
     // a new action rejected above leaves the saved one pending and unchanged.
     if let Some(mut previous) = superseded {
@@ -726,13 +730,72 @@ mod tests {
     }
 
     #[test]
-    fn intent_write_failure_still_blocks_runtime_mutation() {
+    fn intent_write_failure_records_a_failure_without_runtime_mutation() {
         let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         fs::write(directory(&paths), "not a directory").unwrap();
         let runner = Fake::new("Running");
         assert!(perform(&runner, &paths, &host(), "stop", "dev").is_err());
         assert!(runner.mutations().is_empty());
+        let history = runtime_activity::read(&paths).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["status"], "completed");
+        assert_eq!(history[0]["tone"], "danger");
+        assert!(history[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Sandbox action progress could not be saved."));
+    }
+
+    #[test]
+    fn intent_reader_accepts_the_limit_and_preserves_oversized_input() {
+        let _test_state = crate::test_support::global_state();
+        let (_dir, paths, _) = setup();
+        pending(&paths, "stop", Phase::StopPending);
+        let target = path(&paths, ID);
+        let mut bytes = fs::read(&target).unwrap();
+        bytes.resize(MAX_OUTPUT_BYTES as usize, b' ');
+        fs::write(&target, &bytes).unwrap();
+        assert!(load(&target).unwrap().is_some());
+        bytes.push(b' ');
+        fs::write(&target, &bytes).unwrap();
+        assert!(load(&target)
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("Saved sandbox action is too large."));
+        assert_eq!(fs::read(&target).unwrap(), bytes);
+    }
+
+    #[test]
+    fn oversized_intent_is_rejected_without_waiting_for_end_of_file() {
+        use std::os::unix::ffi::OsStrExt;
+        let _test_state = crate::test_support::global_state();
+        let (_dir, paths, _) = setup();
+        fs::create_dir_all(directory(&paths)).unwrap();
+        let target = path(&paths, ID);
+        let name = std::ffi::CString::new(target.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let (completed, result) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            completed.send(load(&target).map(|_| ())).unwrap();
+        });
+        let mut writer = fs::OpenOptions::new()
+            .write(true)
+            .open(path(&paths, ID))
+            .unwrap();
+        writer
+            .write_all(&vec![b' '; MAX_OUTPUT_BYTES as usize + 1])
+            .unwrap();
+        let rejected = result.recv_timeout(Duration::from_secs(2));
+        drop(writer);
+        reader.join().unwrap();
+        let failure = rejected
+            .expect("oversized intent should be rejected before its writer closes")
+            .unwrap_err();
+        assert!(failure
+            .to_string()
+            .contains("Saved sandbox action is too large."));
     }
 
     #[test]

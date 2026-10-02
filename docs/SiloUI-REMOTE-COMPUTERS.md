@@ -85,6 +85,21 @@ untouched. A failed or externally managed upgrade returns a repair error.
 Restrictions affect new authentications; already authenticated SSH sessions must
 end before their old authority is gone.
 
+Published-port and desktop forwards share `owned_tunnel.rs`. Its watchdog shell
+leads a dedicated process group and watches a pipe held by the controller. EOF
+on controller crash or exit terminates the group, including ordinary
+ProxyCommand descendants. Closing a tunnel also closes the pipe and performs
+bounded group cleanup. Explicit group signals are sent only while the owned
+leader is unreaped, preventing a reused process-group ID from being targeted.
+SSH stays in the foreground; user `ControlPersist` or
+`ForkAfterAuthentication` settings cannot detach this tunnel from its owner.
+No process-name sweep or change to the remote bridge is involved. Subprocess
+fixture tests verify controller termination, listener closure, descendant exit,
+and survival of an unrelated process; real OpenSSH/ProxyCommand crash behavior
+still requires separate platform qualification.
+
+## Remote settings
+
 Remote settings commands run on Tauri's blocking pool, including configuration
 lock waits, file reads, fsync writes, bridge-link setup, and control-socket setup.
 The desktop viewer already runs on a blocking worker and reads saved hosts through

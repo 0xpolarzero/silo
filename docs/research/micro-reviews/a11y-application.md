@@ -60,3 +60,108 @@ Import eligibility and validation messages remain unchanged.
 Verification: both format-error and duplicate-name fixtures in
 `import-popover.test.tsx` failed the stable-name assertion before the fix. They
 now verify the exact label, error description, invalid state, and disabled Import.
+
+## Dismissing native Quit confirmation lost keyboard position
+
+Trigger: while an input is focused, receive a native Quit request and dismiss the
+confirmation with Cancel or Escape. Radix's default restoration targets a dialog
+trigger, but this native-event dialog has none. Focus ended on the page body.
+
+The fix captures the focused element before opening and restores it through the
+supported close-autofocus callback. This follows the dialog dismissal example in
+[WCAG focus-order guidance](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html).
+The existing Quit decision and initial focus behavior are preserved.
+
+Verification: both dismissal regressions in `quit-request-confirmation.test.tsx`
+failed before the fix. They now restore the search field and still resolve the
+mocked Quit request to false. No native Quit or VM shutdown is exercised.
+
+## Personal-token editing did not manage keyboard position
+
+Trigger: open Add token, then Cancel or complete a successful connection. Opening
+left focus on Add token rather than the password field; closing removed the
+focused form control and left focus on the page body.
+
+The fix focuses the field on mount and restores the opening control after the
+editor closes and the pending operation settles. It uses the same existing
+focus helper and post-render restoration pattern as secret editing, consistent
+with [WCAG focus-order guidance](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html).
+Credential clearing and retry behavior remain unchanged.
+
+Verification: both new cases in `personal-token-connection.test.tsx` failed on
+opening focus, then failed on return focus after adding field autofocus alone.
+The complete fix passes both paths against synthetic token data and a mock save.
+
+## Repository keyboard navigation did not reveal the active option
+
+Trigger: open a repository catalog longer than its height-limited popup and
+navigate down with arrow keys. The input's active descendant changed but no
+scroll action revealed it, including the authorization action below the results.
+
+The fix reveals the active button with native nearest-edge scrolling while
+keeping DOM focus on the input, matching the established shared filter behavior
+and [WAI-ARIA combobox keyboard guidance](https://www.w3.org/WAI/ARIA/apg/patterns/combobox/).
+Selection identity and callback behavior remain unchanged.
+
+Verification: the new `github-access-editor.test.tsx` regression first failed
+because no scroll call targeted repository 20. It now checks both directions,
+the final authorization action, input focus, and Enter dispatch. This DOM fixture
+verifies the native scrolling request, not rendered pixel distances.
+
+## Sandbox badge labels used a role that prohibits naming
+
+Trigger: focus a sandbox badge in an application table. Its label contains the
+sandbox state and owning computer, but the badge was a generic span. WAI-ARIA's
+[generic role](https://www.w3.org/TR/wai-aria-1.2/#generic) prohibits naming and
+recommends a [group](https://www.w3.org/TR/wai-aria-1.2/#group) for a named container.
+The fix assigns that role to the composite sandbox badge.
+
+Verification: all four state regressions in `application-ui.test.tsx` failed to
+find a named status group before the fix. They now verify the full sandbox,
+state, and computer name and retain the existing Tab focus target. Existing
+visible-text, shape, and tooltip tests remain applicable. These are semantic DOM
+checks, not a screen-reader session.
+
+## Expanded log messages had no keyboard scroll target
+
+Trigger: expand a long log record and press Tab from its expansion button. The
+message is capped at 20rem and scrolls independently, but its `pre` element was
+not focusable. Keyboard users in browsers without automatic scroll-container
+focus could not reach the clipped portion with scrolling keys.
+
+The fix makes that exact scroll container focusable, names its output group, and
+adds an inset focus ring, following [MDN's overflow accessibility guidance](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/overflow#accessibility).
+The enclosing detail region and virtual table layout remain unchanged.
+
+Verification: `logs-table.test.tsx` first failed because Tab skipped the expanded
+message. The regression now reaches the named output and verifies the complete
+message remains present. DOM fixtures verify keyboard focus access; native
+scroll distances and screen-reader speech require a packaged-app check.
+
+## Explicit disclosure labels omitted their status captions
+
+Trigger: focus a dependency group disclosure with a caption such as "2 checks
+failed". Its explicit label replaced the button's content-derived name, including
+the status caption, and no description exposed that caption on focus.
+
+The shared header now associates its caption through a unique description ID
+when an explicit label overrides the content name. Unlabelled disclosures retain
+their content-derived names without duplicating the caption as a description.
+This uses [WAI-ARIA's description relationship](https://www.w3.org/TR/wai-aria-1.2/#aria-describedby).
+
+Verification: `disclosure-header.test.tsx` first failed for the missing caption
+description. The regression verifies separate captions across two instances and
+an updated status after rerender. A second case preserves unlabelled behavior.
+
+## Final focused verification
+
+Node 24.11.1: all 145 tests in the 15 focused component and caller files passed
+with `vitest run --maxWorkers=2 --testTimeout=15000`. The file list and complete
+result are saved locally in `/tmp/silo-a11y-node24-focused.log`. Frontend
+`typecheck`, oxlint on the 20 changed TypeScript files, Cargo 1.94.0 formatting,
+and `git diff --check` passed. Earlier iterations used the shell's Node 26
+default; the final Node 24 run reverified every changed area.
+
+Verification used deterministic DOM fixtures and synthetic backend callbacks.
+No bundle was inspected, no native app was launched, and no live VM, SSH
+connection, credential store, or production data was used.
