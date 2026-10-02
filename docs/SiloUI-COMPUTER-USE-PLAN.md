@@ -440,6 +440,22 @@ attempt ended `computer use failed` (`lcu-archive-unavailable`) because the gues
 the host network returned an empty reply; the retry succeeded. The upgrade of an existing 0.8.1
 install is covered by the guest unit tests only, not live.
 
+### Network retry for the LCU download (2026-10-02)
+
+The empty reply (and one DNS timeout) seen in two live runs is transient, and real users on
+flaky networks will see the same. The helper (`download` in `guest/silo-computer-use.py`) now
+tries the HTTPS-only download up to five times, waiting 5, 10, 20 and 40 s between attempts
+(never starting one after 420 s), and each curl uses its own `--retry 3 --retry-all-errors
+--retry-connrefused` with `--connect-timeout`/`--max-time`; every attempt is logged to
+`/var/log/silo-computer-use.log`. A hash mismatch is never retried (`lcu-archive-mismatch`).
+When the attempts run out the helper reports `lcu-archive-unavailable`, the one failure code
+the host treats as retryable: `apply_with` in `computer_use.rs` waits 1, 5 and 15 minutes
+(each wait outside the VM's operation turn, then a normal serialized apply) while the same
+running instance is up. During a wait the state is `preparing` ("Could not download LCU
+(network). Silo tries again automatically."); a boot, a switch change, a manual setup, a
+stop/restart or a deletion cancels it. After the last retry the failure stays until the next
+boot or a manual setup.
+
 ### LCU 0.8.4 pin (2026-10-02)
 
 Silo pins LCU 0.8.4 (tag `v0.8.4`, commit 78e75a4; linux-arm64
