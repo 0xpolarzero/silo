@@ -182,6 +182,113 @@ fn stopped_usage_reports_allocated_blocks_without_starting_guest() {
     assert_eq!(value.workspace_used_bytes, None);
     assert!(runner.calls.lock().unwrap().is_empty());
 }
+
+#[test]
+fn failed_pending_restore_reports_present_disks_and_preserves_errors() {
+    let _test_state = crate::test_support::global_state();
+    struct Restored {
+        observed: InspectedSandbox,
+        guest: Runner,
+    }
+    impl RuntimeRunner for Restored {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            let stdout = match args[0].as_str() {
+                "list" => json!([{"name":"dev"}]).to_string(),
+                "inspect" => json!({"name":self.observed.name,"status":self.observed.status,"config":self.observed.config,"runtime_instance_id":self.observed.runtime_instance_id}).to_string(),
+                _ => return self.guest.run(paths, args, timeout),
+            };
+            Ok(CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+    for status in ["Running", "Stopped"] {
+        let (_dir, paths, machine, mut observed) = fixture();
+        observed.status = status.into();
+        let root = paths.home.join("sandboxes/dev/rootfs.raw");
+        fs::write(&root, vec![3u8; 8192]).unwrap();
+        let pending: checkpoints::Record = serde_json::from_value(json!({
+            "version":1,
+            "checkpoints":[],
+            "restoreAttempted":true,
+            "pendingCheckpointRestore":{
+                "checkpointId":"c000000000000000000000000000000",
+                "sourceWorkspace":"source",
+                "state":"disk"
+            }
+        }))
+        .unwrap();
+        checkpoints::save(&paths, machine.id(), &pending).unwrap();
+        save(
+            &paths,
+            machine.id(),
+            &Record {
+                last_error: Some("Previous trim failed.".into()),
+                ..Record::default()
+            },
+        )
+        .unwrap();
+        let runner = Restored {
+            observed,
+            guest: Runner::new(),
+        };
+        let value = storage_with(&runner, &paths, machine.id(), false).unwrap();
+        assert_eq!(
+            value.workspace_host_bytes,
+            Some(allocated(&owned_disk(&paths, "dev")).unwrap())
+        );
+        assert_eq!(value.runtime_host_bytes, Some(allocated(&root).unwrap()));
+        assert_eq!(value.last_error.as_deref(), Some("Previous trim failed."));
+        let error = storage_with(&runner, &paths, machine.id(), true).unwrap_err();
+        assert!(error.to_string().contains("restore"), "{error}");
+        assert!(runner
+            .guest
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|args| !args.iter().any(|arg| arg == TRIM)));
+    }
+}
+
+#[test]
+fn unstarted_pending_restore_reports_zero_without_starting_a_vm() {
+    let _test_state = crate::test_support::global_state();
+    struct EmptyRuntime;
+    impl RuntimeRunner for EmptyRuntime {
+        fn run(
+            &self,
+            _: &RuntimePaths,
+            args: &[String],
+            _: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            assert_eq!(args[0], "list", "storage must not start an absent VM");
+            Ok(CommandOutput {
+                stdout: "[]".into(),
+                stderr: String::new(),
+            })
+        }
+    }
+    let (_dir, paths, machine, _) = fixture();
+    fs::remove_dir_all(paths.home.join("sandboxes/dev")).unwrap();
+    let mut pending = checkpoints::Record::default();
+    pending.pending_checkpoint_restore = Some(checkpoints::PendingRestore {
+        checkpoint_id: "c000000000000000000000000000000".into(),
+        source_workspace: "source".into(),
+        state: "disk".into(),
+    });
+    checkpoints::save(&paths, machine.id(), &pending).unwrap();
+    let value = storage_with(&EmptyRuntime, &paths, machine.id(), false).unwrap();
+    assert_eq!(value.workspace_host_bytes, Some(0));
+    assert_eq!(value.runtime_host_bytes, Some(0));
+    assert!(storage_with(&EmptyRuntime, &paths, machine.id(), true).is_err());
+}
 #[test]
 fn runtime_tail_truncation_is_repaired_and_reported_even_on_timeout() {
     let _test_state = crate::test_support::global_state();
