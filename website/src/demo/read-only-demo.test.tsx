@@ -94,6 +94,6 @@ it('shows sandbox menus and sample storage without allowing native operations', 
   await user.click(screen.getByRole('menuitem', { name: 'Storage for dev' }));
   expect(await screen.findByText('18.00 GiB')).toBeVisible();
   expect(screen.getByRole('button', { name: 'Reclaim unused space' })).toBeDisabled();
-  await user.click(screen.getByRole('button', { name: 'Reclaim history, 1 attempts' }));
+  await user.click(screen.getByRole('button', { name: 'Reclaim history, 1 attempt' }));
   expect(screen.getByLabelText('Reclaim history entries')).toBeVisible();
 });
