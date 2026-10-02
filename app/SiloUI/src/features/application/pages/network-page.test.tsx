@@ -52,11 +52,11 @@ describe("Network", () => {
     await user.click(screen.getByRole("button",{name:"Add"}))
     expect(save).toHaveBeenCalledWith({workspace:"dev",port:9000,hostPort:null,scheme:null})
     expect(await screen.findByText("Local port is already in use.")).toBeVisible()
-    expect(screen.getByText("Could not add port 9000")).toBeVisible()
+    expect(screen.getByText("Could not add port 9000 · dev")).toBeVisible()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.getByRole("spinbutton",{name:"Port"})).toHaveValue(9000)
     await user.click(screen.getByRole("button",{name:"Retry"}))
-    expect(await screen.findByText("Port 9000 added")).toBeInTheDocument()
+    expect(await screen.findByText("Port 9000 added · dev")).toBeInTheDocument()
     expect(screen.queryByRole("spinbutton",{name:"Port"})).not.toBeInTheDocument()
   })
 
@@ -132,7 +132,7 @@ describe("Network", () => {
 it("forwards a detected port immediately without a form", async () => {
   const {user,actions} = setup()
   await user.click(screen.getByRole("button",{name:/^Forward port 8080 to this (Mac|computer)$/}))
-  expect(await screen.findByText("Port 8080 forwarded")).toBeVisible()
+  expect(await screen.findByText("Port 8080 forwarded · dev")).toBeVisible()
   expect(actions.saveNetworkPort).toHaveBeenCalledWith({workspace:"dev",port:8080,hostPort:null,scheme:"http"})
   expect(screen.queryByRole("spinbutton",{name:"Port"})).not.toBeInTheDocument()
 })

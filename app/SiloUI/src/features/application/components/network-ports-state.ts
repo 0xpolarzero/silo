@@ -24,6 +24,8 @@ export function networkPortState(workspace: ApplicationWorkspace, port: NetworkP
   return ({ reachable: "Reachable", waiting: "Waiting for service", unpublished: "Not forwarded", unknown: "Unknown" })[port.state]
 }
 
+interface PortOperationIdentity { computer?: { id: string; name: string }; sandboxId: string; displayName: string }
+
 interface PortDraft { workspace: string; port: string; hostPort: string; scheme: string; editing: boolean }
 
 /** Shared state and operations for adding, editing, connecting, and removing forwarded ports.
@@ -53,22 +55,21 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   }, [active, refreshNetwork])
 
   /** Runs a port operation with the shared loading → success/failure notifications. Failures offer Retry. */
-  async function run(id: string, copy: { loading: string; step?: string; success: string; failure: string }, operation: () => Promise<void>, onSuccess?: () => void): Promise<boolean> {
+  async function run(id: string, identity: PortOperationIdentity, copy: { loading: string; step?: string; success: string; failure: string }, operation: () => Promise<void>, onSuccess?: () => void): Promise<boolean> {
     setBusy(true)
-    // Ids read `network-port:<target>:…`; a local target is the sandbox name (see `workspaceTarget`).
-    const sandbox = id.split(":")[1]
-    const machine = workspaces.find(workspace => workspaceTarget(workspace) === sandbox)?.machine
-    const noticeSandbox = machine ? { id: machine.id, name: machine.name } : undefined
-    showOperationProgress(id, { title: copy.loading, step: copy.step ?? `${copy.loading}…`, progress: null, sandbox })
+    const sandbox = identity.displayName
+    const location = identity.computer ? `${sandbox} · ${identity.computer.name}` : sandbox
+    const noticeSandbox = { id: identity.sandboxId, name: sandbox }
+    showOperationProgress(id, { title: `${copy.loading} · ${location}`, step: `${copy.step ?? copy.loading} · ${location}`, progress: null, sandbox })
     try {
       await operation()
-      showOperationSuccess(id, copy.success, { sandbox, noticeSandbox })
+      showOperationSuccess(id, `${copy.success} · ${location}`, { sandbox, noticeSandbox })
       setConfirm(null)
       onSuccess?.()
       return true
     } catch (cause) {
       const message = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated."
-      showOperationFailure(id, copy.failure, { description: message, retry: () => void run(id, copy, operation, onSuccess), sandbox, noticeSandbox })
+      showOperationFailure(id, `${copy.failure} · ${location}`, { description: message, retry: () => void run(id, identity, copy, operation, onSuccess), sandbox, noticeSandbox })
       return false
     } finally { setBusy(false) }
   }
