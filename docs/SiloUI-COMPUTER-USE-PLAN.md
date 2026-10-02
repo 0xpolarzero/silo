@@ -123,7 +123,7 @@ absolute).
   `--skip-system --offline`.
 - Pinned LCU release archive, hash-checked, staged for installation in the VM
   (done: `guest/lcu-lock.json`, `/usr/local/share/silo/lcu/`). The published v4 image
-  stages LCU 0.8.1; Silo now pins LCU 0.8.2 (below), which a VM downloads and
+  stages LCU 0.8.1; Silo now pins LCU 0.8.3 (below), which a VM downloads and
   verifies at setup until a new image stages it.
 - Accessibility: dconf `toolkit-accessibility=true` system default and an
   autostarted AT-SPI attribute poller for Chromium/Electron.
@@ -144,7 +144,7 @@ absolute).
 - Every computer does this itself at its own start, remote ones included; a
   controller never prepares an app for another computer.
 
-Done: lock (`lcuVersion` 0.8.2), download, verification, extraction and
+Done: lock (`lcuVersion` 0.8.3), download, verification, extraction and
 publication under `<app data>/chatgpt/published/`, started automatically at app
 start with retries (2026-10-02, replacing the one-time notice), cached status
 reads and a computer-level Retry. See [ChatGPT app](SiloUI-CHATGPT-APP.md).
@@ -439,3 +439,50 @@ now passes in LCU's default configuration, without the previous `E2E_NO_SANDBOX`
 attempt ended `computer use failed` (`lcu-archive-unavailable`) because the guest's first download over
 the host network returned an empty reply; the retry succeeded. The upgrade of an existing 0.8.1
 install is covered by the guest unit tests only, not live.
+
+### LCU 0.8.3 pin (2026-10-02)
+
+Silo now pins LCU 0.8.3 (tag `v0.8.3`, commit 93f3978; `guest/lcu-lock.json`,
+`chatgpt-app-lock.json` `lcuVersion`). The archive hashes were re-verified by downloading
+both Linux archives (arm64 `f6ada7fc...b943b9`, x64 `bc4997cd...29add4fa`). The earlier 0.8.2
+section above stays as the record of the 0.8.2 pin; everything it says about the staged
+v4 archive applies unchanged: the published `ubuntu-24.04-v4` image still stages LCU 0.8.1,
+the helper finds that the staged archive does not match the lock, downloads the locked 0.8.3
+URL, verifies it and installs it in place at setup (network needed once per VM).
+
+`scripts/install.py` is byte-identical between v0.8.2 and v0.8.3, so `SYSTEM_PACKAGES` is
+unchanged and the v4 image lacks nothing. 0.8.3's toolkit detection runs `xprop` for
+`_NET_WM_PID`; `xprop` is in `x11-utils`, which is in both the LCU package list and the v4
+image lock (`image-lock.json`, arm64 and amd64). `python3-pyqt5` appears only in LCU's own
+test Dockerfile and verification notes, not in `SYSTEM_PACKAGES` and not at runtime.
+
+What agents get on the Linux desktop with 0.8.3:
+
+- **Input translation.** The original Linux engine sends window-targeted `pressKey`,
+  coordinate `click`, `scroll` and `drag` with `XSendEvent`, which GTK 4 (XInput2 only)
+  ignores, so they used to succeed and change nothing in GNOME Text Editor. A `sky`
+  trusted-service wrapper now detects a GTK 4 process (`_NET_WM_PID` plus
+  `/proc/<pid>/maps`) and activates the window if needed, then issues the desktop-level
+  call with converted coordinates, for keys, click, scroll and drag. Qt gets the same for
+  scroll only. Everything else (GTK 3, browsers, Electron, the terminal) keeps the original
+  path, which already worked. Opt-out: `LCU_LINUX_INPUT_TRANSLATION=off`; Silo does not set it.
+- **No `node_repl` sandbox on Linux by default.** LCU documents that its Linux default is
+  unsandboxed (the macOS sandbox does not exist there). `LCU_NODE_REPL_SANDBOX` is the
+  opt-out and the host value must still never be set by Silo.
+- **`typeText` is AT-SPI only.** It works for GTK 3, GTK 4 and Qt with accessibility on, and
+  is unsupported in browsers, Electron, Java and terminals (VTE), which expose no AT-SPI
+  text provider; there agents fall back to `pressKey` per key (or click and paste).
+- **GTK 3 paste.** AT-SPI paste into a GTK 3 text view (gedit 46.2) crashes the app: an
+  upstream GTK/GNOME bug, filed with GNOME. Silo's image avoids it by shipping GNOME Text
+  Editor (GTK 4) and no Mousepad.
+
+Live check (macOS arm64, Silo main plus this pin, MicroSandbox 0.7.6 `msb` ad-hoc signed with
+`Entitlements.plist`, published v4 image `ubuntu-24.04-v4-arm64` staging LCU 0.8.1, ChatGPT 26.928.31416
+published by Silo's own downloader; fixture home under `/private/tmp`, `e2e-lcu` sandbox, no packaged
+app). The VM downloaded and verified the locked 0.8.3 archive and installed it over the staged
+0.8.1: `lcu status --json` reported `lcu_version` 0.8.3 and compatibility `tested`, `lcu doctor
+--require-ready` reported ready, and `live_lcu_drives_the_desktop_without_a_model` passed
+(bare MCP client with no `_meta`, the default-sandbox drive, Save As, per-key terminal). The drive now
+also sends window-targeted `pressKey` to GNOME Text Editor (GTK 4): `ctrl+a`, `BackSpace`, `keys-ok`
+and `ctrl+s`; an independent read of the saved file showed `keys-ok` plus the newline the editor adds
+on save, with the previous text gone. Per LCU's own measurements the same calls under 0.8.2 and earlier succeeded without effect.

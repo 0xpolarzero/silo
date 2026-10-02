@@ -81,9 +81,11 @@ if (x11Denied) {
 }
 
 const OUT = '/home/silo/e2e-lcu-out';
+const BEFORE_KEYS = '/tmp/e2e-before-keys.txt';
 const PERKEY = '/tmp/e2e-perkey.txt';
 for (const file of readdirSync('/home/silo').filter(f => f.startsWith('e2e-lcu-out'))) rmSync(`/home/silo/${file}`, { force: true });
 rmSync(PERKEY, { force: true });
+rmSync(BEFORE_KEYS, { force: true });
 try { execSync('pkill -x gnome-text-edit; pkill -x xfce4-terminal; sleep 2'); } catch {}
 execSync('rm -rf /home/silo/.local/share/org.gnome.TextEditor');
 
@@ -106,6 +108,17 @@ await js('save-confirm', `const d = await cua.getApp({ windowId: ${dialog[0]} })
 await sleep(3000);
 mark('editor-processes-after-save', processes('gnome-text-edit'));
 mark('saved-files', JSON.stringify(readdirSync('/home/silo').filter(f => f.startsWith('e2e-lcu-out'))));
+
+// 1b. Window-targeted keys in the GTK4 editor (LCU 0.8.3 translates them; 0.8.2 and earlier
+// ignored them for GTK 4): select all, delete, type per key, then Save in place with ctrl+s.
+// The saved file is compared by the test, which also reads the pre-keys copy made here.
+execSync(`cp /home/silo/e2e-lcu-out*.txt ${BEFORE_KEYS}`);
+await step('keys-select-delete', `await app.pressKey('ctrl+a'); await app.pressKey('BackSpace'); nodeRepl.write('cleared');`);
+const typed = [...'keys-ok\n'].map(keyName);
+await step('keys-type', `for (const k of ${JSON.stringify(typed)}) await app.pressKey(k); nodeRepl.write('typed');`);
+await step('keys-save', `await app.pressKey('ctrl+s'); nodeRepl.write('saved');`);
+await sleep(3000);
+mark('editor-processes-after-keys', processes('gnome-text-edit'));
 
 // 2. Per-key typing into a terminal (GTK3 and VTE): the keys must reach the shell.
 spawn('xfce4-terminal', ['--disable-server'], { detached: true, stdio: 'ignore' }).unref();

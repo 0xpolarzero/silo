@@ -531,8 +531,8 @@ class Apply(Guest):
         self.lcu_status['lcu_version'] = '0.8.1'
         cu.apply('ask')
         self.assertEqual(self.receipt()['archiveSha256'], old_sha)
-        # The new lock pins 0.8.2; the staged archive no longer matches it.
-        self.write_pinned(version='0.8.2', sha256=self.sha, url='https://example.invalid/' + ARCHIVE)
+        # The new lock pins 0.8.3; the staged archive no longer matches it.
+        self.write_pinned(version='0.8.3', sha256=self.sha, url='https://example.invalid/' + ARCHIVE)
         self.commands.clear()
         result = cu.apply('ask', boot=True)
         self.assertEqual(result['state'], 'ready')
