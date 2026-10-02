@@ -1,6 +1,7 @@
 //! Update installation changes the app, never VM disks. Keep the original running
 //! set durable before stopping anything, then restore only those exact identities.
 use super::*;
+use std::io::Read;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -45,11 +46,15 @@ fn save(paths: &RuntimePaths, machines: &[RunningMachine]) -> Result<(), String>
         .map_err(|_| "Update recovery could not be synced.".into())
 }
 fn load(paths: &RuntimePaths) -> Result<Option<Journal>, String> {
-    let bytes = match fs::read(path(paths)) {
-        Ok(b) => b,
+    let file = match File::open(path(paths)) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err("Update recovery could not be read.".into()),
     };
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Update recovery could not be read.")?;
     if bytes.len() > 1024 * 1024 {
         return Err("Update recovery is invalid; it was preserved.".into());
     }
@@ -103,12 +108,32 @@ fn running(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
 ) -> Result<Vec<RunningMachine>, String> {
-    if !paths.metadata.exists() {
-        return Ok(vec![]);
-    }
     let metadata = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
     let mut result = vec![];
     let mut listed: Option<HashSet<String>> = None;
+    let unfinished: Vec<_> = configuration_recovery::shutdown_machines(paths)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|machine| {
+            !metadata.machines.iter().any(|saved| {
+                saved.is_vm() && saved.id() == machine.id() && saved.name() == machine.name()
+            })
+        })
+        .collect();
+    if !unfinished.is_empty() {
+        let present: HashSet<_> = list_managed(runner, paths)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        if let Some(machine) = unfinished
+            .iter()
+            .find(|machine| present.contains(machine.name()))
+        {
+            return Err(format!("{} has unfinished sandbox configuration. Retry or correct its setup before updating.", machine.name()));
+        }
+        listed = Some(present);
+    }
     for m in metadata.machines.iter().filter(|m| m.is_vm()) {
         // Unstarted forks, restores and imports have no runtime VM yet, so they
         // cannot be running and must not block updates.
@@ -227,12 +252,13 @@ fn resume_unless_removed(
     machine: &RunningMachine,
     resume: impl FnOnce(&RunningMachine) -> Result<(), String>,
 ) -> Result<(), String> {
-    let configured = paths.metadata.exists()
-        && read_metadata(&paths.metadata)
-            .map_err(|e| e.to_string())?
-            .machines
-            .iter()
-            .any(|m| m.is_vm() && m.id() == machine.id);
+    let saved = read_saved_metadata(&paths.metadata)
+        .map_err(|e| e.to_string())?
+        .ok_or("Silo's sandbox configuration is missing. Update recovery was preserved; restore the configuration before retrying.")?;
+    let configured = saved
+        .machines
+        .iter()
+        .any(|m| m.is_vm() && m.id() == machine.id);
     if !configured {
         return Ok(());
     }
@@ -279,6 +305,90 @@ pub(crate) fn recover(app: &AppHandle) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn uncommitted_runtime_vm_blocks_update_without_replaying_configuration() {
+        let _test_state = crate::test_support::global_state();
+        struct Runtime {
+            committed: Option<MachineConfiguration>,
+        }
+        impl RuntimeRunner for Runtime {
+            fn run(
+                &self,
+                _: &RuntimePaths,
+                args: &[String],
+                _: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                let stdout = match args[0].as_str() {
+                    "list" => json!([{"name":"unfinished"}]).to_string(),
+                    "inspect" => {
+                        let machine = self.committed.as_ref().unwrap();
+                        assert_eq!(args[1], machine.name());
+                        json!({"name":machine.name(),"status":"Stopped","config":{"labels":{"silo.managed":"true","silo.machine-id":machine.id()}}}).to_string()
+                    }
+                    _ => panic!("update inventory must not mutate VMs: {args:?}"),
+                };
+                Ok(CommandOutput {
+                    stdout,
+                    stderr: String::new(),
+                })
+            }
+        }
+        for has_committed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = super::super::tests::paths(&dir);
+            let mut request: MachineConfigurationRequest = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+            let committed = has_committed.then(|| {
+                let mut machine = request.machines[0].clone();
+                if let MachineConfiguration::Vm { id, name, .. } = &mut machine {
+                    *id = uuid::Uuid::new_v4().to_string();
+                    *name = "committed".into();
+                }
+                machine
+            });
+            if let Some(machine) = &committed {
+                let saved = MachineConfigurationRequest {
+                    schema_version: 1,
+                    machines: vec![machine.clone()],
+                };
+                write_metadata(&paths.metadata, &saved).unwrap();
+                request.machines.push(machine.clone());
+            }
+            configuration_recovery::begin(&paths, &request).unwrap();
+            let error = running(&Runtime { committed }, &paths).unwrap_err();
+            assert!(error.contains("unfinished"), "{error}");
+            assert_eq!(
+                configuration_recovery::pending_request(&paths).unwrap(),
+                Some(request)
+            );
+            assert!(!path(&paths).exists());
+        }
+    }
+
+    #[test]
+    fn unfinished_configuration_without_a_runtime_vm_does_not_block_update() {
+        let _test_state = crate::test_support::global_state();
+        struct EmptyRuntime;
+        impl RuntimeRunner for EmptyRuntime {
+            fn run(
+                &self,
+                _: &RuntimePaths,
+                args: &[String],
+                _: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                assert_eq!(args[0], "list");
+                Ok(CommandOutput {
+                    stdout: "[]".into(),
+                    stderr: String::new(),
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        configuration_recovery::begin(&paths, &request).unwrap();
+        assert!(running(&EmptyRuntime, &paths).unwrap().is_empty());
+    }
+
     #[test]
     fn update_journal_round_trips_and_rejects_duplicate_or_unknown_identity() {
         let _test_state = crate::test_support::global_state();
@@ -360,6 +470,90 @@ mod tests {
         assert_eq!(load(&paths).unwrap().unwrap().machines, vec![first]);
     }
 
+    #[test]
+    fn journal_large_input_memory_is_bounded() {
+        const PROBE: &str = "SILO_TEST_UPDATE_JOURNAL_MEMORY_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::update_recovery::tests::journal_large_input_memory_is_bounded",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            return;
+        }
+
+        fn peak_bytes() -> u64 {
+            // SAFETY: getrusage initializes the supplied rusage structure.
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
+            #[cfg(target_os = "macos")]
+            return usage.ru_maxrss as u64;
+            #[cfg(not(target_os = "macos"))]
+            return usage.ru_maxrss as u64 * 1024;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        let file = path(&paths);
+        fs::File::create(&file)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        let before = peak_bytes();
+        assert!(
+            matches!(load(&paths), Err(message) if message == "Update recovery is invalid; it was preserved.")
+        );
+        let extra = peak_bytes().saturating_sub(before);
+        eprintln!("large update journal peak RSS increase: {extra} bytes");
+        assert!(
+            extra < 32 * 1024 * 1024,
+            "oversized update journal allocated {extra} bytes"
+        );
+        assert_eq!(fs::metadata(&file).unwrap().len(), 128 * 1024 * 1024);
+    }
+    #[test]
+    fn missing_metadata_preserves_the_update_resume_journal() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let machine = RunningMachine {
+            id: uuid::Uuid::new_v4().to_string(),
+            name: "saved".into(),
+        };
+        save(&paths, &[machine]).unwrap();
+        let before = fs::read(path(&paths)).unwrap();
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        let error = restore_pending(&paths, |machine| {
+            resume_unless_removed(&paths, machine, |_| {
+                panic!("unknown configuration must not start a VM")
+            })
+        })
+        .unwrap_err();
+        assert!(error.contains("configuration"), "{error}");
+        assert_eq!(fs::read(path(&paths)).unwrap(), before);
+        let empty = MachineConfigurationRequest {
+            schema_version: 1,
+            machines: vec![],
+        };
+        write_metadata(&paths.metadata, &empty).unwrap();
+        restore_pending(&paths, |machine| {
+            resume_unless_removed(&paths, machine, |_| {
+                panic!("a confirmed removed VM must not start")
+            })
+        })
+        .unwrap();
+        assert!(!path(&paths).exists());
+    }
     #[test]
     fn removed_sandbox_entries_are_resolved_instead_of_blocking_every_launch() {
         let _test_state = crate::test_support::global_state();

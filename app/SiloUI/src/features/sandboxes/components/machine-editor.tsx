@@ -58,7 +58,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
           const selected = event.target.value
           setCustomSelected(selected === "custom")
           if (selected === "custom") setCustomText(value ? String(value) : "")
-          else onChange(Number(selected))
+          else { setCustomText(selected); onChange(Number(selected)) }
         }}
       >
         {values.map((option) => <option key={option} value={option}>{option} {suffix}</option>)}
@@ -79,7 +79,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
     </div>
   )
   return readOnly ? (
-    <TooltipProvider><Tooltip><TooltipTrigger asChild><span tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`}>{field}</span></TooltipTrigger>
+    <TooltipProvider><Tooltip><TooltipTrigger asChild><div role="group" tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`} className="rounded-lg outline-none focus-visible:ring-3 focus-visible:ring-ring/50">{field}</div></TooltipTrigger>
       <TooltipContent>Disk size is read-only.</TooltipContent>
     </Tooltip></TooltipProvider>
   ) : field
@@ -180,6 +180,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   // The confirmation disappears by itself if the sandbox stops elsewhere, a save starts, or
   // Save becomes blocked while it is shown.
   const stopPending = confirmingStop && requiresStop && !saving && !blockedReason && !deletedElsewhere
+  if (confirmingStop && !stopPending) setConfirmingStop(false)
   const stopTarget = `${draft.name}${computerName ? ` on ${computerName}` : ""}`
   const cancelStop = useRef<HTMLButtonElement>(null)
   const saveButton = useRef<HTMLButtonElement>(null)
@@ -194,12 +195,21 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   }
   // Offer only what the computer can run; the runtime rejects ceilings above it.
   const maximums = resourceMaximums(capacity)
-  const cpuPresets = presetsWithin(supportedCPUs, capacity?.logicalCPUs)
-  const memoryPresets = presetsWithin(supportedMemoryGiB, capacity?.memoryGiB)
+  const cpuPresets = presetsWithin(supportedCPUs, capacity ? maximums.cpus : undefined)
+  const memoryPresets = presetsWithin(supportedMemoryGiB, capacity ? maximums.memoryGiB : undefined)
 
   useEffect(() => {
-    firstField.current?.focus()
-    firstField.current?.scrollIntoView?.({ block: "nearest" })
+    function focusFirstField() {
+      firstField.current?.focus()
+      firstField.current?.scrollIntoView?.({ block: "nearest" })
+    }
+    focusFirstField()
+    // A closing menu can restore focus after the editor mounts.
+    const frame = requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active === document.body || active?.getAttribute("aria-haspopup") === "menu") focusFirstField()
+    })
+    return () => cancelAnimationFrame(frame)
   }, [focusRequest])
 
   useEffect(() => {
@@ -215,7 +225,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
     setConfirmingStop(false)
   }
 
-  function save() {
+  function save(stopConfirmed = false) {
     const nativeId = (id: string) => parseRemoteWorkspaceTarget(id)?.vmId ?? id
     const nextErrors = validateMachine({ ...draft, id: nativeId(draft.id) }, machines.map(machine => ({ ...machine, id: nativeId(machine.id) })), editor.originalID ? nativeId(editor.originalID) : undefined)
     if (draft.kind === "vm") {
@@ -226,9 +236,12 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
     const capacityError = machineCapacityError(machines.length, editor.originalID)
     if (capacityError) nextErrors.form = capacityError
     setErrors(nextErrors)
-    if (Object.keys(nextErrors).length > 0) setFailedValidation(count => count + 1)
+    if (Object.keys(nextErrors).length > 0) {
+      setConfirmingStop(false)
+      setFailedValidation(count => count + 1)
+    }
     // Stopping a running sandbox is always confirmed first (decision 8).
-    else if (requiresStop) setConfirmingStop(true)
+    else if (requiresStop && !stopConfirmed) setConfirmingStop(true)
     else onSave(builtInNewVm && startsWithSandbox && draft.kind === "vm" ? { ...draft, desktop: { startWithSandbox: true } } : draft)
   }
 
@@ -338,18 +351,19 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
       </section>}
       </fieldset>
 
+      <p role={saving ? "status" : undefined} aria-live="polite" aria-atomic="true" className="sr-only">{saving ? `Saving ${draft.name}…` : ""}</p>
       {blockedReason && !saving && <p id={blockedReasonId} role="status" className="text-right text-[11px] text-muted-foreground">{blockedReason}</p>}
       {stopPending ? <InlineConfirmation active onDismiss={dismissStop}>
         <div role="group" aria-label={`Stop ${stopTarget} and save?`} className="grid gap-2 rounded-md border border-border px-3 py-2">
           <p className="text-[11px] text-muted-foreground">Stop {stopTarget} and save? Running processes will be interrupted. The new settings apply when you start it again.</p>
           <div className="flex justify-end gap-1.5">
             <Button ref={cancelStop} type="button" variant="ghost" size="xs" onClick={dismissStop}>Cancel</Button>
-            <Button type="button" variant="destructive" size="xs" onClick={() => { setConfirmingStop(false); onSave(draft) }}><Square />Stop and save</Button>
+            <Button type="button" variant="destructive" size="xs" onClick={() => { setConfirmingStop(false); save(true) }}><Square />Stop and save</Button>
           </div>
         </div>
       </InlineConfirmation> : <div className="flex justify-end gap-2">
         <Button type="button" variant="outline" size="sm" disabled={saving} onClick={onCancel}>Cancel</Button>
-        <Button ref={saveButton} type="button" size="sm" disabled={saving || deletedElsewhere || Boolean(blockedReason)} aria-describedby={blockedReason && !saving ? blockedReasonId : undefined} onClick={save}>{saving ? "Saving…" : requiresStop ? "Stop and save…" : "Save"}</Button>
+        <Button ref={saveButton} type="button" size="sm" disabled={saving || deletedElsewhere || Boolean(blockedReason)} aria-describedby={blockedReason && !saving ? blockedReasonId : undefined} onClick={() => save()}>{saving ? "Saving…" : requiresStop ? "Stop and save…" : "Save"}</Button>
       </div>}
       {errors.form && <p className="text-xs text-destructive" role="alert">{errors.form}</p>}
     </div>

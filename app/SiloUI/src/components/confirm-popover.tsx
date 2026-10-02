@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type FormEvent, type ReactNode, type Ref } from "react"
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode, type Ref } from "react"
 
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { restoreFocus } from "@/lib/focus"
 
 /**
  * Ask in a popover, do in a toast. Use `ConfirmPopover` for yes/no confirmations and
@@ -51,7 +52,7 @@ function assignRef<T>(ref: Ref<T> | undefined, value: T | null) {
   else if (ref) ref.current = value
 }
 
-function Shell({ open, setOpen, children, anchor, anchorRef, align, side, content, tooltip }: {
+function Shell({ open, setOpen, children, anchor, anchorRef, align, side, content, tooltip, titleId, descriptionId }: {
   anchorRef?: Ref<HTMLElement>
   open: boolean
   setOpen: (open: boolean) => void
@@ -61,10 +62,13 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
   side: "top" | "right" | "bottom" | "left"
   content: ReactNode
   tooltip?: ReactNode
+  titleId: string
+  descriptionId?: string
 }) {
   const element = useRef<HTMLElement | null>(null)
   const setElement = (node: HTMLElement | null) => { element.current = node; assignRef(anchorRef, node) }
   const contentElement = useRef<HTMLDivElement | null>(null)
+  const interactedOutside = useRef(false)
   const [tooltipOpen, setTooltipOpen] = useState(false)
   const quietUntil = useRef(0)
   function changeOpen(next: boolean) {
@@ -81,11 +85,23 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
         <TooltipContent>{tooltip}</TooltipContent>
       </Tooltip>
       : trigger}
-    <PopoverContent ref={contentElement} align={align} side={side} collisionPadding={8} className="w-64 p-3 text-xs" onOpenAutoFocus={(event) => {
-      // Move focus into the popover ourselves so Escape and Enter always act on it.
+    <PopoverContent ref={contentElement} aria-labelledby={titleId} aria-describedby={descriptionId} align={align} side={side} collisionPadding={8} className="w-64 p-3 text-xs" onOpenAutoFocus={(event) => {
+      interactedOutside.current = false
+      const initialFocus = contentElement.current?.querySelector<HTMLElement>("[data-popover-initial-focus], input, textarea, select")
+      if (!initialFocus) return
+      // Prefer the form field or confirmation button; Radix handles action-only content.
       event.preventDefault()
-      contentElement.current?.querySelector<HTMLElement>("[data-popover-initial-focus], input, textarea, select")?.focus()
-    }} onCloseAutoFocus={(event) => { if (anchor) { event.preventDefault(); element.current?.focus() } }}>
+      initialFocus.focus()
+    }} onCloseAutoFocus={(event) => {
+      if (!anchor) return
+      event.preventDefault()
+      if (interactedOutside.current) { interactedOutside.current = false; return }
+      const target = element.current
+      restoreFocus(target)
+      if (target && target.ownerDocument.activeElement !== target) {
+        restoreFocus(target.querySelector<HTMLElement>("button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1']):not(:disabled)"))
+      }
+    }} onInteractOutside={() => { interactedOutside.current = true }} onEscapeKeyDown={event => { if (event.isComposing) event.preventDefault() }}>
       {content}
     </PopoverContent>
   </Popover>
@@ -93,7 +109,9 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
 
 interface BodyProps {
   title: string
+  titleId?: string
   description?: ReactNode
+  descriptionId?: string
   confirmLabel: string
   cancelLabel?: string
   tone?: "default" | "destructive"
@@ -102,14 +120,14 @@ interface BodyProps {
 }
 
 /** Popover content for a yes/no confirmation. Render inside a popover, or use `ConfirmPopover`. */
-export function ConfirmBody({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onConfirm, onClose }: BodyProps & { onConfirm: () => void | Promise<void> }) {
+export function ConfirmBody({ title, titleId, description, descriptionId, confirmLabel, cancelLabel = "Cancel", tone = "default", onConfirm, onClose }: BodyProps & { onConfirm: () => void | Promise<void> }) {
   function confirm() {
     onClose()
     void Promise.resolve().then(onConfirm)
   }
   return <div className="grid gap-2" onKeyDown={(event) => { if (event.key === "Enter" && !(event.target instanceof HTMLButtonElement)) { event.preventDefault(); confirm() } }}>
-    <p className="font-medium">{title}</p>
-    {description && <div className="text-muted-foreground">{description}</div>}
+    <p id={titleId} className="font-medium">{title}</p>
+    {description && <div id={descriptionId} className="text-muted-foreground">{description}</div>}
     <div className="flex justify-end gap-2">
       <Button type="button" variant="ghost" size="sm" onClick={onClose}>{cancelLabel}</Button>
       <Button type="button" size="sm" variant={tone === "destructive" ? "destructive" : "default"} autoFocus data-popover-initial-focus="" onClick={confirm}>{confirmLabel}</Button>
@@ -118,7 +136,7 @@ export function ConfirmBody({ title, description, confirmLabel, cancelLabel = "C
 }
 
 /** Popover content for a small form. Focuses its first field on mount. */
-export function FormBody({ title, description, confirmLabel, cancelLabel = "Cancel", tone = "default", onSubmit, canSubmit = true, fields, onClose }: BodyProps & {
+export function FormBody({ title, titleId, description, descriptionId, confirmLabel, cancelLabel = "Cancel", tone = "default", onSubmit, canSubmit = true, fields, onClose }: BodyProps & {
   fields: ReactNode
   canSubmit?: boolean
   onSubmit: () => void | Promise<void>
@@ -135,8 +153,8 @@ export function FormBody({ title, description, confirmLabel, cancelLabel = "Canc
     void Promise.resolve().then(onSubmit)
   }
   return <form ref={form} className="grid gap-2" onSubmit={submit}>
-    <p className="font-medium">{title}</p>
-    {description && <div className="text-muted-foreground">{description}</div>}
+    <p id={titleId} className="font-medium">{title}</p>
+    {description && <div id={descriptionId} className="text-muted-foreground">{description}</div>}
     {fields}
     <div className="flex justify-end gap-2">
       <Button type="button" variant="ghost" size="sm" onClick={onClose}>{cancelLabel}</Button>
@@ -149,8 +167,11 @@ export function ConfirmPopover({ title, description, confirmLabel, cancelLabel =
   onConfirm: () => void | Promise<void>
 }) {
   const [isOpen, setOpen] = useOpen(open, onOpenChange)
-  return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} anchorRef={ref} tooltip={tooltip} align={align} side={side} content={
-    <ConfirmBody title={title} description={description} confirmLabel={confirmLabel} cancelLabel={cancelLabel} tone={tone} onConfirm={onConfirm} onClose={() => setOpen(false)} />
+  const id = useId()
+  const titleId = `${id}-title`
+  const descriptionId = description ? `${id}-description` : undefined
+  return <Shell open={isOpen} setOpen={setOpen} titleId={titleId} descriptionId={descriptionId} anchor={anchor} anchorRef={ref} tooltip={tooltip} align={align} side={side} content={
+    <ConfirmBody title={title} titleId={titleId} description={description} descriptionId={descriptionId} confirmLabel={confirmLabel} cancelLabel={cancelLabel} tone={tone} onConfirm={onConfirm} onClose={() => setOpen(false)} />
   }>{children}</Shell>
 }
 
@@ -161,7 +182,10 @@ export function FormPopover({ title, description, confirmLabel, cancelLabel = "C
   onSubmit: () => void | Promise<void>
 }) {
   const [isOpen, setOpen] = useOpen(open, onOpenChange)
-  return <Shell open={isOpen} setOpen={setOpen} anchor={anchor} anchorRef={ref} tooltip={tooltip} align={align} side={side} content={
-    <FormBody title={title} description={description} confirmLabel={confirmLabel} cancelLabel={cancelLabel} tone={tone} fields={fields} canSubmit={canSubmit} onSubmit={onSubmit} onClose={() => setOpen(false)} />
+  const id = useId()
+  const titleId = `${id}-title`
+  const descriptionId = description ? `${id}-description` : undefined
+  return <Shell open={isOpen} setOpen={setOpen} titleId={titleId} descriptionId={descriptionId} anchor={anchor} anchorRef={ref} tooltip={tooltip} align={align} side={side} content={
+    <FormBody title={title} titleId={titleId} description={description} descriptionId={descriptionId} confirmLabel={confirmLabel} cancelLabel={cancelLabel} tone={tone} fields={fields} canSubmit={canSubmit} onSubmit={onSubmit} onClose={() => setOpen(false)} />
   }>{children}</Shell>
 }

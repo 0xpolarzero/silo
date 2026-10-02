@@ -671,19 +671,17 @@ impl OperationGate {
         self.notify();
         // Work that must start promptly waits only while it is still wanted.
         let start = StartCondition::current();
-        let pending = if keep_waiting.is_none() {
-            StartCondition::pending(&start).cloned()
-        } else {
-            None
+        let pending = StartCondition::pending(&start).cloned();
+        let expired = Cell::new(false);
+        let still_wanted = || {
+            let wanted = pending
+                .as_ref()
+                .is_none_or(|condition| condition.started() || (condition.0.wanted)());
+            expired.set(!wanted);
+            wanted && keep_waiting.is_none_or(|keep| keep())
         };
-        let still_wanted = pending
-            .clone()
-            .map(|condition| move || (condition.0.wanted)());
-        let keep_waiting: Option<&dyn Fn() -> bool> = match (keep_waiting, &still_wanted) {
-            (Some(keep_waiting), _) => Some(keep_waiting),
-            (None, Some(wanted)) => Some(wanted),
-            (None, None) => None,
-        };
+        let keep_waiting: Option<&dyn Fn() -> bool> =
+            (pending.is_some() || keep_waiting.is_some()).then_some(&still_wanted);
         let mut state = self.lock();
         // Whether a start condition was confirmed since the last wait.
         let mut confirmed = false;
@@ -703,7 +701,10 @@ impl OperationGate {
             if state.admissible(index) {
                 // Work no longer wanted when its turn arrives never starts. The condition is
                 // asked without the state lock held (D-33); the next pass re-checks the turn.
-                if let Some(condition) = pending.as_ref().filter(|_| !confirmed) {
+                if let Some(condition) = pending
+                    .as_ref()
+                    .filter(|condition| !confirmed && !condition.started())
+                {
                     drop(state);
                     let wanted = (condition.0.wanted)();
                     state = self.lock();
@@ -756,7 +757,7 @@ impl OperationGate {
                     // the next loop pass admits or cancels it instead of giving it up.
                     if !keep && !self.admissible_or_cancelled(&state, id) {
                         // A start condition that stopped holding: the work never starts.
-                        if let Some(condition) = &pending {
+                        if let Some(condition) = pending.as_ref().filter(|_| expired.get()) {
                             condition.0.expired.store(true, Ordering::SeqCst);
                         }
                         state.waiting.retain(|entry| entry.id != id);
@@ -1942,6 +1943,66 @@ mod tests {
     }
 
     #[test]
+    fn an_explicit_wait_predicate_does_not_bypass_an_expired_start_condition() {
+        let gate = leak();
+        let condition = StartCondition::new(|| false);
+        let result = StartCondition::scope(Some(condition.clone()), || {
+            gate.acquire_while(Scope::Computer, None, "Remote change", &|| true)
+                .map(drop)
+        });
+        assert_eq!(result, Err(GateError::Abandoned));
+        assert!(condition.expired());
+        assert!(!condition.started());
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn explicit_waits_stop_when_the_remote_start_condition_expires() {
+        let gate = leak();
+        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let wanted = Arc::new(AtomicBool::new(true));
+        let condition = StartCondition::new({
+            let wanted = wanted.clone();
+            move || wanted.load(Ordering::SeqCst)
+        });
+        let waiter = {
+            let condition = condition.clone();
+            thread::spawn(move || {
+                StartCondition::scope(Some(condition), || {
+                    gate.acquire_while(Scope::Computer, None, "Remote change", &|| true)
+                        .map(drop)
+                })
+            })
+        };
+        wait_until(gate, |queue| queue.waiting.len() == 1);
+        wanted.store(false, Ordering::SeqCst);
+        assert_eq!(waiter.join().unwrap(), Err(GateError::Abandoned));
+        assert!(condition.expired() && !condition.started());
+        assert!(gate.snapshot().waiting.is_empty());
+        drop(busy);
+    }
+
+    #[test]
+    fn abandoning_an_explicit_wait_does_not_expire_a_valid_remote_request() {
+        let gate = leak();
+        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let condition = StartCondition::new(|| true);
+        let waiter = {
+            let condition = condition.clone();
+            thread::spawn(move || {
+                StartCondition::scope(Some(condition), || {
+                    gate.acquire_while(Scope::Computer, None, "Remote change", &|| false)
+                        .map(drop)
+                })
+            })
+        };
+        assert_eq!(waiter.join().unwrap(), Err(GateError::Abandoned));
+        assert!(!condition.expired() && !condition.started());
+        assert!(gate.snapshot().waiting.is_empty());
+        drop(busy);
+    }
+
+    #[test]
     fn started_work_and_other_threads_wait_normally() {
         let gate = leak();
         let wanted = Arc::new(AtomicBool::new(true));
@@ -1979,6 +2040,41 @@ mod tests {
         // The condition applies only inside its scope.
         assert!(StartCondition::current().is_none());
         drop(gate.vm("id-a", "a", "Local work").unwrap());
+    }
+
+    #[test]
+    fn a_waiting_step_continues_when_another_worker_has_started_the_same_request() {
+        let gate = leak();
+        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let wanted = Arc::new(AtomicBool::new(true));
+        let condition = StartCondition::new({
+            let wanted = wanted.clone();
+            move || wanted.load(Ordering::SeqCst)
+        });
+        let waiter = {
+            let condition = condition.clone();
+            thread::spawn(move || {
+                StartCondition::scope(Some(condition), || {
+                    gate.vm("id-a", "a", "Request step A").map(drop)
+                })
+            })
+        };
+        wait_until(gate, |queue| queue.waiting.len() == 1);
+        let other_step = {
+            let condition = condition.clone();
+            thread::spawn(move || {
+                StartCondition::scope(Some(condition), || {
+                    gate.vm("id-b", "b", "Request step B").map(drop)
+                })
+            })
+        };
+        assert_eq!(other_step.join().unwrap(), Ok(()));
+        assert!(condition.started());
+        wanted.store(false, Ordering::SeqCst);
+        drop(busy);
+        assert_eq!(waiter.join().unwrap(), Ok(()));
+        assert!(!condition.expired());
+        assert!(gate.is_idle());
     }
 
     #[test]

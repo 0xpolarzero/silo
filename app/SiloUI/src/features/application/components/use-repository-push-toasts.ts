@@ -11,12 +11,15 @@ const repositoryName = (path: string) => path.split("/").filter(Boolean).at(-1) 
 
 /**
  * Announces backend-driven push transitions as notifications: loading (with Cancel once the host accepts it),
- * then a success that stays until closed (the finished operation is then cleared) or a failure with Retry.
+ * then a success that stays until closed (the finished operation is then cleared), a failure with Retry,
+ * or an unknown outcome that requires checking GitHub before another push.
  * Operations already finished when first seen are not announced.
  */
 export function useRepositoryPushToasts(
   operations: RepositoryPushOperation[],
-  { onPush, onDismiss, resolveSandbox, queue, onCancel }: {
+  { onPush, onDismiss, resolveSandbox, queue, onCancel, enabled = true }: {
+    /** Standalone pages can defer notifications to their application owner. */
+    enabled?: boolean
     /** Retries a failed push of the same confirmed target. */
     onPush: PushRepository
     onDismiss: (workspace: string, repositoryPath: string) => void
@@ -31,15 +34,20 @@ export function useRepositoryPushToasts(
   const callbacks = useRef({ onPush, onDismiss, resolveSandbox, onCancel })
   useLayoutEffect(() => { callbacks.current = { onPush, onDismiss, resolveSandbox, onCancel } }, [onPush, onDismiss, resolveSandbox, onCancel])
   useEffect(() => {
+    if (!enabled) return
     const initial = seen.current === null
     const previous = seen.current ?? new Map<string, string>()
     const next = new Map<string, string>()
     for (const operation of operations) {
       const id = pushToastId(operation)
+      const sandbox = callbacks.current.resolveSandbox?.(operation.workspace)
       const cancelId = operation.status === "pushing" && onCancel
-        ? queue?.running.find((entry) => entry.kind === "push" && entry.cancellable && entry.vmName === operation.workspace)?.id
+        ? queue?.running.find((entry) => entry.kind === "push" && entry.cancellable && (resolveSandbox ? entry.vmId === sandbox?.id : entry.vmName === operation.workspace))?.id
         : undefined
-      const state = cancelId === undefined ? operation.status : `${operation.status}:${cancelId}`
+      const state = `${operation.status}:${JSON.stringify({
+        count: operation.commitCount, message: "message" in operation ? operation.message : undefined, cancelId,
+        repository: operation.target?.repository, branch: operation.target?.branch, commit: operation.target?.commit,
+      })}`
       next.set(id, state)
       const before = previous.get(id)
       if (before === state) continue
@@ -68,12 +76,18 @@ export function useRepositoryPushToasts(
           // The user confirmed this exact target before; a retry pushes it again or aborts if the sandbox moved on.
           retry: operation.target ? () => callbacks.current.onPush(operation.workspace, operation.repositoryPath, operation.commitCount, operation.target!) : undefined,
         })
+      } else if (operation.status === "unknown") {
+        showOperationFailure(id, `Push outcome unknown · ${name}`, {
+          description: operation.message,
+          sandbox: operation.workspace,
+          noticeSandbox: callbacks.current.resolveSandbox?.(operation.workspace),
+          tone: "warning",
+        })
       } else {
         dismissOperationToast(id)
       }
     }
-    for (const [id, state] of previous) if (state.startsWith("pushing") && !next.has(id)) dismissOperationToast(id)
+    for (const [id, state] of previous) if ((state.startsWith("pushing") || state.startsWith("unknown")) && !next.has(id)) dismissOperationToast(id)
     seen.current = next
-  }, [operations, queue, onCancel])
+  }, [enabled, operations, queue, onCancel, resolveSandbox])
 }
-

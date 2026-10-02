@@ -10,9 +10,12 @@ import os
 from pathlib import Path
 import re
 import selectors
+import signal
 import subprocess
 import sys
 import time
+
+MAX_RETRY_DIAGNOSTIC_BYTES = 4 * 1024 * 1024
 
 
 DOWNLOAD = re.compile(r"\[appimage/stderr\] Failed to download runtime: server returned status code (500|502|503|504)")
@@ -73,7 +76,8 @@ def transient_appimage_download(lines):
 def run_attempt(command, log, stdout, stderr):
     output = bytearray()
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   start_new_session=True)
     except OSError as error:
         message = f"Could not start bundle command: {error.strerror}\n".encode()
         stderr.write(message)
@@ -81,22 +85,39 @@ def run_attempt(command, log, stdout, stderr):
         log.write(message)
         log.flush()
         return 127, message
-    with process, selectors.DefaultSelector() as selector:
-        selector.register(process.stdout, selectors.EVENT_READ, stdout)
-        selector.register(process.stderr, selectors.EVENT_READ, stderr)
-        while selector.get_map():
-            for key, _ in selector.select():
-                chunk = os.read(key.fileobj.fileno(), 65536)
-                if not chunk:
-                    selector.unregister(key.fileobj)
-                    continue
-                key.data.write(chunk)
-                key.data.flush()
-                log.write(chunk)
-                log.flush()
-                output.extend(chunk)
-        code = process.wait()
-    return code if code >= 0 else 128 - code, bytes(output)
+    with process:
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, stdout)
+                selector.register(process.stderr, selectors.EVENT_READ, stderr)
+                while selector.get_map():
+                    for key, _ in selector.select():
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        key.data.write(chunk)
+                        key.data.flush()
+                        log.write(chunk)
+                        log.flush()
+                        if output is not None:
+                            if len(output) + len(chunk) > MAX_RETRY_DIAGNOSTIC_BYTES:
+                                # Retry requires the complete diagnostic, including
+                                # earlier unrelated failures. Keep the full disk log.
+                                output = None
+                            else:
+                                output.extend(chunk)
+            code = process.wait()
+        except BaseException:
+            # The unreaped session leader reserves this group ID. Stop its
+            # bundling tools too before Popen's context manager waits.
+            if process.returncode is None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            raise
+    return code if code >= 0 else 128 - code, bytes(output) if output is not None else b''
 
 
 def retry_bundle(command, log_path, stdout=None, stderr=None, sleep=time.sleep):

@@ -129,7 +129,7 @@ mod platform {
         }
         fn tool_tip(&self) -> ksni::ToolTip {
             ksni::ToolTip {
-                title: "Silo".into(),
+                title: crate::channel::current().product_name().into(),
                 description: self.label.clone(),
                 ..Default::default()
             }
@@ -150,7 +150,7 @@ mod platform {
         fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
             vec![
                 ksni::menu::StandardItem {
-                    label: "Open Silo".into(),
+                    label: format!("Open {}", crate::channel::current().product_name()),
                     activate: Box::new(|tray: &mut Self| {
                         status_panel::report(status_panel::open_main(tray.app.clone(), None))
                     }),
@@ -158,7 +158,7 @@ mod platform {
                 }
                 .into(),
                 ksni::menu::StandardItem {
-                    label: "Quit Silo".into(),
+                    label: format!("Quit {}", crate::channel::current().product_name()),
                     activate: Box::new(|tray: &mut Self| crate::settings::request_quit(&tray.app)),
                     ..Default::default()
                 }
@@ -206,14 +206,17 @@ mod platform {
     struct TrayState {
         online: Arc<AtomicBool>,
         handle: std::sync::Mutex<Option<ksni::Handle<LinuxTray>>>,
+        readiness: tokio::sync::watch::Receiver<Option<Result<(), String>>>,
     }
 
     pub fn install(app: &AppHandle) -> tauri::Result<()> {
         // ksni only calls watcher_online after a prior watcher_offline callback.
         let online = Arc::new(AtomicBool::new(true));
+        let (ready, readiness) = tokio::sync::watch::channel(None);
         app.manage(TrayState {
             online: online.clone(),
             handle: std::sync::Mutex::new(None),
+            readiness,
         });
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
@@ -222,7 +225,7 @@ mod platform {
                 online,
                 offline_generation: Arc::new(AtomicU64::new(0)),
                 tone: Tone::Neutral,
-                label: "Silo".into(),
+                label: crate::channel::current().product_name().into(),
             })
             .assume_sni_available(true)
             .spawn()
@@ -232,9 +235,11 @@ mod platform {
                     *app.state::<TrayState>()
                         .handle
                         .lock()
-                        .unwrap_or_else(|error| error.into_inner()) = Some(handle)
+                        .unwrap_or_else(|error| error.into_inner()) = Some(handle);
+                    let _ = ready.send(Some(Ok(())));
                 }
                 Err(error) => {
+                    let _ = ready.send(Some(Err(error.to_string())));
                     app.state::<TrayState>()
                         .online
                         .store(false, Ordering::Relaxed);
@@ -247,20 +252,21 @@ mod platform {
     }
 
     pub async fn update(app: &AppHandle, tone: Tone, label: String) -> Result<(), String> {
+        super::wait_for_tray(app.state::<TrayState>().readiness.clone()).await?;
         let handle = app
             .state::<TrayState>()
             .handle
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .clone();
-        if let Some(handle) = handle {
-            handle
-                .update(move |tray| {
-                    tray.tone = tone;
-                    tray.label = label;
-                })
-                .await;
-        }
+            .clone()
+            .ok_or("Status item is unavailable")?;
+        handle
+            .update(move |tray| {
+                tray.tone = tone;
+                tray.label = label;
+            })
+            .await
+            .ok_or("Status item is unavailable")?;
         Ok(())
     }
 
@@ -270,6 +276,21 @@ mod platform {
 }
 
 pub use platform::{available, install};
+
+#[cfg(any(test, target_os = "linux"))]
+async fn wait_for_tray(
+    mut readiness: tokio::sync::watch::Receiver<Option<Result<(), String>>>,
+) -> Result<(), String> {
+    loop {
+        if let Some(result) = readiness.borrow_and_update().clone() {
+            return result;
+        }
+        readiness
+            .changed()
+            .await
+            .map_err(|_| "Status item is unavailable".to_owned())?;
+    }
+}
 
 /// How long the StatusNotifierWatcher may be gone before Silo surfaces its
 /// window. Desktop shells restart it briefly (plasmashell restart, GNOME Shell
@@ -296,6 +317,56 @@ fn panel_can_anchor(wayland: bool, x: i32, y: i32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_updates_wait_until_the_linux_tray_exists() {
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+
+        let (ready, readiness) = tokio::sync::watch::channel(None);
+        let mut update = std::pin::pin!(wait_for_tray(readiness));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(update.as_mut().poll(&mut context).is_pending());
+        ready.send(Some(Ok(()))).unwrap();
+        assert_eq!(update.as_mut().poll(&mut context), Poll::Ready(Ok(())));
+    }
+
+    #[test]
+    fn startup_failure_is_reported_to_pending_tray_updates() {
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+
+        let (ready, readiness) = tokio::sync::watch::channel(None);
+        let mut update = std::pin::pin!(wait_for_tray(readiness));
+        let mut context = Context::from_waker(Waker::noop());
+        assert!(update.as_mut().poll(&mut context).is_pending());
+        ready.send(Some(Err("D-Bus unavailable".into()))).unwrap();
+        assert_eq!(
+            update.as_mut().poll(&mut context),
+            Poll::Ready(Err("D-Bus unavailable".into()))
+        );
+    }
+
+    #[test]
+    fn abandoned_tray_startup_reports_unavailability() {
+        use std::{
+            future::Future,
+            task::{Context, Poll, Waker},
+        };
+
+        let (ready, readiness) = tokio::sync::watch::channel(None);
+        drop(ready);
+        let mut update = std::pin::pin!(wait_for_tray(readiness));
+        let mut context = Context::from_waker(Waker::noop());
+        assert_eq!(
+            update.as_mut().poll(&mut context),
+            Poll::Ready(Err("Status item is unavailable".into()))
+        );
+    }
 
     #[test]
     fn wayland_or_an_unknown_position_opens_the_main_window() {

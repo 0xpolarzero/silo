@@ -66,6 +66,13 @@ credentials block startup rather than restoring old material. Start completion
 clears pending state only when the desired revision still matches. Secret and
 GitHub updates share the existing runtime locks and preserve each other's config.
 
+The secrets read command runs document I/O and JSON decoding on Tauri's blocking
+pool. A slow document read therefore leaves the async executor available to other
+commands. The FIFO regression supplies a blocked file in a temporary directory
+and requires an independent future to run before releasing the read. This uses
+[Tauri's async command execution](https://v2.tauri.app/develop/calling-rust/#async-commands)
+and the supported [blocking-work boundary](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
+
 ## Boundary
 
 This mechanism supports credentials transmitted in proxied HTTPS requests. It does
@@ -88,11 +95,14 @@ without GitHub access.
 
 - [MicroSandbox placeholder substitution](https://microsandbox.dev/blog/sandboxes-that-lie-about-their-secrets)
 - [Official Rust SDK modification API](https://github.com/superradcompany/microsandbox/blob/main/docs/sdk/rust/sandbox.mdx)
-- Pinned source: `60d4dc8a436fb9365491567ec21d073e924e3c6d`, matching
-  `app/SiloUI/runtime-inputs.json`. The SDK's
+- Current runtime pin: [`runtime-inputs.json`](../app/SiloUI/runtime-inputs.json).
+  The upgrade records in [runtime packaging](SiloUI-RUNTIME-PACKAGING.md)
+  state which checks were repeated on each runtime version.
+- Historical MicroSandbox 0.7.2 source: `60d4dc8a436fb9365491567ec21d073e924e3c6d`.
+  In that revision, the SDK's
   [live secret update implementation](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/sandbox/modify.rs#L1577)
   resolves values for rotation and sends only `SecretLiveChange::Remove { name }`
-  for removal. B-27 uses that existing API without a runtime patch change.
+  for removal. B-27 used that existing API without a runtime patch change.
 - Silo's checked-in runtime patch contains policy-change connection cancellation.
 
 ## Manual checks

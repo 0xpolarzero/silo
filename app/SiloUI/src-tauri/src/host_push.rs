@@ -21,6 +21,19 @@ use tauri::{Emitter, Manager};
 struct Discovery {
     last: Option<(Instant, Result<Vec<Value>, String>)>,
     running: bool,
+    generation: u64,
+}
+impl Discovery {
+    fn invalidate(&mut self) {
+        self.last = None;
+        self.generation = self.generation.wrapping_add(1);
+    }
+    fn finish(&mut self, generation: u64, started: Instant, result: Result<Vec<Value>, String>) {
+        if generation == self.generation {
+            self.last = Some((started, result));
+        }
+        self.running = false;
+    }
 }
 type Discoveries = (Mutex<HashMap<String, Discovery>>, std::sync::Condvar);
 static DISCOVERIES: OnceLock<Discoveries> = OnceLock::new();
@@ -194,6 +207,11 @@ impl PushTarget {
 }
 const TARGET_CHANGED: &str =
     "The repository changed after you confirmed the push. Review it and push again.";
+const UPDATE_TRACKING_REF: &str = r#"set -eu
+origin=$(git -C "$1" remote get-url origin) || exit 0
+[ "$origin" = "$5" ] || exit 0
+git -C "$1" update-ref "$2" "$3" "$4"
+"#;
 /// Rows at most this old are served without reading the guest again.
 const DISCOVERY_FRESH: Duration = Duration::from_secs(15);
 /// A state refresh waits this long for a VM's first discovery; later refreshes
@@ -208,10 +226,11 @@ const DISCOVERY_SECONDS: u64 = 20;
 pub(crate) fn discover(
     paths: &RuntimePaths,
     name: &str,
+    vm_id: &str,
     refresh: bool,
 ) -> Result<Vec<Value>, String> {
     let requested = Instant::now();
-    let key = format!("{}:{name}", paths.home.display());
+    let key = format!("{}:{vm_id}", paths.home.display());
     let (lock, changed) = discoveries();
     let wait_until = requested
         + if refresh {
@@ -234,6 +253,7 @@ pub(crate) fn discover(
         }
         if !entry.running {
             entry.running = true;
+            let generation = entry.generation;
             let (paths, name, key) = (paths.clone(), name.to_owned(), key.clone());
             thread::spawn(move || {
                 let started = Instant::now();
@@ -244,8 +264,7 @@ pub(crate) fn discover(
                     entries.retain(|other, entry| entry.running || *other == key);
                 }
                 let entry = entries.entry(key).or_default();
-                entry.last = Some((started, result));
-                entry.running = false;
+                entry.finish(generation, started, result);
                 changed.notify_all();
             });
         }
@@ -274,7 +293,7 @@ const DISCOVER_REPOSITORIES: &str = r#"find "$1" \( -name node_modules -o -name 
 p=${directory%/.git}
 branch=$(git -C "$p" symbolic-ref --quiet --short HEAD) || continue
 counts=$(git -C "$p" rev-list --left-right --count HEAD..."refs/remotes/origin/$branch" 2>/dev/null) || counts="$(git -C "$p" rev-list --count HEAD --not --remotes=origin) 0"
-dirty=$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null)
+dirty=$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null) || { echo 'Cannot read repository working tree status' >&2; exit 1; }
 head=$(git -C "$p" rev-parse --verify --quiet HEAD) || head=
 origin=$(git -C "$p" remote get-url origin 2>/dev/null) || origin=
 printf '%s\000%s\000%s\000%s\000%s\000%s\000' "$p" "$branch" "$counts" "$dirty" "$head" "$origin"
@@ -334,14 +353,21 @@ const SANDBOX_OUTPUT: &str = "Output from the sandbox (not from Silo or GitHub):
 const CREDENTIAL_EXPIRED: &str =
     "The push took longer than its GitHub credential allows. Push again to continue.";
 const STEP_TIMED_OUT: &str = "Git operation timed out. Check the remote before retrying.";
+const FREE_SPACE_STOP: &str = "Host push stopped to preserve free disk space.";
+const PROCESS_STATUS_UNAVAILABLE: &str = "Cannot read Git process status.";
 /// Reported as an unknown result: GitHub may or may not have updated the branch.
 const PUBLICATION_UNKNOWN: &str =
     "The push stopped while GitHub was receiving it. Check this branch on GitHub before pushing again.";
-/// A final push that Silo stopped (cancel or time limit) may already have
-/// updated the branch; any other failure means it did not.
+/// A final push interrupted by the host may already have updated the branch.
 fn final_push_error(error: String) -> String {
     match error.lines().next() {
-        Some(CANCELLED | CREDENTIAL_EXPIRED | STEP_TIMED_OUT) => PUBLICATION_UNKNOWN.into(),
+        Some(
+            CANCELLED
+            | CREDENTIAL_EXPIRED
+            | STEP_TIMED_OUT
+            | FREE_SPACE_STOP
+            | PROCESS_STATUS_UNAVAILABLE,
+        ) => PUBLICATION_UNKNOWN.into(),
         _ => error,
     }
 }
@@ -378,9 +404,18 @@ fn credential_origin(remote: &str) -> Result<&str, String> {
 }
 impl HostGit {
     fn run(&self, args: &[&str], token: Option<&str>, remote: &str) -> Result<String, String> {
+        self.run_with_budget(args, token, remote, temporary_budget)
+    }
+    fn run_with_budget(
+        &self,
+        args: &[&str],
+        token: Option<&str>,
+        remote: &str,
+        budget: impl Fn(&Path) -> Result<u64, String>,
+    ) -> Result<String, String> {
         let mut command = Command::new(&self.executable);
         command.process_group(0);
-        let file_budget = temporary_budget(&self.directory)? as libc::rlim_t;
+        let file_budget = budget(&self.directory)? as libc::rlim_t;
         let cache_lock_fd = self.cache_lock_fd;
         let credential = token.map(credential_pipe).transpose()?;
         let credential_fd = credential.as_ref().map(|reader| reader.as_raw_fd());
@@ -517,7 +552,7 @@ impl HostGit {
         let outcome = loop {
             match child.try_wait() {
                 Ok(Some(status)) => break Ok(status),
-                Err(_) => break Err("Cannot read Git process status."),
+                Err(_) => break Err(PROCESS_STATUS_UNAVAILABLE),
                 Ok(None) if runtime::operation_gate::cancel_requested() => break Err(CANCELLED),
                 Ok(None) if Instant::now() >= deadline => {
                     break Err(if deadline < step_deadline {
@@ -528,8 +563,8 @@ impl HostGit {
                 }
                 Ok(None) => {
                     if space_check.elapsed() >= Duration::from_secs(1) {
-                        if temporary_budget(&self.directory).is_err() {
-                            break Err("Host push stopped to preserve free disk space.");
+                        if budget(&self.directory).is_err() {
+                            break Err(FREE_SPACE_STOP);
                         }
                         space_check = Instant::now();
                     }
@@ -583,6 +618,22 @@ impl HostGit {
         };
         match outcome {
             Ok(status) if !status.success() => {
+                if stage == "push" && command_args.contains(&"--porcelain") {
+                    // Only an explicit per-ref rejection proves no update.
+                    // Missing status and remote failures can follow acceptance.
+                    let rejected = !overflow
+                        && std::str::from_utf8(&output).is_ok_and(|output| {
+                            output.lines().any(|line| {
+                                let fields: Vec<_> = line.splitn(3, '\t').collect();
+                                matches!(fields.as_slice(), ["!", _, summary]
+                                    if summary.starts_with("[rejected]")
+                                        || summary.starts_with("[remote rejected]"))
+                            })
+                        });
+                    if !rejected {
+                        return Err(PUBLICATION_UNKNOWN.into());
+                    }
+                }
                 // The first line is the summary; the rest becomes diagnostic details.
                 return Err(if from_sandbox {
                     format!("Reading committed data from the sandbox failed (Git {stage}, {status}).\n{diagnostic}")
@@ -1027,6 +1078,8 @@ fn push_target(
             r#"set -eu
 commit=$(git -C "$1" rev-parse --verify --quiet "refs/heads/$4^{commit}") || commit=
 if [ "$commit" != "$5" ]; then printf 'changed\n'; exit 0; fi
+tracking=$(git -C "$1" rev-parse --verify --quiet "refs/remotes/origin/$4") || tracking=
+origin=$(git -C "$1" remote get-url origin)
 git -C "$1" update-ref "$3" "$commit"
 # Use Git LFS's own storage resolution, including linked worktrees and lfs.storage.
 media=$(git -C "$1" lfs env | sed -n 's/^LocalMediaDir=//p')
@@ -1037,11 +1090,19 @@ if [ -d "$media" ]; then
 else
     mkdir "$2/source.git/lfs/objects"
 fi
-printf '%s\n' "$commit"
+printf '%s\n%s\n%s\n' "$commit" "$tracking" "$origin"
 "#,
             &[path, &export, &export_ref, branch, commit],
         )?;
-        if data.lines().next() != Some(commit) {
+        let mut data = data.lines();
+        if data.next() != Some(commit) {
+            return Err(TARGET_CHANGED.into());
+        }
+        let expected_tracking = data.next().unwrap_or_default();
+        let expected_origin = data.next().unwrap_or_default();
+        if !repository(expected_origin)
+            .is_ok_and(|repository| repository.eq_ignore_ascii_case(&target.repository))
+        {
             return Err(TARGET_CHANGED.into());
         }
         let git = HostGit {
@@ -1076,20 +1137,26 @@ printf '%s\n' "$commit"
             cache.discard();
         }
         let count = publication?;
-        // Tracking metadata describes the commit actually published, even if
-        // the sandbox branch advanced while this operation was running.
+        // Record the published commit only if the guest has not fetched newer
+        // tracking data or repointed origin while publication was running.
         let _ = runtime::operation_gate::uncancellable(|| {
             guest(
                 paths,
                 workspace,
-                "git -C \"$1\" update-ref \"$2\" \"$3\"",
-                &[path, &format!("refs/remotes/origin/{branch}"), commit],
+                UPDATE_TRACKING_REF,
+                &[
+                    path,
+                    &format!("refs/remotes/origin/{branch}"),
+                    commit,
+                    expected_tracking,
+                    expected_origin,
+                ],
             )
         });
         // The next state refresh reads the repository again.
         if let Ok(mut entries) = discoveries().0.lock() {
-            if let Some(entry) = entries.get_mut(&format!("{}:{workspace}", paths.home.display())) {
-                entry.last = None;
+            if let Some(entry) = entries.get_mut(&format!("{}:{vm_id}", paths.home.display())) {
+                entry.invalidate();
             }
         }
         Ok(count)
@@ -1114,7 +1181,15 @@ pub(crate) async fn push_repository(
     target: PushTarget,
 ) -> Result<Value, String> {
     let key = format!("{workspace}\0{repository_path}");
-    let planned_count = planned_count(&app, &workspace, &repository_path);
+    let planned_count = {
+        let (app, workspace, repository_path) =
+            (app.clone(), workspace.clone(), repository_path.clone());
+        runtime::operation_gate::spawn_blocking(move || {
+            planned_count(&app, &workspace, &repository_path)
+        })
+        .await
+        .map_err(|_| "Host push task failed.".to_string())?
+    };
     {
         let mut r = results().lock().map_err(|_| "Push state unavailable.")?;
         if r.get(&key).is_some_and(|(v, _)| v["status"] == "pushing") {
@@ -1153,11 +1228,17 @@ pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_
     runtime::runtime_paths(app)
         .ok()
         .and_then(|paths| {
+            let metadata = runtime::read_metadata(&paths.metadata).ok()?;
+            let vm_id = metadata
+                .machines
+                .iter()
+                .find(|machine| machine.is_vm() && machine.name() == workspace)?
+                .id();
             discoveries()
                 .0
                 .lock()
                 .ok()?
-                .get(&format!("{}:{workspace}", paths.home.display()))?
+                .get(&format!("{}:{vm_id}", paths.home.display()))?
                 .last
                 .as_ref()?
                 .1
@@ -1236,6 +1317,39 @@ mod tests {
 
     use super::*;
     #[test]
+    fn recreated_vm_cannot_receive_the_previous_vms_repository_discovery() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = RuntimePaths {
+            executable: root.path().join("missing-msb"),
+            home: root.path().to_path_buf(),
+            guest_image: root.path().join("image"),
+            storage_home: None,
+            library: root.path().join("library"),
+            metadata: root.path().join("metadata"),
+            volumes: root.path().join("volumes"),
+        };
+        let key = format!("{}:vm-old", paths.home.display());
+        let cached = vec![json!({"path": "previous-vm-private-repository"})];
+        discoveries().0.lock().unwrap().insert(
+            key.clone(),
+            Discovery {
+                last: Some((Instant::now(), Ok(cached.clone()))),
+                running: false,
+                generation: 0,
+            },
+        );
+        assert_eq!(discover(&paths, "dev", "vm-old", false).unwrap(), cached);
+        let replacement = discover(&paths, "dev", "vm-new", false);
+        discoveries().0.lock().unwrap().remove(&key);
+        discoveries()
+            .0
+            .lock()
+            .unwrap()
+            .remove(&format!("{}:vm-new", paths.home.display()));
+        assert!(replacement.is_err(), "The replacement VM must discover its own repositories instead of returning the previous VM's cached rows: {replacement:?}");
+    }
+
+    #[test]
     fn manual_discovery_bypasses_cached_rows() {
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("missing-msb");
@@ -1248,21 +1362,22 @@ mod tests {
             metadata: root.path().join("metadata"),
             volumes: root.path().join("volumes"),
         };
-        let key = format!("{}:test", paths.home.display());
+        let key = format!("{}:vm-1", paths.home.display());
         let cached = vec![json!({"path": "removed-repository"})];
         discoveries().0.lock().unwrap().insert(
             key.clone(),
             Discovery {
                 last: Some((Instant::now(), Ok(cached.clone()))),
                 running: false,
+                generation: 0,
             },
         );
-        assert_eq!(discover(&paths, "test", false).unwrap(), cached);
+        assert_eq!(discover(&paths, "test", "vm-1", false).unwrap(), cached);
         // A forced read must reach the missing runtime instead of returning
         // the fresh cached rows. No real VM or runtime is involved.
-        let refreshed = discover(&paths, "test", true);
+        let refreshed = discover(&paths, "test", "vm-1", true);
         assert!(refreshed.is_err());
-        assert_eq!(discover(&paths, "test", false), refreshed);
+        assert_eq!(discover(&paths, "test", "vm-1", false), refreshed);
         discoveries().0.lock().unwrap().remove(&key);
     }
 
@@ -1340,6 +1455,37 @@ mod tests {
         assert_eq!(rows[0]["head"], head.trim());
     }
 
+    #[test]
+    fn discovery_started_before_a_push_cannot_restore_stale_rows() {
+        let mut entry = Discovery {
+            running: true,
+            ..Discovery::default()
+        };
+        let generation = entry.generation;
+        let started = Instant::now();
+        entry.invalidate();
+        entry.finish(
+            generation,
+            started,
+            Ok(vec![json!({"path":"/workspace/repo","ahead":1})]),
+        );
+        assert!(
+            entry.last.is_none(),
+            "the pre-push discovery restored stale rows"
+        );
+        assert!(
+            !entry.running,
+            "the next refresh must be able to start a read"
+        );
+        entry.running = true;
+        entry.finish(
+            entry.generation,
+            Instant::now(),
+            Ok(vec![json!({"path":"/workspace/repo","ahead":0})]),
+        );
+        assert_eq!(entry.last.unwrap().1.unwrap()[0]["ahead"], 0);
+    }
+
     /// A runtime whose guest runs the shell command `wait` during each discovery and
     /// counts them.
     fn slow_discovery_runtime(root: &Path, wait: &str) -> (RuntimePaths, PathBuf) {
@@ -1391,7 +1537,7 @@ mod tests {
         let readers: Vec<_> = (0..3)
             .map(|_| {
                 let paths = paths.clone();
-                thread::spawn(move || discover(&paths, "dev", false))
+                thread::spawn(move || discover(&paths, "dev", "vm-1", false))
             })
             .collect();
         wait_until("the guest read never started", &|| runs(&count) >= 1);
@@ -1402,7 +1548,7 @@ mod tests {
         }
         assert_eq!(runs(&count), 1);
         // Once stale, the known rows are returned at once while a new read runs.
-        let key = format!("{}:dev", paths.home.display());
+        let key = format!("{}:vm-1", paths.home.display());
         discoveries()
             .0
             .lock()
@@ -1414,7 +1560,7 @@ mod tests {
             .unwrap()
             .0 = Instant::now() - Duration::from_secs(60);
         fs::remove_file(&gate).unwrap();
-        assert_eq!(discover(&paths, "dev", false).unwrap().len(), 1);
+        assert_eq!(discover(&paths, "dev", "vm-1", false).unwrap().len(), 1);
         // The call returned while the new read is still blocked in the guest: it served
         // the known rows instead of waiting for it.
         wait_until("background discovery never started", &|| runs(&count) >= 2);
@@ -1432,20 +1578,70 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (paths, count) = slow_discovery_runtime(root.path(), "sleep 6");
         let started = Instant::now();
-        assert!(discover(&paths, "dev", false).unwrap().is_empty());
+        assert!(discover(&paths, "dev", "vm-1", false).unwrap().is_empty());
         assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
         // Later refreshes do not start another read or wait for this one.
         let started = Instant::now();
-        assert!(discover(&paths, "dev", false).unwrap().is_empty());
+        assert!(discover(&paths, "dev", "vm-1", false).unwrap().is_empty());
         assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
         assert_eq!(runs(&count), 1);
         // An explicit refresh waits for the read to finish.
-        assert_eq!(discover(&paths, "dev", true).unwrap().len(), 1);
+        assert_eq!(discover(&paths, "dev", "vm-1", true).unwrap().len(), 1);
         discoveries()
             .0
             .lock()
             .unwrap()
-            .remove(&format!("{}:dev", paths.home.display()));
+            .remove(&format!("{}:vm-1", paths.home.display()));
+    }
+
+    #[test]
+    fn discovery_rejects_unreadable_worktree_status() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repository");
+        fs::create_dir(&repository).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                ])
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .current_dir(&repository)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+            String::from_utf8(output.stdout).unwrap()
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        fs::write(repository.join("README"), "committed\n").unwrap();
+        git(&["add", "README"]);
+        git(&["commit", "--quiet", "-m", "fixture"]);
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        fs::write(repository.join("README"), "uncommitted\n").unwrap();
+        let discover = || {
+            Command::new("/bin/sh")
+                .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
+                .arg(root.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+        };
+        let healthy = discover();
+        assert!(healthy.status.success());
+        let record = String::from_utf8(healthy.stdout).unwrap();
+        assert!(record.split('\0').nth(3).unwrap().contains("README"));
+        fs::write(repository.join(".git/index"), "corrupt index").unwrap();
+        let output = discover();
+        assert!(
+            !output.status.success(),
+            "A failed status read must not publish a clean repository: {:?}",
+            output.stdout
+        );
     }
 
     #[test]
@@ -1533,6 +1729,74 @@ mod tests {
         let rows = discovered_rows(&row("not-a-commit", "https://gitlab.com/owner/repo.git"));
         assert!(rows[0]["repository"].is_null());
         assert!(rows[0]["head"].is_null());
+    }
+
+    #[test]
+    fn tracking_metadata_preserves_concurrent_fetches_and_origin_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repo");
+        fs::create_dir(&repository).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                ])
+                .args(args)
+                .env("HOME", root.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .current_dir(&repository)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}");
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        let commits: Vec<_> = ["before", "published", "fetched"]
+            .into_iter()
+            .map(|message| {
+                git(&["commit", "--quiet", "--allow-empty", "-m", message]);
+                git(&["rev-parse", "HEAD"])
+            })
+            .collect();
+        let origin = "https://github.com/owner/repo.git";
+        let tracking = "refs/remotes/origin/main";
+        git(&["remote", "add", "origin", origin]);
+        let update = |expected: &str| {
+            Command::new("sh")
+                .args(["-c", UPDATE_TRACKING_REF, "silo-host-push"])
+                .arg(&repository)
+                .args([tracking, &commits[1], expected, origin])
+                .env("HOME", root.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+                .status
+        };
+        git(&["update-ref", tracking, &commits[2]]);
+        let _ = update(&commits[0]);
+        assert_eq!(git(&["rev-parse", tracking]), commits[2]);
+        git(&["update-ref", tracking, &commits[0]]);
+        git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/another/repo.git",
+        ]);
+        assert!(update(&commits[0]).success());
+        assert_eq!(git(&["rev-parse", tracking]), commits[0]);
+        git(&["remote", "set-url", "origin", origin]);
+        assert!(update(&commits[0]).success());
+        assert_eq!(git(&["rev-parse", tracking]), commits[1]);
+        git(&["update-ref", "-d", tracking]);
+        assert!(update("").success());
+        assert_eq!(git(&["rev-parse", tracking]), commits[1]);
     }
 
     #[test]
@@ -1732,6 +1996,86 @@ mod tests {
             Err(PUBLICATION_UNKNOWN.into()),
         );
         assert_eq!(unknown["status"], "unknown");
+    }
+
+    #[test]
+    fn a_publication_stopped_for_disk_space_has_an_unknown_outcome() {
+        let directory = tempfile::tempdir().unwrap();
+        let git = sleeping_git(directory.path());
+        fs::write(
+            &git.executable,
+            "#!/bin/sh\nprintf updated >published\nexec /bin/sleep 30\n",
+        )
+        .unwrap();
+        let error = git
+            .run_with_budget(&["push"], None, "", |path| {
+                if path.join("published").exists() {
+                    Err("Cannot check free space for host push.".into())
+                } else {
+                    Ok(1024 * 1024 * 1024)
+                }
+            })
+            .unwrap_err();
+        assert_eq!(
+            fs::read_to_string(directory.path().join("published")).unwrap(),
+            "updated"
+        );
+        let target = PushTarget {
+            repository: "owner/repo".into(),
+            branch: "main".into(),
+            commit: "d".repeat(40),
+        };
+        // Before publication, this interruption remains an ordinary failure.
+        let before_push = finished_result("dev", "/workspace/repo", &target, Err(error.clone()));
+        assert_eq!(before_push["status"], "failed");
+        let result = finished_result(
+            "dev",
+            "/workspace/repo",
+            &target,
+            Err(final_push_error(error)),
+        );
+        assert_eq!(result["status"], "unknown");
+        assert_eq!(result["message"], PUBLICATION_UNKNOWN);
+    }
+
+    #[test]
+    fn publication_failures_require_an_explicit_rejection_to_be_known() {
+        let directory = tempfile::tempdir().unwrap();
+        let git = sleeping_git(directory.path());
+        for (summary, unknown) in [
+            ("", true),
+            ("[remote failure] (remote failed to report status)", true),
+            ("[rejected] (non-fast-forward)", false),
+            ("[remote rejected] (hook declined)", false),
+        ] {
+            let script = if summary.is_empty() {
+                "#!/bin/sh\nprintf updated >published\nexit 128\n".to_owned()
+            } else {
+                format!("#!/bin/sh\nprintf '!\\trefs/silo/push:refs/heads/main\\t%s\\n' '{summary}'\nexit 1\n")
+            };
+            fs::write(&git.executable, script).unwrap();
+            let error = git
+                .run(
+                    &[
+                        "push",
+                        "--porcelain",
+                        "origin",
+                        "refs/silo/push:refs/heads/main",
+                    ],
+                    None,
+                    "",
+                )
+                .unwrap_err();
+            if unknown {
+                assert_eq!(error, PUBLICATION_UNKNOWN);
+            } else {
+                assert!(error.starts_with("Git push failed"), "{error}");
+            }
+        }
+        assert_eq!(
+            fs::read_to_string(directory.path().join("published")).unwrap(),
+            "updated"
+        );
     }
 
     #[test]

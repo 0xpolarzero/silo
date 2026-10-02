@@ -93,9 +93,14 @@ def write_json(path, value):
         with os.fdopen(fd, 'w') as output:
             output.write(json.dumps(value, sort_keys=True) + '\n')
             output.flush()
+            os.fchmod(output.fileno(), 0o644)
             os.fsync(output.fileno())
-        os.chmod(temporary, 0o644)
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         try:
             os.unlink(temporary)
@@ -435,12 +440,17 @@ def wait_for_session(wait, repair):
         state = desktop_session()
         if state == 'running':
             return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Failure('desktop-session-not-running')
         if repair and state in ('failed', 'stopped') and desktop_autostart():
             if repairs >= SESSION_REPAIR_ATTEMPTS:
                 raise Failure('desktop-session-not-running')
             repairs += 1
             log(f'desktop session is {state}; starting it again ({repairs} of {SESSION_REPAIR_ATTEMPTS})')
-            time.sleep(SESSION_REPAIR_BASE * 2 ** (repairs - 1))
+            time.sleep(min(SESSION_REPAIR_BASE * 2 ** (repairs - 1), remaining))
+            if time.monotonic() >= deadline:
+                raise Failure('desktop-session-not-running')
             start_desktop()
             continue
         if time.monotonic() >= deadline:

@@ -39,7 +39,8 @@ it("blocks a conflicting fork name and submits the selected checkpoint and trimm
   const user = userEvent.setup()
   const forkCheckpoint = vi.fn().mockResolvedValue(undefined)
   const target = "silo-remote:office:vm-dev"
-  render(withToaster(<CheckpointPanel workspace={workspace} target={target} actions={{ forkCheckpoint } as unknown as ApplicationActions} disabled={false} takenNames={["existing"]} />))
+  const remote = { ...workspace, computer: { id: "office", vmId: "vm-dev", name: "Office", address: "office", connected: true } }
+  render(withToaster(<CheckpointPanel workspace={remote} target={target} actions={{ forkCheckpoint } as unknown as ApplicationActions} disabled={false} takenNames={["existing"]} />))
   await user.click(screen.getByRole("button", { name: "Checkpoint actions for Disk snapshot" }))
   await user.click(screen.getByRole("menuitem", { name: "Fork Disk snapshot" }))
   const name = screen.getByRole("textbox", { name: "New sandbox name" })
@@ -53,6 +54,7 @@ it("blocks a conflicting fork name and submits the selected checkpoint and trimm
 })
 
 it("ignores a previous sandbox's late usage response when the selected sandbox changes", async () => {
+  const user = userEvent.setup()
   let finish!: (value: typeof usage) => void
   const readCheckpointUsage = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     .mockResolvedValueOnce({ totalBytes: gib, checkpoints: [{ id: "point-1", sizeBytes: gib }] })
@@ -66,7 +68,7 @@ it("ignores a previous sandbox's late usage response when the selected sandbox c
   expect(readCheckpointUsage.mock.calls).toEqual([["vm-dev"], ["vm-other"]])
   expect(row.getByText(/1\.00 GiB/)).toBeVisible()
   expect(row.queryByText(/Used by experiment/)).not.toBeInTheDocument()
-  fireEvent.click(row.getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  await user.click(row.getByRole("button", { name: "Checkpoint actions for Before refactor" }))
   expect(screen.getByRole("menuitem", { name: "Delete Before refactor" })).not.toHaveAttribute("data-disabled")
 })
 
@@ -348,4 +350,27 @@ it("offers Delete only for checkpoints on this computer", async () => {
   await user.click(within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!).getByRole("button", { name: "Checkpoint actions for Before refactor" }))
   expect(screen.queryByRole("menuitem", { name: "Delete Before refactor" })).toBeNull()
   expect(readCheckpointUsage).not.toHaveBeenCalled()
+})
+
+
+it("blocks a failed capture's Retry while a Restore for the same sandbox is pending", async () => {
+  const user = userEvent.setup()
+  const restore = deferred()
+  const createCheckpoint = vi.fn().mockRejectedValueOnce(new Error("Capture failed")).mockResolvedValue(undefined)
+  const restoreCheckpoint = vi.fn(() => restore.promise)
+  render(withToaster(<CheckpointPanel workspace={workspace} target="dev" actions={{ createCheckpoint, restoreCheckpoint } as unknown as ApplicationActions} disabled={false} />))
+  await user.click(screen.getByRole("button", { name: "New checkpoint" }))
+  await user.click(screen.getByRole("button", { name: "Create" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  const row = within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!)
+  await user.click(row.getByRole("button", { name: "Restore" }))
+  await user.click(confirmButton("Restore"))
+  await waitFor(() => expect(restoreCheckpoint).toHaveBeenCalledOnce())
+  try {
+    expect(screen.getByRole("button", { name: "New checkpoint" })).toBeDisabled()
+    await user.click(retry)
+    expect(createCheckpoint).toHaveBeenCalledOnce()
+    expect(screen.getByRole("button", { name: "New checkpoint" })).toBeDisabled()
+  } finally { await act(async () => restore.resolve()) }
+  expect(screen.getByRole("button", { name: "New checkpoint" })).toBeEnabled()
 })

@@ -1,5 +1,67 @@
 use super::*;
 
+const WORKSPACE_CHECKSUM: &str = r#"set -eu
+stage=$(mktemp -d "${TMPDIR:-/tmp}/silo-checksum.XXXXXXXX")
+trap 'rm -rf "$stage"' EXIT
+find /workspace -xdev -type f -exec sha256sum {} + > "$stage/files"
+LC_ALL=C sort "$stage/files" > "$stage/sorted"
+sha256sum < "$stage/sorted"
+"#;
+
+fn checksum_fixture(scan_status: u8, sort_status: u8, records: &str) -> std::process::Output {
+    let directory = tempfile::tempdir().unwrap();
+    crate::test_support::write_shell_script(
+        &directory.path().join("find"),
+        "printf '%s' \"$CHECKSUM_RECORDS\"; exit \"$SCAN_STATUS\"",
+    );
+    crate::test_support::write_shell_script(
+        &directory.path().join("sort"),
+        "[ \"$SORT_STATUS\" -eq 0 ] || exit \"$SORT_STATUS\"; exec /usr/bin/sort \"$@\"",
+    );
+    crate::test_support::write_shell_script(&directory.path().join("sha256sum"), "exec /bin/cat");
+    std::process::Command::new("/bin/sh")
+        .args(["-c", WORKSPACE_CHECKSUM])
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", directory.path().display()),
+        )
+        .env("TMPDIR", directory.path())
+        .env("SCAN_STATUS", scan_status.to_string())
+        .env("SORT_STATUS", sort_status.to_string())
+        .env("CHECKSUM_RECORDS", records)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn workspace_checksum_rejects_failed_scan() {
+    let result = checksum_fixture(23, 0, "partial hash  /workspace/file\n");
+    assert_eq!(result.status.code(), Some(23));
+    assert!(result.stdout.is_empty());
+}
+
+#[test]
+fn workspace_checksum_rejects_failed_sort() {
+    let result = checksum_fixture(0, 17, "hash  /workspace/file\n");
+    assert_eq!(result.status.code(), Some(17));
+    assert!(result.stdout.is_empty());
+}
+
+#[test]
+fn workspace_checksum_preserves_sorted_and_empty_streams() {
+    for (records, expected) in [
+        (
+            "b  /workspace/b\na  /workspace/a\n",
+            "a  /workspace/a\nb  /workspace/b\n",
+        ),
+        ("", ""),
+    ] {
+        let result = checksum_fixture(0, 0, records);
+        assert!(result.status.success());
+        assert_eq!(result.stdout, expected.as_bytes());
+    }
+}
+
 fn fixture() -> (
     tempfile::TempDir,
     RuntimePaths,
@@ -181,6 +243,113 @@ fn stopped_usage_reports_allocated_blocks_without_starting_guest() {
     );
     assert_eq!(value.workspace_used_bytes, None);
     assert!(runner.calls.lock().unwrap().is_empty());
+}
+
+#[test]
+fn failed_pending_restore_reports_present_disks_and_preserves_errors() {
+    let _test_state = crate::test_support::global_state();
+    struct Restored {
+        observed: InspectedSandbox,
+        guest: Runner,
+    }
+    impl RuntimeRunner for Restored {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            let stdout = match args[0].as_str() {
+                "list" => json!([{"name":"dev"}]).to_string(),
+                "inspect" => json!({"name":self.observed.name,"status":self.observed.status,"config":self.observed.config,"runtime_instance_id":self.observed.runtime_instance_id}).to_string(),
+                _ => return self.guest.run(paths, args, timeout),
+            };
+            Ok(CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+    for status in ["Running", "Stopped"] {
+        let (_dir, paths, machine, mut observed) = fixture();
+        observed.status = status.into();
+        let root = paths.home.join("sandboxes/dev/rootfs.raw");
+        fs::write(&root, vec![3u8; 8192]).unwrap();
+        let pending: checkpoints::Record = serde_json::from_value(json!({
+            "version":1,
+            "checkpoints":[],
+            "restoreAttempted":true,
+            "pendingCheckpointRestore":{
+                "checkpointId":"c000000000000000000000000000000",
+                "sourceWorkspace":"source",
+                "state":"disk"
+            }
+        }))
+        .unwrap();
+        checkpoints::save(&paths, machine.id(), &pending).unwrap();
+        save(
+            &paths,
+            machine.id(),
+            &Record {
+                last_error: Some("Previous trim failed.".into()),
+                ..Record::default()
+            },
+        )
+        .unwrap();
+        let runner = Restored {
+            observed,
+            guest: Runner::new(),
+        };
+        let value = storage_with(&runner, &paths, machine.id(), false).unwrap();
+        assert_eq!(
+            value.workspace_host_bytes,
+            Some(allocated(&owned_disk(&paths, "dev")).unwrap())
+        );
+        assert_eq!(value.runtime_host_bytes, Some(allocated(&root).unwrap()));
+        assert_eq!(value.last_error.as_deref(), Some("Previous trim failed."));
+        let error = storage_with(&runner, &paths, machine.id(), true).unwrap_err();
+        assert!(error.to_string().contains("restore"), "{error}");
+        assert!(runner
+            .guest
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|args| !args.iter().any(|arg| arg == TRIM)));
+    }
+}
+
+#[test]
+fn unstarted_pending_restore_reports_zero_without_starting_a_vm() {
+    let _test_state = crate::test_support::global_state();
+    struct EmptyRuntime;
+    impl RuntimeRunner for EmptyRuntime {
+        fn run(
+            &self,
+            _: &RuntimePaths,
+            args: &[String],
+            _: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            assert_eq!(args[0], "list", "storage must not start an absent VM");
+            Ok(CommandOutput {
+                stdout: "[]".into(),
+                stderr: String::new(),
+            })
+        }
+    }
+    let (_dir, paths, machine, _) = fixture();
+    fs::remove_dir_all(paths.home.join("sandboxes/dev")).unwrap();
+    let mut pending = checkpoints::Record::default();
+    pending.pending_checkpoint_restore = Some(checkpoints::PendingRestore {
+        checkpoint_id: "c000000000000000000000000000000".into(),
+        source_workspace: "source".into(),
+        state: "disk".into(),
+    });
+    checkpoints::save(&paths, machine.id(), &pending).unwrap();
+    let value = storage_with(&EmptyRuntime, &paths, machine.id(), false).unwrap();
+    assert_eq!(value.workspace_host_bytes, Some(0));
+    assert_eq!(value.runtime_host_bytes, Some(0));
+    assert!(storage_with(&EmptyRuntime, &paths, machine.id(), true).is_err());
 }
 #[test]
 fn runtime_tail_truncation_is_repaired_and_reported_even_on_timeout() {
@@ -522,8 +691,7 @@ fn live_reclaim_preserves_capacity_contents_and_reboots() {
     let disk = owned_disk(&paths, machine.name());
     let length = fs::metadata(&disk).unwrap().len();
     let host = host_resources().unwrap();
-    let checksum =
-        "set -eu; find /workspace -xdev -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum";
+    let checksum = WORKSPACE_CHECKSUM;
     let mut previous_instance = None;
     for _ in 0..2 {
         let result = (|| -> Result<(), RuntimeError> {
@@ -706,6 +874,62 @@ fn layered_workspace_reclaim_measures_the_whole_chain_and_guards_every_layer_len
 }
 
 #[test]
+fn qcow2_growth_during_reclaim_is_not_a_disk_capacity_change() {
+    let _test_state = crate::test_support::global_state();
+    struct GrowingDisk(PathBuf);
+    impl RuntimeRunner for GrowingDisk {
+        fn run(
+            &self,
+            _: &RuntimePaths,
+            args: &[String],
+            _: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            assert_eq!(args[0], "exec");
+            fs::OpenOptions::new()
+                .append(true)
+                .open(&self.0)
+                .unwrap()
+                .write_all(&vec![8u8; 4096])
+                .unwrap();
+            Ok(CommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+    for qcow2 in [true, false] {
+        let (_dir, paths, machine, observed) = fixture();
+        let disk = if qcow2 {
+            let head = workspace_dir(&paths, "dev").join("writable.qcow2");
+            fs::write(&head, vec![7u8; 8192]).unwrap();
+            head
+        } else {
+            owned_disk(&paths, "dev")
+        };
+        let result = trim(
+            &GrowingDisk(disk.clone()),
+            &paths,
+            &machine,
+            &observed,
+            TRIM_BUDGET,
+            now(),
+        );
+        let record = load(&paths, machine.id()).unwrap();
+        if qcow2 {
+            result.unwrap();
+            assert!(record.last_trim_at.is_some());
+            assert_eq!(record.last_reclaimed_bytes, Some(0));
+        } else {
+            assert!(result.unwrap_err().to_string().contains("size changed"));
+            assert!(record.last_trim_at.is_none());
+        }
+        let contents = fs::read(&disk).unwrap();
+        assert_eq!(&contents[..8192], &vec![7u8; 8192]);
+        assert_eq!(&contents[8192..], &vec![8u8; 4096]);
+    }
+}
+
+#[test]
 fn history_retains_latest_fifty_attempts_including_failures() {
     let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();
@@ -745,6 +969,57 @@ fn history_retains_latest_fifty_attempts_including_failures() {
     assert_eq!(record.history[1].trigger, "scheduled");
     assert_eq!(record.history[1].reclaimed_bytes, Some(0));
     assert!(record.history[1].error.is_none());
+}
+
+#[test]
+fn additive_maintenance_fields_survive_save_and_reload() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = crate::test_support::paths(directory.path());
+    let id = "00000000-0000-4000-8000-000000000001";
+    let path = record_path(&paths, id);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let saved = json!({
+        "lastTrimAt": 100,
+        "lastAttemptAt": 100,
+        "lastReclaimedBytes": 2048,
+        "lastError": null,
+        "futureMaintenance": {"method": "discard", "enabled": true},
+        "history": [{
+            "at": 100,
+            "trigger": "future-trigger",
+            "reclaimedBytes": 2048,
+            "error": null,
+            "futureMeasurement": {"bytes": 4096}
+        }]
+    });
+    fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+
+    let mut record = load(&paths, id).unwrap();
+    assert_eq!(record.last_trim_at, Some(100));
+    assert_eq!(record.history[0].trigger, "future-trigger");
+    record.last_attempt_at = Some(200);
+    save(&paths, id, &record).unwrap();
+
+    let written: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(written["futureMaintenance"], saved["futureMaintenance"]);
+    assert_eq!(written["history"], saved["history"]);
+    let reloaded = load(&paths, id).unwrap();
+    assert_eq!(reloaded.last_attempt_at, Some(200));
+    assert_eq!(reloaded.last_trim_at, Some(100));
+    assert_eq!(reloaded.history.len(), 1);
+}
+
+#[test]
+fn malformed_known_maintenance_fields_still_preserve_the_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = crate::test_support::paths(directory.path());
+    let id = "00000000-0000-4000-8000-000000000001";
+    let path = record_path(&paths, id);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let bytes = br#"{"lastTrimAt":"invalid","futureMaintenance":true}"#;
+    fs::write(&path, bytes).unwrap();
+    assert!(load(&paths, id).is_err());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }
 
 #[test]

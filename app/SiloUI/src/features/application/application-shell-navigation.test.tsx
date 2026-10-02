@@ -1,3 +1,4 @@
+import { setupFakeTimerUser } from "@/test/fake-timer-user"
 import { createApplicationActionsMock } from "@/test/application-actions"
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
@@ -283,8 +284,8 @@ it.each(["past", "future"] as const)("removes a resolved issue from the %s navig
 
 it("opens and dismisses commands with either platform shortcut without losing the current page", async () => {
   const { user } = renderApplication()
-  await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
-  const trigger = screen.getByRole("button", { name: "Search or jump to" })
+  const invoker = within(appNavigation()).getByRole("button", { name: "GitHub" })
+  await user.click(invoker)
   for (const shortcut of ["{Meta>}k{/Meta}", "{Control>}k{/Control}"]) {
     await user.keyboard(shortcut)
     const input = screen.getByRole("combobox", { name: "Search commands" })
@@ -294,7 +295,7 @@ it("opens and dismisses commands with either platform shortcut without losing th
     expect(screen.getByText("No commands found.")).toBeVisible()
     await user.keyboard("{Escape}")
     expect(screen.queryByRole("dialog", { name: "Commands" })).not.toBeInTheDocument()
-    expect(trigger).toHaveFocus()
+    expect(invoker).toHaveFocus()
   }
   expect(appPanel("GitHub")).toBeVisible()
 })
@@ -364,11 +365,12 @@ it("dispatches available sandbox commands and removes them when status becomes s
 
 it("runs an import to completion and reflects the new stopped sandbox", async () => {
   vi.useFakeTimers()
+  const user = setupFakeTimerUser()
   const application = renderApplication()
   try {
     const overviewNav = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" })).getByRole("button", { name: "All sandboxes" })
-    fireEvent.click(screen.getByRole("button", { name: "Add" }))
-    fireEvent.click(screen.getByRole("menuitem", { name: "Import sandbox…" }))
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("menuitem", { name: "Import sandbox…" }))
     await act(async () => { await Promise.resolve() })
     // The import review popover opens anchored to Add; the import starts from it, then continues as a toast.
     fireEvent.click(screen.getByRole("button", { name: "Import" }))
@@ -570,4 +572,50 @@ it.each(["local", "office", "lab"])("notification routes keep the next action on
   rerender(<ApplicationPreview source={renamed} actions={{ openTerminal }} initialRoute={{ workspace: target }} />)
   await user.click(screen.getByRole("button", { name: /^Open .* in Terminal$/ }))
   expect(openTerminal).toHaveBeenLastCalledWith(owner === "local" ? "renamed" : target)
+})
+
+
+it("legacy local-name routes select only the local sandbox's logs", async () => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const local = source.workspaces[0]
+  source.workspaces = [{
+    ...structuredClone(local),
+    machine: { ...local.machine, id: `silo-remote:office:${local.machine.id}` },
+    computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
+  }, local]
+  const queryLogs = vi.fn(async (query: LogQuery) => fixtureLogPage(query.computerId ? source.workspaces[0] : local, query))
+  render(<ApplicationPreview source={source} actions={{ queryLogs }} initialRoute={{ workspace: local.machine.name, workspaceSection: "logs" }} />)
+  await screen.findByText(/Showing .* matching records/)
+  expect(queryLogs).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sandboxId: local.machine.id }))
+  expect(queryLogs.mock.calls[0][0].computerId).toBeUndefined()
+})
+
+it("legacy local-name overview routes keep actions on the local computer", async () => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const local = source.workspaces[0]
+  source.workspaces = [{
+    ...structuredClone(local),
+    machine: { ...local.machine, id: `silo-remote:office:${local.machine.id}` },
+    computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
+  }, local]
+  const openTerminal = vi.fn()
+  const user = userEvent.setup()
+  render(<ApplicationPreview source={source} actions={{ openTerminal }} initialRoute={{ workspace: local.machine.name }} />)
+  await user.click(screen.getByRole("button", { name: /^Open .* in Terminal$/ }))
+  expect(openTerminal).toHaveBeenCalledExactlyOnceWith(local.machine.name)
+})
+
+
+it("a recreated sandbox cannot inherit a legacy route in navigation history", async () => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const local = source.workspaces[0]
+  source.workspaces = [local]
+  const user = userEvent.setup()
+  const { rerender } = render(<ApplicationPreview source={source} initialRoute={{ workspace: local.machine.name }} />)
+  const sections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+  await user.click(sections.getByRole("button", { name: "Files" }))
+  rerender(<ApplicationPreview source={{ ...source, workspaces: [{ ...local, machine: { ...local.machine, id: "replacement-vm" } }] }} />)
+  await user.click(screen.getByRole("button", { name: "Go back" }))
+  expect(within(appPanel("Sandboxes")).getByRole("list", { name: "Configured sandboxes" })).toBeVisible()
+  expect(screen.getByRole("button", { name: "Go back" })).toBeDisabled()
 })

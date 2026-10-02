@@ -213,6 +213,118 @@ fn a_damaged_settings_file_means_ask() {
 }
 
 #[test]
+fn oversized_computer_use_policy_remains_unreadable_and_untouched() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let path = policy_path(&paths, VM_ID).unwrap();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut bytes = br#"{"approval":"auto"}"#.to_vec();
+    bytes.resize(1024 * 1024, b' ');
+    fs::write(&path, &bytes).unwrap();
+    assert_eq!(
+        read_policy_checked(&paths, VM_ID).unwrap().approval,
+        Approval::Auto
+    );
+    bytes.push(b' ');
+    fs::write(&path, &bytes).unwrap();
+    let stored = settings(&paths, VM_ID);
+    assert!(stored.unreadable);
+    assert_eq!(stored.approval, Approval::Ask);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
+fn a_fifo_computer_use_record_is_refused_without_waiting_for_a_writer() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let record = directory.path().join("policy.json");
+    let name = std::ffi::CString::new(record.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (send, receive) = std::sync::mpsc::channel();
+    let to_read = record.clone();
+    let reader = std::thread::spawn(move || {
+        send.send(read_settings_bytes(&to_read)).unwrap();
+    });
+    let result = receive.recv_timeout(Duration::from_secs(1));
+    if result.is_err() {
+        // Release a blocked read before failing so the fixture leaves no reader behind.
+        drop(
+            fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&record)
+                .unwrap(),
+        );
+    }
+    reader.join().unwrap();
+    assert!(result
+        .expect("settings reads must not wait for a FIFO writer")
+        .is_err());
+}
+
+#[test]
+fn oversized_computer_use_observation_is_ignored_without_changing_the_policy() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let policy = policy_path(&paths, VM_ID).unwrap();
+    let observed = observed_path(&paths, VM_ID).unwrap();
+    fs::create_dir_all(policy.parent().unwrap()).unwrap();
+    fs::write(&policy, br#"{"approval":"auto"}"#).unwrap();
+    let mut bytes = br#"{"state":"ready"}"#.to_vec();
+    bytes.resize(1024 * 1024, b' ');
+    fs::write(&observed, &bytes).unwrap();
+    assert_eq!(settings(&paths, VM_ID).known.unwrap().state, "ready");
+    bytes.push(b' ');
+    fs::write(&observed, &bytes).unwrap();
+    let stored = settings(&paths, VM_ID);
+    assert!(stored.known.is_none());
+    assert!(!stored.unreadable);
+    assert_eq!(stored.approval, Approval::Auto);
+    assert_eq!(fs::read(&observed).unwrap(), bytes);
+}
+
+#[test]
+fn unfamiliar_saved_attempt_outcome_preserves_the_approval_choice() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    fs::create_dir_all(directory_of(&paths)).unwrap();
+    let saved = br#"{"approval":"auto","applied":"auto","last":{"mode":"auto","outcome":"future-outcome","at":1790000000}}"#;
+    fs::write(policy_path(&paths, VM_ID).unwrap(), saved).unwrap();
+
+    let stored = settings(&paths, VM_ID);
+    assert!(!stored.unreadable);
+    assert_eq!(stored.approval, Approval::Auto);
+    assert_eq!(stored.applied, Some(Approval::Auto));
+    assert_eq!(stored.last.as_ref().unwrap().outcome, Outcome::Failed);
+    let policy = read_policy_checked(&paths, VM_ID).unwrap();
+    assert!(policy.needs_apply());
+    write_atomic(&paths, policy_path(&paths, VM_ID), &policy).unwrap();
+    assert_eq!(settings(&paths, VM_ID), stored);
+    assert!(Outcome::parse("future-outcome").is_none());
+}
+
+#[test]
+fn unfamiliar_saved_approval_modes_remain_unreadable() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    fs::create_dir_all(directory_of(&paths)).unwrap();
+    for saved in [
+        br#"{"approval":"future-mode"}"#.as_slice(),
+        br#"{"approval":"auto","applied":"future-mode"}"#,
+        br#"{"approval":"auto","unfinished":"future-mode"}"#,
+        br#"{"approval":"auto","last":{"mode":"future-mode","outcome":"applied","at":1}}"#,
+        br#"{"approval":"auto","last":{"mode":"auto","outcome":null,"at":1}}"#,
+    ] {
+        fs::write(policy_path(&paths, VM_ID).unwrap(), saved).unwrap();
+        assert!(settings(&paths, VM_ID).unreadable);
+        assert_eq!(
+            fs::read(policy_path(&paths, VM_ID).unwrap()).unwrap(),
+            saved
+        );
+    }
+}
+
+#[test]
 fn a_policy_of_an_older_version_keeps_its_choice_and_applies_again() {
     // Older files carry a revision and a generation; both are ignored, the choice stays,
     // and with no attempt on record the next boot applies it.
@@ -255,7 +367,7 @@ fn forks_inherit_only_the_approval_and_deleted_vms_are_forgotten() {
             ..Known::default()
         },
     );
-    inherit_settings(&paths, VM_ID, child);
+    inherit_settings(&paths, VM_ID, child).unwrap();
     let inherited = settings(&paths, child);
     assert_eq!(inherited.approval, Approval::Auto);
     // The fork's disk carries the source's configuration: nothing is known to be applied,
@@ -263,7 +375,7 @@ fn forks_inherit_only_the_approval_and_deleted_vms_are_forgotten() {
     assert_eq!((inherited.applied, inherited.last), (None, None));
     assert_eq!(inherited.known, None);
     assert!(read_policy(&paths, child).needs_apply());
-    forget(&paths, VM_ID);
+    forget(&paths, VM_ID).unwrap();
     assert_eq!(settings(&paths, VM_ID), Settings::default());
     assert!(policy_path(&paths, child).unwrap().exists());
 }
@@ -1223,7 +1335,7 @@ fn the_boot_applies_what_an_imported_or_forked_disk_does_not_have() {
     // A fork inherits its source's choice and applies it at its own first boot.
     let child = vm(18);
     set_approval(&paths, &id, Approval::Auto).unwrap();
-    inherit_settings(&paths, &id, &child);
+    inherit_settings(&paths, &id, &child).unwrap();
     write_machines_of(&paths, &child);
     let guest = Guest::new(&child);
     boot_of(test_gate(), &guest, &paths)
@@ -2413,4 +2525,49 @@ fn an_attempt_whose_marker_cannot_be_saved_does_not_run_the_helper() {
     assert!(begin_attempt(&paths, &id, Approval::Auto).is_ok());
     assert_eq!(read_policy(&paths, &id).unfinished, Some(Approval::Auto));
     assert!(approval_reason_text("state-not-saved").contains("could not save"));
+}
+
+#[test]
+fn manual_setup_converges_on_a_choice_saved_while_its_helper_runs() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(32);
+    write_machines_of(&paths, &id);
+    set_approval(&paths, &id, Approval::Auto).unwrap();
+    let guest = Guest::new(&id);
+    let gate = test_gate();
+    let (entered, receiver) = std::sync::mpsc::channel();
+    let release = Arc::new(std::sync::Barrier::new(2));
+    *guest.stall.lock().unwrap() = Some((entered, release.clone()));
+    let worker = {
+        let (guest, paths, id) = (guest.clone(), paths.clone(), id.clone());
+        std::thread::spawn(move || {
+            let turn = gate.vm(&id, "dev", "Updating dev desktop").unwrap();
+            turn.allow_cancel();
+            setup_with(
+                gate,
+                guest.as_ref(),
+                &paths,
+                &machine_of(&id, true),
+                true,
+                turn.cancel_token(),
+            )
+        })
+    };
+    receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+    // Saving the choice is independent of the follow-up worker's admission. That
+    // worker can expire while this manual turn runs, so the turn must converge itself.
+    set_approval(&paths, &id, Approval::Ask).unwrap();
+    release.wait();
+    let status = worker.join().unwrap().unwrap();
+    assert_eq!(guest.modes(), ["auto", "ask"]);
+    assert_eq!(guest.configured().as_deref(), Some("ask"));
+    assert_eq!(status["apply"]["approval"], "ask");
+    let stored = read_policy(&paths, &id);
+    assert_eq!(
+        (stored.approval, stored.applied),
+        (Approval::Ask, Some(Approval::Ask))
+    );
+    assert!(!stored.needs_apply());
+    assert!(!is_pending(&id));
 }

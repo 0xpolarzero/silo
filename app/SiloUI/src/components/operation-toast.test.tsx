@@ -9,7 +9,7 @@ import { dismissSandboxToasts, showOperationFailure, showOperationProgress, show
 function Host() { return <SettingsProvider initialSettings={{ theme: "light" }}><Toaster /></SettingsProvider> }
 const tick = () => act(async () => { await Promise.resolve(); await vi.advanceTimersByTimeAsync(50) })
 
-beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }) })
+beforeEach(() => { vi.useFakeTimers({ now: new Date("2026-10-02T12:00:00Z") }) })
 afterEach(() => { vi.useRealTimers() })
 
 describe("showOperationProgress", () => {
@@ -21,9 +21,9 @@ describe("showOperationProgress", () => {
     const bar = screen.getByRole("progressbar", { name: "Copying disk" })
     expect(bar).toHaveAttribute("aria-valuenow", "40")
     expect(screen.getByRole("list", { name: "Steps" }).querySelectorAll("li")).toHaveLength(3)
-    expect(screen.getByText(/^1m 1?\d+s$|^1m \d+s$/)).toBeInTheDocument()
+    expect(screen.getByText("1m 12s")).toBeInTheDocument()
     await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
-    expect(screen.getByText(/^1m \d+s$/)).toBeInTheDocument()
+    expect(screen.getByText("1m 17s")).toBeInTheDocument()
   })
 
   it("renders an indeterminate bar and updates in place", async () => {
@@ -107,6 +107,14 @@ it("formats elapsed time", () => {
 })
 
 describe("progress notification polish", () => {
+  it("reveals complete checklist labels in every step state", async () => {
+    const steps = (["done", "current", "pending", "failed"] as const).map(state => ({ state, label: `${state}: ${"long operation step ".repeat(20)}`.trim() }))
+    render(<Host />)
+    act(() => showOperationProgress("long-checklist", { title: "Working", steps }))
+    await tick()
+    for (const { label } of steps) expect(screen.getByText(label)).toHaveAttribute("title", label)
+  })
+
   it("hides a step that only repeats the title", async () => {
     render(<Host />)
     act(() => showOperationProgress("dup", { title: "Creating checkpoint “X”", step: "Creating checkpoint…", progress: null }))

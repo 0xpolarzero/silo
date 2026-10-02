@@ -179,6 +179,18 @@ describe("sidebar hover preview", () => {
     expect(screen.getByRole("tooltip")).toHaveTextContent("Expand sidebar")
   })
 
+  it.each(["handled", "composing"])("keeps a preview open when Escape is %s", (mode) => {
+    const { toggle, sidebar } = renderSidebar()
+    fireEvent.pointerEnter(toggle)
+    wait(200)
+    const event = new KeyboardEvent("keydown", { key: "Escape", cancelable: true, isComposing: mode === "composing" })
+    if (mode === "handled") event.preventDefault()
+    fireEvent(window, event)
+    expect(sidebar).toHaveAttribute("data-previewing", "true")
+    fireEvent.keyDown(window, { key: "Escape" })
+    expect(sidebar).toHaveAttribute("data-previewing", "false")
+  })
+
   it("retains a preview during keyboard navigation and closes when focus leaves", () => {
     const { toggle, sidebar } = renderSidebar()
     fireEvent.pointerEnter(toggle)
@@ -191,6 +203,22 @@ describe("sidebar hover preview", () => {
     act(() => screen.getByRole("button", { name: "Page content" }).focus())
     wait(200)
     expect(sidebar).toHaveAttribute("data-collapsed", "true")
+  })
+
+  it("retains a preview when Tab moves from the toggle into the sidebar", () => {
+    const { toggle, sidebar } = renderSidebar()
+    fireEvent.pointerEnter(toggle)
+    wait(200)
+    act(() => toggle.focus())
+    fireEvent.pointerLeave(toggle)
+    fireEvent.keyDown(toggle, { key: "Tab" })
+    act(() => screen.getByRole("button", { name: "Files" }).focus())
+    wait(250)
+    expect(sidebar).toHaveAttribute("data-previewing", "true")
+    expect(screen.getByRole("button", { name: "Files" })).toHaveFocus()
+    act(() => screen.getByRole("button", { name: "Page content" }).focus())
+    wait(200)
+    expect(sidebar).toHaveAttribute("data-previewing", "false")
   })
 
   it("does not reveal previously hovered tooltips when the sidebar collapses", () => {

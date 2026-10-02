@@ -12,17 +12,8 @@ import path from "node:path"
 import readline from "node:readline/promises"
 import { fileURLToPath } from "node:url"
 
-// Keep in sync with src-tauri/src/channel.rs (a test compares the two).
-export const PRODUCTION = Object.freeze({
-  identifier: "org.silo.preview",
-  stateDir: ".silo",
-  keychain: Object.freeze({ github: "org.silo.Silo.github", secrets: "org.silo.Silo.secrets" }),
-})
-export const DEVELOPMENT = Object.freeze({
-  identifier: "org.silo.dev",
-  stateDir: ".silo-dev",
-  keychain: Object.freeze({ github: "org.silo.dev.github", secrets: "org.silo.dev.secrets" }),
-})
+import { DEVELOPMENT, PRODUCTION } from "./channel-names.mjs"
+export { DEVELOPMENT, PRODUCTION }
 
 /** Preferences that describe the person, not the sandboxes or the OS registration. */
 export const COPIED_SETTINGS = Object.freeze([
@@ -34,13 +25,13 @@ export const COPIED_SETTINGS = Object.freeze([
   "browser", "browserUseSystemDefault", "browserPath",
 ])
 
-export const HELP = `Copy production Silo's configuration into Silo Dev (org.silo.dev), once.
+export const HELP = `Copy production Silo's configuration into ${DEVELOPMENT.productName} (${DEVELOPMENT.identifier}), once.
 
 Usage: npm --prefix app/SiloUI run dev:import-production-settings -- [options]
 
 Options:
   --dry-run               Show what would be copied; change nothing.
-  --yes                   Overwrite existing Silo Dev configuration without asking.
+  --yes                   Overwrite existing ${DEVELOPMENT.productName} configuration without asking.
   --include-github-oauth  Also duplicate the GitHub OAuth login. Off by default: GitHub
                           rotates refresh tokens, so the first channel to refresh logs
                           the other one out. The personal access token is always copied.
@@ -51,9 +42,9 @@ editor and browser choices), the GitHub personal access token (Keychain duplicat
 secret definitions and values (Keychain duplicate) with no sandbox assignments, and
 the list of remote computers with this computer's client SSH key that reaches them.
 
-Silo Dev always keeps its OWN remote-management identity: a new host id is generated
+${DEVELOPMENT.productName} always keeps its OWN remote-management identity: a new host id is generated
 (an existing one is preserved) and remote management starts switched off. Computers
-you manage will see Silo Dev as a separate computer. The copied client key still
+you manage will see ${DEVELOPMENT.productName} as a separate computer. The copied client key still
 reaches the production Silo on each remote computer, because that is what its
 authorized_keys entry runs there.
 
@@ -61,8 +52,8 @@ Never copied: sandboxes, VMs, checkpoints, disks, backups and their history, the
 MicroSandbox home and runtime, per-sandbox network and SSH settings, launch-at-login
 and startup-sandbox choices, update preferences, and anything under ~/.ssh.
 
-Production is only read. The command refuses to run while Silo Dev is running, and
-asks before replacing anything Silo Dev already has (previous files are kept as
+Production is only read. The command refuses to run while ${DEVELOPMENT.productName} is running, and
+asks before replacing anything ${DEVELOPMENT.productName} already has (previous files are kept as
 *.bak-<time>). Secret values are never printed. On macOS, the Keychain may ask you to
 allow access to the production items; on Linux, secret-tool is required.
 `
@@ -119,16 +110,16 @@ export function systemKeychain({ platform = process.platform, run = spawnSync } 
   }
 }
 
-/** True when `ps` output lists a Silo Dev process (bundle, or a debug binary from `tauri dev`). */
+/** True when `ps` output lists a development-channel process (bundle or debug binary). */
 export function devProcessRunning(psOutput) {
-  return psOutput.split("\n").some(line => /Silo Dev\.app\/Contents\/MacOS\//.test(line)
+  return psOutput.split("\n").some(line => line.includes(`${DEVELOPMENT.productName}.app/Contents/MacOS/`)
     || /\/debug\/silo-ui(\s|$)/.test(line)
-    || /silo-remote-dev(\s|$)/.test(line))
+    || new RegExp(`${RegExp.escape(DEVELOPMENT.remoteBridge)}(\\s|$)`).test(line))
 }
 
 export function systemDevRunning({ run = spawnSync } = {}) {
   const ps = run("ps", ["-axo", "command="], { encoding: "utf8" })
-  if (ps.error || ps.status !== 0) throw new Error("Could not list processes to check that Silo Dev is not running.")
+  if (ps.error || ps.status !== 0) throw new Error(`Could not list processes to check that ${DEVELOPMENT.productName} is not running.`)
   return devProcessRunning(ps.stdout ?? "")
 }
 
@@ -176,15 +167,32 @@ function validHosts(config) {
 }
 
 function writeAtomic(file, bytes, mode) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-  const temporary = path.join(path.dirname(file), `.import-${process.pid}-${randomUUID()}`)
-  fs.writeFileSync(temporary, bytes, { mode })
-  fs.chmodSync(temporary, mode)
-  fs.renameSync(temporary, file)
+  const parent = path.dirname(file)
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 })
+  const temporary = path.join(parent, `.import-${process.pid}-${randomUUID()}`)
+  const output = fs.openSync(temporary, "wx", mode)
+  try {
+    try {
+      fs.writeFileSync(output, bytes)
+      fs.fchmodSync(output, mode)
+      fs.fsyncSync(output)
+    } finally {
+      fs.closeSync(output)
+    }
+    fs.renameSync(temporary, file)
+    const directory = fs.openSync(parent, "r")
+    try {
+      fs.fsyncSync(directory)
+    } finally {
+      fs.closeSync(directory)
+    }
+  } finally {
+    fs.rmSync(temporary, { force: true })
+  }
 }
 
-function backup(file, stamp) {
-  if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak-${stamp}`)
+function backup(file, stamp, mode) {
+  if (fs.existsSync(file)) writeAtomic(`${file}.bak-${stamp}`, fs.readFileSync(file), mode)
 }
 
 /**
@@ -208,7 +216,7 @@ export async function importProductionSettings({
   if (!home || !path.isAbsolute(home)) throw new Error("A home directory is required.")
   keychain ??= systemKeychain({ platform })
   isDevRunning ??= () => systemDevRunning()
-  if (isDevRunning()) throw new Error("Silo Dev is running. Quit it, then run this command again.")
+  if (isDevRunning()) throw new Error(`${DEVELOPMENT.productName} is running. Quit it, then run this command again.`)
 
   const source = channelPaths(PRODUCTION, { home, platform, env })
   const target = channelPaths(DEVELOPMENT, { home, platform, env })
@@ -216,13 +224,20 @@ export async function importProductionSettings({
   const warnings = []
   const copied = []
   const skipped = []
-  /** @type {{label: string, overwrites: boolean, apply: () => void}[]} */
+  /** @type {{label: string, overwrites: boolean, file?: string, apply: () => void}[]} */
   const actions = []
 
   const devFile = file => {
-    const inside = [target.config, target.data, target.state].some(root => file.startsWith(root + path.sep))
+    const root = [target.config, target.data, target.state].find(root => file.startsWith(root + path.sep))
     const inProduction = [source.config, source.data, source.state].some(root => file.startsWith(root + path.sep))
-    if (!inside || inProduction) throw new Error(`Refusing to write outside the Silo Dev channel: ${file}`)
+    if (!root || inProduction) throw new Error(`Refusing to write outside the ${DEVELOPMENT.productName} channel: ${file}`)
+    const components = []
+    for (let current = file; current !== path.dirname(root); current = path.dirname(current)) components.unshift(current)
+    for (const current of components) {
+      if (fs.lstatSync(current, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        throw new Error(`Refusing to write through a linked ${DEVELOPMENT.productName} destination: ${current}`)
+      }
+    }
     return file
   }
   const devKeychain = {
@@ -236,9 +251,10 @@ export async function importProductionSettings({
     const destination = devFile(file)
     actions.push({
       label,
+      file: destination,
       overwrites: fs.existsSync(destination),
       apply() {
-        backup(destination, stamp)
+        backup(destination, stamp, mode)
         writeAtomic(destination, bytes, mode)
       },
     })
@@ -277,7 +293,7 @@ export async function importProductionSettings({
         const wanted = new Set(definitions.secrets.map(secret => secret.valueId))
         const filtered = Object.fromEntries(Object.entries(vault).filter(([id]) => wanted.has(id)))
         addKeychain("Secret values (Keychain)", "secrets", "values", JSON.stringify(filtered))
-      } else warnings.push("Secret definitions were copied but production's secret values could not be read; re-enter the values in Silo Dev.")
+      } else warnings.push(`Secret definitions were copied but production's secret values could not be read; re-enter the values in ${DEVELOPMENT.productName}.`)
     } else skipped.push("Secrets (none defined)")
   } else skipped.push("Secrets (none defined)")
 
@@ -297,7 +313,7 @@ export async function importProductionSettings({
       warnings.push("The GitHub OAuth login now exists in both channels. When either refreshes it, GitHub invalidates the other's copy; reconnect there if it happens.")
     } else skipped.push("GitHub OAuth login (none saved)")
   } else if (keychain.read(PRODUCTION.keychain.github, "account") !== null) {
-    skipped.push("GitHub OAuth login (connect GitHub in Silo Dev, or pass --include-github-oauth)")
+    skipped.push(`GitHub OAuth login (connect GitHub in ${DEVELOPMENT.productName}, or pass --include-github-oauth)`)
   }
 
   // Remote computers and the client key. Dev keeps its own identity.
@@ -312,13 +328,13 @@ export async function importProductionSettings({
     const own = existing.value && isObject(existing.value) ? existing.value : {}
     const hostId = typeof own.hostId === "string" && own.hostId !== "" ? own.hostId : newId()
     if (hosts.length > 0) {
-      addFile(`Remote computers (${hosts.length}); Silo Dev keeps its own host id and remote management stays off`,
+      addFile(`Remote computers (${hosts.length}); ${DEVELOPMENT.productName} keeps its own host id and remote management stays off`,
         path.join(remoteTarget, "config.json"),
         `${JSON.stringify({ hostId, enabled: own.enabled === true, hosts }, null, 2)}\n`)
       for (const name of ["id_ed25519", "id_ed25519.pub"]) {
         const key = path.join(remoteSource, name)
         if (fs.existsSync(key)) addFile(`Remote-management client key ${name}`, path.join(remoteTarget, name), fs.readFileSync(key), name.endsWith(".pub") ? 0o644 : 0o600)
-        else if (name === "id_ed25519") warnings.push("Production has no client SSH key yet; Silo Dev will create its own and ask you to install it on each remote computer.")
+        else if (name === "id_ed25519") warnings.push(`Production has no client SSH key yet; ${DEVELOPMENT.productName} will create its own and ask you to install it on each remote computer.`)
       }
     } else skipped.push("Remote computers (none saved)")
   } else skipped.push("Remote computers (none saved)")
@@ -327,7 +343,7 @@ export async function importProductionSettings({
     log("Nothing to import: production has no saved configuration to copy.")
     return { copied, skipped, warnings, performed: false }
   }
-  log("Silo Dev will receive:")
+  log(`${DEVELOPMENT.productName} will receive:`)
   for (const action of actions) log(`  - ${action.label}${action.overwrites ? "  [replaces existing]" : ""}`)
   for (const name of remoteNames) log(`      remote computer: ${name}`)
   for (const line of skipped) log(`Not copied: ${line}`)
@@ -338,16 +354,19 @@ export async function importProductionSettings({
   }
   const overwrites = actions.filter(action => action.overwrites)
   if (overwrites.length > 0 && !yes) {
-    if (!(await confirm(`Silo Dev already has ${overwrites.length} of these. Replace them?`))) {
+    if (!(await confirm(`${DEVELOPMENT.productName} already has ${overwrites.length} of these. Replace them?`))) {
       log("Cancelled. Nothing was changed.")
       return { copied, skipped, warnings, performed: false }
     }
   }
+  // Confirmation can remain open while destination entries change.
+  if (isDevRunning()) throw new Error(`${DEVELOPMENT.productName} is running. Quit it, then run this command again.`)
+  for (const action of actions) if (action.file) devFile(action.file)
   for (const action of actions) {
     action.apply()
     copied.push(action.label)
   }
-  log(`Copied ${copied.length} item${copied.length === 1 ? "" : "s"} into Silo Dev. Production was not modified.`)
+  log(`Copied ${copied.length} item${copied.length === 1 ? "" : "s"} into ${DEVELOPMENT.productName}. Production was not modified.`)
   return { copied, skipped, warnings, performed: true }
 }
 

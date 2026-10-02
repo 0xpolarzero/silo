@@ -16,7 +16,16 @@ on:
       - 'app/SiloUI/scripts/build_desktop.py'
       - 'app/SiloUI/scripts/linux-package-tools.mjs'
       - 'app/SiloUI/scripts/prepare-microsandbox-runtime.mjs'
+      - 'app/SiloUI/scripts/microsandbox-runtime.mjs'
+      - 'app/SiloUI/scripts/git-runtime.mjs'
+      - 'app/SiloUI/scripts/lfs-transfer-runtime.mjs'
+      - 'app/SiloUI/scripts/guest-image.mjs'
+      - 'app/SiloUI/scripts/build-input.mjs'
+      - 'app/SiloUI/scripts/preflight.mjs'
       - 'app/SiloUI/runtime-inputs.json'
+      - 'app/SiloUI/guest-image/image-lock.json'
+      - 'app/SiloUI/package.json'
+      - 'app/SiloUI/package-lock.json'
       - '.github/actions/prepare-release-runtime/**'
       - '.github/workflows/linux-packaging.yml'
   pull_request:
@@ -29,7 +38,16 @@ on:
       - 'app/SiloUI/scripts/build_desktop.py'
       - 'app/SiloUI/scripts/linux-package-tools.mjs'
       - 'app/SiloUI/scripts/prepare-microsandbox-runtime.mjs'
+      - 'app/SiloUI/scripts/microsandbox-runtime.mjs'
+      - 'app/SiloUI/scripts/git-runtime.mjs'
+      - 'app/SiloUI/scripts/lfs-transfer-runtime.mjs'
+      - 'app/SiloUI/scripts/guest-image.mjs'
+      - 'app/SiloUI/scripts/build-input.mjs'
+      - 'app/SiloUI/scripts/preflight.mjs'
       - 'app/SiloUI/runtime-inputs.json'
+      - 'app/SiloUI/guest-image/image-lock.json'
+      - 'app/SiloUI/package.json'
+      - 'app/SiloUI/package-lock.json'
       - '.github/actions/prepare-release-runtime/**'
       - '.github/workflows/linux-packaging.yml'
   schedule:
@@ -60,6 +78,8 @@ jobs:
       CARGO_INCREMENTAL: '0'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc

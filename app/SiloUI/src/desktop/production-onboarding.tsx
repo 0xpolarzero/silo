@@ -155,7 +155,8 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
         workspaces: onboardingDraft.machines.map(({ name }) => ({
           workspace: name,
           repositories: [],
-          identity: onboardingDraft.workspaceIdentities[name] ?? { name: "", email: "", apply: false },
+          identity: Object.hasOwn(onboardingDraft.workspaceIdentities, name)
+            ? onboardingDraft.workspaceIdentities[name] : { name: "", email: "", apply: false },
         })),
       },
     })
@@ -214,6 +215,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     operationError={setup.error}
     repositoryOptions={application?.github.repositoryCatalog}
     repositoryPolicies={application?.github.workspaces}
+    tokenConnected={application?.github.personalToken?.state === "connected"}
     onRetryDependencies={dependencies.retry}
     actions={{
       submitStep: (step, request, options) => {

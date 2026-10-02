@@ -11,6 +11,7 @@ import subprocess
 import sys
 
 from macos_release_signing import sign_runtime, verify_bundle
+from channel_names import channel_names
 
 APP = Path(__file__).resolve().parent.parent
 DEVELOPMENT_CONFIG = 'src-tauri/tauri.dev.conf.json'
@@ -57,10 +58,12 @@ def build(arguments, *, root=APP, platform=sys.platform, run=subprocess.run):
     target = Path(json.loads(metadata.stdout)['target_directory'])
     if options.target:
         target /= options.target
-    bundle = target / 'release/bundle/macos/Silo.app'
+    production = channel_names()['production']
+    bundle = target / 'release/bundle/macos' / f"{production['productName']}.app"
     # Generate only the app here. Installers and updater archives must be made
     # after runtime finalization by package-macos-release.py.
-    config = json.dumps({'bundle': {'active': True, 'createUpdaterArtifacts': False,
+    config = json.dumps({'identifier': production['identifier'], 'productName': production['productName'],
+                         'bundle': {'active': True, 'createUpdaterArtifacts': False,
                                     'macOS': {'hardenedRuntime': True}}})
     args = arguments + ([] if options.bundles else ['--bundles', 'app'])
     run(tauri + args + ['--config', config], cwd=root, check=True)

@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::Path,
     sync::Mutex,
     time::Duration,
@@ -142,11 +142,15 @@ fn config_path(paths: &RuntimePaths) -> std::path::PathBuf {
 }
 fn read_config(paths: &RuntimePaths) -> Result<Configuration, String> {
     let path = config_path(paths);
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Configuration::default()),
         Err(_) => return Err("Could not read saved ports.".into()),
     };
+    let mut bytes = Vec::new();
+    file.take(128 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read saved ports.")?;
     if bytes.len() > 128 * 1024 {
         return Err("Saved ports are invalid.".into());
     }
@@ -170,15 +174,18 @@ fn write_config(paths: &RuntimePaths, config: &Configuration) -> Result<(), Stri
     if bytes.len() > 128 * 1024 || config.mappings.len() > 4096 {
         return Err("Too many saved ports. Remove an unused port first.".into());
     }
-    let mut file = tempfile::NamedTempFile::new_in(path.parent().ok_or("Could not save ports.")?)
-        .map_err(|_| "Could not save ports.")?;
+    let parent = path.parent().ok_or("Could not save ports.")?;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|_| "Could not save ports.")?;
     file.as_file_mut()
         .write_all(&bytes)
         .map_err(|_| "Could not save ports.")?;
     file.as_file()
         .sync_all()
         .map_err(|_| "Could not save ports.")?;
-    file.persist(path).map_err(|_| "Could not save ports.")?;
+    file.persist(&path).map_err(|_| "Could not save ports.")?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "Could not save ports.")?;
     Ok(())
 }
 
@@ -312,6 +319,20 @@ fn socket_path(paths: &RuntimePaths, workspace: &str) -> std::path::PathBuf {
         .join(&digest[..24])
         .join("control.sock")
 }
+/// Forget saved forwarding intent before a deleted sandbox's name becomes reusable.
+pub(crate) fn workspace_removed(paths: &RuntimePaths, workspace: &str) -> Result<(), String> {
+    let forwarding = forwarding_lock(workspace);
+    let _forwarding = hold(&forwarding);
+    let _data = network_lock();
+    let mut config = read_config(paths)?;
+    let before = config.mappings.len();
+    config.mappings.retain(|m| m.workspace != workspace);
+    if config.mappings.len() != before {
+        write_config(paths, &config)?;
+    }
+    Ok(())
+}
+
 /// Observe one workspace's saved forwards with a single enabled mapping for `port`.
 #[cfg(test)]
 pub(crate) fn observe_saved_port_for_test(
@@ -536,10 +557,10 @@ fn observe(
         })
         .collect();
     for mapping in desired {
-        if !mapping.enabled && !failures.contains_key(&mapping.port) {
+        let active = published.iter().find(|p| p.guest_port == mapping.port);
+        if !mapping.enabled && active.is_none() && !failures.contains_key(&mapping.port) {
             continue;
         }
-        let active = published.iter().find(|p| p.guest_port == mapping.port);
         let (status, message) = if let Some(e) = failures.get(&mapping.port) {
             (
                 "unknown",
@@ -548,6 +569,11 @@ fn observe(
                 } else {
                     format!("Access could not be removed. {e}")
                 }),
+            )
+        } else if !mapping.enabled {
+            (
+                "unknown",
+                Some("Access could not be removed. Retry removing this port.".into()),
             )
         } else if !listeners.contains_key(&mapping.port) {
             ("waiting", None)
@@ -703,16 +729,18 @@ fn reconcile_forwarding(
     }
     Ok(failures)
 }
+fn reconcile_workspaces(config: &Configuration) -> BTreeSet<String> {
+    config
+        .mappings
+        .iter()
+        .map(|m| m.workspace.clone())
+        .collect()
+}
 /// Reconcile the affected VM's forwards on a background thread, skipping it when
 /// that VM is busy, so a read can return immediately while repair converges. Each
 /// VM is repaired under its own gate guard.
 fn schedule_network_reconcile(app: &AppHandle, config: &Configuration) {
-    let workspaces: BTreeSet<String> = config
-        .mappings
-        .iter()
-        .filter(|m| m.enabled)
-        .map(|m| m.workspace.clone())
-        .collect();
+    let workspaces = reconcile_workspaces(config);
     if workspaces.is_empty() {
         return;
     }
@@ -968,6 +996,74 @@ pub(crate) fn reconcile_started(paths: &RuntimePaths, workspace: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_ports_report_an_unreadable_parent_after_publication() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory = tempfile::tempdir().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let paths = crate::test_support::paths(directory.path());
+        let config = Configuration {
+            mappings: vec![Mapping {
+                workspace: "fixture-workspace".into(),
+                port: 3000,
+                host_port: None,
+                scheme: Some("http".into()),
+                enabled: false,
+            }],
+        };
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = write_config(&paths, &config);
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(read_config(&paths).unwrap().mappings, config.mappings);
+        assert!(
+            result.is_err(),
+            "an unsynchronized rename must not report success"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        write_config(&paths, &config).unwrap();
+    }
+
+    #[test]
+    fn saved_ports_accept_the_size_limit_and_reject_one_extra_byte() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(directory.path());
+        let mut bytes = br#"{"mappings":[]}"#.to_vec();
+        bytes.resize(128 * 1024, b' ');
+        fs::write(config_path(&paths), &bytes).unwrap();
+        assert!(read_config(&paths).unwrap().mappings.is_empty());
+        bytes.push(b' ');
+        fs::write(config_path(&paths), &bytes).unwrap();
+        assert_eq!(
+            read_config(&paths).err().unwrap(),
+            "Saved ports are invalid."
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oversized_saved_ports_stop_reading_before_the_input_closes() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, thread};
+        let directory = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(directory.path());
+        let path = config_path(&paths);
+        let fifo = CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let (release, released) = mpsc::channel();
+        let writer = thread::spawn(move || {
+            let mut file = fs::OpenOptions::new().write(true).open(path).unwrap();
+            file.write_all(&vec![b' '; 128 * 1024 + 1]).unwrap();
+            released.recv_timeout(Duration::from_secs(5)).is_ok()
+        });
+        let error = read_config(&paths).err().unwrap();
+        let _ = release.send(());
+        let stopped_before_eof = writer.join().unwrap();
+        assert_eq!(error, "Saved ports are invalid.");
+        assert!(stopped_before_eof, "oversized reader waited for EOF");
+    }
     #[cfg(unix)]
     fn control_reply(response: &str) -> Result<Vec<Published>, String> {
         use std::os::unix::net::UnixListener;
@@ -1370,6 +1466,125 @@ mod tests {
             saved,
             vec![("dev".to_string(), 3000), ("other".to_string(), 8080)]
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pending_removal_is_selected_for_background_repair() {
+        use std::os::unix::net::UnixListener;
+        let _test_state = crate::test_support::global_state();
+        let config = one_port("dev", 3000, false);
+        let workspaces = reconcile_workspaces(&config);
+        assert_eq!(workspaces, BTreeSet::from(["dev".into()]));
+        let temp = tempfile::tempdir_in(crate::test_support::live::temp_root()).unwrap();
+        let paths = temp_paths(&temp);
+        write_config(&paths, &config).unwrap();
+        let socket = socket_path(&paths, "dev");
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(socket).unwrap();
+        let server = std::thread::spawn(move || {
+            for op in ["ports_list", "port_remove"] {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                let request: Value = serde_json::from_str(&request).unwrap();
+                assert_eq!(request["op"], op);
+                let ports = if op == "ports_list" {
+                    json!([{"guest_port":3000,"host_port":43000,"host_bind":"127.0.0.1"}])
+                } else {
+                    assert_eq!(request["guest_port"], 3000);
+                    json!([])
+                };
+                stream
+                    .write_all(format!("{}\n", json!({"ok":true,"ports":ports})).as_bytes())
+                    .unwrap();
+            }
+        });
+        let gate = runtime::operation_gate::OperationGate::new();
+        for workspace in workspaces {
+            let _guard = gate
+                .vm("test-id", &workspace, "Retrying removed port")
+                .unwrap();
+            assert!(reconcile_forwarding(&paths, &workspace).unwrap().is_empty());
+        }
+        server.join().unwrap();
+        assert!(read_config(&paths).unwrap().mappings.is_empty());
+    }
+
+    #[cfg(unix)]
+    fn running_paths(temp: &tempfile::TempDir) -> RuntimePaths {
+        let paths = temp_paths(temp);
+        fs::write(&paths.library, "fixture").unwrap();
+        fs::write(
+            &paths.metadata,
+            json!({"schemaVersion":1,"machines":[{
+                "kind":"vm","id":"00000000-0000-4000-8000-000000000001","name":"dev",
+                "cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,
+                "workspaceStorageGiB":10,"runtimeStorageGiB":10
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        crate::test_support::write_shell_script(
+            &paths.executable,
+            r#"
+case "$1" in
+    inspect) echo '{"name":"dev","status":"Running","config":{"labels":{"silo.managed":"true"}}}' ;;
+    exec) printf 'sl local_address rem_address st\n0: 00000000:0BB8 00000000:0000 0A\n' ;;
+    *) exit 1 ;;
+esac
+"#,
+        );
+        paths
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn pending_removal_stays_visible_on_an_ordinary_refresh() {
+        use std::os::unix::net::UnixListener;
+        let _test_state = crate::test_support::global_state();
+        let temp = tempfile::tempdir_in(crate::test_support::live::temp_root()).unwrap();
+        let paths = running_paths(&temp);
+        let config = one_port("dev", 3000, false);
+        write_config(&paths, &config).unwrap();
+        let socket = socket_path(&paths, "dev");
+        fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        let listener = UnixListener::bind(socket).unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = String::new();
+                BufReader::new(stream.try_clone().unwrap())
+                    .read_line(&mut request)
+                    .unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Value>(&request).unwrap()["op"],
+                    "ports_list"
+                );
+                let reply = json!({"ok":true,"ports":[{
+                    "guest_port":3000,"host_port":43000,"host_bind":"127.0.0.1"
+                }]});
+                stream.write_all(format!("{reply}\n").as_bytes()).unwrap();
+            }
+        });
+        let state = observe(&paths, "dev", &config, &BTreeMap::new());
+        server.join().unwrap();
+        assert!(state.error.is_none(), "{:?}", state.error);
+        assert_eq!(state.ports.len(), 1);
+        let port = &state.ports[0];
+        assert!(
+            port.configured,
+            "active removal must keep its retry control"
+        );
+        assert_eq!(port.state, "unknown");
+        assert_eq!(port.host_port, Some(43000));
+        assert!(port
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("Access could not be removed"));
     }
 
     #[test]

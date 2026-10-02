@@ -6,6 +6,31 @@ import { DisclosureHeader } from "./disclosure-header"
 import { Collapsible, CollapsibleContent } from "./ui/collapsible"
 
 describe("shared disclosure header", () => {
+  it("describes explicitly labelled disclosures with their own current caption", () => {
+    const headers = (detail: string) => <>
+      <Collapsible><DisclosureHeader title="Requirements" label="Requirements" detail={detail} /></Collapsible>
+      <Collapsible><DisclosureHeader title="Runtime" label="Runtime" detail="Checking 2 requirements…" /></Collapsible>
+    </>
+    const view = render(headers("2 checks failed"))
+    expect(screen.getByRole("button", { name: "Requirements" })).toHaveAccessibleDescription("2 checks failed")
+    expect(screen.getByRole("button", { name: "Runtime" })).toHaveAccessibleDescription("Checking 2 requirements…")
+    view.rerender(headers("4 of 4 checks passed"))
+    expect(screen.getByRole("button", { name: "Requirements" })).toHaveAccessibleDescription("4 of 4 checks passed")
+  })
+
+  it("keeps captions in the natural button name when there is no explicit label", () => {
+    render(<Collapsible><DisclosureHeader title="Requirements" detail="2 checks failed" /></Collapsible>)
+    expect(screen.getByRole("button", { name: /Requirements\s*2 checks failed/ })).toHaveAccessibleDescription("")
+  })
+
+  it("reveals complete text titles and captions when they are truncated", () => {
+    const title = "Remote computer name ".repeat(15)
+    const detail = "Connection details ".repeat(20)
+    render(<Collapsible><DisclosureHeader title={title} detail={detail} /></Collapsible>)
+    expect(screen.getByText(title.trim())).toHaveAttribute("title", title)
+    expect(screen.getByText(detail.trim())).toHaveAttribute("title", detail)
+  })
+
   it("toggles from its title, caption, caret and keyboard without triggering sibling actions", async () => {
     const user = userEvent.setup()
     const copy = vi.fn()

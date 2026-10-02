@@ -27,6 +27,18 @@ account in NAME". The setup:
    account;
 6. writes the record last.
 
+Generated sudoers, desktop service, configuration claim and account record files
+are published individually through temporary files in their destination
+directories. Setup applies each file's final permissions, flushes and fsyncs
+its bytes, replaces the destination, then fsyncs the directory. This uses
+Python's [standard file operations](https://docs.python.org/3/library/os.html#os.fsync)
+and the existing guest patcher's publication sequence; Linux
+[fsync](https://man7.org/linux/man-pages/man2/fsync.2.html) requires the separate
+directory sync to persist the renamed entry. It does not make account migration
+one transaction. A subprocess fixture with a real file-size limit proves that
+an interrupted service write preserves the installed service and a fresh
+process can retry setup. Separate tests inject file and directory sync errors.
+
 A new VM takes the same path with an empty `/root`. Each step checks what an
 earlier run already did. Start retries interrupted setup; home conflicts require
 resolution first. If setup fails, Silo stops the VM and shows the reason. A record
@@ -63,12 +75,21 @@ links in parent directories, are never traversed. Both legacy homes and the
 conflicting destination entry stay in place. Preserve or move the named entry
 inside the guest before retrying Start. Copy failures can leave completed files;
 retry accepts their original or relocated contents without overwriting them.
-A partially written file reports a conflict and is preserved for resolution.
+New files are staged beside their destination and published only after copying
+and launcher relocation finish. A partial file left by an earlier Silo reports
+a conflict and is preserved for resolution.
 
 Root's shell setup remains authoritative: regular shell files already in the new
 home are skipped during merging, then root's customized shell files replace
-them. Shell links and directories cause a conflict instead of being removed.
+them atomically, leaving any other hardlinks to the previous file unchanged.
+Shell links and directories cause a conflict instead of being removed.
 Unchanged distribution defaults remain skipped.
+
+Shell and launcher relocation includes whole home values such as `HOME="/root"`
+and keeps external paths such as `/opt/root/tools` unchanged. The shared
+[Python byte-pattern substitution](https://docs.python.org/3.12/library/re.html)
+preserves existing encodings and line endings. Only legacy home tokens and
+their descendants are relocated; matching text inside another path is retained.
 
 Python 3.12's [copytree contract](https://docs.python.org/3.12/library/shutil.html#shutil.copytree)
 preserves source links with `symlinks=True`, but `dirs_exist_ok=True` permits

@@ -87,7 +87,10 @@ export function createNativeDependencyStore(invokeChecks: InvokeDependencyChecks
       activeRequest = null
       publish(exceptionalChecks("timeout", "Dependency checks timed out. No successful result was recorded."))
     })
-    void Promise.resolve().then(() => invokeChecks("read_dependencies", { requestId })).then((input) => {
+    void Promise.resolve().then(() => {
+      if (disposed) return
+      return invokeChecks("read_dependencies", { requestId })
+    }).then((input) => {
       if (activeRequest !== requestId) return
       try { publish(validateDependencyReport(input, requestId)) }
       catch { publish(exceptionalChecks("unavailable", "Silo returned a malformed or stale dependency result.")) }

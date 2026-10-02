@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
+import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
 import { OverviewPage } from "./overview-page"
@@ -114,4 +115,41 @@ it("permits removing the last local VM without affecting connected computers", a
   await user.click(within((await screen.findByText(`Delete ${machine.name} permanently?`)).closest<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name: "Delete permanently" }))
   await waitFor(() => expect(onMachinesChange).toHaveBeenCalledWith([], [machine]))
   expect(actions.deleteRemoteMachine).not.toHaveBeenCalled()
+})
+
+it("keeps a local edit scoped to local machines when a connected computer is removed", async () => {
+  const { source, actions, onMachinesChange, user, view } = setup()
+  source.workspaces.forEach(workspace => { workspace.state = "stopped" })
+  view.rerender(<OverviewPage source={{ ...source }} actions={actions} onMachinesChange={onMachinesChange} />)
+  const local = source.workspaces.filter(workspace => !workspace.computer).map(workspace => workspace.machine)
+  const machine = local[0]!
+  const row = within(document.querySelector<HTMLElement>(`li[data-machine-id="${machine.id}"]`)!)
+  await user.click(row.getByRole("button", { name: `More actions for ${machine.name}` }))
+  await user.click(screen.getByRole("menuitem", { name: `Edit ${machine.name}` }))
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
+  view.rerender(<OverviewPage source={{ ...source, workspaces: source.workspaces.filter(workspace => !workspace.computer), remoteComputers: [] }}
+    actions={actions} onMachinesChange={onMachinesChange} />)
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(onMachinesChange).toHaveBeenCalledExactlyOnceWith(local.map(item => item.id === machine.id ? { ...item, cpus: 4 } : item), local)
+  expect(actions.saveRemoteMachine).not.toHaveBeenCalled()
+})
+
+
+it("keeps a new sandbox draft when its selected computer is removed before Save", async () => {
+  const { source, actions, onMachinesChange, user, view } = setup()
+  render(<Toaster />)
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+  await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "2")
+  view.rerender(<OverviewPage source={{ ...source, workspaces: source.workspaces.filter(workspace => !workspace.computer), remoteComputers: [] }}
+    actions={actions} onMachinesChange={onMachinesChange} />)
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(actions.saveRemoteMachine).not.toHaveBeenCalled()
+  expect(onMachinesChange).not.toHaveBeenCalled()
+  expect(await screen.findByText("The selected computer was removed. Choose another computer before saving.")).toBeVisible()
+  expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("2")
+  await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(onMachinesChange).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ cpus: 2 })]), expect.any(Array))
 })

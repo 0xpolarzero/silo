@@ -299,10 +299,11 @@ pub(crate) fn configure_with(
 fn machine(
     app: &AppHandle,
     workspace: &str,
+    expected_id: Option<&str>,
 ) -> Result<(RuntimePaths, MachineConfiguration), String> {
     runtime::validate_name(workspace).map_err(|e| e.to_string())?;
     let paths = runtime::runtime_paths(app)?;
-    let machine = machine_at(&runtime::ProcessRunner, &paths, workspace)?;
+    let machine = machine_at(&runtime::ProcessRunner, &paths, workspace, expected_id)?;
     Ok((paths, machine))
 }
 
@@ -310,6 +311,7 @@ fn machine_at(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     workspace: &str,
+    expected_id: Option<&str>,
 ) -> Result<MachineConfiguration, String> {
     let machine = runtime::read_metadata(&paths.metadata)
         .map_err(|e| e.to_string())?
@@ -317,6 +319,9 @@ fn machine_at(
         .into_iter()
         .find(|m| m.is_vm() && m.name() == workspace)
         .ok_or("This sandbox no longer exists on this computer.")?;
+    if expected_id.is_some_and(|id| machine.id() != id) {
+        return Err("The sandbox changed identity. Refresh before accessing its desktop.".into());
+    }
     // An imported VM waiting for its first Start has no runtime sandbox yet: Silo's own
     // record is all there is, and the status and approval paths treat it as stopped.
     if runtime::is_pending_restore(paths, workspace) {
@@ -324,8 +329,16 @@ fn machine_at(
     }
     let inspected =
         runtime::inspect_workspace(runner, paths, workspace).map_err(|e| e.to_string())?;
-    runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
-    if inspected.name != workspace
+    ensure_machine_identity(&machine, &inspected)?;
+    Ok(machine)
+}
+
+fn ensure_machine_identity(
+    machine: &MachineConfiguration,
+    inspected: &runtime::InspectedSandbox,
+) -> Result<(), String> {
+    runtime::ensure_managed(inspected).map_err(|e| e.to_string())?;
+    if inspected.name != machine.name()
         || inspected
             .config
             .pointer("/labels/silo.machine-id")
@@ -334,7 +347,7 @@ fn machine_at(
     {
         return Err("The sandbox changed identity. Refresh before accessing its desktop.".into());
     }
-    Ok(machine)
+    Ok(())
 }
 
 /// The desktop state a live regression polls (production code path, real runtime).
@@ -364,7 +377,10 @@ fn status_with(
     };
     let inspected =
         match runtime::observe_vm(runner, paths, machine.name()).map_err(|e| e.to_string())? {
-            runtime::VmRuntime::Present(inspected) => Some(inspected),
+            runtime::VmRuntime::Present(inspected) => {
+                ensure_machine_identity(machine, &inspected)?;
+                Some(inspected)
+            }
             runtime::VmRuntime::Absent => None,
         };
     if inspected
@@ -575,15 +591,14 @@ fn safe_lcu_runtime_version(value: Option<&str>) -> Option<&str> {
 }
 
 pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
-    let name = runtime::remote_ops::local_vm_name(
-        app,
-        params["vmId"].as_str().ok_or("Missing VM identity.")?,
-    )?;
+    let vm_id = params["vmId"].as_str().ok_or("Missing VM identity.")?;
+    let name = runtime::remote_ops::local_vm_name(app, vm_id)?;
     if method == "computer.approval" {
         return local_approval(
             app,
             &name,
             params["mode"].as_str().ok_or("Missing approval mode.")?,
+            Some(vm_id),
         );
     }
     local(
@@ -594,19 +609,36 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
         } else {
             Some(params["action"].as_str().ok_or("Missing desktop action.")?)
         },
+        Some(vm_id),
     )
 }
 
-fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value, String> {
-    // A desktop action changes only this VM's guest (and may start the VM); it
-    // waits its turn per VM. Reading desktop status observes only, so it takes
-    // no gate and stays available during other operations.
-    let _guard = match action {
+fn prepare_local<'a>(
+    gate: &'a runtime::operation_gate::OperationGate,
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace: &str,
+    action: Option<&str>,
+    expected_id: Option<&str>,
+) -> Result<
+    (
+        Option<runtime::operation_gate::OperationGuard<'a>>,
+        MachineConfiguration,
+    ),
+    String,
+> {
+    let vm_id = match expected_id {
+        Some(id) => Some(id.to_owned()),
+        None if action.is_some() => {
+            Some(runtime::resolve_vm_id(paths, workspace).map_err(|e| e.to_string())?)
+        }
+        None => None,
+    };
+    let guard = match action {
         Some(action) => {
-            let paths = runtime::runtime_paths(app)?;
-            let vm_id = runtime::resolve_vm_id(&paths, workspace).map_err(|e| e.to_string())?;
-            let guard = runtime::OPERATIONS
-                .vm(&vm_id, workspace, &format!("Updating {workspace} desktop"))
+            let vm_id = vm_id.as_deref().ok_or("Missing VM identity.")?;
+            let guard = gate
+                .vm(vm_id, workspace, &format!("Updating {workspace} desktop"))
                 .map_err(|e| e.to_string())?;
             // Desktop/guest setup is cancellable; installs legitimately run up
             // to their guest timeout, so only flag them after that.
@@ -616,7 +648,29 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
         }
         None => None,
     };
-    let (paths, machine) = machine(app, workspace)?;
+    runtime::validate_name(workspace).map_err(|e| e.to_string())?;
+    let machine = machine_at(runner, paths, workspace, vm_id.as_deref())?;
+    Ok((guard, machine))
+}
+
+fn local(
+    app: &AppHandle,
+    workspace: &str,
+    action: Option<&str>,
+    expected_id: Option<&str>,
+) -> Result<Value, String> {
+    // A desktop action changes only this VM's guest (and may start the VM); it
+    // waits its turn per VM. Reading desktop status observes only, so it takes
+    // no gate and stays available during other operations.
+    let paths = runtime::runtime_paths(app)?;
+    let (_guard, machine) = prepare_local(
+        &runtime::OPERATIONS,
+        &runtime::ProcessRunner,
+        &paths,
+        workspace,
+        action,
+        expected_id,
+    )?;
     if let Some(action) = action {
         runtime::shutdown::ensure_accepting_operations()?;
         if !matches!(
@@ -649,7 +703,10 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
             .map_err(|e| e.to_string())?
         {
             runtime::VmRuntime::Absent => return Err(crate::terminal::start_first(workspace)),
-            runtime::VmRuntime::Present(inspected) => inspected,
+            runtime::VmRuntime::Present(inspected) => {
+                ensure_machine_identity(&machine, &inspected)?;
+                inspected
+            }
         };
         if action_starts_vm(action) && matches!(inspected.status.as_str(), "Created" | "Stopped") {
             runtime::start_for_desktop(&paths, workspace).map_err(|e| e.to_string())?;
@@ -688,11 +745,16 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
 
 /// Stores a VM's computer-use approval mode and, when it runs, starts applying it in the
 /// background: the answer is the desktop state at once, with the apply `pending`.
-fn local_approval(app: &AppHandle, workspace: &str, mode: &str) -> Result<Value, String> {
+fn local_approval(
+    app: &AppHandle,
+    workspace: &str,
+    mode: &str,
+    expected_id: Option<&str>,
+) -> Result<Value, String> {
     let approval =
         crate::computer_use::Approval::parse(mode).ok_or("Unsupported computer-use approval.")?;
     runtime::shutdown::ensure_accepting_operations()?;
-    let (paths, machine) = machine(app, workspace)?;
+    let (paths, machine) = machine(app, workspace, expected_id)?;
     let status = approval_at(
         &runtime::ProcessRunner,
         &paths,
@@ -718,10 +780,14 @@ fn approval_at(
             "Computer use is built into sandboxes created with the current guest image.".into(),
         );
     }
-    let running = matches!(
-        runtime::observe_vm(runner, paths, machine.name()).map_err(|e| e.to_string())?,
-        runtime::VmRuntime::Present(inspected) if inspected.status == "Running"
-    );
+    let running =
+        match runtime::observe_vm(runner, paths, machine.name()).map_err(|e| e.to_string())? {
+            runtime::VmRuntime::Present(inspected) => {
+                ensure_machine_identity(machine, &inspected)?;
+                inspected.status == "Running"
+            }
+            runtime::VmRuntime::Absent => false,
+        };
     crate::computer_use::apply_approval_with(apply_runner, paths, machine, approval, running)
         .map_err(|e| e.to_string())?;
     status_with(runner, paths, machine)
@@ -746,7 +812,7 @@ pub async fn set_computer_use_approval(
                 json!({"vmId":vm,"mode":mode}),
             )
         } else {
-            local_approval(&app, &workspace, &mode)
+            local_approval(&app, &workspace, &mode, None)
         }
     })
     .await
@@ -780,7 +846,7 @@ async fn execute(
                 }
             })
         } else {
-            local(&app, &workspace, action.as_deref())
+            local(&app, &workspace, action.as_deref(), None)
         }
     })
     .await
@@ -809,20 +875,38 @@ pub async fn desktop_action(
 }
 
 /// Private backend-only connection material. Never register this as a UI command.
-pub(crate) fn connection_local(app: &AppHandle, workspace: &str) -> Result<Value, String> {
-    let (paths, machine) = machine(app, workspace)?;
-    if status_with(&runtime::ProcessRunner, &paths, &machine)?["state"] != "running" {
+pub(crate) fn connection_local(
+    app: &AppHandle,
+    workspace: &str,
+    expected_id: Option<&str>,
+) -> Result<Value, String> {
+    runtime::validate_name(workspace).map_err(|e| e.to_string())?;
+    let paths = runtime::runtime_paths(app)?;
+    connection_with(&runtime::ProcessRunner, &paths, workspace, expected_id)
+}
+
+fn connection_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace: &str,
+    expected_id: Option<&str>,
+) -> Result<Value, String> {
+    runtime::validate_name(workspace).map_err(|e| e.to_string())?;
+    let machine = machine_at(runner, paths, workspace, expected_id)?;
+    if status_with(runner, paths, &machine)?["state"] != "running" {
         return Err("The desktop is not running.".into());
     }
     let output = guest(
-        &runtime::ProcessRunner,
-        &paths,
+        runner,
+        paths,
         workspace,
         "/usr/local/bin/silo-desktop connection",
         Duration::from_secs(15),
         false,
     )
     .map_err(|_| "Could not read desktop connection credentials.")?;
+    // A read stays ungated; reject credentials if the VM changed while it ran.
+    machine_at(runner, paths, workspace, Some(machine.id()))?;
     let value: Value = serde_json::from_str(output.trim())
         .map_err(|_| "Invalid desktop connection credentials.")?;
     let username = value["username"].as_str().filter(|s| {
@@ -967,7 +1051,7 @@ mod tests {
         .unwrap();
         // No command may reach the runtime: it knows nothing about this VM yet.
         let runner = ScriptedRunner::new([]);
-        let resolved = machine_at(&runner, &paths, "dev").unwrap();
+        let resolved = machine_at(&runner, &paths, "dev", None).unwrap();
         assert_eq!(resolved.id(), machine.id());
         let status = status_with(&runner, &paths, &resolved).unwrap();
         assert_eq!(status["state"], "vm-stopped");
@@ -981,6 +1065,126 @@ mod tests {
         )
         .unwrap();
         assert_eq!(status["computerUse"]["approval"], "auto");
+        runner.assert_finished();
+    }
+
+    #[test]
+    fn queued_desktop_action_rejects_a_replacement_vm() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let original = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![original.clone()],
+            },
+        )
+        .unwrap();
+        let mut replacement = original.clone();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "00000000-0000-4000-8000-000000000002".into();
+        }
+        let runner = ScriptedRunner::new([]);
+        let gate = runtime::operation_gate::OperationGate::new();
+        let computer = gate.computer("Replace sandbox").unwrap();
+        std::thread::scope(|scope| {
+            let action = scope.spawn(|| {
+                prepare_local(&gate, &runner, &paths, "dev", Some("stop"), None)
+                    .map(|(_, machine)| machine.id().to_owned())
+            });
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while gate.snapshot().waiting.is_empty() {
+                assert!(std::time::Instant::now() < deadline, "action never queued");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(
+                gate.snapshot().waiting[0].vm_id.as_deref(),
+                Some(original.id())
+            );
+            runtime::write_metadata(
+                &paths.metadata,
+                &runtime::MachineConfigurationRequest {
+                    schema_version: 1,
+                    machines: vec![replacement],
+                },
+            )
+            .unwrap();
+            drop(computer);
+            let result = action.join().unwrap();
+            assert_eq!(
+                result.unwrap_err(),
+                "The sandbox changed identity. Refresh before accessing its desktop."
+            );
+        });
+        runner.assert_finished();
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn explicit_desktop_identity_rejects_a_reused_name() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let replacement = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![replacement],
+            },
+        )
+        .unwrap();
+        let gate = runtime::operation_gate::OperationGate::new();
+        let runner = ScriptedRunner::new([]);
+        let removed_id = "00000000-0000-4000-8000-000000000002";
+        for action in [None, Some("stop")] {
+            assert!(
+                prepare_local(&gate, &runner, &paths, "dev", action, Some(removed_id)).is_err()
+            );
+        }
+        // Approval requests use the same identity check without taking a VM gate.
+        assert!(machine_at(&runner, &paths, "dev", Some(removed_id)).is_err());
+        assert!(gate.is_idle());
+        runner.assert_finished();
+    }
+
+    #[test]
+    fn desktop_admission_preserves_identity_and_ungated_reads() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let machine = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine.clone()],
+            },
+        )
+        .unwrap();
+        let labels = json!({"silo.managed":"true","silo.machine-id":machine.id()});
+        let runner = ScriptedRunner::new([
+            inspect("Running", labels.clone()),
+            inspect("Running", labels),
+        ]);
+        let gate = runtime::operation_gate::OperationGate::new();
+        let (guard, admitted) =
+            prepare_local(&gate, &runner, &paths, "dev", Some("stop"), None).unwrap();
+        assert_eq!(admitted.id(), machine.id());
+        assert_eq!(
+            gate.snapshot().running[0].vm_id.as_deref(),
+            Some(machine.id())
+        );
+        drop(guard);
+        let computer = gate.computer("Update sandbox").unwrap();
+        let (guard, observed) =
+            prepare_local(&gate, &runner, &paths, "dev", None, Some(machine.id())).unwrap();
+        assert!(guard.is_none());
+        assert_eq!(observed.id(), machine.id());
+        drop(computer);
+        assert!(gate.is_idle());
         runner.assert_finished();
     }
 
@@ -1002,7 +1206,7 @@ mod tests {
             "Stopped",
             json!({"silo.managed":"true","silo.machine-id":"someone-else"}),
         )]);
-        assert!(machine_at(&runner, &paths, "dev").is_err());
+        assert!(machine_at(&runner, &paths, "dev", None).is_err());
         runner.assert_finished();
     }
 
@@ -1048,6 +1252,24 @@ mod tests {
         let parsed: DesktopConfiguration =
             serde_json::from_value(json!({"startWithSandbox": false})).unwrap();
         assert!(!parsed.built_in);
+    }
+
+    #[test]
+    fn sparse_desktop_settings_keep_legacy_defaults_on_round_trip() {
+        for (saved, expected_start) in [
+            (json!({}), true),
+            (json!({"startWithSandbox": false}), false),
+        ] {
+            let configuration: DesktopConfiguration = serde_json::from_value(saved).unwrap();
+            assert_eq!(configuration.start_with_sandbox, expected_start);
+            assert!(!configuration.built_in);
+            let encoded = serde_json::to_value(&configuration).unwrap();
+            assert_eq!(encoded, json!({"startWithSandbox": expected_start}));
+            assert_eq!(
+                serde_json::from_value::<DesktopConfiguration>(encoded).unwrap(),
+                configuration
+            );
+        }
     }
 
     #[test]
@@ -1311,11 +1533,244 @@ mod tests {
         assert_eq!(prerequisite["lcuReason"], "chatgpt-app-required");
     }
 
+    struct ConnectionRunner {
+        machine: MachineConfiguration,
+        calls: std::sync::Mutex<Vec<Vec<String>>>,
+        on_connection: Option<Box<dyn Fn(&RuntimePaths) + Send + Sync>>,
+    }
+    impl RuntimeRunner for ConnectionRunner {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            _: Duration,
+        ) -> Result<runtime::CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            let stdout = match args.first().map(String::as_str) {
+                Some("inspect") => json!({
+                    "name":self.machine.name(),"status":"Running",
+                    "config":{"labels":{"silo.managed":"true","silo.machine-id":self.machine.id()}}
+                })
+                .to_string(),
+                Some("exec")
+                    if args.last().map(String::as_str)
+                        == Some("/usr/local/bin/silo-desktop connection") =>
+                {
+                    if let Some(change) = &self.on_connection {
+                        change(paths);
+                    }
+                    json!({"port":6901,"username":"silo","password":"b".repeat(64)}).to_string()
+                }
+                Some("exec")
+                    if args.last().is_some_and(|script| {
+                        script.contains("/usr/local/bin/silo-desktop status")
+                    }) =>
+                {
+                    format!(
+                        "{}\n{{}}\n",
+                        json!({"installed":true,"state":"running","autoStart":true,"backend":"selkies"})
+                    )
+                }
+                _ => panic!("Unexpected desktop connection command: {args:?}"),
+            };
+            Ok(runtime::CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn desktop_connection_rejects_a_reused_name_for_an_explicit_vm_id() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let replacement = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![replacement.clone()],
+            },
+        )
+        .unwrap();
+        let runner = ConnectionRunner {
+            machine: replacement,
+            calls: Default::default(),
+            on_connection: None,
+        };
+        let removed_id = "00000000-0000-4000-8000-000000000002";
+        let result = connection_with(&runner, &paths, "dev", Some(removed_id));
+        assert!(
+            result.is_err(),
+            "returned replacement credentials for the removed VM"
+        );
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn desktop_connection_discards_credentials_if_the_vm_changes_during_lookup() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let original = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![original.clone()],
+            },
+        )
+        .unwrap();
+        let mut replacement = original.clone();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "00000000-0000-4000-8000-000000000002".into();
+        }
+        let runner = ConnectionRunner {
+            machine: original.clone(),
+            calls: Default::default(),
+            on_connection: Some(Box::new(move |paths| {
+                let _change = runtime::OPERATIONS
+                    .computer("Replace fixture sandbox")
+                    .unwrap();
+                runtime::write_metadata(
+                    &paths.metadata,
+                    &runtime::MachineConfigurationRequest {
+                        schema_version: 1,
+                        machines: vec![replacement.clone()],
+                    },
+                )
+                .unwrap();
+            })),
+        };
+        let result = connection_with(&runner, &paths, "dev", Some(original.id()));
+        assert!(
+            result.is_err(),
+            "returned credentials after the selected VM was replaced"
+        );
+        assert_ne!(
+            runtime::resolve_vm_id(&paths, "dev").unwrap(),
+            original.id()
+        );
+    }
+
+    #[test]
+    fn desktop_connection_returns_credentials_for_the_matching_vm() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let machine = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine.clone()],
+            },
+        )
+        .unwrap();
+        for expected in [None, Some(machine.id())] {
+            let runner = ConnectionRunner {
+                machine: machine.clone(),
+                calls: Default::default(),
+                on_connection: None,
+            };
+            let result = connection_with(&runner, &paths, "dev", expected).unwrap();
+            assert_eq!(
+                result,
+                json!({"port":6901,"username":"silo","password":"b".repeat(64)})
+            );
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls.len(), 5);
+            assert!(calls
+                .iter()
+                .filter(|args| args[0] == "exec")
+                .all(|args| args.iter().any(|arg| arg == "--no-start")));
+        }
+    }
+
+    #[test]
+    fn desktop_status_rejects_a_runtime_replaced_after_resolution() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let machine = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine.clone()],
+            },
+        )
+        .unwrap();
+        for status in ["Stopped", "Running"] {
+            let runner = ScriptedRunner::new([
+                inspect(
+                    "Running",
+                    json!({"silo.managed":"true","silo.machine-id":machine.id()}),
+                ),
+                inspect(
+                    status,
+                    json!({"silo.managed":"true","silo.machine-id":"replacement"}),
+                ),
+            ]);
+            let resolved = machine_at(&runner, &paths, "dev", Some(machine.id())).unwrap();
+            assert!(
+                status_with(&runner, &paths, &resolved).is_err(),
+                "accepted replacement runtime"
+            );
+            runner.assert_finished();
+        }
+    }
+
+    #[test]
+    fn desktop_status_rejects_unmanaged_or_renamed_runtime() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let machine = built_in_machine();
+        for (name, managed) in [("dev", "false"), ("other", "true")] {
+            let runner = ScriptedRunner::new([ExpectedCommand::ok(
+                ["inspect", "dev", "--format", "json"],
+                json!({"name":name,"status":"Stopped","config":{"labels":{
+                    "silo.managed":managed,"silo.machine-id":machine.id()
+                }}})
+                .to_string(),
+            )]);
+            assert!(status_with(&runner, &paths(dir.path()), &machine).is_err());
+            runner.assert_finished();
+        }
+    }
+
+    #[test]
+    fn desktop_approval_rejects_a_replacement_without_saving_policy() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let machine = built_in_machine();
+        let labels = json!({"silo.managed":"true","silo.machine-id":"replacement"});
+        let runner = ScriptedRunner::new([inspect("Stopped", labels)]);
+        let result = approval_at(
+            &runner,
+            &paths,
+            &machine,
+            crate::computer_use::Approval::Auto,
+            std::sync::Arc::new(runtime::ProcessRunner),
+        );
+        assert!(result.is_err(), "saved approval for a replaced runtime");
+        assert_eq!(
+            crate::computer_use::settings(&paths, machine.id()).approval,
+            crate::computer_use::Approval::Ask
+        );
+        runner.assert_finished();
+    }
+
     #[test]
     fn stopped_status_never_boots_vm() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
-        let runner = ScriptedRunner::new([inspect("Stopped", json!({}))]);
+        let runner = ScriptedRunner::new([inspect(
+            "Stopped",
+            json!({"silo.managed":"true","silo.machine-id":"id"}),
+        )]);
         let machine: MachineConfiguration = serde_json::from_value(json!({"kind":"vm","id":"id","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":false}})).unwrap();
         assert_eq!(
             status_with(&runner, &paths(dir.path()), &machine).unwrap(),
@@ -1343,14 +1798,20 @@ mod tests {
             crate::computer_use::Approval::Auto,
         )
         .unwrap();
-        let runner = ScriptedRunner::new([inspect("Stopped", json!({}))]);
+        let runner = ScriptedRunner::new([inspect(
+            "Stopped",
+            json!({"silo.managed":"true","silo.machine-id":built_in_machine().id()}),
+        )]);
         let status = status_with(&runner, &paths, &built_in_machine()).unwrap();
         assert_eq!(status["state"], "vm-stopped");
         assert_eq!(status["computerUse"]["approval"], "auto");
         assert!(status["computerUse"]["state"].is_string());
         runner.assert_finished();
         // A VM without built-in computer use reports none.
-        let runner = ScriptedRunner::new([inspect("Stopped", json!({}))]);
+        let runner = ScriptedRunner::new([inspect(
+            "Stopped",
+            json!({"silo.managed":"true","silo.machine-id":"id"}),
+        )]);
         let machine: MachineConfiguration = serde_json::from_value(json!({"kind":"vm","id":"id","name":"dev","cpus":1,"maxCPUs":1,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10,"desktop":{"startWithSandbox":true}})).unwrap();
         assert!(status_with(&runner, &paths, &machine)
             .unwrap()
@@ -1373,7 +1834,10 @@ mod tests {
             json!({"state":"ready","reason":null,"compatibility":"untested","warning":"Not tested.","appVersion":"26.928.31416","runtimeVersion":null,"lcuVersion":"0.8.0","agents":["codex"],"approval":"ask","mount":"ok"})
         );
         let runner = ScriptedRunner::new([
-            inspect("Running", json!({})),
+            inspect(
+                "Running",
+                json!({"silo.managed":"true","silo.machine-id":machine.id()}),
+            ),
             ExpectedCommand::ok(
                 [
                     "exec",

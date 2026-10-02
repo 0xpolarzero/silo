@@ -1,10 +1,10 @@
-import { render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { expect, it } from "vitest"
+import { expect, it, vi } from "vitest"
 
 import { NotificationsPage } from "./notifications-page"
 import { createMemorySettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
-import { SystemIntegrationProvider } from "@/features/preferences/system-integrations-store"
+import { createSystemIntegrationStore, SystemIntegrationProvider, type NotificationStatus, type SystemIntegrations } from "@/features/preferences/system-integrations-store"
 import { createFixtureSystemIntegrationStore } from "@/fixtures/system-integrations"
 
 function page() {
@@ -28,4 +28,56 @@ it("saves each category under its own setting", async () => {
   await user.click(await screen.findByRole("switch", { name: "Long tasks finished" }))
   await user.click(screen.getByRole("switch", { name: "Failures" }))
   expect(store.getSnapshot().settings).toMatchObject({ notifyCompletions: false, notifyFailures: false, notifyChanges: true })
+})
+
+it("disables blocked notifications without losing category choices and restores them after authorization", async () => {
+  const settings = createMemorySettingsStore({ notificationsEnabled: true, notifyFailures: false })
+  const initial: SystemIntegrations = { platform: "macos", loginItem: { state: "enabled", error: null }, notifications: { state: "denied", error: null } }
+  const openSettings = vi.fn(async () => {})
+  const requestNotifications = vi.fn(async (): Promise<NotificationStatus> => ({ state: "authorized", error: null }))
+  const integrations = createSystemIntegrationStore({
+    read: async () => ({ ...initial, notifications: { state: "authorized", error: null } }),
+    setLoginItem: async () => initial.loginItem, requestNotifications, openSettings, showError: async () => {},
+  }, settings, initial)
+  render(<SettingsProvider store={settings}><SystemIntegrationProvider store={integrations}><NotificationsPage /></SystemIntegrationProvider></SettingsProvider>)
+  expect(screen.getByRole("switch", { name: "Enable notifications" })).not.toBeChecked()
+  for (const name of ["Failures", "Unexpected sandbox changes", "Long tasks finished"]) expect(screen.getByRole("switch", { name })).toBeDisabled()
+  fireEvent.click(screen.getByRole("button", { name: "Open System Settings" }))
+  expect(openSettings).toHaveBeenCalledExactlyOnceWith("notifications")
+
+  await act(() => integrations.refresh())
+
+  expect(screen.queryByText("Blocked in System Settings")).not.toBeInTheDocument()
+  expect(screen.getByRole("switch", { name: "Enable notifications" })).toBeChecked()
+  expect(screen.getByRole("switch", { name: "Failures" })).toBeEnabled()
+  expect(screen.getByRole("switch", { name: "Failures" })).not.toBeChecked()
+  expect(settings.getSnapshot().settings).toMatchObject({ notificationsEnabled: true, notifyFailures: false, notifyChanges: true, notifyCompletions: true })
+  expect(requestNotifications).not.toHaveBeenCalled()
+})
+
+it("waits for verified permission before enabling categories and prevents duplicate authorization requests", async () => {
+  const settings = createMemorySettingsStore({ notificationsEnabled: false, notifyCompletions: false })
+  const initial: SystemIntegrations = { platform: "macos", loginItem: { state: "enabled", error: null }, notifications: { state: "notDetermined", error: null } }
+  let permit!: (status: NotificationStatus) => void
+  const requestNotifications = vi.fn(() => new Promise<NotificationStatus>(resolve => { permit = resolve }))
+  const integrations = createSystemIntegrationStore({
+    read: async () => initial, setLoginItem: async () => initial.loginItem,
+    requestNotifications, openSettings: async () => {}, showError: async () => {},
+  }, settings, initial)
+  render(<SettingsProvider store={settings}><SystemIntegrationProvider store={integrations}><NotificationsPage /></SystemIntegrationProvider></SettingsProvider>)
+  const enable = screen.getByRole("switch", { name: "Enable notifications" })
+  await act(async () => fireEvent.click(enable))
+  expect(enable).toBeDisabled()
+  expect(enable).not.toBeChecked()
+  expect(screen.getByRole("switch", { name: "Failures" })).toBeDisabled()
+  fireEvent.click(enable)
+  expect(requestNotifications).toHaveBeenCalledOnce()
+
+  await act(async () => permit({ state: "provisional", error: null }))
+
+  expect(enable).toBeEnabled()
+  expect(enable).toBeChecked()
+  expect(screen.getByRole("switch", { name: "Failures" })).toBeEnabled()
+  expect(screen.getByRole("switch", { name: "Long tasks finished" })).not.toBeChecked()
+  expect(settings.getSnapshot().settings.notificationsEnabled).toBe(true)
 })

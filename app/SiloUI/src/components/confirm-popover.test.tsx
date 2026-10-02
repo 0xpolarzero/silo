@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -8,6 +8,22 @@ import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
 
 describe("ConfirmPopover", () => {
+  it("retains an unfinished form when Escape cancels an IME candidate", async () => {
+    const user = userEvent.setup()
+    render(<FormPopover title="Create checkpoint" confirmLabel="Create" onSubmit={vi.fn()} fields={<input aria-label="Description" defaultValue="Draft" />}><button type="button">New checkpoint</button></FormPopover>)
+    const trigger = screen.getByRole("button", { name: "New checkpoint" })
+    await user.click(trigger)
+    const input = screen.getByRole("textbox", { name: "Description" })
+    await waitFor(() => expect(input).toHaveFocus())
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true })
+    expect(screen.getByRole("dialog", { name: "Create checkpoint" })).toBeVisible()
+    expect(input).toHaveValue("Draft")
+    expect(input).toHaveFocus()
+    await user.keyboard("{Escape}")
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveFocus())
+  })
+
   function setup(onConfirm = vi.fn()) {
     render(<ConfirmPopover title="Delete it?" description="Cannot be undone" confirmLabel="Delete" tone="destructive" onConfirm={onConfirm}><button type="button">Trigger</button></ConfirmPopover>)
     return onConfirm
@@ -16,6 +32,7 @@ describe("ConfirmPopover", () => {
   it("confirms, closes immediately and focuses the confirm button", async () => {
     const onConfirm = setup()
     await userEvent.click(screen.getByRole("button", { name: "Trigger" }))
+    expect(screen.getByRole("dialog", { name: "Delete it?" })).toHaveAccessibleDescription("Cannot be undone")
     expect(screen.getByText("Cannot be undone")).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete" })).toHaveFocus())
     await userEvent.click(screen.getByRole("button", { name: "Delete" }))
@@ -49,6 +66,55 @@ describe("ConfirmPopover", () => {
     render(<ConfirmPopover open onOpenChange={() => {}} title="Import?" confirmLabel="Import" onConfirm={() => {}} anchor={<button type="button">Add</button>} />)
     expect(screen.getByText("Import?")).toBeInTheDocument()
   })
+
+  it("preserves focus on an outside control when an anchored form is dismissed", async () => {
+    function AnchoredForm() {
+      const [open, setOpen] = useState(false)
+      return <>
+        <FormPopover open={open} onOpenChange={setOpen} title="Import sandbox" confirmLabel="Import" onSubmit={vi.fn()}
+          anchor={<span><button type="button" onClick={() => setOpen(true)}>Add sandbox</button></span>}
+          fields={<input aria-label="Sandbox name" />} />
+        <button type="button">Another action</button>
+      </>
+    }
+    const user = userEvent.setup()
+    render(<AnchoredForm />)
+    await user.click(screen.getByRole("button", { name: "Add sandbox" }))
+    const outside = screen.getByRole("button", { name: "Another action" })
+    await user.click(outside)
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+    expect(outside).toHaveFocus()
+  })
+
+  it.each(["Escape", "Cancel"])("returns focus to a button inside an external anchor after %s", async dismissal => {
+    function AnchoredForm() {
+      const [open, setOpen] = useState(false)
+      return <FormPopover open={open} onOpenChange={setOpen} title="Import sandbox" confirmLabel="Import" onSubmit={vi.fn()}
+        anchor={<span><button type="button" onClick={() => setOpen(true)}>Add sandbox</button></span>}
+        fields={<input aria-label="Sandbox name" />} />
+    }
+    const user = userEvent.setup()
+    render(<AnchoredForm />)
+    const anchorButton = screen.getByRole("button", { name: "Add sandbox" })
+    await user.click(anchorButton)
+    expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveFocus()
+    if (dismissal === "Escape") await user.keyboard("{Escape}")
+    else await user.click(screen.getByRole("button", { name: "Cancel" }))
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+    expect(anchorButton).toHaveFocus()
+  })
+
+  it("keeps the names and descriptions of separate confirmations distinct", () => {
+    render(<>
+      <ConfirmPopover open title="Delete alpha?" description="Alpha is removed." confirmLabel="Delete" onConfirm={vi.fn()} />
+      <ConfirmPopover open title="Delete beta?" description="Beta is removed." confirmLabel="Delete" onConfirm={vi.fn()} />
+    </>)
+    const alpha = screen.getByRole("dialog", { name: "Delete alpha?" })
+    const beta = screen.getByRole("dialog", { name: "Delete beta?" })
+    expect(alpha).toHaveAccessibleDescription("Alpha is removed.")
+    expect(beta).toHaveAccessibleDescription("Beta is removed.")
+    expect(alpha.getAttribute("aria-labelledby")).not.toBe(beta.getAttribute("aria-labelledby"))
+  })
 })
 
 describe("FormPopover", () => {
@@ -63,6 +129,7 @@ describe("FormPopover", () => {
     const onSubmit = vi.fn()
     render(<Form onSubmit={onSubmit} />)
     await userEvent.click(screen.getByRole("button", { name: "Open" }))
+    expect(screen.getByRole("dialog", { name: "Rename" })).not.toHaveAttribute("aria-describedby")
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Name" })).toHaveFocus())
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
     await userEvent.keyboard("{Enter}")
@@ -72,6 +139,11 @@ describe("FormPopover", () => {
     await userEvent.keyboard("{Enter}")
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("abc"))
     expect(screen.queryByRole("textbox", { name: "Name" })).not.toBeInTheDocument()
+  })
+
+  it("associates the form description with its dialog", () => {
+    render(<FormPopover open title="Rename sandbox" description="Choose a unique name." confirmLabel="Save" onSubmit={vi.fn()} fields={<input aria-label="Name" />} />)
+    expect(screen.getByRole("dialog", { name: "Rename sandbox" })).toHaveAccessibleDescription("Choose a unique name.")
   })
 })
 

@@ -6,6 +6,8 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(test, target_os = "linux"))]
+mod notification_ids;
 #[cfg(target_os = "linux")]
 use linux as platform;
 #[cfg(target_os = "macos")]
@@ -123,9 +125,17 @@ pub(crate) fn install_notifications(app: &AppHandle) {
     let _ = app;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotificationDelivery {
+    Delivered,
+    Skipped,
+}
+
 /// Delivery never requests authorization or opens a permission prompt. A newer notice
 /// with the same key replaces the older one.
-pub(crate) fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(), String> {
+pub(crate) fn deliver_notification(
+    notice: &crate::notifications::Notice,
+) -> Result<NotificationDelivery, String> {
     platform::deliver_notification(notice)
 }
 

@@ -5,6 +5,7 @@ use schedule::Schedule;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -69,35 +70,62 @@ struct Controller {
     preferences: PathBuf,
 }
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Preferences {
     automatic_checks: bool,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
+const MAX_PREFERENCE_BYTES: u64 = 1024 * 1024;
+const PREFERENCE_READ_ERROR: &str =
+    "Update preferences could not be read. Save your preference again.";
 fn read_preferences(path: &Path) -> Result<bool, String> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice::<Preferences>(&bytes)
-            .map(|p| p.automatic_checks)
-            .map_err(|_| {
-                "Update preferences could not be read. Save your preference again.".into()
-            }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(_) => Err("Update preferences could not be read. Save your preference again.".into()),
-    }
+    Ok(read_saved_preferences(path)?
+        .map(|preferences| preferences.automatic_checks)
+        .unwrap_or(true))
 }
+fn read_saved_preferences(path: &Path) -> Result<Option<Preferences>, String> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(PREFERENCE_READ_ERROR.into()),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_PREFERENCE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| PREFERENCE_READ_ERROR)?;
+    if bytes.len() as u64 > MAX_PREFERENCE_BYTES {
+        return Err(PREFERENCE_READ_ERROR.into());
+    }
+    serde_json::from_slice::<Preferences>(&bytes)
+        .map(Some)
+        .map_err(|_| PREFERENCE_READ_ERROR.into())
+}
+
 fn save_preferences(path: &Path, enabled: bool) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or("Update preference storage is unavailable.")?;
     fs::create_dir_all(parent).map_err(|_| "Update preferences could not be saved.")?;
+    let extra = read_saved_preferences(path)
+        .ok()
+        .flatten()
+        .map(|preferences| preferences.extra)
+        .unwrap_or_default();
+    let bytes = serde_json::to_vec(&Preferences {
+        automatic_checks: enabled,
+        extra,
+    })
+    .map_err(|_| "Update preferences could not be saved.")?;
+    if bytes.len() as u64 > MAX_PREFERENCE_BYTES {
+        return Err(
+            "Update preferences are too large to save. Your saved preference was not changed."
+                .into(),
+        );
+    }
     let mut file = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| "Update preferences could not be saved.")?;
-    serde_json::to_writer(
-        &mut file,
-        &Preferences {
-            automatic_checks: enabled,
-        },
-    )
-    .map_err(|_| "Update preferences could not be saved.")?;
+    std::io::Write::write_all(&mut file, &bytes)
+        .map_err(|_| "Update preferences could not be saved.")?;
     file.as_file()
         .sync_all()
         .map_err(|_| "Update preferences could not be saved.")?;
@@ -298,17 +326,46 @@ pub(crate) async fn set_update_automatic_checks(
 ) -> Result<Snapshot, String> {
     // The durable write fsyncs twice; keep it off the main thread.
     tauri::async_runtime::spawn_blocking(move || {
-        save_preferences(&app.state::<Controller>().preferences, enabled)?;
-        modify(&app, |s| {
-            if enabled && !s.snapshot.automatic_checks {
-                s.schedule.enable(SystemTime::now());
-            }
-            s.snapshot.automatic_checks = enabled;
-        })
+        update_automatic_checks(
+            &app.state::<Controller>(),
+            enabled,
+            save_preferences,
+            |snapshot| {
+                let _ = app.emit("silo://update-state", snapshot);
+            },
+        )
     })
     .await
     .map_err(|_| "Update preferences could not be saved.".to_owned())?
 }
+fn update_automatic_checks(
+    controller: &Controller,
+    enabled: bool,
+    persist: impl FnOnce(&Path, bool) -> Result<(), String>,
+    publish: impl FnOnce(&Snapshot),
+) -> Result<Snapshot, String> {
+    let mut state = controller
+        .state
+        .lock()
+        .map_err(|_| "Update state is unavailable.")?;
+    persist(&controller.preferences, enabled)?;
+    if enabled && !state.snapshot.automatic_checks {
+        state.schedule.enable(SystemTime::now());
+    }
+    state.snapshot.automatic_checks = enabled;
+    if state.snapshot.phase == "error"
+        && state.snapshot.error.as_deref() == Some(PREFERENCE_READ_ERROR)
+    {
+        state.snapshot.phase = "idle".into();
+        state.snapshot.error = None;
+        state.snapshot.error_details = None;
+        state.snapshot.retry_action = None;
+    }
+    let snapshot = state.snapshot.clone();
+    publish(&snapshot);
+    Ok(snapshot)
+}
+
 #[tauri::command]
 pub(crate) async fn check_for_update(app: AppHandle) -> Result<Snapshot, String> {
     check(app, false).await
@@ -573,7 +630,7 @@ fn preflight_destination(
     // one new copy beside it; the downloaded archive is held in memory.
     if free < needed {
         return Err(format!(
-            "Not enough space to install the update. Free at least {} MB and retry.",
+            "Not enough space to install the update. Free at least {} MiB and retry.",
             needed.saturating_sub(free).div_ceil(1024 * 1024)
         ));
     }
@@ -597,38 +654,24 @@ fn available_install_space(parent: &Path) -> Result<u64, String> {
 enum InstallError {
     /// Nothing was installed (sandboxes were restored where possible); retry the install.
     Failed(String),
-    /// The package is installed, but this process could not be replaced.
-    NotRestarted(String),
 }
 impl From<String> for InstallError {
     fn from(error: String) -> Self {
         Self::Failed(error)
     }
 }
-/// `exec` skips `RunEvent::Exit` and every `Drop`, so first close what exit closes
-/// (SSH tunnels and listeners, desktop viewers); otherwise their helper processes
-/// keep the ports and the new instance cannot bind them. `restart` returns only if
-/// the process could not be replaced: the stopped sandboxes are then resumed.
-fn restart_after_install(
-    close: impl FnOnce(),
-    restart: impl FnOnce() -> String,
-    resume: impl FnOnce() -> Result<(), String>,
-) -> InstallError {
+/// `exec` skips exit cleanup, so close helpers and release the instance claim first.
+/// A failed replacement must exit without reopening admission or restoring sandboxes:
+/// this process no longer owns the claim. Startup restores the saved running set.
+fn restart_after_install(close: impl FnOnce(), restart: impl FnOnce() -> String) -> ! {
     close();
     let error = restart();
-    InstallError::NotRestarted(match resume() {
-        Ok(()) => error,
-        Err(resume) => format!("{error}\nSandboxes could not resume: {resume}"),
-    })
-}
-fn relaunch_required(snapshot: &mut Snapshot, details: String) {
-    snapshot.phase = "error".into();
-    snapshot.error =
-        Some("Silo was updated but could not restart. Quit and reopen Silo to finish.".into());
-    snapshot.error_details = Some(details);
-    snapshot.retry_action = Some("relaunch".into());
-    snapshot.install_status = None;
-    snapshot.can_install = false;
+    use std::io::Write;
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "{error}\nSilo has closed. Reopen Silo to finish the update and restore its sandboxes."
+    );
+    std::process::exit(1)
 }
 /// Debian installs through APT with system authentication. Authentication, the
 /// source check, the refresh and the download all happen while sandboxes keep
@@ -674,13 +717,11 @@ fn install_debian(app: &AppHandle, version: &str, consent: bool) -> Result<(), I
         }
         return Err(InstallError::Failed(error));
     }
-    // Close admission before releasing installation guards. The update journal
-    // retains the running set for startup to restore after restart. Keep the VM
-    // operation gate: the SSH monitor cannot reopen listeners, and a failed restart
-    // resumes the sandboxes under it.
+    // Keep installation guards and shutdown admission closed until this process
+    // is replaced or exits. Startup owns recovery from the retained update journal.
     crate::runtime::shutdown::begin();
-    drop((admission, backup, github, secrets));
-    let outcome = restart_after_install(
+    let _guards = (admission, backup, github, secrets, runtime);
+    restart_after_install(
         || {
             crate::ssh_access::close_all();
             crate::remote_network::close_all();
@@ -690,13 +731,7 @@ fn install_debian(app: &AppHandle, version: &str, consent: bool) -> Result<(), I
             crate::single_instance::release(app);
         },
         debian::restart,
-        || {
-            crate::runtime::shutdown::cancel();
-            crate::runtime::update_recovery::restore_locked(app)
-        },
-    );
-    drop(runtime);
-    Err(outcome)
+    )
 }
 #[tauri::command]
 pub(crate) async fn install_update(
@@ -777,12 +812,6 @@ pub(crate) async fn install_update(
     }).await.unwrap_or_else(|_| Err(InstallError::Failed("Update installation was interrupted. Relaunch Silo to restore the saved sandbox state, then download the update again.".into())));
     match result {
         Ok(()) => get_update_state(app).await,
-        Err(InstallError::NotRestarted(details)) => modify(&app, |s| {
-            // Offering the installed version again would reinstall and stop sandboxes again.
-            s.update = None;
-            s.bytes = None;
-            relaunch_required(&mut s.snapshot, details);
-        }),
         Err(InstallError::Failed(e)) => fail(
             &app,
             if is_debian {
@@ -910,53 +939,64 @@ mod tests {
         ));
     }
     #[test]
-    fn restart_closes_tunnels_first_and_a_failed_exec_resumes_sandboxes_and_asks_to_relaunch() {
-        let events = std::cell::RefCell::new(vec![]);
-        let outcome = restart_after_install(
-            || events.borrow_mut().push("close tunnels and listeners"),
-            || {
-                events.borrow_mut().push("exec");
-                "exec failed".into()
-            },
-            || {
-                events.borrow_mut().push("resume sandboxes");
-                Ok(())
-            },
-        );
-        assert_eq!(
-            events.into_inner(),
-            ["close tunnels and listeners", "exec", "resume sandboxes"]
-        );
-        let InstallError::NotRestarted(details) = outcome else {
-            panic!("an installed package must not be offered for reinstallation");
-        };
-        assert_eq!(details, "exec failed");
-        let InstallError::NotRestarted(details) = restart_after_install(
-            || {},
-            || "exec failed".into(),
-            || Err("dev: start failed".into()),
-        ) else {
-            panic!("an installed package must not be offered for reinstallation");
-        };
-        assert!(details.contains("exec failed") && details.contains("dev: start failed"));
-        let mut state = snapshot("installing");
-        state.install_status = Some("Installing Silo…".into());
-        state.can_install = true;
-        relaunch_required(&mut state, details);
-        assert_eq!(state.phase, "error");
-        assert_eq!(state.retry_action.as_deref(), Some("relaunch"));
-        assert!(state
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("Quit and reopen Silo"));
-        assert!(state
-            .error_details
-            .as_deref()
-            .unwrap()
-            .contains("dev: start failed"));
-        assert!(!state.can_install && state.install_status.is_none());
+    fn reexec_replaces_or_exits_without_resuming_writes() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        const CHILD: &str = "SILO_REEXEC_TEST_DIRECTORY";
+        const REPLACE: &str = "SILO_REEXEC_TEST_REPLACE";
+        if let Some(directory) = std::env::var_os(CHILD) {
+            let directory = PathBuf::from(directory);
+            let mutation = directory.join("mutation");
+            let worker = std::thread::spawn(move || -> () {
+                restart_after_install(
+                    || fs::write(directory.join("released"), b"claim released").unwrap(),
+                    || {
+                        assert!(directory.join("released").exists());
+                        let error = if std::env::var_os(REPLACE).is_some() {
+                            Command::new("/bin/sh").args(["-c", "exit 0"]).exec()
+                        } else {
+                            Command::new(directory.join("missing-executable")).exec()
+                        };
+                        format!("exec failed: {error}")
+                    },
+                )
+            });
+            worker.join().unwrap();
+            fs::write(mutation, b"ordinary write resumed").unwrap();
+            return;
+        }
+        for replace in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "updates::tests::reexec_replaces_or_exits_without_resuming_writes",
+                    "--nocapture",
+                ])
+                .env(CHILD, directory.path())
+                .env("HOME", directory.path())
+                .env_remove(REPLACE);
+            if replace {
+                command.env(REPLACE, "1");
+            }
+            let output = command.output().unwrap();
+            assert!(directory.path().join("released").exists());
+            assert!(
+                !directory.path().join("mutation").exists(),
+                "ordinary mutations must not resume after releasing the instance claim"
+            );
+            assert_eq!(output.status.code(), Some(if replace { 0 } else { 1 }));
+            if !replace {
+                let error = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    error.contains("exec failed") && error.contains("Reopen Silo"),
+                    "{error}"
+                );
+            }
+        }
     }
+
     #[test]
     fn readiness_probe_never_rejects_concurrent_operations() {
         // The settings card polls readiness every few seconds while an update is ready.
@@ -973,6 +1013,246 @@ mod tests {
         drop(active);
         readiness(|| Ok(())).unwrap();
     }
+    #[test]
+    fn concurrent_preference_changes_keep_disk_and_snapshot_in_agreement() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Controller {
+            preferences: directory.path().join("prefs.json"),
+            state: Mutex::new(State {
+                schedule: Schedule::new(SystemTime::now()),
+                snapshot: snapshot("idle"),
+                update: None,
+                bytes: None,
+            }),
+        };
+        let (first_saved, saved) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let (second_saved, second) = std::sync::mpsc::channel();
+        std::thread::scope(|threads| {
+            let controller = &controller;
+            let first = threads.spawn(move || {
+                update_automatic_checks(
+                    controller,
+                    false,
+                    |path, enabled| {
+                        save_preferences(path, enabled)?;
+                        first_saved.send(()).unwrap();
+                        released.recv().unwrap();
+                        Ok(())
+                    },
+                    |_| {},
+                )
+            });
+            saved.recv().unwrap();
+            let last = threads.spawn(move || {
+                update_automatic_checks(
+                    controller,
+                    true,
+                    |path, enabled| {
+                        save_preferences(path, enabled)?;
+                        second_saved.send(()).unwrap();
+                        Ok(())
+                    },
+                    |_| {},
+                )
+            });
+            // Give the second writer a chance to overtake the first publication.
+            let overtook = second.recv_timeout(Duration::from_secs(1)).is_ok();
+            release.send(()).unwrap();
+            first.join().unwrap().unwrap();
+            last.join().unwrap().unwrap();
+            assert!(
+                !overtook,
+                "a second save overtook an unpublished preference"
+            );
+        });
+        assert_eq!(
+            read_preferences(&controller.preferences).unwrap(),
+            controller.state.lock().unwrap().snapshot.automatic_checks
+        );
+    }
+    #[test]
+    fn failed_preference_save_preserves_snapshot_and_does_not_publish() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Controller {
+            preferences: directory.path().join("prefs.json"),
+            state: Mutex::new(State {
+                schedule: Schedule::new(SystemTime::now()),
+                snapshot: snapshot("idle"),
+                update: None,
+                bytes: None,
+            }),
+        };
+        let error = update_automatic_checks(
+            &controller,
+            false,
+            |_, _| Err("save failed".into()),
+            |_| panic!("failed persistence must not publish success"),
+        )
+        .unwrap_err();
+        assert_eq!(error, "save failed");
+        assert!(controller.state.lock().unwrap().snapshot.automatic_checks);
+    }
+    #[test]
+    fn saving_preferences_clears_the_read_error_but_preserves_update_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        let preferences = directory.path().join("prefs.json");
+        fs::write(&preferences, "broken").unwrap();
+        let read_error = read_preferences(&preferences).unwrap_err();
+        let mut initial = snapshot("error");
+        initial.error = Some(read_error);
+        initial.automatic_checks = false;
+        let controller = Controller {
+            preferences,
+            state: Mutex::new(State {
+                schedule: Schedule::new(SystemTime::now()),
+                snapshot: initial,
+                update: None,
+                bytes: None,
+            }),
+        };
+        let repaired =
+            update_automatic_checks(&controller, false, save_preferences, |_| {}).unwrap();
+        assert!(repaired.error.is_none());
+        assert_eq!(repaired.phase, "idle");
+        assert!(!read_preferences(&controller.preferences).unwrap());
+        {
+            let mut state = controller.state.lock().unwrap();
+            state.snapshot.phase = "error".into();
+            state.snapshot.error = Some("Download failed".into());
+            state.snapshot.retry_action = Some("download".into());
+        }
+        let unrelated =
+            update_automatic_checks(&controller, false, save_preferences, |_| {}).unwrap();
+        assert_eq!(unrelated.error.as_deref(), Some("Download failed"));
+        assert_eq!(unrelated.phase, "error");
+        assert_eq!(unrelated.retry_action.as_deref(), Some("download"));
+    }
+    #[test]
+    fn preferences_large_input_memory_is_bounded() {
+        const PROBE: &str = "SILO_TEST_UPDATE_PREFERENCES_MEMORY_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "updates::tests::preferences_large_input_memory_is_bounded",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            return;
+        }
+
+        fn peak_bytes() -> u64 {
+            // SAFETY: getrusage initializes the supplied rusage structure.
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
+            #[cfg(target_os = "macos")]
+            return usage.ru_maxrss as u64;
+            #[cfg(not(target_os = "macos"))]
+            return usage.ru_maxrss as u64 * 1024;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sandboxes.json");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        let before = peak_bytes();
+        assert_eq!(read_preferences(&path).unwrap_err(), PREFERENCE_READ_ERROR);
+        let extra = peak_bytes().saturating_sub(before);
+        eprintln!("large preference peak RSS increase: {extra} bytes");
+        assert!(
+            extra < 32 * 1024 * 1024,
+            "oversized preferences allocated {extra} bytes"
+        );
+        assert_eq!(fs::metadata(&path).unwrap().len(), 128 * 1024 * 1024);
+        let before_save = peak_bytes();
+        save_preferences(&path, false).unwrap();
+        let save_extra = peak_bytes().saturating_sub(before_save);
+        assert!(
+            save_extra < 32 * 1024 * 1024,
+            "preference repair allocated {save_extra} bytes"
+        );
+        assert!(!read_preferences(&path).unwrap());
+    }
+    #[test]
+    fn a_preference_save_that_exceeds_the_limit_preserves_the_original() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        let mut preferences =
+            serde_json::json!({"automatic_checks": true, "future_preference": ""});
+        let padding =
+            MAX_PREFERENCE_BYTES as usize - serde_json::to_vec(&preferences).unwrap().len();
+        preferences["future_preference"] = serde_json::Value::String("x".repeat(padding));
+        let bytes = serde_json::to_vec(&preferences).unwrap();
+        assert_eq!(bytes.len(), MAX_PREFERENCE_BYTES as usize);
+        fs::write(&path, &bytes).unwrap();
+        assert!(save_preferences(&path, false).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(read_preferences(&path).unwrap());
+    }
+    #[test]
+    fn preference_size_limit_accepts_boundary_and_rejects_larger_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        let mut bytes = br#"{"automatic_checks":false}"#.to_vec();
+        bytes.resize(MAX_PREFERENCE_BYTES as usize, b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert!(!read_preferences(&path).unwrap());
+        bytes.push(b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_preferences(&path).unwrap_err(), PREFERENCE_READ_ERROR);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+    #[test]
+    fn additive_update_preferences_keep_the_choice_and_survive_saves() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        for automatic in [false, true] {
+            let saved = serde_json::json!({
+                "automatic_checks": automatic,
+                "future_preference": {"channel": "preview", "days": [1, 3, 5]}
+            });
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(read_preferences(&path).unwrap(), automatic);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+
+            save_preferences(&path, !automatic).unwrap();
+            let written: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(written["automatic_checks"], !automatic);
+            assert_eq!(written["future_preference"], saved["future_preference"]);
+            assert_eq!(read_preferences(&path).unwrap(), !automatic);
+        }
+    }
+
+    #[test]
+    fn malformed_known_update_preferences_are_not_accepted_as_additive_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        for bytes in [
+            br#"{"automatic_checks":"false","future_preference":true}"#.as_slice(),
+            br#"{"automatic_checks":null,"future_preference":true}"#,
+            br#"{"future_preference":true}"#,
+        ] {
+            fs::write(&path, bytes).unwrap();
+            assert!(read_preferences(&path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        save_preferences(&path, false).unwrap();
+        assert!(!read_preferences(&path).unwrap());
+    }
+
     #[test]
     fn missing_preferences_enable_checks_but_corrupt_preferences_do_not() {
         let dir = tempfile::tempdir().unwrap();
@@ -1040,8 +1320,17 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let destination = root.path().join("Silo.AppImage");
         fs::write(&destination, "old app").unwrap();
-        let error = preflight_destination(&destination, b"new app", false, |_| Ok(0)).unwrap_err();
-        assert!(error.contains("Not enough space"));
+        for (size, expected) in [(2 * 1024 * 1024, "2 MiB"), (2 * 1024 * 1024 + 1, "3 MiB")] {
+            let payload = vec![0; size];
+            let error =
+                preflight_destination(&destination, &payload, false, |_| Ok(0)).unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "Not enough space to install the update. Free at least {expected} and retry."
+                )
+            );
+        }
         assert!(
             preflight_destination(&destination, b"new app", false, |_| Err(
                 "Space unavailable".into()

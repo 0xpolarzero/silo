@@ -46,6 +46,78 @@ fn keep_mtime_write(path: &Path, bytes: &[u8]) {
 }
 
 #[test]
+fn a_fifo_record_is_refused_without_waiting_for_a_writer() {
+    let dir = root();
+    let package = deb(&good_items());
+    let lock = lock_for(&package);
+    let base = chatgpt_root(&dir);
+    let record = base.join("1.2.3-arm64.published.json");
+    let name = c_name_path(&record).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (send, receive) = std::sync::mpsc::channel();
+    let status_root = base.clone();
+    let status_lock = lock.clone();
+    let reader = std::thread::spawn(move || {
+        send.send(current_status(&status_root, &status_lock, DebArch::Arm64))
+            .unwrap();
+    });
+    let result = receive.recv_timeout(Duration::from_secs(1));
+    if result.is_err() {
+        // Release a blocked reader before failing, so the test owns no stray thread.
+        drop(
+            OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&record)
+                .unwrap(),
+        );
+    }
+    reader.join().unwrap();
+    assert_eq!(result.unwrap(), Status::Idle);
+    let (result, calls) = again(&dir, &package, &lock);
+    assert!(result.is_ok());
+    assert_eq!(calls, 1);
+    assert!(fs::symlink_metadata(record).unwrap().is_file());
+}
+
+#[test]
+fn collection_removes_interrupted_deletions_from_the_published_folder() {
+    let (dir, _, lock, path) = published();
+    let base = chatgpt_root(&dir);
+    let abandoned = base.join("published/.rejected-interrupted");
+    fs::create_dir_all(abandoned.join("resources")).unwrap();
+    fs::write(abandoned.join("resources/app.asar"), b"leftover").unwrap();
+    let in_use = base.join("published/1.1.0-arm64");
+    fs::create_dir_all(&in_use).unwrap();
+    let keep = HashSet::from(["1.1.0-arm64".to_owned()]);
+    assert!(collect_garbage(&base, &lock, DebArch::Arm64, &keep)
+        .unwrap()
+        .is_empty());
+    assert!(!abandoned.exists());
+    assert!(in_use.exists());
+    assert!(path.join("ChatGPT").is_file());
+}
+
+#[test]
+fn preparation_removes_interrupted_deletions_without_following_links() {
+    let dir = root();
+    let base = chatgpt_root(&dir);
+    let abandoned = base.join("published/.rejected-interrupted");
+    fs::create_dir_all(abandoned.join("resources")).unwrap();
+    fs::write(abandoned.join("resources/app.asar"), b"leftover").unwrap();
+    let outside = dir.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"precious").unwrap();
+    std::os::unix::fs::symlink(&outside, base.join("published/.rejected-link")).unwrap();
+    let package = deb(&good_items());
+    let (result, _) = again(&dir, &package, &lock_for(&package));
+    assert!(result.is_ok());
+    assert!(!abandoned.exists());
+    assert!(fs::symlink_metadata(base.join("published/.rejected-link")).is_err());
+    assert_eq!(fs::read(outside.join("keep")).unwrap(), b"precious");
+}
+
+#[test]
 fn a_planted_part_symlink_is_removed_not_written_through() {
     let dir = root();
     let package = deb(&good_items());
@@ -591,4 +663,19 @@ fn a_tree_published_at_the_old_location_moves_and_is_still_verified() {
     let (result, calls) = again(&dir, &package, &lock);
     assert_eq!(result.unwrap(), mounted.join("1.2.3-arm64"));
     assert_eq!(calls, 0);
+}
+
+#[test]
+fn a_busy_storage_lock_does_not_allow_a_symlinked_mount_folder() {
+    let dir = root();
+    let base = chatgpt_root(&dir);
+    let mounted = ensure_published_dir(&base).unwrap();
+    let _held = RootLock::take(&base).unwrap();
+    assert_eq!(ensure_published_dir_nowait(&base).unwrap(), mounted);
+    let outside = dir.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::remove_dir(base.join("published")).unwrap();
+    std::os::unix::fs::symlink(&outside, base.join("published")).unwrap();
+    assert!(ensure_published_dir_nowait(&base).is_err());
+    assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
 }

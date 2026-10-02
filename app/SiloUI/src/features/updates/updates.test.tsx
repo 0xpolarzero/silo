@@ -5,7 +5,7 @@ import { UpdatesCard, UpdateNotice } from "./updates"
 import { UpdatesProvider, type UpdateBackend, type UpdateSnapshot } from "./update-store"
 
 const state: UpdateSnapshot = { phase: "idle", lastChecked: null, retryAction: null, currentVersion: "0.1.0", availableVersion: null, releaseNotes: null, downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "macos", releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: null, errorDetails: null, installBlockReason: null, runningSandboxes: [], canInstall: true }
-function mount(initial: Partial<UpdateSnapshot> = {}) {
+function mount(initial: Partial<UpdateSnapshot> = {}, adjust: (backend: UpdateBackend) => void = () => {}) {
   let emit!: (value: UpdateSnapshot) => void
   const backend: UpdateBackend = {
     read: vi.fn(async () => ({ ...state, ...initial })),
@@ -17,9 +17,83 @@ function mount(initial: Partial<UpdateSnapshot> = {}) {
     openRelease: vi.fn(async () => {}),
   }
   const open = vi.fn()
-  render(<UpdatesProvider backend={backend}><UpdateNotice onOpen={open} /><UpdatesCard /></UpdatesProvider>)
-  return { backend, open, emit: (patch: Partial<UpdateSnapshot>) => act(() => emit({ ...state, ...initial, ...patch })) }
+  adjust(backend)
+  const view = render(<UpdatesProvider backend={backend}><UpdateNotice onOpen={open} /><UpdatesCard /></UpdatesProvider>)
+  return { backend, open, view, emit: (patch: Partial<UpdateSnapshot>) => act(() => emit({ ...state, ...initial, ...patch })) }
 }
+
+it("reconnects after a failed initial read without running an update action", async () => {
+  const user = userEvent.setup()
+  const stop = vi.fn()
+  const read = vi.fn().mockRejectedValueOnce(new Error("private native failure")).mockResolvedValueOnce(state)
+  const subscribe = vi.fn(async () => stop)
+  const { backend, view } = mount({}, backend => { backend.read = read; backend.subscribe = subscribe })
+  expect(await screen.findByRole("alert")).toHaveTextContent("Silo could not load updates. Try again.")
+  expect(screen.getByRole("alert")).not.toHaveTextContent("private native failure")
+  await user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(await screen.findByText("Version 0.1.0")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(subscribe).toHaveBeenCalledTimes(2)
+  expect(stop).toHaveBeenCalledOnce()
+  expect(backend.check).not.toHaveBeenCalled()
+  expect(backend.download).not.toHaveBeenCalled()
+  expect(backend.install).not.toHaveBeenCalled()
+  view.unmount()
+  expect(stop).toHaveBeenCalledTimes(2)
+})
+
+it("cleans up a subscription that registers after the updates view unmounts", async () => {
+  let register!: (stop: () => void) => void
+  const stop = vi.fn()
+  const subscribe = vi.fn(() => new Promise<() => void>(resolve => { register = resolve }))
+  const { backend, view } = mount({}, backend => { backend.subscribe = subscribe })
+  view.unmount()
+  await act(async () => register(stop))
+  expect(stop).toHaveBeenCalledOnce()
+  expect(backend.read).not.toHaveBeenCalled()
+})
+
+it("ignores an obsolete initial read failure after a newer native event", async () => {
+  let reject!: (error: Error) => void
+  const read = vi.fn(() => new Promise<UpdateSnapshot>((_, fail) => { reject = fail }))
+  const { emit } = mount({}, backend => { backend.read = read })
+  await waitFor(() => expect(read).toHaveBeenCalledOnce())
+  emit({ phase: "ready", availableVersion: "0.2.0" })
+  expect(screen.getByRole("button", { name: "Restart and update" })).toBeEnabled()
+  await act(async () => reject(new Error("Obsolete read failed")))
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})
+it("restores update events after returning to a window whose subscription failed", async () => {
+  const { backend, emit } = mount({}, backend => {
+    vi.mocked(backend.subscribe).mockRejectedValueOnce(new Error("event registration failed"))
+  })
+  expect(await screen.findByRole("alert")).toHaveTextContent("Silo could not load updates. Try again.")
+  fireEvent.focus(window)
+  await waitFor(() => expect(backend.subscribe).toHaveBeenCalledTimes(2))
+  expect(await screen.findByText("Version 0.1.0")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  emit({ phase: "available", availableVersion: "0.2.0" })
+  expect(screen.getByRole("status")).toHaveTextContent("Silo 0.2.0 is available.")
+  expect(backend.check).not.toHaveBeenCalled()
+})
+it("keeps a failed update connection visible when focus returns during listener recovery", async () => {
+  let rejectRegistration!: (cause: Error) => void
+  let resolveRead: ((next: UpdateSnapshot) => void) | undefined
+  const { backend } = mount({}, backend => {
+    vi.mocked(backend.subscribe).mockRejectedValueOnce(new Error("event registration failed"))
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectRegistration = reject }))
+    vi.mocked(backend.read).mockImplementation(() => new Promise(resolve => { resolveRead = resolve }))
+  })
+  await screen.findByRole("alert")
+  fireEvent.focus(window)
+  await waitFor(() => expect(backend.subscribe).toHaveBeenCalledTimes(2))
+  fireEvent.focus(window)
+  await act(async () => rejectRegistration(new Error("registration failed again")))
+  await act(async () => resolveRead?.(state))
+  expect(screen.getByRole("alert")).toHaveTextContent("Silo could not load updates. Try again.")
+  expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled()
+})
 it("loads the installed version without a fake up-to-date result and persists automatic checks", async () => {
   const user = userEvent.setup()
   const { backend } = mount()
@@ -70,6 +144,17 @@ it("opens the package release for manual installations instead of offering nativ
   expect(backend.openRelease).toHaveBeenCalledOnce()
   expect(backend.download).not.toHaveBeenCalled()
   expect(screen.queryByRole("button", { name: "Restart and update" })).not.toBeInTheDocument()
+})
+it("retries opening manual installers after the release page failed to open", async () => {
+  const user = userEvent.setup()
+  const { backend } = mount({ packageKind: "manual", phase: "available", availableVersion: "0.2.0" }, backend => {
+    vi.mocked(backend.openRelease).mockRejectedValueOnce(new Error("browser unavailable"))
+  })
+  await user.click(await screen.findByRole("button", { name: "View installers on GitHub" }))
+  await user.click(await screen.findByRole("button", { name: "Retry" }))
+  expect(backend.openRelease).toHaveBeenCalledTimes(2)
+  expect(backend.check).not.toHaveBeenCalled()
+  expect(backend.download).not.toHaveBeenCalled()
 })
 it("keeps native failure details collapsed and shows a useful retry", async () => {
   const user = userEvent.setup()
@@ -128,6 +213,29 @@ it("reports a failed native action without exposing its raw rejection", async ()
   await user.click(await screen.findByRole("button", { name: "Check for updates" }))
   expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish. Try again.")
   expect(screen.queryByText("unfiltered internal paths")).not.toBeInTheDocument()
+})
+it("retries downloading the available release after a command rejection without checking again", async () => {
+  const user = userEvent.setup()
+  const { backend } = mount({ packageKind: "appimage", phase: "available", availableVersion: "0.2.0" })
+  vi.mocked(backend.download).mockRejectedValueOnce(new Error("Download command unavailable"))
+  await user.click(await screen.findByRole("button", { name: "Download update" }))
+  expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish")
+  await user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(backend.download).toHaveBeenCalledTimes(2)
+  expect(backend.check).not.toHaveBeenCalled()
+})
+it.each([
+  ["macos", "ready", "Restart and update"],
+  ["debian", "available", "Update"],
+] as const)("retries %s installation after frontend preparation fails without checking again", async (packageKind, phase, label) => {
+  const user = userEvent.setup()
+  const { backend } = mount({ packageKind, phase, availableVersion: "0.2.0" })
+  vi.mocked(backend.install).mockRejectedValueOnce(new Error("Settings delivery failed"))
+  await user.click(await screen.findByRole("button", { name: label }))
+  expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish")
+  await user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(backend.install).toHaveBeenCalledTimes(2)
+  expect(backend.check).not.toHaveBeenCalled()
 })
 
 it("does not overwrite saved automatic-check settings with an older focus refresh", async () => {
@@ -194,4 +302,22 @@ it("asks for a manual relaunch when an installed update could not restart, witho
   expect(screen.queryByRole("button", { name: /Check for updates|Update|Restart and update/ })).not.toBeInTheDocument()
   expect(backend.check).not.toHaveBeenCalled()
   expect(backend.install).not.toHaveBeenCalled()
+})
+
+it.each(["initial", "focus"] as const)("ignores a failed %s status read superseded by a native update event", async kind => {
+  let reject!: (cause: Error) => void
+  const pending = new Promise<UpdateSnapshot>((_resolve, fail) => { reject = fail })
+  const { backend, emit } = mount({}, backend => {
+    if (kind === "initial") vi.mocked(backend.read).mockReturnValueOnce(pending)
+  })
+  if (kind === "focus") {
+    await screen.findByText("Version 0.1.0")
+    vi.mocked(backend.read).mockReturnValueOnce(pending)
+    fireEvent.focus(window)
+  }
+  await waitFor(() => expect(backend.read).toHaveBeenCalledTimes(kind === "initial" ? 1 : 2))
+  emit({ currentVersion: "0.2.0" })
+  await act(async () => reject(new Error("Old status read failed")))
+  expect(screen.getByText("Version 0.2.0")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
 })

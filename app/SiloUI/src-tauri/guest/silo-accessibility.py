@@ -127,13 +127,17 @@ def worker(fast):
     handled = set()
     skip_until = {}
     interval = fast
+    next_index = 0
     while True:
         changed = False
         try:
             desktop = pyatspi.Registry.getDesktop(0)
             present = set()
             deadline = time.monotonic() + SWEEP_BUDGET
-            for index in range(desktop.childCount):
+            count = desktop.childCount
+            deferred = None
+            for offset in range(count):
+                index = (next_index + offset) % count
                 try:
                     application = desktop.getChildAtIndex(index)
                 except Exception:
@@ -149,12 +153,16 @@ def worker(fast):
                     continue
                 changed = True
                 if now > deadline:
-                    continue  # out of budget: the rest waits for the next, fast sweep
+                    if deferred is None:
+                        deferred = index
+                    continue
                 done, hung = poll_application(application, deadline)
                 if done:
                     handled.add(key)
                 elif hung:
                     skip_until[key] = time.monotonic() + HUNG_COOLDOWN
+            # Resume at the first deferred application so empty roots cannot starve it.
+            next_index = deferred if deferred is not None else 0
             if handled - present:
                 handled &= present
                 changed = True
@@ -162,7 +170,7 @@ def worker(fast):
                 del skip_until[key]
         except Exception as error:
             print(f"silo-accessibility: {error}", file=sys.stderr, flush=True)
-            changed = True
+            changed = False
         interval = fast if changed else min(interval * 1.5, SLOW_INTERVAL)
         time.sleep(interval)
 

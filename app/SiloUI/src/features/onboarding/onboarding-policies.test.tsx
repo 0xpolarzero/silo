@@ -24,15 +24,101 @@ const policies: ApplicationGitHubWorkspacePolicy[] = [{
   identity: { name: "Other Author", email: "other@example.test", apply: true },
 }]
 
-function setup(initialSource = source, initialPolicies?: ApplicationGitHubWorkspacePolicy[], restored: OnboardingDraft | null = null) {
+function setup(initialSource = source, initialPolicies?: ApplicationGitHubWorkspacePolicy[], restored: OnboardingDraft | null = null, tokenConnected = false) {
   const store = createMemorySettingsStore({}, restored)
   const actions = { connectGitHub: vi.fn(), saveMachineConfiguration: vi.fn(), retryWorkspaceSetup: vi.fn(), finishSetup: vi.fn(), submitStep: vi.fn() }
   const wrap = (currentSource: OnboardingSource, repositoryPolicies?: ApplicationGitHubWorkspacePolicy[]) => (
     <SettingsProvider store={store}><OnboardingApp source={currentSource} actions={actions} repositoryPolicies={repositoryPolicies}
-      repositoryOptions={["acme/silo", "acme/tools"]} githubConnectionState="connected" completed={false} /></SettingsProvider>
+      tokenConnected={tokenConnected} repositoryOptions={["acme/silo", "acme/tools"]} githubConnectionState="connected" completed={false} /></SettingsProvider>
   )
   return { ...render(wrap(initialSource, initialPolicies)), wrap, store, actions, user: userEvent.setup() }
 }
+
+it.each([false, true])("handles a sandbox named constructor with missing policies (recovered=%s)", async (recovered) => {
+  const machine = { ...source.machineConfigurations[0], name: "constructor" }
+  const current = { ...source, machineConfigurations: [machine], progressEvents: [], bootstrapConfiguration: {
+    ...source.bootstrapConfiguration,
+    workspaces: [{ ...source.bootstrapConfiguration.workspaces[0], name: machine.name }],
+  } }
+  const restored: OnboardingDraft | null = recovered ? {
+    currentStep: "github", machines: [machine], unfinishedMachineEditor: null,
+    workspaceSelections: {}, workspaceIdentities: {},
+  } : null
+  const view = setup(current, [], restored)
+
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: [expect.objectContaining({ workspace: "constructor", repositories: [] })] }),
+  }))
+})
+
+it("shows a missing recovered Git identity as unapplied, matching the submission", async () => {
+  const restored: OnboardingDraft = {
+    currentStep: "github", machines: source.machineConfigurations, unfinishedMachineEditor: null,
+    workspaceSelections: {}, workspaceIdentities: {},
+  }
+  const view = setup({ ...source, currentHostGitIdentity: null }, [], restored)
+
+  expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining([
+      expect.objectContaining({ workspace: "dev", identity: { name: "", email: "", apply: false } }),
+    ]) }),
+  }))
+})
+
+it("skips applying a blank host identity and adopts an identity that loads later", async () => {
+  const view = setup({ ...source, currentHostGitIdentity: null }, [])
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining([
+      expect.objectContaining({ workspace: "dev", identity: { name: "", email: "", apply: false } }),
+    ]) }),
+  }))
+
+  await act(async () => { view.rerender(view.wrap(source, [])) })
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).toBeChecked()
+  expect(screen.getByLabelText("Git name for dev")).toHaveValue(source.currentHostGitIdentity!.name)
+})
+
+it("finishes with current application preferences after keeping omitted sandboxes", async () => {
+  const restored: OnboardingDraft = {
+    currentStep: "review", machines: [source.machineConfigurations[0]], unfinishedMachineEditor: null,
+    workspaceSelections: {}, workspaceIdentities: {},
+  }
+  const view = setup({ ...source, existingMachines: source.machineConfigurations }, [], restored)
+  await view.user.click(screen.getByRole("button", { name: "Finish" }))
+  expect(view.actions.finishSetup).not.toHaveBeenCalled()
+
+  await act(async () => { await view.store.updateSettings({ browser: "Firefox", browserPath: "/Applications/Firefox.app", browserUseSystemDefault: false }) })
+  await view.user.click(screen.getByRole("button", { name: "Keep sandboxes" }))
+
+  expect(view.actions.finishSetup).toHaveBeenCalledWith(expect.objectContaining({
+    applications: expect.objectContaining({ browser: "Firefox", browserPath: "/Applications/Firefox.app", browserUseSystemDefault: false }),
+  }))
+})
+
+it("keeps saved GitHub policies when restoring an omitted sandbox before Finish", async () => {
+  const restored: OnboardingDraft = {
+    currentStep: "review", machines: [source.machineConfigurations[0]], unfinishedMachineEditor: null,
+    workspaceSelections: {}, workspaceIdentities: {},
+  }
+  const savedPolicies = [policies[0], { ...policies[1], authenticationMethod: "token" as const }]
+  const view = setup({ ...source, existingMachines: source.machineConfigurations }, savedPolicies, restored, true)
+  await view.user.click(screen.getByRole("button", { name: "Finish" }))
+  await view.user.click(screen.getByRole("button", { name: "Keep sandboxes" }))
+
+  expect(view.actions.finishSetup).toHaveBeenCalledWith(expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining(savedPolicies) }),
+  }))
+})
 
 it.each(["before render", "after equal machines", "after changed machines"])("submits untouched saved policies loaded %s", async (timing) => {
   const initial = timing === "after changed machines"
@@ -82,5 +168,88 @@ it("keeps restored policy fields including deliberately empty selections when sa
       { workspace: "dev", ...restored.workspaceRepositoryAccess!.dev, repositories: [], identity: restored.workspaceIdentities.dev },
       policies[1],
     ]) }),
+  }))
+})
+
+
+it.each(["before render", "after render"])("preserves token authentication loaded %s through Continue, recovery, and Finish", async (timing) => {
+  const tokenPolicy: ApplicationGitHubWorkspacePolicy = { ...policies[0], authenticationMethod: "token" }
+  const view = setup(source, timing === "before render" ? [tokenPolicy] : [], null, true)
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  if (timing === "after render") await act(async () => { view.rerender(view.wrap(source, [tokenPolicy])) })
+  expect(screen.getByRole("radio", { name: "Use token for dev" })).toBeChecked()
+  expect(screen.getByRole("radio", { name: "Use token for dev" })).toBeEnabled()
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining([tokenPolicy]) }),
+  }))
+  await act(async () => { await view.store.flush() })
+  const saved = structuredClone(view.store.getSnapshot().onboardingDraft)
+  expect(saved?.workspaceRepositoryAccess?.dev).toEqual({
+    authenticationMethod: "token", repositoryMode: "selected", allRepositoriesAllowChanges: false,
+  })
+  view.unmount()
+
+  const resumed = setup(source, [{ ...tokenPolicy, authenticationMethod: "oauth" }], saved, true)
+  await resumed.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  expect(screen.getByRole("radio", { name: "Use token for dev" })).toBeChecked()
+  await resumed.user.click(screen.getByRole("tab", { name: /Review/ }))
+  await resumed.user.click(screen.getByRole("button", { name: "Finish" }))
+  expect(resumed.actions.finishSetup).toHaveBeenCalledWith(expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining([tokenPolicy]) }),
+  }))
+})
+
+it("submits and recovers a deliberate switch from token to OAuth", async () => {
+  const view = setup(source, [{ ...policies[0], authenticationMethod: "token" }], null, true)
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  expect(screen.getByRole("radio", { name: "Use token for dev" })).toBeChecked()
+  await view.user.click(screen.getByRole("radio", { name: "Use GitHub OAuth for dev" }))
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining([{ ...policies[0], authenticationMethod: "oauth" }]) }),
+  }))
+  await act(async () => { await view.store.flush() })
+  const saved = structuredClone(view.store.getSnapshot().onboardingDraft)
+  view.unmount()
+  const resumed = setup(source, [{ ...policies[0], authenticationMethod: "token" }], saved, true)
+  await resumed.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  expect(screen.getByRole("radio", { name: "Use GitHub OAuth for dev" })).toBeChecked()
+})
+
+it("summarizes token access separately from OAuth repository restrictions", async () => {
+  const view = setup(source, [{ ...policies[0], authenticationMethod: "token" }], null, true)
+  await view.user.click(screen.getByRole("tab", { name: /Review/ }))
+  const access = screen.getByRole("group", { name: "GitHub access" })
+  expect(access).toHaveTextContent("Personal token in 1 sandbox")
+  expect(access).toHaveTextContent("0 repositories across 0 of 2 sandboxes")
+})
+
+
+it("fills a missing authentication method in older recovered drafts without changing their repository choices", async () => {
+  const restored: OnboardingDraft = {
+    currentStep: "github", machines: source.machineConfigurations, unfinishedMachineEditor: null,
+    workspaceSelections: { dev: [] }, workspaceIdentities: { dev: policies[0].identity },
+    workspaceRepositoryAccess: { dev: { repositoryMode: "all", allRepositoriesAllowChanges: true } },
+  }
+  const view = setup(source, [{ ...policies[0], authenticationMethod: "token" }], restored, true)
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining([{
+      ...policies[0], authenticationMethod: "token", repositoryMode: "all", allRepositoriesAllowChanges: true, repositories: [],
+    }]) }),
+  }))
+})
+
+it("keeps repository edits while initializing the untouched authentication method from a late policy", async () => {
+  const view = setup(source, [], null, true)
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  await view.user.click(screen.getByRole("checkbox", { name: "All repositories for dev" }))
+  await act(async () => { view.rerender(view.wrap(source, [{ ...policies[0], authenticationMethod: "token" }])) })
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining([{
+      ...policies[0], authenticationMethod: "token", repositoryMode: "all",
+    }]) }),
   }))
 })

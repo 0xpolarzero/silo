@@ -4,12 +4,22 @@ Network links use the current browser preference: Launch Services (`open -a`) on
 
 Folder actions use MicroSandbox's SSH server over standard input/output, not a host `/workspace` path. The app checks the managed VM is running and the requested directory exists before opening it. `msb ssh serve --stdio --no-start` prevents the editor transport from starting a stopped VM, including a stop between checking and connecting.
 
+Guest folder names are raw filesystem paths. URI handoff encodes each segment with [`Url::path_segments_mut`](https://docs.rs/url/2.5.8/url/struct.Url.html#method.path_segments_mut), including literal percent signs: a folder named `some%20comments` is sent as `some%2520comments` so the editor decodes the original name. `Url::set_path` accepts existing percent escapes and therefore cannot preserve every raw folder name.
+
+Editor handoff rejects ASCII control characters in folder names. The URL parser discards tabs, carriage returns, and newlines instead of encoding them, so accepting those names would open a different path. Ordinary spaces and Unicode names remain supported.
+
 Silo creates an Ed25519 client identity in its private runtime home, adds only its public key to MicroSandbox authorization, and pins the VM's locally stored SSH host public key. The guest does not receive either private key. SSH uses `IdentitiesOnly`, disables the agent, and requires the pinned host key. Each exact VM alias has a private configuration file. One `Include` line is prepended to the user's SSH configuration; the existing bytes are preserved and repeated actions do not duplicate the include. A symlinked `~/.ssh` or `~/.ssh/config` (stow, chezmoi) is followed to the folder or file it points to when this account owns it, and the file is replaced atomically so the link stays in place. When the target can't be changed (for example a read-only home-manager file in the Nix store) or the link is broken, the error names the exact `Include` line to add by hand; once it is there, Silo writes nothing. Oversized or non-regular configuration files still fail explicitly. Terminals for remote sandboxes pass `-F` and never touch `~/.ssh/config`.
+
+Reusing a connection key repairs group or other access to `0600` through the
+existing atomic private-file writer, preserving the key bytes and identity.
+[OpenSSH's key loader](https://github.com/openssh/openssh-portable/blob/V_9_9_P2/authfile.c#L86-L111)
+rejects account-owned private keys with any group or other permission bits, even
+when their parent directory is private. Already private keys need no rewrite.
 
 Supported adapters:
 
 - Zed: bundled CLI on macOS or discovered executable on Linux, with an encoded `ssh://alias/path` URI (the user comes from the alias's SSH configuration).
-- Visual Studio Code: bundled CLI on macOS or discovered executable on Linux, with `--profile Silo <workspace file>` (see [VS Code and the sandbox](#vs-code-and-the-sandbox)). VS Code needs its Remote - SSH extension in the Silo profile.
+- Visual Studio Code: bundled CLI on macOS or discovered executable on Linux, with `--profile <channel profile> <workspace file>` (see [VS Code and the sandbox](#vs-code-and-the-sandbox)). VS Code needs its Remote - SSH extension in the current channel's profile.
 - Other editors: explicit unsupported message. No successful-looking local folder fallback.
 
 Settings list only editors and terminals Silo can hand a sandbox to, and a system default that cannot (for example Xcode as the `.swift` handler, or a plain text editor as the Linux `text/plain` handler) falls back to the first supported app (G-07). Choose… still accepts any application and reports the unsupported message when used. macOS editors: Visual Studio Code (and Insiders) and Zed (Preview, Nightly, Dev); terminals: Terminal, Ghostty (through `osascript`, off the main thread) and iTerm.
@@ -22,23 +32,31 @@ When Silo runs as an AppImage (G-24), every child it starts from these files (te
 
 After the storage migration, the entries copied from the previous generation are repointed at the converted runtime home at every launch, on every build, and the converted home's `Include` is added where the user's file still includes the previous one, so an editor that reconnects by itself opens the current sandbox. See [Editor connections after the migration](SiloUI-RUNTIME-PACKAGING.md#editor-connections-after-the-migration-2026-10-01).
 
+AppImage environment cleanup uses [`std::env::split_paths`](https://doc.rust-lang.org/std/env/fn.split_paths.html) and `join_paths` to preserve native path bytes, including non-UTF-8 system directories. [`Path::starts_with`](https://doc.rust-lang.org/std/path/struct.Path.html#method.starts_with) compares components, so repeated and trailing slashes still identify bundled entries while similarly named sibling mounts remain untouched. Pure launch-policy regressions cover these cases; they do not qualify a live Linux desktop launch.
+
+Terminal shell commands require UTF-8 runtime home, executable and library paths.
+Each is checked with `Path::to_str` before the command is written; display text is
+never used for environment assignments. Command-boundary tests preserve literal
+spaces, quotes and shell characters and reject non-UTF-8 bytes in each path.
+
 ## Trust the editor gives the sandbox
 
 An editor's remote mode runs a server inside the sandbox that talks back to the editor on this computer. Treat that server as sandbox code: the working account has `sudo`, so anything in the sandbox can replace or drive it. The measures below narrow what the editor offers it; they do not make the editor a security boundary.
 
 ### VS Code and the sandbox
 
-Owner decision 5 of the [2026-09-29 review](research/codebase-review-2026-09-29.md) (G-19). Silo opens every sandbox folder in VS Code with a dedicated profile named **Silo** and a workspace file that Silo writes on this computer:
+Owner decision 5 of the [2026-09-29 review](research/codebase-review-2026-09-29.md) (G-19). Silo opens every sandbox folder in VS Code with a dedicated profile and a workspace file that Silo writes on this computer. `Channel::vscode_profile()` and `Channel::state_dir()` in [`channel.rs`](../app/SiloUI/src-tauri/src/channel.rs) supply the profile and private home; see [build channels](SiloUI-BUILD-CHANNELS.md). Production names stay unchanged, and Dev uses its own profile and home:
 
-- `code --profile Silo ~/.silo/editor/<alias>/<path hash>/<folder>.code-workspace`. The file names the remote folder (`vscode-remote://ssh-remote+<alias>/<path>`) and `"remoteAuthority": "ssh-remote+<alias>"`, which VS Code uses to open a local workspace file in a remote window (`windowsMainService.ts` resolves it through `resolveLocalWorkspace`).
+- `code --profile "<channel profile>" "<channel home>/editor/<alias>/<path hash>/<folder>.code-workspace"`. The file names the remote folder (`vscode-remote://ssh-remote+<alias>/<path>`) and `"remoteAuthority": "ssh-remote+<alias>"`, which VS Code uses to open a local workspace file in a remote window (`windowsMainService.ts` resolves it through `resolveLocalWorkspace`).
 - Its workspace settings are `github.gitAuthentication: false` (the sandbox's Git cannot borrow the GitHub session of VS Code on this computer), `git.terminalAuthentication: false` (sandbox terminals get no `VSCODE_GIT_IPC_HANDLE` askpass route back to this computer), `remote.autoForwardPorts: false` and `remote.forwardOnOpen: false` (sandbox ports reach this computer only through Silo's port publishing). All four are window- or resource-scoped, so workspace settings apply. Silo rewrites these keys, the folder and the remote authority on every open and keeps any other workspace settings the user added.
+- Silo currently reads workspace files as strict JSON objects. Although [VS Code supports comments in workspace files](https://code.visualstudio.com/docs/editing/workspaces/multi-root-workspaces#_workspace-file-schema), Silo leaves a commented, malformed, or non-object workspace file unchanged and reports its path instead of replacing the user's configuration. Remove comments or repair the JSON before reopening through Silo.
 - Workspace settings are used instead of settings in the profile because VS Code only creates a profile when a window opens with it (`--profile` creates a missing profile empty; `--install-extension --profile` fails for a missing profile), so the first window would otherwise run without them. Workspace settings also outrank the "Remote" settings file that the sandbox itself can write (`~/.vscode-server/data/Machine/settings.json`); user and profile settings do not.
-- The profile keeps the user's normal profile untouched and limits which extensions reach the sandbox to those installed in the Silo profile. On first use VS Code creates the profile empty and shows "Extension 'Remote - SSH' is required to open the remote window. Do you want to install the extension?"; **Install and Reload** installs it into the Silo profile only (`nativeExtensionService.ts` `_handleNoResolverFound`). Themes and other extensions can be added to that profile in VS Code's Profiles editor.
+- The profile keeps the user's normal profile untouched and limits which extensions reach the sandbox to those installed in the current channel's profile. On first use VS Code creates the profile empty and shows "Extension 'Remote - SSH' is required to open the remote window. Do you want to install the extension?"; **Install and Reload** installs it into the current channel's profile only (`nativeExtensionService.ts` `_handleNoResolverFound`). Themes and other extensions can be added to that profile in VS Code's Profiles editor.
 
 What remains trusted (from VS Code's architecture and documentation; not tested against a hostile sandbox):
 
 - A sandbox can edit `.vscode/settings.json` in the opened folder. In a workspace window those folder settings can still turn resource-scoped settings such as `github.gitAuthentication` back on.
-- The VS Code server and the extensions running in the sandbox use VS Code's extension API, which the window on this computer serves. That includes reading and writing this computer's clipboard (`vscode.env.clipboard`), opening links in this computer's browser (`vscode.env.openExternal`), forwarding ports through the tunnel API even with automatic forwarding off (VS Code's own `remote.autoForwardPorts` description says extensions can still forward ports), showing prompts and notifications in VS Code, and asking for authentication sessions (`vscode.authentication.getSession`). A session for an account the user already allowed for an extension ID can be handed to code that claims that ID, because the sandbox's extension host reports the IDs itself. Sign in to GitHub or Copilot in the Silo profile only if the sandbox may use that account.
+- The VS Code server and the extensions running in the sandbox use VS Code's extension API, which the window on this computer serves. That includes reading and writing this computer's clipboard (`vscode.env.clipboard`), opening links in this computer's browser (`vscode.env.openExternal`), forwarding ports through the tunnel API even with automatic forwarding off (VS Code's own `remote.autoForwardPorts` description says extensions can still forward ports), showing prompts and notifications in VS Code, and asking for authentication sessions (`vscode.authentication.getSession`). A session for an account the user already allowed for an extension ID can be handed to code that claims that ID, because the sandbox's extension host reports the IDs itself. Sign in to GitHub or Copilot in the current channel's profile only if the sandbox may use that account.
 - Anything typed into a prompt that a sandbox extension shows goes to the sandbox.
 - VS Code's Workspace Trust and "Restricted Mode" limit what the workspace's own tasks and settings do, not the server.
 
@@ -86,4 +104,14 @@ The focused live test passed against the running `dev` VM with the patched bundl
 
 This exposed and fixed two runtime bugs, covered by the live transfer regression: SSH/SFTP previously used `/` instead of the login home, and SFTP channel completion omitted SSH exit status (OpenSSH SCP returned failure despite successfully transferring bytes). The patch sets a shared login-home cwd and sends subsystem completion status on client EOF. Neither fix uses Zed-specific paths.
 
-VS Code and Linux editor opening still require real-platform verification; URI/configuration and preference validation tests do not substitute for those checks. For the Silo profile (G-19) the macOS check is: the first open creates the Silo profile and offers Remote - SSH, the window opens the sandbox folder with the four workspace settings in effect, the user's default profile settings file is unchanged, and a second open reuses the profile without a prompt.
+VS Code and Linux editor opening still require real-platform verification; URI/configuration and preference validation tests do not substitute for those checks. For the current channel's profile (G-19) the macOS check is: the first open creates that profile and offers Remote - SSH, the window opens the sandbox folder with the four workspace settings in effect, the user's default profile settings file is unchanged, and a second open reuses the profile without a prompt.
+
+## Configuration repair failures
+
+Startup repair reports per-file read and replacement failures through the existing
+editor connection warning. It repairs writable entries in a partial batch, preserves
+files whose atomic replacement fails, and adds the converted runtime's Include
+only after every entry succeeds. Repeating repair after storage becomes writable
+updates ProxyCommand, IdentityFile and UserKnownHostsFile before reporting success.
+An absent optional SSH configuration directory is harmless. AppImage transport
+refresh reports the same incomplete rewrite errors.

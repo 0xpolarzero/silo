@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "linux", test))]
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::fs;
 use std::{
-    fs::{self, File},
+    fs::File,
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -15,10 +17,13 @@ const REINSTALL_GUIDANCE: &str = "Reinstall Silo from its original download or p
 const RETRY_GUIDANCE: &str =
     "Retry checks. If this keeps happening, quit and reopen Silo, then retry.";
 
+// Finish native probes before the frontend watchdog abandons the report at 15 seconds.
+const COLLECTION_TIMEOUT: Duration = Duration::from_secs(12);
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const MAX_HASH_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_OUTPUT: u64 = 8 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 // Embed reviewed source inputs; never derive approval from staged package metadata.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -233,50 +238,58 @@ fn expected_target() -> Option<&'static str> {
     }
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError> {
-    let bytes = fs::read(path).map_err(|error| match error.kind() {
+fn open_regular_file(path: &Path) -> Result<File, ProbeError> {
+    let unreadable = |error: io::Error| match error.kind() {
         io::ErrorKind::NotFound => ProbeError::Missing(format!("{} is missing", path.display())),
         io::ErrorKind::PermissionDenied => {
             ProbeError::Unreadable(format!("{} cannot be read", path.display()))
         }
         _ => ProbeError::Unreadable(format!("{} could not be read: {error}", path.display())),
-    })?;
+    };
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Inspect the opened descriptor without waiting for a FIFO writer.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(unreadable)?;
+    if !file.metadata().map_err(unreadable)?.is_file() {
+        return Err(ProbeError::Malformed(format!(
+            "{} is not a regular file",
+            path.display()
+        )));
+    }
+    Ok(file)
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError> {
+    let file = open_regular_file(path)?;
+    let mut bytes = Vec::new();
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            ProbeError::Unreadable(format!("{} could not be read: {error}", path.display()))
+        })?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(ProbeError::Malformed(format!(
+            "{} exceeds the manifest size limit",
+            path.display()
+        )));
+    }
     serde_json::from_slice(&bytes).map_err(|_| {
         ProbeError::Malformed(format!("{} is not a valid Silo manifest", path.display()))
     })
 }
 
 fn readable_file(path: &Path) -> Result<(), ProbeError> {
-    let metadata = fs::metadata(path).map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => ProbeError::Missing(format!("{} is missing", path.display())),
-        io::ErrorKind::PermissionDenied => {
-            ProbeError::Unreadable(format!("{} cannot be read", path.display()))
-        }
-        _ => ProbeError::Unreadable(format!(
-            "{} could not be inspected: {error}",
-            path.display()
-        )),
-    })?;
-    if !metadata.is_file() {
-        return Err(ProbeError::Malformed(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
-    File::open(path)
-        .map_err(|_| ProbeError::Unreadable(format!("{} cannot be read", path.display())))?;
-    Ok(())
+    open_regular_file(path).map(|_| ())
 }
 
-#[cfg(target_os = "linux")]
-fn sha256_file(path: &Path) -> Result<String, ProbeError> {
-    let mut file = File::open(path).map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => ProbeError::Missing(format!("{} is missing", path.display())),
-        io::ErrorKind::PermissionDenied => {
-            ProbeError::Unreadable(format!("{} cannot be read", path.display()))
-        }
-        _ => ProbeError::Unreadable(format!("{} could not be read: {error}", path.display())),
-    })?;
+#[cfg(any(target_os = "linux", test))]
+fn sha256_file(path: &Path, deadline: Instant) -> Result<String, ProbeError> {
+    let mut file = open_regular_file(path)?;
     let length = file
         .metadata()
         .map_err(|error| {
@@ -292,7 +305,7 @@ fn sha256_file(path: &Path) -> Result<String, ProbeError> {
             path.display()
         )));
     }
-    let deadline = Instant::now() + PROCESS_TIMEOUT;
+    let deadline = deadline.min(Instant::now() + PROCESS_TIMEOUT);
     let mut hasher = Sha256::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -396,6 +409,7 @@ fn run_bounded_with_timeout(
     environment: &[(&str, &Path)],
     timeout: Duration,
 ) -> Result<String, ProbeError> {
+    let deadline = Instant::now() + timeout;
     readable_file(path)?;
     let mut stdout_file = tempfile::tempfile().map_err(|error| {
         ProbeError::Unavailable(format!("Could not isolate version output: {error}"))
@@ -420,6 +434,30 @@ fn run_bounded_with_timeout(
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
+        // The child writes to regular temporary files; enforce the output bound
+        // while it runs, using only resource-limit syscalls between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                let zero = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                if libc::setrlimit(libc::RLIMIT_CORE, &zero) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut limit = zero;
+                if libc::getrlimit(libc::RLIMIT_FSIZE, &mut limit) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let bound = (MAX_OUTPUT + 1) as libc::rlim_t;
+                limit.rlim_cur = limit.rlim_cur.min(bound);
+                limit.rlim_max = limit.rlim_max.min(bound);
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     for (name, value) in environment {
         command.env(name, value);
@@ -430,7 +468,6 @@ fn run_bounded_with_timeout(
         }
         _ => ProbeError::Unavailable(format!("{} could not run: {error}", path.display())),
     })?;
-    let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(status) = child
             .try_wait()
@@ -488,12 +525,17 @@ fn run_bounded_with_timeout(
         .map_err(|_| ProbeError::Malformed("version output was not UTF-8".into()))
 }
 
-fn run_bounded(
+fn run_bounded_until(
     path: &Path,
     arguments: &[&str],
     environment: &[(&str, &Path)],
+    deadline: Instant,
 ) -> Result<String, ProbeError> {
-    run_bounded_with_timeout(path, arguments, environment, PROCESS_TIMEOUT)
+    let remaining = deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+        .ok_or(ProbeError::Timeout)?;
+    run_bounded_with_timeout(path, arguments, environment, remaining.min(PROCESS_TIMEOUT))
 }
 
 // Local extension keeps the user-facing mapping exhaustive without leaking paths into group captions.
@@ -543,9 +585,12 @@ impl ProbeError {
     }
 }
 
-fn system_check() -> DependencyCheck {
+fn system_check(deadline: Instant) -> DependencyCheck {
     let id = "system-os";
     let title = "Supported OS";
+    if Instant::now() >= deadline {
+        return ProbeError::Timeout.to_check(id, title, false);
+    }
     if expected_target().is_none() {
         return DependencyCheck::failure(
             id,
@@ -561,7 +606,12 @@ fn system_check() -> DependencyCheck {
     }
     #[cfg(target_os = "macos")]
     {
-        let output = run_bounded(Path::new("/usr/bin/sw_vers"), &["-productVersion"], &[]);
+        let output = run_bounded_until(
+            Path::new("/usr/bin/sw_vers"),
+            &["-productVersion"],
+            &[],
+            deadline,
+        );
         let version = match output {
             Ok(value) => value,
             Err(error) => return error.to_check(id, title, false),
@@ -643,15 +693,19 @@ fn linux_system_version_result(version: &str, target: &str) -> DependencyCheck {
     )
 }
 
-fn virtualization_check() -> DependencyCheck {
+fn virtualization_check(deadline: Instant) -> DependencyCheck {
     let id = "system-virtualization";
     let title = "Virtualization";
+    if Instant::now() >= deadline {
+        return ProbeError::Timeout.to_check(id, title, false);
+    }
     #[cfg(target_os = "macos")]
     {
-        return match run_bounded(
+        return match run_bounded_until(
             Path::new("/usr/sbin/sysctl"),
             &["-n", "kern.hv_support"],
             &[],
+            deadline,
         ) {
             Ok(value) if value == "1" => {
                 DependencyCheck::pass(id, title, "Apple Hypervisor available")
@@ -785,18 +839,19 @@ fn kvm_open_failure(error: io::Error) -> DependencyCheck {
 }
 
 #[cfg(target_os = "macos")]
-fn verify_macos_signature(path: &Path) -> Result<(), ProbeError> {
-    run_bounded(
+fn verify_macos_signature(path: &Path, deadline: Instant) -> Result<(), ProbeError> {
+    run_bounded_until(
         Path::new("/usr/bin/codesign"),
         &["--verify", "--strict", path.to_string_lossy().as_ref()],
         &[],
+        deadline,
     )
     .map(|_| ())
 }
 
 #[cfg(target_os = "linux")]
-fn verify_linux_hash(path: &Path, expected: &str) -> Result<(), ProbeError> {
-    let actual = sha256_file(path)?;
+fn verify_linux_hash(path: &Path, expected: &str, deadline: Instant) -> Result<(), ProbeError> {
+    let actual = sha256_file(path, deadline)?;
     if actual == expected {
         Ok(())
     } else {
@@ -807,11 +862,18 @@ fn verify_linux_hash(path: &Path, expected: &str) -> Result<(), ProbeError> {
     }
 }
 
-fn microsandbox_check(paths: &ProbePaths) -> DependencyCheck {
+fn microsandbox_check(paths: &ProbePaths, deadline: Instant) -> DependencyCheck {
     let id = "runtime-microsandbox";
     let title = "MicroSandbox runtime";
-    if let Err(message) = crate::runtime::guest_image::validate_bundle(&paths.resource_dir) {
-        return ProbeError::Malformed(message).to_check(id, title, true);
+    if let Err(message) =
+        crate::runtime::guest_image::validate_bundle_until(&paths.resource_dir, deadline)
+    {
+        let error = if Instant::now() >= deadline {
+            ProbeError::Timeout
+        } else {
+            ProbeError::Malformed(message)
+        };
+        return error.to_check(id, title, true);
     }
     let manifest_path = paths.resource_dir.join("microsandbox/manifest.json");
     let manifest: MicrosandboxManifest = match read_json(&manifest_path) {
@@ -844,7 +906,7 @@ fn microsandbox_check(paths: &ProbePaths) -> DependencyCheck {
     }
     #[cfg(target_os = "macos")]
     for candidate in [&executable, &library] {
-        if let Err(error) = verify_macos_signature(candidate) {
+        if let Err(error) = verify_macos_signature(candidate, deadline) {
             return error.to_check(id, title, true);
         }
     }
@@ -853,7 +915,7 @@ fn microsandbox_check(paths: &ProbePaths) -> DependencyCheck {
         (&executable, manifest.executable.sha256.as_str()),
         (&library, manifest.library.sha256.as_str()),
     ] {
-        if let Err(error) = verify_linux_hash(candidate, expected) {
+        if let Err(error) = verify_linux_hash(candidate, expected, deadline) {
             return error.to_check(id, title, true);
         }
     }
@@ -864,7 +926,7 @@ fn microsandbox_check(paths: &ProbePaths) -> DependencyCheck {
                 .to_check(id, title, true)
         }
     };
-    let output = run_bounded(
+    let output = run_bounded_until(
         &executable,
         &["--version"],
         &[
@@ -873,6 +935,7 @@ fn microsandbox_check(paths: &ProbePaths) -> DependencyCheck {
             ("MSB_PATH", &executable),
             ("MSB_LIBKRUNFW_PATH", &library),
         ],
+        deadline,
     );
     microsandbox_version_result(output)
 }
@@ -937,7 +1000,13 @@ fn microsandbox_version_result(output: Result<String, ProbeError>) -> Dependency
     }
 }
 
-fn git_checks(paths: &ProbePaths) -> [DependencyCheck; 2] {
+fn git_checks(paths: &ProbePaths, deadline: Instant) -> [DependencyCheck; 2] {
+    if Instant::now() >= deadline {
+        return [
+            ProbeError::Timeout.to_check("tool-git", "Git", true),
+            ProbeError::Timeout.to_check("tool-git-lfs", "Git LFS", true),
+        ];
+    }
     let manifest_path = paths.resource_dir.join("git-support/manifest.json");
     let manifest: GitManifest = match read_json(&manifest_path) {
         Ok(value) => value,
@@ -1004,7 +1073,7 @@ fn git_checks(paths: &ProbePaths) -> [DependencyCheck; 2] {
     let https = paths.executable_dir.join(&executables.git_remote_https);
     #[cfg(target_os = "macos")]
     for candidate in [&git, &lfs, &http, &https] {
-        if let Err(error) = verify_macos_signature(candidate) {
+        if let Err(error) = verify_macos_signature(candidate, deadline) {
             return [
                 error.to_check("tool-git", "Git", true),
                 DependencyCheck::failure(
@@ -1024,7 +1093,7 @@ fn git_checks(paths: &ProbePaths) -> [DependencyCheck; 2] {
         (&http, manifest.executable_sha256.git_remote_http.as_str()),
         (&https, manifest.executable_sha256.git_remote_https.as_str()),
     ] {
-        if let Err(error) = verify_linux_hash(candidate, expected) {
+        if let Err(error) = verify_linux_hash(candidate, expected, deadline) {
             return [
                 error.to_check("tool-git", "Git", true),
                 DependencyCheck::failure(
@@ -1070,10 +1139,15 @@ fn git_checks(paths: &ProbePaths) -> [DependencyCheck; 2] {
         ("PATH", exec_path),
     ];
     let git_result = git_version_result(
-        run_bounded(&git, &["--version"], &environment),
+        run_bounded_until(&git, &["--version"], &environment, deadline),
         &manifest.git_version_output,
     );
-    let lfs_result = git_lfs_version_result(run_bounded(&lfs, &["version"], &environment));
+    let lfs_result = git_lfs_version_result(run_bounded_until(
+        &lfs,
+        &["version"],
+        &environment,
+        deadline,
+    ));
     [git_result, lfs_result]
 }
 
@@ -1131,12 +1205,13 @@ fn git_lfs_version_result(output: Result<String, ProbeError>) -> DependencyCheck
 }
 
 fn collect(request_id: String, paths: ProbePaths) -> DependencyReport {
+    let deadline = Instant::now() + COLLECTION_TIMEOUT;
     let mut checks = vec![
-        system_check(),
-        virtualization_check(),
-        microsandbox_check(&paths),
+        system_check(deadline),
+        virtualization_check(deadline),
+        microsandbox_check(&paths, deadline),
     ];
-    checks.extend(git_checks(&paths));
+    checks.extend(git_checks(&paths, deadline));
     DependencyReport {
         schema_version: 1,
         request_id,
@@ -1196,7 +1271,7 @@ mod tests {
             resource_dir: directory.path().join("resources"),
             frameworks_dir: Some(directory.path().join("Frameworks")),
         };
-        let check = microsandbox_check(&paths);
+        let check = microsandbox_check(&paths, Instant::now() + COLLECTION_TIMEOUT);
         assert_eq!(check.id, "runtime-microsandbox");
         assert_ne!(check.status, CheckStatus::Pass);
         assert_eq!(check.remediation.as_deref(), Some(REINSTALL_GUIDANCE));
@@ -1360,6 +1435,169 @@ mod tests {
     }
 
     #[test]
+    fn oversized_manifest_is_rejected_before_deserialization() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.json");
+        let mut bytes = vec![b' '; MAX_MANIFEST_BYTES as usize];
+        bytes.extend_from_slice(b"{}");
+        fs::write(&path, bytes).unwrap();
+        assert!(matches!(
+            read_json::<serde_json::Value>(&path),
+            Err(ProbeError::Malformed(_))
+        ));
+        fs::write(&path, b"{}").unwrap();
+        assert_eq!(
+            read_json::<serde_json::Value>(&path).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn non_file_manifest_is_bundle_damage_rather_than_a_permission_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = read_json::<serde_json::Value>(directory.path()).unwrap_err();
+        assert!(matches!(error, ProbeError::Malformed(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_manifest_is_rejected_without_waiting_for_a_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.json");
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let helper = format!("{module}::fifo_manifest_reader_helper");
+        let result = run_bounded_with_timeout(
+            &std::env::current_exe().unwrap(),
+            &["--exact", &helper],
+            &[("SILO_TEST_MANIFEST_FIFO", path.as_path())],
+            PROCESS_TIMEOUT,
+        );
+        let output = result.expect("FIFO manifest reader must finish without a writer");
+        assert!(output.contains("1 passed"), "{output}");
+    }
+
+    #[cfg(unix)]
+    fn assert_guest_image_fifo_is_rejected(name: &str) {
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("guest-image");
+        fs::create_dir(&image).unwrap();
+        fs::write(image.join("image.tar.gz"), b"a").unwrap();
+        fs::write(
+            image.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "architecture": std::env::consts::ARCH,
+                "imageReference": "ghcr.io/0xpolarzero/silo-guest:test",
+                "imageDigest": format!("sha256:{}", "a".repeat(64)),
+                "archiveSha256": "b".repeat(64),
+                "archiveBytes": 1,
+                "unpackedBytes": 1,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let path = image.join(name);
+        fs::remove_file(&path).unwrap();
+        let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let helper = format!("{module}::guest_image_fifo_reader_helper");
+        let output = run_bounded_with_timeout(
+            &std::env::current_exe().unwrap(),
+            &["--exact", &helper, "--nocapture"],
+            &[("SILO_TEST_GUEST_IMAGE_FIFO", directory.path())],
+            PROCESS_TIMEOUT,
+        )
+        .expect("guest-image validation must not wait for a FIFO writer");
+        assert!(output.contains("1 passed"), "{output}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_manifest_fifo_is_rejected_before_the_collection_deadline() {
+        assert_guest_image_fifo_is_rejected("manifest.json");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_archive_fifo_is_rejected_before_the_collection_deadline() {
+        assert_guest_image_fifo_is_rejected("image.tar.gz");
+    }
+
+    #[test]
+    fn guest_image_fifo_reader_helper() {
+        let Some(directory) = std::env::var_os("SILO_TEST_GUEST_IMAGE_FIFO") else {
+            return;
+        };
+        let paths = ProbePaths {
+            executable_dir: PathBuf::from(&directory),
+            resource_dir: PathBuf::from(&directory),
+            frameworks_dir: Some(PathBuf::from(&directory)),
+        };
+        let check = microsandbox_check(&paths, Instant::now() + Duration::from_secs(2));
+        assert_eq!(check.status, CheckStatus::Failed, "{check:?}");
+        assert!(check.detail.contains("regular file"), "{check:?}");
+    }
+
+    #[test]
+    fn dependency_hash_rejects_directories_and_hashes_valid_files() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            sha256_file(directory.path(), Instant::now() + PROCESS_TIMEOUT),
+            Err(ProbeError::Malformed(_))
+        ));
+        let path = directory.path().join("binary");
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            sha256_file(&path, Instant::now() + PROCESS_TIMEOUT).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_hash_fifo_is_rejected_without_waiting_for_a_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("git");
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let helper = format!("{module}::dependency_hash_fifo_reader_helper");
+        let output = run_bounded_with_timeout(
+            &std::env::current_exe().unwrap(),
+            &["--exact", &helper, "--nocapture"],
+            &[("SILO_TEST_DEPENDENCY_HASH_FIFO", path.as_path())],
+            PROCESS_TIMEOUT,
+        )
+        .expect("dependency hashing must not wait for a FIFO writer");
+        assert!(output.contains("1 passed"), "{output}");
+    }
+
+    #[test]
+    fn dependency_hash_fifo_reader_helper() {
+        let Some(path) = std::env::var_os("SILO_TEST_DEPENDENCY_HASH_FIFO") else {
+            return;
+        };
+        assert!(matches!(
+            sha256_file(Path::new(&path), Instant::now() + PROCESS_TIMEOUT),
+            Err(ProbeError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn fifo_manifest_reader_helper() {
+        let Some(path) = std::env::var_os("SILO_TEST_MANIFEST_FIFO") else {
+            return;
+        };
+        assert!(matches!(
+            read_json::<serde_json::Value>(Path::new(&path)),
+            Err(ProbeError::Malformed(_))
+        ));
+    }
+
+    #[test]
     fn strict_manifests_reject_missing_integrity_evidence() {
         let input = r#"{"schemaVersion":1,"targetTriple":"x86_64-unknown-linux-gnu"}"#;
         assert!(serde_json::from_str::<GitManifest>(input).is_err());
@@ -1459,6 +1697,74 @@ mod tests {
         }
         runtime.executable.bundled_name = "../../bin/sh".into();
         assert!(!runtime_manifest_matches(&runtime));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_limit_stops_probes_before_they_continue_after_excessive_writes() {
+        for script in [
+            "printf '%65536s' x; printf finished > \"$1\"",
+            "printf '%65536s' x >&2; printf finished > \"$1\"",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let marker = directory.path().join("finished");
+            let result = run_bounded_with_timeout(
+                Path::new("/bin/sh"),
+                &["-c", script, "probe", marker.to_str().unwrap()],
+                &[],
+                PROCESS_TIMEOUT,
+            );
+            assert!(
+                matches!(result, Err(ProbeError::Malformed(_))),
+                "{result:?}"
+            );
+            assert!(
+                !marker.exists(),
+                "the oversized write completed before its limit was enforced"
+            );
+        }
+    }
+
+    #[test]
+    fn expired_collection_deadline_does_not_start_another_probe() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("started");
+        let result = run_bounded_until(
+            Path::new("/bin/sh"),
+            &[
+                "-c",
+                "printf started > \"$1\"",
+                "probe",
+                marker.to_str().unwrap(),
+            ],
+            &[],
+            Instant::now(),
+        );
+        assert!(matches!(result, Err(ProbeError::Timeout)));
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn probes_share_the_collection_deadline_and_keep_completed_results() {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        let first = git_version_result(
+            run_bounded_until(
+                Path::new("/bin/sh"),
+                &["-c", "printf 'git version 2.53.0'"],
+                &[],
+                deadline,
+            ),
+            "git version 2.53.0",
+        );
+        let second = git_lfs_version_result(run_bounded_until(
+            Path::new("/bin/sh"),
+            &["-c", "sleep 2; printf git-lfs/3.7.1"],
+            &[],
+            deadline,
+        ));
+        assert_eq!(first.status, CheckStatus::Pass);
+        assert_eq!(second.status, CheckStatus::Timeout);
+        assert_eq!(second.remediation.as_deref(), Some(RETRY_GUIDANCE));
     }
 
     #[test]

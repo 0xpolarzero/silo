@@ -14,20 +14,23 @@ npm --prefix app/SiloUI run lint
 cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked
 RUSTUP_TOOLCHAIN=1.94.0 npm --prefix app/SiloUI run desktop:build:debug
 codesign --verify --deep --strict \
-  app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app
-open app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app
+  'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app'
+open 'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app'
 ```
 
-Quit an existing instance normally before launching the rebuilt app. Do not
-launch an installed copy with `open -a Silo`. The executable is
-`Silo.app/Contents/MacOS/silo-ui`. The visible name is Silo; the stable internal
-identifier retains existing preferences and OS permissions.
+Before launching, inspect any running instance and verify its executable path
+and ownership. Use the exact rebuilt Dev bundle above; its executable is
+`Silo Dev.app/Contents/MacOS/silo-ui` and its identifier is `org.silo.dev`.
+Do not interrupt the user's app or VMs. Quitting a test-owned Dev instance
+stops its local VMs, so use only disposable state for this walkthrough.
 
 The first build downloads pinned build inputs and compiles the patched runtime.
 It requires Rust 1.94.0. Users of the finished app need none of those build tools.
-For an isolated manual run, build a separate application identity through Tauri's
-`--config` option; this uses the same production code with its own real data.
-Do not add fixture hooks or edit user settings to simulate states.
+The debug build already uses the development channel, with separate app data,
+credentials, runtime aliases and remote bridge names. See
+[build channels](SiloUI-BUILD-CHANNELS.md). Use deterministic frontend fixtures
+for UI-only checks and disposable Dev VMs for native checks. Historical bundle
+paths in the verification records below identify those earlier runs.
 
 ## Dependencies
 
@@ -53,6 +56,17 @@ References: [Apple Hypervisor](https://developer.apple.com/documentation/hypervi
 [KVM API](https://docs.kernel.org/virt/kvm/api.html#kvm-get-api-version),
 [Tauri sidecars](https://v2.tauri.app/develop/sidecar/).
 
+## Selected export and import paths
+
+The native pickers return paths through a string-based frontend contract. A
+selection must round-trip without changing its filename: spaces, Unicode and
+leading dashes are preserved. Non-UTF-8 names fail before archive inspection or
+remembering an export folder. Rename the affected file or folder and select it
+again. Rust's [`Path::to_str`](https://doc.rust-lang.org/std/path/struct.Path.html#method.to_str)
+reports this boundary; `to_string_lossy` replaces invalid bytes and can name a
+different file. Native path-conversion regressions exercise synthetic Unix
+paths, not a live desktop picker.
+
 ## VM configuration
 
 Use disposable VMs for this walkthrough.
@@ -68,9 +82,10 @@ Use disposable VMs for this walkthrough.
    Startup memory pressure uses the approved advisory; it is not an invented
    universal minimum. Disk failures report the real operation error.
 
-GitHub authentication, repository cloning/pushing and other unimplemented
-workspace tools remain separate work. Their actions return explicit errors;
-empty lists do not pretend that discovery or synchronization succeeded.
+GitHub authentication and host Push are implemented separately; see
+[GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md). Repository selection
+controls access, and tools inside the VM clone repositories through that access.
+This walkthrough's storage checks do not verify GitHub authorization or pushing.
 
 ## Export a sandbox
 
@@ -125,15 +140,17 @@ The ignored Rust test
 production create, identity, export and import functions with disposable paths.
 `real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk` covers
 checkpoint export the same way.
-It requires the built app and a working host hypervisor. Use the bundled runtime,
+It requires prepared guest-image resources, the built app and a working host
+hypervisor. Configure native tests through the [release guide's local setup](SiloUI-RELEASES.md#local-setup).
+Use the bundled Dev runtime,
 which Tauri signs with the Hypervisor entitlement; the raw build-cache executable
 cannot boot a macOS VM:
 
 ```sh
 SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures \
-SILO_TEST_MSB="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app/Contents/MacOS/msb" \
-SILO_TEST_LIBKRUNFW="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app/Contents/Frameworks/libkrunfw.5.dylib" \
-cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml \
+SILO_TEST_MSB="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app/Contents/MacOS/msb" \
+SILO_TEST_LIBKRUNFW="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app/Contents/Frameworks/libkrunfw.5.dylib" \
+cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked \
   real_backup_restore_preserves_root_and_workspace_without_original_cache \
   -- --ignored --nocapture
 ```
@@ -148,11 +165,12 @@ and checks that the existing VM and its cached disks remain intact. It cleans up
 
 ## Coverage limits
 
-macOS is the available live verification host. Unit tests cover failure mapping,
+The original checks recorded below used macOS. Unit tests cover failure mapping,
 archive traversal/integrity, cancellation, name collisions and resource handling.
-Linux code and packaging inputs are covered by source and focused tests, but
-neither Linux architecture is live-qualified on this Mac. Run the same real
-create/export/import flow on supported arm64 and x86_64 Linux before release.
+Later Linux runs are recorded in [Linux verification](SiloUI-LINUX-VERIFICATION.md)
+and [Linux acceptance](research/silo-linux-acceptance-2026-09-25.md), with exact
+packages, runtime versions and host limits. Those dated runs do not qualify the
+current HEAD or every platform; verify the intended package and workflow before release.
 An ad-hoc debug signature is not notarization or release-signing verification.
 
 ## Interrupted import cleanup limit
@@ -162,15 +180,21 @@ Recovery removes indexed members of that group, including an import interrupted
 before sandbox settings were saved. A failed cleanup keeps that ownership journal
 for another launch. Other groups and completed imports remain intact.
 
-The [pinned runtime's archive loader](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/snapshot/archive/batch.rs#L263)
-creates random `.msb-snapshot-import-*` folders in its snapshot store and
-`snapshot-import-*` folders in `cache/tmp`. These folders carry no destination
-group or Silo operation identity. A normal failed or cancelled load removes its
-new snapshot and cache stages; a process crash before publication can leave unattributed
-snapshot or cache stages. Startup preserves them because it cannot prove which
-operation owns them. Complete crash cleanup requires the runtime to expose or
-journal its exact stage paths before writing them; Silo does not run an age or
-prefix sweep.
+The current [import-stage patch](../app/SiloUI/patches/microsandbox-import-stage-id-0.7.6.patch)
+adds `snapshot load --stage-id`. Silo journals `silo-import-<id>` before load
+starts, then passes its suffix as the stage ID. The loader uses
+`snapshots/.msb-snapshot-load-<id>` and `cache/tmp/snapshot-load-<id>` under the
+selected runtime home. [Launch recovery](../app/SiloUI/src-tauri/src/backup_controller/recovery.rs)
+removes only that journaled group's indexed members and its two stage roots,
+including after a crash before sandbox identity allocation. Cleanup respects the
+existing worker lock, rejects symlinked stage paths, and retains the journal on failure.
+
+The older [MicroSandbox 0.7.2 archive loader](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/snapshot/archive/batch.rs#L263)
+used random `.msb-snapshot-import-*` and `snapshot-import-*` directories without
+operation ownership. Recovery still preserves those unattributed legacy stages
+and other operations' stages. It does not use an age or prefix sweep. See the
+[import cleanup design and evidence](SiloUI-REVIEW-DESIGN-NOTES.md#e-03-checkpoint-deletion-with-fork-dependencies-and-native-snapshot-cleanup)
+for the recorded patch qualification and its limits.
 
 ## Recorded evidence, 2026-09-08
 
@@ -251,8 +275,12 @@ operation error rather than hiding the outcome.
 To check optional GitHub setup, leave GitHub disconnected and continue to Review.
 Saved repository choices remain in the draft but are excluded from submission
 until GitHub is connected. Git author choices still apply. Click Finish: setup
-must complete without a repository-setup error. Connected repository selections
-still fail explicitly because repository setup is not implemented.
+must complete without a repository-setup error. With GitHub connected, setup
+saves the selected/all repository policy and waits for each sandbox to acknowledge
+that access before marking completion. A failed or replaced policy keeps setup
+incomplete. The [production setup adapter](../app/SiloUI/src/desktop/production-source.ts)
+and its [fixture tests](../app/SiloUI/src/desktop/production-setup.test.ts) cover this
+acknowledgement; they do not prove live GitHub access.
 
 On Review, each verified sandbox must show **Complete**, matching its Sandboxes
 row. Git author shows **Complete** only after saving and verification succeed;
@@ -441,3 +469,14 @@ After reopening the rebuilt production app, the existing three-VM draft showed
 **Not started · Continue to start this step**, **Continue to create sandboxes**,
 and **0 of 6 operations complete**. The user's draft was not submitted during
 verification. Screenshot: `src-tauri/target/ui-evidence/setup-draft-idle.jpg`.
+
+## Export folder picker execution
+
+The export picker reads its saved folder inside its existing blocking worker.
+Backup-state reads hold the view mutex while reading the recovery journal, so the
+picker can wait for filesystem I/O even though the destination itself is cached.
+The blocking worker covers that lock wait as well as the native dialog and path
+validation, following [Tauri's async command execution](https://v2.tauri.app/develop/calling-rust/#async-commands)
+and [Tokio's blocking-work boundary](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
+The destination persistence and picker path regressions cover the retained data
+behavior; they do not exercise a live native dialog.

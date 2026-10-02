@@ -326,6 +326,27 @@ impl<T: Clone + PartialEq> SessionSecret<T> {
             .map_err(|_| "Credential state is unavailable.")?;
         self.write_locked(&mut state, value, write)
     }
+    /// Explicit replacements become visible only after durable storage succeeds.
+    fn replace(&self, value: T, write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| "Credential state is unavailable.")?;
+        if let Some(Err(error)) = state.value.as_ref() {
+            return Err(error.clone());
+        }
+        if state.unsaved.is_none()
+            && matches!(state.value.as_ref(), Some(Ok(current)) if current == &value)
+        {
+            return Ok(());
+        }
+        write()?;
+        state.value = Some(Ok(value));
+        state.unsaved = None;
+        state.blocked = false;
+        self.publish(&state.value);
+        Ok(())
+    }
     fn update(
         &self,
         read: impl FnOnce() -> Result<T, String>,
@@ -448,6 +469,16 @@ fn observed_credential() -> CredentialObservation {
         .map(|state| state.clone())
         .unwrap_or_else(|_| Some(Err("GitHub credential state is unavailable.".into())))
 }
+// Policy revisions cross IPC as JavaScript numbers and must remain distinguishable.
+const MAX_POLICY_REVISION: u64 = 9_007_199_254_740_991;
+
+fn next_policy_revision(revision: u64) -> Result<u64, String> {
+    revision
+        .checked_add(1)
+        .filter(|next| *next <= MAX_POLICY_REVISION)
+        .ok_or_else(|| "GitHub settings revision exceeds the supported range.".into())
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Document {
@@ -489,6 +520,8 @@ struct Document {
     /// view. Kept after a policy is removed so a stale save cannot bring it back.
     #[serde(default)]
     policy_stamps: std::collections::BTreeMap<String, PolicyStamp>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -557,7 +590,7 @@ pub(crate) fn fork_assignment(
             .workspaces
             .retain(|value| value["workspace"].as_str() != Some(target));
         document.workspaces.push(assignment);
-        document.revision = document.revision.saturating_add(1);
+        document.revision = next_policy_revision(document.revision)?;
         stamp(&mut document, target, None);
         if !document.access_pending.iter().any(|name| name == target) {
             document.access_pending.push(target.into());
@@ -574,7 +607,7 @@ pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Re
     let _state = serialize(&STATE);
     let mut document = load(app)?;
     forget_workspace(&mut document, target);
-    document.revision = document.revision.saturating_add(1);
+    document.revision = next_policy_revision(document.revision)?;
     stamp(&mut document, target, None);
     save(app, &document)
 }
@@ -611,7 +644,7 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
         let _state = serialize(&STATE);
         let mut d = load_at(&document)?;
         if forget_workspace(&mut d, workspace) {
-            d.revision = d.revision.saturating_add(1);
+            d.revision = next_policy_revision(d.revision)?;
             stamp(&mut d, workspace, None);
             save_at(&document, &d)?;
         }
@@ -696,6 +729,16 @@ fn store(c: &Credential) -> Result<(), String> {
     );
     result
 }
+fn replace_connection_credential(
+    secret: &SessionSecret<Option<Credential>>,
+    credential: &Credential,
+    persist: impl FnOnce() -> Result<(), String>,
+    publish: impl FnOnce(Result<Option<u64>, String>),
+) -> Result<(), String> {
+    secret.replace(Some(credential.clone()), persist)?;
+    publish(Ok(Some(observed_expiry(credential))));
+    Ok(())
+}
 /// Retry storing a credential whose earlier write failed (for example a renewed
 /// credential after a refresh), at most every 15 minutes so a denied Keychain prompt
 /// is not reopened in a loop. Until then the renewed credential is used in memory.
@@ -748,15 +791,29 @@ fn document_path() -> Option<PathBuf> {
 fn load(app: &tauri::AppHandle) -> Result<Document, String> {
     load_at(&path(app)?)
 }
+const MAX_CONFIGURATION_BYTES: usize = 16 * 1024 * 1024;
 fn load_at(path: &std::path::Path) -> Result<Document, String> {
-    match fs::read(path) {
-        Ok(b) if b.len() <= 16 * 1024 * 1024 => {
-            serde_json::from_slice(&b).map_err(|_| "GitHub configuration is invalid.".into())
-        }
-        Ok(_) => Err("GitHub configuration exceeds the supported size.".into()),
+    match fs::File::open(path) {
+        Ok(file) => read_configuration(file),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Document::default()),
         Err(_) => Err("Cannot read GitHub configuration.".into()),
     }
+}
+fn read_configuration(reader: impl Read) -> Result<Document, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_CONFIGURATION_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Cannot read GitHub configuration.")?;
+    if bytes.len() > MAX_CONFIGURATION_BYTES {
+        return Err("GitHub configuration exceeds the supported size.".into());
+    }
+    let document: Document =
+        serde_json::from_slice(&bytes).map_err(|_| "GitHub configuration is invalid.")?;
+    if document.revision > MAX_POLICY_REVISION {
+        return Err("GitHub settings revision exceeds the supported range.".into());
+    }
+    Ok(document)
 }
 fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
     save_at(&path(app)?, d)?;
@@ -771,12 +828,15 @@ fn save_at(p: &std::path::Path, d: &Document) -> Result<(), String> {
     }
     let at = now();
     saved.rate_retry.retain(|_, until| *until > at);
-    let d = &saved;
+    let encoded = serde_json::to_vec(&saved).map_err(|_| "Cannot encode GitHub configuration.")?;
+    if encoded.len() > MAX_CONFIGURATION_BYTES {
+        return Err("GitHub configuration exceeds the supported size.".into());
+    }
     let parent = p.parent().ok_or("Missing configuration directory.")?;
     fs::create_dir_all(parent).map_err(|_| "Cannot create configuration directory.")?;
     let mut f = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| "Cannot write GitHub configuration.")?;
-    f.write_all(&serde_json::to_vec(d).map_err(|_| "Cannot encode GitHub configuration.")?)
+    f.write_all(&encoded)
         .map_err(|_| "Cannot write GitHub configuration.")?;
     f.as_file()
         .sync_all()
@@ -1014,6 +1074,13 @@ fn github(token: &str, path: &str) -> Result<Value, String> {
 }
 fn catalog(c: &Credential) -> Result<Vec<Value>, String> {
     Ok(catalog_installations(c)?.0)
+}
+fn catalog_with_retry(
+    c: &Credential,
+    fetch: impl FnOnce(&Credential) -> Result<Vec<Value>, String>,
+) -> Result<Vec<Value>, String> {
+    crate::github_http::reset_catalog_retries(&c.access_token);
+    fetch(c)
 }
 fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
     let slug = APP_SLUG.ok_or("GitHub App is not configured in this build.")?;
@@ -1656,10 +1723,16 @@ fn scopes(d: &Document, policy: &Value) -> Result<Vec<GrantScope>, String> {
     let selected = policy["repositories"]
         .as_array()
         .ok_or("Invalid repository selection.")?;
+    let matches = |repo: &Value, selection: &Value| {
+        repo["name"]
+            .as_str()
+            .zip(selection["repository"].as_str())
+            .is_some_and(|(catalog, saved)| catalog.eq_ignore_ascii_case(saved))
+    };
     if !all
         && selected
             .iter()
-            .any(|s| !d.repositories.iter().any(|r| r["name"] == s["repository"]))
+            .any(|s| !d.repositories.iter().any(|r| matches(r, s)))
     {
         return Err(
             "A selected repository is no longer authorized by GitHub. Update the selection.".into(),
@@ -1667,7 +1740,7 @@ fn scopes(d: &Document, policy: &Value) -> Result<Vec<GrantScope>, String> {
     }
     let mut groups = std::collections::BTreeMap::<u64, GrantScope>::new();
     for repo in &d.repositories {
-        let selection = selected.iter().find(|s| s["repository"] == repo["name"]);
+        let selection = selected.iter().find(|s| matches(repo, s));
         if !all && selection.is_none() {
             continue;
         }
@@ -1811,9 +1884,11 @@ fn mint(
     {
         return Ok((token.token, token.expires_at));
     }
-    let response = token_operation(
+    let response = crate::github_tokens::execute_for_workspace(
+        &token_configuration()?,
         Operation::Scope,
         json!({"accessToken":c.access_token,"ownerId":s.owner,"repositoryIds":if s.all{vec![]}else if write{s.writes.clone()}else{s.ids.clone()},"allRepositories":s.all,"allowChanges":write}),
+        workspace,
     )?;
     let token = response["accessToken"]
         .as_str()
@@ -2113,7 +2188,10 @@ pub(crate) fn host_push_credential(
     repository: &str,
 ) -> Result<HostPushCredential, String> {
     let _guard = crate::sync::lock_or_recover(&OPERATION, "GitHub operation");
-    let d = load(app)?;
+    let d = {
+        let _state = serialize(&STATE);
+        load(app)?
+    };
     let policy = d
         .workspaces
         .iter()
@@ -2125,51 +2203,75 @@ pub(crate) fn host_push_credential(
         return Err("Enable GitHub access before pushing.".into());
     }
     push_authorized(policy, repository)?;
-    if personal_token::selected(policy) {
-        return Ok(HostPushCredential {
-            token: personal_token::value()?,
-            repository: repository.into(),
-            expires_at: None,
-            retire: None,
-        });
-    }
-    let c = host_push_account_credential()?;
-    let catalog = catalog(&c)?;
-    let repo = catalog
-        .iter()
-        .find(|r| {
-            r["name"]
-                .as_str()
-                .is_some_and(|name| name.eq_ignore_ascii_case(repository))
-        })
-        .ok_or("GitHub no longer authorizes this repository.")?;
-    let name = repo["name"]
-        .as_str()
-        .ok_or("Invalid repository name.")?
-        .to_owned();
-    let owner = repo["ownerId"]
-        .as_u64()
-        .ok_or("Invalid repository owner.")?;
-    let id = repo["id"]
-        .as_u64()
-        .ok_or("Invalid repository identifier.")?;
-    let response = token_operation(
-        Operation::Scope,
-        host_push_scope(&c.access_token, owner, id),
-    )?;
-    let token = response["accessToken"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or("GitHub returned no restricted push credential.")?
-        .to_owned();
-    // From here on, dropping the credential revokes the token.
-    let mut credential = HostPushCredential {
-        token,
-        repository: name,
-        expires_at: None,
-        retire: Some((app.clone(), workspace.into())),
+    let current = || {
+        let _state = serialize(&STATE);
+        if load(app)?.revision != d.revision {
+            return Err("GitHub access changed. Retry the push with your latest choices.".into());
+        }
+        Ok(())
     };
-    credential.expires_at = Some(token_expiry(&response)?);
+    issue_host_push(
+        || {
+            if personal_token::selected(policy) {
+                return Ok(HostPushCredential {
+                    token: personal_token::value()?,
+                    repository: repository.into(),
+                    expires_at: None,
+                    retire: None,
+                });
+            }
+            let c = host_push_account_credential()?;
+            let catalog = catalog(&c)?;
+            let repo = catalog
+                .iter()
+                .find(|r| {
+                    r["name"]
+                        .as_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(repository))
+                })
+                .ok_or("GitHub no longer authorizes this repository.")?;
+            let name = repo["name"]
+                .as_str()
+                .ok_or("Invalid repository name.")?
+                .to_owned();
+            let owner = repo["ownerId"]
+                .as_u64()
+                .ok_or("Invalid repository owner.")?;
+            let id = repo["id"]
+                .as_u64()
+                .ok_or("Invalid repository identifier.")?;
+            current()?;
+            let response = token_operation(
+                Operation::Scope,
+                host_push_scope(&c.access_token, owner, id),
+            )?;
+            let token = response["accessToken"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or("GitHub returned no restricted push credential.")?
+                .to_owned();
+            // From here on, dropping the credential revokes the token.
+            let mut credential = HostPushCredential {
+                token,
+                repository: name,
+                expires_at: None,
+                retire: Some((app.clone(), workspace.into())),
+            };
+            credential.expires_at = Some(token_expiry(&response)?);
+            Ok(credential)
+        },
+        &current,
+    )
+}
+
+fn issue_host_push<T>(
+    issue: impl FnOnce() -> Result<T, String>,
+    current: impl Fn() -> Result<(), String>,
+) -> Result<T, String> {
+    current()?;
+    let credential = issue()?;
+    // An obsolete scoped credential is dropped and retired before it reaches the push.
+    current()?;
     Ok(credential)
 }
 
@@ -2233,6 +2335,62 @@ mod host_push_authorization_tests {
             },
         );
         assert_eq!(*remembered.borrow(), ["offline"]);
+    }
+
+    #[test]
+    fn host_push_drops_issued_credentials_when_policy_changes_before_handoff() {
+        use std::cell::Cell;
+        struct ScopedToken<'a>(&'a Cell<usize>);
+        impl Drop for ScopedToken<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let revision = Cell::new(7);
+        let revoked = Cell::new(0);
+        let handed_off = Cell::new(false);
+        let result = super::issue_host_push(
+            || {
+                // A completed Disable access or policy save increments the revision
+                // while the network request is issuing the credential.
+                revision.set(8);
+                Ok(ScopedToken(&revoked))
+            },
+            || {
+                if revision.get() != 7 {
+                    Err("GitHub access changed.".into())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        if result.is_ok() {
+            handed_off.set(true);
+        }
+        assert!(!handed_off.get());
+        assert_eq!(revoked.get(), 1);
+    }
+
+    #[test]
+    fn host_push_does_not_issue_after_authorization_already_changed() {
+        let mut issued = false;
+        let result = super::issue_host_push(
+            || {
+                issued = true;
+                Ok("credential")
+            },
+            || Err("GitHub access changed.".into()),
+        );
+        assert!(result.is_err());
+        assert!(!issued);
+    }
+
+    #[test]
+    fn host_push_hands_off_credentials_when_authorization_stays_current() {
+        assert_eq!(
+            super::issue_host_push(|| Ok("credential"), || Ok(())),
+            Ok("credential")
+        );
     }
 
     #[test]
@@ -2310,7 +2468,11 @@ fn read_callback_request(reader: &mut impl Read) -> Option<String> {
     let mut chunk = [0; 1024];
     while bytes.len() < 8192 && Instant::now() < deadline {
         let remaining = (8192 - bytes.len()).min(chunk.len());
-        let length = reader.read(&mut chunk[..remaining]).ok()?;
+        let length = match reader.read(&mut chunk[..remaining]) {
+            Ok(length) => length,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
         if length == 0 {
             return None;
         }
@@ -2492,6 +2654,15 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             return Err("GitHub connection cancelled.".into());
         }
         let mut d = load(app)?;
+        let revision = next_policy_revision(d.revision)?;
+        // A failed explicit replacement must leave the previous account and its access intact.
+        replace_connection_credential(
+            &ACCOUNT_SECRET,
+            &c,
+            || entry().and_then(|entry| store_entry(&entry, &c)),
+            publish_credential_observation,
+        )?;
+        unstored.kept();
         // Reconnecting creates a new account authorization. Never reuse old
         // grants, even if the account name and repository choices are identical.
         let prefix = format!("{}:", path(app)?.display());
@@ -2510,7 +2681,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
                 detach_result(
                     app,
                     name,
-                    crate::runtime::apply_github_policy(app, name, d.revision + 1, &profile(&[])),
+                    crate::runtime::apply_github_policy(app, name, revision, &profile(&[])),
                 )
             },
         );
@@ -2522,17 +2693,10 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             .lock()
             .map_err(|_| "GitHub state is unavailable.")?
             .retain(|key, _| !key.starts_with(&prefix));
-        let stored = store(&c);
-        // A failed store write keeps the new credential in use in memory and stores it
-        // later, so it is kept; only a credential that Silo holds nowhere is revoked.
-        if stored.is_ok() || ACCOUNT_SECRET.peek() == Some(Ok(Some(c.clone()))) {
-            unstored.kept();
-        }
-        stored?;
         let same = account
             .as_deref()
             .is_some_and(|login| same_account(d.account.as_deref(), login));
-        record_connection(&mut d, account, repos);
+        record_connection(&mut d, account, repos)?;
         for (name, error) in detach_errors.workspaces {
             d.access_errors.insert(name, error);
         }
@@ -2555,15 +2719,21 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     snapshot(app)
 }
 
-fn record_connection(d: &mut Document, account: Option<String>, repositories: Vec<Value>) {
+fn record_connection(
+    d: &mut Document,
+    account: Option<String>,
+    repositories: Vec<Value>,
+) -> Result<(), String> {
+    let revision = next_policy_revision(d.revision)?;
     d.access_enabled = true;
     d.disconnect_pending = false;
     d.account = account;
     d.repositories = repositories;
     d.catalog_error = None;
     d.catalog_refresh_at = now() + 300;
-    d.revision += 1;
+    d.revision = revision;
     mark_pending(d);
+    Ok(())
 }
 
 fn catalog_refresh_due(d: &Document, now: u64) -> bool {
@@ -2849,9 +3019,8 @@ pub async fn refresh_github_repositories(
 ) -> Result<Value, String> {
     require_main(window.label())?;
     retry_credential_access();
-    crate::github_http::reset_retries();
     run(app, |app| {
-        let result = active_credential().and_then(|c| catalog(&c));
+        let result = active_credential().and_then(|c| catalog_with_retry(&c, catalog));
         let _state = serialize(&STATE);
         let mut d = load(app)?;
         match result {
@@ -2890,9 +3059,9 @@ pub async fn disconnect_github(
         let _update = crate::updates::operation_guard()?;
         let _state = serialize(&STATE);
         let mut d = load(&app)?;
+        d.revision = next_policy_revision(d.revision)?;
         d.access_enabled = false;
         d.disconnect_pending = true;
-        d.revision += 1;
         mark_pending(&mut d);
         save(&app, &d)?;
         let result = narrow_now(&app, &mut d);
@@ -2922,8 +3091,8 @@ pub async fn set_github_access_enabled(
         if d.access_enabled == enabled {
             return snapshot(&app);
         }
+        d.revision = next_policy_revision(d.revision)?;
         d.access_enabled = enabled;
-        d.revision += 1;
         mark_pending(&mut d);
         save(&app, &d)?;
         let result = narrow_now(&app, &mut d);
@@ -3038,8 +3207,9 @@ fn apply_patches(
         }
     }
     validate(&workspaces)?;
+    let revision = next_policy_revision(d.revision)?;
     d.workspaces = workspaces;
-    d.revision += 1;
+    d.revision = revision;
     for w in &changed_policies {
         if let Some(name) = w["workspace"].as_str() {
             stamp(d, name, base);
@@ -3120,6 +3290,25 @@ pub async fn save_github_configuration(
     .await
     .map_err(|_| "GitHub operation failed.")?
 }
+fn prepare_retry(d: &mut Document, workspace: Option<&str>) {
+    let names: Vec<String> = d
+        .workspaces
+        .iter()
+        .filter_map(|w| w["workspace"].as_str())
+        .filter(|name| workspace.is_none_or(|target| target == *name))
+        .map(str::to_owned)
+        .collect();
+    for name in &names {
+        if d.identity_errors.contains_key(name) && !d.identity_pending.contains(name) {
+            d.identity_pending.push(name.clone());
+        }
+        if !d.access_pending.contains(name) {
+            d.access_pending.push(name.clone());
+        }
+    }
+    mark_pending_for(d, &names);
+}
+
 #[tauri::command]
 pub async fn retry_github_configuration(
     app: tauri::AppHandle,
@@ -3129,26 +3318,17 @@ pub async fn retry_github_configuration(
     require_main(window.label())?;
     retry_credential_access();
     let ticket = INTENTS.ticket();
-    crate::github_http::reset_retries();
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
         let _state = serialize(&STATE);
         let mut d = load(&app)?;
-        for w in &d.workspaces {
-            if let Some(name) = w["workspace"].as_str() {
-                if workspace.as_deref().is_none_or(|target| target == name)
-                    && d.identity_errors.contains_key(name)
-                    && !d.identity_pending.iter().any(|n| n == name)
-                {
-                    d.identity_pending.push(name.into());
-                }
-            }
+        if let Some(workspace) = workspace.as_deref() {
+            crate::github_http::reset_workspace_retries(workspace);
+        } else {
+            crate::github_http::reset_retries();
         }
-        mark_pending(&mut d);
-        if let Some(target) = &workspace {
-            d.access_pending.retain(|name| name == target);
-        }
+        prepare_retry(&mut d, workspace.as_deref());
         save(&app, &d)?;
         schedule(Duration::ZERO);
         snapshot(&app)
@@ -3159,6 +3339,18 @@ pub async fn retry_github_configuration(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repository_refresh_keeps_unrelated_token_operations_stopped() {
+        crate::github_http::assert_bearer_retry_isolated(|token| {
+            let credential = fixture_credential(token, super::now() + 3600);
+            let result = super::catalog_with_retry(&credential, |credential| {
+                assert_eq!(credential.access_token, token);
+                Ok(vec![serde_json::json!({"fixture": true})])
+            })
+            .unwrap();
+            assert_eq!(result, vec![serde_json::json!({"fixture": true})]);
+        });
+    }
     #[test]
     fn a_panic_under_the_github_locks_does_not_block_updates_or_settings() {
         let _test_state = crate::test_support::global_state();
@@ -3246,6 +3438,41 @@ mod tests {
         cache.retry();
         cache.write(Some(2), || Ok(())).unwrap();
         assert_eq!(cache.read(|| panic!("Read after write")).unwrap(), Some(2));
+    }
+    #[test]
+    fn failed_reconnection_preserves_the_previous_credential_and_observation() {
+        let secret = SessionSecret::new();
+        let old = fixture_credential("previous-account", now() + 600);
+        let new = fixture_credential("new-account", now() + 900);
+        let stored = std::cell::RefCell::new(Some(old.clone()));
+        let observed = std::cell::RefCell::new(Ok(Some(observed_expiry(&old))));
+        secret.read(|| Ok(stored.borrow().clone())).unwrap();
+        assert!(replace_connection_credential(
+            &secret,
+            &new,
+            || Err("store denied".into()),
+            |value| *observed.borrow_mut() = value,
+        )
+        .is_err());
+        assert!(secret.peek() == Some(Ok(Some(old.clone()))));
+        assert!(*observed.borrow() == Ok(Some(observed_expiry(&old))));
+        secret
+            .flush(|_| panic!("failed reconnect must not be retried as a renewal"))
+            .unwrap();
+        assert!(*stored.borrow() == Some(old));
+        replace_connection_credential(
+            &secret,
+            &new,
+            || {
+                *stored.borrow_mut() = Some(new.clone());
+                Ok(())
+            },
+            |value| *observed.borrow_mut() = value,
+        )
+        .unwrap();
+        assert!(secret.peek() == Some(Ok(Some(new.clone()))));
+        assert!(*stored.borrow() == Some(new.clone()));
+        assert!(*observed.borrow() == Ok(Some(observed_expiry(&new))));
     }
     #[test]
     fn expired_credential_with_refresh_token_stays_connected() {
@@ -3384,6 +3611,107 @@ mod tests {
     fn saved_policy(name: &str, all: bool) -> Value {
         json!({"workspace":name,"repositoryMode":if all {"all"} else {"selected"},"allRepositoriesAllowChanges":all,
             "repositories":[],"identity":{"name":"","email":"","apply":false}})
+    }
+    #[test]
+    fn additive_github_preferences_survive_a_known_setting_change() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let saved = json!({
+            "revision": 4,
+            "accessEnabled": false,
+            "account": "fixture-account",
+            "workspaces": [saved_policy("dev", false)],
+            "futurePreference": {"mode": "newer", "enabled": true}
+        });
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut document = load_at(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        document.access_enabled = true;
+        save_at(&path, &document).unwrap();
+        let reloaded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
+        assert_eq!(reloaded["workspaces"], saved["workspaces"]);
+        assert_eq!(reloaded["account"], saved["account"]);
+        assert!(load_at(&path).unwrap().access_enabled);
+    }
+
+    #[test]
+    fn legacy_github_preferences_keep_safe_defaults_after_save_and_reload() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        fs::write(&path, br#"{"revision":0,"accessEnabled":false}"#).unwrap();
+        let document = load_at(&path).unwrap();
+        assert!(!document.access_enabled);
+        assert!(document.account.is_none());
+        assert!(document.workspaces.is_empty());
+        assert!(document.policy_stamps.is_empty());
+        assert!(!document.grants_issued);
+        save_at(&path, &document).unwrap();
+        let reloaded = load_at(&path).unwrap();
+        assert!(!reloaded.access_enabled);
+        assert!(reloaded.account.is_none());
+        assert!(reloaded.workspaces.is_empty());
+        assert!(reloaded.policy_stamps.is_empty());
+        assert!(!reloaded.grants_issued);
+    }
+
+    #[test]
+    fn unsafe_saved_policy_revisions_are_refused_without_rewriting_the_document() {
+        for revision in [9_007_199_254_740_992, u64::MAX] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("github.json");
+            let bytes = serde_json::to_vec(&Document {
+                revision,
+                ..Default::default()
+            })
+            .unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(load_at(&path).is_err(), "revision {revision} was accepted");
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+    #[test]
+    fn policy_revision_exhaustion_refuses_edits_without_changing_saved_choices() {
+        let _test_state = crate::test_support::global_state();
+        for revision in [9_007_199_254_740_991, u64::MAX] {
+            let mut d = Document {
+                revision,
+                workspaces: vec![saved_policy("dev", false)],
+                ..Default::default()
+            };
+            let before = serde_json::to_value(&d).unwrap();
+            assert!(
+                apply_patches(&mut d, &[saved_policy("dev", true)], None, true, false).is_err()
+            );
+            assert_eq!(serde_json::to_value(&d).unwrap(), before);
+        }
+    }
+    #[test]
+    fn the_last_safe_policy_revision_is_saved_and_noop_edits_still_succeed() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let mut d = Document {
+            revision: 9_007_199_254_740_990,
+            workspaces: vec![saved_policy("dev", false)],
+            ..Default::default()
+        };
+        assert!(
+            apply_patches(&mut d, &[saved_policy("dev", true)], None, true, false)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(d.revision, 9_007_199_254_740_991);
+        assert_eq!(d.policy_stamps["dev"].revision, 9_007_199_254_740_991);
+        save_at(&path, &d).unwrap();
+        assert_eq!(load_at(&path).unwrap().revision, 9_007_199_254_740_991);
+        assert_eq!(
+            apply_patches(&mut d, &[saved_policy("dev", true)], None, true, false).unwrap(),
+            None
+        );
     }
     #[test]
     fn a_save_patches_only_its_sandboxes_and_never_changes_access() {
@@ -3938,6 +4266,27 @@ mod tests {
         });
     }
     #[test]
+    fn selected_scopes_preserve_access_when_catalog_capitalization_changes() {
+        let _test_state = crate::test_support::global_state();
+        let d = Document {
+            access_enabled: true,
+            account: Some("owner".into()),
+            repositories: vec![
+                json!({"name":"OWNER/Project","ownerId":7,"id":11}),
+                json!({"name":"OWNER/Other","ownerId":7,"id":12}),
+            ],
+            ..Default::default()
+        };
+        let policy = json!({"repositoryMode":"selected","repositories":[{"repository":"owner/project","allowPushes":true}]});
+        let desired = scopes(&d, &policy).unwrap();
+        assert_eq!(desired.len(), 1);
+        assert_eq!(desired[0].owner, 7);
+        assert_eq!(desired[0].ids, vec![11]);
+        assert_eq!(desired[0].writes, vec![11]);
+        assert_eq!(desired[0].login, "OWNER");
+    }
+
+    #[test]
     fn invalid_remaining_selection_never_preserves_removed_repository_access() {
         let _test_state = crate::test_support::global_state();
         let previous = test_grant();
@@ -4067,6 +4416,36 @@ mod tests {
         .unwrap();
         assert_eq!(calls, vec![false, true]);
     }
+    #[test]
+    fn targeted_retry_preserves_other_pending_grants_and_verified_operations() {
+        let _test_state = crate::test_support::global_state();
+        let mut d = Document {
+            session: session().into(),
+            refresh_at: now() + 3600,
+            workspaces: vec![
+                saved_policy("retry", false),
+                saved_policy("pending", false),
+                saved_policy("healthy", false),
+            ],
+            access_pending: vec!["pending".into()],
+            operations: vec![
+                json!({"workspace":"retry","status":"failed"}),
+                json!({"workspace":"pending","status":"applying"}),
+                json!({"workspace":"healthy","status":"succeeded"}),
+            ],
+            ..Default::default()
+        };
+        let healthy = d.operations[2].clone();
+        prepare_retry(&mut d, Some("retry"));
+        assert!(access_update_due(&d, "pending", now(), false, &[]));
+        assert!(access_update_due(&d, "retry", now(), false, &[]));
+        assert_eq!(
+            d.operations.iter().find(|op| op["workspace"] == "healthy"),
+            Some(&healthy)
+        );
+        assert!(!access_update_due(&d, "healthy", now(), false, &[]));
+    }
+
     #[test]
     fn unrelated_owner_and_vm_status_stays_unchanged() {
         let _test_state = crate::test_support::global_state();
@@ -4235,7 +4614,7 @@ mod tests {
     fn connection_enables_access_without_selecting_repositories() {
         let _test_state = crate::test_support::global_state();
         let mut document = Document::default();
-        record_connection(&mut document, Some("account".into()), vec![]);
+        record_connection(&mut document, Some("account".into()), vec![]).unwrap();
         assert!(document.access_enabled);
         assert!(document.workspaces.is_empty());
         assert!(document.access_pending.is_empty());
@@ -4243,7 +4622,7 @@ mod tests {
         document.access_enabled = false;
         document.disconnect_pending = true;
         document.workspaces = vec![json!({"workspace":"dev"})];
-        record_connection(&mut document, Some("account".into()), vec![]);
+        record_connection(&mut document, Some("account".into()), vec![]).unwrap();
         assert!(document.access_enabled);
         assert!(!document.disconnect_pending);
         assert_eq!(document.access_pending, vec!["dev"]);
@@ -4307,6 +4686,62 @@ mod tests {
         )
         .is_err());
         assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+    }
+    #[test]
+    fn configuration_reader_stops_at_the_size_limit() {
+        struct CountingReader {
+            remaining: usize,
+            read: usize,
+        }
+        impl Read for CountingReader {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                let length = target.len().min(self.remaining);
+                target[..length].fill(b' ');
+                self.remaining -= length;
+                self.read += length;
+                Ok(length)
+            }
+        }
+        let mut reader = CountingReader {
+            remaining: MAX_CONFIGURATION_BYTES * 2,
+            read: 0,
+        };
+        assert!(read_configuration(&mut reader).is_err());
+        assert_eq!(reader.read, MAX_CONFIGURATION_BYTES + 1);
+        let document = Document::default();
+        let encoded = serde_json::to_vec(&document).unwrap();
+        assert!(read_configuration(encoded.as_slice()).is_ok());
+        assert!(read_configuration(&b"not-json"[..]).is_err());
+    }
+    #[test]
+    fn oversized_configuration_save_preserves_the_last_readable_document() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let mut document = Document {
+            account: Some("previous-account".into()),
+            ..Default::default()
+        };
+        save_at(&path, &document).unwrap();
+        let previous = fs::read(&path).unwrap();
+        document.account = Some("new-account".into());
+        let name = format!("{}/{}", "o".repeat(39), "r".repeat(100));
+        document.repositories = (1..=99_900)
+            .map(|id| json!({"id":id,"ownerId":7,"name":name}))
+            .collect();
+        assert!(serde_json::to_vec(&document).unwrap().len() > 16 * 1024 * 1024);
+        assert!(save_at(&path, &document).is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(
+            load_at(&path).unwrap().account.as_deref(),
+            Some("previous-account")
+        );
+        document.repositories.clear();
+        save_at(&path, &document).unwrap();
+        assert_eq!(
+            load_at(&path).unwrap().account.as_deref(),
+            Some("new-account")
+        );
     }
     #[test]
     fn durable_document_contains_no_credentials() {
@@ -4450,6 +4885,36 @@ mod tests {
             assert!(callback(request, "right").is_err());
         }
     }
+    #[test]
+    fn callback_retries_interrupted_reads_without_losing_partial_headers() {
+        struct Interrupted<'a> {
+            bytes: &'a [u8],
+            interrupt: bool,
+        }
+        impl Read for Interrupted<'_> {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                self.interrupt = !self.interrupt;
+                if self.interrupt {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let length = self.bytes.len().min(target.len()).min(3);
+                target[..length].copy_from_slice(&self.bytes[..length]);
+                self.bytes = &self.bytes[length..];
+                Ok(length)
+            }
+        }
+        let request =
+            b"GET /github/callback?state=right&code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let mut reader = Interrupted {
+            bytes: request,
+            interrupt: false,
+        };
+        assert_eq!(
+            read_callback_request(&mut reader).as_deref(),
+            Some(std::str::from_utf8(request).unwrap())
+        );
+    }
+
     #[test]
     fn callback_requires_complete_bounded_headers_across_fragments() {
         let _test_state = crate::test_support::global_state();
@@ -4648,6 +5113,33 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         assert!(from_response(json!({})).is_err());
     }
+    #[test]
+    fn nullable_github_authentication_matches_wire_contract() {
+        let _test_state = crate::test_support::global_state();
+        let workspaces = [Value::Null, json!("oauth"), json!("token")]
+            .into_iter()
+            .enumerate()
+            .map(|(index, method)| {
+                json!({
+                    "workspace": format!("dev-{index}"),
+                    "authenticationMethod": method,
+                    "repositoryMode": "selected",
+                    "allRepositoriesAllowChanges": false,
+                    "repositories": [],
+                    "identity": {"name": "", "email": "", "apply": false}
+                })
+            })
+            .collect::<Vec<_>>();
+        validate(&workspaces).unwrap();
+        let document = Document {
+            session: session().into(),
+            workspaces,
+            ..Default::default()
+        };
+        let state = public_snapshot(document, Ok(None), None);
+        crate::runtime::contract_tests::assert_fixture("github-authentication.json", vec![state]);
+    }
+
     #[test]
     fn public_github_state_matches_frontend_contract() {
         let _test_state = crate::test_support::global_state();

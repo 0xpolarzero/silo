@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useEffectEvent, useRef, useState } from "react"
 
 import { showActionFailure, showOperationNotice } from "@/lib/operation-toast"
 
@@ -68,7 +68,12 @@ export function useMachineEditing({
   const drafts = useMachineEditorDrafts()
   const [stored] = useState(() => !initialEditorDraft && draftKey ? drafts?.get(draftKey) : undefined)
   const [computerId, setComputerId] = useState(stored?.computerId ?? "")
-  const [committing, setCommitting] = useState(false)
+  const [committing, setCommitting] = useState(Boolean(stored?.pendingSave))
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
   const disabled = interactionDisabled || committing
   const [editorFocusRequest, setEditorFocusRequest] = useState(0)
   const [editor, setEditorState] = useState<MachineEditorDraft | null>(initialEditorDraft ?? stored?.editor ?? null)
@@ -85,14 +90,30 @@ export function useMachineEditing({
   const baselineRef = useRef<SetupMachineConfiguration[] | null>(stored?.baseline ?? null)
   // The edited VM's baseline, plus editor conflict state, drive the in-editor notices.
   const [editorBaseline, setEditorBaseline] = useState<SetupMachineConfiguration | null>(stored?.editorBaseline ?? null)
+  const [editorConflict, setEditorConflict] = useState(stored?.editorConflict ?? false)
+  const [editorReview, setEditorReview] = useState<MachineReview | null>(stored?.editorReview ?? null)
   useEffect(() => {
     if (!draftKey || !drafts) return
-    if (editor) drafts.set(draftKey, { editor, editorBaseline, baseline: baselineRef.current, computerId })
+    if (editor) drafts.set(draftKey, { editor, editorBaseline, editorConflict, editorReview, baseline: baselineRef.current, computerId, pendingSave: drafts.get(draftKey)?.pendingSave })
     else drafts.delete(draftKey)
-  }, [drafts, draftKey, editor, editorBaseline, computerId])
-  const [editorConflict, setEditorConflict] = useState(false)
-  const [editorReview, setEditorReview] = useState<MachineReview | null>(null)
+  }, [drafts, draftKey, editor, editorBaseline, editorConflict, editorReview, computerId])
   const [editorResetToken, setEditorResetToken] = useState(0)
+
+  const completeRestoredSave = useEffectEvent(() => { setEditor(null); setCommitting(false) })
+  // A restored editor observes the same save instead of starting another one.
+  useEffect(() => {
+    if (!stored?.pendingSave) return
+    let current = true
+    void stored.pendingSave.then(() => {
+      if (current) completeRestoredSave()
+    }, cause => {
+      if (current) {
+        if (isStaleConfigurationError(cause)) setEditorConflict(true)
+        setCommitting(false)
+      }
+    })
+    return () => { current = false }
+  }, [stored])
 
   function captureBaseline() {
     baselineRef.current = structuredClone(machines as SetupMachineConfiguration[])
@@ -113,7 +134,11 @@ export function useMachineEditing({
    * the rejection arrived), report it as a failure instead of dropping it.
    */
   function reportSaveFailure(cause: unknown, machine?: Pick<SetupMachineConfiguration, "id" | "name">) {
-    if (machine && isStaleConfigurationError(cause) && editorRef.current?.originalID === machine.id) setEditorConflict(true)
+    if (machine && isStaleConfigurationError(cause) && draftKey && drafts) {
+      const cached = drafts.get(draftKey)
+      if (cached?.editor.originalID === machine.id) drafts.set(draftKey, { ...cached, editorConflict: true })
+    }
+    if (mounted.current && machine && isStaleConfigurationError(cause) && editorRef.current?.originalID === machine.id) setEditorConflict(true)
     else showActionFailure(machine ? `Could not save ${machine.name}` : "Could not save changes", cause, undefined, { native: false })
   }
 
@@ -159,10 +184,9 @@ export function useMachineEditing({
 
   // Restrict a captured baseline to the machines this list actually commits (local vs a
   // single remote computer), matching the list the save is derived against.
-  function scopedBaseline(): SetupMachineConfiguration[] | undefined {
-    const baseline = baselineRef.current
+  function scopedBaseline(baseline = baselineRef.current, targetComputerId = computerId): SetupMachineConfiguration[] | undefined {
     if (!baseline) return undefined
-    return getComputerId ? baseline.filter(machine => (getComputerId(machine) ?? "") === computerId) : baseline
+    return getComputerId ? baseline.filter(machine => (getComputerId(machine) ?? "") === targetComputerId) : baseline
   }
 
   /** Applies a whole-list change; returns its settlement (failures already reported) when asynchronous. */
@@ -186,18 +210,28 @@ export function useMachineEditing({
     const baseline = baselineRef.current ?? undefined
     if (onCommitMachine) {
       setCommitting(true)
+      let pendingSave: Promise<void> | undefined
       try {
         // The expected state is what the editor opened with, so a concurrent change is
         // rejected as stale instead of silently overwritten.
         const original = baseline?.find(item => item.id === originalID) ?? machines.find(item => item.id === originalID)
-        await onCommitMachine(machine, original, targetComputerId, baseline)
+        pendingSave = onCommitMachine(machine, original, targetComputerId, baseline)
+        const cached = draftKey ? drafts?.get(draftKey) : undefined
+        if (cached && draftKey && cached.editor === editorRef.current) drafts?.set(draftKey, { ...cached, pendingSave })
+        await pendingSave
+        // Cache settlement cannot depend on an effect in an editor that has left the page.
+        if (draftKey && drafts?.get(draftKey)?.pendingSave === pendingSave) drafts.delete(draftKey)
         setEditor(null)
       } catch (cause) {
         // A stale-baseline rejection keeps the editor open with the user's edits so they
         // can review the latest values or discard; other failures surface as before.
         reportSaveFailure(cause, originalID ? { id: originalID, name: machine.name } : machine)
       }
-      finally { setCommitting(false) }
+      finally {
+        const cached = draftKey ? drafts?.get(draftKey) : undefined
+        if (cached && draftKey && cached.pendingSave === pendingSave) drafts?.set(draftKey, { ...cached, pendingSave: undefined })
+        setCommitting(false)
+      }
       return
     }
     const base = baseline ?? [...machines]
@@ -254,14 +288,13 @@ export function useMachineEditing({
   // in its own dialog, so it captures a fresh baseline and awaits the deletion here, letting
   // failures propagate to the dialog instead of the inline notice.
   async function deleteMachineNow(machine: SetupMachineConfiguration) {
-    captureBaseline()
-    const baseline = baselineRef.current ?? undefined
+    if (disabled) throw new Error(interactionDisabledReason)
+    const blocked = validateOperation?.(machine, false, getComputerId?.(machine) ?? "")
+    if (blocked) throw new Error(blocked)
+    const baseline = structuredClone(machines as SetupMachineConfiguration[])
     if (onDeleteMachine) { await onDeleteMachine(machine, baseline); return }
-    const base = baseline ?? machines
-    const next = configurationRequest(base.filter(({ id }) => id !== machine.id)).machines
-    const outcome = baseline
-      ? onMachinesChange(next, scopedBaseline())
-      : onMachinesChange(next)
+    const next = configurationRequest(baseline.filter(({ id }) => id !== machine.id)).machines
+    const outcome = onMachinesChange(next, scopedBaseline(baseline, getComputerId?.(machine) ?? ""))
     if (outcome) await outcome
   }
 

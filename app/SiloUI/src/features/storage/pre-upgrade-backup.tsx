@@ -58,34 +58,41 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
   const [backup, setBackup] = useState<PreUpgradeBackup | null>(null)
   const [size, setSize] = useState<PreUpgradeBackupSize>("measuring")
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null)
+  const [connection, setConnection] = useState(0)
   const [removing, setRemoving] = useState(false)
-  const removal = useRef(false)
+  const removal = useRef<Promise<void> | null>(null)
+  const reads = useRef({ sequence: 0 })
   const refresh = useRef<() => Promise<void>>(async () => {})
 
   useEffect(() => {
     if (!backend) return
     let live = true
-    let sequence = 0
+    const requests = reads.current
     let unsubscribe: (() => void) | undefined
     refresh.current = async () => {
-      const mine = ++sequence
+      if (!live) return
+      const mine = ++requests.sequence
       try {
         const next = await backend.read()
-        if (!live || mine !== sequence) return
+        if (!live || mine !== requests.sequence) return
         setBackup(next)
         setLoadError(null)
         setLoaded(true)
       } catch (cause) {
-        if (live && mine === sequence) { setLoadError(message(cause)); setLoaded(true) }
+        if (live && mine === requests.sequence) { setLoadError(message(cause)); setLoaded(true) }
       }
     }
-    void backend.subscribe(() => { void refresh.current() }).then(stop => {
-      if (live) unsubscribe = stop
+    void backend.subscribe(() => { if (live) void refresh.current() }).then(stop => {
+      if (live) { unsubscribe = stop; setSubscriptionError(null) }
       else stop()
-    }).catch((cause: unknown) => console.error("Silo pre-upgrade backup:", message(cause)))
-    void refresh.current()
+    }).catch(() => {
+      if (live) setSubscriptionError("Silo could not listen for backup changes. Try again.")
+    }).then(() => {
+      if (live) void refresh.current()
+    })
     return () => { live = false; unsubscribe?.() }
-  }, [backend])
+  }, [backend, connection])
 
   // Every new read of a present backup is measured again: a failed deletion may have removed part of it.
   const present = backup !== null
@@ -99,30 +106,39 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
     return () => { live = false }
   }, [backend, measure, present, backup])
 
-  const remove = useCallback(async () => {
-    if (!backend || removal.current) return
-    removal.current = true
+  const remove = useCallback(() => {
+    if (!backend) return Promise.resolve()
+    if (removal.current) return removal.current
+    ++reads.current.sequence
     setRemoving(true)
-    try {
-      await backend.remove()
-      setBackup(null)
-    } catch (cause) {
-      // A failed deletion may have removed part of it: show what is left.
-      void refresh.current()
-      throw cause
-    } finally {
-      removal.current = false
-      setRemoving(false)
-    }
+    removal.current = Promise.resolve().then(async () => {
+      try {
+        await backend.remove()
+        ++reads.current.sequence
+        setBackup(null)
+        setLoadError(null)
+      } catch (cause) {
+        // A failed deletion may have removed part of it: show what is left.
+        void refresh.current()
+        throw cause
+      } finally {
+        removal.current = null
+        setRemoving(false)
+      }
+    })
+    return removal.current
   }, [backend])
 
   return {
     loaded,
     backup,
     size,
-    loadError,
+    loadError: loadError ?? subscriptionError,
     removing,
-    retry: () => { void refresh.current() },
+    retry: () => {
+      if (subscriptionError) setConnection(value => value + 1)
+      else void refresh.current()
+    },
     remove,
     reveal: async () => { await backend?.reveal() },
     acknowledge: async () => { await backend?.acknowledge() },

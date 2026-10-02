@@ -1,5 +1,5 @@
 //! A privileged local shell and an unprivileged guest child webview.
-use crate::{desktop_proxy::Proxy, editor, remote, remote_access, runtime};
+use crate::{desktop_proxy::Proxy, editor, owned_tunnel::Tunnel, remote, remote_access, runtime};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -7,10 +7,9 @@ use std::{
     os::unix::{
         fs::{FileTypeExt, MetadataExt},
         net::UnixStream,
-        process::CommandExt,
     },
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::Command,
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -19,80 +18,6 @@ use tauri::{
     WebviewWindowBuilder, Window,
 };
 
-/// Runs the forward in its own process group and ends the whole group (ssh
-/// and its ProxyCommand) when Silo's end of stdin closes: on Drop, and also
-/// when Silo crashes or is force-quit, since the kernel closes it then (G-16).
-/// `kill 0` is safe only because the group is the tunnel's own.
-const WATCHDOG: &str = r#"exec 3<&0 </dev/null
-"$@" 3<&- &
-child=$!
-{ read -r _ <&3; kill -s TERM 0; } &
-exec 3<&-
-wait "$child"
-kill -s TERM 0
-"#;
-
-/// The ssh forward and the private directory holding its Unix socket (G-04).
-struct Tunnel {
-    /// The watchdog shell, leader of the tunnel's process group.
-    child: Child,
-    /// Silo's end of the watchdog pipe; closing it ends the tunnel.
-    stdin: Option<ChildStdin>,
-    /// Set once the leader is reaped: its group id may then be reused.
-    exited: bool,
-    /// Removed after the child is reaped (fields drop after `drop`).
-    _directory: Option<tempfile::TempDir>,
-}
-impl Tunnel {
-    fn spawn(command: &Command, directory: Option<tempfile::TempDir>) -> std::io::Result<Self> {
-        let mut child = crate::applications::launch::sanitize_child(&mut Command::new("/bin/sh"))
-            .arg("-c")
-            .arg(WATCHDOG)
-            .arg("silo-desktop-tunnel")
-            .arg(command.get_program())
-            .args(command.get_args())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()?;
-        let stdin = child.stdin.take();
-        Ok(Self {
-            child,
-            stdin,
-            exited: false,
-            _directory: directory,
-        })
-    }
-    fn running(&mut self) -> bool {
-        if !self.exited && !matches!(self.child.try_wait(), Ok(None)) {
-            self.exited = true;
-        }
-        !self.exited
-    }
-}
-impl Drop for Tunnel {
-    fn drop(&mut self) {
-        drop(self.stdin.take());
-        if !self.running() {
-            return;
-        }
-        // The unreaped leader keeps the group id reserved, so this reaches only
-        // the tunnel's own processes. ssh and the shell exit on TERM at once.
-        let group = self.child.id() as i32;
-        unsafe { libc::killpg(group, libc::SIGTERM) };
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while Instant::now() < deadline {
-            if !self.running() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        unsafe { libc::killpg(group, libc::SIGKILL) };
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 struct Viewer {
     workspace: String,
     proxy: Option<Proxy>,
@@ -229,11 +154,15 @@ pub(crate) fn require_workspace(window: &Window, workspace: &str) -> Result<(), 
         Err("This window cannot access that desktop.".into())
     }
 }
-pub(crate) fn local_connection(app: &AppHandle, workspace: &str) -> Result<Value, String> {
+pub(crate) fn local_connection(
+    app: &AppHandle,
+    workspace: &str,
+    expected_id: Option<&str>,
+) -> Result<Value, String> {
     // Reading desktop connection credentials only observes a running VM; it takes
     // no operation gate so viewing stays available during other operations.
     runtime::shutdown::ensure_accepting_operations()?;
-    crate::desktop::connection_local(app, workspace)
+    crate::desktop::connection_local(app, workspace, expected_id)
 }
 
 /// `sun_path` holds 104 bytes on macOS and 108 on Linux, including the NUL.
@@ -311,7 +240,7 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
     let connection = if let Some((host, vm)) = &remote_target {
         remote::call_remote(app, host, "desktop.connect", json!({"vmId":vm}))?
     } else {
-        local_connection(app, workspace)?
+        local_connection(app, workspace, None)?
     };
     let guest = connection["port"]
         .as_u64()
@@ -357,6 +286,10 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
     let proxy = Proxy::start(socket, guest, username, password)?;
     Ok((proxy, Some(tunnel)))
 }
+fn viewer_title(name: &str, channel: crate::channel::Channel) -> String {
+    format!("{name} — {}", channel.product_name())
+}
+
 #[tauri::command]
 pub(crate) async fn open_desktop(
     app: AppHandle,
@@ -372,7 +305,7 @@ pub(crate) async fn open_desktop(
             // Verify the remote identity before creating a shell.
             let state = remote::call_remote(&app, &host, "desktop.status", json!({"vmId":vm}))?;
             let machine = state["name"].as_str().unwrap_or(&vm);
-            let computer = remote::remote_host_list()?
+            let computer = remote::saved_hosts()?
                 .into_iter()
                 .find(|h| h.id == host)
                 .map(|h| h.name);
@@ -415,7 +348,7 @@ pub(crate) async fn open_desktop(
             ViewerClaim::New(label) => label,
         };
         let result = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(route.into()))
-            .title(format!("{name} — Silo"))
+            .title(viewer_title(&name, crate::channel::current()))
             .inner_size(1200., 820.)
             .min_inner_size(640., 400.)
             .build();
@@ -703,6 +636,24 @@ mod geometry_tests {
 }
 
 #[cfg(test)]
+mod title_tests {
+    use super::*;
+    use crate::channel::Channel;
+
+    #[test]
+    fn desktop_window_titles_identify_the_build_channel() {
+        assert_eq!(
+            viewer_title("dev · Office", Channel::Production),
+            "dev · Office — Silo"
+        );
+        assert_eq!(
+            viewer_title("dev · Office", Channel::Development),
+            "dev · Office — Silo Dev"
+        );
+    }
+}
+
+#[cfg(test)]
 mod input_tests {
     use super::*;
 
@@ -729,6 +680,7 @@ mod input_tests {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
+    use std::process::Stdio;
 
     #[test]
     fn desktop_forward_uses_pinned_ssh_config_and_a_private_socket() {
@@ -894,12 +846,49 @@ mod transport_tests {
         let mut tunnel = Tunnel::spawn(&forward, None).unwrap();
         let pid = recorded_pid(&pid_file);
         // A crash or force-quit closes Silo's end of the pipe without Drop.
-        drop(tunnel.stdin.take());
+        tunnel.close_lifetime_pipe();
         assert!(ended(pid), "the forward outlived Silo");
         let deadline = Instant::now() + Duration::from_secs(5);
         while tunnel.running() {
             assert!(Instant::now() < deadline, "the watchdog outlived Silo");
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn closing_or_crashing_reaps_term_ignoring_forward_processes() {
+        for (script, crashed) in [
+            ("trap '' TERM; echo $$ > \"$1\"; exec sleep 30", false),
+            ("trap '' TERM; echo $$ > \"$1\"; exec sleep 30", true),
+            (
+                "sh -c 'trap \"\" TERM; echo $$ > \"$1\"; exec sleep 30' forward \"$1\" & wait",
+                false,
+            ),
+            (
+                "sh -c 'trap \"\" TERM; echo $$ > \"$1\"; exec sleep 30' forward \"$1\" & wait",
+                true,
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let pid_file = directory.path().join("forward.pid");
+            let mut forward = Command::new("/bin/sh");
+            forward.args(["-c", script, "forward"]).arg(&pid_file);
+            let mut tunnel = Tunnel::spawn(&forward, None).unwrap();
+            let group = tunnel.group_id();
+            let pid = recorded_pid(&pid_file);
+            assert_eq!(unsafe { libc::getpgid(pid) }, group);
+            if crashed {
+                tunnel.close_lifetime_pipe();
+            } else {
+                drop(tunnel);
+            }
+            let reaped = ended(pid);
+            if !reaped && unsafe { libc::getpgid(pid) } == group {
+                // Clean up only the recorded fixture's still-reserved group.
+                unsafe { libc::killpg(group, libc::SIGKILL) };
+                assert!(ended(pid));
+            }
+            assert!(reaped, "the TERM-ignoring forward outlived its tunnel");
         }
     }
 

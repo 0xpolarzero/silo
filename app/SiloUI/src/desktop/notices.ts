@@ -42,10 +42,24 @@ export function listenForNotices(handler: (notice: Notice) => void): () => void 
   if (!isTauri()) return () => {}
   let stopped = false
   let stop: (() => void) | undefined
-  void listen(NOTICE_EVENT, (event) => {
-    const parsed = noticeSchema.safeParse(event.payload)
-    if (parsed.success) handler(parsed.data)
-    else console.error("Silo notice: ignored malformed notice", parsed.error.message)
-  }).then((unlisten) => { if (stopped) unlisten(); else stop = unlisten }, (error: unknown) => console.error("Silo notice:", error))
-  return () => { stopped = true; stop?.() }
+  let connecting = false
+  const connect = () => {
+    if (stopped || stop || connecting) return
+    connecting = true
+    void listen(NOTICE_EVENT, (event) => {
+      if (stopped) return
+      const parsed = noticeSchema.safeParse(event.payload)
+      if (parsed.success) handler(parsed.data)
+      else console.error("Silo notice: ignored malformed notice", parsed.error.message)
+    }).then((unlisten) => { if (stopped) unlisten(); else stop = unlisten }, (error: unknown) => console.error("Silo notice:", error))
+      .finally(() => { connecting = false })
+  }
+  window.addEventListener("focus", connect)
+  connect()
+  return () => {
+    if (stopped) return
+    stopped = true
+    window.removeEventListener("focus", connect)
+    stop?.()
+  }
 }

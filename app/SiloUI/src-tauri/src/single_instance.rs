@@ -1,11 +1,6 @@
-//! Only one Silo runs at a time, across builds (F-09 and the owner answer in
-//! `docs/SiloUI-REVIEW-DESIGN-NOTES.md`). Every Silo build shares the bundle
-//! identifier, so `tauri-plugin-single-instance` keys them together: a later
-//! launch hands its arguments to the running Silo and exits while the plugins
-//! initialize, before the setup hook runs any migration, remote-management or
-//! VM work. The running Silo brings its main window forward (including when it
-//! is hidden to the tray) and, when the other launch came from a different
-//! build, explains why that build did not open.
+//! One Silo instance runs per channel. The single-instance plugin keys its
+//! claim by bundle identifier before setup can touch channel state. A second
+//! launch focuses the running copy and explains if its executable differs.
 use std::{
     ffi::OsString,
     fs::File,
@@ -14,8 +9,6 @@ use std::{
 };
 use tauri::{AppHandle, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-
-pub(crate) const ALREADY_RUNNING: &str = "Silo is already running. Quit it first.";
 
 /// Register this before every other plugin: the plugin exits a second instance
 /// while plugins initialize, and plugins initialize in registration order.
@@ -43,13 +36,14 @@ fn second_launch(app: &AppHandle, argv: Vec<String>, cwd: String) {
     if same_build(&own_executable(), &other) {
         return;
     }
+    let name = crate::channel::current().product_name();
     let mut dialog = app
         .dialog()
         .message(format!(
-            "{ALREADY_RUNNING}\n\nThe other copy of Silo was not opened: {}",
+            "{name} is already running. Quit it first.\n\nThe other copy of {name} was not opened: {}",
             other.display()
         ))
-        .title("Silo")
+        .title(name)
         .kind(MessageDialogKind::Warning);
     if let Some(window) = app.get_webview_window("main") {
         dialog = dialog.parent(&window);
@@ -80,7 +74,12 @@ fn resolve_program(program: &str, cwd: &Path, path: Option<OsString>) -> Option<
     std::env::split_paths(&path?)
         .filter(|directory| directory.is_absolute())
         .map(|directory| directory.join(program))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| {
+            use std::os::unix::fs::PermissionsExt;
+            candidate.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
 }
 
 /// Two launches are the same build when they run the same executable bytes. An
@@ -119,11 +118,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn path_lookup_skips_non_executable_copies_like_the_launcher() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let decoy = root.path().join("decoy");
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&decoy).unwrap();
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(decoy.join("silo-ui"), b"not an executable build").unwrap();
+        std::fs::set_permissions(
+            decoy.join("silo-ui"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let selected = bin.join("silo-ui");
+        std::fs::write(&selected, b"#!/bin/sh\nprintf selected").unwrap();
+        std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = std::env::join_paths([&decoy, &bin]).unwrap();
+        let launch = std::process::Command::new("silo-ui")
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(launch.status.success());
+        assert_eq!(launch.stdout, b"selected");
+        assert_eq!(
+            resolve_program("silo-ui", root.path(), Some(path)),
+            Some(selected)
+        );
+    }
+
+    #[test]
     fn resolves_absolute_relative_and_path_launches() {
         let directory = tempfile::tempdir().unwrap();
         let bin = directory.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(bin.join("silo-ui"), b"build").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(bin.join("silo-ui"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
         let path = Some(OsString::from(format!("relative:{}", bin.display())));
         assert_eq!(
             resolve_program("/opt/Silo/silo-ui", directory.path(), None),
