@@ -60,3 +60,18 @@ Import eligibility and validation messages remain unchanged.
 Verification: both format-error and duplicate-name fixtures in
 `import-popover.test.tsx` failed the stable-name assertion before the fix. They
 now verify the exact label, error description, invalid state, and disabled Import.
+
+## Dismissing native Quit confirmation lost keyboard position
+
+Trigger: while an input is focused, receive a native Quit request and dismiss the
+confirmation with Cancel or Escape. Radix's default restoration targets a dialog
+trigger, but this native-event dialog has none. Focus ended on the page body.
+
+The fix captures the focused element before opening and restores it through the
+supported close-autofocus callback. This follows the dialog dismissal example in
+[WCAG focus-order guidance](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html).
+The existing Quit decision and initial focus behavior are preserved.
+
+Verification: both dismissal regressions in `quit-request-confirmation.test.tsx`
+failed before the fix. They now restore the search field and still resolve the
+mocked Quit request to false. No native Quit or VM shutdown is exercised.
