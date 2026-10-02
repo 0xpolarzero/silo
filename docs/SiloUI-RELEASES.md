@@ -508,14 +508,25 @@ source and compiled guest server, and the guest archive. Cold LFS server builds
 use Go 1.25 or newer; CI installs Go 1.25.x. The source archive is SHA-256 checked
 before extraction and Go verifies module downloads against the pinned go.sum.
 The server is cross-compiled with CGO disabled for the Linux guest architecture,
-including on macOS hosts.
-Keys include the runner, target, Rust toolchain, staging scripts, runtime patch,
+including on macOS hosts. Before accepting a staged or shared executable, preparation
+resolves the effective compiler in the pinned module's Go 1.25.0 context. The
+[upstream go.mod](https://github.com/charmbracelet/git-lfs-transfer/blob/971c0284dc33b1ed3f7ed9dde5d4fc0cee62db6b/go.mod)
+contains no `toolchain` directive; cold builds verify that these selection lines
+still match. This respects [Go toolchain selection](https://go.dev/doc/toolchain),
+including `GOTOOLCHAIN` and module requirements. The executable manifest records
+the selected Go version, requested toolchain, staging-script recipe digest, and
+effective build flags, experiments, architecture tuning, and FIPS setting. A
+change to any of these rejects both executable caches. Builds and compiler notices
+use the selected compiler's GOROOT with further toolchain switching disabled.
+Keys include the runner, target, Rust and selected Go versions, staging scripts, runtime patch,
 and guest lockfile, so app version changes alone do not invalidate the runtime.
 Preparation always verifies and stages restored inputs and regenerates package
 metadata. Cache misses follow the normal build path.
 
 Release validation checks exact runtime-cache availability for each target using
-`lookup-only` on the existing validation runner. Warm platforms start their native
+`lookup-only` on the existing validation runner. Go setup runs before this lookup
+so a newer 1.25.x patch release cannot count as an exact hit for older executables;
+CI uses `GOTOOLCHAIN=local` consistently for lookup and preparation. Warm platforms start their native
 and package jobs directly, without an extra producer runner or artifact transfer.
 A missing exact cache starts one credential-free runtime producer inside that
 platform's `release-platform.yml` invocation. Its native and package jobs wait for
