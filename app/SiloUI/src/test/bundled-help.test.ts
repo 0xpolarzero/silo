@@ -51,3 +51,10 @@ it("explains checkpoint deletion blockers and cleanup when dependencies are remo
   expect(instructions?.textContent).toMatch(/dependencies.*removed/i)
   expect(instructions?.textContent).not.toMatch(/until its last dependent sandbox is deleted/i)
 })
+
+it("qualifies update instructions because Silo Dev has no release feed", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("With automatic checks enabled"))
+  expect(instructions?.textContent).toMatch(/production Silo app/i)
+  expect(instructions?.textContent).toMatch(/Silo Dev has no update feed/i)
+})
