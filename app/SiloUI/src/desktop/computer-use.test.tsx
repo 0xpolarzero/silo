@@ -562,6 +562,20 @@ describe("ChatGPT status ordering", () => {
     expect(store.getSnapshot().status).toMatchObject({ state: "ready", version: "1.2" })
     stop()
   })
+  it("drops a read error superseded by a status event", async () => {
+    const pending = deferred<unknown>()
+    const read = vi.fn(() => pending.promise)
+    let emit!: (payload: unknown) => void
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: read, listenStatus: async handler => { emit = handler; return () => {} } }))
+    const store = bridge.chatGptFor()
+    const stop = store.subscribe(() => {})
+    try {
+      await waitFor(() => expect(read).toHaveBeenCalledOnce())
+      act(() => emit({ state: "ready", path: "/p", version: "1.2" }))
+      await act(async () => { pending.reject(new Error("Status read failed")) })
+      expect(store.getSnapshot()).toMatchObject({ status: { state: "ready", version: "1.2" }, loadError: null })
+    } finally { stop() }
+  })
   it("lets the latest of overlapping reads win", async () => {
     const first = deferred<unknown>()
     const second = deferred<unknown>()
