@@ -282,6 +282,10 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
     let proxy = Proxy::start(socket, guest, username, password)?;
     Ok((proxy, Some(tunnel)))
 }
+fn viewer_title(name: &str, channel: crate::channel::Channel) -> String {
+    format!("{name} — {}", channel.product_name())
+}
+
 #[tauri::command]
 pub(crate) async fn open_desktop(
     app: AppHandle,
@@ -340,7 +344,7 @@ pub(crate) async fn open_desktop(
             ViewerClaim::New(label) => label,
         };
         let result = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(route.into()))
-            .title(format!("{name} — Silo"))
+            .title(viewer_title(&name, crate::channel::current()))
             .inner_size(1200., 820.)
             .min_inner_size(640., 400.)
             .build();
@@ -624,6 +628,24 @@ mod geometry_tests {
         for invalid in [0., -1., f64::INFINITY, f64::NAN] {
             assert!(desktop_position(0, 0, invalid, 0., 0.).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod title_tests {
+    use super::*;
+    use crate::channel::Channel;
+
+    #[test]
+    fn desktop_window_titles_identify_the_build_channel() {
+        assert_eq!(
+            viewer_title("dev · Office", Channel::Production),
+            "dev · Office — Silo"
+        );
+        assert_eq!(
+            viewer_title("dev · Office", Channel::Development),
+            "dev · Office — Silo Dev"
+        );
     }
 }
 
