@@ -103,6 +103,13 @@ Dev file had broader permissions. Backups use the same atomic writer as imports:
 accepts creation permissions, while
 [the copy API's mode](https://nodejs.org/docs/latest-v24.x/api/fs.html#fscopyfilesyncsrc-dest-mode)
 controls copy flags rather than permissions. Public SSH keys use `0644`.
+The writer sets final permissions and
+[syncs the open file](https://nodejs.org/docs/latest-v24.x/api/fs.html#fsfsyncsyncfd)
+before rename, then syncs the containing directory before continuing. Directory
+sync is required separately by the [Linux fsync contract](https://man7.org/linux/man-pages/man2/fsync.2.html).
+Failures close descriptors and remove partial private staging files. Fixture
+tests inject partial writes and file/directory sync failures using temporary
+HOMEs and an in-memory Keychain; they never run the importer against live data.
 
 Copied:
 
