@@ -60,3 +60,14 @@ Fixed and folded in `a37abab9`. All 17 module tests, Rust formatting, module Cli
 - **Consequence:** A bodyless client request gains bytes the client did not send. A strict upstream rejecting bytes after the declared request body closes without returning its response in the regression. No live guest failure was established.
 - **Fix:** Terminate each retained field once, then emit exactly one blank line whether or not retained fields exist.
 - **Regression:** `completed_http_requests_keep_write_side_open_for_response` now checks GET without Content-Length, GET with Content-Length zero, and POST with a body. The synthetic upstream rejects unexpected trailing bytes; all cases must still receive their response after client write-half-close.
+
+Fixed and folded in `7502c0cd`. All 17 module tests, Rust formatting, module Clippy with warnings denied, frontend typecheck, and frontend lint passed.
+
+## DESKTOP-PROXY-7 · P2 · Transient accept failures retire the entire listener
+
+- **Location:** `app/SiloUI/src-tauri/src/desktop_proxy.rs`, `Proxy::start` accept-loop error handling.
+- **Trigger:** An accept attempt returns Interrupted, ConnectionAborted, or ConnectionReset, affecting one pending connection rather than invalidating the listening socket.
+- **Evidence:** Every accept error except WouldBlock exits the loop and drops the listener. The regression injects a ConnectionAborted result before delegating subsequent accepts to the real loopback listener; before the fix, its retry channel disconnected because the accept worker exited. [The Linux accept manual](https://man7.org/linux/man-pages/man2/accept.2.html) lists connection-abort and interruption errors. [Tokio's listener documentation](https://docs.rs/tokio/latest/tokio/net/struct.TcpListener.html#errors) also warns that an aborted pending connection need not be a fatal accept-loop error.
+- **Consequence:** One transient failed connection closes the desktop's loopback port and prevents subsequent viewer requests. The existing backend health check retains a Proxy object and does not detect listener termination.
+- **Fix:** Retry the three transient connection/interruption error kinds; retain existing WouldBlock polling and cancellation behavior.
+- **Regression:** `transient_accept_errors_do_not_retire_the_listener` injects each error kind once and requires the production listener loop to attempt another accept. The seam uses the real TcpListener for subsequent calls and changes no signal handlers or file-descriptor limits.

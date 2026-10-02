@@ -359,6 +359,24 @@ impl Proxy {
         username: &str,
         password: &str,
     ) -> Result<Self, String> {
+        Self::start_with_accept(
+            upstream,
+            guest_port,
+            username,
+            password,
+            TcpListener::accept,
+        )
+    }
+
+    fn start_with_accept(
+        upstream: PathBuf,
+        guest_port: u16,
+        username: &str,
+        password: &str,
+        mut accept: impl FnMut(&TcpListener) -> std::io::Result<(TcpStream, std::net::SocketAddr)>
+            + Send
+            + 'static,
+    ) -> Result<Self, String> {
         if guest_port == 0
             || username.contains(':')
             || username.contains(['\r', '\n'])
@@ -385,7 +403,7 @@ impl Proxy {
         let active = Arc::new(AtomicUsize::new(0));
         thread::spawn(move || {
             while !worker_stop.load(Ordering::Acquire) {
-                match listener.accept() {
+                match accept(&listener) {
                     Ok((socket, _)) => {
                         if active.load(Ordering::Acquire) >= 48 {
                             drop(socket);
@@ -410,6 +428,16 @@ impl Proxy {
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(30))
                     }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::Interrupted
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::ConnectionReset
+                        ) =>
+                    {
+                        continue
+                    }
                     Err(_) => break,
                 }
             }
@@ -433,6 +461,39 @@ mod tests {
         let path = directory.path().join("desktop.sock");
         let listener = UnixListener::bind(&path).unwrap();
         (directory, listener, path)
+    }
+
+    #[test]
+    fn transient_accept_errors_do_not_retire_the_listener() {
+        for kind in [
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::Interrupted,
+        ] {
+            let (_directory, _upstream, socket) = guest();
+            let (retried_tx, retried_rx) = std::sync::mpsc::channel();
+            let mut failed = false;
+            let mut reported_retry = false;
+            let proxy =
+                Proxy::start_with_accept(socket, 6901, "silo", "password", move |listener| {
+                    if !failed {
+                        failed = true;
+                        return Err(kind.into());
+                    }
+                    if !reported_retry {
+                        reported_retry = true;
+                        retried_tx.send(()).unwrap();
+                    }
+                    listener.accept()
+                })
+                .unwrap();
+            let retried = retried_rx.recv_timeout(Duration::from_secs(3));
+            drop(proxy);
+            assert!(
+                retried.is_ok(),
+                "accept error retired the listener: {kind:?}"
+            );
+        }
     }
 
     struct InterruptedOnce {
