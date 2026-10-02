@@ -109,3 +109,9 @@ A broader caller run passed 100 of 101 tests; the existing 6,001-record log-wind
 - Consequence: The toast tracker falls through to dismissal, showing neither the outcome nor its required action. A user who navigated away from the repository row loses the background notification precisely when the remote branch may already have changed.
 - Fix: Replace progress with a persistent warning containing the backend's check-GitHub explanation. Offer no Retry and do not clear or acknowledge the backend record when this warning closes. Dismiss the warning once the repository check removes that record.
 - Test: Transition from pushing to unknown, assert the warning and explanation, verify no Retry, close the warning, and assert neither backend dismissal nor push runs. Also verify that the repository acknowledgment removes the warning. Both regressions failed first; output is saved in `/tmp/fe-lib-hooks-12-red.log` and `/tmp/fe-lib-hooks-12-ack-red.log`.
+
+## Follow-up loop verification
+
+The second bounded loop fixed FE-LIB-HOOKS-8 through FE-LIB-HOOKS-12 in five separate commits, each immediately folded into `codex/integration`. Each fix includes a patch changeset and a regression that failed first.
+
+The combined Node 24 fixture run passed **163 tests across 11 suites**: the operation-toast notice and body suites, visible text, shortcuts, relative time, sidebar, file tree, repository push feedback, lifecycle notifications, queue notifications, and sandbox transfer. Exact output is saved in `/tmp/fe-lib-hooks-round-two-check.log`. Frontend typecheck, scoped oxlint, `git diff --check`, and Rust 1.94.0 formatting checks passed. No native application or live VM was launched, and no production data or real credentials were accessed.
