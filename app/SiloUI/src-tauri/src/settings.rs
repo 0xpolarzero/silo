@@ -338,7 +338,9 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
     };
     if !only_fields(machine, fields, optional)
         || machine.get("desktop").is_some_and(|desktop| {
-            serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone()).is_err()
+            desktop.get("startWithSandbox").is_none()
+                || serde_json::from_value::<crate::desktop::DesktopConfiguration>(desktop.clone())
+                    .is_err()
         })
         || !valid_uuid(&machine["id"])
         || !(if unfinished {
@@ -1813,6 +1815,38 @@ mod tests {
         saved["maxCPUs"] = json!(12);
         saved["maxMemoryGiB"] = json!(48);
         assert!(valid_machine(&saved, false));
+    }
+
+    #[test]
+    fn malformed_saved_desktop_policy_protects_the_original_draft() {
+        let mut draft = unfinished_draft();
+        draft["machines"][0] = json!({
+            "id":"95168b7e-aa9f-4dc1-a5de-2865c1b0bb64", "kind":"vm", "name":"dev",
+            "cpus":2,"maxCPUs":4,"memoryGiB":4,"maxMemoryGiB":8,
+            "workspaceStorageGiB":60,"runtimeStorageGiB":80
+        });
+        for desktop in [json!({}), json!({"builtIn":true})] {
+            draft["machines"][0]["desktop"] = desktop;
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("settings.json");
+            let original = serde_json::to_vec(&json!({
+                "schemaVersion":1,"settings":{"theme":"dark"},"onboardingDraft":draft
+            }))
+            .unwrap();
+            fs::write(&path, &original).unwrap();
+            let mut store = SettingsStore::load(Some(path.clone()));
+            assert!(store.snapshot().write_protected);
+            assert!(store.snapshot().save_error.is_some());
+            store.update_draft(unfinished_draft()).unwrap();
+            assert_eq!(fs::read(path).unwrap(), original);
+        }
+        for desktop in [
+            json!({"startWithSandbox":false}),
+            json!({"startWithSandbox":true,"builtIn":true}),
+        ] {
+            draft["machines"][0]["desktop"] = desktop;
+            assert!(valid_draft(&draft));
+        }
     }
 
     #[test]
