@@ -145,6 +145,17 @@ it("opens the package release for manual installations instead of offering nativ
   expect(backend.download).not.toHaveBeenCalled()
   expect(screen.queryByRole("button", { name: "Restart and update" })).not.toBeInTheDocument()
 })
+it("retries opening manual installers after the release page failed to open", async () => {
+  const user = userEvent.setup()
+  const { backend } = mount({ packageKind: "manual", phase: "available", availableVersion: "0.2.0" }, backend => {
+    vi.mocked(backend.openRelease).mockRejectedValueOnce(new Error("browser unavailable"))
+  })
+  await user.click(await screen.findByRole("button", { name: "View installers on GitHub" }))
+  await user.click(await screen.findByRole("button", { name: "Retry" }))
+  expect(backend.openRelease).toHaveBeenCalledTimes(2)
+  expect(backend.check).not.toHaveBeenCalled()
+  expect(backend.download).not.toHaveBeenCalled()
+})
 it("keeps native failure details collapsed and shows a useful retry", async () => {
   const user = userEvent.setup()
   const { backend } = mount({ phase: "error", error: "The download was interrupted.", errorDetails: "Network connection closed.", availableVersion: "0.2.0" })
