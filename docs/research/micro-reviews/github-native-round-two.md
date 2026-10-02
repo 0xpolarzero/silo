@@ -25,3 +25,7 @@ The production cache and reconnect seam regression failed at the old-credential 
 The reader rejects documents larger than 16 MiB, while the writer previously replaced the saved file without checking its encoded size. A 99,900-entry catalog with supported owner/repository name lengths exceeded that limit and was accepted by the writer, making subsequent reads fail.
 
 `save_at` now shares the reader's size limit and checks serialized bytes before creating or replacing files. The temporary-directory regression failed before the fix because the oversized save succeeded; after the fix it verifies byte-for-byte preservation, reload of the old account, and a successful smaller retry. The harness includes the production `Document`, `load_at`, and `save_at`, with only rate-floor collection stubbed. No application data was used.
+
+## Bound oversized configuration reads
+
+The old `fs::read` allocated and read the entire file before checking the 16 MiB limit. The production read seam now uses `Read::take` at the limit plus one sentinel byte, rejecting oversized inputs without consuming their remaining content. The counting-reader regression consumed all 32 MiB before the fix and exactly 16 MiB plus one byte after it; valid document parsing and malformed JSON rejection remain covered. Focused Rust tests, Clippy, formatting, and whitespace checks passed.
