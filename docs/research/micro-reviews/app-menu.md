@@ -58,3 +58,13 @@ At the end of the approximately 20-minute loop, the full Cargo test still had no
 A separate stale-owner cache-removal candidate was rejected: the router's per-key gate already serializes current delivery and withdrawal call paths before an adapter captures its proxy owner. A standalone helper call sequence alone did not establish a reachable product defect.
 
 APP-MENU-4 verification: the regression failed with an old OS notice still active, then passed after only delivered outcomes advanced the submitted revision. A standalone root compiled the actual router, menu, channel, integration wrapper, macOS adapter, and Linux ID cache against matching cached native-test dependencies; all 42 pure/fixture tests passed. Temporary module-path and include-path adjustments made the integration wrapper load from the standalone root. No native OS delivery or login-item function was invoked. `cargo +1.94.0 fmt --check`, `npm --prefix app/SiloUI run typecheck`, and `npm --prefix app/SiloUI run lint` passed. The Linux adapter's changed return handling was formatting/source checked; it was not compiled on this macOS host.
+
+## APP-MENU-5 — P2 — Queued notices use policy captured before a slow delivery
+
+- **Scope:** `notifications.rs` delivery policy and per-key gate.
+- **Trigger:** One OS delivery waits for its callback; another notice for the same key checks focus and preferences, then waits on the gate. The user focuses the main window or disables notifications before the gate becomes available.
+- **Consequence:** The waiting notice submits using the earlier policy, despite the current setting or focus state suppressing it. macOS authorization callbacks can wait up to 30 seconds, making the wait concrete.
+- **Fix:** Inject the policy check at the delivery seam and evaluate it after acquiring the per-key gate and checking the request revision, immediately before calling the OS adapter.
+- **Regression:** `queued_delivery_rechecks_preferences_after_an_in_flight_notice` holds the first delivery in its fake adapter, queues a second, disables the preference, then releases the first. The old path submitted both notices; the fixed path submits only the already in-flight one.
+
+APP-MENU-5 verification: the regression first submitted both `older` and `newer` after the preference was disabled, then submitted only `older` with policy evaluation inside the gate. The native fixture root passed all 43 tests, including the real macOS adapter's compiled types and the Linux ID-cache fixtures. Formatting, typecheck, and lint passed. Fixture callbacks were the only notification senders exercised; no app, real notifications, VM state, or user settings were accessed.
