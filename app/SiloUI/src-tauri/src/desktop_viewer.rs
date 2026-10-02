@@ -236,11 +236,15 @@ pub(crate) fn require_workspace(window: &Window, workspace: &str) -> Result<(), 
         Err("This window cannot access that desktop.".into())
     }
 }
-pub(crate) fn local_connection(app: &AppHandle, workspace: &str) -> Result<Value, String> {
+pub(crate) fn local_connection(
+    app: &AppHandle,
+    workspace: &str,
+    expected_id: Option<&str>,
+) -> Result<Value, String> {
     // Reading desktop connection credentials only observes a running VM; it takes
     // no operation gate so viewing stays available during other operations.
     runtime::shutdown::ensure_accepting_operations()?;
-    crate::desktop::connection_local(app, workspace)
+    crate::desktop::connection_local(app, workspace, expected_id)
 }
 
 /// `sun_path` holds 104 bytes on macOS and 108 on Linux, including the NUL.
@@ -318,7 +322,7 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
     let connection = if let Some((host, vm)) = &remote_target {
         remote::call_remote(app, host, "desktop.connect", json!({"vmId":vm}))?
     } else {
-        local_connection(app, workspace)?
+        local_connection(app, workspace, None)?
     };
     let guest = connection["port"]
         .as_u64()
