@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
+import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
 import { OverviewPage } from "./overview-page"
@@ -131,4 +132,24 @@ it("keeps a local edit scoped to local machines when a connected computer is rem
   await user.click(screen.getByRole("button", { name: "Save" }))
   expect(onMachinesChange).toHaveBeenCalledExactlyOnceWith(local.map(item => item.id === machine.id ? { ...item, cpus: 4 } : item), local)
   expect(actions.saveRemoteMachine).not.toHaveBeenCalled()
+})
+
+
+it("keeps a new sandbox draft when its selected computer is removed before Save", async () => {
+  const { source, actions, onMachinesChange, user, view } = setup()
+  render(<Toaster />)
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+  await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "2")
+  view.rerender(<OverviewPage source={{ ...source, workspaces: source.workspaces.filter(workspace => !workspace.computer), remoteComputers: [] }}
+    actions={actions} onMachinesChange={onMachinesChange} />)
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(actions.saveRemoteMachine).not.toHaveBeenCalled()
+  expect(onMachinesChange).not.toHaveBeenCalled()
+  expect(await screen.findByText("The selected computer was removed. Choose another computer before saving.")).toBeVisible()
+  expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("2")
+  await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(onMachinesChange).toHaveBeenCalledWith(expect.arrayContaining([expect.objectContaining({ cpus: 2 })]), expect.any(Array))
 })
