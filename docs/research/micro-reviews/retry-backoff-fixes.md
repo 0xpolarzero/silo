@@ -7,3 +7,11 @@
 - Consequence: an unavailable remote computer receives repeated connection attempts at the normal progress interval.
 - Fix: double the delay after failed reads, cap it at 30 seconds, and reset it after a successful status read.
 - Verification: the regression checks every deadline, repeated capped delays, recovery, and unsubscribe cleanup. Existing visibility and explicit-retry tests remain in the focused suite.
+
+## Sandbox computer-use state
+
+- Trigger: the computer-use panel remains active while sandbox state reads fail.
+- Evidence: `ComputerUseSection` used an unconditional five-second interval. Its fake-timer regression observed another read before the first ten-second backoff deadline.
+- Consequence: guest state reads or remote connection attempts continue at the normal progress interval throughout an outage.
+- Fix: schedule the next read after completion, double the delay on failure up to 30 seconds, and reset the delay on success. Effect cleanup prevents in-flight reads from restarting an inactive schedule.
+- Verification: the regression checks growing and capped delays, recovery, and inactivity; existing tests cover hidden documents and explicit mutations.

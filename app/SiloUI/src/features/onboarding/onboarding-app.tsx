@@ -34,6 +34,7 @@ export interface OnboardingAppProps {
   presentationOnlyCompleted?: boolean
   repositoryOptions?: readonly string[]
   repositoryPolicies?: readonly ApplicationGitHubWorkspacePolicy[]
+  tokenConnected?: boolean
   onOpenApp?: () => void
   onRetryDependencies?: () => void
   onConnectComputer?: () => void
@@ -147,6 +148,7 @@ export function OnboardingApp({
   presentationOnlyCompleted = false,
   repositoryOptions,
   repositoryPolicies,
+  tokenConnected = false,
   onOpenApp,
   onRetryDependencies,
   onConnectComputer,
@@ -157,7 +159,7 @@ export function OnboardingApp({
       currentStep: "dependencies" as const,
       machines: source.machineConfigurations.map((machine) => ({ ...machine })),
       unfinishedMachineEditor: null,
-      workspaceRepositoryAccess: Object.fromEntries((repositoryPolicies ?? []).map((policy) => [policy.workspace, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false }])),
+      workspaceRepositoryAccess: Object.fromEntries((repositoryPolicies ?? []).map((policy) => [policy.workspace, { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false, ...(policy.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}) }])),
       workspaceSelections: repositoryPolicies ? Object.fromEntries(repositoryPolicies.map((policy) => [policy.workspace, [...policy.repositories]])) : initialWorkspaceSelections(source),
       workspaceIdentities: repositoryPolicies ? { ...initialWorkspaceIdentities(source), ...Object.fromEntries(repositoryPolicies.map((policy) => [policy.workspace, { ...policy.identity }])) } : initialWorkspaceIdentities(source),
     }
@@ -170,6 +172,7 @@ export function OnboardingApp({
   const editedIdentities = useRef(new Set(Object.keys(onboardingDraft?.workspaceIdentities ?? {})))
   const editedSelections = useRef(new Set(Object.keys(onboardingDraft?.workspaceSelections ?? {})))
   const editedRepositoryAccess = useRef(new Set(Object.keys(onboardingDraft?.workspaceRepositoryAccess ?? {})))
+  const editedAuthenticationMethods = useRef(new Set(Object.entries(onboardingDraft?.workspaceRepositoryAccess ?? {}).filter(([, access]) => access.authenticationMethod !== undefined).map(([name]) => name)))
   const policiesInitialized = useRef(new Set(onboardingDraft ? [] : (repositoryPolicies ?? []).map(({ workspace }) => workspace)))
   const recoveryCleared = useRef(false)
   // Existing sandboxes the user deleted with the list's own Delete confirmation.
@@ -234,6 +237,12 @@ export function OnboardingApp({
       policiesInitialized.current.add(name)
       if (!editedRepositoryAccess.current.has(name)) {
         next.workspaceRepositoryAccess[name] = { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false }
+        changed = true
+      }
+      if (!editedAuthenticationMethods.current.has(name) && policy.authenticationMethod) {
+        next.workspaceRepositoryAccess[name] = {
+          ...next.workspaceRepositoryAccess[name], authenticationMethod: policy.authenticationMethod,
+        }
         changed = true
       }
       if (!editedSelections.current.has(name)) {
@@ -479,11 +488,13 @@ export function OnboardingApp({
           activityEvents={source.activityEvents ?? source.progressEvents}
           workspaces={machineWorkspaceViews}
           connectionState={githubConnectionState}
+          tokenConnected={tokenConnected}
           notice={operationError ? <p role="alert" className="text-xs text-destructive">{operationError}</p> : undefined}
           repositoryOptions={availableRepositories}
           workspaceSelections={workspaceSelections}
           workspaceRepositoryAccess={draft.workspaceRepositoryAccess}
           onWorkspaceRepositoryAccessChange={(workspace, access) => {
+            if (access.authenticationMethod !== currentDraft.current.workspaceRepositoryAccess?.[workspace]?.authenticationMethod) editedAuthenticationMethods.current.add(workspace)
             editedRepositoryAccess.current.add(workspace)
             updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })
           }}

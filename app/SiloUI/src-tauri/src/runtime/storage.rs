@@ -39,10 +39,12 @@ struct ReclaimEntry {
     trigger: String,
     reclaimed_bytes: Option<u64>,
     error: Option<String>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Record {
     #[serde(default)]
     history: Vec<ReclaimEntry>,
@@ -50,6 +52,8 @@ struct Record {
     last_attempt_at: Option<u64>,
     last_reclaimed_bytes: Option<u64>,
     last_error: Option<String>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,6 +104,7 @@ fn load(paths: &RuntimePaths, id: &str) -> Result<Record, RuntimeError> {
                 trigger: "legacy".into(),
                 reclaimed_bytes: record.last_reclaimed_bytes,
                 error: None,
+                extra: serde_json::Map::new(),
             });
         }
     }
@@ -453,6 +458,7 @@ fn trim_triggered(
             trigger: trigger.into(),
             reclaimed_bytes: None,
             error: record.last_error.clone(),
+            extra: serde_json::Map::new(),
         },
     );
     record.history.truncate(HISTORY_LIMIT);
@@ -751,47 +757,7 @@ async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageSta
         };
         shutdown::ensure_accepting_operations()?;
         let paths = runtime_paths(&app)?;
-        let result = (|| {
-            let machine = machine(&paths, &id)?;
-            if checkpoints::is_pending(&paths, machine.id())? {
-                // No runtime sandbox or disk exists until the user starts it.
-                if reclaim {
-                    return Err(failure(&format!("Start {} first.", machine.name())));
-                }
-                let record = load(&paths, machine.id())?;
-                let (checkpoint_host_bytes, checkpoint_count) = checkpoints::storage_totals(
-                    &ProcessRunner,
-                    &paths,
-                    machine.id(),
-                    machine.name(),
-                );
-                return Ok(StorageState {
-                    checkpoint_host_bytes,
-                    checkpoint_count,
-                    history: record.history,
-                    workspace_host_bytes: Some(0),
-                    runtime_host_bytes: Some(0),
-                    workspace_used_bytes: None,
-                    workspace_capacity_bytes: None,
-                    last_reclaimed_bytes: record.last_reclaimed_bytes,
-                    last_trim_at: record.last_trim_at,
-                    last_error: None,
-                });
-            }
-            let observed = inspect_workspace(&ProcessRunner, &paths, machine.name())?;
-            verify(&machine, &observed)?;
-            if reclaim {
-                trim(
-                    &ProcessRunner,
-                    &paths,
-                    &machine,
-                    &observed,
-                    TRIM_BUDGET,
-                    now(),
-                )?;
-            }
-            state(&ProcessRunner, &paths, &machine, &observed)
-        })();
+        let result = storage_with(&ProcessRunner, &paths, &id, reclaim);
         result.map_err(|e| safe_activity_error(&e))
     })
     .await
@@ -799,6 +765,52 @@ async fn command(app: AppHandle, id: String, reclaim: bool) -> Result<StorageSta
         "Silo could not finish the workspace storage action. Refresh the Storage tab and retry."
             .to_string()
     })?
+}
+
+fn storage_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    id: &str,
+    reclaim: bool,
+) -> Result<StorageState, RuntimeError> {
+    let machine = machine(paths, id)?;
+    let absent = if checkpoints::pending_view(paths, machine.id(), false)? {
+        let exists = list_managed(runner, paths)?
+            .iter()
+            .any(|entry| entry.name == machine.name());
+        checkpoints::pending_view(paths, machine.id(), exists)?
+    } else {
+        false
+    };
+    if absent {
+        if reclaim {
+            return Err(failure(&format!("Start {} first.", machine.name())));
+        }
+        let record = load(paths, machine.id())?;
+        let (checkpoint_host_bytes, checkpoint_count) =
+            checkpoints::storage_totals(runner, paths, machine.id(), machine.name());
+        return Ok(StorageState {
+            checkpoint_host_bytes,
+            checkpoint_count,
+            history: record.history,
+            workspace_host_bytes: Some(0),
+            runtime_host_bytes: Some(0),
+            workspace_used_bytes: None,
+            workspace_capacity_bytes: None,
+            last_reclaimed_bytes: record.last_reclaimed_bytes,
+            last_trim_at: record.last_trim_at,
+            last_error: record.last_error,
+        });
+    }
+    let observed = inspect_workspace(runner, paths, machine.name())?;
+    verify(&machine, &observed)?;
+    if reclaim {
+        if checkpoints::needs_explicit_start(paths, machine.id())? {
+            return Err(failure("The sandbox has an unfinished restore. Retry Start before reclaiming workspace space."));
+        }
+        trim(runner, paths, &machine, &observed, TRIM_BUDGET, now())?;
+    }
+    state(runner, paths, &machine, &observed)
 }
 
 #[cfg(test)]

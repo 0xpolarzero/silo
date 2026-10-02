@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react"
+import { errorMessage } from "@/lib/operation-toast"
 import type { ApplicationWorkspace } from "./application-source"
 import { isUnsupportedRemote, logIdentity, LOG_ROW_HEIGHT, type LogEntry, type LogLoader, type LogPage, type LogQuery } from "./logs"
 
@@ -192,7 +193,7 @@ class HistoryStore {
       else {
         const retained = previous.get(key)
         if (retained) results.push(retained)
-        this.errors.set(key, `${workspace.machine.name}: ${String(value.reason)}`)
+        this.errors.set(key, `${workspace.machine.name}: ${errorMessage(value.reason)}`)
       }
     }
     const historyLimited = this.snapshot.historyLimited && results.some(result => previous.get(ownerKey(result.workspace)) === result)
@@ -219,7 +220,7 @@ class HistoryStore {
       const result = requested[index]
       const key = ownerKey(result.workspace)
       if (value.status === "rejected") {
-        this.errors.set(key, `${result.workspace.machine.name}: ${String(value.reason)}`)
+        this.errors.set(key, `${result.workspace.machine.name}: ${errorMessage(value.reason)}`)
         this.failedPaging.add(key)
         continue
       }

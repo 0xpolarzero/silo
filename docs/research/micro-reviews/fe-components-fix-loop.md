@@ -31,3 +31,4 @@ Scope: `app/SiloUI/src/components/`, correctness and accessibility defects found
 - **Suggested fix:** Assign each write an attempt token; only the latest mounted attempt may change feedback or start its reset timer.
 - **Regression:** `copy-button.test.tsx` controls the two clipboard promises and checks that both latest-success and latest-failure feedback survive an older opposite completion.
 - **Verification:** Both new cases failed before the fix; focused tests and the required checks are run before commit.
+- **Integration:** Concurrent commit `dfebec66` supplied the same attempt guard while this fix was being checked. The merge retains that implementation and its cleanup tests, adds both opposite-result regressions from this review, and drops the duplicate changeset.

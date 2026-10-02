@@ -237,6 +237,25 @@ fn project_observed(
     project_ports(value, host, tunnels)
 }
 
+fn validate_remote_ports(value: &Value) -> Result<(), String> {
+    for row in value["workspaces"]
+        .as_array()
+        .ok_or("Invalid remote network state.")?
+    {
+        row["vmId"].as_str().ok_or("Missing remote VM identity.")?;
+        for port in row["ports"]
+            .as_array()
+            .ok_or("Invalid remote port state.")?
+        {
+            port["port"]
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .ok_or("Invalid remote port.")?;
+        }
+    }
+    Ok(())
+}
+
 /// Rewrites the owner's rows for this computer: rows become remote targets, ports show this
 /// computer's tunnel (never the owner's loopback endpoint). Each sandbox gets the host
 /// name its websites open at here (C-24; the owner's own host choice is ignored).
@@ -246,6 +265,8 @@ fn project_ports(
     host: &str,
     tunnels: &mut Tunnels,
 ) -> Result<Projection, String> {
+    // Reject the whole response before changing tunnel ownership or scheduling workers.
+    validate_remote_ports(&value)?;
     let mut observed = HashSet::new();
     let mut closed = Vec::new();
     let mut reconnect = Vec::new();
@@ -829,6 +850,45 @@ mod tests {
         assert!(
             tunnels.live.contains_key(&key("other")) && tunnels.intents.contains_key(&key("other"))
         );
+    }
+
+    #[test]
+    fn an_invalid_snapshot_cannot_strand_a_reconnect() {
+        let mut state = Tunnels::default();
+        state.intents.insert(key("office"), intent(43000));
+        let mut invalid = observed(Some(32000));
+        invalid["workspaces"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"workspace":"bad","ports":[]}));
+        assert!(project_ports(invalid, "office", &mut state).is_err());
+        assert!(
+            !state.connecting.contains(&key("office")),
+            "no worker was started for the rejected snapshot"
+        );
+        let next = project_ports(observed(Some(32000)), "office", &mut state).unwrap();
+        assert_eq!(next.reconnect, [(key("office"), intent(43000), 32000)]);
+    }
+
+    #[test]
+    fn an_invalid_snapshot_keeps_the_existing_tunnel() {
+        let mut state = Tunnels::default();
+        state.live.insert(key("office"), tunnel(43000, 32000));
+        state.intents.insert(key("office"), intent(43000));
+        let mut invalid = observed(Some(32001));
+        invalid["workspaces"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"vmId":"bad","ports":[{"port":65536}]}));
+        assert!(project_ports(invalid, "office", &mut state).is_err());
+        assert!(
+            state
+                .live
+                .get_mut(&key("office"))
+                .is_some_and(Tunnel::alive),
+            "a rejected snapshot closed the working tunnel"
+        );
+        assert!(state.connecting.is_empty());
     }
 
     #[test]

@@ -102,6 +102,12 @@ class GuestPublicationTests(unittest.TestCase):
         self.assertLess(workflow.index(command), workflow.index('node app/SiloUI/scripts/build-guest-image.mjs arm64'))
         self.assertLess(workflow.index(command), workflow.index('docker push'))
 
+    def test_publication_queue_keeps_multiple_pending_versions(self):
+        workflow = (SCRIPT.parents[3] / '.github/workflows/guest-image.yml').read_text()
+        concurrency = workflow.split('\nconcurrency:\n', 1)[1].split('\njobs:', 1)[0]
+        self.assertIn('  queue: max', concurrency.splitlines())
+        self.assertIn('  cancel-in-progress: false', concurrency.splitlines())
+
 
 if __name__ == '__main__':
     unittest.main()

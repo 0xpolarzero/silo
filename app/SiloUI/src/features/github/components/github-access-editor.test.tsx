@@ -5,6 +5,63 @@ import { describe, expect, it, vi } from "vitest"
 import { GitHubAccessEditor } from "@/features/github/components/github-access-editor"
 
 describe("GitHubAccessEditor", () => {
+  it("keeps the highlighted repository when the catalog order changes", async () => {
+    const user = userEvent.setup()
+    const onSelections = vi.fn()
+    const props = {
+      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions: ["acme/base", "acme/silo"], workspaceSelections: {}, workspaceIdentities: {},
+      currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
+      onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
+    }
+    const view = render(<GitHubAccessEditor {...props} />)
+    await user.click(screen.getByRole("combobox"))
+    await user.keyboard("{ArrowDown}")
+    expect(screen.getByRole("option", { name: "acme/silo" })).toHaveAttribute("aria-selected", "true")
+    view.rerender(<GitHubAccessEditor {...props} repositoryOptions={["acme/base", "acme/other", "acme/silo"]} />)
+    await user.keyboard("{Enter}")
+    expect(onSelections).toHaveBeenCalledExactlyOnceWith("dev", [{ repository: "acme/silo", allowPushes: false }])
+  })
+
+  it("does not add a different repository when the highlighted result disappears", async () => {
+    const user = userEvent.setup()
+    const onSelections = vi.fn()
+    const props = {
+      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions: ["acme/silo", "acme/other"], workspaceSelections: {}, workspaceIdentities: {},
+      currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
+      onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
+    }
+    const view = render(<GitHubAccessEditor {...props} />)
+    await user.click(screen.getByRole("combobox"))
+    view.rerender(<GitHubAccessEditor {...props} repositoryOptions={["acme/other"]} />)
+    await user.keyboard("{Enter}")
+    expect(onSelections).not.toHaveBeenCalled()
+    expect(screen.getByRole("combobox")).not.toHaveAttribute("aria-activedescendant")
+    await user.keyboard("{ArrowDown}{Enter}")
+    expect(onSelections).toHaveBeenCalledExactlyOnceWith("dev", [{ repository: "acme/other", allowPushes: false }])
+  })
+
+  it("keeps GitHub authorization highlighted when repository results change", async () => {
+    const user = userEvent.setup()
+    const onSelections = vi.fn()
+    const onManage = vi.fn()
+    const props = {
+      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions: ["acme/silo"], workspaceSelections: {}, workspaceIdentities: {},
+      currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
+      onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(), onManageRepositories: onManage,
+    }
+    const view = render(<GitHubAccessEditor {...props} />)
+    await user.click(screen.getByRole("combobox"))
+    await user.keyboard("{ArrowDown}")
+    expect(screen.getByRole("option", { name: "Add more repositories on GitHub" })).toHaveAttribute("aria-selected", "true")
+    view.rerender(<GitHubAccessEditor {...props} repositoryOptions={["acme/silo", "acme/other"]} />)
+    await user.keyboard("{Enter}")
+    expect(onManage).toHaveBeenCalledOnce()
+    expect(onSelections).not.toHaveBeenCalled()
+  })
+
   it("offers repository authorization as the final search item, including empty results", async () => {
     const user = userEvent.setup()
     const onManageRepositories = vi.fn()

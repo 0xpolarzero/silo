@@ -21,3 +21,14 @@ Scope: `app/SiloUI/src/lib/` and `app/SiloUI/src/hooks/`. Follow-up to the untra
 - Consequence: After the 160 ms close delay, the preview collapses despite keyboard focus inside it and restores focus to the toggle. The rendered sidebar regression observes `data-previewing=false` instead of the expected retained preview.
 - Fix: Track Tab in the preview's existing window keydown listener, including events that originate on the toggle.
 - Test: Enter the real preview from its toggle with Tab, advance beyond the close delay, and assert the preview and focused navigation control remain. Then move focus to page content and verify dismissal still works.
+
+
+## FE-LIB-HOOKS-5: Soft hyphens bypass guest-name visibility markers
+
+- Priority: P2.
+- File: `app/SiloUI/src/lib/visible-text.ts:13`.
+- Trigger: A guest provides a file or folder name such as `con\u00ADfig` beside an ordinary `config`. The visibility helper leaves U+00AD unchanged; the file tree uses that output for its displayed name and accessible folder label.
+- Consequence: A distinct guest-controlled path can look like the ordinary path because soft hyphens have no width unless a line breaks there. The unit and rendered-file-tree regressions both failed to find the expected visible marker before the fix.
+- Fix: Include U+00AD in the existing invisible-character regex.
+- Test: Assert `con\u00ADfig.json` displays a U+00AD marker. Render a folder with that character, find it by its marked label, and verify Open passes the original path unchanged.
+- Primary source: [Unicode UAX #14, Soft Hyphen](https://www.unicode.org/reports/tr14/tr14-51.html#SoftHyphen), which defines its invisible, zero-width rendering between line breaks. This is a targeted correction to the existing display policy, not a claim to prevent all Unicode lookalike names.

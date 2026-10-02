@@ -1,10 +1,12 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { spawn, execFileSync } from "node:child_process"
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
+import { Readable } from "node:stream"
+import { MICROSANDBOX_PATCHES, runtimeTargets, sha256, stageRuntime } from "./microsandbox-runtime.mjs"
 
 const runtimeModule = new URL("./microsandbox-runtime.mjs", import.meta.url).href
 const toolScript = `#!${process.execPath}
@@ -112,4 +114,44 @@ test("a failed preparation removes its own extracted source", async t => {
   for (const name of await readdir(builds)) {
     assert.deepEqual((await readdir(join(builds, name))).filter(entry => entry.startsWith("work-")), [])
   }
+})
+
+
+test("failed capability verification removes staging files and preserves the published runtime", async t => {
+  const { root } = await fixture(t)
+  const appRoot = join(root, "app")
+  const targetTriple = "aarch64-apple-darwin"
+  const executable = Buffer.from(`#!${process.execPath}\nconsole.log("unsupported runtime")\n`)
+  const agentd = Buffer.from("fixture agent")
+  const library = Buffer.from("fixture library")
+  const source = Buffer.from("fixture source")
+  const selected = {
+    ...runtimeTargets[targetTriple], executableSha256: sha256(executable),
+    agentdSha256: sha256(agentd), librarySha256: sha256(library),
+  }
+  const sourceArtifact = { url: "https://fixture.invalid/source", sha256: sha256(source) }
+  await mkdir(join(appRoot, "patches"), { recursive: true })
+  for (const patch of MICROSANDBOX_PATCHES) {
+    await copyFile(new URL(`../${patch.path}`, import.meta.url), join(appRoot, patch.path))
+  }
+  const binaries = join(appRoot, "src-tauri/binaries")
+  const resources = join(appRoot, "src-tauri/runtime")
+  const published = join(resources, "microsandbox")
+  await mkdir(binaries, { recursive: true })
+  await mkdir(published, { recursive: true })
+  await writeFile(join(binaries, `msb-${targetTriple}`), "previous executable")
+  await writeFile(join(published, "manifest.json"), "previous manifest")
+  const fetchStream = async url => {
+    const bytes = url === sourceArtifact.url ? source : url.endsWith(selected.agentdAsset) ? agentd
+      : url.endsWith(selected.libraryAsset) ? library : executable
+    return Readable.from([bytes])
+  }
+  await assert.rejects(stageRuntime({
+    appRoot, targetTriple, selected, sourceArtifact, licenses: [], fetchStream,
+    buildExecutable: async () => executable,
+  }), /failed its version/)
+  assert.equal(await readFile(join(binaries, `msb-${targetTriple}`), "utf8"), "previous executable")
+  assert.equal(await readFile(join(published, "manifest.json"), "utf8"), "previous manifest")
+  assert.deepEqual(await readdir(binaries), [`msb-${targetTriple}`])
+  assert.deepEqual(await readdir(resources), ["microsandbox"])
 })
