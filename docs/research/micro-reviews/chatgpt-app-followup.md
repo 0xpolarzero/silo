@@ -20,7 +20,7 @@ Scope: the native ChatGPT app implementation and adjacent computer-use state int
 - **Consequence:** A settings read never finishes. Policy read-modify-write operations hold `POLICY_LOCK` while reading, so one such policy also prevents changes to other VMs' approval settings.
 - **Regression:** `a_fifo_computer_use_record_is_refused_without_waiting_for_a_writer` timed out before the fix. The fixture releases and joins its reader before failing. The actual reader and regression were compiled together in a disposable harness, using only temporary files.
 - **Fix:** Open nonblocking, require a regular file through descriptor metadata, then retain the existing 1 MiB read limit. Existing callers treat the error as unreadable policy or absent observation.
-- **Verification:** Red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/policy-fifo-red.log`. The actual reader/regression harness and its Clippy check passed after the fix; formatting, Node 24 typecheck, and lint passed. The broader native tests are queued against the shared Cargo target with synthetic GitHub configuration; no app or VM is launched.
+- **Verification:** Red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/policy-fifo-red.log`. The actual reader/regression harness and its Clippy check passed after the fix; formatting, Node 24 typecheck, and lint passed. The focused `computer_use::tests::` Cargo run used the shared target and synthetic GitHub configuration, but compilation failed before tests ran: `settings.rs` uses unavailable `tauri::test` APIs and `host_push.rs` references an undefined `vm_id`. These integration errors are being fixed centrally; no native suite pass is claimed. No app or VM is launched.
 
 ## CHATGPT-APP-6: Status rendering hides failed Retry requests
 
@@ -51,3 +51,11 @@ Scope: the native ChatGPT app implementation and adjacent computer-use state int
 - **Regression:** `a_busy_storage_lock_does_not_allow_a_symlinked_mount_folder` failed before the fix. It holds the real storage lock, confirms that an ordinary mount resolves without waiting, replaces the folder with a symlink, and checks rejection without touching the target.
 - **Fix:** Open the published subdirectory without following symlinks and validate ownership even when preparation is skipped for lock contention.
 - **Verification:** Red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/busy-mount-red.log`; the actual download/storage source and hardening/HTTP regressions passed together in the disposable harness, 33 tests total. Rust formatting, Node 24 typecheck, and lint passed. Temporary directories only, with no app or VM launch.
+
+## Final verification after integration merges
+
+- Both focused frontend files pass: 130 tests. Node 24 typecheck, lint, and Rust formatting pass.
+- The extracted production download/storage source and its HTTP/hardening tests pass: 33 tests. The actual worker module passes all 11 tests. The computer-use reader/FIFO regression harness passes.
+- Scoped storage Clippy reports the same three pre-existing warnings (redundant write/append options and platform-dependent casts); it reports no new warning from these fixes.
+- Native integration testing is blocked by the compile errors above. The extraction harnesses verify component behavior and do not prove full Tauri integration, packaging, or live VM behavior.
+- All five follow-up findings are fixed and folded individually. No app, live VM, production state, or signing configuration was used. Temporary resource symlinks were removed from this worktree after verification.
