@@ -375,6 +375,287 @@ pub(crate) fn revoke_observed_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::runner::{ExpectedCommand, ScriptedRunner};
+
+    #[test]
+    fn material_validation_rejects_empty_duplicate_and_malformed_inputs() {
+        for (name, value, domains) in [
+            ("", "value", vec!["*"]),
+            ("1TOKEN", "value", vec!["*"]),
+            ("A-B", "value", vec!["*"]),
+            ("TÖKEN", "value", vec!["*"]),
+            ("TOKEN", "", vec!["*"]),
+            ("TOKEN", "nul\0value", vec!["*"]),
+            ("TOKEN", "value", vec![]),
+            ("TOKEN", "value", vec![""]),
+            ("TOKEN", "value", vec!["api.example.com", "bad@host"]),
+            ("TOKEN", "value", vec!["bad\0host"]),
+            ("TOKEN", "value", vec!["bad\rhost"]),
+            ("TOKEN", "value", vec!["bad\nhost"]),
+        ] {
+            let material = vec![(
+                name.into(),
+                value.into(),
+                domains.into_iter().map(str::to_owned).collect(),
+            )];
+            assert_eq!(
+                validate_material(&material).unwrap_err(),
+                "Invalid secret name, value, or allowed domain.",
+                "{name:?}"
+            );
+        }
+        let valid = vec![(
+            "_TOKEN_2".into(),
+            "literal '$value'\nbytes".into(),
+            vec!["*".into()],
+        )];
+        validate_material(&valid).unwrap();
+        validate_material(&vec![]).unwrap();
+        let mut duplicate = valid.clone();
+        duplicate.extend(valid);
+        assert!(validate_material(&duplicate).is_err());
+    }
+
+    #[test]
+    fn modify_failures_preserve_retry_and_cancellation_categories_without_diagnostics() {
+        let cancelled = modify_error(RuntimeError::Cancelled {
+            operation: "private diagnostic".into(),
+        });
+        assert!(matches!(cancelled, Attempt::Cancelled(_)));
+        assert_eq!(String::from(cancelled), "Saving secrets was cancelled.");
+        for error in [
+            RuntimeError::TimedOut {
+                operation: "private diagnostic".into(),
+            },
+            RuntimeError::Failed {
+                operation: "modify".into(),
+                exit_code: None,
+                detail: "private diagnostic".into(),
+            },
+        ] {
+            let attempt = modify_error(error);
+            assert!(attempt.is_transient());
+            assert_eq!(String::from(attempt), "Updating sandbox secrets timed out or could not be verified. Retry after checking its state.");
+        }
+        let rejected = modify_error(RuntimeError::Failed {
+            operation: "modify".into(),
+            exit_code: Some(1),
+            detail: "private diagnostic".into(),
+        });
+        assert!(matches!(rejected, Attempt::Final(_)));
+        assert_eq!(
+            String::from(rejected),
+            "The sandbox rejected the secret update. Retry after checking its state."
+        );
+        for error in [
+            RuntimeError::Invalid("private diagnostic".into()),
+            RuntimeError::Unavailable("private diagnostic".into()),
+            RuntimeError::Malformed("private diagnostic".into()),
+        ] {
+            let attempt = modify_error(error);
+            assert!(matches!(attempt, Attempt::Final(_)));
+            assert_eq!(String::from(attempt), "Could not update sandbox secrets.");
+        }
+    }
+
+    #[test]
+    #[ignore = "bug: temporary runtime launch failures are final, so secret updates skip automatic retry"]
+    fn temporary_runtime_launch_failure_remains_retryable_for_secret_updates() {
+        let attempt = modify_error(RuntimeError::Launch(
+            "temporarily unable to spawn the runtime".into(),
+        ));
+        assert!(
+            attempt.is_transient(),
+            "temporary launch failure must reach automatic retry: {attempt:?}"
+        );
+    }
+
+    fn observation(status: &str, saved: &[&str], active: Option<&[&str]>) -> Value {
+        let mut saved = config(saved);
+        saved["labels"] = json!({"silo.managed":"true"});
+        json!({"name":"dev", "status":status, "config":saved, "active_config":active.map(config)})
+    }
+
+    #[test]
+    fn removal_plan_revokes_names_found_only_in_the_active_configuration() {
+        let inspected = serde_json::from_value(observation(
+            "Running",
+            &["SAVED_ONLY", "BOTH", "SILO_GITHUB"],
+            Some(&["ACTIVE_ONLY", "BOTH", "SILO_GITHUB"]),
+        ))
+        .unwrap();
+        let material = vec![(
+            "BOTH".into(),
+            "private value".into(),
+            vec!["api.example.com".into()],
+        )];
+        let (live, deferred, pending) = plan(&inspected, &material, false);
+        let mut removals = Vec::new();
+        let mut additions = Vec::new();
+        for pair in live.chunks_exact(2) {
+            match pair[0].as_str() {
+                "--secret-rm" => removals.push(pair[1].as_str()),
+                "--secret" => additions.push(pair[1].as_str()),
+                flag => panic!("unexpected secret update flag {flag}"),
+            }
+        }
+        removals.sort_unstable();
+        assert_eq!(removals, ["ACTIVE_ONLY", "SAVED_ONLY"]);
+        assert_eq!(additions, ["BOTH:passthrough=*@api.example.com"]);
+        assert!(deferred.is_empty());
+        assert!(!pending);
+    }
+
+    #[test]
+    fn verification_rejects_wrong_bindings_and_missing_or_extra_hosts() {
+        let material = vec![(
+            "TOKEN".into(),
+            "private value".into(),
+            vec!["api.example.com".into(), "*.example.com".into()],
+        )];
+        let approved = json!({"network":{"tls":{"enabled":true},"secrets":{"secrets":[{
+            "env_var":"TOKEN","source":{"kind":"env","var":source_name("TOKEN")},
+            "value":"","placeholder":"$MSB_TOKEN","require_tls_identity":true,
+            "allowed_hosts":[{"wildcard":"*.example.com"},{"exact":"api.example.com"}]
+        }]}}});
+        assert!(verify_config(&approved, &material));
+        for (pointer, replacement) in [
+            ("/network/tls/enabled", json!(false)),
+            ("/network/secrets/secrets/0/env_var", json!("OTHER")),
+            ("/network/secrets/secrets/0/source/kind", json!("literal")),
+            ("/network/secrets/secrets/0/source/var", json!("TOKEN")),
+            (
+                "/network/secrets/secrets/0/placeholder",
+                json!("$MSB_OTHER"),
+            ),
+            ("/network/secrets/secrets/0/allowed_hosts", json!([])),
+            (
+                "/network/secrets/secrets/0/allowed_hosts",
+                json!([{"exact":"api.example.com"}]),
+            ),
+            (
+                "/network/secrets/secrets/0/allowed_hosts",
+                json!([{"exact":"api.example.com"},{"wildcard":"*.example.com"},"any"]),
+            ),
+        ] {
+            let mut changed = approved.clone();
+            *changed.pointer_mut(pointer).unwrap() = replacement;
+            assert!(!verify_config(&changed, &material), "{pointer}");
+        }
+        assert!(verify_config(&config(&["SILO_GITHUB"]), &vec![]));
+        assert!(!verify_config(&config(&["OTHER", "SILO_GITHUB"]), &vec![]));
+    }
+
+    #[test]
+    fn revocation_skips_unobservable_guests_and_already_clean_configurations() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(dir.path());
+        for (status, saved, active, expected) in [
+            ("Stopped", vec!["TOKEN"], Some(vec!["TOKEN"]), false),
+            ("Starting", vec!["TOKEN"], Some(vec!["TOKEN"]), false),
+            ("Paused", vec!["TOKEN"], Some(vec!["TOKEN"]), false),
+            ("Running", vec!["TOKEN"], None, false),
+            (
+                "Running",
+                vec!["SILO_GITHUB"],
+                Some(vec!["SILO_GITHUB"]),
+                true,
+            ),
+        ] {
+            let inspected =
+                serde_json::from_value(observation(status, &saved, active.as_deref())).unwrap();
+            let runner = ScriptedRunner::new([]);
+            let result =
+                revoke_observed_with(&runner, &paths, "dev", "TOKEN", &inspected, &mut |_| {
+                    panic!("no revocation command should run for {status}")
+                });
+            assert_eq!(result.unwrap(), expected, "{status}");
+            runner.assert_finished();
+        }
+    }
+
+    #[test]
+    fn revocation_requires_confirmation_from_saved_and_active_configurations() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(dir.path());
+        let inspected =
+            serde_json::from_value(observation("Running", &["TOKEN"], Some(&["TOKEN"]))).unwrap();
+        for (status, saved, active, expected) in [
+            ("Running", vec!["TOKEN"], Some(vec![]), false),
+            ("Running", vec![], Some(vec!["TOKEN"]), false),
+            ("Running", vec![], None, false),
+            (
+                "Running",
+                vec!["SILO_GITHUB"],
+                Some(vec!["SILO_GITHUB"]),
+                true,
+            ),
+            ("Stopped", vec!["TOKEN"], None, true),
+            ("Created", vec!["TOKEN"], None, true),
+            ("Crashed", vec!["TOKEN"], None, true),
+            ("Paused", vec![], Some(vec![]), false),
+        ] {
+            let runner = ScriptedRunner::new([ExpectedCommand::ok(
+                ["inspect", "dev", "--format", "json"],
+                observation(status, &saved, active.as_deref()).to_string(),
+            )]);
+            let mut removed = Vec::new();
+            assert_eq!(
+                revoke_observed_with(&runner, &paths, "dev", "TOKEN", &inspected, &mut |name| {
+                    removed.push(name.to_owned());
+                    Ok(())
+                })
+                .unwrap(),
+                expected,
+                "{status}"
+            );
+            assert_eq!(removed, ["TOKEN"]);
+            runner.assert_finished();
+        }
+    }
+
+    #[test]
+    fn revocation_preserves_remove_errors_and_rejects_failed_or_unmanaged_confirmation() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(dir.path());
+        let inspected =
+            serde_json::from_value(observation("Running", &["TOKEN"], Some(&["TOKEN"]))).unwrap();
+        let runner = ScriptedRunner::new([]);
+        assert_eq!(
+            revoke_observed_with(&runner, &paths, "dev", "TOKEN", &inspected, &mut |_| Err(
+                "fixture removal failed".into()
+            ))
+            .unwrap_err(),
+            "fixture removal failed"
+        );
+        runner.assert_finished();
+
+        let runner = ScriptedRunner::new([ExpectedCommand::error(
+            ["inspect", "dev", "--format", "json"],
+            RuntimeError::TimedOut {
+                operation: "Inspect".into(),
+            },
+        )]);
+        assert_eq!(
+            revoke_observed_with(&runner, &paths, "dev", "TOKEN", &inspected, &mut |_| Ok(()))
+                .unwrap_err(),
+            "Inspect timed out. Check the sandbox state, then retry."
+        );
+        runner.assert_finished();
+
+        let mut replaced = observation("Running", &[], Some(&[]));
+        replaced["config"]["labels"] = json!({});
+        let runner = ScriptedRunner::new([ExpectedCommand::ok(
+            ["inspect", "dev", "--format", "json"],
+            replaced.to_string(),
+        )]);
+        assert_eq!(
+            revoke_observed_with(&runner, &paths, "dev", "TOKEN", &inspected, &mut |_| Ok(()))
+                .unwrap_err(),
+            "Sandbox 'dev' is not owned by Silo. No sandbox operation was performed."
+        );
+        runner.assert_finished();
+    }
 
     #[test]
     fn attempt_classifies_transient_and_final_and_preserves_the_message() {

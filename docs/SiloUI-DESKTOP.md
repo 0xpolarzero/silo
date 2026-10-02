@@ -192,14 +192,18 @@ rules, including on new VMs when files were deliberately created with sudo.
 Conflicting pre-existing VNC configuration is reported before installation,
 rather than overwritten. See [working accounts](SiloUI-WORKING-ACCOUNT.md).
 
-Adding a desktop installs no agent tools. Silo previously installed
-[Luda](SiloUI-LUDA.md) (now historical); [LCU](SiloUI-COMPUTER-USE-PLAN.md) is the
-supported computer-use integration and is set up explicitly from a running
-desktop. Existing desktops that already have Luda keep it untouched, and Silo
-ignores its status. Silo does not install or authenticate agents. Tools running in a remote
-SSH project must execute inside the guest and target this display; selecting
-an SSH project does not redirect a macOS-only plugin. Human and automated
-input share the ordinary Linux session without Silo arbitrating control.
+On VMs created before v4, adding a desktop does not install agent tools;
+[LCU](SiloUI-COMPUTER-USE-PLAN.md) setup remains an explicit action on a running
+VM. Built-in desktops use the [automatic computer-use setup](#built-in-computer-use)
+after boot; the [boot handler](../app/SiloUI/src-tauri/src/runtime.rs) schedules
+it, and [desktop actions](../app/SiloUI/src-tauri/src/desktop.rs) keep legacy
+`setup-lcu` separate from built-in `setup-computer-use`.
+Silo previously installed [Luda](SiloUI-LUDA.md) (now historical). Existing
+desktops that have Luda keep it untouched, and Silo ignores its status.
+Silo does not install or authenticate the agents themselves. Tools running in a
+remote SSH project must execute inside the guest and target this display;
+selecting an SSH project does not redirect a macOS-only plugin. Human and
+automated input share the ordinary Linux session without Silo arbitrating control.
 
 The initial recipe includes a terminal, file manager, text editor and fonts.
 Users install additional applications, including their preferred browser.

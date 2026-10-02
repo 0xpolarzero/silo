@@ -38,12 +38,14 @@ it("still reads the result when native listener registration fails", async () =>
 
 it("releases a late registration without reading after the view closes", async () => {
   let register!: (stop: () => void) => void
+  let refresh!: () => void
   const registration = new Promise<() => void>(resolve => { register = resolve })
   const backend: TransferResultNoticeBackend = {
-    read: vi.fn(async () => recovered), acknowledge: vi.fn(), subscribe: () => registration,
+    read: vi.fn(async () => recovered), acknowledge: vi.fn(), subscribe: handler => { refresh = handler; return registration },
   }
   const view = renderHook(() => useTransferResultNotice(backend, true))
   view.unmount()
+  await act(async () => refresh())
   const stop = vi.fn()
   await act(async () => register(stop))
   expect(stop).toHaveBeenCalledOnce()

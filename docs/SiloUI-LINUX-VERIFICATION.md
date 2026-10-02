@@ -7,20 +7,22 @@ not prove the WebKit UI, desktop services, or hardware virtualization works.
 | --- | --- | --- |
 | Frontend | `npm test -- --maxWorkers=2` | Component behavior and bridge contracts on Linux; test adapters remain outside production. |
 | Native | `cargo test --manifest-path src-tauri/Cargo.toml --locked` | Linux application discovery, login entries, settings, resource checks, files, network, GitHub boundary behavior, secrets, and backup validation. |
-| Desktop | `xvfb-run -a dbus-run-session -- python3 scripts/test-linux-desktop.py` | Real production WebKit, native IPC, dependency failure gating, page navigation, inline validation and persisted settings. |
+| Desktop | `xvfb-run -a dbus-run-session -- python3 scripts/test-linux-desktop.py` | Real WebKit and native IPC in the Dev app, dependency failure gating, page navigation, inline validation and persisted settings. |
 | GNOME integration | `sh scripts/test-linux-gnome.sh` | Real GNOME Wayland, tray reopen/quit, native backup picker and visible notification delivery. |
 | Hardware | `python3 scripts/test-linux-runtime.py` | Real KVM creation, bundled image import/cache reuse, guest tools/identity, backup/restore data round trips, live secret changes and interrupted restart recovery. |
 
 Run from `app/SiloUI`. Hardware tests use temporary Silo runtime directories and
 synthetic secret material. They do not touch existing sandboxes. Desktop tests
-use temporary XDG directories and a private D-Bus session; their saved settings
-fixture is a file owned by the test, with no hooks or fixtures in production UI.
+use a temporary HOME, temporary XDG directories and a private D-Bus session;
+their saved settings fixture is a file owned by the test, with no hooks or
+fixtures in the application UI.
 Authenticated GitHub workflow testing is separate and requires explicitly scoped
 test repositories and credentials; these Linux CI jobs never receive credentials.
 
 ## Preparation
 
-Use native Ubuntu 24.04 ARM64 or x86-64 with Node 24 and Rust 1.94.0:
+Use native Ubuntu 24.04 ARM64 or x86-64 with Node 24, Python 3.11 or newer,
+Rust 1.94.0 and Go 1.25 for cold runtime preparation:
 
 ```sh
 sudo apt-get update
@@ -33,8 +35,13 @@ npm run runtime:prepare
 Set the three build configuration variables to synthetic values for these tests:
 `SILO_GITHUB_APP_SLUG=silo-linux-test`, `SILO_GITHUB_CLIENT_ID=test-client`,
 `SILO_GITHUB_CLIENT_SECRET=test-secret`. Never copy a developer's ignored
-`github-build.local.json` into a test machine. Build the real app with
+`github-build.local.json` into a test machine. Build the Dev app with
 `npm run desktop:build -- --debug --no-bundle --ci` before desktop testing.
+The [build wrapper](../app/SiloUI/scripts/build_desktop.py) selects the development
+identity for `--debug`; the [desktop harness](../app/SiloUI/scripts/test-linux-desktop.py)
+defaults to that identity and `src-tauri/target/debug/silo-ui`. If Cargo writes to
+another target directory, set `SILO_LINUX_APPLICATION` to the absolute path of
+the freshly built Dev executable before running the harness.
 For memory-limited machines, set `CARGO_PROFILE_DEV_DEBUG=0`,
 `CARGO_PROFILE_TEST_DEBUG=0` and bound `CARGO_BUILD_JOBS`.
 Do not run Cargo tests concurrently with desktop builds in the same target

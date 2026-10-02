@@ -86,5 +86,16 @@ class PlatformCoverageTests(unittest.TestCase):
         self.assertIn("if: runner.os == 'macOS'", signing[0])
 
 
+class DebianCoverageTests(unittest.TestCase):
+    def test_ci_opts_into_disposable_root_lifecycle_tests(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        commands = re.findall(r'(?m)^ +(?:- )?run: (sudo env .+)$', workflow)
+        lifecycle = [shlex.split(command) for command in commands if 'test_debian_installation.py' in command]
+        self.assertEqual(len(lifecycle), 1, 'ordinary discovery skips the root-only lifecycle suite')
+        self.assertIn('SILO_APT_LIFECYCLE_TEST=1', lifecycle[0])
+        self.assertEqual(lifecycle[0][:2], ['sudo', 'env'])
+        self.assertIn('pkexec', workflow, 'the lifecycle fixture requires the system authentication helper')
+
+
 if __name__ == '__main__':
     unittest.main()

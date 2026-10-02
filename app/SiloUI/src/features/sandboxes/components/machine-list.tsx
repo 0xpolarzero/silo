@@ -270,12 +270,12 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               </Button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal><DropdownMenu.Content aria-label="Add sandbox" aria-labelledby={undefined} align="end" sideOffset={4} onCloseAutoFocus={event => {
-              // A selection hands focus to the editor or dialog it opens.
-              if (addSelected.current) {
+              // Inline editors take focus; external actions retain the menu's normal return target.
+              if (addSelected.current === "editor") {
                 event.preventDefault()
-                if (addSelected.current === "editor") setEditorFocusRequest(request => request + 1)
-                addSelected.current = null
+                setEditorFocusRequest(request => request + 1)
               }
+              addSelected.current = null
             }} className="silo-portal z-50 grid w-48 gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
               <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "editor"; startAdd("vm") }}>New sandbox</DropdownMenu.Item>
               <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = onConnectComputer ? "external" : "editor"; if (onConnectComputer) onConnectComputer(); else startAdd("ssh") }}>{onConnectComputer ? "Connect computer…" : "Connect an SSH host…"}</DropdownMenu.Item>

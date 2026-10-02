@@ -11,3 +11,5 @@ Scope: `app/SiloUI/src-tauri/src/editor.rs`, `include_line`.
 - **Regression:** `ssh_includes_keep_wildcard_characters_in_directory_names_literal` passes the generated Include to the actual system OpenSSH config parser and checks the resolved HostName for all four directory-name cases. `-G` performs no SSH connection. The fixture uses temporary directories, not the user's SSH configuration or VMs.
 
 The parser tested locally is OpenSSH 10.2p1. This check establishes configuration resolution on that parser; it does not prove a live editor connection or the complete supported-host matrix.
+
+The same fix was independently folded in `94734eb1` before this branch's fold. The merge keeps that implementation and its changeset, removes this branch's duplicate changeset, and retains the additional regression using distinct HostName values for each fixture directory.

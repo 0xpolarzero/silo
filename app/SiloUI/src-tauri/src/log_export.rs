@@ -162,6 +162,9 @@ pub(crate) fn write_requests(
                 return Ok(false);
             }
             let page = page?;
+            if page.unsupported {
+                return Err("Update Silo on the remote computer before exporting its logs.".into());
+            }
             if request.cursor.is_none() {
                 let mut coverage_request = request.clone();
                 coverage_request.query = request
@@ -416,6 +419,42 @@ mod tests {
             || false,
         );
         assert!(result.unwrap_err().contains("stopped advancing"));
+    }
+
+    #[test]
+    fn unsupported_remote_logs_do_not_replace_an_existing_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("logs.jsonl");
+        std::fs::write(&destination, b"previous complete export").unwrap();
+        let requests = vec![
+            Query::default(),
+            Query {
+                computer_id: Some("older-computer".into()),
+                ..Query::default()
+            },
+        ];
+        let result = save_atomically(
+            &destination,
+            |output| {
+                write_requests(
+                    output,
+                    requests,
+                    |request| {
+                        let mut response = page(0, usize::from(request.computer_id.is_none()));
+                        response.unsupported = request.computer_id.is_some();
+                        Ok(response)
+                    },
+                    || false,
+                )
+            },
+            || false,
+        );
+        assert!(result.unwrap_err().contains("Update Silo"));
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"previous complete export"
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 
     #[test]

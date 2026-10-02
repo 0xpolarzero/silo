@@ -419,17 +419,16 @@ fn prepare(
 
 /// The `Include` that makes the entries in `root` visible to the user's `ssh`.
 fn include_line(root: &Path) -> Result<String, String> {
-    let escaped = root
-        .to_str()
-        .ok_or(FAILED)?
-        .replace('\\', "\\\\")
-        .replace('*', "\\*")
-        .replace('?', "\\?")
-        .replace('[', "\\[")
-        .replace(']', "\\]");
+    let mut pattern = String::new();
+    for character in root.to_str().ok_or(FAILED)?.chars() {
+        if matches!(character, '\\' | '[' | ']' | '?' | '*') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
     Ok(format!(
         "Include {}",
-        ssh_quote(&Path::new(&escaped).join("*.conf"))?
+        ssh_quote(&Path::new(&pattern).join("*.conf"))?
     ))
 }
 
@@ -1585,6 +1584,40 @@ mod tests {
     }
 
     const INCLUDE: &str = "Include \"/home/user/.silo/abc/ssh/*.conf\"";
+
+    #[test]
+    fn ssh_includes_treat_runtime_directory_names_as_literal_paths() {
+        let home = tempfile::tempdir().unwrap();
+        for name in ["ssh[fixture]", "ssh?fixture", "ssh*fixture", "ssh\\fixture"] {
+            let root = home.path().join(name);
+            fs::create_dir_all(&root).unwrap();
+            fs::write(
+                root.join("dev.conf"),
+                "Host silo-glob-fixture\n  HostName 127.0.0.9\n",
+            )
+            .unwrap();
+            let config = home.path().join("fixture.conf");
+            fs::write(&config, format!("{}\n", include_line(&root).unwrap())).unwrap();
+            let output = Command::new("/usr/bin/ssh")
+                .env("HOME", home.path())
+                .args(["-G", "-F"])
+                .arg(&config)
+                .arg("silo-glob-fixture")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: SSH configuration parsing failed"
+            );
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .lines()
+                    .any(|line| line == "hostname 127.0.0.9"),
+                "{name}: the included host was not found"
+            );
+        }
+    }
 
     #[test]
     fn a_stow_linked_ssh_config_is_updated_through_its_link() {

@@ -71,6 +71,23 @@ it("shows a missing recovered Git identity as unapplied, matching the submission
   }))
 })
 
+it("skips applying a blank host identity and adopts an identity that loads later", async () => {
+  const view = setup({ ...source, currentHostGitIdentity: null }, [])
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining([
+      expect.objectContaining({ workspace: "dev", identity: { name: "", email: "", apply: false } }),
+    ]) }),
+  }))
+
+  await act(async () => { view.rerender(view.wrap(source, [])) })
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).toBeChecked()
+  expect(screen.getByLabelText("Git name for dev")).toHaveValue(source.currentHostGitIdentity!.name)
+})
+
 it("finishes with current application preferences after keeping omitted sandboxes", async () => {
   const restored: OnboardingDraft = {
     currentStep: "review", machines: [source.machineConfigurations[0]], unfinishedMachineEditor: null,
