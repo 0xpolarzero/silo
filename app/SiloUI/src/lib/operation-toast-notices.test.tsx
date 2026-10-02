@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const delivered = vi.hoisted(() => vi.fn())
@@ -133,4 +133,34 @@ describe("toast sandbox ownership", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(screen.queryByText("Failed B")).not.toBeInTheDocument()
   })
+})
+
+it("keeps progress and cancellation available when Retry replaces the failure in place", async () => {
+  render(<Host />)
+  const cancel = vi.fn()
+  const retry = () => showOperationProgress("retry-progress", { title: "Retrying operation", sandbox: "retry-vm", cancel: { onCancel: cancel } })
+  act(() => showOperationFailure("retry-progress", "Operation failed", { retry, sandbox: "retry-vm", native: false }))
+  await tick()
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+  await tick()
+  await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+  expect(screen.getByText("Retrying operation")).toBeInTheDocument()
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }))
+  expect(cancel).toHaveBeenCalledOnce()
+  act(() => dismissOperationToast("retry-progress"))
+})
+
+
+it("retains sandbox ownership while Retry waits for backend-driven progress", async () => {
+  render(<Host />)
+  const retry = vi.fn()
+  act(() => showOperationFailure("retry-waiting", "Waiting retry", { retry, sandbox: "waiting-vm", native: false }))
+  await tick()
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+  await tick()
+  expect(retry).toHaveBeenCalledOnce()
+  act(() => dismissSandboxToasts("waiting-vm"))
+  await tick()
+  await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+  expect(screen.queryByText("Waiting retry")).not.toBeInTheDocument()
 })
