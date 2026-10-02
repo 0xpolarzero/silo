@@ -154,13 +154,6 @@ fn appimage_root() -> Option<PathBuf> {
     (root.is_absolute() && executable.starts_with(&root)).then_some(root)
 }
 
-fn inside(entry: &str, root: &str) -> bool {
-    entry == root
-        || entry
-            .strip_prefix(root)
-            .is_some_and(|rest| rest.starts_with('/'))
-}
-
 /// Environment changes that undo the AppImage's AppRun hooks for a child
 /// (G-24): every variable naming the mount point loses those entries (and is
 /// removed when nothing remains), so children such as gnome-terminal use the
@@ -169,10 +162,7 @@ pub(crate) fn appimage_child_environment(
     variables: impl IntoIterator<Item = (OsString, OsString)>,
     root: &Path,
 ) -> Vec<(OsString, Option<OsString>)> {
-    let Some(root) = root.to_str().map(|root| root.trim_end_matches('/')) else {
-        return Vec::new();
-    };
-    if root.is_empty() {
+    if root.as_os_str().is_empty() || root == Path::new("/") {
         return Vec::new();
     }
     let mut changes = Vec::new();
@@ -181,21 +171,24 @@ pub(crate) fn appimage_child_environment(
             changes.push((name, None));
             continue;
         }
-        let Some(text) = value.to_str() else { continue };
-        if !text.contains(root) {
-            continue;
-        }
-        let entries: Vec<_> = text.split(':').collect();
+        let entries: Vec<_> = std::env::split_paths(&value).collect();
         let kept: Vec<_> = entries
             .iter()
-            .copied()
-            .filter(|entry| !inside(&entry.replace("//", "/"), root))
+            .filter(|entry| !entry.starts_with(root))
             .collect();
         if kept.len() == entries.len() {
             continue;
         }
-        let kept: Vec<_> = kept.into_iter().filter(|entry| !entry.is_empty()).collect();
-        changes.push((name, (!kept.is_empty()).then(|| kept.join(":").into())));
+        let kept: Vec<_> = kept
+            .into_iter()
+            .filter(|entry| !entry.as_os_str().is_empty())
+            .collect();
+        changes.push((
+            name,
+            (!kept.is_empty()).then(|| {
+                std::env::join_paths(kept).expect("Paths from split_paths contain no separator")
+            }),
+        ));
     }
     changes
 }
@@ -453,6 +446,47 @@ mod tests {
             Some(listed[0].as_str())
         );
         assert_eq!(linux_terminal_default(&nowhere, &[]), None);
+    }
+
+    #[test]
+    fn appimage_cleanup_preserves_non_utf8_system_paths() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = Path::new("/tmp/.mount_Silo");
+        let system = OsString::from_vec(b"/opt/editor \xff/lib".to_vec());
+        let mut libraries = OsString::from("/tmp/.mount_Silo/usr/lib:");
+        libraries.push(&system);
+        libraries.push(":/tmp/.mount_Silo-other/lib");
+        let changes =
+            appimage_child_environment([(OsString::from("LD_LIBRARY_PATH"), libraries)], root);
+        let mut expected = system;
+        expected.push(":/tmp/.mount_Silo-other/lib");
+        assert_eq!(
+            changes,
+            [(OsString::from("LD_LIBRARY_PATH"), Some(expected))]
+        );
+    }
+
+    #[test]
+    fn appimage_cleanup_accepts_non_utf8_mounts_and_repeated_slashes() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = PathBuf::from(OsString::from_vec(b"/tmp/.mount_Silo \xff///".to_vec()));
+        let bundled = OsString::from_vec(b"/tmp//.mount_Silo \xff////usr/lib".to_vec());
+        let changes = appimage_child_environment(
+            [
+                (OsString::from("APPDIR"), root.as_os_str().to_owned()),
+                (OsString::from("LD_LIBRARY_PATH"), bundled),
+            ],
+            &root,
+        );
+        assert_eq!(
+            changes,
+            [
+                (OsString::from("APPDIR"), None),
+                (OsString::from("LD_LIBRARY_PATH"), None),
+            ]
+        );
     }
 
     #[test]

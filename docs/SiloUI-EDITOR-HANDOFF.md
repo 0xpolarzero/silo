@@ -26,6 +26,8 @@ When Silo runs as an AppImage (G-24), every child it starts from these files (te
 
 After the storage migration, the entries copied from the previous generation are repointed at the converted runtime home at every launch, on every build, and the converted home's `Include` is added where the user's file still includes the previous one, so an editor that reconnects by itself opens the current sandbox. See [Editor connections after the migration](SiloUI-RUNTIME-PACKAGING.md#editor-connections-after-the-migration-2026-10-01).
 
+AppImage environment cleanup uses [`std::env::split_paths`](https://doc.rust-lang.org/std/env/fn.split_paths.html) and `join_paths` to preserve native path bytes, including non-UTF-8 system directories. [`Path::starts_with`](https://doc.rust-lang.org/std/path/struct.Path.html#method.starts_with) compares components, so repeated and trailing slashes still identify bundled entries while similarly named sibling mounts remain untouched. Pure launch-policy regressions cover these cases; they do not qualify a live Linux desktop launch.
+
 ## Trust the editor gives the sandbox
 
 An editor's remote mode runs a server inside the sandbox that talks back to the editor on this computer. Treat that server as sandbox code: the working account has `sudo`, so anything in the sandbox can replace or drive it. The measures below narrow what the editor offers it; they do not make the editor a security boundary.
