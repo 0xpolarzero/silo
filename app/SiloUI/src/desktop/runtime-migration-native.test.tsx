@@ -22,9 +22,10 @@ function renderNativeGate() {
 
 describe("native migration boundary", () => {
   it("parses backend JSON and retries migration through the native command", async () => {
+    let retried = false
     native.invoke.mockImplementation(async command => {
-      if (command === "read_runtime_migration_state") return failedJson
-      if (command === "retry_runtime_migration") return completeJson
+      if (command === "read_runtime_migration_state") return retried ? completeJson : failedJson
+      if (command === "retry_runtime_migration") { retried = true; return completeJson }
       // A finished migration also asks for the backup it left behind; this one left none.
       if (command === "read_pre_upgrade_backup") return null
       throw new Error(`Unexpected migration command: ${command}`)
@@ -36,7 +37,7 @@ describe("native migration boundary", () => {
     expect(screen.getByText("Full log: /tmp/silo-migration.log")).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
     expect(await screen.findByText("Normal application")).toBeVisible()
-    expect(native.invoke.mock.calls).toEqual([["read_runtime_migration_state"], ["retry_runtime_migration"], ["read_pre_upgrade_backup"]])
+    expect(native.invoke.mock.calls).toEqual([["read_runtime_migration_state"], ["retry_runtime_migration"], ["read_runtime_migration_state"], ["read_pre_upgrade_backup"]])
     expect(native.listen).toHaveBeenCalledWith("silo://application-state-changed", expect.any(Function))
   })
 

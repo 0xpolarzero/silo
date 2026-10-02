@@ -86,3 +86,63 @@ it("shows migration progress once the first status reports it", async () => {
   render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
   expect(await screen.findByText("Updating your sandboxes")).toBeVisible()
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>(done => { resolve = done })
+  return { promise, resolve }
+}
+
+it.each(["complete", "failed"] as const)("preserves event-%s when an older Retry response arrives", async status => {
+  let refresh!: () => void
+  let current = failed
+  const response = deferred<RuntimeMigrationState>()
+  const read = vi.fn(async () => current)
+  const backend: RuntimeMigrationBackend = {
+    read, retry: () => response.promise, continueAfterFailure: vi.fn(),
+    subscribe: async handler => { refresh = handler; return () => {} },
+  }
+  render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
+  await screen.findByText("Some sandboxes could not be migrated")
+  fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
+  current = { ...failed, status, stage: "Attempt finished", error: status === "failed" ? "Retry conversion failed" : undefined }
+  await act(async () => refresh())
+  await act(async () => response.resolve({ ...failed, status: "running", error: undefined }))
+  expect(screen.queryByText("Updating your sandboxes")).not.toBeInTheDocument()
+  if (status === "complete") expect(screen.getByText("Normal application")).toBeVisible()
+  else {
+    expect(screen.getByRole("alert")).toHaveTextContent("Retry conversion failed")
+    expect(screen.getByRole("button", { name: "Retry migration" })).toBeEnabled()
+  }
+})
+
+it("keeps the latest event read when two status reads resolve in reverse order", async () => {
+  let refresh!: () => void
+  const older = deferred<RuntimeMigrationState>()
+  const newer = deferred<RuntimeMigrationState>()
+  const read = vi.fn().mockResolvedValueOnce(failed).mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise)
+  const backend: RuntimeMigrationBackend = {
+    read, retry: vi.fn(), continueAfterFailure: vi.fn(),
+    subscribe: async handler => { refresh = handler; return () => {} },
+  }
+  render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
+  await screen.findByText("Some sandboxes could not be migrated")
+  await act(async () => { refresh(); refresh() })
+  await act(async () => newer.resolve({ ...failed, status: "complete", error: undefined }))
+  expect(screen.getByText("Normal application")).toBeVisible()
+  await act(async () => older.resolve({ ...failed, status: "running", error: undefined }))
+  expect(screen.getByText("Normal application")).toBeVisible()
+})
+
+it("reads authoritative status after Retry even without a completion event", async () => {
+  const read = vi.fn().mockResolvedValueOnce(failed).mockResolvedValue({ ...failed, status: "complete", error: undefined })
+  const backend: RuntimeMigrationBackend = {
+    read, retry: vi.fn().mockResolvedValue({ ...failed, status: "running", error: undefined }),
+    continueAfterFailure: vi.fn(), subscribe: async () => () => {},
+  }
+  render(<RuntimeMigrationBoundary backend={backend}><p>Normal application</p></RuntimeMigrationBoundary>)
+  await screen.findByText("Some sandboxes could not be migrated")
+  fireEvent.click(screen.getByRole("button", { name: "Retry migration" }))
+  expect(await screen.findByText("Normal application")).toBeVisible()
+  expect(read).toHaveBeenCalledTimes(2)
+})
