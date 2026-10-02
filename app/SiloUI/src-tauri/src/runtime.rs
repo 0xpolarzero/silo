@@ -5951,14 +5951,17 @@ pub(crate) fn validate_name(name: &str) -> Result<(), RuntimeError> {
 }
 
 pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, RuntimeError> {
+    Ok(
+        read_saved_metadata(path)?.unwrap_or(MachineConfigurationRequest {
+            schema_version: 1,
+            machines: Vec::new(),
+        }),
+    )
+}
+fn read_saved_metadata(path: &Path) -> Result<Option<MachineConfigurationRequest>, RuntimeError> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(MachineConfigurationRequest {
-                schema_version: 1,
-                machines: Vec::new(),
-            })
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(RuntimeError::Unavailable(format!(
                 "Silo could not read its sandbox configuration: {error}"
@@ -5982,7 +5985,7 @@ pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, 
         RuntimeError::Malformed("Silo's saved sandbox configuration is invalid.".into())
     })?;
     validate_request(&request)?;
-    Ok(request)
+    Ok(Some(request))
 }
 
 /// Resolve a local VM's stable id from its current display name in fresh metadata.
