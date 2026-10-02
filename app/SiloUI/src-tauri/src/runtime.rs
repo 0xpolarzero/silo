@@ -2025,8 +2025,9 @@ fn verify_workspace_identities_in(
             machine,
             &format!("Checking Git identity for {}", machine.name()),
         )?;
+        ensure_current_machine(paths, machine)?;
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         if !identity.apply {
             continue;
         }
@@ -2123,13 +2124,18 @@ fn configure_workspace_identities_in(
             )));
         };
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         changed.push((identity, machine));
     }
     for (identity, machine) in changed {
         let _lane = lane(
             machine,
             &format!("Saving Git identity for {}", machine.name()),
+        )?;
+        ensure_current_machine(paths, machine)?;
+        ensure_machine_identity(
+            machine,
+            &inspect_workspace(runner, paths, &identity.workspace)?,
         )?;
         // Remove old boot overrides: normal Git/jj configuration must own defaults.
         let mut args = vec!["modify".into(), identity.workspace.clone()];
@@ -4708,6 +4714,24 @@ pub(crate) fn ensure_managed(inspected: &InspectedSandbox) -> Result<(), Runtime
             "Sandbox '{}' is not owned by Silo. No sandbox operation was performed.",
             inspected.name
         )));
+    }
+    Ok(())
+}
+
+fn ensure_current_machine(
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+) -> Result<(), RuntimeError> {
+    if !read_metadata(&paths.metadata)?
+        .machines
+        .iter()
+        .any(|current| {
+            current.is_vm() && current.id() == machine.id() && current.name() == machine.name()
+        })
+    {
+        return Err(RuntimeError::Invalid(
+            "The sandbox identity changed. Its replacement was preserved.".into(),
+        ));
     }
     Ok(())
 }
@@ -10958,6 +10982,106 @@ exit 9
     }
 
     #[test]
+    fn git_identity_rejects_a_replacement_before_writing_or_verifying() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let mut replacement = inspect(&paths, "Running");
+        replacement["config"]["labels"]["silo.machine-id"] =
+            json!("22222222-2222-4222-8222-222222222222");
+        let writer = StubRunner::new(vec![
+            identity_output(&replacement.to_string()),
+            identity_output("{}"),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+        let verifier = StubRunner::new(vec![
+            identity_output(&replacement.to_string()),
+            identity_output("silo-identity-verified"),
+        ]);
+
+        assert!(configure_workspace_identities_with(&writer, &paths, &[test_identity()]).is_err());
+        assert!(verify_workspace_identities_with(&verifier, &paths, &[test_identity()]).is_err());
+        for runner in [writer, verifier] {
+            assert!(runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args[0] == "inspect"));
+        }
+    }
+
+    #[test]
+    fn git_identity_rechecks_runtime_identity_after_preflight() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let mut replacement = inspect(&paths, "Running");
+        replacement["config"]["labels"]["silo.machine-id"] =
+            json!("22222222-2222-4222-8222-222222222222");
+        let runner = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output(&replacement.to_string()),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+
+        assert!(configure_workspace_identities_with(&runner, &paths, &[test_identity()]).is_err());
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|args| args[0] == "inspect"));
+    }
+
+    #[test]
+    fn git_identity_rechecks_the_machine_after_admission() {
+        let _test_state = crate::test_support::global_state();
+        for verify_only in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            let lane = |_: &MachineConfiguration, _: &str| {
+                let mut replacement = vm();
+                if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+                    *id = "22222222-2222-4222-8222-222222222222".into();
+                }
+                write_metadata(&paths.metadata, &request(vec![replacement]))?;
+                Ok(None)
+            };
+            let runner = StubRunner::new(if verify_only {
+                vec![
+                    identity_output(&inspect(&paths, "Running").to_string()),
+                    identity_output("silo-identity-verified"),
+                ]
+            } else {
+                vec![
+                    identity_output(&inspect(&paths, "Running").to_string()),
+                    identity_output("{}"),
+                    identity_output(""),
+                    identity_output("silo-identity-verified"),
+                ]
+            });
+
+            let rejected = if verify_only {
+                verify_workspace_identities_in(&runner, &paths, &[test_identity()], &lane).is_err()
+            } else {
+                configure_workspace_identities_in(&runner, &paths, &[test_identity()], &lane)
+                    .is_err()
+            };
+
+            assert!(rejected);
+            assert!(runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args[0] == "inspect"));
+        }
+    }
+
+    #[test]
     fn identity_resume_verifies_guest_files_not_boot_environment() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10983,6 +11107,7 @@ exit 9
         let state = inspect(&paths, "Running");
         let runner = StubRunner::new(vec![
             identity_output(&state.to_string()),
+            identity_output(&state.to_string()),
             identity_output("{}"),
             identity_output(""),
             identity_output("silo-identity-verified"),
@@ -11004,15 +11129,16 @@ exit 9
         identity.name = "O'Neil $(touch /tmp/unsafe)".into();
         let runner = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("{}"),
             identity_output(""),
             identity_output("silo-identity-verified"),
         ]);
         configure_workspace_identities_with(&runner, &paths, &[identity]).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert!(calls[1].iter().any(|arg| arg == "--env-rm"));
-        assert_eq!(calls[2][0], "exec");
-        assert!(calls[2]
+        assert!(calls[2].iter().any(|arg| arg == "--env-rm"));
+        assert_eq!(calls[3][0], "exec");
+        assert!(calls[3]
             .iter()
             .any(|arg| arg == "O'Neil $(touch /tmp/unsafe)"));
         assert!(!calls
@@ -11082,6 +11208,7 @@ exit 9
         };
         let mut work_inspect = inspect(&paths, "Running");
         work_inspect["name"] = json!("work");
+        work_inspect["config"]["labels"]["silo.machine-id"] = json!(other.id());
         let runner = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("silo-identity-verified"),
@@ -11104,6 +11231,7 @@ exit 9
         assert!(OPERATIONS.is_vm_idle(vm().id()) && OPERATIONS.is_vm_idle(other.id()));
         lanes.lock().unwrap().clear();
         let writer = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
             identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("{}"),
             identity_output(""),
