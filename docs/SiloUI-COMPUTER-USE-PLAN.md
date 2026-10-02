@@ -123,7 +123,7 @@ absolute).
   `--skip-system --offline`.
 - Pinned LCU release archive, hash-checked, staged for installation in the VM
   (done: `guest/lcu-lock.json`, `/usr/local/share/silo/lcu/`). The published v4 image
-  stages LCU 0.8.1; Silo now pins LCU 0.8.5 (below), which a VM downloads and
+  stages LCU 0.8.1; Silo now pins LCU 0.8.6 (below), which a VM downloads and
   verifies at setup until a new image stages it.
 - Accessibility: dconf `toolkit-accessibility=true` system default and an
   autostarted AT-SPI attribute poller for Chromium/Electron.
@@ -144,7 +144,7 @@ absolute).
 - Every computer does this itself at its own start, remote ones included; a
   controller never prepares an app for another computer.
 
-Done: lock (`lcuVersion` 0.8.5), download, verification, extraction and
+Done: lock (`lcuVersion` 0.8.6), download, verification, extraction and
 publication under `<app data>/chatgpt/published/`, started automatically at app
 start with retries (2026-10-02, replacing the one-time notice), cached status
 reads and a computer-level Retry. See [ChatGPT app](SiloUI-CHATGPT-APP.md).
@@ -455,6 +455,21 @@ running instance is up. During a wait the state is `preparing` ("Could not downl
 (network). Silo tries again automatically."); a boot, a switch change, a manual setup, a
 stop/restart or a deletion cancels it. After the last retry the failure stays until the next
 boot or a manual setup.
+
+### LCU 0.8.6 pin (2026-10-03)
+
+Silo pins LCU 0.8.6 (tag `v0.8.6`, commit d6db28d; linux-arm64
+`7ff9d94589b72d9f4896c3f7ab1fad36282974d59aba66df66003f6445431254`, linux-x64
+`47b23234a82cb9fd09431b65f51476f05fec93e4e10e949c2ae474e78c7d1c5f`, verified by
+download). It closes the last review findings in the Linux input translation: before a
+translated pointer action the X server's window chain at the point must contain the target
+(an overlapping overlay refuses the action instead of receiving it), original engine calls
+from the queue are bounded to 30 s with the trusted worker reset on timeout, the X server
+must prove it shares LCU's PID namespace before its client PIDs are trusted, an unreadable
+namespace fails closed, and only translatable requests run the identity helper.
+`SYSTEM_PACKAGES` is unchanged. LCU's own gates ran against ChatGPT 26.915.31945 only; the
+pinned 26.928.31416 is covered by Silo's live tests. The section below describes the 0.8.5
+pin it replaces.
 
 ### LCU 0.8.5 pin (2026-10-02)
 
