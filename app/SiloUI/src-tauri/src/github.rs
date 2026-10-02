@@ -3010,8 +3010,8 @@ pub async fn refresh_github_repositories(
 ) -> Result<Value, String> {
     require_main(window.label())?;
     retry_credential_access();
-    crate::github_http::reset_retries();
     run(app, |app| {
+        crate::github_http::reset_safe_retries();
         let result = active_credential().and_then(|c| catalog(&c));
         let _state = serialize(&STATE);
         let mut d = load(app)?;
