@@ -388,7 +388,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let networkError: string | null = null
   const networkReads = new Map<string, { dirty: boolean; promise: Promise<void> }>()
   const networkReadRevisions = new Map<string, number>()
-  let networkRevision = 0
+  const networkSaveRevisions = new Map<string, number>()
   let operationQueue: OperationQueue | undefined
   let operationQueueRequest: Promise<void> | undefined
   let operationQueueDirty = false
@@ -545,16 +545,32 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function changeNetwork(command: string, arguments_: Record<string, unknown>) {
-    const revision = ++networkRevision
-    const remote = typeof arguments_.workspace === "string" ? parseRemoteWorkspaceTarget(arguments_.workspace) : undefined
+    const target = arguments_.workspace as string
+    const remote = parseRemoteWorkspaceTarget(target)
     const owner = remote?.hostId ?? ""
+    const revision = (networkSaveRevisions.get(target) ?? 0) + 1
+    networkSaveRevisions.set(target, revision)
     networkReadRevisions.set(owner, (networkReadRevisions.get(owner) ?? 0) + 1)
     const { workspace: _workspace, ...rest } = arguments_
-    const result = parseNetworkState(await native.invoke(remote ? `remote_${command}` : command, remote ? { ...rest, ...remote } : arguments_))
-    if (revision !== networkRevision || disposed) return
+    let result: NetworkState
+    try {
+      result = parseNetworkState(await native.invoke(remote ? `remote_${command}` : command, remote ? { ...rest, ...remote } : arguments_))
+      if (result.workspaces.some(row => workspaceOwner(row.workspace) !== owner)) throw new Error("Network response belongs to another computer.")
+    } catch (cause) {
+      networkReadRevisions.set(owner, (networkReadRevisions.get(owner) ?? 0) + 1)
+      if (!disposed) void readNetworkOwner(owner)
+      throw cause
+    }
+    if (disposed) return
     networkReadRevisions.set(owner, (networkReadRevisions.get(owner) ?? 0) + 1)
-    const retained = network?.workspaces.filter(row => remote ? !row.workspace.startsWith(`silo-remote:${remote.hostId}:`) : row.workspace.startsWith("silo-remote:")) ?? []
-    network = { workspaces: [...retained, ...result.workspaces] }; networkError = null
+    if (revision !== networkSaveRevisions.get(target)) {
+      void readNetworkOwner(owner)
+      return
+    }
+    // A computer-wide reply can carry older rows for unrelated sandbox saves.
+    const retained = network?.workspaces.filter(row => row.workspace !== target) ?? []
+    network = { workspaces: [...retained, ...result.workspaces.filter(row => row.workspace === target)] }
+    if (!owner) networkError = null
     publish({ ...snapshot })
   }
 
