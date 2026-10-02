@@ -92,3 +92,21 @@ callbacks documented in the Radix source linked above.
 Checks: all 44 import, shared-popover, and sandbox-transfer tests passed.
 Frontend typecheck, touched-file oxlint, Rust formatting, and diff whitespace
 checks passed.
+
+## Escape dismisses operation cancellation questions
+
+Integration already fixed focus restoration after Keep going, recorded in
+`fe-components-fix-loop.md`; that instance was skipped. A separate missing
+Escape handler remained: pressing Escape while focused in the cancellation
+question left it open. The new regression failed because the Confirm cancel
+group remained rendered. Output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/toast-before.log`.
+
+The question now consumes Escape locally and returns to progress through the
+existing Keep going state transition and focus restoration. It respects handled
+and composition events. The regression verifies Cancel regains focus, the
+operation continues, and Enter can reopen the question and activate cancellation.
+
+Checks: all 21 operation-toast body and toast integration tests passed.
+Frontend typecheck, touched-file oxlint, Rust formatting, and diff whitespace
+checks passed.

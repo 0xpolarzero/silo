@@ -82,7 +82,12 @@ export function OperationToastBody({ title, step, steps, progress, startedAt, ca
 
   if (confirming && cancel?.confirm) {
     const { prompt, confirmLabel, keepLabel = "Keep going" } = cancel.confirm
-    return <div className="grid gap-2 text-xs" role="group" aria-label="Confirm cancel">
+    return <div className="grid gap-2 text-xs" role="group" aria-label="Confirm cancel" onKeyDown={event => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing) return
+      event.preventDefault()
+      event.stopPropagation()
+      setConfirming(false)
+    }}>
       <p>{prompt}</p>
       <div className="flex gap-2">
         <Button type="button" variant="ghost" size="sm" autoFocus onClick={() => setConfirming(false)}>{keepLabel}</Button>
