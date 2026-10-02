@@ -338,6 +338,28 @@ fn after_boot_pushes_and_detaches_the_sync_with_the_vms_approval() {
 }
 
 #[test]
+fn a_vm_booted_by_its_pending_restore_still_gets_its_sync() {
+    // Imports and forks boot inside the restore, while Silo still records them as pending.
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    runtime::checkpoints::import_pending_restore(
+        &paths,
+        VM_ID,
+        "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
+        "silo-backup-0-330418-1790360984903",
+    )
+    .unwrap();
+    assert!(runtime::is_pending_restore(&paths, "dev"));
+    let runner = Arc::new(Booting::new("one"));
+    after_boot(runner.clone(), &paths, "dev")
+        .unwrap()
+        .join()
+        .unwrap();
+    assert_eq!(runner.inner.scripts().len(), 1);
+}
+
+#[test]
 fn after_boot_stamps_an_unstamped_policy_so_an_older_guest_mode_cannot_win() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);

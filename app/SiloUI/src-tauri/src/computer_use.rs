@@ -481,10 +481,11 @@ fn running_instance(
     paths: &RuntimePaths,
     name: &str,
 ) -> Option<Option<String>> {
-    match runtime::observe_vm(runner, paths, name) {
-        Ok(runtime::VmRuntime::Present(inspected)) if inspected.status == "Running" => {
-            Some(inspected.runtime_instance_id)
-        }
+    // Asks the runtime directly: a VM restored from a checkpoint is still recorded as
+    // pending while the restore that boots it runs `prepare_booted`, and `observe_vm`
+    // would call it absent.
+    match runtime::inspect_workspace(runner, paths, name) {
+        Ok(inspected) if inspected.status == "Running" => Some(inspected.runtime_instance_id),
         _ => None,
     }
 }
