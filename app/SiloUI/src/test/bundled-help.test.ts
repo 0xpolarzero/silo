@@ -73,3 +73,10 @@ it("names the macOS Settings menu for both Silo build channels", () => {
   expect(instructions?.textContent).toMatch(/Silo → Settings/)
   expect(instructions?.textContent).toMatch(/Silo Dev → Settings/)
 })
+
+it("requires a running desktop as well as a running sandbox for computer-use setup", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.startsWith("Set up computer use"))
+  expect(instructions?.textContent).toMatch(/sandbox and its Linux desktop are running/i)
+  expect(instructions?.textContent).toMatch(/Start.*desktop.*viewer/i)
+})
