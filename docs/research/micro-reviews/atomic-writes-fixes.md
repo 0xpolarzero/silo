@@ -50,3 +50,14 @@ access. It failed before the fix and passed afterward in a harness with the exac
 production document types, thread-local path override, path resolver, writer and
 test, compiled with Rust 1.94.0 and warnings denied. No credential store or guest
 was accessed; root skips the permission boundary.
+
+## Log exports: fixed
+
+`log_export.rs::save_atomically` returned success after publishing synchronized
+file bytes without synchronizing the selected directory. It now syncs the
+directory before acknowledging success. The real permission fixture confirms
+complete published output while rejecting that unconfirmed save; it failed
+before the change. Three exact-source persistence tests passed after the fix,
+including existing failure/cancellation preservation and 1,001 JSONL rows with
+Unicode, using Rust 1.94.0 with warnings denied. The harness isolates the writer
+from Tauri dialogs and log-query adapters; root skips the permission fixture.
