@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep checkpoint export preflight read-only and migrate saved lineage only after the export acquires its operation gate.
+Preparing a checkpoint export no longer changes your saved checkpoint history while another checkpoint operation is in progress.
