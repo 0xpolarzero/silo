@@ -1,4 +1,5 @@
 import { ComputerUseProvider } from "./computer-use-provider"
+import { Profiler } from "react"
 import { act, fireEvent, render, renderHook, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
@@ -45,6 +46,28 @@ it("reads remote download status without waiting for local event registration", 
     await advance(1000)
     expect(read).toHaveBeenCalledTimes(2)
   } finally { stop() }
+})
+
+it("does not commit the computer-use panel for equal reads but shows changed approval", async () => {
+  let state = fixtureDesktopState("ready")
+  const read = vi.fn(async () => structuredClone(state))
+  const bridge = createComputerUseBridge(backend({ readDesktopState: read }))
+  const commits = vi.fn()
+  const view = render(<ComputerUseProvider bridge={bridge}><Profiler id="computer-use" onRender={commits}>
+    <ComputerUseSection workspace={workspace} />
+  </Profiler></ComputerUseProvider>)
+  try {
+    await advance(0)
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
+    commits.mockClear()
+    for (let tick = 0; tick < 10; tick++) await advance(5000)
+    expect(read).toHaveBeenCalledTimes(11)
+    expect(commits).not.toHaveBeenCalled()
+    state = fixtureDesktopState("auto")
+    await advance(5000)
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeChecked()
+    expect(commits).toHaveBeenCalledOnce()
+  } finally { view.unmount() }
 })
 
 it("keeps remote download consumers stable until progress or a read error changes", async () => {

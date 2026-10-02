@@ -68,21 +68,21 @@ export function OperationQueueToast({ queue, onCancel }: { queue?: OperationQueu
   // The earliest entry decides the debounce: once *something* has been active long enough,
   // the whole toast may appear. Stable across renders while the same entry stays oldest.
   const earliest = active ? Math.min(...[...running, ...waiting].map((entry) => entry.sinceMs)) : 0
-  const [debounced, setDebounced] = useState(false)
-  const show = active && debounced
+  const [debouncedSince, setDebouncedSince] = useState<number>()
+  const show = active && debouncedSince === earliest
   const now = useNow(show)
 
   useEffect(() => {
     if (!active) {
-      setDebounced(false)
+      setDebouncedSince(undefined)
       return
     }
     const remaining = TOAST_DEBOUNCE_MS - (Date.now() - earliest)
     if (remaining <= 0) {
-      setDebounced(true)
+      setDebouncedSince(earliest)
       return
     }
-    const timer = window.setTimeout(() => setDebounced(true), remaining)
+    const timer = window.setTimeout(() => setDebouncedSince(earliest), remaining)
     return () => window.clearTimeout(timer)
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [active, earliest])

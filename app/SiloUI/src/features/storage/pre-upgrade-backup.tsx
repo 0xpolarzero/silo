@@ -71,6 +71,7 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
     const requests = reads.current
     let unsubscribe: (() => void) | undefined
     refresh.current = async () => {
+      if (!live) return
       const mine = ++requests.sequence
       try {
         const next = await backend.read()
@@ -82,7 +83,7 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
         if (live && mine === requests.sequence) { setLoadError(message(cause)); setLoaded(true) }
       }
     }
-    void backend.subscribe(() => { void refresh.current() }).then(stop => {
+    void backend.subscribe(() => { if (live) void refresh.current() }).then(stop => {
       if (live) { unsubscribe = stop; setSubscriptionError(null) }
       else stop()
     }).catch(() => {

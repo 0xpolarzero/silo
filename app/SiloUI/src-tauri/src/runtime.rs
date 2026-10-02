@@ -4669,17 +4669,19 @@ pub(crate) fn is_pending_restore(paths: &RuntimePaths, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Inspect a Silo VM without treating "not created yet" as a failure. A sandbox that
-/// is pending restore is decided from Silo's own record before the runtime is asked;
-/// a runtime that reports the sandbox as missing is likewise `Absent`.
+/// Inspect a Silo VM without treating "not created yet" as a failure. An unattempted
+/// restore is absent; after an attempt, inspect the VM it may have created. A runtime
+/// that reports the sandbox as missing is likewise `Absent`.
 pub(crate) fn observe_vm(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<VmRuntime, RuntimeError> {
     validate_name(name)?;
-    if is_pending_restore(paths, name) {
-        return Ok(VmRuntime::Absent);
+    if let Ok(id) = resolve_vm_id(paths, name) {
+        if checkpoints::pending_view(paths, &id, true)? {
+            return Ok(VmRuntime::Absent);
+        }
     }
     match inspect_workspace(runner, paths, name) {
         Ok(inspected) => Ok(VmRuntime::Present(inspected)),
@@ -5951,14 +5953,17 @@ pub(crate) fn validate_name(name: &str) -> Result<(), RuntimeError> {
 }
 
 pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, RuntimeError> {
+    Ok(
+        read_saved_metadata(path)?.unwrap_or(MachineConfigurationRequest {
+            schema_version: 1,
+            machines: Vec::new(),
+        }),
+    )
+}
+fn read_saved_metadata(path: &Path) -> Result<Option<MachineConfigurationRequest>, RuntimeError> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(MachineConfigurationRequest {
-                schema_version: 1,
-                machines: Vec::new(),
-            })
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(RuntimeError::Unavailable(format!(
                 "Silo could not read its sandbox configuration: {error}"
@@ -5982,7 +5987,7 @@ pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, 
         RuntimeError::Malformed("Silo's saved sandbox configuration is invalid.".into())
     })?;
     validate_request(&request)?;
-    Ok(request)
+    Ok(Some(request))
 }
 
 /// Resolve a local VM's stable id from its current display name in fresh metadata.
@@ -8007,7 +8012,7 @@ esac
         crate::test_support::paths(directory.path())
     }
 
-    fn vm() -> MachineConfiguration {
+    pub(super) fn vm() -> MachineConfiguration {
         MachineConfiguration::Vm {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "dev".into(),
@@ -8021,7 +8026,7 @@ esac
         }
     }
 
-    fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
+    pub(super) fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
         MachineConfigurationRequest {
             schema_version: 1,
             machines,
@@ -9843,6 +9848,48 @@ exit 9
         .unwrap());
         crate::secrets::use_test_store(None);
         crate::secrets::use_test_vault(None);
+    }
+
+    #[test]
+    fn pending_secret_revocation_does_not_retire_a_running_failed_restore() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let pending: checkpoints::Record = serde_json::from_value(json!({
+            "version":1,
+            "checkpoints":[],
+            "restoreAttempted":true,
+            "pendingCheckpointRestore":{
+                "checkpointId":"c000000000000000000000000000000",
+                "sourceWorkspace":"source",
+                "state":"disk"
+            }
+        }))
+        .unwrap();
+        checkpoints::save(&paths, vm().id(), &pending).unwrap();
+        let record = pending_secret_fixture(&directory);
+        let mut removed = Vec::new();
+        let result = revoke_secret_with(
+            &StubRunner::successful_json(vec![
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+            ]),
+            &paths,
+            &record,
+            &mut |name| {
+                removed.push(name.to_owned());
+                Ok(())
+            },
+        )
+        .unwrap();
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        assert!(
+            !result,
+            "a running restore still exposes the revoked secret"
+        );
+        assert_eq!(removed, ["API_KEY"]);
     }
 
     #[test]

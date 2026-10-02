@@ -25,7 +25,7 @@ export type { OperationCancel, OperationProgressOptions, OperationStep } from "@
  * loading → success (stays until the user closes it) or failure (stays, with Retry).
  * Use a stable `id` per operation so each phase replaces the previous toast in place.
  */
-export interface OperationToastCopy {
+interface OperationToastCopy {
   /** Shown while the action runs, e.g. "Pushing 2 commits". */
   loading: string
   /** Shown when it finishes, e.g. "Pushed 2 commits". */
@@ -36,7 +36,7 @@ export interface OperationToastCopy {
   description?: string
 }
 
-export interface OperationToastOptions {
+interface OperationToastOptions {
   /** Called by the failure toast's Retry action. Omit when a retry makes no sense. */
   retry?: () => void
   /** Extra success action, e.g. { label: "Show in Finder", onClick }. */
@@ -55,7 +55,7 @@ export function errorMessage(error: unknown): string {
  * A result-toast action. Always a label + handler so every notification renders the same
  * Sonner action button (never a hand-made `<Button>`, which would look different).
  */
-export type OperationAction = { label: string; onClick: (event: MouseEvent<HTMLButtonElement>) => void }
+type OperationAction = { label: string; onClick: (event: MouseEvent<HTMLButtonElement>) => void }
 
 /**
  * Notifications about a specific sandbox, so they can be dismissed when it is deleted (their
@@ -99,7 +99,7 @@ export function dismissSandboxToasts(target: string) {
 }
 
 /** Auto-dismiss delay of a quick confirmation (nothing to act on, finished fast). */
-export const QUICK_TOAST_DURATION = 4000
+const QUICK_TOAST_DURATION = 4000
 /** A progress notification visible at least this long makes its success notification persistent. */
 export const LONG_OPERATION_MS = 3000
 
@@ -107,7 +107,7 @@ export const LONG_OPERATION_MS = 3000
 const progressStarts = new Map<string, number>()
 
 /** Options shared by every finished-state notification. */
-export interface OperationResultOptions {
+interface OperationResultOptions {
   description?: ReactNode
   action?: OperationAction
   /** Sandbox(es) this notification is about; see `dismissSandboxToasts`. */

@@ -122,7 +122,7 @@ fn directory() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
     directory_in(Path::new(&home))
 }
-/// `~/.silo/desktop-remote` (`~/.silo-dev/...` for Silo Dev) under `home`, private to this account.
+/// The current channel's `desktop-remote` directory under `home`, private to this account.
 fn directory_in(home: &Path) -> Result<PathBuf, String> {
     let root = crate::channel::current().state_dir(home);
     crate::runtime::prepare_private_directory(&root).map_err(|e| e.to_string())?;
@@ -298,7 +298,7 @@ fn select_bridge_target(app_image: Option<PathBuf>, current: PathBuf) -> Result<
     }
     Ok(current)
 }
-/// Points `~/.local/bin/silo-remote` under `home` at `target`, replacing only a link
+/// Points the current channel's bridge link under `~/.local/bin` at `target`, replacing only a link
 /// Silo made earlier: one to an executable with the same name, a Silo AppImage, or a
 /// link whose target is gone (an old AppImage mount or a moved app).
 fn link_bridge(home: &Path, target: &Path) -> Result<(), String> {
@@ -531,8 +531,9 @@ fn read_reply(mut reader: impl std::io::BufRead) -> Result<Value, String> {
         if byte == REPLY_PREAMBLE[matched] {
             matched += 1;
         } else {
-            skipped += matched + 1;
-            matched = usize::from(byte == REPLY_PREAMBLE[0]);
+            let restart = usize::from(byte == REPLY_PREAMBLE[0]);
+            skipped += matched + 1 - restart;
+            matched = restart;
             if skipped > REPLY_SEARCH_LIMIT {
                 return Err("The other computer printed unexpected text before Silo's reply. Remove output from its shell startup files, such as echo in .bashrc.".into());
             }
@@ -965,12 +966,17 @@ fn connection_failure(code: Option<i32>, stderr: &str) -> String {
     if has("Silo is not running on this computer.") {
         return "Silo is not running on the other computer. Open Silo there with remote management enabled.".into();
     }
-    if code == Some(127)
-        || has("silo-remote: No such file")
-        || has("silo-remote: not found")
-        || has("silo-remote-dev: No such file")
-        || has("silo-remote-dev: not found")
-    {
+    let missing_bridge = [
+        crate::channel::Channel::Production,
+        crate::channel::Channel::Development,
+    ]
+    .into_iter()
+    .any(|channel| {
+        ["No such file", "not found"]
+            .into_iter()
+            .any(|cause| has(&format!("{}: {cause}", channel.remote_bridge_name())))
+    });
+    if code == Some(127) || missing_bridge {
         return "Silo's remote bridge is missing on the other computer. Turn remote management off and on again there.".into();
     }
     CONNECTION_HELP.into()
@@ -1319,7 +1325,9 @@ fn save_connected_host(
         return Err(if host.name == local_name {
             "This address points to this computer. Its VMs are already available locally.".into()
         } else {
-            format!("{} uses this computer's Silo identity, probably because its Silo settings were copied from here. On {}, quit Silo, delete ~/.silo/desktop-remote/config.json (~/.silo-dev/desktop-remote/config.json for Silo Dev), and open Silo again.", host.name, host.name)
+            let production = crate::channel::Channel::Production;
+            let development = crate::channel::Channel::Development;
+            format!("{} uses this computer's Silo identity, probably because its Silo settings were copied from here. On {}, quit Silo, delete ~/{}/desktop-remote/config.json (~/{}/desktop-remote/config.json for {}), and open Silo again.", host.name, host.name, production.state_dir_name(), development.state_dir_name(), development.product_name())
         });
     }
     if let Some(saved) = config.hosts.iter().find(|saved| saved.id == host.id) {
@@ -2658,6 +2666,22 @@ mod setup_tests {
 mod connection_failure_tests {
     use super::*;
     #[test]
+    fn missing_bridge_stderr_recognizes_both_channels_without_exit_127() {
+        for channel in [
+            crate::channel::Channel::Production,
+            crate::channel::Channel::Development,
+        ] {
+            for cause in ["No such file", "not found"] {
+                let stderr = format!(
+                    "sh: /home/u/.local/bin/{}: {cause}\n",
+                    channel.remote_bridge_name()
+                );
+                assert!(connection_failure(Some(1), &stderr).contains("bridge is missing"));
+            }
+        }
+    }
+
+    #[test]
     fn distinguishes_ssh_failures_from_bridge_failures() {
         let _test_state = crate::test_support::global_state();
         let changed = "@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.\n";
@@ -3351,6 +3375,21 @@ mod reply_tests {
         let mut bare = Vec::new();
         write_frame(&mut bare, &value).unwrap();
         assert!(read_reply(bare.as_slice()).is_err());
+    }
+
+    #[test]
+    fn reply_search_counts_overlapping_prefix_bytes_once() {
+        let value = json!({"result":{"hostId":"office"}});
+        for mut noise in [vec![b'x'; REPLY_SEARCH_LIMIT], vec![0; REPLY_SEARCH_LIMIT]] {
+            *noise.last_mut().unwrap() = 0;
+            let bytes = [noise, reply(&value)].concat();
+            let reader = std::io::BufReader::with_capacity(7, bytes.as_slice());
+            assert_eq!(read_reply(reader).unwrap(), value);
+        }
+        let flood = [vec![0; REPLY_SEARCH_LIMIT + 1], reply(&value)].concat();
+        assert!(read_reply(flood.as_slice())
+            .unwrap_err()
+            .contains("shell startup files"));
     }
 
     #[test]

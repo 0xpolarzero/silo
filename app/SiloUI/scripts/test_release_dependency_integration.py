@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SPEC = importlib.util.spec_from_file_location('release_deps', Path(__file__).with_name('release-dependency-cache.py'))
 DEPS = importlib.util.module_from_spec(SPEC)
@@ -55,7 +55,9 @@ class ReleaseDependencyIntegrationTests(unittest.TestCase):
         (self.state / 'metadata.json').write_text(json.dumps({'resolve': {'root': 'app'}}))
         for code, fresh, expected in [(19, False, 19), (0, True, None), (0, False, 0)]:
             row = {'reason': 'compiler-artifact', 'package_id': 'app', 'executable': '/unused', 'fresh': fresh}
-            process = argparse.Namespace(stdout=io.StringIO(json.dumps(row) + '\n'), wait=lambda: code)
+            process = MagicMock(stdout=io.StringIO(json.dumps(row) + '\n'))
+            process.__enter__.return_value = process
+            process.wait.return_value = code
             with self.subTest(code=code, fresh=fresh), patch.object(DEPS.subprocess, 'Popen', return_value=process):
                 if expected is None:
                     with self.assertRaises(ValueError):
@@ -66,7 +68,9 @@ class ReleaseDependencyIntegrationTests(unittest.TestCase):
     def test_failed_compiler_streams_rendered_diagnostics_and_retains_inventory(self):
         (self.state / 'metadata.json').write_text(json.dumps({'resolve': {'root': 'app'}}))
         diagnostic = {'reason': 'compiler-message', 'message': {'rendered': 'error[E0308]: mismatched types\n'}}
-        process = argparse.Namespace(stdout=io.StringIO(json.dumps(diagnostic) + '\n'), wait=lambda: 101)
+        process = MagicMock(stdout=io.StringIO(json.dumps(diagnostic) + '\n'))
+        process.__enter__.return_value = process
+        process.wait.return_value = 101
         stderr = io.StringIO()
         with patch.object(DEPS.subprocess, 'Popen', return_value=process), patch.object(DEPS.sys, 'stderr', stderr):
             self.assertEqual(DEPS.build(self.args), 101)
