@@ -30,3 +30,15 @@ Native verification uses a disposable Rust harness extracting the production wat
 - **Protocol evidence:** [RFC 6455 section 7.1.4](https://www.rfc-editor.org/rfc/rfc6455.html#section-7.1.4) ties WebSocket closure to closing its underlying TCP connection; [section 7.2.1](https://www.rfc-editor.org/rfc/rfc6455.html#section-7.2.1) requires failure when the transport is unexpectedly lost. This proxy propagates transport termination without interpreting WebSocket frames.
 
 All 15 proxy module tests passed after the fix, compiled directly from the production module with Rust 1.94.0 and shared cached dependencies, without stubs. Scoped Clippy with warnings denied, frontend typecheck/lint, Rust formatting, and whitespace checks passed. Synthetic TCP/Unix sockets and credentials were used; no app or VM was launched. The direct module run does not establish whole-application compilation.
+
+## DESKTOP-VIEWER-4: Obsolete attachment errors remain on stopped sandboxes
+
+- **Priority:** P3.
+- **Location before fix:** `app/SiloUI/src/desktop/linux-desktop-viewer.tsx`, native viewer error projection.
+- **Trigger:** Native attachment fails, then a subsequent successful health read reports `vm-stopped`.
+- **Evidence:** Connection errors have a separate lifetime from health-read errors. Successful health reads clear only the latter, and a stopped display cannot attach to clear the former. The mocked-IPC regression failed because the stopped sandbox retained the old attachment alert and Reconnect button alongside Start sandbox.
+- **Consequence:** The viewer presents a transport recovery action when the current state instead requires starting the sandbox. The same stale alert can obscure display-recovery controls while the stream is stopped or failed.
+- **Fix:** Show attachment errors only while the current guest state permits attachment. Keep health-read and action errors visible independently, and retain connection errors during healthy running-state reads until attachment succeeds.
+- **Regression:** Start with a running guest whose attachment fails, poll a stopped sandbox, require Start sandbox and no obsolete attachment alert or Reconnect control, and verify no desktop action is invoked automatically. Existing tests retain connection errors while a running guest's attachment continues failing.
+
+Both viewer test files passed all 29 tests. Frontend typecheck, lint, Rust formatting, and whitespace checks passed. Tests used mocked IPC and fake timers; no application or VM was launched.
