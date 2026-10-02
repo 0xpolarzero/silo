@@ -279,3 +279,34 @@ stopped. A failure after `install` restores the recorded running set. APT's
 existing 60-second lock timeout bounds the install stage. Unit tests use shell
 fixtures for the handshake and Python tests for the helper; the packaged pkexec
 prompt and a live Debian upgrade were not exercised.
+
+
+## Failed process replacement, 2 October 2026
+
+After a successful Debian installation, Silo keeps its installation and VM
+operation guards, closes helpers, releases its single-instance claim and executes
+the updated binary. If replacement fails, it exits with status 1. Reopen Silo
+to acquire the claim and restore the saved running set from the update journal.
+The old process never cancels shutdown or resumes sandbox recovery after releasing
+its claim. Settings were flushed before installation, so this exit intentionally
+skips the ordinary exit handler and its additional state writes.
+
+The pinned [single-instance plugin 2.4.5 public API](https://github.com/tauri-apps/plugins-workspace/blob/single-instance-v2.4.5/plugins/single-instance/src/lib.rs)
+provides initialization and destruction, but no verified reacquisition operation.
+Its [Linux implementation](https://github.com/tauri-apps/plugins-workspace/blob/single-instance-v2.4.5/plugins/single-instance/src/platform_impl/linux.rs)
+releases the D-Bus name on destruction; its connection state is private.
+Re-registering the plugin cannot establish ownership through the existing managed
+connection. Silo therefore terminates rather than adding a separate ownership
+mechanism. Rust's [exec contract](https://doc.rust-lang.org/std/os/unix/process/trait.CommandExt.html#tymethod.exec)
+returns only on failure and warns that process state may have changed.
+[process::exit](https://doc.rust-lang.org/std/process/fn.exit.html) terminates all
+threads without running Rust destructors, matching the successful replacement
+path's cleanup requirements.
+
+The regression test uses isolated child processes with temporary HOMEs. It
+injects a real missing-executable failure and replaces a test process with
+`/bin/sh` for the success case. Both cases close the synthetic claim first and
+prevent a subsequent mutation marker; failure exits with status 1 and explains
+that Silo must be reopened. These checks do not exercise session D-Bus, a second
+Linux app, package installation, or live VM recovery. Native Linux acceptance
+still requires a disposable session before claiming release readiness.

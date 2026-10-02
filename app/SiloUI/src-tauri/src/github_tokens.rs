@@ -258,8 +258,11 @@ fn execute_with(
                     .as_array()
                     .ok_or("GitHub returned an invalid installation list.")?;
                 for installation in installations {
+                    // GitHub lists only this token's App; client_id is optional.
                     if installation["account"]["id"].as_u64() != Some(owner)
-                        || installation["client_id"] != config.client_id
+                        || installation.get("client_id").is_some_and(|client_id| {
+                            client_id.as_str() != Some(config.client_id.as_str())
+                        })
                         || !installation["suspended_at"].is_null()
                     {
                         continue;
@@ -650,6 +653,30 @@ mod tests {
             assert!(execute_with(&config(), Operation::Scope, input(), |r| {
                 assert_eq!(r.method, Method::GET);
                 Ok(json!({"installations":[item.clone()]}))
+            })
+            .is_err());
+        }
+    }
+    #[test]
+    fn installations_without_optional_client_id_can_mint() {
+        let mut installed = installation(json!({"contents":"read"}));
+        installed.as_object_mut().unwrap().remove("client_id");
+        let body = scoped_permissions(input(), installed).unwrap();
+        assert_eq!(body["target_id"], 7);
+        assert_eq!(body["repository_ids"], json!([11, 12]));
+        assert_eq!(
+            body["permissions"],
+            json!({"contents":"read","metadata":"read"})
+        );
+    }
+    #[test]
+    fn malformed_installation_client_ids_never_mint() {
+        for client_id in [Value::Null, json!(7), json!({}), json!([])] {
+            let mut installed = installation(json!({"contents":"read"}));
+            installed["client_id"] = client_id;
+            assert!(execute_with(&config(), Operation::Scope, input(), |r| {
+                assert_eq!(r.method, Method::GET);
+                Ok(json!({"installations":[installed.clone()]}))
             })
             .is_err());
         }

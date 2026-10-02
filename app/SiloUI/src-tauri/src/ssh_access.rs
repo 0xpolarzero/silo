@@ -25,6 +25,8 @@ struct Configuration {
     port: u16,
     bind_address: String,
     keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_key: Option<String>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -131,6 +133,9 @@ fn validate(config: &Configuration) -> Result<(), String> {
     }
     if config.keys.len() > 128 {
         return Err("Use at most 128 authorized keys.".into());
+    }
+    if let Some(key) = &config.managed_key {
+        editor::validate_public_key(key)?;
     }
     let mut seen = BTreeSet::new();
     for key in &config.keys {
@@ -687,13 +692,19 @@ fn client_key(paths: &RuntimePaths, id: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// The owner's managed client public key for one sandbox, if it exists. Never creates one.
+/// Recover the managed public identity from key files for settings written before
+/// it was recorded separately. Never creates a key.
 fn managed_public_key(paths: &RuntimePaths, id: &str) -> Option<String> {
     uuid::Uuid::parse_str(id).ok()?;
     let path = paths.home.join("ssh/managed-clients").join(id);
-    path.exists()
+    let public = path
+        .exists()
         .then(|| editor::public_key(&path).ok())
-        .flatten()
+        .flatten();
+    public.or_else(|| {
+        let bytes = editor::read_regular(&path.with_extension("pub")).ok()?;
+        normalize_key(std::str::from_utf8(&bytes).ok()?.trim()).ok()
+    })
 }
 /// Comment marking a key another computer registered through `ssh.access.connection`,
 /// followed by that computer's Silo identity.
@@ -799,32 +810,46 @@ fn save_with(
         })
         .ok_or("This sandbox no longer exists on its computer. Refresh SSH access.")?;
     let workspace = machine.name().to_owned();
+    let mut configs = read(paths)?;
+    let previous = configs.iter().find(|c| c.machine_id == machine.id());
+    let managed = previous
+        .and_then(|c| c.managed_key.clone())
+        .or_else(|| managed_public_key(paths, machine.id()));
     let Settings {
         enabled,
         port,
         bind_address,
         mut keys,
     } = settings;
-    if enabled {
+    let managed_key = if enabled {
         let public = editor::public_key(&client_key(paths, machine.id())?)?;
+        if let Some(old) = &managed {
+            if old != &public {
+                keys.retain(|key| normalize_key(key).ok().as_deref() != Some(old.as_str()));
+            }
+        }
         if !keys
             .iter()
             .any(|key| normalize_key(key).ok().as_deref() == Some(public.trim()))
         {
             keys.push(public.trim().to_owned());
         }
+        Some(public)
     } else {
         // Turning access off revokes every key Silo manages: other computers'
         // registered keys and this computer's managed key, which is replaced on the
         // next enable (C-15). Keys the user added stay for next time.
-        let managed = managed_public_key(paths, machine.id());
+        if managed.is_none() && previous.is_some_and(|c| c.enabled) && !keys.is_empty() {
+            return Err("Could not identify the previous SSH connection key. Restore its managed public key file before disabling SSH access.".into());
+        }
         keys.retain(|key| {
             !is_controller_key(key)
                 && managed.as_deref().is_none_or(|managed| {
                     normalize_key(key).ok().as_deref() != Some(managed.trim())
                 })
         });
-    }
+        None
+    };
     let mut config = Configuration {
         workspace: workspace.clone(),
         machine_id: machine.id().into(),
@@ -832,13 +857,13 @@ fn save_with(
         port,
         bind_address,
         keys,
+        managed_key,
     };
     validate(&config)?;
     if enabled && config.bind_address != "127.0.0.1" && !addresses().contains(&config.bind_address)
     {
         return Err("Choose an active network interface address.".into());
     }
-    let mut configs = read(&paths)?;
     // Deleted or replaced identities must not reserve a port forever.
     configs.retain(|c| {
         metadata
@@ -977,6 +1002,7 @@ mod tests {
                 "ssh-ed25519 {} test laptop",
                 base64::engine::general_purpose::STANDARD.encode(bytes)
             )],
+            managed_key: None,
         }
     }
     fn paths(dir: &tempfile::TempDir) -> RuntimePaths {
@@ -1386,6 +1412,61 @@ sys.stdin.buffer.read()
             );
         }
         assert_eq!(read(&p).unwrap()[0].keys, keys);
+    }
+
+    #[test]
+    fn disabling_ssh_access_revokes_managed_key_when_key_files_are_missing() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        remote_fixture(&p);
+        let mut c = config();
+        c.port = unused_port();
+        remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
+        let key = client_key(&p, &c.machine_id).unwrap();
+        let managed = editor::public_key(&key).unwrap();
+        fs::remove_file(&key).unwrap();
+        fs::remove_file(key.with_extension("pub")).unwrap();
+        let mut disabled = read(&p).unwrap()[0].clone();
+        disabled.enabled = false;
+        remote_with(&p, "ssh.access.save", &remote_request(&disabled)).unwrap();
+        assert_eq!(read(&p).unwrap()[0].keys, c.keys);
+        let mut reenabled = read(&p).unwrap()[0].clone();
+        reenabled.enabled = true;
+        remote_with(&p, "ssh.access.save", &remote_request(&reenabled)).unwrap();
+        let rotated = editor::public_key(&client_key(&p, &c.machine_id).unwrap()).unwrap();
+        assert_ne!(rotated, managed);
+        assert!(!read(&p).unwrap()[0].keys.contains(&managed));
+    }
+
+    #[test]
+    fn disabling_legacy_ssh_access_uses_surviving_public_key() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        remote_fixture(&p);
+        let mut c = config();
+        c.port = unused_port();
+        remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
+        let key = client_key(&p, &c.machine_id).unwrap();
+        let public = fs::read(key.with_extension("pub")).unwrap();
+        fs::remove_file(&key).unwrap();
+        fs::remove_file(key.with_extension("pub")).unwrap();
+        let mut legacy: serde_json::Value =
+            serde_json::from_slice(&fs::read(path(&p)).unwrap()).unwrap();
+        legacy[0].as_object_mut().unwrap().remove("managedKey");
+        editor::write_private(&path(&p), &serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let mut disabled = read(&p).unwrap()[0].clone();
+        disabled.enabled = false;
+        let error = remote_with(&p, "ssh.access.save", &remote_request(&disabled)).unwrap_err();
+        assert!(
+            error.contains("Restore its managed public key file"),
+            "{error}"
+        );
+        assert!(read(&p).unwrap()[0].enabled);
+        fs::write(key.with_extension("pub"), public).unwrap();
+        remote_with(&p, "ssh.access.save", &remote_request(&disabled)).unwrap();
+        assert_eq!(read(&p).unwrap()[0].keys, c.keys);
     }
 
     #[test]

@@ -62,6 +62,10 @@ impl Channel {
         self.pick(PRODUCTION_IDENTIFIER, DEVELOPMENT_IDENTIFIER)
     }
 
+    pub(crate) fn product_name(self) -> &'static str {
+        self.pick("Silo", "Silo Dev")
+    }
+
     pub(crate) fn is_development(self) -> bool {
         self == Self::Development
     }
@@ -143,6 +147,7 @@ mod tests {
     fn production_names_are_exactly_the_released_names() {
         let production = Channel::Production;
         assert_eq!(production.identifier(), "org.silo.preview");
+        assert_eq!(production.product_name(), "Silo");
         assert_eq!(production.state_dir_name(), ".silo");
         assert_eq!(
             production.keychain_service(Keychain::Github),
@@ -171,8 +176,10 @@ mod tests {
     fn development_names_never_equal_production_names() {
         let (p, d) = (Channel::Production, Channel::Development);
         assert_eq!(d.identifier(), "org.silo.dev");
+        assert_eq!(d.product_name(), "Silo Dev");
         let pairs = [
             (p.identifier(), d.identifier()),
+            (p.product_name(), d.product_name()),
             (p.state_dir_name(), d.state_dir_name()),
             (
                 p.keychain_service(Keychain::Github),
@@ -248,9 +255,15 @@ mod tests {
         };
         let production = read("tauri.conf.json");
         assert_eq!(production["identifier"], PRODUCTION_IDENTIFIER);
-        assert_eq!(production["productName"], "Silo");
+        assert_eq!(
+            production["productName"],
+            Channel::Production.product_name()
+        );
         let development = read("tauri.dev.conf.json");
         assert_eq!(development["identifier"], DEVELOPMENT_IDENTIFIER);
-        assert_eq!(development["productName"], "Silo Dev");
+        assert_eq!(
+            development["productName"],
+            Channel::Development.product_name()
+        );
     }
 }

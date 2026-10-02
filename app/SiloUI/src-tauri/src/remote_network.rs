@@ -70,6 +70,21 @@ impl Tunnels {
     fn changed(&mut self, host: &str) {
         self.revisions.insert(host.into(), Arc::new(()));
     }
+    fn has_connection(&self, key: &Key) -> bool {
+        self.live.contains_key(key)
+            || self.intents.contains_key(key)
+            || self.saves.contains_key(key)
+            || self.connecting.contains(key)
+    }
+    fn connection_count(&self) -> usize {
+        self.live
+            .keys()
+            .chain(self.intents.keys())
+            .chain(self.saves.keys())
+            .chain(self.connecting.iter())
+            .collect::<HashSet<_>>()
+            .len()
+    }
 }
 static TUNNELS: OnceLock<Mutex<Tunnels>> = OnceLock::new();
 /// A short data lock: never held while ssh starts or a port is probed.
@@ -89,6 +104,9 @@ impl PendingSave {
         runtime::shutdown::ensure_accepting_operations()?;
         let token = Arc::new(());
         let mut tunnels = tunnels();
+        if !tunnels.has_connection(&key) && tunnels.connection_count() >= TUNNEL_LIMIT {
+            return Err("Close an unused connection before opening another port.".into());
+        }
         tunnels.changed(&key.0);
         tunnels.saves.insert(key.clone(), token.clone());
         Ok(Self { key, token })
@@ -456,9 +474,6 @@ fn finish_save(
         if !pending.current(&tunnels) {
             return Err("This port configuration was superseded. Refresh network services.".into());
         }
-        if tunnels.live.len() >= TUNNEL_LIMIT && !tunnels.live.contains_key(&key) {
-            return Err("Close an unused connection before opening another port.".into());
-        }
         // Automatic keeps the port this computer used before, so bookmarks keep working.
         let requested =
             host_port.or_else(|| tunnels.intents.get(&key).map(|intent| intent.local_port));
@@ -817,6 +832,70 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_saves_reserve_the_last_connection_slot() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        for vm in 0..TUNNEL_LIMIT - 1 {
+            tunnels()
+                .intents
+                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+        }
+        let first = PendingSave::new((host.clone(), "first".into(), 3000)).unwrap();
+        let second = PendingSave::new((host.clone(), "second".into(), 3000));
+        let rejected = second.is_err();
+        drop(second);
+        drop(first);
+        close_host(&host);
+        assert!(rejected, "two saves were admitted into the last slot");
+    }
+
+    #[test]
+    fn a_failed_save_releases_its_connection_slot() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        for vm in 0..TUNNEL_LIMIT - 1 {
+            tunnels()
+                .intents
+                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+        }
+        let failed = save_tunnel(
+            (host.clone(), "failed".into(), 3000),
+            None,
+            None,
+            32000,
+            |_| Err("SSH fixture failed".into()),
+        );
+        let next = PendingSave::new((host.clone(), "next".into(), 3000));
+        let admitted = next.is_ok();
+        drop(next);
+        close_host(&host);
+        assert!(failed.is_err());
+        assert!(admitted, "a failed open leaked its connection slot");
+    }
+
+    #[test]
+    fn disconnected_intents_keep_their_connection_slots() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        for vm in 0..TUNNEL_LIMIT {
+            tunnels()
+                .intents
+                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+        }
+        disconnect_host(&host);
+        let extra = PendingSave::new((host.clone(), "extra".into(), 3000));
+        let rejected = extra.is_err();
+        drop(extra);
+        // Editing an existing connection remains possible at the limit.
+        let existing = PendingSave::new((host.clone(), "0".into(), 3000));
+        let editable = existing.is_ok();
+        drop(existing);
+        close_host(&host);
+        assert!(rejected, "disconnecting freed slots promised to reconnects");
+        assert!(editable, "a configured connection could not be edited");
+    }
+
+    #[test]
     fn an_older_poll_cannot_forget_a_newly_saved_tunnel() {
         let _guard = crate::test_support::global_state();
         let host = uuid::Uuid::new_v4().to_string();
@@ -890,6 +969,7 @@ mod tests {
 
     #[test]
     fn saving_a_port_never_holds_the_lock_while_ssh_starts_and_keeps_the_old_tunnel_on_failure() {
+        let _guard = crate::test_support::global_state();
         let host = uuid::Uuid::new_v4().to_string();
         let key = key(&host);
         save_tunnel(key.clone(), None, Some("http".into()), 32000, |requested| {
