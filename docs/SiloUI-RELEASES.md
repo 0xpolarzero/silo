@@ -568,6 +568,9 @@ the selected Go version, requested toolchain, staging-script recipe digest, and
 effective build flags, experiments, architecture tuning, and FIPS setting. A
 change to any of these rejects both executable caches. Builds and compiler notices
 use the selected compiler's GOROOT with further toolchain switching disabled.
+The LFS manifest also records every bundled license file's SHA256; both caches
+reject missing, changed or unexpected notices instead of packaging an incomplete
+notice tree alongside a valid executable.
 Keys include the runner, target, Rust and selected Go versions, staging scripts, runtime patch,
 and guest lockfile, so app version changes alone do not invalidate the runtime.
 Preparation always verifies and stages restored inputs and regenerates package
