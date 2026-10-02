@@ -26,7 +26,7 @@ export function useLifecycleToasts(source: ApplicationSource, actions: Applicati
   // Lifecycle Start/Stop/Restart: a progress notification appears only if the action takes
   // longer than a moment (instant ones never flash) and is dismissed when it finishes; the row
   // state already shows the outcome. Failures keep their own retryable notification.
-  const lifecycleProgress = useRef(new Map<string, { timer?: number; shown: boolean; startedAt: number }>())
+  const lifecycleProgress = useRef(new Map<string, { timer?: number; shown: boolean; startedAt: number; show: () => void }>())
   const trackLifecycle = useEffectEvent((all: ApplicationWorkspace[]) => {
     const tracked = lifecycleProgress.current
     const live = new Set<string>()
@@ -41,12 +41,12 @@ export function useLifecycleToasts(source: ApplicationSource, actions: Applicati
       const waiting = !workspace.computer ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, workspace.machine.id) : undefined
       const step = waiting && source.operationQueue ? waitingStatusText(source.operationQueue, waiting) : action === "restart" ? "Restarting…" : action === "stop" ? "Stopping…" : "Starting…"
       const existing = tracked.get(key)
-      const entry = existing ?? { shown: false, startedAt: Date.now() } as { timer?: number; shown: boolean; startedAt: number }
-      const show = () => showOperationProgress(id, { title, step, startedAt: entry.startedAt, sandbox: name })
+      const entry = existing ?? { shown: false, startedAt: Date.now(), show: () => {} } as { timer?: number; shown: boolean; startedAt: number; show: () => void }
+      entry.show = () => showOperationProgress(id, { title, step, startedAt: entry.startedAt, sandbox: name })
       if (!existing) {
         tracked.set(key, entry)
-        entry.timer = window.setTimeout(() => { entry.shown = true; entry.timer = undefined; show() }, LIFECYCLE_TOAST_DELAY_MS)
-      } else if (entry.shown) show()
+        entry.timer = window.setTimeout(() => { entry.shown = true; entry.timer = undefined; entry.show() }, LIFECYCLE_TOAST_DELAY_MS)
+      } else if (entry.shown) entry.show()
     }
     for (const [key, entry] of tracked) {
       if (live.has(key)) continue

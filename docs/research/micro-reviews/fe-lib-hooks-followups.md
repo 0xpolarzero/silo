@@ -63,3 +63,12 @@ All fixes were developed in `codex-fix-fe-lib-hooks` on `codex/fix-fe-lib-hooks`
 Focused checks include `npm --prefix app/SiloUI test --` with the changed library suites, sidebar fixture, remote-deletion fixture, file-tree fixture, operation-toast suite, and transfer suite. The integrated scope check passed 63 tests across seven files; the final action-dismissal check passed 66 tests across three files. Frontend typecheck, touched-file oxlint, `git diff --check`, and Rust 1.94.0 formatting checks passed.
 
 A broader caller run passed 100 of 101 tests; the existing 6,001-record log-window fixture exceeded its five-second default timeout. Its focused retry also timed out at five seconds, then passed with `--maxWorkers=1 --testTimeout=15000` in 6.12 seconds. Exact output is preserved in `/tmp/fe-lib-hooks-integrated-check.log`, `/tmp/fe-lib-hooks-log-window-recheck.log`, and `/tmp/fe-lib-hooks-log-window-budget-check.log`. No timeout settings were changed in the repository.
+
+## FE-LIB-HOOKS-8: Delayed lifecycle progress shows a stale queue step
+
+- Priority: P3.
+- File: `app/SiloUI/src/features/application/model/use-lifecycle-toasts.tsx`, `trackLifecycle`.
+- Trigger: A start is initially queued behind maintenance, then becomes running within the 800 ms notification delay.
+- Consequence: The timer captures the first snapshot and announces “Waiting for background maintenance…” even though the operation is running. With no further snapshot change, that incorrect step remains visible.
+- Fix: Refresh the pending entry's display callback on every snapshot and invoke that callback when the original delay expires.
+- Test: Move a lifecycle operation out of its queue at 400 ms, then assert that its first toast at 800 ms says “Starting…”. This failed with the stale waiting step before the implementation; exact output is saved in `/tmp/fe-lib-hooks-8-red.log`.
