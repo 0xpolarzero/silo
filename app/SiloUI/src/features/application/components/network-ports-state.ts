@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 
+import { bridgeErrorMessage } from "@/contracts/bridge-error"
 import { errorMessage, showActionFailure, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import type { ApplicationActions, ApplicationWorkspace, NetworkPort, NetworkState } from "@/features/application/model/application-source"
@@ -72,7 +73,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
       onSuccess?.()
       return true
     } catch (cause) {
-      const message = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated."
+      const message = bridgeErrorMessage(cause) ?? (typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated.")
       showOperationFailure(id, `${copy.failure} · ${location}`, { description: message, retry: () => void run(id, identity, copy, operation, onSuccess), sandbox, noticeSandbox })
       return false
     } finally { pending.current = false; setBusy(false) }
