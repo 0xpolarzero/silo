@@ -284,8 +284,8 @@ it.each(["past", "future"] as const)("removes a resolved issue from the %s navig
 
 it("opens and dismisses commands with either platform shortcut without losing the current page", async () => {
   const { user } = renderApplication()
-  await user.click(within(appNavigation()).getByRole("button", { name: "GitHub" }))
-  const trigger = screen.getByRole("button", { name: "Search or jump to" })
+  const invoker = within(appNavigation()).getByRole("button", { name: "GitHub" })
+  await user.click(invoker)
   for (const shortcut of ["{Meta>}k{/Meta}", "{Control>}k{/Control}"]) {
     await user.keyboard(shortcut)
     const input = screen.getByRole("combobox", { name: "Search commands" })
@@ -295,7 +295,7 @@ it("opens and dismisses commands with either platform shortcut without losing th
     expect(screen.getByText("No commands found.")).toBeVisible()
     await user.keyboard("{Escape}")
     expect(screen.queryByRole("dialog", { name: "Commands" })).not.toBeInTheDocument()
-    expect(trigger).toHaveFocus()
+    expect(invoker).toHaveFocus()
   }
   expect(appPanel("GitHub")).toBeVisible()
 })

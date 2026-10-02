@@ -56,3 +56,7 @@ Full-crate Cargo regressions were queued with the shared `/tmp/silo-codex-target
 - **Consequence:** A successfully stopped replacement leaves the app unable to Quit until configuration recovery clears the journal.
 - **Fix:** Skip an absent journal identity only when an exact-name, managed runtime inspection matches a different known identity under that name. The present identity still follows normal shutdown verification; unknown identities remain errors.
 - **Regression test:** Both committed and uncommitted replacements stop successfully without discarding their recovery journal. The extracted production shutdown function failed before and passes after the fix. Native regressions were added; full-crate execution remains blocked by the shared Cargo lock. Rust formatting, frontend typecheck, lint, and diff checks passed for the fixes in this loop.
+
+## Final native verification result
+
+The queued native test command eventually acquired the shared Cargo lock, then exited 101 before compiling the application tests: Tauri's build script could not find `binaries/msb-aarch64-apple-darwin` in this worktree. The preserved output is `/tmp/runtime-dir-c-4-native.log`. No runtime preparation or app launch was performed. The native regressions require a prepared test environment; their full-crate compilation and execution remain unverified. The failing-before/passing-after source-extracted reproductions and formatting/typecheck/lint checks passed, including the final name-reuse reproduction after merging integration.

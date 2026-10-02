@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { chmod, copyFile, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { fetchVerifiedFile } from './build-input.mjs'
 import { validateArchiveEntries } from './git-runtime.mjs'
@@ -38,6 +38,18 @@ export function lfsTransferGuestArchitecture(targetTriple) {
   if (targetTriple === 'aarch64-apple-darwin' || targetTriple === 'aarch64-unknown-linux-gnu') return 'arm64'
   if (targetTriple === 'x86_64-unknown-linux-gnu') return 'amd64'
   throw new Error(`Unsupported Git LFS transfer target: ${targetTriple}`)
+}
+
+async function licenseDigests(directory) {
+  const files = ['LICENSE-MIT.txt']
+  for (const entry of await readdir(join(directory, 'licenses'), { recursive: true, withFileTypes: true })) {
+    if (entry.isDirectory()) continue
+    if (!entry.isFile()) throw new Error('Git LFS transfer licenses contain an unsupported file type')
+    files.push(relative(directory, join(entry.parentPath, entry.name)))
+  }
+  const entries = []
+  for (const file of files.sort()) entries.push([file, sha256(await readFile(join(directory, file)))])
+  return Object.fromEntries(entries)
 }
 
 async function normalizeModes(directory) {
@@ -93,7 +105,8 @@ export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchStre
       await readFile(join(directory, 'licenses', 'Go-LICENSE'))
       return manifest.schemaVersion === 2 && JSON.stringify(manifest.buildIdentity) === JSON.stringify(buildIdentity) &&
         manifest.commit === LFS_TRANSFER_COMMIT && manifest.sourceSha256 === LFS_TRANSFER_SOURCE_SHA256 &&
-        manifest.architecture === architecture && manifest.binarySha256 === sha256(await readFile(join(directory, 'git-lfs-transfer')))
+        manifest.architecture === architecture && JSON.stringify(manifest.licenseSha256) === JSON.stringify(await licenseDigests(directory)) &&
+        manifest.binarySha256 === sha256(await readFile(join(directory, 'git-lfs-transfer')))
     } catch { return false }
   }
   if (await valid(root)) {
@@ -154,7 +167,7 @@ export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchStre
     await writeFile(join(stage, 'manifest.json'), `${JSON.stringify({
       schemaVersion: 2, distribution: 'charmbracelet/git-lfs-transfer', commit: LFS_TRANSFER_COMMIT, buildIdentity,
       sourceSha256: LFS_TRANSFER_SOURCE_SHA256, platform: 'linux', architecture,
-      binarySha256: sha256(await readFile(join(stage, 'git-lfs-transfer'))),
+      binarySha256: sha256(await readFile(join(stage, 'git-lfs-transfer'))), licenseSha256: await licenseDigests(stage),
     }, null, 2)}\n`)
     await normalizeModes(stage)
     await rm(root, { recursive: true, force: true })
