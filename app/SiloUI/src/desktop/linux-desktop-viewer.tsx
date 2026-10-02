@@ -103,6 +103,7 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const [connection, setConnection] = useState(0)
   const screenRef = useRef<HTMLDivElement>(null)
+  const refreshAttachment = useRef<(() => void) | null>(null)
   const operation = useRef(false)
   const polling = useRef(false)
   const revision = useRef(0)
@@ -112,13 +113,18 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
     transportTail.current = next
     return next
   }, [])
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (checkAttachment = true) => {
     if (operation.current || polling.current) return
     polling.current = true
     const currentRevision = revision.current
     try {
       const result = parseLinuxDesktopState(await invoke("read_desktop_state", { workspace }))
-      if (currentRevision === revision.current) { setState(result); setError(null) }
+      if (currentRevision === revision.current) {
+        setState(result)
+        setError(null)
+        // A host disconnect can retire the transport while its guest keeps running.
+        if (checkAttachment && result.state === "running" && (result.streamState == null || result.streamState === "running")) refreshAttachment.current?.()
+      }
     } catch (cause) { if (currentRevision === revision.current) setError(String(cause)) }
     finally { polling.current = false; if (currentRevision === revision.current) setBusy(false) }
   }, [workspace])
@@ -152,11 +158,12 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
       finally { pending = false; if (dirty) { dirty = false; void attach() } }
     }
     const updateBounds = () => { void attach() }
+    refreshAttachment.current = updateBounds
     const observer = new ResizeObserver(updateBounds)
     observer.observe(screen)
     window.addEventListener("resize", updateBounds)
     void attach()
-    return () => { disposed = true; observer.disconnect(); window.removeEventListener("resize", updateBounds); void transport(() => invoke("desktop_viewer_detach")).catch(() => {}) }
+    return () => { disposed = true; refreshAttachment.current = null; observer.disconnect(); window.removeEventListener("resize", updateBounds); void transport(() => invoke("desktop_viewer_detach")).catch(() => {}) }
   }, [workspace, streamReady, connection, transport])
   async function handleAction(action: DesktopAction) {
     if (operation.current) return
@@ -182,6 +189,6 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
   }
   return <LinuxDesktopViewer name={name} state={state} busy={busy} error={error ?? connectionError} screenRef={screenRef} lcuUpdated={lcuUpdated} MenuComponent={NativeDesktopActionsMenu}
     onAction={action => { void handleAction(action) }}
-    onRetry={() => { setConnection(value => value + 1); void refresh() }}
+    onRetry={() => { setConnection(value => value + 1); void refresh(false) }}
     onFullscreen={() => { const window = getCurrentWindow(); void window.isFullscreen().then(value => window.setFullscreen(!value)).catch(cause => setError(String(cause))) }} />
 }
