@@ -128,6 +128,6 @@ function boundary(date: string, time: string, end: boolean): string {
   return value.toISOString()
 }
 function rangeLabel(since: string, until: string): string {
-  const format = (value: string) => new Date(value).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+  const format = (value: string) => new Date(value).toLocaleString("en", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
   return since && until ? `${format(since)} → ${format(until)}` : since ? `Since ${format(since)}` : `Until ${format(until)}`
 }
