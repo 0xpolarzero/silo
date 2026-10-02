@@ -71,3 +71,9 @@ The standalone Rust verification extracts the production retry helper, failure c
 - Evidence: the picker retried failed reads on every ten-second interval. The regression observed an extra read before the first twenty-second failure deadline.
 - Change: grow the failed-read delay from twenty to forty seconds, capped at sixty seconds. Successful reads reset the delay; focus, visibility, and explicit Retry remain immediate.
 - Verification: the fixture regression covers repeated caps, focus recovery, the restored ten-second cadence, and disposal. Existing focus, stale-workspace, StrictMode, pagination, and queued-read cancellation tests remain in place.
+
+## Offline-computer snapshot polling
+
+- Evidence: the production source's ten-second refresh retried every computer, regardless of its preceding snapshot failure. The fixture regression observed a second failed request before the first twenty-second deadline.
+- Change: track independent failure deadlines, doubling to a sixty-second cap, and honor them only for background polling. Healthy computers retain their cadence; explicit refresh, focus, mutation refreshes, and computer address changes bypass the wait. A valid snapshot or busy response resets the delay.
+- Verification: the fixture regression covers independent healthy reads, growing and repeated caps, immediate focus recovery, the restored cadence, and disposal.
