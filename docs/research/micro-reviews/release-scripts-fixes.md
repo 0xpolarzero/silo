@@ -54,3 +54,9 @@ the correction. Staging now rejects this mismatch before fetching or replacing
 any artifact; approved ARM64 and x86_64 downloads and warm-cache reuse still
 pass. These synthetic archives establish the preparation policy, not the
 architecture of bytes supplied by an incorrectly authored trusted lock.
+
+## RELEASE-SCRIPTS-5 — P2: Missing Linux inputs destroy the previous package tools
+
+- **Trigger and evidence:** `stageLinuxPackageTools` removes the published directory before copying its inputs. A temporary-directory fixture supplies the first new executable and omits the second; it reproduced a directory containing only the replacement `msb`, with all six prior tools lost. Failing output is preserved in ignored `target/verification/release-scripts/linux-package-before.log`.
+- **Fix:** Converged with integration commit `a173affb`. Copy and set modes in an operation-owned staging directory, then publish only after every input succeeds. Always clean that staging directory. This preserves the previous tools on input or copy failures; final directory replacement is not crash-atomic.
+- **Verification:** All four Linux package-tool tests passed, including exact bytes/modes and the packaging overlay contract. Typecheck, touched-file oxlint, Rust formatting, CI-coverage tests (two), and whitespace checks passed. Internal tooling only; no changeset required.
