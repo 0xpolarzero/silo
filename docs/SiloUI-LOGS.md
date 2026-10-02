@@ -115,6 +115,8 @@ Export… saves all matching pages through the native save dialog as JSON
 Lines. It includes coverage metadata and complete record identities. Export
 queries each sandbox as a separate snapshot. Cancellation or a failed page leaves
 the selected destination untouched and removes partial output.
+If a selected remote computer cannot serve logs, export asks you to update Silo
+on that computer and leaves the destination untouched.
 
 The display and export use marker-based sensitive-output filtering. PEM block
 state crosses records within each stream and execution session. Search scans
@@ -134,6 +136,12 @@ Command lines with password, passphrase, token, secret, key, credential, or user
 options are also hidden. The filter recognizes separated long-option words
 and [curl's `-u` credential option](https://curl.se/docs/manpage.html#-u),
 because its username/password value does not need an assignment or URL.
+URL query names are decoded before applying the assignment markers, so
+percent-encoded names such as `%74oken` cannot bypass filtering. Signature
+parameters are hidden too, including
+[Azure SAS `sig`](https://learn.microsoft.com/en-us/rest/api/storageservices/create-service-sas#specifying-the-signature-field),
+[Amazon S3 `X-Amz-Signature`](https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sigv4-query-string-auth.html),
+and [Cloud Storage `X-Goog-Signature`](https://cloud.google.com/storage/docs/authentication/canonical-requests).
 
 The pinned runtime's [retention patch](../app/SiloUI/patches/microsandbox-log-retention-desktop-start-0.7.6.patch)
 renames older segments to increasing numeric suffixes. Silo uses numeric suffix

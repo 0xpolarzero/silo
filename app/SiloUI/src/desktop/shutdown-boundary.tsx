@@ -28,16 +28,24 @@ export function ShutdownBoundary({ children, compact = false, pendingWork }: { c
     let disposed = false
     let receivedEvent = false
     let unsubscribe: (() => void) | undefined
-    void listen<boolean>("silo://shutdown-state-changed", ({ payload }) => {
-      receivedEvent = true
-      if (!disposed && typeof payload === "boolean") setQuitting(payload)
-    }).then(async stop => {
-      if (disposed) { stop(); return }
-      unsubscribe = stop
-      const active = await invoke<boolean>("read_shutdown_state")
-      if (!disposed && !receivedEvent && typeof active === "boolean") setQuitting(active)
-    }).catch(error => console.error("Silo shutdown status:", error))
-    return () => { disposed = true; unsubscribe?.() }
+    let connecting = false
+    const connect = () => {
+      if (disposed || unsubscribe || connecting) return
+      connecting = true
+      void listen<boolean>("silo://shutdown-state-changed", ({ payload }) => {
+        receivedEvent = true
+        if (!disposed && typeof payload === "boolean") setQuitting(payload)
+      }).then(async stop => {
+        if (disposed) { stop(); return }
+        unsubscribe = stop
+        const active = await invoke<boolean>("read_shutdown_state")
+        if (!disposed && !receivedEvent && typeof active === "boolean") setQuitting(active)
+      }).catch(error => console.error("Silo shutdown status:", error))
+        .finally(() => { connecting = false })
+    }
+    window.addEventListener("focus", connect)
+    connect()
+    return () => { disposed = true; unsubscribe?.(); window.removeEventListener("focus", connect) }
   }, [])
   // While quitting, follow the operation queue so the overlay can name the work
   // Quit is waiting for and offer to cancel it. The read command keeps working
@@ -57,8 +65,8 @@ export function ShutdownBoundary({ children, compact = false, pendingWork }: { c
     void listen("silo://operation-queue-changed", () => { void read() }).then(stop => {
       if (disposed) { stop(); return }
       unsubscribe = stop
+      void read()
     }).catch(error => console.error("Silo shutdown queue:", error))
-    void read()
     return () => { disposed = true; unsubscribe?.(); setQueue(emptyOperationQueue) }
   }, [quitting])
   const waitingLabel = shutdownWaitingLabel(queue)

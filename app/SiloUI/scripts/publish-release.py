@@ -90,8 +90,8 @@ def main():
     if args.publish:
         if not existing or not existing["draft"]:
             raise RuntimeError("A verified draft is required; existing public releases are never changed.")
-        assets = {a["name"] for a in existing["assets"] if a["size"] > 0}
-        if assets != EXPECTED | {"latest.json", "SHA256SUMS"}:
+        assets = {a["name"] for a in existing["assets"]}
+        if assets != EXPECTED | {"latest.json", "SHA256SUMS"} or any(a["size"] <= 0 for a in existing["assets"]):
             raise RuntimeError("Draft is incomplete; refusing to publish.")
         # Download and verify every byte again after draft storage and before public cutover.
         import tempfile

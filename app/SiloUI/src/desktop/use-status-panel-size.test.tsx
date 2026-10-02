@@ -31,6 +31,62 @@ beforeEach(() => {
 })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
+it("releases its fixed height after native failure and retries on the next measurement", async () => {
+  const failure = new Error("Window unavailable")
+  const log = vi.spyOn(console, "error").mockImplementation(() => {})
+  native.invoke.mockRejectedValueOnce(failure)
+  const view = render(<Panel />)
+  await act(async () => {})
+  expect(log).toHaveBeenCalledExactlyOnceWith("Silo status resize:", failure)
+  expect((view.container.firstElementChild as HTMLElement).style.height).toBe("")
+
+  height = 240
+  await act(async () => { measure() })
+  expect(native.invoke).toHaveBeenLastCalledWith("resize_status", { height: 240 })
+  expect(native.invoke).toHaveBeenCalledTimes(2)
+  expect(view.container.firstElementChild).toHaveStyle({ height: "240px" })
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it("does not apply a pending native acknowledgment after unmount", async () => {
+  let acknowledge!: () => void
+  native.invoke.mockImplementationOnce(() => new Promise<void>(resolve => { acknowledge = resolve }))
+  const view = render(<Panel />)
+  const panel = view.container.firstElementChild as HTMLElement
+  expect(native.invoke).toHaveBeenCalledExactlyOnceWith("resize_status", { height: 120 })
+  view.unmount()
+  await act(async () => { acknowledge(); await vi.runAllTimersAsync() })
+  expect(panel.style.height).toBe("")
+  expect(native.invoke).toHaveBeenCalledOnce()
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it("keeps the active panel height when a disposed StrictMode resize fails", async () => {
+  let fail!: (error: Error) => void
+  native.invoke.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject }))
+  const log = vi.spyOn(console, "error").mockImplementation(() => {})
+  const view = render(<Panel />, { reactStrictMode: true })
+  await act(async () => {})
+  expect(native.invoke).toHaveBeenCalledTimes(2)
+  expect(view.container.firstElementChild).toHaveStyle({ height: "120px" })
+  await act(async () => { fail(new Error("Old request failed")) })
+  expect(view.container.firstElementChild).toHaveStyle({ height: "120px" })
+  expect(log).not.toHaveBeenCalled()
+})
+
+it("cancels the next animation frame before it can resize an unmounted panel", async () => {
+  const view = render(<Panel />)
+  await act(async () => {})
+  native.invoke.mockClear()
+  height = 300
+  act(() => { measure() })
+  expect(vi.getTimerCount()).toBe(1)
+  view.unmount()
+  await act(async () => { await vi.runAllTimersAsync() })
+  expect(native.invoke).not.toHaveBeenCalled()
+  expect(vi.getTimerCount()).toBe(0)
+})
+
 it("starts compact, grows and shrinks through acknowledged frames, and caps long pages", async () => {
   const view = render(<Panel />)
   await act(async () => {})

@@ -31,7 +31,16 @@ The original GITHUB-HTTP-1 audit remains in the shared review worktree. Its inte
 - **Consequence:** The worker can automatically repeat an ambiguous write that the user did not explicitly retry. Saving a personal token affects the OAuth/App transport's stopped requests as well as personal-token validation.
 - **Suggested fix:** Make reset operations accept the intended credential/request scope, and carry workspace or operation ownership where required. Personal-token save should reset its validation failures only. Preserve unrelated ambiguous-write refusals and server floors.
 - **Test that would catch it:** Stop distinct mint requests for workspaces A and B. Explicitly retry A and verify that only A becomes admissible. Save a personal token and verify that neither mint is reopened. Exercise the worker after the next refresh deadline and assert the outbound request count for B stays unchanged.
-- **Status:** Skipped. The reset API and its callers need intent/credential ownership plumbing outside the assigned file. The disposable failing probe and output remain under `/tmp/silo-codex-target/verification/github-http/`; no failing test was committed.
+- **Status:** Personal-token save and workspace-specific Retry are fixed after the scope expanded to adjacent modules. Personal-token save resets only its bearer credential's failures. Workspace policy requests carry ownership through `github_tokens` into the HTTP gate, and identical mint bodies for different workspaces get distinct failure keys. Workspace Retry clears only that workspace's failures after its intent ticket and update guard are acquired. Regressions failed under global resets and now prove unrelated personal credentials, other workspaces, and account operations remain blocked while the selected intent can retry without bypassing server floors. All 34 transport/token-operation tests passed, as did formatting and focused Clippy. Repository Refresh still uses the global reset and is the next caller to inspect. The disposable failing probe and output remain under `/tmp/silo-codex-target/verification/github-http/`; no failing test was committed.
+
+## GITHUB-HTTP-5 — P2: An HTTP request timeout permanently blocks safe reads
+
+- **File:line:** `app/SiloUI/src-tauri/src/github_http.rs:295` (before this fix).
+- **Trigger:** GitHub or its HTTP frontend returns HTTP 408 to a safe token-validation or repository-list request.
+- **Evidence:** `retryable_response` treated only rate limits and safe server errors as retryable. HTTP 408 therefore stored `until: None` and subsequent preflight checks refused the same request indefinitely. A local wire regression failed with `safe read stopped after HTTP 408`. [RFC 9110 section 15.5.9](https://www.rfc-editor.org/rfc/rfc9110.html#name-408-request-timeout) describes an incomplete request and permits another attempt. This finding uses a synthetic HTTP response, not a live GitHub outage.
+- **Consequence:** A transient request timeout requires manual recovery despite the safe-read retry policy.
+- **Fix:** Classify HTTP 408 as retryable for safe operations. Unsafe writes still stop, and permission/resource errors remain terminal.
+- **Regression:** Local HTTP 408 responses exercise safe and unsafe requests, pre-deadline blocking, admission at the retry deadline, and permanent unsafe refusal. Additional assertions keep HTTP 401 and 404 terminal. The test failed before the fix; all 35 transport/token-operation tests passed afterward, as did formatting and focused Clippy.
 
 ## Fix-loop verification
 

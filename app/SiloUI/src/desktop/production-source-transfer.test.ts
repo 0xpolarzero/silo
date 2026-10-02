@@ -59,6 +59,7 @@ describe("export and verify", () => {
   })
 
   it("never settles with another operation's result", async () => {
+    vi.useFakeTimers()
     let finishStart: ((id: string) => void) | undefined
     const { production, publish } = await store(() => new Promise(resolve => { finishStart = resolve }))
     const settled = vi.fn()
@@ -68,7 +69,7 @@ describe("export and verify", () => {
     publish({ ...idle, operationId: "old-op", operation: result("success") })
     await vi.waitFor(() => expect(finishStart).toBeDefined())
     finishStart?.("op-2")
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await vi.advanceTimersByTimeAsync(0)
     expect(settled).not.toHaveBeenCalled()
     publish({ ...idle, operationId: "op-2", operation: result("failed", "The destination disconnected.") })
     const error = await completion.catch((cause: unknown) => cause)
@@ -78,6 +79,7 @@ describe("export and verify", () => {
   })
 
   it("rejects when this export is cancelled or its result disappears", async () => {
+    vi.useFakeTimers()
     const cancelled = await store(async () => "op-3")
     const first = cancelled.production.backupActions.exportAndVerify("/Volumes/Backups", ["dev"])
     await vi.waitFor(() => expect(cancelled.invoke).toHaveBeenCalledWith("start_backup", expect.anything()))
@@ -88,7 +90,7 @@ describe("export and verify", () => {
     const lost = await store(async () => "op-4")
     const second = lost.production.backupActions.exportAndVerify("/Volumes/Backups", ["dev"])
     await vi.waitFor(() => expect(lost.invoke).toHaveBeenCalledWith("start_backup", expect.anything()))
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await vi.advanceTimersByTimeAsync(0)
     lost.publish({ ...idle, operationId: "op-5", operation: null })
     await expect(second).rejects.toMatchObject({ reason: "unavailable", operationId: "op-4" })
     lost.production.dispose()
@@ -110,10 +112,11 @@ describe("export and verify", () => {
   })
 
   it("rejects a pending wait when the source is disposed", async () => {
+    vi.useFakeTimers()
     const { production, invoke } = await store(async () => "op-7")
     const completion = production.backupActions.exportAndVerify("/Volumes/Backups", ["dev"])
     await vi.waitFor(() => expect(invoke).toHaveBeenCalledWith("start_backup", expect.anything()))
-    await new Promise(resolve => setTimeout(resolve, 0))
+    await vi.advanceTimersByTimeAsync(0)
     production.dispose()
     await expect(completion).rejects.toMatchObject({ reason: "unavailable", operationId: "op-7" })
   })
@@ -133,6 +136,25 @@ describe("export and verify", () => {
 
 // E-27: closing the import review stops the export file check it started.
 describe("export file check", () => {
+  it("does not start an inspection with an already aborted signal", async () => {
+    const { production, invoke } = await store(async () => "unused")
+    invoke.mockResolvedValue({ archive: exported, valid: true })
+    const abort = new AbortController()
+    abort.abort()
+    await expect(production.backupActions.inspectArchive(exported, abort.signal)).rejects.toMatchObject({ name: "AbortError" })
+    expect(invoke).not.toHaveBeenCalledWith("inspect_backup_archive", expect.anything())
+    production.dispose()
+  })
+
+  it("does not start inspection if selecting the archive aborts the request", async () => {
+    const { production, invoke } = await store(async () => "unused")
+    invoke.mockImplementation(async (command: string): Promise<unknown> => command === "choose_backup_archive" ? exported.archivePath : { archive: exported, valid: true })
+    const abort = new AbortController()
+    await expect(production.backupActions.chooseArchive(() => abort.abort(), abort.signal)).rejects.toMatchObject({ name: "AbortError" })
+    expect(invoke).not.toHaveBeenCalledWith("inspect_backup_archive", expect.anything())
+    production.dispose()
+  })
+
   it("tags the check with a request id, cancels it on abort, and changes no state", async () => {
     let finish: ((value: unknown) => void) | undefined
     const { production, invoke } = await store(async () => "unused")

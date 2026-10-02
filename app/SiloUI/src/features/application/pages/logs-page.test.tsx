@@ -50,19 +50,23 @@ describe("retained logs", () => {
   })
 
   it("explains the bounded window and exports all matches after records leave the list", async () => {
-    const { workspace, actions } = fixture(6001)
-    actions.queryLogs = vi.fn(async request => fixtureLogPage(workspace, { ...request, limit: 3000 }))
+    const { workspace, actions } = fixture(100)
+    workspace.logs.forEach(log => { log.line += "x".repeat(64 * 1024) })
     actions.exportLogs = vi.fn(async () => true)
     render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
-    await screen.findByText(/Showing 3000 of 6001/)
-    scrollNearEnd()
-    await screen.findByText(/Showing 5000 of 6001/)
+    await screen.findByText(/Showing 15 of 100/)
+    for (let page = 2; page <= 5; page++) {
+      scrollNearEnd()
+      await screen.findByText(new RegExp(`Showing ${Math.min(63, page * 15)} of 100`))
+      await waitFor(() => expect(screen.getByRole("table", { name: "Logs" })).toHaveAttribute("aria-busy", "false"))
+    }
+    await screen.findByText(/Showing 63 of 100/)
     expect(screen.getByText(/Some loaded records have left this list/)).toBeVisible()
     fireEvent.click(screen.getByRole("button", { name: "Save logs…" }))
     expect(actions.exportLogs).toHaveBeenCalledWith([expect.objectContaining({ sandboxId: workspace.machine.id, query: "" })])
     expect(vi.mocked(actions.exportLogs!).mock.calls[0][0][0]).not.toHaveProperty("cursor")
     fireEvent.click(screen.getByRole("button", { name: "Refresh logs" }))
-    await screen.findByText(/Showing 3000 of 6001/)
+    await screen.findByText(/Showing 15 of 100/)
     expect(screen.queryByText(/Some loaded records have left this list/)).not.toBeInTheDocument()
   })
   it("says when records could not be read and labels times the sandbox reported", async () => {
@@ -242,6 +246,46 @@ describe("retained logs", () => {
     expect(await within(document.body).findByText("Logs saved")).toBeInTheDocument()
     expect(actions.exportLogs).toHaveBeenCalledTimes(2)
   })
+
+  it("treats a cancelled export picker as silent and allows the next export", async () => {
+    const user = userEvent.setup()
+    const { workspace, actions } = fixture(2)
+    actions.exportLogs = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+    actions.cancelLogExport = vi.fn().mockResolvedValue(undefined)
+    render(<><Toaster /><Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} /></>)
+    await screen.findByText("Showing 2 of 2 matching records.")
+    const save = screen.getByRole("button", { name: "Save logs…" })
+    await user.click(save)
+    await waitFor(() => expect(save).toBeEnabled())
+    expect(screen.queryByText("Logs saved")).not.toBeInTheDocument()
+    expect(screen.queryByText("Could not save logs")).not.toBeInTheDocument()
+    expect(actions.cancelLogExport).not.toHaveBeenCalled()
+    await user.click(save)
+    expect(await screen.findByText("Logs saved")).toBeInTheDocument()
+    expect(actions.exportLogs).toHaveBeenCalledTimes(2)
+  })
+
+  it("reports cancellation failure without ending the pending export", async () => {
+    const user = userEvent.setup()
+    const { workspace, actions } = fixture(2)
+    let finish!: (saved: boolean) => void
+    actions.exportLogs = vi.fn(() => new Promise<boolean>(resolve => { finish = resolve }))
+    actions.cancelLogExport = vi.fn().mockRejectedValue({ code: "internal", message: "Could not stop writing logs" })
+    render(<><Toaster /><Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} /></>)
+    await screen.findByText("Showing 2 of 2 matching records.")
+    const save = screen.getByRole("button", { name: "Save logs…" })
+    await user.click(save)
+    await user.click(await screen.findByRole("button", { name: "Cancel" }))
+    expect(await screen.findByText("Could not stop writing logs")).toBeInTheDocument()
+    expect(save).toBeDisabled()
+    expect(screen.queryByText("Logs saved")).not.toBeInTheDocument()
+    await act(async () => finish(true))
+    expect(await screen.findByText("Logs saved")).toBeInTheDocument()
+    expect(save).toBeEnabled()
+    expect(actions.exportLogs).toHaveBeenCalledOnce()
+    expect(actions.cancelLogExport).toHaveBeenCalledOnce()
+  })
+
   it("ignores an old response after switching sandboxes and preserves explicit errors", async () => {
     const { workspace, actions } = fixture()
     let resolve!: (page: LogPage) => void

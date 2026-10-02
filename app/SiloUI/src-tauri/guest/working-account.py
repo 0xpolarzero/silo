@@ -73,7 +73,10 @@ def check_destination(destination):
 
 
 def relocate(value):
-    return value.replace('/home/silo-desktop/', '/home/silo/').replace('/root/', '/home/silo/')
+    for legacy in ('/home/silo-desktop', '/root'):
+        if value == legacy or value.startswith(legacy + '/'):
+            return '/home/silo' + value[len(legacy):]
+    return value
 
 
 def launcher_contents(path, relative):

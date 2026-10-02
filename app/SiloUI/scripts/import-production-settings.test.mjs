@@ -100,6 +100,110 @@ const run = (home, keychain, options = {}) => importProductionSettings({
   home, platform: "darwin", keychain, isDevRunning: () => false, newId: () => "dddddddd-dddd-4ddd-8ddd-dddddddddddd", ...options,
 })
 
+test("import refuses linked Dev destination directories before writing files or credentials", async t => {
+  for (const location of ["channel", "file", "remote", "dangling-remote"]) {
+    await t.test(location, async t => {
+      const { home, source, target } = fixtureHome()
+      t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+      const destination = location === "channel" ? target.config : location === "file"
+        ? path.join(target.config, "settings.json") : path.join(target.state, "desktop-remote")
+      const external = location === "channel" ? source.config : location === "file"
+        ? path.join(source.config, "settings.json") : location === "remote"
+        ? path.join(source.state, "desktop-remote") : path.join(home, "external-missing")
+      fs.mkdirSync(path.dirname(destination), { recursive: true })
+      fs.symlinkSync(external, destination, "dir")
+      const before = [...snapshot(source.config), ...snapshot(source.state)]
+      const keychain = productionKeychain()
+      await assert.rejects(run(home, keychain, { yes: true }), /Refusing to write through a linked/)
+      assert.deepEqual([...snapshot(source.config), ...snapshot(source.state)], before)
+      assert.deepEqual(keychain.writes, [])
+      assert.equal(fs.readlinkSync(destination), external)
+      if (location === "dangling-remote") assert.equal(fs.existsSync(external), false)
+      if (location.includes("remote")) assert.equal(fs.existsSync(target.config), false)
+    })
+  }
+})
+
+test("import rechecks all destination links after confirmation before applying any copy", async t => {
+  const { home, source, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  fs.mkdirSync(target.config, { recursive: true })
+  const settings = path.join(target.config, "settings.json")
+  fs.writeFileSync(settings, "previous Dev settings")
+  const destination = path.join(target.state, "desktop-remote")
+  fs.mkdirSync(destination, { recursive: true })
+  const keychain = productionKeychain()
+  const before = snapshot(source.state)
+  await assert.rejects(run(home, keychain, { confirm: async () => {
+    fs.rmdirSync(destination)
+    fs.symlinkSync(path.join(source.state, "desktop-remote"), destination, "dir")
+    return true
+  } }), /Refusing to write through a linked/)
+  assert.equal(fs.readFileSync(settings, "utf8"), "previous Dev settings")
+  assert.deepEqual(snapshot(source.state), before)
+  assert.deepEqual(keychain.writes, [])
+  assert.deepEqual(fs.readdirSync(target.config), ["settings.json"])
+})
+
+test("file sync failure preserves Dev settings and removes private staging files", async t => {
+  const { home, source, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  fs.mkdirSync(target.config, { recursive: true })
+  const settings = path.join(target.config, "settings.json")
+  fs.writeFileSync(settings, "previous Dev settings")
+  const before = snapshot(source.config)
+  const keychain = productionKeychain()
+  t.mock.method(fs, "fsyncSync", () => { throw new Error("file sync failed") })
+  await assert.rejects(run(home, keychain, { yes: true }), /file sync failed/)
+  assert.equal(fs.readFileSync(settings, "utf8"), "previous Dev settings")
+  assert.deepEqual(fs.readdirSync(target.config), ["settings.json"])
+  assert.deepEqual(snapshot(source.config), before)
+  assert.deepEqual(keychain.writes, [])
+})
+
+test("interrupted import removes partially written private backup staging", async t => {
+  const { home, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  fs.mkdirSync(target.config, { recursive: true })
+  const settings = path.join(target.config, "settings.json")
+  fs.writeFileSync(settings, "previous private Dev settings")
+  const write = fs.writeFileSync
+  t.mock.method(fs, "writeFileSync", (file, bytes, options) => {
+    write(file, Buffer.from(bytes).subarray(0, 8), options)
+    throw new Error("interrupted write")
+  })
+  await assert.rejects(run(home, productionKeychain(), { yes: true }), /interrupted write/)
+  assert.equal(fs.readFileSync(settings, "utf8"), "previous private Dev settings")
+  assert.deepEqual(fs.readdirSync(target.config), ["settings.json"])
+})
+
+test("import syncs final file permissions before rename and rejects directory sync failure", async t => {
+  const { home, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const settings = path.join(target.config, "settings.json")
+  const synced = []
+  const fsync = fs.fsyncSync
+  t.mock.method(fs, "fsyncSync", fd => {
+    const info = fs.fstatSync(fd)
+    if (info.isFile()) {
+      assert.equal(fs.existsSync(settings), false)
+      assert.equal(info.mode & 0o777, 0o600)
+      assert.ok(info.size > 0)
+      synced.push("file")
+      fsync(fd)
+    } else {
+      assert.equal(info.isDirectory(), true)
+      assert.equal(info.ino, fs.statSync(target.config).ino)
+      assert.equal(JSON.parse(fs.readFileSync(settings, "utf8")).settings.theme, "dark")
+      synced.push("directory")
+      throw new Error("directory sync failed")
+    }
+  })
+  await assert.rejects(run(home, productionKeychain()), /directory sync failed/)
+  assert.deepEqual(synced, ["file", "directory"])
+  assert.deepEqual(fs.readdirSync(target.config), ["settings.json"])
+})
+
 test("copies the intended configuration into dev and nothing about sandboxes", async () => {
   const { home, target } = fixtureHome()
   const keychain = productionKeychain()
@@ -157,6 +261,25 @@ test("refuses to run while Silo Dev is running and changes nothing", async () =>
   await assert.rejects(run(home, keychain, { isDevRunning: () => true }), /Silo Dev is running/)
   assert.equal(fs.existsSync(target.config), false)
   assert.equal(fs.existsSync(target.state), false)
+  assert.deepEqual(keychain.writes, [])
+})
+
+test("refuses an import when Dev starts while replacement confirmation is open", async t => {
+  const { home, source, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  fs.mkdirSync(target.config, { recursive: true })
+  const settings = path.join(target.config, "settings.json")
+  fs.writeFileSync(settings, "previous Dev settings")
+  const before = snapshot(source.config)
+  const keychain = productionKeychain()
+  let running = false
+  await assert.rejects(run(home, keychain, {
+    isDevRunning: () => running,
+    confirm: async () => { running = true; return true },
+  }), /Silo Dev is running/)
+  assert.equal(fs.readFileSync(settings, "utf8"), "previous Dev settings")
+  assert.deepEqual(fs.readdirSync(target.config), ["settings.json"])
+  assert.deepEqual(snapshot(source.config), before)
   assert.deepEqual(keychain.writes, [])
 })
 

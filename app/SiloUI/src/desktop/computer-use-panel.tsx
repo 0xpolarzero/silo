@@ -53,15 +53,16 @@ export function ChatGptAppStatusView({ store, retry = false, fallbackReason, act
   const recovery = subscriptionError ?? loadError
   const refresh = recovery ? <ErrorLine message={recovery} actionLabel="Refresh status" onAction={store ? () => { void store.refresh() } : undefined} /> : null
   const onRetry = retry && store ? () => { void store.retry() } : undefined
+  const retryError = error ? <ErrorLine message={error} onDismiss={() => store?.dismissError()} /> : null
   if (!status) {
-    if (refresh) return refresh
-    return fallbackReason ? <ErrorLine message={fallbackReason} actionLabel={onRetry ? "Retry" : undefined} onAction={onRetry} busy={busy} /> : null
+    const fallback = fallbackReason ? <ErrorLine message={fallbackReason} actionLabel={onRetry ? "Retry" : undefined} onAction={onRetry} busy={busy} /> : null
+    return <>{refresh ?? fallback}{retryError}</>
   }
-  if (status.state === "ready" || status.state === "unknown") return <>{fallbackReason && <ErrorLine message={fallbackReason} />}{refresh}</>
+  if (status.state === "ready" || status.state === "unknown") return <>{fallbackReason && <ErrorLine message={fallbackReason} />}{refresh}{retryError}</>
   return <div className="grid gap-1.5">
     <ChatGptAppProgress status={status} busy={busy} onRetry={onRetry} />
     {refresh}
-    {error && <ErrorLine message={error} onDismiss={() => store?.dismissError()} />}
+    {retryError}
   </div>
 }
 
@@ -183,7 +184,11 @@ export function ComputerUseSection({ workspace, pollMs = 5000, active = true }: 
     const current = revision.current
     try {
       const next = await bridge.readState(workspace)
-      if (current === revision.current) { failureDelay.current = 0; setState(next); setLoadError(null) }
+      if (current === revision.current) {
+        failureDelay.current = 0
+        setState(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
+        setLoadError(null)
+      }
     } catch (cause) {
       if (current === revision.current) {
         failureDelay.current = Math.min(Math.max(failureDelay.current, pollMs) * 2, 30000)

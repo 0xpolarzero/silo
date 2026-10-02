@@ -31,7 +31,11 @@ Development and packaging scripts read this API through the standalone
 directory, reads its JSON output, and deletes the executable; the Node adapter
 uses the same Python adapter. This requires Rust and Python 3.11 or newer but no
 Tauri build, GitHub configuration, or access to application state. It avoids a
-second registry of names or a parser tied to Rust source formatting. Static Tauri
+second registry of names or a parser tied to Rust source formatting. Linux
+verification harnesses use the same adapter for runtime aliases, including
+non-production identifiers, so Dev fixtures look under the Dev private home. Production app bundle roots, disk-image volume names, release asset names and
+package identity checks also read the exporter; production output names stay
+unchanged. Static Tauri
 configuration and documentation examples remain pinned by channel tests.
 
 ## Shared state that is now per channel
@@ -93,12 +97,26 @@ Silo Dev is running, lists what it will copy, and asks before replacing anything
 Dev already has (previous files are kept as `*.bak-<time>`). Re-running is safe.
 Values are never printed.
 
+The importer rejects symlinks at Dev channel roots and within destination paths,
+including dangling links, before applying any file or Keychain copy. It repeats
+the check after confirmation. [Node's `lstatSync`](https://nodejs.org/docs/latest-v24.x/api/fs.html#fslstatsyncpath-options)
+inspects the link itself instead of its target. Temporary-home regressions cover
+linked channel directories, nested remote directories, files, and links created
+while confirmation is open.
+
 Imported private files and their backups use `0600`, including when the previous
 Dev file had broader permissions. Backups use the same atomic writer as imports:
 [Node's file writer](https://nodejs.org/docs/latest-v24.x/api/fs.html#fswritefilesyncfile-data-options)
 accepts creation permissions, while
 [the copy API's mode](https://nodejs.org/docs/latest-v24.x/api/fs.html#fscopyfilesyncsrc-dest-mode)
 controls copy flags rather than permissions. Public SSH keys use `0644`.
+The writer sets final permissions and
+[syncs the open file](https://nodejs.org/docs/latest-v24.x/api/fs.html#fsfsyncsyncfd)
+before rename, then syncs the containing directory before continuing. Directory
+sync is required separately by the [Linux fsync contract](https://man7.org/linux/man-pages/man2/fsync.2.html).
+Failures close descriptors and remove partial private staging files. Fixture
+tests inject partial writes and file/directory sync failures using temporary
+HOMEs and an in-memory Keychain; they never run the importer against live data.
 
 Copied:
 

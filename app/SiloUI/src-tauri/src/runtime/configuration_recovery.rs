@@ -124,6 +124,7 @@ pub(super) fn claim(
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
+    use std::os::unix::fs::PermissionsExt;
     let Some(journal) = load(paths)? else {
         return Ok(());
     };
@@ -145,6 +146,7 @@ pub(super) fn claim(
     }
     let stage = tempfile::Builder::new()
         .prefix(".configuration-claim-")
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(&paths.volumes)
         .map_err(failure)?;
     let mut marker = fs::OpenOptions::new()
@@ -355,6 +357,7 @@ fn reconcile(
             .any(|next| next.id() == machine.id())
     }) {
         if !machine.is_vm() || !listed.iter().any(|entry| entry.name == machine.name()) {
+            crate::network::workspace_removed(paths, machine.name()).map_err(failure)?;
             crate::secrets::workspace_removed(machine.name()).map_err(failure)?;
             remove_machine_volumes(paths, machine)?;
             lifecycle_recovery::forget_removed(paths, machine)?;
@@ -620,6 +623,75 @@ fn recover_inner(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_mappings_are_removed_when_recovering_an_interrupted_deletion() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        let vm = MachineConfiguration::Vm {
+            id: "00000000-0000-4000-8000-000000000001".into(),
+            name: "dev".into(),
+            cpus: 1,
+            max_cpus: 1,
+            memory_gib: 2,
+            max_memory_gib: 2,
+            workspace_storage_gib: 10,
+            runtime_storage_gib: 10,
+            desktop: None,
+        };
+        let previous = MachineConfigurationRequest {
+            schema_version: 1,
+            machines: vec![vm],
+        };
+        write_metadata(&paths.metadata, &previous).unwrap();
+        let request = MachineConfigurationRequest {
+            schema_version: 1,
+            machines: vec![],
+        };
+        begin(&paths, &request).unwrap();
+        let network = paths.metadata.with_file_name("network.json");
+        fs::write(
+            &network,
+            json!({"mappings":[
+                {"workspace":"dev","port":3000,"hostPort":null,"scheme":"http","enabled":true}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let runner = crate::test_support::runner::ScriptedRunner::new([
+            crate::test_support::runner::ExpectedCommand::ok(
+                ["list", "--label", MANAGED_LABEL, "--format", "json"],
+                "[]",
+            ),
+        ]);
+        prepare_retry(&runner, &paths, None).unwrap();
+        runner.assert_finished();
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+        let saved: Value = serde_json::from_slice(&fs::read(network).unwrap()).unwrap();
+        assert!(saved["mappings"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn claimed_workspace_directory_is_private() {
+        let _test_state = crate::test_support::global_state();
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        let machine = super::super::tests::vm();
+        let request = super::super::tests::request(vec![machine.clone()]);
+        begin(&paths, &request).unwrap();
+        claim(&paths, &machine).unwrap();
+        let folder = paths.volumes.join(machine.name());
+        assert_eq!(
+            fs::metadata(&folder).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::read_to_string(folder.join(OWNER)).unwrap(),
+            machine.id()
+        );
+    }
 
     #[cfg(unix)]
     #[test]

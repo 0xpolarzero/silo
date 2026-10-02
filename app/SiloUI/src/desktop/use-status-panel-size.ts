@@ -40,6 +40,7 @@ export function useStatusPanelSize(content: RefObject<HTMLDivElement | null>) {
           } while (progress < 1)
         }
       } catch (error) {
+        if (disposed) return
         console.error("Silo status resize:", error)
         element.style.height = ""
         current = undefined

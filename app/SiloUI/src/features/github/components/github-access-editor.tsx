@@ -1,4 +1,4 @@
-import { useId, useMemo, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
 import { Check, ExternalLink, GitBranch, Info, LoaderCircle, RotateCcw, Search, Trash2, X } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
@@ -18,6 +18,8 @@ export interface GitHubRepositorySelection {
   repository: string
   allowPushes: boolean
 }
+
+const emptySelections: readonly GitHubRepositorySelection[] = []
 
 export interface GitHubRepositoryAccess {
   authenticationMethod?: "oauth" | "token"
@@ -70,22 +72,28 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [activeOption, setActiveOption] = useState<string>()
+  const activeElement = useRef<HTMLButtonElement>(null)
   const selectedNames = useMemo(
     () => new Set(selectedRepositories.map(({ repository }) => repository.toLowerCase())),
     [selectedRepositories],
   )
-  function matchingRepositories(searchQuery: string) {
-    return repositoryOptions.filter((repository) => (
-      !selectedNames.has(repository.toLowerCase()) && repository.toLowerCase().includes(searchQuery.trim().toLowerCase())
-    ))
-  }
-  const results = matchingRepositories(query)
+  const matchingRepositories = useCallback((searchQuery: string) => {
+    const normalizedQuery = searchQuery.trim().toLowerCase()
+    return repositoryOptions.filter((repository) => {
+      const name = repository.toLowerCase()
+      return !selectedNames.has(name) && name.includes(normalizedQuery)
+    })
+  }, [repositoryOptions, selectedNames])
+  const results = useMemo(() => matchingRepositories(query), [matchingRepositories, query])
 
   const searchActions = [
     ...(onManageRepositories ? [{ label: "Add more repositories on GitHub", run: onManageRepositories, icon: ExternalLink }] : []),
   ]
   const optionNames = [...results, ...searchActions.map(({ label }) => label)]
   const activeIndex = activeOption === undefined ? -1 : optionNames.indexOf(activeOption)
+  useEffect(() => {
+    if (open) activeElement.current?.scrollIntoView({ block: "nearest", inline: "nearest" })
+  }, [open, activeIndex, activeOption])
 
   function openResults() {
     if (!open) setActiveOption(optionNames[0])
@@ -157,10 +165,12 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
       >
         {results.length > 0 ? results.map((repository, index) => (
           <button
+            ref={index === activeIndex ? activeElement : undefined}
             key={repository}
             id={`${listboxId}-${index}`}
             type="button"
             role="option"
+            tabIndex={-1}
             aria-selected={index === activeIndex}
             className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus:bg-accent aria-selected:bg-accent"
             disabled={disabled}
@@ -175,10 +185,12 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
         )}
         {searchActions.map((action, index) => (
           <button
+            ref={activeIndex === results.length + index ? activeElement : undefined}
             key={action.label}
             id={`${listboxId}-${results.length + index}`}
             type="button"
             role="option"
+            tabIndex={-1}
             aria-selected={activeIndex === results.length + index}
             className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus:bg-accent aria-selected:bg-accent ${index === 0 ? "mt-1 border-t border-border" : ""}`}
             onMouseDown={(event) => event.preventDefault()}
@@ -303,9 +315,9 @@ export function GitHubAccessEditor({
         <div className="divide-y divide-border">
           {workspaces.map((workspace) => {
             const { name } = workspace
-            const selections = workspaceSelections[name] ?? []
-            const access = workspaceRepositoryAccess[name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }
-            const identity = workspaceIdentities[name] ?? { name: "", email: "", apply: true }
+            const selections = (Object.hasOwn(workspaceSelections, name) ? workspaceSelections[name] : undefined) ?? emptySelections
+            const access = (Object.hasOwn(workspaceRepositoryAccess, name) ? workspaceRepositoryAccess[name] : undefined) ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }
+            const identity = (Object.hasOwn(workspaceIdentities, name) ? workspaceIdentities[name] : undefined) ?? { name: "", email: "", apply: true }
             const workspaceActions = renderWorkspaceActions?.(workspace)
             const workspaceNotice = renderWorkspaceNotice?.(workspace)
             const workspaceDisabled = disabled

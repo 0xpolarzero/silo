@@ -19,6 +19,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::Read,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -198,10 +199,18 @@ fn observed_path(paths: &RuntimePaths, id: &str) -> Option<PathBuf> {
 }
 
 fn read_settings_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Computer-use settings must be a regular file.",
+        ));
+    }
     let mut bytes = Vec::new();
-    fs::File::open(path)?
-        .take(MAX_SETTINGS_BYTES + 1)
-        .read_to_end(&mut bytes)?;
+    file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_SETTINGS_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -351,30 +360,44 @@ fn policy_for_apply(paths: &RuntimePaths, id: &str) -> Policy {
 
 /// A fork starts with its source's approval mode and nothing else: its guest disk
 /// carries the source's configuration, so no attempt is known and its first boot applies.
-pub(crate) fn inherit_settings(paths: &RuntimePaths, from: &str, to: &str) {
+pub(crate) fn inherit_settings(
+    paths: &RuntimePaths,
+    from: &str,
+    to: &str,
+) -> Result<(), RuntimeError> {
     let _lock = lock_policies();
     let approval = read_policy(paths, from).approval;
-    let _ = write_atomic(
+    write_atomic(
         paths,
         policy_path(paths, to),
         &Policy {
             approval,
             ..Policy::default()
         },
-    );
+    )
 }
 
 /// Removes the settings of a deleted VM, or of an imported one: an import or transfer
 /// starts from the destination's default (ask) with no attempt known, so its first boot
 /// applies the default over whatever configuration the imported disk carries.
-pub(crate) fn forget(paths: &RuntimePaths, id: &str) {
+pub(crate) fn forget(paths: &RuntimePaths, id: &str) -> Result<(), RuntimeError> {
     let _lock = lock_policies();
+    let mut failure = None;
     for path in [policy_path(paths, id), observed_path(paths, id)]
         .into_iter()
         .flatten()
     {
-        let _ = fs::remove_file(path);
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {
+                failure = Some(RuntimeError::Unavailable(
+                    "Silo could not remove the computer-use settings.".into(),
+                ));
+            }
+        }
     }
+    failure.map_or(Ok(()), Err)
 }
 
 /// Records what the guest last reported. Touches only the observation file.

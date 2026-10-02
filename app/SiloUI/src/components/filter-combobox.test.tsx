@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { render, screen } from "@testing-library/react"
+import { fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -17,6 +17,32 @@ function Filter({ available = options }: { available?: typeof options }) {
 }
 
 describe("FilterCombobox keyboard navigation", () => {
+  it.each(["ArrowDown", "ArrowUp", "Enter", "Escape"])("does not change filter selection for composing %s", async (key) => {
+    const user = userEvent.setup()
+    render(<Filter />)
+    const input = screen.getByRole("combobox")
+    await user.click(input)
+    const active = input.getAttribute("aria-activedescendant")
+    const event = new KeyboardEvent("keydown", { key, isComposing: true, bubbles: true, cancelable: true })
+    fireEvent(input, event)
+    expect(event.defaultPrevented).toBe(key === "Escape")
+    expect(input).toHaveAttribute("aria-activedescendant", active)
+    expect(screen.getByRole("listbox")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: /Remove Sandbox/ })).not.toBeInTheDocument()
+    await user.keyboard("{ArrowDown}{Enter}")
+    expect(screen.getByRole("button", { name: "Remove Sandbox 1" })).toBeInTheDocument()
+  })
+
+  it("reveals a selected option's full label after the chip truncates it", async () => {
+    const user = userEvent.setup()
+    const label = "sandbox-with-a-long-name-".repeat(15)
+    render(<Filter available={[{ value: "long-name", label }]} />)
+    await user.click(screen.getByRole("combobox"))
+    await user.keyboard("{Enter}")
+    expect(screen.getByText(label)).toHaveAttribute("title", label)
+    expect(screen.getByRole("button", { name: `Remove ${label}` })).toBeInTheDocument()
+  })
+
   it("leaves the filter on Tab without entering its popup options", async () => {
     const user = userEvent.setup()
     render(<Filter />)

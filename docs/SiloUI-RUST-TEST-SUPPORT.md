@@ -3,6 +3,33 @@
 Native unit tests use [shared fixtures](../app/SiloUI/src-tauri/src/test_support.rs)
 instead of acquiring the production operation gate to serialize unrelated tests.
 
+## Persisted configuration compatibility
+
+The runtime metadata fixture pins the schema-1 VM and SSH field names used before
+desktop configuration was added in `7e7fb3e4`. Deserializing and serializing that
+fixture must preserve its JSON fields and omit an absent desktop. Desktop fixtures
+also pin `startWithSandbox`'s default of true and `builtIn`'s default of false,
+including omission of the false built-in flag. These tests exercise Serde's
+[missing-field defaults and serialization rules](https://serde.rs/field-attrs.html)
+without the runtime or process-wide state.
+
+Update preferences retain unknown JSON fields through load/save using Serde's
+[flattened map](https://serde.rs/attr-flatten.html), while the automatic-check flag
+still requires a boolean. Temporary-file regressions exercise both choices,
+additive metadata, save/reload, and explicit repair of malformed preferences.
+
+The migration journal and generation marker were introduced together in
+`d654e4bc`. A completed migration requires that marker at startup and whenever
+normal runtime storage is resolved. Temporary-file regressions remove the marker,
+verify that both generations and the journal remain untouched, and restore it to
+verify recovery. An installation that needs no migration still uses `runtime/`
+without a marker.
+
+Export-folder preferences also preserve additive JSON fields through an explicit
+folder change using a flattened map. Their reader retains the 1 MiB limit and
+schema-version check; malformed destinations or archive arrays remain unreadable.
+The temporary-file tests verify that reads leave the saved bytes untouched.
+
 ## Process-wide state
 
 `test_support::global_state()` guards tests in modules that reach the global
@@ -11,10 +38,10 @@ It releases shutdown admission on drop, including assertion unwind. Join all
 workers before dropping the guard. A worker must not acquire the test lock itself.
 Tests with independent gates and state instances run in parallel. Keep the guard
 when their helpers still reach global shutdown admission or caches. The remaining
-serial group consists of guarded runtime, GitHub, SSH, network, secrets, desktop,
-backup and remote tests: 531 guard sites across 19 source files. This conservative
-module isolation permits concurrency within each owning test and serializes this
-group inside the full parallel suite. Ordinary checks use `cargo test --locked`
+serial group consists of tests whose helpers reach that process-wide state;
+`test_support::global_state()` call sites identify its current membership.
+This conservative isolation permits concurrency within each owning test and
+serializes the guarded tests inside the full parallel suite. Ordinary checks use `cargo test --locked`
 with Cargo's default test thread count. Opt-in live checks retain their documented
 serial commands and require separate authorization.
 
@@ -91,9 +118,11 @@ before the file descriptor isolation fix and qualification restarted.
 Logs and timing JSON remain under the ignored
 `app/SiloUI/src-tauri/target/verification/k18/` directory (`parallel-11.log` for
 the failure, `qualified-01.log` through `qualified-10.log`, and `final-*.log`).
-Linux CI now uses the same default-thread command; Linux execution was outside
-this local qualification. These fixture checks do not establish live VM or
-packaged-app behavior.
+The [ordinary CI workflow](../.github/workflows/ci.yml) uses the same default-thread
+command. The [Linux verification workflow](../.github/workflows/linux-verification.yml)
+and [release platform workflow](../.github/workflows/release-platform.yml) explicitly
+use `--test-threads=1`. Linux execution was outside this local qualification.
+These fixture checks do not establish live VM or packaged-app behavior.
 
 ## Runtime fixtures
 
@@ -158,8 +187,11 @@ keeps the folder `chatgpt_app::tests::live_download_of_the_pinned_arm64_package`
 | `live_built_in_computer_use_sets_up_and_survives_export_and_import` | Export and import into a second home with its own folder; the imported VM takes the destination's `ask` |
 | `live_built_in_desktop_boots_repeatedly` | `SILO_BOOT_LOOP_ROUNDS` (default 3) restarts and imports with no desktop failure |
 
-These checks use temporary fixture data. They do not launch the packaged Silo app
-or establish live VM, installed-app or release readiness.
+These opt-in tests exercise real disposable VMs with temporary data when run
+with the required live inputs. Their source and fixture checks alone do not prove
+those workflows passed. A successful live run qualifies only the tested runtime,
+image and scenario; it does not launch the packaged Silo app or establish
+installed-app or release readiness.
 
 ## Blocked test-speed experiment (2026-10-02)
 

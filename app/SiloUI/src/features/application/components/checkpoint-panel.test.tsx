@@ -351,3 +351,26 @@ it("offers Delete only for checkpoints on this computer", async () => {
   expect(screen.queryByRole("menuitem", { name: "Delete Before refactor" })).toBeNull()
   expect(readCheckpointUsage).not.toHaveBeenCalled()
 })
+
+
+it("blocks a failed capture's Retry while a Restore for the same sandbox is pending", async () => {
+  const user = userEvent.setup()
+  const restore = deferred()
+  const createCheckpoint = vi.fn().mockRejectedValueOnce(new Error("Capture failed")).mockResolvedValue(undefined)
+  const restoreCheckpoint = vi.fn(() => restore.promise)
+  render(withToaster(<CheckpointPanel workspace={workspace} target="dev" actions={{ createCheckpoint, restoreCheckpoint } as unknown as ApplicationActions} disabled={false} />))
+  await user.click(screen.getByRole("button", { name: "New checkpoint" }))
+  await user.click(screen.getByRole("button", { name: "Create" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  const row = within(screen.getByText("Before refactor").closest("[data-checkpoint-name]")!)
+  await user.click(row.getByRole("button", { name: "Restore" }))
+  await user.click(confirmButton("Restore"))
+  await waitFor(() => expect(restoreCheckpoint).toHaveBeenCalledOnce())
+  try {
+    expect(screen.getByRole("button", { name: "New checkpoint" })).toBeDisabled()
+    await user.click(retry)
+    expect(createCheckpoint).toHaveBeenCalledOnce()
+    expect(screen.getByRole("button", { name: "New checkpoint" })).toBeDisabled()
+  } finally { await act(async () => restore.resolve()) }
+  expect(screen.getByRole("button", { name: "New checkpoint" })).toBeEnabled()
+})

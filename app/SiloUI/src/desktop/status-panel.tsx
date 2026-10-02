@@ -24,11 +24,15 @@ export function StatusPanel({ source: input, actions, notice }: { source: Applic
 
   useEffect(() => {
     const element = content.current!
-    const unlisten = listen("desktop:status-opened", () => {
+    let disposed = false
+    let stop: (() => void) | undefined
+    void listen("desktop:status-opened", () => {
+      if (disposed) return
       setOpening((current) => current + 1)
       element.focus()
-    })
-    return () => { void unlisten.then((stop) => stop()) }
+    }).then(unlisten => { if (disposed) unlisten(); else stop = unlisten })
+      .catch(error => console.error("Silo status events:", error))
+    return () => { disposed = true; stop?.() }
   }, [])
 
   useEffect(() => {

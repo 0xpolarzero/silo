@@ -45,6 +45,15 @@ describe("splitErrorDetails", () => {
 })
 
 describe("ErrorDetails", () => {
+  it("keeps the full recovery and partial-change warning when diagnostics are separate", async () => {
+    const message = "Creating the sandbox: Sandbox CPU, memory, or storage limits could not be validated. Review the sandbox resources against this computer's limits and retry. Completed changes were kept; reload the sandbox list before retrying."
+    render(<ErrorDetails message={message} diagnostic={stderr} />)
+    expect(screen.getByText(message)).toBeVisible()
+    expect(screen.queryByText(/krun: step 39/)).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole("button", { name: "Show details" }))
+    expect(screen.getByLabelText("Error details")).toHaveTextContent("krun: step 39")
+  })
+
   it("shows a one-line summary with the full output behind Details and Copy", async () => {
     const user = userEvent.setup()
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)

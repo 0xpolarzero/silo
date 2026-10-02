@@ -81,3 +81,32 @@ Repaired-preference verification: the rejecting test failed before the fix, then
 - Typecheck, lint, Rust formatting, and diff whitespace checks passed before each fix commit.
 - Full native Cargo validation remained blocked on the shared artifact lock and was stopped after checking the exact executable command, user, and worktree. It did not compile or run tests. Earlier superseded queued requests were also stopped. No other agent process was interrupted.
 - No application, real VM, package manager, production data, or credentials were exercised. The final scope pass confirmed the remaining post-go-ahead stall finding and found no further evidence-backed defect.
+
+## UPDATES-NATIVE-6: Missing metadata silently retires update recovery
+
+- **Priority:** P2.
+- **Scope:** Adjacent `runtime/update_recovery.rs:250–257` and the metadata reader in `runtime.rs`.
+- **Trigger:** An update resume journal exists, but `machines.json` is missing.
+- **Evidence:** `resume_unless_removed` treats a missing metadata path as an absent sandbox and returns success. `restore_pending` then removes that identity and deletes the journal. The new temporary-directory regression failed because recovery returned success with no metadata.
+- **Consequence:** The exact saved running set is discarded without evidence that those sandboxes were deleted. Restoring the configuration later cannot retry the lost update resume intent.
+- **Correction:** Preserve the metadata reader's missing-file result for recovery. Ordinary first-launch reads still default to an empty configuration; update recovery requires a readable saved configuration before retiring an absent identity. This also avoids an existence-check/read race.
+- **Regression:** `missing_metadata_preserves_the_update_resume_journal` requires an error and byte-identical journal preservation when metadata is absent, then installs a valid empty configuration and requires confirmed deleted entries to retire normally.
+
+UPDATES-NATIVE-6 verification: the regression failed on the original recovery decision, then 6 extracted journal/metadata-decision tests passed, covering missing metadata, confirmed deletion, interruption, failed resume, consent, and an empty running set. Journal and metadata-reader functions are production source; runtime path/type/validation collaborators are disposable fixtures. Typecheck, lint, formatting, and whitespace checks passed. Full native `update_recovery::tests::` validation is queued with the shared target and synthetic GitHub configuration.
+
+
+UPDATES-NATIVE-6 merge verification: retained the concurrent metadata reader's 1 MiB-plus-one-byte consumption limit. Seven extracted tests passed, including its child-process peak-memory regression against a sparse 128 MiB file. Formatting, typecheck, lint, and whitespace checks passed after resolving the merge. The complete earlier update audit trail was preserved.
+
+## UPDATES-NATIVE-7: Update preferences allocate the complete input before rejection
+
+- **Priority:** P2.
+- **Location:** `updates.rs::read_preferences` before the fix.
+- **Trigger:** A corrupted or externally edited update preference file grows well beyond the one-boolean schema.
+- **Evidence:** The exact production reader consumed a sparse 128 MiB fixture. A child-process peak-RSS regression measured a 134,299,648-byte increase before rejection and failed its 32 MiB budget.
+- **Consequence:** Startup allocates memory proportional to arbitrary file size before displaying the preference-read error; sufficiently large files can exhaust application memory.
+- **Correction:** Use standard `Read::take` with the existing application settings convention of 1 MiB plus one byte, reject oversized files, and retain missing-file/default and malformed-file error behavior.
+- **Regressions:** `preferences_large_input_memory_is_bounded` measures the real read in an isolated subprocess; `preference_size_limit_accepts_boundary_and_rejects_larger_files` accepts an exact-limit valid document, rejects one extra byte, and preserves the input bytes.
+
+UPDATES-NATIVE-7 verification: the peak-memory regression failed before the fix and 12 extracted preference/scheduler tests passed afterward, including exact-limit preservation and previous preference repairs. Formatting, typecheck, lint, and whitespace checks passed. Full native validation remains queued on the shared artifact lock.
+
+UPDATES-NATIVE-7 merge verification: retained concurrent additive-field preservation. Its save path reproduced a further 134,332,416-byte peak-memory increase while repairing the same sparse fixture. Reads and repair saves now share the bounded preference reader. A save that would grow a valid exact-limit document past the read limit fails before replacing it; its regression also failed before the writer check. Fifteen extracted preference/scheduler tests passed, including both concurrent additive-field regressions. Typecheck, lint, formatting, and whitespace checks passed after resolution.

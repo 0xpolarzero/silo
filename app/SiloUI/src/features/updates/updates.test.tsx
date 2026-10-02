@@ -214,6 +214,16 @@ it("reports a failed native action without exposing its raw rejection", async ()
   expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish. Try again.")
   expect(screen.queryByText("unfiltered internal paths")).not.toBeInTheDocument()
 })
+it("retries downloading the available release after a command rejection without checking again", async () => {
+  const user = userEvent.setup()
+  const { backend } = mount({ packageKind: "appimage", phase: "available", availableVersion: "0.2.0" })
+  vi.mocked(backend.download).mockRejectedValueOnce(new Error("Download command unavailable"))
+  await user.click(await screen.findByRole("button", { name: "Download update" }))
+  expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish")
+  await user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(backend.download).toHaveBeenCalledTimes(2)
+  expect(backend.check).not.toHaveBeenCalled()
+})
 it.each([
   ["macos", "ready", "Restart and update"],
   ["debian", "available", "Update"],

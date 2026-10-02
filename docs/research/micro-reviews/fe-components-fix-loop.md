@@ -42,3 +42,29 @@ Scope: `app/SiloUI/src/components/`, correctness and accessibility defects found
 - **Suggested fix:** Retain the Cancel button ref and restore it after leaving the confirmation, using the existing focus helper.
 - **Regression:** `operation-toast-body.test.tsx` enters the prompt, keeps going with Enter, checks Cancel focus, and reopens the prompt with Enter without invoking cancellation.
 - **Verification:** The new case failed before the fix; focused tests and the required checks are run before commit.
+
+## FE-COMPONENTS-8 — P2 — The actions-menu popover host has no accessible name
+
+- **File:line at discovery:** `app/SiloUI/src/components/actions-menu.tsx:74`.
+- **Trigger:** Open a registered confirmation, such as sandbox deletion, from an actions menu or a command-palette panel request.
+- **Evidence:** This host directly renders `PopoverContent` without a name and receives bare `ConfirmBody` or `FormBody` content, bypassing the named `ConfirmPopover`/`FormPopover` shell. Both new accessible-name regressions fail with an unnamed dialog.
+- **Consequence:** Screen reader users enter a dialog without receiving the selected action or its target as its name.
+- **Suggested fix:** Name the host from the registered action's accessible label, then its visible label, with the menu's target-specific label as a fallback.
+- **Regression:** `actions-menu.test.tsx` asserts a named deletion dialog after both menu selection and a command-palette panel request.
+- **Verification:** Both new cases failed before the fix; focused tests and the required checks are run before commit.
+- **Integration:** Concurrent commit `bff211dd` added the same registered-action name while this fix was being checked. The merge retains both changes and this review's target-specific menu-label fallback for panels without a matching item.
+
+## Fix and verification results
+
+| Finding | Fix commit |
+| --- | --- |
+| FE-COMPONENTS-1: confirmation/form dialog names | `e46d9611` |
+| FE-COMPONENTS-2: visible keyboard filter selection | `32f18899` |
+| FE-COMPONENTS-3: accessible operation-step status | `3a2b3ac9` |
+| FE-COMPONENTS-4: external-anchor focus restoration | `079344c1` |
+| FE-COMPONENTS-5: valid selection after filter refresh | `f3b74b99` |
+| FE-COMPONENTS-6: latest clipboard feedback | Concurrent implementation `dfebec66`; additional regressions merged in `69e1da50` |
+| FE-COMPONENTS-7: cancellation-prompt return focus | `09c451a5` |
+| FE-COMPONENTS-8: actions-menu dialog names | `72189d60`, reconciled with concurrent `bff211dd` |
+
+Every new regression failed before its fix. The final component suite at `72189d60` passed all 85 tests in 17 files with `npm --prefix app/SiloUI test -- src/components --maxWorkers=2`. After reconciling the final dialog-name conflict, the 15 menu/popover tests passed again. Frontend typecheck, touched-file oxlint, Rust 1.94.0 formatting, and whitespace checks passed before each fix or merge-resolution commit. The broader component-directory lint check also passed. These checks use deterministic fixtures and establish component behavior; they do not establish packaged-app accessibility or live VM health.

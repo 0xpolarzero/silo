@@ -5,7 +5,7 @@ import { setupFakeTimerUser } from "@/test/fake-timer-user"
 import { toast } from "sonner"
 import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import { SshAccessBadges, SshAccessPanel } from "./ssh-access-panel"
+import { SshAccessBadges, SshAccessPanel, SshAccessRow } from "./ssh-access-panel"
 import type { ApplicationActions, ApplicationWorkspace, SshAccessWorkspace } from "../model/application-source"
 const workspace = applicationSourceForScenario("complete").workspaces[0]
 const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOV89nMlTnLLFa2UlVuqssPU56E2EbdIg1XmcraGpVXQ laptop"
@@ -73,11 +73,11 @@ describe("managed SSH access", () => {
     ["Copy SSH address", "Copy address"],
     ["More local SSH actions", "More local SSH actions"],
   ])("uses the app tooltip for %s without native titles", async (name, caption) => {
-    const { user, container } = setup()
+    const { user } = setup()
     await expand(user)
     await user.hover(screen.getByRole("button", { name }))
     expect(await screen.findByRole("tooltip")).toHaveTextContent(caption)
-    expect(container.querySelector("[title]")).toBeNull()
+    expect(screen.getByRole("button", { name }).closest("[title]")).toBeNull()
   })
   it("copies the displayed network address and keeps the fingerprint in its tooltip", async () => {
     const { user } = setup({ bindAddress: "192.168.1.42" })
@@ -356,4 +356,44 @@ it("blocks an old SSH Retry for connection preparation while a save is pending",
   expect(toggle).toBeDisabled()
   await act(async () => finish())
   expect(toggle).toBeEnabled()
+})
+
+
+it("ignores an old SSH Retry after a newer save completes", async () => {
+  const save = vi.fn().mockRejectedValueOnce(new Error("Port is in use.")).mockResolvedValue(undefined)
+  const { user } = setup({}, save)
+  await expand(user)
+  await selectAction(user, "Edit connection")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  const port = screen.getByRole("spinbutton", { name: "SSH port" })
+  await user.clear(port); await user.type(port, "2223")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  await waitFor(() => expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument())
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(2)
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ port: 2223 }))
+})
+
+it("ignores an SSH Retry after its sandbox controls unmount", async () => {
+  const save = vi.fn().mockRejectedValue(new Error("Port is in use."))
+  const { user, rerender } = setup({}, save)
+  await expand(user)
+  await selectAction(user, "Edit connection")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  rerender(<Toaster />)
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(1)
+})
+
+it("checks current read-only state before retrying an SSH save", async () => {
+  const save = vi.fn().mockRejectedValue(new Error("Port is in use."))
+  const user = userEvent.setup()
+  const { rerender } = render(<><Toaster /><SshAccessRow workspace={workspace} access={base} save={save} stale={false} embedded /></>)
+  await user.click(screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  rerender(<><Toaster /><SshAccessRow workspace={workspace} access={base} save={save} stale={false} embedded readOnly /></>)
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(1)
 })

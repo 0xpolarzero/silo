@@ -44,6 +44,7 @@ fn write_json_line(output: &mut impl Write, value: &impl Serialize) -> Result<()
 fn save_atomically(
     destination: &Path,
     write: impl FnOnce(&mut std::fs::File) -> Result<bool, String>,
+    cancelled: impl Fn() -> bool,
 ) -> Result<bool, String> {
     let parent = destination
         .parent()
@@ -57,6 +58,9 @@ fn save_atomically(
         .as_file()
         .sync_all()
         .map_err(|_| "Could not finish the log export.")?;
+    if cancelled() {
+        return Ok(false);
+    }
     temporary
         .persist(destination)
         .map_err(|_| "Could not save the completed log export.")?;
@@ -125,9 +129,11 @@ fn export_with(
     if cancelled() {
         return Ok(false);
     }
-    save_atomically(&destination, |output| {
-        write_requests(output, requests, query, cancelled)
-    })
+    save_atomically(
+        &destination,
+        |output| write_requests(output, requests, query, &cancelled),
+        &cancelled,
+    )
 }
 
 pub(crate) fn write_requests(
@@ -151,9 +157,13 @@ pub(crate) fn write_requests(
             if cancelled() {
                 return Ok(false);
             }
-            let page = query(request.clone())?;
+            let page = query(request.clone());
             if cancelled() {
                 return Ok(false);
+            }
+            let page = page?;
+            if page.unsupported {
+                return Err("Update Silo on the remote computer before exporting its logs.".into());
             }
             if request.cursor.is_none() {
                 let mut coverage_request = request.clone();
@@ -368,6 +378,29 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_wins_over_a_pending_page_failure_without_hiding_other_errors() {
+        for cancel in [false, true] {
+            let cancelled = std::cell::Cell::new(false);
+            let mut output = Vec::new();
+            let result = write_requests(
+                &mut output,
+                vec![Query::default()],
+                |_| {
+                    cancelled.set(cancel);
+                    Err("Remote computer disconnected.".into())
+                },
+                || cancelled.get(),
+            );
+            if cancel {
+                assert!(!result.unwrap());
+            } else {
+                assert_eq!(result.unwrap_err(), "Remote computer disconnected.");
+            }
+            assert_eq!(String::from_utf8(output).unwrap().lines().count(), 1);
+        }
+    }
+
+    #[test]
     fn export_header_does_not_promise_that_sensitive_output_was_removed() {
         let mut output = Vec::new();
         write_requests(&mut output, vec![], |_| Ok(page(0, 0)), || false).unwrap();
@@ -389,20 +422,91 @@ mod tests {
     }
 
     #[test]
+    fn unsupported_remote_logs_do_not_replace_an_existing_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("logs.jsonl");
+        std::fs::write(&destination, b"previous complete export").unwrap();
+        let requests = vec![
+            Query::default(),
+            Query {
+                computer_id: Some("older-computer".into()),
+                ..Query::default()
+            },
+        ];
+        let result = save_atomically(
+            &destination,
+            |output| {
+                write_requests(
+                    output,
+                    requests,
+                    |request| {
+                        let mut response = page(0, usize::from(request.computer_id.is_none()));
+                        response.unsupported = request.computer_id.is_some();
+                        Ok(response)
+                    },
+                    || false,
+                )
+            },
+            || false,
+        );
+        assert!(result.unwrap_err().contains("Update Silo"));
+        assert_eq!(
+            std::fs::read(&destination).unwrap(),
+            b"previous complete export"
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
     fn failed_or_cancelled_export_preserves_existing_destination_and_removes_partial_file() {
         let directory = tempfile::tempdir().unwrap();
         let destination = directory.path().join("logs.jsonl");
         std::fs::write(&destination, b"previous export").unwrap();
-        let failed = save_atomically(&destination, |output| {
-            output.write_all(b"partial page").unwrap();
-            Err("Remote computer disconnected.".into())
-        });
+        let failed = save_atomically(
+            &destination,
+            |output| {
+                output.write_all(b"partial page").unwrap();
+                Err("Remote computer disconnected.".into())
+            },
+            || false,
+        );
         assert!(failed.is_err());
-        assert!(!save_atomically(&destination, |output| {
-            output.write_all(b"cancelled page").unwrap();
-            Ok(false)
-        })
+        assert!(!save_atomically(
+            &destination,
+            |output| {
+                output.write_all(b"cancelled page").unwrap();
+                Ok(false)
+            },
+            || false
+        )
         .unwrap());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous export");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn cancellation_after_writing_preserves_the_previous_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("logs.jsonl");
+        std::fs::write(&destination, b"previous export").unwrap();
+        let cancelled = std::cell::Cell::new(false);
+        let saved = save_atomically(
+            &destination,
+            |output| {
+                let complete = write_requests(
+                    output,
+                    vec![Query::default()],
+                    |_| Ok(page(0, 1)),
+                    || cancelled.get(),
+                )?;
+                assert!(complete);
+                cancelled.set(true);
+                Ok(complete)
+            },
+            || cancelled.get(),
+        )
+        .unwrap();
+        assert!(!saved);
         assert_eq!(std::fs::read(&destination).unwrap(), b"previous export");
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
     }
@@ -416,7 +520,7 @@ mod tests {
                 write_json_line(output, &serde_json::json!({"id": index, "line": "échec\nsecond line", "sandboxId": "vm-id", "computerId": "host-id", "occurredAt": "2026-09-18T10:00:00Z"}))?;
             }
             Ok(true)
-        }).unwrap());
+        }, || false).unwrap());
         let text = std::fs::read_to_string(destination).unwrap();
         assert_eq!(text.lines().count(), 1001);
         let last: serde_json::Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();

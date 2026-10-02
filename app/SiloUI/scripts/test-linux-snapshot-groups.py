@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from channel_names import channel_for_identifier
 import secrets
 import shutil
 import socket
@@ -205,7 +206,7 @@ def verify_vm_capacity(workspace):
     generation = json.loads(generation_path.read_text())["directory"] if generation_path.exists() else "runtime"
     storage_home = app_data / generation / "microsandbox"
     digest = hashlib.sha256(os.fsencode(str(storage_home))).hexdigest()[:12]
-    runtime_home = Path(os.environ["HOME"]) / ".silo" / digest
+    runtime_home = Path(os.environ["HOME"]) / channel_for_identifier(APPLICATION_ID)["stateDir"] / digest
     runtime_env = {
         **os.environ,
         "MSB_HOME": str(runtime_home),

@@ -74,10 +74,11 @@ extern "C-unwind" fn should_terminate(_: &AnyObject, _: Sel, _: *mut AnyObject) 
         if !crate::settings::accepts_terminate_request(app) {
             return TERMINATE_NOW;
         }
-        if PENDING.swap(true, Ordering::SeqCst) {
-            return TERMINATE_LATER;
-        }
-        super::route(app, super::quit_reason(current_quit_reason()));
+        begin_terminate(
+            &PENDING,
+            super::quit_reason(current_quit_reason()),
+            |reason| super::route(app, reason),
+        );
         TERMINATE_LATER
     })
     .unwrap_or(TERMINATE_NOW)
@@ -95,6 +96,49 @@ fn current_quit_reason() -> Option<u32> {
         0 => reason.typeCodeValue(),
         code => code,
     })
+}
+
+fn begin_terminate(
+    pending: &AtomicBool,
+    reason: super::ShutdownReason,
+    route: impl FnOnce(super::ShutdownReason),
+) {
+    if pending.swap(true, Ordering::SeqCst) && reason == super::ShutdownReason::UserQuit {
+        return;
+    }
+    route(reason);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system_shutdown::ShutdownReason;
+
+    #[test]
+    fn session_end_escalates_an_already_pending_user_quit() {
+        for reason in [ShutdownReason::Logout, ShutdownReason::Shutdown] {
+            let pending = AtomicBool::new(false);
+            let mut routed = Vec::new();
+            begin_terminate(&pending, ShutdownReason::UserQuit, |reason| {
+                routed.push(reason)
+            });
+            begin_terminate(&pending, reason, |reason| routed.push(reason));
+            assert_eq!(routed, vec![ShutdownReason::UserQuit, reason]);
+            assert!(pending.load(Ordering::SeqCst));
+        }
+    }
+
+    #[test]
+    fn repeated_user_quit_does_not_open_a_second_confirmation() {
+        let pending = AtomicBool::new(false);
+        let mut routed = Vec::new();
+        for _ in 0..2 {
+            begin_terminate(&pending, ShutdownReason::UserQuit, |reason| {
+                routed.push(reason)
+            });
+        }
+        assert_eq!(routed, vec![ShutdownReason::UserQuit]);
+    }
 }
 
 /// Answer a pending `applicationShouldTerminate:`. Returns false when AppKit was

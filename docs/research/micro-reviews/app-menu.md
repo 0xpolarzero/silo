@@ -2,7 +2,7 @@
 
 Scope: `app/SiloUI/src-tauri/src/app_menu.rs` and `app/SiloUI/src-tauri/src/notifications.rs`.
 
-Original read-only audit, before the fix loop: no builds, tests, native app launches, or live notification checks were run. Original finding line numbers refer to the audited version. Checked the two earlier review reports and `docs/SiloUI-CODE-REVIEW-PASS-3-*.md`; the previously reported remote notification identity defect is excluded. No additional concrete defect found in `app_menu.rs`.
+Read-only source review. No builds, tests, native app launches, or live notification checks were run. Checked the two earlier review reports and `docs/SiloUI-CODE-REVIEW-PASS-3-*.md`; the previously reported remote notification identity defect is excluded. No additional concrete defect found in `app_menu.rs`.
 
 ## APP-MENU-1 — P2 — Deletion misses in-flight system notifications
 
@@ -34,7 +34,37 @@ Original read-only audit, before the fix loop: no builds, tests, native app laun
 
 - APP-MENU-1: fixed and folded in `527ae7a4`; regressions cover queued cancellation, deletion during OS delivery, and a delayed withdrawal following a newer submission.
 - APP-MENU-2: fixed and folded in `4d3e17cb`; regressions force reverse task execution and exercise delivery of a different key while another key's adapter is running.
-- APP-MENU-3: fixed by bounding every prepared system notice; its regression reproduces the frontend mirror path.
+- APP-MENU-3: fixed and folded in `17600b26` by bounding every prepared system notice; its regression reproduces the frontend mirror path.
 - The shared worktree report remains the original read-only audit. Implementation and this expanded report live in the isolated `codex/fix-app-menu` worktree.
 - Before each fix, the new behavior regression failed in a standalone Rust harness extracting the production synchronization code and the exact test bodies. All six new regressions pass after the fixes. The harness uses minimal notice structs and fake OS callbacks; it does not prove Tauri integration or live notification behavior.
 - Rust formatting, frontend typecheck, and frontend lint pass. The native Cargo test command uses `/tmp/silo-codex-target` and explicit synthetic GitHub configuration; at this point it is still waiting on the shared artifact-directory lock. No app was launched and no real user data was accessed.
+
+### Scoped native verification
+
+Compiled the actual `notifications.rs`, `app_menu.rs`, and supporting `channel.rs` modules with `rustc +1.94.0 --test`, using matching cached Tauri, Serde, and serde_json artifacts from `/tmp/silo-codex-target/debug/deps`. A temporary root module supplied fake settings, notification, launch, and status-panel boundaries. `/tmp/silo-app-menu-module --nocapture` passed all 31 tests, including all 18 notification tests and the six new regressions. This also compiled the real Tauri command macros and checked the real notice wire serialization. The first standalone-module setup lacked Cargo package metadata and chose incompatible Serde artifact variants; correcting the harness metadata and matching Tauri's dependency fingerprints resolved those setup errors. Neither setup error was a product defect.
+
+The temporary harness, build logs, failing regression outputs, and test logs are under `/tmp/silo-app-menu-*`; they are not committed or distributed. No packaged bundle was built or inspected, no app was launched, and no live OS notifications, VM state, or user settings were accessed. Full application compilation and live OS delivery remain unverified. No additional concrete defect was found in the remaining scoped review.
+
+At the end of the approximately 20-minute loop, the full Cargo test still had not acquired the shared artifact-directory lock. Its waiting process was terminated after verifying its Cargo executable and this worktree's cwd. The scoped native harness passed; the full application Cargo test did not run.
+
+## APP-MENU-4 — P2 — Skipped delivery incorrectly protects an old notification
+
+- **Scope:** `notifications.rs`, `system_integrations.rs`, and its macOS/Linux adapters.
+- **Trigger:** A withdrawal is pending, then a newer notice for the same key is skipped by the OS adapter. macOS permission rejection and an absent Linux service returned `Ok(())`, indistinguishable from submission.
+- **Consequence:** The router advanced its submitted revision for the unsent replacement. The pending withdrawal then skipped clearing the older notification.
+- **Fix:** Return an explicit `NotificationDelivery::Skipped` or `Delivered` from both adapters, and advance the router's submitted revision only for `Delivered`.
+- **Regression:** `skipped_replacement_does_not_prevent_withdrawing_an_older_notice` delivers the original, defers withdrawal, skips a replacement, then checks that withdrawal removes the original. It failed before the router distinguished outcomes.
+
+A separate stale-owner cache-removal candidate was rejected: the router's per-key gate already serializes current delivery and withdrawal call paths before an adapter captures its proxy owner. A standalone helper call sequence alone did not establish a reachable product defect.
+
+APP-MENU-4 verification: the regression failed with an old OS notice still active, then passed after only delivered outcomes advanced the submitted revision. A standalone root compiled the actual router, menu, channel, integration wrapper, macOS adapter, and Linux ID cache against matching cached native-test dependencies; all 42 pure/fixture tests passed. Temporary module-path and include-path adjustments made the integration wrapper load from the standalone root. No native OS delivery or login-item function was invoked. `cargo +1.94.0 fmt --check`, `npm --prefix app/SiloUI run typecheck`, and `npm --prefix app/SiloUI run lint` passed. The Linux adapter's changed return handling was formatting/source checked; it was not compiled on this macOS host.
+
+## APP-MENU-5 — P2 — Queued notices use policy captured before a slow delivery
+
+- **Scope:** `notifications.rs` delivery policy and per-key gate.
+- **Trigger:** One OS delivery waits for its callback; another notice for the same key checks focus and preferences, then waits on the gate. The user focuses the main window or disables notifications before the gate becomes available.
+- **Consequence:** The waiting notice submits using the earlier policy, despite the current setting or focus state suppressing it. macOS authorization callbacks can wait up to 30 seconds, making the wait concrete.
+- **Fix:** Inject the policy check at the delivery seam and evaluate it after acquiring the per-key gate and checking the request revision, immediately before calling the OS adapter.
+- **Regression:** `queued_delivery_rechecks_preferences_after_an_in_flight_notice` holds the first delivery in its fake adapter, queues a second, disables the preference, then releases the first. The old path submitted both notices; the fixed path submits only the already in-flight one.
+
+APP-MENU-5 verification: the regression first submitted both `older` and `newer` after the preference was disabled, then submitted only `older` with policy evaluation inside the gate. The native fixture root passed all 43 tests, including the real macOS adapter's compiled types and the Linux ID-cache fixtures. Formatting, typecheck, and lint passed. Fixture callbacks were the only notification senders exercised; no app, real notifications, VM state, or user settings were accessed.

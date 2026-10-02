@@ -18,6 +18,7 @@ const FILE: &str = "runtime-migration.json";
 const GENERATION: &str = "runtime-generation.json";
 const CLEAN: &str = "runtime-checkpoints-clean";
 const CONVERTED: &str = "runtime-checkpoints-converted";
+const MISSING_GENERATION: &str = "Completed migration has no saved sandbox storage selection. Existing data was preserved. Report this problem before using sandboxes.";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -210,6 +211,9 @@ fn initial(path: &Path, app_data: &Path) -> Result<MigrationState, String> {
         return Ok(state);
     }
     if let Some(mut state) = read(path)? {
+        if state.status == "complete" {
+            return Err(MISSING_GENERATION.into());
+        }
         if matches!(state.status.as_str(), "scanning" | "running") {
             state.status = "failed".into();
             state.stage = "Interrupted migration".into();
@@ -874,7 +878,11 @@ fn check_ready(writable: bool, status: &str) -> Result<(), String> {
 /// refuses every caller: the folder is a pre-upgrade backup, never a live runtime.
 fn usable_storage(app_data: &Path, writable: bool, status: &str) -> Result<PathBuf, String> {
     check_ready(writable, status)?;
-    selected_runtime_storage(app_data)
+    match generation(app_data)? {
+        Some(selected) => Ok(app_data.join(selected)),
+        None if status == "complete" => Err(MISSING_GENERATION.into()),
+        None => Ok(app_data.join("runtime")),
+    }
 }
 
 fn readiness(app: &AppHandle) -> Result<(Arc<Controller>, String), String> {
@@ -896,6 +904,17 @@ fn readiness(app: &AppHandle) -> Result<(Arc<Controller>, String), String> {
 pub(crate) fn ensure_ready(app: &AppHandle) -> Result<(), String> {
     let (controller, status) = readiness(app)?;
     check_ready(controller.writable, &status)
+}
+
+pub(crate) async fn ensure_ready_async(app: &AppHandle) -> Result<(), String> {
+    let controller = app
+        .try_state::<Arc<Controller>>()
+        .ok_or(NOT_READY)?
+        .inner()
+        .clone();
+    let writable = controller.writable;
+    let state = migration_snapshot(controller).await?;
+    check_ready(writable, &state.status)
 }
 
 /// The storage behind `runtime::runtime_paths`, the only way to name a runtime.
@@ -940,13 +959,20 @@ fn update(
 }
 
 #[tauri::command]
-pub(crate) fn read_runtime_migration_state(app: AppHandle) -> Result<MigrationState, String> {
-    let controller = app.state::<Arc<Controller>>();
-    controller
-        .state
-        .lock()
-        .map(|state| state.clone())
-        .map_err(|_| "Migration state is unavailable.".into())
+pub(crate) async fn read_runtime_migration_state(app: AppHandle) -> Result<MigrationState, String> {
+    migration_snapshot(app.state::<Arc<Controller>>().inner().clone()).await
+}
+
+async fn migration_snapshot(controller: Arc<Controller>) -> Result<MigrationState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        controller
+            .state
+            .lock()
+            .map(|state| state.clone())
+            .map_err(|_| "Migration state is unavailable.".to_string())
+    })
+    .await
+    .map_err(|_| "Migration state is unavailable.".to_string())?
 }
 
 /// Runs file writes and fsyncs off the main thread.
@@ -1096,6 +1122,38 @@ mod interrupted_tests;
 mod tests {
     use super::*;
 
+    #[test]
+    fn migration_state_wait_does_not_block_the_async_executor() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(Controller {
+            app_data: directory.path().into(),
+            path: directory.path().join(FILE),
+            state: Mutex::new(fresh("running", 1)),
+            writable: true,
+        });
+        let writing = controller.clone();
+        let (held, acquired) = std::sync::mpsc::channel();
+        let (heartbeat, observed) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let _guard = writing.state.lock().unwrap();
+            held.send(()).unwrap();
+            observed.recv_timeout(Duration::from_secs(2)).is_ok()
+        });
+        acquired.recv().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (result, ()) = runtime.block_on(async {
+            tokio::join!(biased; migration_snapshot(controller), async {
+                let _ = heartbeat.send(());
+            })
+        });
+        assert_eq!(result.unwrap().status, "running");
+        assert!(
+            writer.join().unwrap(),
+            "waiting for migration state blocked the executor"
+        );
+    }
     #[test]
     fn failure_is_recorded_in_memory_when_saving_it_fails() {
         let directory = tempfile::tempdir().unwrap();
@@ -1353,6 +1411,58 @@ mod tests {
         assert_eq!(
             initial(&app_data.join(FILE), app_data).unwrap().status,
             "complete"
+        );
+    }
+
+    #[test]
+    fn completed_migration_never_falls_back_when_its_generation_marker_is_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let path = app_data.join(FILE);
+        let metadata = one_vm("source", "fcfbc268-ae3f-40ff-8dfa-8af78911e52f");
+        for generation in ["runtime", CONVERTED] {
+            runtime::write_metadata(&app_data.join(generation).join("machines.json"), &metadata)
+                .unwrap();
+        }
+        fs::write(app_data.join("runtime/workspace.raw"), b"pre-upgrade").unwrap();
+        fs::write(app_data.join(CONVERTED).join("workspace.raw"), b"converted").unwrap();
+        let mut completed = fresh("complete", 1);
+        completed.migrated_count = 1;
+        write(&path, &completed).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        assert!(initial(&path, app_data).is_err());
+        assert!(usable_storage(app_data, true, "complete").is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(
+            fs::read(app_data.join("runtime/workspace.raw")).unwrap(),
+            b"pre-upgrade"
+        );
+        assert_eq!(
+            fs::read(app_data.join(CONVERTED).join("workspace.raw")).unwrap(),
+            b"converted"
+        );
+
+        select_generation(app_data, CONVERTED).unwrap();
+        assert_eq!(initial(&path, app_data).unwrap().status, "complete");
+        assert_eq!(
+            usable_storage(app_data, true, "complete").unwrap(),
+            app_data.join(CONVERTED)
+        );
+        fs::remove_file(app_data.join(GENERATION)).unwrap();
+        assert!(usable_storage(app_data, true, "complete").is_err());
+    }
+
+    #[test]
+    fn an_unmigrated_install_keeps_the_original_generation_without_a_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let path = app_data.join(FILE);
+        write(&path, &fresh("not-required", 0)).unwrap();
+        assert_eq!(initial(&path, app_data).unwrap().status, "not-required");
+        assert_eq!(
+            usable_storage(app_data, true, "not-required").unwrap(),
+            app_data.join("runtime")
         );
     }
 

@@ -107,3 +107,44 @@ it("has no Storage section without a pre-upgrade backup", async () => {
   expect(screen.queryByRole("region", { name: "Storage" })).not.toBeInTheDocument()
   expect(screen.getByRole("heading", { name: "Accessibility" })).toBeVisible()
 })
+
+it("reports unsaved preferences and retries delivery without losing the selection", async () => {
+  const user = userEvent.setup()
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {})
+  const source = applicationSourceForScenario("running")
+  let saved: SettingsSnapshot = { revision: 0, settings: { startWorkspacesAtLaunch: false }, onboardingDraft: null, saveError: null }
+  let failDelivery = true
+  const settings = createSettingsStore({
+    read: async () => saved, subscribe: async () => () => {},
+    updateSettings: async (patch) => {
+      if (failDelivery) throw new Error("Settings delivery unavailable")
+      return (saved = { ...saved, revision: saved.revision + 1, settings: { ...saved.settings, ...patch } })
+    },
+    updateOnboardingDraft: async () => saved, flush: async () => {},
+  }, {}, saved)
+  render(<SettingsProvider store={settings}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(settings)}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SystemIntegrationProvider></SettingsProvider>)
+  await user.click(screen.getByRole("switch", { name: "Start sandboxes at launch" }))
+  expect(errors).toHaveBeenCalledExactlyOnceWith("Silo settings:", "Settings delivery unavailable")
+  errors.mockRestore()
+  expect(await screen.findByRole("alert")).toHaveTextContent("Settings could not be saved")
+  expect(screen.getByRole("switch", { name: "Start sandboxes at launch" })).toBeChecked()
+  expect(saved.settings.startWorkspacesAtLaunch).toBe(false)
+  failDelivery = false
+  await user.click(screen.getByRole("button", { name: "Retry saving settings" }))
+  await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
+  expect(saved.settings.startWorkspacesAtLaunch).toBe(true)
+  settings.dispose()
+})
+
+it("explains write-protected settings without offering a save retry", () => {
+  const source = applicationSourceForScenario("running")
+  const saved: SettingsSnapshot = { revision: 0, settings: {}, onboardingDraft: null, saveError: "Settings use an unsupported file version", writeProtected: true }
+  const settings = createSettingsStore({
+    read: async () => saved, subscribe: async () => () => {}, updateSettings: async () => saved,
+    updateOnboardingDraft: async () => saved, flush: async () => {},
+  }, {}, saved)
+  render(<SettingsProvider store={settings}><SystemIntegrationProvider store={createFixtureSystemIntegrationStore(settings)}><GeneralPage source={source} applicationPreferences={source.preferences} onApplicationPreferencesChange={vi.fn()} reduceMotion={false} onReduceMotionChange={vi.fn()} /></SystemIntegrationProvider></SettingsProvider>)
+  expect(screen.getByRole("alert")).toHaveTextContent("Changes last for this session")
+  expect(screen.queryByRole("button", { name: "Retry saving settings" })).not.toBeInTheDocument()
+  settings.dispose()
+})

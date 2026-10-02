@@ -38,6 +38,27 @@ This describes graceful Quit, not process crashes or forced OS termination. Silo
 
 Legacy SSH entries remain saved connections. They are not assumed to be Silo hosts or converted into VMs. Operational configuration permits an empty inventory; onboarding retains its explicit initial setup flow.
 
+## Checkpoint request deadlines
+
+Remote checkpoint creation, fork, and restore share a 122-minute complete-request
+window. The controller sends `startWithinMs` as half its remaining request time:
+initial admission must occur within 61 minutes, leaving 60 minutes for all owner
+stages and one minute for framing and transport. The work allowance follows
+[`RESTORE_EXPECTED_DURATION`](../app/SiloUI/src-tauri/src/runtime/checkpoints.rs),
+which also sets Restore's slow-operation threshold. The 900-second capture limit
+fits within that allowance; it does not define a complete restore's deadline.
+
+Both the controller exchange and owner bridge use
+[`request_timeout`](../app/SiloUI/src-tauri/src/remote.rs). Both computers need the
+updated budget. Lost-connection retries retain the operation ID and attach to the
+existing owner registry result. Admission expiration still prevents queued work
+from starting; it does not cancel work that has already started.
+
+Fake-clock regressions cover a 601-second capture, a 900-second fork, an hour of
+restore work admitted just before the queue deadline, and reconnection to one
+retained result without replay. Registry tests cover expiration before admission.
+These fixtures do not qualify a slow live two-computer checkpoint.
+
 ## Published-port readiness
 
 Each published-port tunnel runs the system OpenSSH client as a foreground master
@@ -62,6 +83,21 @@ local users; it does not protect against a process already running as the same
 account. Readiness confirms forwarding setup, not guest application health.
 The `-N` transport and remote loopback destination preserve the existing
 `silo-remote` forced-command and `permitopen` contract.
+
+Published-port and desktop forwards share `owned_tunnel.rs`. Its watchdog shell
+leads a dedicated process group and watches a pipe held by the controller. EOF
+on controller crash or exit terminates the group, including ordinary
+ProxyCommand descendants. Closing a tunnel also closes the pipe and performs
+bounded group cleanup. Explicit group signals are sent only while the owned
+leader is unreaped, preventing a reused process-group ID from being targeted.
+SSH stays in the foreground; user `ControlPersist` or
+`ForkAfterAuthentication` settings cannot detach this tunnel from its owner.
+No process-name sweep or change to the remote bridge is involved. Subprocess
+fixture tests verify controller termination, listener closure, descendant exit,
+and survival of an unrelated process; real OpenSSH/ProxyCommand crash behavior
+still requires separate platform qualification.
+
+## Remote settings
 
 Remote settings commands run on Tauri's blocking pool, including configuration
 lock waits, file reads, fsync writes, bridge-link setup, and control-socket setup.

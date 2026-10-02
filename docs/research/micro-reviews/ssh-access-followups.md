@@ -19,6 +19,16 @@ production implementation in an extracted Rust harness before its fix.
 
 ## Verification boundaries
 
+SSH-ACCESS-4: `remote.rs` classified `ssh.access.connection` as `Access::Read`
+after the method began registering controller keys. Repeating one request ran
+the handler twice and wrote no operation marker. The new
+`ssh_key_registration_is_recorded_once_per_request` handler regression failed
+with two executions, then passed after classifying registration as a change.
+The existing all-method replay/read regression also passed. The dispatcher
+harness uses the production request handler, configuration readers/writer,
+operation journal, and gate; only host-directory selection and shutdown
+admission use fixture adapters.
+
 The disposable Rust harness extracts production save, controller-registration,
 configuration, validation, and editor key helpers directly from this worktree.
 Runtime metadata and operation admission use fixture adapters; reconciliation
