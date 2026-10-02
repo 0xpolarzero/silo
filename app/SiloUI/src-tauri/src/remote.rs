@@ -20,7 +20,7 @@ mod operations;
 /// Appends the key read from input to `authorized_keys` once. sshd runs this with the
 /// account's login shell, so the POSIX script is handed to `sh` in single quotes, which
 /// fish, csh and nushell also pass through unchanged; the script itself has no single quote.
-const INSTALL_PUBLIC_KEY: &str = r#"sh -c 'umask 077; mkdir -p ~/.ssh && touch ~/.ssh/authorized_keys && key=$(cat) && { grep -qxF -- "$key" ~/.ssh/authorized_keys || printf "\n%s\n" "$key" >> ~/.ssh/authorized_keys; }'"#;
+const INSTALL_PUBLIC_KEY: &str = r#"sh -c 'umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && key=$(cat) && { grep -qxF -- "$key" ~/.ssh/authorized_keys || printf "\n%s\n" "$key" >> ~/.ssh/authorized_keys; }'"#;
 /// Silo's key may only run the bridge and open `-N` tunnels to loopback ports on the owner.
 fn authorized_key_options() -> String {
     format!(
@@ -2229,6 +2229,8 @@ mod setup_tests {
         fs::create_dir(&ssh).unwrap();
         let authorized = ssh.join("authorized_keys");
         fs::write(&authorized, b"existing-key-without-final-newline").unwrap();
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::set_permissions(&authorized, fs::Permissions::from_mode(0o666)).unwrap();
         let public = "ssh-ed25519 AAAA public-comment-$(never-execute)";
         for _ in 0..2 {
             let mut child = Command::new(shell)
@@ -2253,6 +2255,14 @@ mod setup_tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
+        assert_eq!(
+            fs::metadata(&ssh).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&authorized).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
         assert_eq!(
             fs::read_to_string(authorized).unwrap(),
             format!("existing-key-without-final-newline\n{public}\n"),
@@ -2324,6 +2334,31 @@ mod setup_tests {
     fn public_key_install_preserves_existing_unterminated_line_and_is_idempotent() {
         let _test_state = crate::test_support::global_state();
         install_with(Path::new("/bin/sh"));
+    }
+    #[test]
+    fn public_key_install_fails_before_appending_when_permission_repair_fails() {
+        let _test_state = crate::test_support::global_state();
+        let home = tempfile::tempdir().unwrap();
+        let ssh = home.path().join(".ssh");
+        let bin = home.path().join("bin");
+        fs::create_dir(&ssh).unwrap();
+        fs::create_dir(&bin).unwrap();
+        let authorized = ssh.join("authorized_keys");
+        fs::write(&authorized, "existing-key\n").unwrap();
+        let chmod = bin.join("chmod");
+        fs::write(&chmod, "#!/bin/sh\nexit 73\n").unwrap();
+        fs::set_permissions(chmod, fs::Permissions::from_mode(0o755)).unwrap();
+        let child = Command::new("/bin/sh")
+            .args(["-c", INSTALL_PUBLIC_KEY])
+            .env("HOME", home.path())
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        assert!(!child.wait_with_output().unwrap().status.success());
+        assert_eq!(fs::read_to_string(authorized).unwrap(), "existing-key\n");
     }
     #[test]
     fn public_key_install_works_from_any_login_shell() {
