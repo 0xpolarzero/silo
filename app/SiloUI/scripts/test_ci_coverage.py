@@ -97,5 +97,21 @@ class DebianCoverageTests(unittest.TestCase):
         self.assertIn('pkexec', workflow, 'the lifecycle fixture requires the system authentication helper')
 
 
+class DocumentationCoverageTests(unittest.TestCase):
+    def test_ci_link_check_includes_tracked_first_party_markdown(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        step = workflow.split('      - name: Check relative links in documentation\n', 1)[1].split('\n  rust:', 1)[0]
+        command = ' '.join(step.split('        run: >-\n', 1)[1].splitlines())
+        covered = set()
+        for pattern in shlex.split(command):
+            if pattern.endswith('.md'):
+                covered.update(str(path.relative_to(ROOT)) for path in ROOT.glob(pattern) if path.is_file())
+        tracked = subprocess.check_output(['git', 'ls-files', '*.md'], cwd=ROOT, text=True).splitlines()
+        # The vendor tree contains upstream documentation for an intentionally partial crate copy.
+        expected = {name for name in tracked if '/vendor/' not in name}
+        missing = sorted(expected - covered)
+        self.assertEqual(missing, [], f'{len(missing)} Markdown files omitted: {missing[:12]}')
+
+
 if __name__ == '__main__':
     unittest.main()
