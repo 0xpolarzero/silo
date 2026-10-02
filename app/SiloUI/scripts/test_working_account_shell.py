@@ -1,4 +1,5 @@
 """Offline regressions for the live working-account proof's shell checks."""
+import ast
 import importlib.util
 import os
 from pathlib import Path
@@ -14,6 +15,29 @@ SPEC.loader.exec_module(LIVE)
 
 
 class WorkingAccountShellTests(unittest.TestCase):
+    def test_guest_probes_stop_at_first_failure(self):
+        source = Path(LIVE.__file__).read_text()
+        guest = next(node for node in ast.walk(ast.parse(source))
+                     if isinstance(node, ast.FunctionDef) and node.name == 'guest')
+        with tempfile.TemporaryDirectory(prefix='silo-account-probe-') as directory:
+            cmp = Path(directory) / 'cmp'
+            cmp.write_text('#!/bin/sh\nexit "$CMP_STATUS"\n')
+            cmp.chmod(0o700)
+            env = dict(os.environ, PATH=directory + ':/usr/bin:/bin')
+
+            def msb(*command, **options):
+                return subprocess.run(command[command.index('--') + 1:], env=env,
+                                      capture_output=True, text=True, **options)
+
+            scope = {'msb': msb, 'name': 'fixture'}
+            exec(compile(ast.Module(body=[guest], type_ignores=[]), LIVE.__file__, 'exec'), scope)
+            for status in ('1', '23', '0'):
+                with self.subTest(status=status):
+                    env['CMP_STATUS'] = status
+                    result = scope['guest']('cmp first second; printf "accepted\\n"')
+                    self.assertEqual(result.returncode, int(status))
+                    self.assertEqual(result.stdout, 'accepted\n' if status == '0' else '')
+
     def check_fetch(self, **overrides):
         with tempfile.TemporaryDirectory(prefix='silo-account-shell-') as directory:
             scripts = {
