@@ -182,6 +182,20 @@ pub(crate) fn linux_editor_command(
     )
 }
 
+/// Resolves the actual terminal executable behind an entry's env wrapper.
+pub(crate) fn linux_terminal_program(
+    argv: &[String],
+    fallback: PathBuf,
+    find_program: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let program = match exec_program(argv) {
+        Some(token) if Path::new(token).is_absolute() => Some(PathBuf::from(token)),
+        Some(token) => find_program(token),
+        None => Some(fallback),
+    }?;
+    executable_file(&program).then_some(program)
+}
+
 /// Commands that run the user's preferred terminal (G-07). The freedesktop
 /// `xdg-terminal-exec` comes first, then Debian's `x-terminal-emulator`.
 pub(crate) const TERMINAL_LAUNCHERS: [&str; 2] = ["xdg-terminal-exec", "x-terminal-emulator"];
@@ -347,6 +361,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn env_wrapped_terminals_require_an_available_target() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("gnome-terminal");
+        let argv = vec![
+            "/usr/bin/env".into(),
+            "TERM=xterm".into(),
+            program.to_str().unwrap().into(),
+        ];
+        let resolve = || linux_terminal_program(&argv, PathBuf::from("/usr/bin/env"), &nowhere);
+        assert!(resolve().is_none(), "removed terminal was accepted");
+        executable(&program);
+        assert_eq!(resolve(), Some(program.clone()));
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(resolve().is_none(), "non-executable terminal was accepted");
+        fs::remove_file(&program).unwrap();
+        assert!(resolve().is_none());
     }
 
     #[test]
