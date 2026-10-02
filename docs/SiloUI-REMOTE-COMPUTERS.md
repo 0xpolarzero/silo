@@ -38,6 +38,27 @@ This describes graceful Quit, not process crashes or forced OS termination. Silo
 
 Legacy SSH entries remain saved connections. They are not assumed to be Silo hosts or converted into VMs. Operational configuration permits an empty inventory; onboarding retains its explicit initial setup flow.
 
+## Checkpoint request deadlines
+
+Remote checkpoint creation, fork, and restore share a 122-minute complete-request
+window. The controller sends `startWithinMs` as half its remaining request time:
+initial admission must occur within 61 minutes, leaving 60 minutes for all owner
+stages and one minute for framing and transport. The work allowance follows
+[`RESTORE_EXPECTED_DURATION`](../app/SiloUI/src-tauri/src/runtime/checkpoints.rs),
+which also sets Restore's slow-operation threshold. The 900-second capture limit
+fits within that allowance; it does not define a complete restore's deadline.
+
+Both the controller exchange and owner bridge use
+[`request_timeout`](../app/SiloUI/src-tauri/src/remote.rs). Both computers need the
+updated budget. Lost-connection retries retain the operation ID and attach to the
+existing owner registry result. Admission expiration still prevents queued work
+from starting; it does not cancel work that has already started.
+
+Fake-clock regressions cover a 601-second capture, a 900-second fork, an hour of
+restore work admitted just before the queue deadline, and reconnection to one
+retained result without replay. Registry tests cover expiration before admission.
+These fixtures do not qualify a slow live two-computer checkpoint.
+
 ## Validation
 
 Commands, counts, and final build evidence are recorded after the final verification run below. Automated tests use controlled subprocesses, sockets, and runtime responses; browser inspection uses deterministic fixture data. They do not prove real two-computer hypervisor operation.

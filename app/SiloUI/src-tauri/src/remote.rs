@@ -798,6 +798,15 @@ fn silo_public_key() -> Option<String> {
     Some(public.trim().to_owned())
 }
 fn request_timeout(request: &Value) -> Duration {
+    if matches!(
+        request["method"].as_str(),
+        Some("checkpoint.create" | "checkpoint.fork" | "checkpoint.restore")
+    ) {
+        // Admission uses half the request window. Reserve the other half for every
+        // owner stage within the restore window plus framing and transport.
+        return 2
+            * (crate::runtime::checkpoints::RESTORE_EXPECTED_DURATION + Duration::from_secs(60));
+    }
     // A new VM may get a desktop from the owner (it defaults one on v4 images), so
     // creation needs the desktop-capable time even when the request names none.
     if (request["method"] == "runtime.upsert"
@@ -1046,11 +1055,21 @@ fn send_change(
     request: &mut Value,
     deadline: Instant,
     delays: &[Duration],
+    send: impl FnMut(&Value) -> Result<Value, Failure>,
+) -> Result<Value, BridgeError> {
+    send_change_with_clock(request, deadline, delays, send, Instant::now)
+}
+
+fn send_change_with_clock(
+    request: &mut Value,
+    deadline: Instant,
+    delays: &[Duration],
     mut send: impl FnMut(&Value) -> Result<Value, Failure>,
+    mut now: impl FnMut() -> Instant,
 ) -> Result<Value, BridgeError> {
     let mut delays = delays.iter();
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(now());
         // Queued work must start early enough to finish while this computer still waits.
         request["startWithinMs"] = json!((remaining / 2).as_millis() as u64);
         match send(request) {
@@ -1869,6 +1888,95 @@ mod tests {
         assert!(
             checkpoint_remote_request("not-an-id", "create", Some("Point"), None, None).is_err()
         );
+    }
+
+    #[test]
+    fn checkpoint_requests_cover_queueing_and_complete_owner_work() {
+        for method in ["checkpoint.create", "checkpoint.fork", "checkpoint.restore"] {
+            let budget = request_timeout(&json!({"method":method}));
+            let queue = budget / 2;
+            assert!(
+                budget - queue >= Duration::from_secs(3600 + 60),
+                "{method} leaves only {:?} after admission for owner work and transport",
+                budget - queue,
+            );
+        }
+        assert_eq!(
+            request_timeout(&json!({"method":"runtime.snapshot"})),
+            Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn checkpoint_requests_keep_long_results_observable_and_reconnect_without_replay() {
+        use std::cell::Cell;
+        for (method, work, queued) in [
+            ("checkpoint.create", 601, false),
+            ("checkpoint.fork", 900, true),
+            ("checkpoint.restore", 3600, true),
+        ] {
+            let _test_state = crate::test_support::global_state();
+            let journal = tempfile::tempdir().unwrap();
+            let registry: &'static operations::Registry =
+                Box::leak(Box::new(operations::Registry::new()));
+            let mut request = json!({"method":method,"operationId":uuid::Uuid::new_v4().to_string(),"params":{"vmId":uuid::Uuid::new_v4().to_string()}});
+            let budget = request_timeout(&request);
+            let start = Instant::now();
+            let deadline = start + budget;
+            let clock = Cell::new(start);
+            let runs = Cell::new(0);
+            let attempts = Cell::new(0);
+            let result = send_change_with_clock(
+                &mut request,
+                deadline,
+                &[Duration::ZERO],
+                |request| {
+                    attempts.set(attempts.get() + 1);
+                    let start_within =
+                        Duration::from_millis(request["startWithinMs"].as_u64().unwrap());
+                    let result = registry
+                        .submit(
+                            operations::Submission {
+                                journal: journal.path(),
+                                id: request["operationId"].as_str().unwrap(),
+                                method,
+                                params: &request["params"],
+                                start_within,
+                                connection: std::sync::Arc::new(|| true),
+                                allowed: std::sync::Arc::new(|| true),
+                                wait: budget,
+                                reconnect_grace: operations::RECONNECT_GRACE,
+                            },
+                            || {
+                                runs.set(runs.get() + 1);
+                                let queue = if queued {
+                                    start_within - Duration::from_millis(1)
+                                } else {
+                                    Duration::ZERO
+                                };
+                                clock.set(start + queue + Duration::from_secs(work));
+                                Ok(json!({"checkpoint":"complete"}))
+                            },
+                        )
+                        .map_err(Failure::Reported)?;
+                    clock.set(clock.get() + Duration::from_secs(15));
+                    if clock.get() >= deadline {
+                        return Err(Failure::Failed("Remote operation timed out.".into()));
+                    }
+                    // Lose the first reply, then attach to the owner's retained result.
+                    if attempts.get() == 1 {
+                        Err(Failure::Lost("connection lost".into()))
+                    } else {
+                        Ok(result)
+                    }
+                },
+                || clock.get(),
+            );
+            assert_eq!(result, Ok(json!({"checkpoint":"complete"})), "{method}");
+            assert_eq!(runs.get(), 1);
+            assert_eq!(attempts.get(), 2);
+            assert!(clock.get() < deadline);
+        }
     }
 
     #[test]
