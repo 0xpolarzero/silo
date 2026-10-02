@@ -39,7 +39,8 @@ it("blocks a conflicting fork name and submits the selected checkpoint and trimm
   const user = userEvent.setup()
   const forkCheckpoint = vi.fn().mockResolvedValue(undefined)
   const target = "silo-remote:office:vm-dev"
-  render(withToaster(<CheckpointPanel workspace={workspace} target={target} actions={{ forkCheckpoint } as unknown as ApplicationActions} disabled={false} takenNames={["existing"]} />))
+  const remote = { ...workspace, computer: { id: "office", vmId: "vm-dev", name: "Office", address: "office", connected: true } }
+  render(withToaster(<CheckpointPanel workspace={remote} target={target} actions={{ forkCheckpoint } as unknown as ApplicationActions} disabled={false} takenNames={["existing"]} />))
   await user.click(screen.getByRole("button", { name: "Checkpoint actions for Disk snapshot" }))
   await user.click(screen.getByRole("menuitem", { name: "Fork Disk snapshot" }))
   const name = screen.getByRole("textbox", { name: "New sandbox name" })
@@ -53,6 +54,7 @@ it("blocks a conflicting fork name and submits the selected checkpoint and trimm
 })
 
 it("ignores a previous sandbox's late usage response when the selected sandbox changes", async () => {
+  const user = userEvent.setup()
   let finish!: (value: typeof usage) => void
   const readCheckpointUsage = vi.fn().mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
     .mockResolvedValueOnce({ totalBytes: gib, checkpoints: [{ id: "point-1", sizeBytes: gib }] })
@@ -66,7 +68,7 @@ it("ignores a previous sandbox's late usage response when the selected sandbox c
   expect(readCheckpointUsage.mock.calls).toEqual([["vm-dev"], ["vm-other"]])
   expect(row.getByText(/1\.00 GiB/)).toBeVisible()
   expect(row.queryByText(/Used by experiment/)).not.toBeInTheDocument()
-  fireEvent.click(row.getByRole("button", { name: "Checkpoint actions for Before refactor" }))
+  await user.click(row.getByRole("button", { name: "Checkpoint actions for Before refactor" }))
   expect(screen.getByRole("menuitem", { name: "Delete Before refactor" })).not.toHaveAttribute("data-disabled")
 })
 
