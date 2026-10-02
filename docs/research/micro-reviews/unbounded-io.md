@@ -52,3 +52,23 @@ changing the policy. Both saved files remain untouched.
 production data types and reader/settings functions verbatim, with a disposable
 runtime-path fixture. Rust formatting, typecheck, lint and diff checks passed.
 The full native test command remains queued on the shared Cargo artifact lock.
+
+## Remote-operation markers
+
+**Trigger:** An operation journal marker, including a legacy full-request/result
+record, grows beyond 16 MiB. The read runs during registry acceptance under its
+mutex.
+
+**Evidence:** `read_marker` used unbounded `fs::read`. A valid legacy finished
+record padded beyond the limit was accepted as finished by the original reader;
+the regression failed before the fix and passed afterwards.
+
+**Correction:** Consume at most 16 MiB plus one byte. Larger files follow the
+existing unreadable-marker path: the operation was accepted but its result is
+uncertain, and registry acceptance refuses to replay it. Missing markers still
+return `None`; exact-limit legacy records still parse and files remain untouched.
+The larger allowance retains compatibility with legacy request/result records.
+
+**Checks:** Source-extracted production reader and committed regression passed
+1/1. Rust formatting, typecheck, lint and diff checks passed. Native Cargo tests
+remain queued on the shared target lock; no running app or VM was accessed.

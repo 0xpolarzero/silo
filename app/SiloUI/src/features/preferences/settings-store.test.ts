@@ -4,6 +4,26 @@ import { createMemorySettingsStore, createSettingsStore, type SettingsBackend, t
 const snapshot = (revision = 0, settings = {}): SettingsSnapshot => ({ revision, settings, onboardingDraft: null, saveError: null })
 
 describe("settings synchronization", () => {
+  it.each(["initial", "refresh"])("ignores a late %s read failure after a newer settings event", async phase => {
+    let receive!: (value: SettingsSnapshot) => void
+    let reject!: (error: Error) => void
+    const read = vi.fn().mockImplementation(() => new Promise<SettingsSnapshot>((_, fail) => { reject = fail }))
+    if (phase === "refresh") read.mockResolvedValueOnce(snapshot())
+    const store = createSettingsStore({
+      subscribe: async listener => { receive = listener; return () => {} }, read,
+      updateSettings: async () => snapshot(), updateOnboardingDraft: async () => snapshot(), flush: async () => {},
+    })
+    try {
+      if (phase === "refresh") await store.initialize()
+      const pending = store.initialize()
+      await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(phase === "refresh" ? 2 : 1))
+      receive(snapshot(2, { theme: "dark" }))
+      reject(new Error("Old settings read unavailable"))
+      await pending
+      expect(store.getSnapshot()).toMatchObject({ revision: 2, settings: { theme: "dark" }, saveError: null })
+    } finally { store.dispose() }
+  })
+
   it("follows system application defaults after opting in without erasing the saved custom choice", async () => {
     let state = snapshot(0, { editor: "Custom", editorPath: "/Applications/Custom.app" })
     const store = createSettingsStore({

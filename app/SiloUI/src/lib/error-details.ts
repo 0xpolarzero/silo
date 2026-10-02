@@ -16,14 +16,15 @@ function shorten(line: string): string {
 
 /**
  * Splits an error into a short summary and the full diagnostic. A backend-supplied `diagnostic`
- * (D-39) is used as is. Otherwise raw runtime output, exit codes and long multi-line messages
- * move into `details`, which always holds the complete original text so nothing is lost.
+ * (D-39) keeps the complete user-facing message separate. Otherwise raw runtime output,
+ * exit codes and long multi-line messages move into `details`, which always holds the
+ * complete original text so nothing is lost.
  * `summary` is null when the message has nothing but command output.
  */
 export function splitErrorDetails(message: string, diagnostic?: string | null): { summary: string | null; details: string | null } {
   const text = message.trim()
   const firstLine = text.split("\n").find(line => line.trim())?.trim() ?? ""
-  if (diagnostic?.trim()) return { summary: firstLine ? shorten(firstLine) : null, details: diagnostic.trim() }
+  if (diagnostic?.trim()) return { summary: text || null, details: diagnostic.trim() }
   const exitCode = exitCodeSuffix.exec(text)
   if (exitCode) {
     const lead = exitCode[1].trim().replace(/[.:;,]+$/, "")

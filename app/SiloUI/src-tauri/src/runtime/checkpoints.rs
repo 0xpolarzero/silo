@@ -723,7 +723,7 @@ pub async fn create_checkpoint(
     workspace_id: String,
     name: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -1643,7 +1643,7 @@ pub async fn fork_checkpoint(
     checkpoint_id: Option<String>,
     new_name: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2046,7 +2046,7 @@ pub async fn restore_checkpoint(
     workspace_id: String,
     checkpoint_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2219,7 +2219,7 @@ pub async fn abandon_restore(
     app: AppHandle,
     workspace_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2489,7 +2489,7 @@ pub async fn delete_checkpoint(
     workspace_id: String,
     checkpoint_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;

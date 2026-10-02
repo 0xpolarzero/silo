@@ -31,3 +31,12 @@ Fixed and folded in `dd7d2fe2`. All nine module tests, Rust formatting, module C
 - **Regression:** `interrupted_body_reads_do_not_truncate_requests` and `interrupted_response_reads_do_not_truncate_streams` require delivery of the complete payload after the injected interruption. Tests use synthetic Unix socket pairs and do not install signal handlers or touch process-wide signal state.
 
 Fixed and folded in `5d6c4346`. All 11 module tests, Rust formatting, module Clippy with warnings denied, frontend typecheck, and frontend lint passed before integrating the additional deadline tests.
+
+## DESKTOP-PROXY-4 · P2 · Disconnected WebSocket clients retain handlers
+
+- **Location:** `app/SiloUI/src-tauri/src/desktop_proxy.rs`, WebSocket writer branch in `serve_with_header_progress`.
+- **Trigger:** A WebSocket upgrade completes, the client disconnects, and the guest keeps its socket open without sending more data.
+- **Evidence:** The client-to-guest relay observes EOF and returns, but only the guest-to-client direction sets `ended`. The response relay therefore keeps retrying read timeouts forever. WebSockets intentionally have no HTTP deadline. The real-socket regression completed the upgrade, kept the guest open, dropped the client, and failed with `disconnected WebSocket retained its handler: Timeout`.
+- **Consequence:** The abandoned upgraded connection retains its handler and active connection slot until the guest closes or the entire proxy is dropped; repeated disconnects can exhaust the 48-slot limit.
+- **Fix:** Set the shared `ended` flag when the WebSocket writer returns so the response relay also stops. Do not do this for completed ordinary HTTP bodies, which still need their response.
+- **Regression:** `websocket_client_disconnect_releases_silent_upstream` requires an idle upgraded connection to survive beyond the configured HTTP deadline, then requires handler completion and guest EOF after client disconnect without dropping Proxy or closing the guest socket.
