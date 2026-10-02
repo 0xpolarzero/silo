@@ -3,8 +3,58 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { GitHubAccessEditor } from "@/features/github/components/github-access-editor"
+import { GitHubPage } from "@/features/application/pages/github-page"
+import type { ApplicationActions } from "@/features/application/model/application-source"
+import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 
 describe("GitHubAccessEditor", () => {
+  it("uses empty defaults for an incoming sandbox named constructor", () => {
+    const props = {
+      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions: ["acme/silo"], workspaceSelections: { dev: [] }, workspaceIdentities: {},
+      currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(),
+      onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
+      onWorkspaceRepositoryAccessChange: vi.fn(),
+    }
+    const view = render(<GitHubAccessEditor {...props} />)
+    view.rerender(<GitHubAccessEditor {...props} workspaces={[{ name: "dev" }, { name: "constructor" }]} />)
+    expect(screen.getByLabelText("Git name for constructor")).toHaveValue("")
+    expect(screen.getByLabelText("Git email for constructor")).toHaveValue("")
+    expect(screen.getByRole("checkbox", { name: "All repositories for constructor" })).not.toBeChecked()
+    expect(screen.getByRole("combobox", { name: "Add repository to constructor" })).toBeEnabled()
+    expect(screen.queryByRole("table", { name: "Selected repositories for constructor" })).not.toBeInTheDocument()
+  })
+
+  it("uses saved GitHub settings for a sandbox named constructor", () => {
+    render(<GitHubAccessEditor
+      workspaces={[{ name: "constructor" }]} connectionState="connected"
+      repositoryOptions={["acme/silo"]}
+      workspaceSelections={{ constructor: [{ repository: "acme/silo", allowPushes: true }] }}
+      workspaceIdentities={{ constructor: { name: "Taylor", email: "taylor@example.com", apply: false } }}
+      workspaceRepositoryAccess={{ constructor: { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false } }}
+      currentHostGitIdentity={null} onConnect={vi.fn()}
+      onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
+      onWorkspaceRepositoryAccessChange={vi.fn()}
+    />)
+    expect(screen.getByLabelText("Git name for constructor")).toHaveValue("Taylor")
+    expect(screen.getByLabelText("Git email for constructor")).toHaveValue("taylor@example.com")
+    expect(screen.getByRole("checkbox", { name: "Apply Git identity to constructor" })).not.toBeChecked()
+    expect(screen.getByRole("checkbox", { name: "Allow GitHub changes for acme/silo" })).toBeChecked()
+  })
+
+  it("accepts a newly discovered constructor sandbox before the page draft catches up", () => {
+    const source = applicationSourceForScenario("running", "connected")
+    const actions = {} as ApplicationActions
+    const view = render(<GitHubPage source={source} actions={actions} />)
+    const workspace = source.workspaces.find(item => !item.computer)!
+    const incoming = { ...source, workspaces: [...source.workspaces, {
+      ...workspace, machine: { ...workspace.machine, name: "constructor", id: "new-constructor" },
+    }] }
+    view.rerender(<GitHubPage source={incoming} actions={actions} />)
+    expect(screen.getByLabelText("Git name for constructor")).toBeInTheDocument()
+    expect(screen.getByRole("combobox", { name: "Add repository to constructor" })).toBeEnabled()
+  })
+
   it("keeps the highlighted repository when the catalog order changes", async () => {
     const user = userEvent.setup()
     const onSelections = vi.fn()
