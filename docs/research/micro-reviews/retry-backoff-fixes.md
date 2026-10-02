@@ -89,3 +89,9 @@ The standalone Rust verification extracts the production retry helper, failure c
 - Evidence: failures reading `remote_host_list` were consumed and displayed, but the ten-second application timer repeated the read. The regression observed another read before the first twenty-second deadline.
 - Change: grow the background list-read delay to a sixty-second cap while retaining known rows and the existing list-error behavior. Explicit refresh, focus, and connect/remove reconciliation bypass the deadline. A valid list resets the delay.
 - Verification: a production-source fixture checks repeated caps, continuing local reads, immediate focus recovery, and the restored ten-second cadence.
+
+## Guest desktop-repair deadline
+
+- Evidence: `wait_for_session` checked its wait deadline only after the repair branch. A deterministic three-second budget still started repairs at simulated seconds 2, 10, and 22; a one-second budget slept through all 2/4/8-second delays and started three repairs.
+- Change: check the remaining budget before admitting a repair and after its bounded backoff. This stops additional starts after expiration; an already-started desktop command retains its existing subprocess timeout and ownership.
+- Verification: both clock regressions failed before the fix and pass afterward. Existing tests cover three attempts within budget, boot recovery, manual desktops, and starting sessions.
