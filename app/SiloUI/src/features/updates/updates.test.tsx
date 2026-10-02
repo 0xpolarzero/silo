@@ -54,7 +54,7 @@ it("cleans up a subscription that registers after the updates view unmounts", as
   expect(backend.read).not.toHaveBeenCalled()
 })
 
-it.fails("bug: an obsolete initial read failure shows a connection error after a newer native event", async () => {
+it("ignores an obsolete initial read failure after a newer native event", async () => {
   let reject!: (error: Error) => void
   const read = vi.fn(() => new Promise<UpdateSnapshot>((_, fail) => { reject = fail }))
   const { emit } = mount({}, backend => { backend.read = read })

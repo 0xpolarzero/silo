@@ -260,12 +260,12 @@ describe("retained logs", () => {
     })
     render(<Logs workspaces={[workspace, remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
     expect(await screen.findByText("old diagnostic needle")).toBeVisible()
-    expect(screen.getByRole("alert")).toHaveTextContent("remote sandbox: Error: Offline")
+    expect(screen.getByRole("alert")).toHaveTextContent("remote sandbox: Offline")
   })
   it("retries a failed first read from the error control without overlapping requests", async () => {
     const { workspace, actions } = fixture(2)
     let resolve!: (page: LogPage) => void
-    const queryLogs = vi.fn().mockRejectedValueOnce(new Error("Host unavailable"))
+    const queryLogs = vi.fn().mockRejectedValueOnce({ code: "internal", message: "Host unavailable" })
       .mockImplementationOnce(() => new Promise<LogPage>(done => { resolve = done }))
     actions.queryLogs = queryLogs
     render(<Logs workspaces={[workspace]} actions={actions} active query="needle" onQueryChange={vi.fn()} />)

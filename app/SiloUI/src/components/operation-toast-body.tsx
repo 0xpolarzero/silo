@@ -92,7 +92,7 @@ export function OperationToastBody({ title, step, steps, progress, startedAt, ca
       <span className="shrink-0 tabular-nums" data-slot="operation-elapsed">{elapsed}</span>
     </div>
     {steps && steps.length > 0 && <ul className="grid gap-0.5" aria-label="Steps">
-      {steps.map((entry) => <li key={entry.label} data-state={entry.state} aria-current={entry.state === "current" ? "step" : undefined} className={`flex items-center gap-1.5 ${entry.state === "pending" ? "text-muted-foreground/70" : entry.state === "failed" ? "text-destructive" : ""}`}>
+      {steps.map((entry) => <li key={entry.label} data-state={entry.state} aria-current={entry.state === "current" ? "step" : undefined} className={`flex items-center gap-1.5 ${entry.state === "pending" ? "text-muted-foreground" : entry.state === "failed" ? "text-destructive" : ""}`}>
         {stepIcon[entry.state]}<span className="min-w-0 truncate">{entry.label}<span className="sr-only">: {stepStatus[entry.state]}</span></span>
       </li>)}
     </ul>}

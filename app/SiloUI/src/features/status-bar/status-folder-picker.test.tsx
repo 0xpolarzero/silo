@@ -15,6 +15,15 @@ function setup(loader = vi.fn().mockResolvedValue(page([]))) {
   return { user: userEvent.setup(), loader, props, onOpen, ...render(<StatusFolderPicker {...props} />) }
 }
 describe("status folder picker live directories", () => {
+  it("reveals complete sanitized folder names and the sandbox heading", async () => {
+    const name = `${"folder-".repeat(30)}\u202E`
+    setup(vi.fn().mockResolvedValue(page([name])))
+    const displayed = name.replace("\u202E", "⟨U+202E⟩")
+    expect(await screen.findByText(displayed)).toHaveAttribute("title", displayed)
+    const heading = `${workspace.machine.name} folders`
+    expect(screen.getByRole("heading", { name: heading })).toHaveAttribute("title", heading)
+  })
+
   it("loads lazily, opens the exact path, and keeps cached folders on return", async () => {
     let resolve!: (value: DirectoryPage) => void
     const loader = vi.fn().mockImplementationOnce(() => new Promise<DirectoryPage>(done => { resolve = done })).mockResolvedValueOnce(page(["nested"], "/workspace/project"))

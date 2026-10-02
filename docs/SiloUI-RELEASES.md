@@ -636,6 +636,15 @@ matrix, frontend checks, package checks and minimum-macOS checks to pass. Native
 test jobs receive no signing credentials. Only the reviewed public release dependencies
 described above are cached; application and native-test products are excluded.
 
+Reusable workflow and runtime-action string inputs enter shell commands through
+quoted environment variables. GitHub expands expressions before parsing inline
+scripts, so quoting a `${{ inputs.target }}` expression alone does not prevent
+script injection. See [GitHub's script-injection guidance](https://docs.github.com/en/actions/reference/security/secure-use#use-an-intermediate-environment-variable).
+The workflow regression runs extracted commands against disposable executables
+with ordinary targets, quote-breaking input and command-substitution input.
+Current release callers supply fixed matrix values; this protects the reusable
+input boundary without changing release gates or published asset names.
+
 Artifact-only runs have independent concurrency groups, so they do not queue
 behind or displace a pending publication. Tagged and draft publications of the
 same release tag share one concurrency group per tag, so builds of different

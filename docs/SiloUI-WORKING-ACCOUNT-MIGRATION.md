@@ -69,7 +69,8 @@ a conflict and is preserved for resolution.
 
 Root's shell setup remains authoritative: regular shell files already in the new
 home are skipped during merging, then root's customized shell files replace
-them. Shell links and directories cause a conflict instead of being removed.
+them atomically, leaving any other hardlinks to the previous file unchanged.
+Shell links and directories cause a conflict instead of being removed.
 Unchanged distribution defaults remain skipped.
 
 Python 3.12's [copytree contract](https://docs.python.org/3.12/library/shutil.html#shutil.copytree)

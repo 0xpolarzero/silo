@@ -278,7 +278,6 @@ export async function stageRuntime({
       }
       await rm(isolatedHome, { recursive: true, force: true })
     }
-    await rename(executableTemporary, executablePath)
     await copyFile(library, libraryPath)
     await chmod(libraryPath, 0o644)
 
@@ -322,6 +321,7 @@ export async function stageRuntime({
       },
     }
     await writeFile(join(stagedRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
+    await rename(executableTemporary, executablePath)
     await rm(bundledRoot, { recursive: true, force: true })
     await rename(stagedRoot, bundledRoot)
 

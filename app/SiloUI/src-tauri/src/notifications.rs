@@ -185,7 +185,8 @@ impl DeliveredIndex {
         gate
     }
 
-    fn prepare(&mut self, notice: Notice) -> PendingDelivery {
+    fn prepare(&mut self, mut notice: Notice) -> PendingDelivery {
+        notice.body = bounded_body(&notice.body);
         // Withdrawal must include keys whose OS delivery has not finished yet.
         self.record(&notice);
         let gate = self.gate(&notice.key);
@@ -227,7 +228,8 @@ impl PendingDelivery {
             .submitted
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if self.cancelled() {
+        // Task polling and mutex acquisition need not follow issuance order.
+        if self.cancelled() || self.revision != self.gate.revision.load(Ordering::SeqCst) {
             return;
         }
         let result = send(&self.notice);
@@ -677,6 +679,23 @@ mod tests {
     }
 
     #[test]
+    fn frontend_notice_bodies_are_bounded_before_system_delivery() {
+        let mut notice = failure("vm:1:lifecycle", "t", "b", sandbox());
+        // Frontend mirrors deserialize Notice directly rather than using failure().
+        notice.body = format!("first\nsecond\t{}", "x".repeat(500));
+        let pending = DeliveredIndex::default().prepare(notice);
+        pending.deliver(
+            |notice| {
+                assert!(notice.body.starts_with("first second "));
+                assert_eq!(notice.body.chars().count(), BODY_LIMIT);
+                assert!(notice.body.ends_with('\u{2026}'));
+                Ok(())
+            },
+            |_| {},
+        );
+    }
+
+    #[test]
     fn deletion_withdraws_a_notice_whose_delivery_is_in_flight() {
         use std::sync::{mpsc, Arc};
         let index = Arc::new(Mutex::new(DeliveredIndex::default()));
@@ -739,6 +758,60 @@ mod tests {
             |_| {},
         );
         assert!(!submitted.get(), "queued notice submitted after deletion");
+    }
+
+    #[test]
+    fn reversed_delivery_tasks_cannot_replace_a_newer_notice() {
+        let mut index = DeliveredIndex::default();
+        let older = index.prepare(failure("vm:1:lifecycle", "older", "b", sandbox()));
+        let newer = index.prepare(failure("vm:1:lifecycle", "newer", "b", sandbox()));
+        let visible = std::cell::RefCell::new(String::new());
+        newer.deliver(
+            |notice| {
+                *visible.borrow_mut() = notice.title.clone();
+                Ok(())
+            },
+            |_| {},
+        );
+        older.deliver(
+            |notice| {
+                *visible.borrow_mut() = notice.title.clone();
+                Ok(())
+            },
+            |_| {},
+        );
+        assert_eq!(visible.into_inner(), "newer");
+    }
+
+    #[test]
+    fn notification_delivery_does_not_block_a_different_key() {
+        let mut index = DeliveredIndex::default();
+        let first = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let second = index.prepare(failure(
+            "vm:2:lifecycle",
+            "t",
+            "b",
+            Some(NoticeSandbox {
+                id: "2".into(),
+                name: "second".into(),
+            }),
+        ));
+        let submissions = std::cell::Cell::new(0);
+        first.deliver(
+            |_| {
+                second.deliver(
+                    |_| {
+                        submissions.set(submissions.get() + 1);
+                        Ok(())
+                    },
+                    |_| {},
+                );
+                submissions.set(submissions.get() + 1);
+                Ok(())
+            },
+            |_| {},
+        );
+        assert_eq!(submissions.get(), 2);
     }
 
     #[test]

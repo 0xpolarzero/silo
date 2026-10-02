@@ -14,6 +14,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -98,10 +99,23 @@ def read(name, default=None):
 
 
 def write(path, value):
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value) + '\n')
-    temporary.chmod(0o600)
-    temporary.replace(path)
+    fd, temporary = tempfile.mkstemp(prefix=f'.{path.name}-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            output.write(json.dumps(value) + '\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def identity(pid):

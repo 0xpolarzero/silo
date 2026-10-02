@@ -47,6 +47,16 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertTrue((destination / '.local/bin/tool').read_text().startswith('#!/home/silo/.local/bin/python'))
         self.assertTrue((source / '.local/bin/tool').read_text().startswith('#!/root/'))
 
+    def test_utf8_decodable_binary_launcher_is_preserved_byte_for_byte(self):
+        source, home = self.root / 'source', self.root / 'home'
+        (source / '.local/bin').mkdir(parents=True)
+        binary = b'\x00\x01/root/binary-data\n/home/silo-desktop/data'
+        (source / '.local/bin/binary').write_bytes(binary)
+        guest.copy_home(source, home)
+        guest.copy_home(source, home)
+        self.assertEqual((home / '.local/bin/binary').read_bytes(), binary)
+        self.assertEqual((source / '.local/bin/binary').read_bytes(), binary)
+
     def test_home_copy_skips_transient_pipes_and_preserves_files(self):
         source, destination = self.root / 'root', self.root / 'silo'
         source.mkdir()
@@ -238,6 +248,36 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertTrue((home / '.bashrc').is_symlink())
         self.assertEqual(external.read_bytes(), b'outside-home')
 
+    def test_shell_setup_replaces_home_entry_without_overwriting_hardlink_target(self):
+        source, home, external = self.root / 'source', self.root / 'home', self.root / 'external'
+        source.mkdir()
+        home.mkdir()
+        original = source / '.bashrc'
+        original.write_text('export PATH=/root/.local/bin:$PATH')
+        external.write_bytes(b'existing external shell setup')
+        os.link(external, home / '.bashrc')
+        guest.copy_shell_setup(source, home)
+        self.assertEqual(external.read_bytes(), b'existing external shell setup')
+        self.assertEqual((home / '.bashrc').read_text(), 'export PATH=/home/silo/.local/bin:$PATH')
+        self.assertEqual(original.read_text(), 'export PATH=/root/.local/bin:$PATH')
+
+    def test_interrupted_shell_setup_preserves_existing_file_and_retries(self):
+        source, home = self.root / 'source', self.root / 'home'
+        source.mkdir()
+        home.mkdir()
+        (source / '.profile').write_text('# /root/tools\n')
+        target = home / '.profile'
+        target.write_bytes(b'existing shell setup')
+        def interrupted(original, target):
+            Path(target).write_bytes(b'partial')
+            raise OSError('synthetic interrupted copy')
+        with mock.patch.object(guest.shutil, 'copy2', side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, 'synthetic interrupted copy'):
+                guest.copy_shell_setup(source, home)
+        self.assertEqual(target.read_bytes(), b'existing shell setup')
+        guest.copy_shell_setup(source, home)
+        self.assertEqual(target.read_text(), '# /home/silo/tools\n' + guest.PATH_SETUP)
+
     def test_resumed_account_requires_the_reserved_identity(self):
         guest.validate_account(SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir='/home/silo'))
         for values in [(0, 1001, '/home/silo'), (1001, 1000, '/home/silo'), (1001, 1001, '/root')]:
@@ -276,6 +316,26 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertFalse(guest.carried(root / '.bashrc'))
         (root / '.bashrc').write_text('# default root bashrc\nexport PATH=/root/.bun/bin:$PATH\n')
         self.assertTrue(guest.carried(root / '.bashrc'))
+
+    def test_shell_setup_relocates_paths_without_decoding_or_changing_other_bytes(self):
+        source, home = self.root / 'source', self.root / 'home'
+        source.mkdir()
+        originals = {
+            '.bashrc': b'# caf\xe9\r\nexport PATH=/root/.local/bin:$PATH\r\n',
+            '.profile': b'# caf\xe9\nexport TOOL=/home/silo-desktop/bin/tool\n',
+        }
+        for name, contents in originals.items():
+            (source / name).write_bytes(contents)
+        for _ in range(2):
+            guest.copy_home(source, home)
+            guest.copy_shell_setup(source, home)
+        for name, contents in originals.items():
+            expected = contents.replace(b'/root/', b'/home/silo/').replace(
+                b'/home/silo-desktop/', b'/home/silo/')
+            if name == '.profile':
+                expected += guest.PATH_SETUP.encode('utf-8')
+            self.assertEqual((home / name).read_bytes(), expected)
+            self.assertEqual((source / name).read_bytes(), contents)
 
 
 if __name__ == '__main__':

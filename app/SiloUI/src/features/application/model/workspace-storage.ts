@@ -26,6 +26,7 @@ export type WorkspaceStorageState = z.infer<typeof workspaceStorageStateSchema>
 
 /** Binary units, as the host allocation figures are measured. */
 export function formatStorageBytes(bytes: number) {
-  if (bytes === 0) return "0 B"
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`
   return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GiB` : `${(bytes / 1024 ** 2).toFixed(1)} MiB`
 }

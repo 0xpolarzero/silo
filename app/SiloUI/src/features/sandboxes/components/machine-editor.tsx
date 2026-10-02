@@ -58,7 +58,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
           const selected = event.target.value
           setCustomSelected(selected === "custom")
           if (selected === "custom") setCustomText(value ? String(value) : "")
-          else onChange(Number(selected))
+          else { setCustomText(selected); onChange(Number(selected)) }
         }}
       >
         {values.map((option) => <option key={option} value={option}>{option} {suffix}</option>)}
