@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { toast } from "sonner"
@@ -42,18 +42,24 @@ describe("GitHub operation notifications", () => {
     const actions = { setGitHubAccessEnabled: vi.fn() }
     const view = render(page(sourceWith([]), actions))
     await startUserChange(user, actions)
+    vi.useFakeTimers()
     view.rerender(page(sourceWith([{ workspace, status: "applying", message: "Applying repository access…" }], 2), actions))
     view.rerender(page(sourceWith([{ workspace, status: "succeeded", message: "Repository access applied." }], 3), actions))
-    expect(await screen.findByText("GitHub settings applied")).toBeInTheDocument()
-    await new Promise((resolve) => setTimeout(resolve, 4_500))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(screen.getByText("GitHub settings applied")).toBeInTheDocument()
-  }, 10_000)
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_500) })
+    expect(screen.getByText("GitHub settings applied")).toBeInTheDocument()
+    vi.useRealTimers()
+    await user.click(screen.getByRole("button", { name: "Close toast" }))
+    await waitFor(() => expect(screen.queryByText("GitHub settings applied")).not.toBeInTheDocument())
+  })
 
   it("never notifies for background applying then succeeded", async () => {
+    vi.useFakeTimers()
     const view = render(page(sourceWith([])))
     view.rerender(page(sourceWith([{ workspace, status: "applying", message: "Applying GitHub settings." }], 2)))
     view.rerender(page(sourceWith([{ workspace, status: "succeeded", message: "GitHub access verified." }], 3)))
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
     expect(screen.queryByText("GitHub settings applied")).not.toBeInTheDocument()
     expect(screen.queryByText("Applying GitHub settings.")).not.toBeInTheDocument()
   })
@@ -75,9 +81,10 @@ describe("GitHub operation notifications", () => {
   })
 
   it("shows only the inline label for a background failure", async () => {
+    vi.useFakeTimers()
     const view = render(page(sourceWith([{ workspace, status: "succeeded", message: "GitHub access verified." }])))
     view.rerender(page(sourceWith([{ workspace, status: "failed", message: "background failure", canRetry: true }], 2)))
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
     expect(screen.getByRole("button", { name: new RegExp(`not applied for ${workspace}`, "i") })).toBeInTheDocument()
     expect(screen.queryByText("GitHub settings could not be applied.")).not.toBeInTheDocument()
   })

@@ -100,3 +100,71 @@ Final pair, the committed baseline setup against the K-09 setup, three interleav
 The full suite was not timed here (the coordinator runs it). The earlier conclusion that no cheap setup waste remained was wrong for stylesheets: this change removes rules no element can match rather than stylesheet processing, so real CSS still reaches every element it applies to.
 
 Local ignored evidence: `app/SiloUI/src-tauri/target/verification/k09/` holds `matrix/results.jsonl`, `main/results.jsonl` and `final/results.jsonl` with per-run JSON reports, the drivers `ab.mjs` and `ab-final.mjs`, `summarize.mjs`, `count-rules.mjs`, and the minimal jsdom reproducer `jsdom-style-leak.mjs`.
+
+## Deterministic GitHub notification waits (2026-10-02)
+
+At `087b9063`, the verbose full-suite profile ranked
+`application-shell-navigation.test.tsx` (12.297 s / 38 tests),
+`application-lifecycle.test.tsx` (10.216 s / 31), and
+`onboarding-machines.test.tsx` (9.275 s / 15) highest by summed test
+duration. The former application/onboarding monoliths have been split.
+`github-page.test.tsx` ranked eighth (5.745 s / 7), with a 4.626-second
+success-notification test: it waited 4,500 ms on a real timer. Two background
+notification assertions also waited 300 ms each.
+
+Replace those waits with Vitest's supported asynchronous fake-timer advancement
+inside React `act`. Keep the real page, Sonner, stylesheet processing, user
+interaction, 4,500 ms persistence boundary, background-notification assertions,
+and all seven tests. Add an explicit Close toast interaction and disappearance
+assertion to complete the existing test's stated behavior. Install fake timers
+after the initial user click and restore real timers before the close click, so
+user-event retains its normal scheduling. Shared setup restores real timers on
+failure. A temporary mutation changing this success toast's `persist: true` to
+`false` failed at the post-4,500 ms assertion; the production source was restored.
+
+### Controlled comparison
+
+Host: Apple M4 Max, 16 CPUs, macOS, Node 24.11.1, Vitest 4.1.11. Two
+interleaved real/fake pairs used the following command (replace `LABEL`):
+
+```sh
+PATH=/Users/polarzero/.nvm/versions/node/v24.11.1/bin:$PATH \
+  /usr/bin/time -p npm --prefix app/SiloUI test -- \
+  src/features/application/pages/github-page.test.tsx \
+  --maxWorkers=1 --testTimeout=60000 --reporter=verbose --reporter=json \
+  --outputFile.json=src-tauri/target/verification/test-speed/LABEL.json
+```
+
+The comparison baseline holds the new close assertion and `act` boundaries
+stable, but uses real timers. The higher CLI timeout is for both measurements
+only; the retained test uses the ordinary default timeout. All four runs passed
+the same seven names and assertions. Values below are medians of two runs.
+
+| Measurement | Real timers | Fake timers | Reduction |
+| --- | ---: | ---: | ---: |
+| Success test duration | 5.805 s | 1.605 s | 72.4% |
+| Sum of seven test durations | 9.702 s | 6.989 s | 28.0% |
+
+Twenty-two agents shared this host; load averages rose above 100. The paired
+results remove a known 5,100 ms of real waits but do not establish a stable
+full-suite wall-time improvement. The initial Node 26 full run passed 207 files
+and failed two: the two GitHub background tests emitted React `act` warnings,
+and an unrelated Updates `it.fails` unexpectedly passed. The initial focused
+Node 24 baseline reproduced both GitHub warnings. A diagnostic controlled
+baseline without the higher CLI timeout exceeded the default timeout; its
+subsequent failures are excluded. A Homebrew Node invocation failed before
+Vitest because of a missing dylib; subsequent focused runs used the working
+Node 24.11.1 installation. All failing logs remain preserved.
+
+Focused treatment checks passed all seven tests, typecheck, and touched-file
+oxlint. This is fixture verification; no app bundle or live VM was inspected.
+Ignored raw evidence is under
+`app/SiloUI/src-tauri/target/verification/test-speed/`: `frontend-before.*`,
+`github-before-fixed.*`, `github-before-controlled.*`,
+`github-{real,fake}-{1,2}.{log,json}`, `github-mutation.log`, and the exact
+comparison sources `github-{baseline,treatment}.tsx`.
+
+Primary references: [Vitest timers](https://vitest.dev/guide/mocking/timers)
+and [Testing Library fake timers](https://testing-library.com/docs/using-fake-timers/).
+Both document advancing supported fake timers and restoring real timers;
+Testing Library also warns about user-event scheduling with fake timers.
