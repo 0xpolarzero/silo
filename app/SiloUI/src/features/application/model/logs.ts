@@ -39,6 +39,7 @@ export function isUnsupportedRemote(reason: unknown): boolean {
 export type LogEntry = z.infer<typeof logEntrySchema>
 export type LogPage = z.infer<typeof logPageSchema>
 export type LogLoader = (request: LogQuery) => Promise<LogPage>
+export const LOG_ROW_HEIGHT = 52
 export function logIdentity(workspace: ApplicationWorkspace): Pick<LogQuery, "sandboxId" | "computerId"> {
   return { sandboxId: workspace.computer?.vmId ?? workspace.machine.id, ...(workspace.computer && { computerId: workspace.computer.id }) }
 }

@@ -7,6 +7,7 @@ permissions:
   contents: read
 concurrency:
   group: publish-silo-guest
+  queue: max
   cancel-in-progress: false
 jobs:
   protection:
@@ -40,6 +41,8 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
@@ -47,32 +50,22 @@ jobs:
       - name: Read image version and names
         id: image
         run: node app/SiloUI/scripts/build-guest-image.mjs metadata >> "$GITHUB_OUTPUT"
-      - name: Refuse replacing an existing image release
+      - name: Refuse replacing published guest artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ steps.image.outputs.tag }}
-        run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "This image version is published. Increment the recipe version before publishing again."
-            exit 1
-          fi
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: python3 app/SiloUI/scripts/check-guest-publication.py
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: docker.io/tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Refuse replacing an already published architecture
-        env:
-          IMAGE: ${{ steps.image.outputs.image }}
-        run: |
-          for arch in arm64 amd64; do
-            if docker manifest inspect "$IMAGE-$arch" >/dev/null 2>&1; then
-              echo "This image architecture is already published. Recover the exact artifact or publish a new version."
-              exit 1
-            fi
-          done
       - name: Build and verify both guest architectures
         run: |
           node app/SiloUI/scripts/build-guest-image.mjs arm64

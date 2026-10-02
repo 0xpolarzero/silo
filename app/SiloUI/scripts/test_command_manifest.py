@@ -30,6 +30,10 @@ class CommandManifestTests(unittest.TestCase):
     def test_matching_lists_pass(self):
         self.assertEqual(check['differences'](BUILD, MAIN), [])
 
+    def test_line_comments_in_manifest_do_not_declare_commands(self):
+        build = BUILD.replace('"reveal",', '"reveal", // keep "reveal" available\n            // "retired",')
+        self.assertEqual(check['differences'](build, MAIN), [])
+
     def test_handler_missing_from_manifest_is_reported(self):
         build = BUILD.replace('"reveal",', '')
         self.assertEqual(check['differences'](build, MAIN), ['Registered in main.rs but missing from build.rs: reveal'])

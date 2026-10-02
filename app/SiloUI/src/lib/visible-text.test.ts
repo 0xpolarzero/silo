@@ -13,6 +13,11 @@ describe("visible text for guest-controlled names", () => {
     expect(visibleText("line\nbreak\u0007\u009B")).toBe("line⟨U+000A⟩break⟨U+0007⟩⟨U+009B⟩")
   })
 
+  it("reveals soft hyphens in otherwise identical file names", () => {
+    expect(visibleText("con\u00ADfig.json")).toBe("con⟨U+00AD⟩fig.json")
+    expect(visibleText("config.json")).toBe("config.json")
+  })
+
   it("leaves ordinary names, including non-Latin ones, unchanged", () => {
     for (const name of ["acme/silo", "projects/my app", "données", "项目", "שלום"]) expect(visibleText(name)).toBe(name)
   })

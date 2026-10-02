@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-export const preflightStatusSchema = z.enum(["pending", "pass", "failed", "needsAction", "unavailable", "timeout"])
+const preflightStatusSchema = z.enum(["pending", "pass", "failed", "needsAction", "unavailable", "timeout"])
 
 export const siloPreflightCheckSchema = z.object({
   id: z.string().min(1),
@@ -10,10 +10,10 @@ export const siloPreflightCheckSchema = z.object({
   remediation: z.string().nullable(),
 }).strict()
 
-export const siloBootstrapWorkspaceSchema = z.object({
+const siloBootstrapWorkspaceSchema = z.object({
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
-  cpu: z.number().int().min(1).max(4_294_967_295),
-  cpuCeiling: z.number().int().min(1).max(4_294_967_295),
+  cpu: z.number().int().min(1).max(255),
+  cpuCeiling: z.number().int().min(1).max(255),
   memoryGiB: z.number().int().min(1).max(4_294_967_295),
   memoryCeilingGiB: z.number().int().min(1).max(4_294_967_295),
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
@@ -32,7 +32,7 @@ export const siloBootstrapConfigurationSchema = z.object({
   return new Set(names).size === names.length
 }, { message: "Sandbox names must be unique." })
 
-export const desktopConfigurationSchema = z.object({
+const desktopConfigurationSchema = z.object({
   startWithSandbox: z.boolean(),
   // Reported for VMs whose desktop is built into the image (v4). Read-only: the desktop always starts.
   builtIn: z.boolean().optional(),
@@ -41,8 +41,8 @@ export const desktopConfigurationSchema = z.object({
 export const setupWorkspaceConfigurationSchema = z.object({
   id: z.uuid(),
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
-  cpus: z.number().int().min(1).max(4_294_967_295),
-  maxCPUs: z.number().int().min(1).max(4_294_967_295),
+  cpus: z.number().int().min(1).max(255),
+  maxCPUs: z.number().int().min(1).max(255),
   memoryGiB: z.number().int().min(1).max(4_294_967_295),
   maxMemoryGiB: z.number().int().min(1).max(4_294_967_295),
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
@@ -83,7 +83,7 @@ export const setupMachineConfigurationRequestSchema = z.object({
   return new Set(ids).size === ids.length
 }, { message: "Sandbox IDs must be unique." })
 
-export const siloBootstrapPhaseSchema = z.enum([
+const siloBootstrapPhaseSchema = z.enum([
   "welcome",
   "preflight",
   "toolchain",
@@ -144,7 +144,7 @@ export const siloProtocolErrorSchema = z.object({
   retryable: z.boolean(),
 }).strict()
 
-export const githubRepositoryPolicySchema = z.object({
+const githubRepositoryPolicySchema = z.object({
   workspace: z.string().min(1),
   repositoryID: z.number().int(),
   fullName: z.string().min(1),
@@ -171,11 +171,8 @@ export const setupQueueItemIdSchema = z.enum([
   "completion",
 ])
 
-export const setupQueueItemStatusSchema = z.enum(["queued", "running", "succeeded", "failed"])
-
 export type SiloPreflightCheck = z.infer<typeof siloPreflightCheckSchema>
 export type SiloBootstrapConfiguration = z.infer<typeof siloBootstrapConfigurationSchema>
-export type SiloBootstrapState = z.infer<typeof siloBootstrapStateSchema>
 export type SetupMachineConfiguration = z.infer<typeof setupMachineConfigurationSchema>
 export type SetupMachineConfigurationRequest = z.infer<typeof setupMachineConfigurationRequestSchema>
 export type SetupSSHMachineConfiguration = z.infer<typeof setupSSHMachineConfigurationSchema>
@@ -183,6 +180,4 @@ export type SetupVirtualMachineConfiguration = z.infer<typeof setupVirtualMachin
 export type SiloProgressEvent = z.infer<typeof siloProgressEventSchema>
 export type SiloBootstrapResult = z.infer<typeof siloBootstrapResultSchema>
 export type SiloProtocolError = z.infer<typeof siloProtocolErrorSchema>
-export type GitHubWorkspacePolicy = z.infer<typeof githubWorkspacePolicySchema>
 export type SetupQueueItemID = z.infer<typeof setupQueueItemIdSchema>
-export type SetupQueueItemStatus = z.infer<typeof setupQueueItemStatusSchema>

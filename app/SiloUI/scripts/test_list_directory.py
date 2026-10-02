@@ -70,6 +70,15 @@ class ListDirectory(unittest.TestCase):
         self.assertEqual(self.run_script(os.path.join(self.root, 'alias')), b'invalid\0')
         self.assertEqual(self.run_script(os.path.join(self.root, 'real')), b'ok\0')
 
+    @unittest.skipIf(os.geteuid() == 0, 'root bypasses directory search permissions')
+    def test_inaccessible_ancestor_reports_denied_instead_of_missing(self):
+        parent = Path(self.root, 'private')
+        child = parent / 'child'
+        child.mkdir(parents=True)
+        self.addCleanup(os.chmod, parent, 0o700)
+        parent.chmod(0)
+        self.assertEqual(self.run_script(str(child)), b'denied\0')
+
     def test_undecodable_names_are_escaped_and_never_openable(self):
         scan = FakeScan([FakeEntry(b'caf\xe9', directory=True), FakeEntry('日本語'.encode())])
         with patch.object(listing.os, 'scandir', return_value=scan):

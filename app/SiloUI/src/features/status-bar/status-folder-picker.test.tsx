@@ -1,4 +1,5 @@
 import { act, render, screen } from "@testing-library/react"
+import { StrictMode } from "react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -15,6 +16,15 @@ function setup(loader = vi.fn().mockResolvedValue(page([]))) {
   return { user: userEvent.setup(), loader, props, onOpen, ...render(<StatusFolderPicker {...props} />) }
 }
 describe("status folder picker live directories", () => {
+  it("reveals complete sanitized folder names and the sandbox heading", async () => {
+    const name = `${"folder-".repeat(30)}\u202E`
+    setup(vi.fn().mockResolvedValue(page([name])))
+    const displayed = name.replace("\u202E", "⟨U+202E⟩")
+    expect(await screen.findByText(displayed)).toHaveAttribute("title", displayed)
+    const heading = `${workspace.machine.name} folders`
+    expect(screen.getByRole("heading", { name: heading })).toHaveAttribute("title", heading)
+  })
+
   it("loads lazily, opens the exact path, and keeps cached folders on return", async () => {
     let resolve!: (value: DirectoryPage) => void
     const loader = vi.fn().mockImplementationOnce(() => new Promise<DirectoryPage>(done => { resolve = done })).mockResolvedValueOnce(page(["nested"], "/workspace/project"))
@@ -114,5 +124,27 @@ describe("status folder picker live directories", () => {
       await act(async () => vi.advanceTimersByTime(20_000))
       expect(loader).toHaveBeenCalledTimes(2)
     } finally { vi.useRealTimers() }
+  })
+  it("cancels queued directory reads when the folder picker closes", async () => {
+    const waiting: ((value: DirectoryPage) => void)[] = []
+    const loader = vi.fn().mockResolvedValueOnce(page(["a", "b", "c"]))
+      .mockImplementation(() => new Promise<DirectoryPage>(resolve => { waiting.push(resolve) }))
+    const { user, unmount } = setup(loader)
+    await user.click(await screen.findByRole("button", { name: "a" }))
+    await user.click(screen.getByRole("button", { name: "/workspace" }))
+    await user.click(screen.getByRole("button", { name: "b" }))
+    await user.click(screen.getByRole("button", { name: "/workspace" }))
+    await user.click(screen.getByRole("button", { name: "c" }))
+    expect(loader.mock.calls.map(call => call[1])).toEqual(["/workspace", "/workspace/a", "/workspace", "/workspace/b"])
+    unmount()
+    await act(async () => waiting[0](page([], "/workspace/a")))
+    expect(loader.mock.calls.map(call => call[1])).not.toContain("/workspace/c")
+    await act(async () => waiting.slice(1).forEach(resolve => resolve(page([]))))
+  })
+  it("loads folders after StrictMode replays cleanup", async () => {
+    const loader = vi.fn().mockResolvedValue(page(["project"]))
+    render(<StrictMode><StatusFolderPicker workspace={workspace} editor="Cursor" onBack={vi.fn()} onOpen={vi.fn()} listDirectory={loader} /></StrictMode>)
+    expect(await screen.findByRole("button", { name: "project" })).toBeVisible()
+    expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeEnabled()
   })
 })

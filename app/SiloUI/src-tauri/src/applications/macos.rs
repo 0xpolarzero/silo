@@ -47,13 +47,18 @@ pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
             .ok_or("The selected browser is unavailable. Choose another in Settings.")?;
         command.arg("-a").arg(path);
     }
-    let status = command
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|_| "The browser could not be opened.")?;
+    command.arg(url);
+    launch_browser(command, std::time::Duration::from_secs(10))
+}
+
+fn launch_browser(
+    command: std::process::Command,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let status = run_bounded(command, timeout).map_err(|error| match error {
+        Bounded::Spawn => "The browser could not be opened.",
+        Bounded::TimedOut => "Opening the browser timed out. Check your browser and retry.",
+    })?;
     if status.success() {
         Ok(())
     } else {
@@ -682,7 +687,7 @@ pub fn open_terminal(
     if id.as_deref() == Some("com.mitchellh.ghostty") {
         // Callers run on a worker. osascript keeps the first-run Automation
         // prompt or a busy Ghostty from freezing Silo's main thread (G-05).
-        return match run_bounded(ghostty_launch(command), GHOSTTY_TIMEOUT) {
+        return match run_bounded(ghostty_launch(&application.path, command), GHOSTTY_TIMEOUT) {
             Ok(status) if status.success() => Ok(()),
             Ok(_) => Err("Ghostty could not open the terminal. Use Ghostty 1.3 or newer and allow Silo in System Settings → Privacy & Security → Automation.".into()),
             Err(Bounded::Spawn) => Err("Could not contact the terminal launcher.".into()),
@@ -708,7 +713,7 @@ pub fn open_terminal(
 /// never as AppleScript source, so it needs no AppleScript escaping.
 const GHOSTTY_SCRIPT: &str = r#"on run argv
  with timeout of 30 seconds
-  tell application id "com.mitchellh.ghostty"
+  tell application __SILO_GHOSTTY_PATH__
    activate
    set cfg to new surface configuration
    set command of cfg to item 1 of argv
@@ -726,9 +731,24 @@ end run"#;
 /// Automation prompt has time to be answered.
 const GHOSTTY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
 
-fn ghostty_launch(command: &str) -> std::process::Command {
+fn ghostty_script(application_path: &str) -> String {
+    // A literal target loads terminology from the selected bundle too.
+    let path = application_path
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t");
+    GHOSTTY_SCRIPT.replace("__SILO_GHOSTTY_PATH__", &format!("\"{path}\""))
+}
+
+fn ghostty_launch(application_path: &str, command: &str) -> std::process::Command {
     let mut launch = std::process::Command::new("/usr/bin/osascript");
-    launch.arg("-e").arg(GHOSTTY_SCRIPT).arg("--").arg(command);
+    launch
+        .arg("-e")
+        .arg(ghostty_script(application_path))
+        .arg("--")
+        .arg(command);
     launch
 }
 
@@ -770,13 +790,56 @@ mod terminal_tests {
     use super::*;
 
     #[test]
+    fn ghostty_targets_the_selected_bundle_instead_of_its_registered_copy() {
+        for path in ["/Applications/Ghostty A.app", "/Applications/Ghostty B.app"] {
+            let launch = ghostty_launch(path, "ssh example");
+            let args: Vec<_> = launch.get_args().map(|arg| arg.to_str().unwrap()).collect();
+            assert!(args[1].contains(&format!("tell application \"{path}\"")));
+            assert!(!args[1].contains("tell application id"));
+            assert_eq!(&args[2..], &["--", "ssh example"]);
+        }
+    }
+
+    #[test]
     fn ghostty_runs_in_osascript_with_the_command_as_data() {
         let command = r#"'/usr/bin/ssh' '-F' '/a "b"\c' $(touch /tmp/never)"#;
-        let launch = ghostty_launch(command);
+        let launch = ghostty_launch("/Applications/Ghostty.app", command);
         assert_eq!(launch.get_program(), "/usr/bin/osascript");
         let args: Vec<_> = launch.get_args().map(|arg| arg.to_str().unwrap()).collect();
-        assert_eq!(args, ["-e", GHOSTTY_SCRIPT, "--", command]);
+        assert_eq!(
+            args,
+            [
+                "-e",
+                &ghostty_script("/Applications/Ghostty.app"),
+                "--",
+                command
+            ]
+        );
         assert!(GHOSTTY_SCRIPT.contains("set command of cfg to item 1 of argv"));
+    }
+
+    #[test]
+    fn ghostty_bundle_paths_remain_literal_applescript_text() {
+        let path = "/tmp/a\"b\\c\n\r\t.app";
+        let script = ghostty_script(path);
+        let target = script
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("tell application "))
+            .unwrap();
+        // Evaluate only the target literal, without contacting an application.
+        let output = std::process::Command::new("/usr/bin/osascript")
+            .args(["-e", &format!("return {target}")])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("{path}\n")
+        );
     }
 
     #[test]
@@ -797,6 +860,23 @@ mod terminal_tests {
             String::from_utf8(output.stdout).unwrap(),
             format!("{command}\n")
         );
+    }
+
+    #[test]
+    fn browser_launcher_reports_timeout_failure_and_success() {
+        let mut sleeper = std::process::Command::new("/bin/sleep");
+        sleeper.arg("0.2");
+        assert!(launch_browser(sleeper, std::time::Duration::from_millis(20)).is_err());
+        assert!(launch_browser(
+            std::process::Command::new("/usr/bin/false"),
+            std::time::Duration::from_secs(1)
+        )
+        .is_err());
+        assert!(launch_browser(
+            std::process::Command::new("/usr/bin/true"),
+            std::time::Duration::from_secs(1)
+        )
+        .is_ok());
     }
 
     #[test]

@@ -66,6 +66,13 @@ credentials block startup rather than restoring old material. Start completion
 clears pending state only when the desired revision still matches. Secret and
 GitHub updates share the existing runtime locks and preserve each other's config.
 
+The secrets read command runs document I/O and JSON decoding on Tauri's blocking
+pool. A slow document read therefore leaves the async executor available to other
+commands. The FIFO regression supplies a blocked file in a temporary directory
+and requires an independent future to run before releasing the read. This uses
+[Tauri's async command execution](https://v2.tauri.app/develop/calling-rust/#async-commands)
+and the supported [blocking-work boundary](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
+
 ## Boundary
 
 This mechanism supports credentials transmitted in proxied HTTPS requests. It does

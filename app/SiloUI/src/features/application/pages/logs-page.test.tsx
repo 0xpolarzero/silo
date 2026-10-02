@@ -1,8 +1,10 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
+import userEvent from "@testing-library/user-event"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
 import { fixtureLogPage, logPageSchema, type LogPage, type LogQuery } from "../model/logs"
+import * as logFormatting from "../model/logs"
 import { Toaster } from "@/components/ui/sonner"
 import { Logs } from "./logs-page"
 
@@ -23,6 +25,46 @@ function scrollNearEnd() {
   return viewport
 }
 describe("retained logs", () => {
+  it.each([[1, "record"], [2, "records"]])("pluralizes the summary for %i matching %s", async (count, noun) => {
+    const { workspace, actions } = fixture(count)
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    expect(await screen.findByText(`Showing ${count} of ${count} matching ${noun}.`)).toBeVisible()
+  })
+  it("formats clipboard text on click and copies the current loaded window", async () => {
+    const user = userEvent.setup()
+    const { workspace, actions } = fixture(401)
+    const format = vi.spyOn(logFormatting, "formatLog")
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    await screen.findByText(/Showing 200 of 401/)
+    expect(format).not.toHaveBeenCalled()
+    scrollNearEnd()
+    await screen.findByText(/Showing 400 of 401/)
+    expect(format).not.toHaveBeenCalled()
+    await user.click(screen.getByRole("button", { name: "Copy logs" }))
+    const text = await navigator.clipboard.readText()
+    expect(text.split("\n")).toHaveLength(400)
+    expect(text).toContain("record 400")
+    expect(text).toContain("record 1")
+    expect(text).not.toContain("old diagnostic needle")
+    expect(format).toHaveBeenCalledTimes(400)
+  })
+
+  it("explains the bounded window and exports all matches after records leave the list", async () => {
+    const { workspace, actions } = fixture(6001)
+    actions.queryLogs = vi.fn(async request => fixtureLogPage(workspace, { ...request, limit: 3000 }))
+    actions.exportLogs = vi.fn(async () => true)
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    await screen.findByText(/Showing 3000 of 6001/)
+    scrollNearEnd()
+    await screen.findByText(/Showing 5000 of 6001/)
+    expect(screen.getByText(/Some loaded records have left this list/)).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Save logs…" }))
+    expect(actions.exportLogs).toHaveBeenCalledWith([expect.objectContaining({ sandboxId: workspace.machine.id, query: "" })])
+    expect(vi.mocked(actions.exportLogs!).mock.calls[0][0][0]).not.toHaveProperty("cursor")
+    fireEvent.click(screen.getByRole("button", { name: "Refresh logs" }))
+    await screen.findByText(/Showing 3000 of 6001/)
+    expect(screen.queryByText(/Some loaded records have left this list/)).not.toBeInTheDocument()
+  })
   it("says when records could not be read and labels times the sandbox reported", async () => {
     const { workspace, actions } = fixture()
     const occurredAt = "2020-01-01T00:00:00.000000000Z"
@@ -167,7 +209,7 @@ describe("retained logs", () => {
     expect(details).toHaveTextContent("old diagnostic needle")
     expect(details).toHaveTextContent("The complete diagnostic message remains visible when expanded.")
     expect(screen.getByLabelText("Search logs")).toHaveValue("needle")
-    expect(screen.getByText("Showing 1 of 1 matching records.")).toBeVisible()
+    expect(screen.getByText("Showing 1 of 1 matching record.")).toBeVisible()
     expect(queryLogs).toHaveBeenCalledTimes(1)
     expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ query: "needle", ...window, limit: 200 }))
     fireEvent.click(screen.getByRole("button", { name: `Collapse ${label}` }))
@@ -223,12 +265,12 @@ describe("retained logs", () => {
     })
     render(<Logs workspaces={[workspace, remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
     expect(await screen.findByText("old diagnostic needle")).toBeVisible()
-    expect(screen.getByRole("alert")).toHaveTextContent("remote sandbox: Error: Offline")
+    expect(screen.getByRole("alert")).toHaveTextContent("remote sandbox: Offline")
   })
   it("retries a failed first read from the error control without overlapping requests", async () => {
     const { workspace, actions } = fixture(2)
     let resolve!: (page: LogPage) => void
-    const queryLogs = vi.fn().mockRejectedValueOnce(new Error("Host unavailable"))
+    const queryLogs = vi.fn().mockRejectedValueOnce({ code: "internal", message: "Host unavailable" })
       .mockImplementationOnce(() => new Promise<LogPage>(done => { resolve = done }))
     actions.queryLogs = queryLogs
     render(<Logs workspaces={[workspace]} actions={actions} active query="needle" onQueryChange={vi.fn()} />)
@@ -245,7 +287,7 @@ describe("retained logs", () => {
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.getByText("old diagnostic needle")).toBeVisible()
-    expect(screen.getByText("Showing 1 of 1 matching records.")).toBeVisible()
+    expect(screen.getByText("Showing 1 of 1 matching record.")).toBeVisible()
     expect(screen.getByRole("button", { name: "Refresh logs" })).toBeEnabled()
   })
   it("refreshes only while following and active", async () => {
@@ -364,13 +406,15 @@ describe("retained logs", () => {
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
   })
 
-  it("uses the unsupported remote error code as an update hint", async () => {
+  it.each(["", "needle"])("uses the unsupported remote error code as an update hint without claiming empty logs (query: %s)", async query => {
     const { workspace, actions } = fixture()
     const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:zeronival:dev-zeronival", name: "dev-zeronival" }, computer: { id: "zeronival", vmId: "dev-zeronival", name: "zeronival", address: "zeronival.local", connected: true } }
     actions.queryLogs = vi.fn(async () => { throw { code: "unsupported_remote_operation", message: "This computer cannot query logs." } })
-    render(<Logs workspaces={[remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    render(<Logs workspaces={[remote]} actions={actions} active query={query} onQueryChange={vi.fn()} />)
     expect(await screen.findByText("Update Silo on zeronival to see logs for dev-zeronival.")).toBeVisible()
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
+    expect(screen.queryByText("No logs yet")).not.toBeInTheDocument()
+    expect(screen.queryByText("No results")).not.toBeInTheDocument()
   })
 
 })

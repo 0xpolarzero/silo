@@ -1,12 +1,12 @@
 import { ComputerUseProvider } from "./computer-use-provider"
-import { act, fireEvent, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, renderHook, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { RemoteComputersSettings } from "@/features/application/components/remote-computers-settings"
 import type { ApplicationActions } from "@/features/application/model/application-source"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { createFixtureComputerUseBackend, fixtureDesktopState } from "@/fixtures/computer-use"
-import { createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
+import { createComputerUseBridge, useChatGptApp, type ComputerUseBackend } from "./computer-use-bridge"
 import { ComputerUseSection } from "./computer-use-panel"
 
 const workspace = "silo-remote:11111111-1111-4111-8111-111111111111:33333333-3333-4333-8333-333333333333"
@@ -28,6 +28,94 @@ function section(b: ComputerUseBackend, active = true) {
 }
 beforeEach(() => { vi.useFakeTimers(); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible") })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+
+it("keeps remote download consumers stable until progress or a read error changes", async () => {
+  let receivedBytes = 1
+  let unavailable = false
+  const read = vi.fn(async () => {
+    if (unavailable) throw new Error("Computer disconnected")
+    return { state: "downloading", receivedBytes, totalBytes: 10 }
+  })
+  const store = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 1000, idle: 1000 }).chatGptFor("office")
+  let renders = 0
+  const view = renderHook(() => { renders++; return useChatGptApp(store) })
+  try {
+    await advance(0)
+    const first = view.result.current
+    const initialRenders = renders
+    for (let tick = 0; tick < 10; tick++) await advance(1000)
+    expect(read).toHaveBeenCalledTimes(11)
+    expect(renders - initialRenders).toBe(0)
+    expect(view.result.current).toBe(first)
+
+    receivedBytes = 2
+    await advance(1000)
+    expect(view.result.current.status).toMatchObject({ receivedBytes: 2 })
+    unavailable = true
+    await advance(1000)
+    expect(view.result.current.loadError).toBe("Computer disconnected")
+    const errorRenders = renders
+    await advance(2000)
+    expect(renders).toBe(errorRenders)
+    unavailable = false
+    await advance(4000)
+    expect(view.result.current.loadError).toBeNull()
+    expect(view.result.current.status).toMatchObject({ receivedBytes: 2 })
+  } finally { view.unmount() }
+})
+
+it("backs off failed remote download reads to a cap and restores polling after recovery", async () => {
+  const read = vi.fn(async (): Promise<unknown> => { throw new Error("Computer disconnected") })
+  const store = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 1000, idle: 1000 }).chatGptFor("office")
+  const stop = store.subscribe(() => {})
+  try {
+    await advance(0)
+    expect(read).toHaveBeenCalledOnce()
+    for (const delay of [2000, 4000, 8000, 16000, 30000, 30000]) {
+      const calls = read.mock.calls.length
+      await advance(delay - 1)
+      expect(read).toHaveBeenCalledTimes(calls)
+      await advance(1)
+      expect(read).toHaveBeenCalledTimes(calls + 1)
+    }
+    expect(store.getSnapshot().loadError).toBe("Computer disconnected")
+    read.mockResolvedValue({ state: "idle" })
+    await advance(30000)
+    expect(store.getSnapshot().loadError).toBeNull()
+    const calls = read.mock.calls.length
+    await advance(999)
+    expect(read).toHaveBeenCalledTimes(calls)
+    await advance(1)
+    expect(read).toHaveBeenCalledTimes(calls + 1)
+    stop()
+    await advance(60000)
+    expect(read).toHaveBeenCalledTimes(calls + 1)
+  } finally { stop() }
+})
+
+it("backs off failed computer-use state reads and stops a pending schedule when inactive", async () => {
+  const read = vi.fn(async (): Promise<unknown> => { throw new Error("Sandbox unavailable") })
+  const view = section(backend({ readDesktopState: read }))
+  await advance(0)
+  expect(read).toHaveBeenCalledOnce()
+  for (const delay of [10000, 20000, 30000, 30000]) {
+    const calls = read.mock.calls.length
+    await advance(delay - 1)
+    expect(read).toHaveBeenCalledTimes(calls)
+    await advance(1)
+    expect(read).toHaveBeenCalledTimes(calls + 1)
+  }
+  read.mockResolvedValue(fixtureDesktopState("ready"))
+  await advance(30000)
+  const calls = read.mock.calls.length
+  await advance(4999)
+  expect(read).toHaveBeenCalledTimes(calls)
+  await advance(1)
+  expect(read).toHaveBeenCalledTimes(calls + 1)
+  view.setActive(false)
+  await advance(60000)
+  expect(read).toHaveBeenCalledTimes(calls + 1)
+})
 
 it("pauses an inactive computer-use section and refreshes once on return", async () => {
   const read = vi.fn(async () => fixtureDesktopState("ready"))

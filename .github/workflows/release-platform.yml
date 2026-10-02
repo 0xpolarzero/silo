@@ -47,12 +47,15 @@ jobs:
     if: ${{ !inputs.runtime-cache-hit }}
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 45
+    env:
+      RUNTIME_TARGET: ${{ inputs.target }}
     outputs:
       artifact-name: ${{ steps.archive.outputs.artifact-name }}
       archive-sha256: ${{ steps.archive.outputs.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ inputs.source-ref }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -73,7 +76,7 @@ jobs:
           runtime_toolchain=$(node -p "require(process.env.GITHUB_WORKSPACE + '/app/SiloUI/runtime-inputs.json').toolchain")
           rustup toolchain install "$runtime_toolchain" --profile minimal
           rustup default "$runtime_toolchain"
-          test "$(rustc --print host-tuple)" = '${{ inputs.target }}'
+          test "$(rustc --print host-tuple)" = "$RUNTIME_TARGET"
       # No environment, signing key, or GitHub App configuration enters this job.
       - uses: ./.github/actions/prepare-release-runtime
         with:
@@ -84,7 +87,7 @@ jobs:
         shell: bash
         run: |
           python3 app/SiloUI/scripts/release-runtime-cache.py pack --archive "$RUNNER_TEMP/runtime-cache.tar.gz" >> "$GITHUB_OUTPUT"
-          echo "artifact-name=runtime-cache-${{ inputs.target }}-${{ github.run_id }}-${{ github.run_attempt }}" >> "$GITHUB_OUTPUT"
+          echo "artifact-name=runtime-cache-$RUNTIME_TARGET-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.archive.outputs.artifact-name }}
@@ -111,6 +114,7 @@ jobs:
         working-directory: app/SiloUI
         shell: bash
     env:
+      RUNTIME_TARGET: ${{ inputs.target }}
       SILO_GITHUB_APP_SLUG: silo-unit-test
       SILO_GITHUB_CLIENT_ID: synthetic-unit-client
       SILO_GITHUB_CLIENT_SECRET: synthetic-unit-secret
@@ -120,6 +124,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ inputs.source-ref }}
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -139,7 +144,7 @@ jobs:
           runtime_toolchain=$(node -p "require(process.env.GITHUB_WORKSPACE + '/app/SiloUI/runtime-inputs.json').toolchain")
           rustup toolchain install "$runtime_toolchain" --profile minimal
           rustup default "$runtime_toolchain"
-          test "$(rustc --print host-tuple)" = '${{ inputs.target }}'
+          test "$(rustc --print host-tuple)" = "$RUNTIME_TARGET"
       - run: npm ci
       - uses: ./.github/actions/prepare-release-runtime
         with:
@@ -174,6 +179,9 @@ jobs:
     # compile Silo see the App configuration, and only the steps that sign see
     # the updater key. npm, Homebrew, Python tests and other build scripts never do.
     env:
+      RUNTIME_TARGET: ${{ inputs.target }}
+      RELEASE_BUNDLES: ${{ inputs.bundles }}
+      RELEASE_ASSET: ${{ inputs.asset }}
       APPLE_SIGNING_IDENTITY: '-'
       CARGO_INCREMENTAL: '0'
       CARGO_PROFILE_DEV_DEBUG: '0'
@@ -181,6 +189,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           ref: ${{ inputs.source-ref }}
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -212,14 +221,14 @@ jobs:
           runtime_toolchain=$(node -p "require(process.env.GITHUB_WORKSPACE + '/app/SiloUI/runtime-inputs.json').toolchain")
           rustup toolchain install "$runtime_toolchain" --profile minimal
           rustup default "$runtime_toolchain"
-          test "$(rustc --print host-tuple)" = '${{ inputs.target }}'
+          test "$(rustc --print host-tuple)" = "$RUNTIME_TARGET"
       - name: Install signature verifier
         if: runner.os == 'macOS'
         run: brew install minisign
       - run: npm ci
       - name: Resolve public dependency identity before test signing configuration
         id: dependencies
-        run: python3 scripts/release-dependency-cache.py prepare --target '${{ inputs.target }}' --state "$RUNNER_TEMP/release-dependencies" >> "$GITHUB_OUTPUT"
+        run: python3 scripts/release-dependency-cache.py prepare --target "$RUNTIME_TARGET" --state "$RUNNER_TEMP/release-dependencies" >> "$GITHUB_OUTPUT"
       - name: Generate isolated test signing key
         if: ${{ !inputs.draft }}
         run: |
@@ -269,14 +278,14 @@ jobs:
           key: ${{ steps.dependencies.outputs.key }}
       - name: Validate dependencies or fall back to ordinary compilation
         run: |
-          python3 scripts/release-dependency-cache.py restore --target '${{ inputs.target }}' --state "$RUNNER_TEMP/release-dependencies"
+          python3 scripts/release-dependency-cache.py restore --target "$RUNTIME_TARGET" --state "$RUNNER_TEMP/release-dependencies"
           echo "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/app/SiloUI/src-tauri/target/release-compile" >> "$GITHUB_ENV"
       - name: Compile release application
         env:
           SILO_GITHUB_APP_SLUG: ${{ secrets.SILO_GITHUB_APP_SLUG }}
           SILO_GITHUB_CLIENT_ID: ${{ secrets.SILO_GITHUB_CLIENT_ID }}
           SILO_GITHUB_CLIENT_SECRET: ${{ secrets.SILO_GITHUB_CLIENT_SECRET }}
-        run: python3 scripts/measure-command.py release-build -- python3 scripts/release-dependency-cache.py build --target '${{ inputs.target }}' --state "$RUNNER_TEMP/release-dependencies"
+        run: python3 scripts/measure-command.py release-build -- python3 scripts/release-dependency-cache.py build --target "$RUNTIME_TARGET" --state "$RUNNER_TEMP/release-dependencies"
       - name: Build release bundles
         env:
           # Drafts sign with the production key; verification runs use the
@@ -289,7 +298,7 @@ jobs:
           else
             bundle_config_args=()
           fi
-          python3 scripts/measure-command.py release-bundle -- python3 scripts/retry-bundle.py --log "$RUNNER_TEMP/silo-bundle.log" -- npx tauri bundle --target '${{ inputs.target }}' --bundles '${{ inputs.bundles }}' --ci --verbose "${bundle_config_args[@]}"
+          python3 scripts/measure-command.py release-bundle -- python3 scripts/retry-bundle.py --log "$RUNNER_TEMP/silo-bundle.log" -- npx tauri bundle --target "$RUNTIME_TARGET" --bundles "$RELEASE_BUNDLES" --ci --verbose "${bundle_config_args[@]}"
       # The verbose bundle log stays on the runner: it can contain signing and
       # build configuration details (see scripts/retry-bundle.py).
       - name: Enforce exact macOS runtime libraries and rebuild signed packages
@@ -297,7 +306,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ inputs.draft && secrets.TAURI_SIGNING_PRIVATE_KEY || env.SILO_TEST_SIGNING_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ inputs.draft && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
-        run: python3 scripts/package-macos-release.py 'src-tauri/target/release-compile/${{ inputs.target }}/release/bundle/macos/Silo.app' release-assets
+        run: python3 scripts/package-macos-release.py "src-tauri/target/release-compile/$RUNTIME_TARGET/release/bundle/macos/Silo.app" release-assets
       - name: Verify macOS library constraints
         if: runner.os == 'macOS'
         run: python3 scripts/test-macos-library-constraints.py --constraints-only --output "$RUNNER_TEMP/library-constraints"
@@ -305,7 +314,7 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           mkdir -p release-assets
-          bundle='src-tauri/target/release-compile/${{ inputs.target }}/release/bundle'
+          bundle="src-tauri/target/release-compile/$RUNTIME_TARGET/release/bundle"
           codesign --verify --deep --strict "$bundle/macos/Silo.app"
           python3 scripts/verify-macos-signing.py "$bundle/macos/Silo.app"
           test -s release-assets/Silo-macos-arm64.app.tar.gz
@@ -315,17 +324,17 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           mkdir -p release-assets
-          packages=(src-tauri/target/release-compile/${{ inputs.target }}/release/bundle/deb/*.deb)
+          packages=("src-tauri/target/release-compile/$RUNTIME_TARGET/release/bundle/deb/"*.deb)
           test "${#packages[@]}" -eq 1
           python3 scripts/package-debian-release.py "${packages[0]}"
           dpkg-deb --info "${packages[0]}"
-          cp "${packages[0]}" 'release-assets/Silo-${{ inputs.asset }}.deb'
-          images=(src-tauri/target/release-compile/${{ inputs.target }}/release/bundle/appimage/*.AppImage)
+          cp "${packages[0]}" "release-assets/Silo-$RELEASE_ASSET.deb"
+          images=("src-tauri/target/release-compile/$RUNTIME_TARGET/release/bundle/appimage/"*.AppImage)
           test "${#images[@]}" -eq 1
-          cp "${images[0]}" 'release-assets/Silo-${{ inputs.asset }}.AppImage'
-          cp "${images[0]}.sig" 'release-assets/Silo-${{ inputs.asset }}.AppImage.sig'
-          chmod +x 'release-assets/Silo-${{ inputs.asset }}.AppImage'
-          'release-assets/Silo-${{ inputs.asset }}.AppImage' --appimage-extract >/dev/null
+          cp "${images[0]}" "release-assets/Silo-$RELEASE_ASSET.AppImage"
+          cp "${images[0]}.sig" "release-assets/Silo-$RELEASE_ASSET.AppImage.sig"
+          chmod +x "release-assets/Silo-$RELEASE_ASSET.AppImage"
+          "release-assets/Silo-$RELEASE_ASSET.AppImage" --appimage-extract >/dev/null
           test -x squashfs-root/usr/bin/silo-ui
       - name: Verify update signatures
         run: python3 scripts/verify-release-signatures.py release-assets

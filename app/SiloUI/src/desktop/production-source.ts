@@ -1,5 +1,5 @@
 import { bridgeErrorMessage, hasBridgeErrorCode } from "@/contracts/bridge-error"
-import { defaultSettings } from "@/features/preferences/model/settings"
+import { defaultSettings, settingSchemas } from "@/features/preferences/model/settings"
 import { workspaceStorageStateSchema } from "@/features/application/model/workspace-storage"
 import { isUnsupportedRemote, logPageSchema } from "@/features/application/model/logs"
 import { invoke } from "@tauri-apps/api/core"
@@ -128,7 +128,7 @@ const machineShape = z.discriminatedUnion("kind", [
     desktop: z.object({ startWithSandbox: z.boolean(), builtIn: z.boolean().optional() }).optional(),
   }).passthrough(),
   z.object({ kind: z.literal("ssh"), id: z.string().min(1), name: z.string().min(1), host: z.string().min(1), user: z.string().min(1), port: z.number().int().min(1).max(65535) }).passthrough(),
-]).transform(machine => machine as SetupMachineConfiguration)
+])
 
 const workspaceShape = z.object({
   machine: machineShape,
@@ -187,18 +187,27 @@ const runtimeRepairShape = z.object({
   status: tolerantEnum(["needed", "unavailable"], "unavailable"), reason: z.string(), recovery: z.string().optional(), checking: z.boolean().optional(),
 })
 
-const sandboxConfigurationOperationShape = z.object({
+const sandboxConfigurationOperationFields = {
   id: z.string().min(1),
-  status: z.enum(["applying", "awaiting-approval", "failed"]),
   candidate: setupMachineConfigurationRequestSchema,
   progressEvents: z.array(siloProgressEventSchema),
-  result: siloBootstrapResultSchema.nullable(),
-  error: siloProtocolErrorSchema.nullable(),
-})
+}
+const sandboxConfigurationOperationShape = z.discriminatedUnion("status", [
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("applying"), result: z.null(), error: z.null() }),
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("awaiting-approval"), result: siloBootstrapResultSchema, error: z.null() }),
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("failed"), result: z.null(), error: siloProtocolErrorSchema }),
+])
 
 const preferencesShape = z.object({
   terminal: z.string(), editor: z.string(), browser: z.string(), launchAtLogin: z.boolean(),
   startWorkspacesAtLaunch: z.boolean(), reduceMotion: z.boolean(),
+  startupWorkspaceIds: settingSchemas.startupWorkspaceIds.optional().catch(undefined),
+  terminalPath: settingSchemas.terminalPath.optional().catch(undefined),
+  editorPath: settingSchemas.editorPath.optional().catch(undefined),
+  browserPath: settingSchemas.browserPath.optional().catch(undefined),
+  terminalUseSystemDefault: settingSchemas.terminalUseSystemDefault.optional().catch(undefined),
+  editorUseSystemDefault: settingSchemas.editorUseSystemDefault.optional().catch(undefined),
+  browserUseSystemDefault: settingSchemas.browserUseSystemDefault.optional().catch(undefined),
 }).passthrough()
 const backupSummaryShape = z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() })
 
@@ -268,12 +277,12 @@ export function parseNetworkState(input: unknown): NetworkState {
 }
 
 export function parseApplicationSource(input: unknown): ApplicationSource {
-  return applicationSourceShape.parse(input) as ApplicationSource
+  return applicationSourceShape.parse(input)
 }
 
 /** Another computer's snapshot, which may come from an older or newer Silo. */
 export function parseRemoteApplicationSource(input: unknown): ApplicationSource {
-  return remoteApplicationSourceShape.parse(input) as ApplicationSource
+  return remoteApplicationSourceShape.parse(input)
 }
 
 export function parseBackupState(input: unknown): BackupState {
@@ -352,6 +361,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     error: null,
   }
   let view = snapshot
+  let viewKey = JSON.stringify(view)
   type SetupItem = NonNullable<OnboardingSource["setupQueue"]>[number]
   type SetupJob = { items: SetupItem[]; activityId: string }
   let setupJobs: SetupJob[] = []
@@ -589,7 +599,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function publish(next: ProductionSnapshot) {
     if (disposed) return
     snapshot = next
-    view = derive(next)
+    const nextView = derive(next)
+    // Native reads return fresh objects even when the serialized state is unchanged.
+    const nextKey = JSON.stringify(nextView)
+    if (nextKey === viewKey) return
+    view = nextView
+    viewKey = nextKey
     listeners.forEach((listener) => listener())
   }
 
@@ -1020,27 +1035,35 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   async function startLiveUpdates() {
     if (disposed) return
     try {
-      unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
-      unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
-      unlisten.push(await native.listen("silo://application-state-changed", refreshFromEvent))
-      unlisten.push(await native.listen("desktop:status-opened", refreshFromEvent))
-      // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
-      // so setup and sandbox configuration must be accepted again.
-      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => {
-        if (event?.payload !== false) return
-        acceptingSetup = true
-        if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
-      }))
-      unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
-        const parsed = siloProgressEventSchema.safeParse(event?.payload)
-        if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
-        const progressEvents = [...activeConfiguration.progressEvents, parsed.data]
-        activeConfiguration = { ...activeConfiguration, progressEvents }
-        publish({ ...snapshot, setupEvents: progressEvents, setupActivity: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
-        if (parsed.data.step === "workspace-verification" && activeMachineJob) setJobStatus(activeMachineJob, ["workspaceVerify"], "running")
-      }))
+      const subscriptions: Array<[string, EventHandler]> = [
+        ["silo://network-state-changed", () => { void refreshNetwork() }],
+        ["silo://operation-queue-changed", () => { void refreshOperationQueue() }],
+        ["silo://application-state-changed", refreshFromEvent],
+        ["desktop:status-opened", refreshFromEvent],
+        // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
+        // so setup and sandbox configuration must be accepted again.
+        ["silo://shutdown-state-changed", (event) => {
+          if (event?.payload !== false) return
+          acceptingSetup = true
+          if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
+        }],
+        ["silo://machine-configuration-progress", (event) => {
+          const parsed = siloProgressEventSchema.safeParse(event?.payload)
+          if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
+          const progressEvents = [...activeConfiguration.progressEvents, parsed.data]
+          activeConfiguration = { ...activeConfiguration, progressEvents }
+          publish({ ...snapshot, setupEvents: progressEvents, setupActivity: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
+          if (parsed.data.step === "workspace-verification" && activeMachineJob) setJobStatus(activeMachineJob, ["workspaceVerify"], "running")
+        }],
+      ]
+      for (const [event, handler] of subscriptions) {
+        const stop = await native.listen(event, payload => { if (!disposed) handler(payload) })
+        if (disposed) { stop(); return }
+        unlisten.push(stop)
+      }
     } catch (cause) {
       unlisten.splice(0).forEach((stop) => stop())
+      if (disposed) return
       const error = `Silo could not subscribe to application updates: ${errorMessage(cause)}`
       publish({ ...snapshot, loading: false, error })
       throw new Error(error)
@@ -1533,7 +1556,17 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     try {
       const result = await native.invoke<unknown>(command, { workspaceId: localWorkspace!.machine.id, ...arguments_ })
       ++refreshSequence
-      publish({ ...snapshot, source: parseMutationSource(result), error: null })
+      let source = parseMutationSource(result)
+      if (snapshot.source) {
+        const incoming = new Map(source.workspaces.map(workspace => [workspace.machine.id, workspace]))
+        const workspaces = snapshot.source.workspaces.map(workspace => workspace.machine.id === localWorkspace!.machine.id ? incoming.get(workspace.machine.id) ?? workspace : workspace)
+        if (kind === "fork" && typeof arguments_.newName === "string") {
+          const fork = source.workspaces.find(workspace => workspace.machine.name === arguments_.newName && !workspaces.some(current => current.machine.id === workspace.machine.id))
+          if (fork) workspaces.push(fork)
+        }
+        source = { ...source, workspaces }
+      }
+      publish({ ...snapshot, source, error: null })
       void refresh()
     } catch (cause) {
       void refresh()
@@ -1793,6 +1826,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   /** Checks an export file under a request id so aborting `signal` stops the check (E-27).
    * The check changes no state, so no refresh follows it. */
   async function inspectBackupArchive(archivePath: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
     const requestId = crypto.randomUUID()
     const cancel = () => { void native.invoke("cancel_backup_inspection", { requestId }).catch(() => undefined) }
     signal?.addEventListener("abort", cancel, { once: true })
@@ -1820,7 +1854,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           ? "Silo no longer reports this export's result. Check the export folder before relying on it."
           : "Silo stopped tracking this export before it finished.", operationId))
       }
-      exportWaiters.add(waiter)
+      if (disposed) waiter(null, readSequence)
+      else exportWaiters.add(waiter)
     })
   }
 
@@ -1964,7 +1999,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
+    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.splice(0).forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
   }
 }
 

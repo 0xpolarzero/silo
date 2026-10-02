@@ -360,13 +360,15 @@ Supported packages:
 | Platform | Installer | In-app updates |
 | --- | --- | --- |
 | Apple Silicon macOS | DMG | Signed Tauri app archive |
-| Linux x86-64 | AppImage and Debian package | AppImage only |
-| Linux ARM64 | AppImage and Debian package | AppImage only |
+| Linux x86-64 | AppImage and Debian package | Signed AppImage replacement; Debian through authenticated APT |
+| Linux ARM64 | AppImage and Debian package | Signed AppImage replacement; Debian through authenticated APT |
 
 Linux builds target Ubuntu 24.04-compatible systems and require KVM for VMs.
 AppImage bundles application libraries but does not make glibc or GPU support
-universal. Debian upgrades use the package manager and download flow, never
-replace package-owned binaries in place. Intel macOS and Windows are unsupported.
+universal. Debian upgrades use authenticated APT from Silo or the system package
+manager and never replace package-owned binaries in place. See
+[in-app Debian updates](SiloUI-LINUX-UPDATES.md#in-app-debian-updates-14-september-2026).
+Intel macOS and Windows are unsupported.
 Linux packages keep runtime/Git helpers in `/usr/libexec/silo/tools`; they never
 overwrite system Git in `/usr/bin`. AppImage keeps its helpers inside the image.
 The guest image, native runtime, host Git/LFS tools and notices are packaged with
@@ -380,6 +382,12 @@ commit. The private key is stored in protected GitHub environment
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Keep an independent secure backup. Losing
 the private key prevents updates to already installed applications. Never upload
 private keys, complete build directories, or local GitHub configuration artifacts.
+
+The macOS packager passes the signing password through Tauri's
+[password environment input](https://v2.tauri.app/reference/cli/#signer-sign),
+which the installed CLI also lists in `tauri signer sign --help`. Keep passwords
+out of command arguments: a failed subprocess reports its arguments in Python's
+exception text. Signing failures report only the exit code.
 
 The `release-signing` and `release-publish` environments require maintainer review
 and restrict execution to version tags. Artifact-only verification uses a fresh
@@ -531,6 +539,13 @@ and guest lockfile, so app version changes alone do not invalidate the runtime.
 Preparation always verifies and stages restored inputs and regenerates package
 metadata. Cache misses follow the normal build path.
 
+The patched MicroSandbox executable key also includes the staging-script recipe
+digest and the requested `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`,
+`CARGO_BUILD_RUSTFLAGS`, and target-specific `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`.
+[Cargo documents these compiler inputs](https://doc.rust-lang.org/cargo/reference/environment-variables.html).
+Changing them rebuilds the executable even when a fallback public archive restores
+otherwise valid source, patch, compiler, and capability checks.
+
 Release validation checks exact runtime-cache availability for each target using
 `lookup-only` on the existing validation runner. Go setup runs before this lookup
 so a newer 1.25.x patch release cannot count as an exact hit for older executables;
@@ -621,6 +636,28 @@ matrix, frontend checks, package checks and minimum-macOS checks to pass. Native
 test jobs receive no signing credentials. Only the reviewed public release dependencies
 described above are cached; application and native-test products are excluded.
 
+Workflow checkouts set `persist-credentials: false`. The [pinned checkout action](https://github.com/actions/checkout/blob/3d3c42e5aac5ba805825da76410c181273ba90b1/action.yml)
+defaults to retaining its token for later authenticated Git commands. These jobs
+need Git authentication only during checkout; publication and package downloads
+receive explicit step-scoped tokens. Disabling persistence keeps that token out
+of subsequent build and test Git commands. Job permissions remain read-only by
+default, with existing write permissions confined to publication jobs.
+
+Reusable workflow and runtime-action string inputs enter shell commands through
+quoted environment variables. GitHub expands expressions before parsing inline
+scripts, so quoting a `${{ inputs.target }}` expression alone does not prevent
+script injection. See [GitHub's script-injection guidance](https://docs.github.com/en/actions/reference/security/secure-use#use-an-intermediate-environment-variable).
+The workflow regression runs extracted commands against disposable executables
+with ordinary targets, quote-breaking input and command-substitution input.
+Current release callers supply fixed matrix values; this protects the reusable
+input boundary without changing release gates or published asset names.
+
+Linux verification and release-tooling checks cancel obsolete runs for the same
+pull request and workflow. Push and manual verification runs use their run IDs,
+so they stay independent. [GitHub concurrency groups](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+are repository-wide; including the workflow name prevents cross-workflow
+cancellation. Publication and release-build concurrency policies are unchanged.
+
 Artifact-only runs have independent concurrency groups, so they do not queue
 behind or displace a pending publication. Tagged and draft publications of the
 same release tag share one concurrency group per tag, so builds of different
@@ -651,3 +688,13 @@ streams output and remains in the bundle log. Compilation, runtime preparation
 and package validation are outside this retry boundary; other errors fail
 immediately. This handles transient upstream download failures without
 repeating the expensive build phases.
+
+Each bundle attempt runs in its own process group. If forwarding stdout/stderr
+or writing the local log fails, the wrapper stops that group and reaps its
+bundle command before propagating the error. Python's
+[`Popen` context manager](https://docs.python.org/3/library/subprocess.html#subprocess.Popen)
+waits for the child on exit; it does not stop it on an exception. The synthetic
+stream-failure regression checks all three output destinations and verifies
+that the child is reaped. A descendant fixture inherits a separate pipe; EOF
+verifies that it also exits after forwarding fails. This does not test a real
+package build.

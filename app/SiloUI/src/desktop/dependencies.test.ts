@@ -42,6 +42,27 @@ describe("native dependency report validation", () => {
     store.dispose()
   })
 
+  it("retains completed checks and specific failures when native probes exhaust their shared budget", async () => {
+    vi.useFakeTimers()
+    const partial = checks.map((check) => check.id === "tool-git" ? {
+      ...check, status: "timeout" as const, detail: "The signature check timed out.", remediation: "Retry checks.",
+    } : check)
+    const invokeChecks = vi.fn((_command, { requestId }) => new Promise((resolve) => {
+      setTimeout(() => resolve({ schemaVersion: 1, requestId, checkedAtMs: Date.now(), checks: partial }), 13_000)
+    }))
+    const store = createNativeDependencyStore(invokeChecks)
+    try {
+      store.retry()
+      await vi.advanceTimersByTimeAsync(13_000)
+      expect(store.getSnapshot()).toEqual(partial)
+      await vi.advanceTimersByTimeAsync(2_000)
+      expect(store.getSnapshot()).toEqual(partial)
+    } finally {
+      store.dispose()
+      vi.useRealTimers()
+    }
+  })
+
   it("keeps watchdog timeout terminal when the native result arrives late", async () => {
     vi.useFakeTimers()
     let resolveRequest!: (value: unknown) => void
