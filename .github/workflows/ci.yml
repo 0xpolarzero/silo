@@ -139,3 +139,5 @@ jobs:
       - run: npm run runtime:prepare
       # Process-wide state is isolated inside the suite; use default test threads.
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+      - name: Test patched updater transport and atomic installation
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib

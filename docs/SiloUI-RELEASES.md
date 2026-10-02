@@ -272,6 +272,7 @@ npm --prefix app/SiloUI run lint
 npm --prefix app/SiloUI test
 cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check
 cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib
 npm --prefix app/SiloUI run test:release
 python3 -m unittest discover -s app/SiloUI/scripts -p 'test_*.py'
 ```
@@ -285,7 +286,9 @@ Continuous integration runs the same checks. `.github/workflows/ci.yml` runs on
 every push to `main` and every pull request: frontend, script, website and demo
 checks; a blocking [Rust formatting check](https://github.com/rust-lang/rustfmt#verifying-code-is-formatted)
 using the pinned toolchain; the Rust
-suite with synthetic GitHub configuration; and a relative-link
+suite with synthetic GitHub configuration and the patched updater library tests;
+[Cargo's default package selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html#package-selection)
+runs only the root package, so the updater requires an explicit `-p` command; and a relative-link
 check of the Markdown documentation with [lychee](https://github.com/lycheeverse/lychee)
 in offline mode. To run that check locally, install lychee and run from the
 repository root:
