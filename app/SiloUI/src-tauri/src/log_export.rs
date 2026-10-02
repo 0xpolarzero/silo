@@ -120,9 +120,8 @@ fn export_with(
     query: impl FnMut(Query) -> Result<Page, String>,
     cancelled: impl Fn() -> bool,
 ) -> Result<bool, String> {
-    let _guard = EXPORT_LOCK
-        .try_lock()
-        .map_err(|_| "A log export is already in progress.")?;
+    let _guard = crate::sync::try_lock_or_recover(&EXPORT_LOCK, "log export")
+        .ok_or("A log export is already in progress.")?;
     if cancelled() {
         return Ok(false);
     }
@@ -286,6 +285,35 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn a_panicked_export_does_not_block_the_next_export() {
+        let _isolation = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("logs.jsonl");
+        std::fs::write(&destination, b"previous export").unwrap();
+        let failure = std::panic::catch_unwind(|| {
+            export_with(
+                vec![Query::default()],
+                || Ok(Some(destination.clone())),
+                |_| panic!("simulated log-query panic"),
+                || false,
+            )
+        });
+        assert!(failure.is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous export");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        let retry = export_with(
+            vec![Query::default()],
+            || Ok(Some(destination.clone())),
+            |_| Ok(page(0, 1)),
+            || false,
+        );
+        let remained_poisoned = EXPORT_LOCK.is_poisoned();
+        EXPORT_LOCK.clear_poison();
+        assert!(retry.unwrap());
+        assert!(!remained_poisoned);
     }
 
     fn page(offset: usize, total: usize) -> Page {
