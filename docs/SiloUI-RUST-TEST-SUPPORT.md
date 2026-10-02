@@ -35,6 +35,12 @@ fields change. Temporary-file round trips verify the saved identity and host lis
 while malformed or absent required fields still fail to load. Existing read/write
 size-limit and directory-sync regressions exercise the same reader and writer.
 
+GitHub settings preserve additive top-level fields when known choices change.
+Round-trip fixtures pin legacy defaults for access, account, grants and workspace
+policies, and retain the existing rejection of unsafe policy revisions. The
+isolated serialization harness supplies no HTTP retry floors; native tests take
+the shared state guard because the production writer collects those floors.
+
 ## Process-wide state
 
 `test_support::global_state()` guards tests in modules that reach the global
