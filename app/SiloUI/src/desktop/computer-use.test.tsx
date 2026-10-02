@@ -1,12 +1,14 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
 import { MachineList } from "@/features/sandboxes/components/machine-list"
 import { computerUseFixtureNames, createFixtureComputerUseBackend, fixtureChatGptStatus, fixtureComputerUse, fixtureDesktopState } from "@/fixtures/computer-use"
-import { ComputerUseProvider, computerOfWorkspace, createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
-import { CHATGPT_DOWNLOAD_NOTE, ChatGptAppProgress, ChatGptAppStatusView, ComputerUsePanel, ComputerUseSection, chatGptStatusText, computerUseLabel } from "./computer-use-panel"
+import { computerOfWorkspace, createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
+import { ComputerUseProvider } from "./computer-use-provider"
+import { CHATGPT_DOWNLOAD_NOTE, ChatGptAppProgress, ChatGptAppStatusView, ComputerUsePanel, ComputerUseSection } from "./computer-use-panel"
+import { chatGptStatusText, computerUseLabel } from "./computer-use-labels"
 import { LinuxDesktopViewer } from "./linux-desktop-viewer"
 import { chatGptAppStatusSchema, parseChatGptAppStatus, parseLinuxDesktopState, type ComputerUseState, type LinuxDesktopState } from "./linux-desktop-state"
 
@@ -460,6 +462,78 @@ describe("fixture for an unreadable remote status", () => {
     await expect(fixture.chatGptStatus("11111111-1111-4111-8111-111111111111")).resolves.toMatchObject({ state: "ready" })
     await expect(fixture.chatGptStatus("11111111-1111-4111-8111-111111111111")).rejects.toThrow("connection")
     await expect(fixture.chatGptStatus()).resolves.toMatchObject({ state: "ready" })
+  })
+})
+
+describe("local ChatGPT status subscription recovery", () => {
+  it("recovers a failed registration and catches up without permanent polling", async () => {
+    vi.useFakeTimers()
+    let status: unknown = { state: "downloading", receivedBytes: 1, totalBytes: 10 }
+    let emit!: (payload: unknown) => void
+    const read = vi.fn(async () => status)
+    const stopListening = vi.fn()
+    const listen = vi.fn().mockRejectedValueOnce(new Error("Event bridge unavailable"))
+      .mockImplementation(async handler => { emit = handler; return stopListening })
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: read, listenStatus: listen }))
+    const view = render(<ChatGptAppStatusView store={bridge.chatGptFor()} />)
+    try {
+      await act(async () => vi.advanceTimersByTimeAsync(0))
+      expect(screen.getByRole("status")).toHaveTextContent("Downloading")
+      status = { state: "ready", path: "/p", version: "1" }
+      await act(async () => vi.advanceTimersByTimeAsync(60_000))
+      expect(bridge.chatGptFor().getSnapshot().status).toMatchObject({ state: "ready" })
+      expect(screen.queryByRole("status")).not.toBeInTheDocument()
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+      expect(listen).toHaveBeenCalledTimes(2)
+      expect(read).toHaveBeenCalledTimes(2)
+      act(() => emit({ state: "verifying" }))
+      expect(screen.getByRole("status")).toHaveTextContent("Verifying")
+      view.unmount()
+      expect(stopListening).toHaveBeenCalledOnce()
+      expect(vi.getTimerCount()).toBe(0)
+    } finally { view.unmount(); vi.useRealTimers() }
+  })
+
+  it("exposes a working Refresh after listener registration fails", async () => {
+    vi.useFakeTimers()
+    const read = vi.fn().mockResolvedValueOnce({ state: "downloading", receivedBytes: 1, totalBytes: 10 })
+      .mockResolvedValue({ state: "ready", path: "/p", version: "1" })
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: read, listenStatus: async () => { throw new Error("Event bridge unavailable") } }))
+    const view = render(<ChatGptAppStatusView store={bridge.chatGptFor()} />)
+    try {
+      await act(async () => vi.advanceTimersByTimeAsync(0))
+      expect(screen.getByRole("alert")).toHaveTextContent("Event bridge unavailable")
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Refresh status" })))
+      expect(read).toHaveBeenCalledTimes(2)
+      expect(bridge.chatGptFor().getSnapshot().status).toMatchObject({ state: "ready" })
+      expect(screen.queryByRole("status")).not.toBeInTheDocument()
+    } finally { view.unmount(); vi.useRealTimers() }
+  })
+
+  it("suspends failed subscription retries while hidden and cancels them on disposal", async () => {
+    vi.useFakeTimers()
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible")
+    const listen = vi.fn().mockRejectedValue(new Error("Event bridge unavailable"))
+    const read = vi.fn().mockResolvedValue({ state: "idle" })
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: read, listenStatus: listen }))
+    const stop = bridge.chatGptFor().subscribe(() => {})
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      visibility.mockReturnValue("hidden")
+      document.dispatchEvent(new Event("visibilitychange"))
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(listen).toHaveBeenCalledOnce()
+      visibility.mockReturnValue("visible")
+      document.dispatchEvent(new Event("visibilitychange"))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(listen).toHaveBeenCalledTimes(2)
+      stop()
+      expect(vi.getTimerCount()).toBe(0)
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(listen).toHaveBeenCalledTimes(2)
+      expect(read).toHaveBeenCalledTimes(2)
+    } finally { stop(); visibility.mockRestore(); vi.useRealTimers() }
   })
 })
 

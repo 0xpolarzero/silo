@@ -482,6 +482,36 @@ mod tests {
     }
 
     #[test]
+    fn history_failure_does_not_block_graceful_quit() {
+        let _test_state = crate::test_support::global_state();
+        for malformed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = setup(&dir);
+            let history = paths.metadata.with_file_name("sandbox-activity.json");
+            if malformed {
+                fs::write(&history, "{broken-json").unwrap();
+            } else {
+                fs::create_dir(&history).unwrap();
+            }
+            let runner = runner(None);
+            stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
+            assert!(runner
+                .states
+                .lock()
+                .unwrap()
+                .values()
+                .all(|state| state == "Stopped"));
+            assert!(!lifecycle_recovery::has_intent(&paths, &id("first")));
+            assert!(!lifecycle_recovery::has_intent(&paths, &id("second")));
+            assert!(runtime_activity::read(&paths)
+                .unwrap()
+                .iter()
+                .any(|event| event["title"] == "Activity history unavailable"
+                    && event["tone"] == "warning"));
+        }
+    }
+
+    #[test]
     fn quit_stops_and_verifies_each_local_vm_without_removing_it() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();

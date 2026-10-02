@@ -96,6 +96,14 @@ signatures, checksums, version metadata and update feed, then publishes and mark
 the release latest. A successful command means the workflow was requested;
 publication is complete only when that workflow succeeds.
 
+The final publication gate also refuses 1.0.0 or later by default. Only after the
+owner approves a stable release, pass `npm run release:publish -- --allow-stable`
+or explicitly select `allow_stable` in the publication workflow. An ordinary
+publication retry leaves that option off.
+For an approved stable draft, manually dispatch **Build Silo release** on its
+version tag with both `draft` and `allow_stable` enabled. Tag-triggered builds
+have no opt-in and reject 1.0.0 or later before platform builds.
+
 ### Preview, retries, and recovery
 
 - `npm run release:status` is read-only. No pending changes is not a new release;
@@ -435,6 +443,17 @@ succeeds before announcing availability through Software Updater. Initial
 setup, key rotation, migration, and installer tests are documented in
 [Linux system updates](SiloUI-LINUX-UPDATES.md).
 
+Candidate indexes advertise the latest two complete releases. Historical signed
+metadata, its by-hash indexes, and every referenced package remain available
+until that metadata's 14-day `Valid-Until` expires, across successive deployments.
+The publisher verifies historical signatures and object digests before copying
+them; expired metadata and objects without a current reference are omitted from
+the new site. This follows APT's signed Release-to-index-to-package chain described
+in [apt-ftparchive](https://manpages.debian.org/bookworm/apt-utils/apt-ftparchive.1.en.html).
+The existing GitHub Pages publisher rejects a site above 900 MiB, including retained
+objects, before deployment. If release volume reaches that limit, choose storage
+that can hold the full validity window; do not shorten retention silently.
+
 ### Required release acceptance evidence
 
 - Clean install from actual downloaded DMG, AppImage and Debian package.
@@ -497,14 +516,25 @@ source and compiled guest server, and the guest archive. Cold LFS server builds
 use Go 1.25 or newer; CI installs Go 1.25.x. The source archive is SHA-256 checked
 before extraction and Go verifies module downloads against the pinned go.sum.
 The server is cross-compiled with CGO disabled for the Linux guest architecture,
-including on macOS hosts.
-Keys include the runner, target, Rust toolchain, staging scripts, runtime patch,
+including on macOS hosts. Before accepting a staged or shared executable, preparation
+resolves the effective compiler in the pinned module's Go 1.25.0 context. The
+[upstream go.mod](https://github.com/charmbracelet/git-lfs-transfer/blob/971c0284dc33b1ed3f7ed9dde5d4fc0cee62db6b/go.mod)
+contains no `toolchain` directive; cold builds verify that these selection lines
+still match. This respects [Go toolchain selection](https://go.dev/doc/toolchain),
+including `GOTOOLCHAIN` and module requirements. The executable manifest records
+the selected Go version, requested toolchain, staging-script recipe digest, and
+effective build flags, experiments, architecture tuning, and FIPS setting. A
+change to any of these rejects both executable caches. Builds and compiler notices
+use the selected compiler's GOROOT with further toolchain switching disabled.
+Keys include the runner, target, Rust and selected Go versions, staging scripts, runtime patch,
 and guest lockfile, so app version changes alone do not invalidate the runtime.
 Preparation always verifies and stages restored inputs and regenerates package
 metadata. Cache misses follow the normal build path.
 
 Release validation checks exact runtime-cache availability for each target using
-`lookup-only` on the existing validation runner. Warm platforms start their native
+`lookup-only` on the existing validation runner. Go setup runs before this lookup
+so a newer 1.25.x patch release cannot count as an exact hit for older executables;
+CI uses `GOTOOLCHAIN=local` consistently for lookup and preparation. Warm platforms start their native
 and package jobs directly, without an extra producer runner or artifact transfer.
 A missing exact cache starts one credential-free runtime producer inside that
 platform's `release-platform.yml` invocation. Its native and package jobs wait for

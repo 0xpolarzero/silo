@@ -105,5 +105,12 @@ Validation before folding:
 - `python3 -m unittest app/SiloUI/scripts/test_release_cache.py app/SiloUI/scripts/test_release_runtime_transfer.py`: 11 passed.
 - Typecheck, focused lint, `cargo +1.94.0 fmt --check`, `git diff --check` and the new relative documentation link passed. Full lint passed with 12 existing warnings in unrelated UI files.
 
+After reconciling the Git LFS compiler-identity cache change from integration,
+the combined streaming/cache tests passed all 34 tests, focused Vitest still
+passed 33 tests, release scripts passed 98 tests with 12 opt-in skips, and the
+packaging/cache Python checks passed 12 tests. Typecheck, full and focused lint,
+Rust format and diff checks passed; integration had resolved the earlier UI lint
+warnings.
+
 No app bundle, production state, Keychain, VM, or installed-app behavior is
 exercised.

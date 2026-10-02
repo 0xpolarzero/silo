@@ -225,6 +225,29 @@ describe("retained logs", () => {
     expect(await screen.findByText("old diagnostic needle")).toBeVisible()
     expect(screen.getByRole("alert")).toHaveTextContent("remote sandbox: Error: Offline")
   })
+  it("retries a failed first read from the error control without overlapping requests", async () => {
+    const { workspace, actions } = fixture(2)
+    let resolve!: (page: LogPage) => void
+    const queryLogs = vi.fn().mockRejectedValueOnce(new Error("Host unavailable"))
+      .mockImplementationOnce(() => new Promise<LogPage>(done => { resolve = done }))
+    actions.queryLogs = queryLogs
+    render(<Logs workspaces={[workspace]} actions={actions} active query="needle" onQueryChange={vi.fn()} />)
+    expect(await screen.findByRole("alert")).toHaveTextContent("Host unavailable")
+    const retry = screen.getByRole("button", { name: "Retry" })
+
+    fireEvent.click(retry)
+    expect(retry).toBeDisabled()
+    fireEvent.click(retry)
+    expect(queryLogs).toHaveBeenCalledTimes(2)
+    expect(queryLogs.mock.calls[1][0]).toEqual(queryLogs.mock.calls[0][0])
+
+    await act(async () => resolve(fixtureLogPage(workspace, queryLogs.mock.calls[1][0])))
+
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.getByText("old diagnostic needle")).toBeVisible()
+    expect(screen.getByText("Showing 1 of 1 matching records.")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Refresh logs" })).toBeEnabled()
+  })
   it("refreshes only while following and active", async () => {
     vi.useFakeTimers()
     try {

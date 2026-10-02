@@ -33,6 +33,19 @@ publication once its companion release or an architecture tag exists. If publica
 fails halfway, recover the exact already-built artifacts; do not rebuild over the
 version. Otherwise increment the version.
 
+The QEMU setup action uses its supported `image` input to pin the privileged
+installer to `tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0`.
+Docker Hub's manifest index resolved on 2026-10-02 identifies version
+`qemu-v10.2.3-68`, source revision `e29e7d72c9672c8c8bf846655ab149b50e1a62bd`,
+and MIT licensing; it includes Linux AMD64 and ARM64 hosts. The Ubuntu AMD64
+publishing runner installs only ARM64 emulation. Keep this maintained upstream
+installer: no custom emulator installation is needed. Review and update the
+digest explicitly when updating QEMU. Pinning prevents tag drift; it does not
+remove the installer's host privileges or establish absence of vulnerabilities.
+The pinned action's [input contract](https://github.com/docker/setup-qemu-action/blob/99012661954931238ded8c8b007157a8430204e1/action.yml)
+and [implementation](https://github.com/docker/setup-qemu-action/blob/99012661954931238ded8c8b007157a8430204e1/src/main.ts)
+confirm the default is mutable and installation uses privileged containers.
+
 `app/SiloUI/guest-image/image-lock.json` pins the exact release archive SHA-256,
 length, uncompressed archive length and Docker config digest for each architecture.
 Normal `npm run runtime:prepare` downloads that exact archive once and stages it

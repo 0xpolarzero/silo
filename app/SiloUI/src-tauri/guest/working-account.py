@@ -3,9 +3,10 @@
 
 A new VM gets a fresh account. A VM from an older Silo kept agent files under /root,
 and sometimes had a separate silo-desktop account: those homes are copied into
-/home/silo and the originals stay in place. The account record is written last and
-every step can be repeated, so an interrupted run finishes at the next boot.
+/home/silo and the originals stay in place. The account record is written last;
+completed copies can be retried, and conflicting entries stop setup for resolution.
 """
+import filecmp
 import grp
 import json
 import os
@@ -15,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 POLICY = {'schemaVersion': 1, 'user': 'silo', 'home': '/home/silo'}
 RECORD = Path('/var/lib/silo/working-account.json')
@@ -51,52 +53,122 @@ def carried(path, defaults=Path('/usr/share/base-files')):
                 and default.is_file() and path.read_bytes() == default.read_bytes())
 
 
+def path_mode(path):
+    try:
+        return path.lstat().st_mode
+    except FileNotFoundError:
+        return None
+
+
+def conflict(path):
+    raise RuntimeError(f'Home migration conflict at {path}. Preserve or move the conflicting entry and retry; legacy homes are unchanged.')
+
+
+def check_destination(destination):
+    # Check ancestors from the filesystem root before inspecting any child.
+    for path in reversed((destination.absolute(), *destination.absolute().parents)):
+        mode = path_mode(path)
+        if mode is not None and not stat.S_ISDIR(mode):
+            conflict(path)
+
+
+def relocate(value):
+    return value.replace('/home/silo-desktop/', '/home/silo/').replace('/root/', '/home/silo/')
+
+
+def launcher_contents(path, relative):
+    if not (relative.parent == Path('.') and path.name in SHELL_SETUP or 'bin' in relative.parts):
+        return None
+    try:
+        data = path.read_text()
+    except (UnicodeError, OSError):
+        return None
+    updated = relocate(data)
+    return updated if updated != data else None
+
+
 def copy_home(source, destination):
-    """Preserve credentials and binary files; relocate home links and launch scripts."""
-    def skipped(directory, names):
-        directory = Path(directory)
-        return [name for name in names
-                if stat.S_ISSOCK((directory / name).lstat().st_mode)
-                or stat.S_ISFIFO((directory / name).lstat().st_mode)
-                or directory == source and not carried(directory / name)]
-    # A failed copy may already have installed links. Replace only matching source links.
-    for path in source.rglob('*'):
-        target = destination / path.relative_to(source)
-        if path.is_symlink() and target.is_symlink():
-            target.unlink()
-    shutil.copytree(source, destination, symlinks=True, dirs_exist_ok=True, ignore=skipped)
-    for path in destination.rglob('*'):
-        if path.is_symlink():
-            target = os.readlink(path)
-            updated = target.replace('/home/silo-desktop/', '/home/silo/').replace('/root/', '/home/silo/')
-            if updated != target:
-                path.unlink()
-                path.symlink_to(updated)
-        elif path.is_file() and (path.parent == destination and path.name in SHELL_SETUP or 'bin' in path.relative_to(destination).parts):
-            # Installed launchers and shell setup contain absolute home paths.
-            # Preserve binaries and all agent state/credential contents byte for byte.
+    """Preflight the whole merge; preserve conflicting entries and both legacy homes."""
+    check_destination(destination)
+    copies = []
+
+    def preflight(path, target):
+        mode = path.lstat().st_mode
+        relative = path.relative_to(source)
+        if stat.S_ISSOCK(mode) or stat.S_ISFIFO(mode) or path.parent == source and not carried(path):
+            return
+        existing = path_mode(target)
+        if stat.S_ISDIR(mode):
+            if existing is not None and not stat.S_ISDIR(existing):
+                conflict(target)
+            if existing is None:
+                copies.append((path, target, mode))
+            for child in sorted(path.iterdir()):
+                preflight(child, target / child.name)
+        elif stat.S_ISLNK(mode):
+            if existing is not None:
+                if stat.S_ISLNK(existing) and os.readlink(target) == relocate(os.readlink(path)):
+                    return
+                conflict(target)
+            copies.append((path, target, mode))
+        elif stat.S_ISREG(mode):
+            if existing is not None:
+                if not stat.S_ISREG(existing):
+                    conflict(target)
+                # Shell setup is resolved separately from root's authoritative copy.
+                if path.parent == source and path.name in SHELL_SETUP:
+                    return
+                updated = launcher_contents(path, relative)
+                same = target.read_bytes() == updated.encode() if updated is not None else filecmp.cmp(path, target, shallow=False)
+                if same:
+                    return
+                conflict(target)
+            copies.append((path, target, mode))
+        else:
+            conflict(path)
+
+    preflight(source, destination)
+    for path, target, mode in copies:
+        if stat.S_ISDIR(mode):
+            target.mkdir()
+        elif stat.S_ISLNK(mode):
+            target.symlink_to(relocate(os.readlink(path)))
+            shutil.copystat(path, target, follow_symlinks=False)
+        else:
+            with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.silo-copy-', delete=False) as staged:
+                temporary = Path(staged.name)
             try:
-                data = path.read_text()
-            except (UnicodeError, OSError):
-                continue
-            updated = data.replace('/home/silo-desktop/', '/home/silo/').replace('/root/', '/home/silo/')
-            if updated != data:
-                path.write_text(updated)
+                shutil.copy2(path, temporary)
+                updated = launcher_contents(path, path.relative_to(source))
+                if updated is not None:
+                    temporary.write_text(updated)
+                # Publish complete bytes without replacing an entry created during copying.
+                os.link(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+    for path, target, mode in reversed(copies):
+        if stat.S_ISDIR(mode):
+            shutil.copystat(path, target)
 
 
 def copy_shell_setup(source, destination):
     # The root account owns agent shell setup; desktop defaults must not replace it.
+    check_destination(destination)
+    originals = []
     for name in SHELL_SETUP:
         original, target = source / name, destination / name
         if original.is_file() and not original.is_symlink() and carried(original):
-            if target.is_symlink():
-                target.unlink()
-            shutil.copy2(original, target)
-            target.write_text(original.read_text().replace('/root/', '/home/silo/'))
-            # Root's profile does not put the user's own tools on PATH.
-            if name == '.profile' and PATH_SETUP not in target.read_text():
-                with target.open('a') as output:
-                    output.write(PATH_SETUP)
+            existing = path_mode(target)
+            if existing is not None and not stat.S_ISREG(existing):
+                conflict(target)
+            originals.append((original, target))
+    for original, target in originals:
+        shutil.copy2(original, target)
+        target.write_text(relocate(original.read_text()))
+        # Root's profile does not put the user's own tools on PATH.
+        if original.name == '.profile' and PATH_SETUP not in target.read_text():
+            with target.open('a') as output:
+                output.write(PATH_SETUP)
 
 
 def validate_account(entry):

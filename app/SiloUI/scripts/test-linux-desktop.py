@@ -99,6 +99,8 @@ def run():
     passed = False
     with tempfile.TemporaryDirectory(prefix="silo-linux-ui-") as temporary:
         environment = dict(os.environ)
+        environment["HOME"] = str(Path(temporary) / "home")
+        Path(environment["HOME"]).mkdir(mode=0o700)
         identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.preview")
         for kind in ["CONFIG", "DATA", "CACHE"]:
             directory = Path(temporary) / kind.lower()
@@ -229,9 +231,7 @@ def run():
                 login = browser.find_element(By.CSS_SELECTOR, "button[aria-label='Launch Silo at login']")
                 wait.until(lambda _: login.is_enabled())
                 login.click()
-                # The Linux login integration uses a stable desktop entry name
-                # even when the packaged Tauri application identifier changes.
-                entry = Path(environment["XDG_CONFIG_HOME"]) / "autostart/org.silo.preview.desktop"
+                entry = Path(environment["XDG_CONFIG_HOME"]) / "autostart" / f"{identifier}.desktop"
                 wait.until(lambda _: entry.exists() and "Exec=" in entry.read_text() and "Hidden=true" not in entry.read_text())
                 wait.until(lambda _: login.is_enabled() and login.get_attribute("aria-checked") == "true")
                 login.click()

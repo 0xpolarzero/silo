@@ -56,11 +56,13 @@ jobs:
           cache: false
       - run: npm run runtime:prepare
       - run: cargo test --manifest-path src-tauri/Cargo.toml --locked -- --test-threads=1
-      - name: Build production Linux application
+      - name: Build development Linux application
         run: npm run desktop:build -- --debug --no-bundle --ci
       - name: Install external WebDriver
         run: cargo install tauri-driver --version 2.0.6 --locked
       - name: Verify native WebKit onboarding and validation
+        env:
+          SILO_LINUX_APPLICATION_ID: org.silo.dev
         run: xvfb-run -a dbus-run-session -- python3 scripts/test-linux-desktop.py
       - name: Verify real AMD64 hardware runtime operations
         if: matrix.runner == 'ubuntu-24.04'

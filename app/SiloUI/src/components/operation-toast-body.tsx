@@ -53,7 +53,7 @@ const stepIcon: Record<OperationStepState, React.ReactNode> = {
  * True when a step line only repeats the title ("Creating checkpoint…" under "Creating
  * checkpoint “X”"). Compared case-insensitively, ignoring quotes and ellipses.
  */
-export function isRedundantStep(title: string | undefined, step: string | undefined): boolean {
+function isRedundantStep(title: string | undefined, step: string | undefined): boolean {
   if (!step) return true
   if (!title) return false
   const normalize = (text: string) => text.toLowerCase().replace(/[“”‘’"'`]/g, "").replace(/(\.{3}|…)/g, "").replace(/\s+/g, " ").trim()

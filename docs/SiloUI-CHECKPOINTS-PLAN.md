@@ -597,3 +597,17 @@ was observed on the normal overview with `dev` and `hermes` stopped. No
 production VM was started. The updated sanitized staged-inspection message has
 focused native coverage; the corrected message was not separately inspected in
 the UI.
+
+### Imported full checkpoints: restore mode, 2026-10-02
+
+Import requests disk restoration even when the native artifact contains full
+execution state. Start retains the runtime inventory's native scope separately
+from that desired mode and sends `--disk-only` only for full artifacts. Actual
+disk captures cold boot without that flag; full checkpoint forks retain
+`--cow-mem`. The pinned [restore CLI](https://github.com/superradcompany/microsandbox/blob/09df3d4b9d832adaede1fb9a198cfc660bfab8cd/crates/cli/lib/commands/restore.rs#L193-L198)
+selects disk restoration explicitly. The virtio-fs device-state budgeting patch
+changes capture limits, not this selection contract.
+
+A deterministic production Start test covers all three combinations. The
+opt-in full-checkpoint export/import test also checks a changed boot ID and
+absence of a captured process and RAM-only file; it remains unexecuted here.

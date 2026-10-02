@@ -16,6 +16,7 @@ describe("ConfirmPopover", () => {
   it("confirms, closes immediately and focuses the confirm button", async () => {
     const onConfirm = setup()
     await userEvent.click(screen.getByRole("button", { name: "Trigger" }))
+    expect(screen.getByRole("dialog", { name: "Delete it?" })).toHaveAccessibleDescription("Cannot be undone")
     expect(screen.getByText("Cannot be undone")).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole("button", { name: "Delete" })).toHaveFocus())
     await userEvent.click(screen.getByRole("button", { name: "Delete" }))
@@ -49,6 +50,18 @@ describe("ConfirmPopover", () => {
     render(<ConfirmPopover open onOpenChange={() => {}} title="Import?" confirmLabel="Import" onConfirm={() => {}} anchor={<button type="button">Add</button>} />)
     expect(screen.getByText("Import?")).toBeInTheDocument()
   })
+
+  it("keeps the names and descriptions of separate confirmations distinct", () => {
+    render(<>
+      <ConfirmPopover open title="Delete alpha?" description="Alpha is removed." confirmLabel="Delete" onConfirm={vi.fn()} />
+      <ConfirmPopover open title="Delete beta?" description="Beta is removed." confirmLabel="Delete" onConfirm={vi.fn()} />
+    </>)
+    const alpha = screen.getByRole("dialog", { name: "Delete alpha?" })
+    const beta = screen.getByRole("dialog", { name: "Delete beta?" })
+    expect(alpha).toHaveAccessibleDescription("Alpha is removed.")
+    expect(beta).toHaveAccessibleDescription("Beta is removed.")
+    expect(alpha.getAttribute("aria-labelledby")).not.toBe(beta.getAttribute("aria-labelledby"))
+  })
 })
 
 describe("FormPopover", () => {
@@ -63,6 +76,7 @@ describe("FormPopover", () => {
     const onSubmit = vi.fn()
     render(<Form onSubmit={onSubmit} />)
     await userEvent.click(screen.getByRole("button", { name: "Open" }))
+    expect(screen.getByRole("dialog", { name: "Rename" })).not.toHaveAttribute("aria-describedby")
     await waitFor(() => expect(screen.getByRole("textbox", { name: "Name" })).toHaveFocus())
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
     await userEvent.keyboard("{Enter}")
@@ -72,6 +86,11 @@ describe("FormPopover", () => {
     await userEvent.keyboard("{Enter}")
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith("abc"))
     expect(screen.queryByRole("textbox", { name: "Name" })).not.toBeInTheDocument()
+  })
+
+  it("associates the form description with its dialog", () => {
+    render(<FormPopover open title="Rename sandbox" description="Choose a unique name." confirmLabel="Save" onSubmit={vi.fn()} fields={<input aria-label="Name" />} />)
+    expect(screen.getByRole("dialog", { name: "Rename sandbox" })).toHaveAccessibleDescription("Choose a unique name.")
   })
 })
 

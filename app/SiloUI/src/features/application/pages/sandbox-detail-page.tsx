@@ -213,11 +213,11 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
       {draft && !draft.editing && <div className="border-b border-border">{inlineForm}</div>}
       {useLive
         ? rows.length > 0
-          ? <div className="divide-y divide-border">{rows.map(({ workspace: portWorkspace, port, host }) => {
+          ? <div className="divide-y divide-border">{rows.map(({ workspace: portWorkspace, port, host, error: rowError }) => {
               const key = `${target}:${port.port}`
               if (draft?.editing && draft.port === String(port.port)) return <div key={key} className="last:*:border-b-0">{inlineForm}</div>
               const address = networkAddress(port, host)
-              const stateText = networkPortState(portWorkspace, port, controller.error, controller.errors)
+              const stateText = networkPortState(portWorkspace, port, rowError)
               return <ListRow
                 key={key}
                 icon={<ListRowIcon aria-hidden="true"><Globe className="size-3.5" /></ListRowIcon>}
@@ -478,7 +478,7 @@ export function SandboxDetailPage({ workspace, source, actions, controls }: {
         </div>
         <ScrollArea className="min-h-0 flex-1">
           <div className="pt-4">
-            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview" && controls.pageActive !== false} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} computerUse={machine.kind === "vm" && machine.desktop ? <ComputerUseSection key={target} workspace={target} /> : undefined} /></TabsContent>
+            <TabsContent value="overview"><OverviewTab workspace={workspace} source={source} actions={actions} active={activeTab === "overview" && controls.pageActive !== false} onEdit={canEdit ? () => editing.startEdit(machine) : undefined} onNavigate={controls.onNavigate} computerUse={machine.kind === "vm" && machine.desktop ? <ComputerUseSection key={target} workspace={target} active={activeTab === "overview" && controls.pageActive !== false} /> : undefined} /></TabsContent>
             {showCheckpoints && <TabsContent value="checkpoints">
               <CheckpointPanel workspace={workspace} target={target} actions={actions} takenNames={sandboxNamesOnComputer(source.workspaces, workspace.computer?.id)} disabled={controls.configurationLocked || Boolean(workspace.lifecycleAction) || Boolean(workspace.computer?.busy) || workspace.freshness === "stale"} onExport={controls.onCheckpointExport} exportDisabled={controls.checkpointExportDisabled} forkedAction={controls.onCheckpointForkedAction} restoredAction={controls.onCheckpointRestoredAction} />
             </TabsContent>}

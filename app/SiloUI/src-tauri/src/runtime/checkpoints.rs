@@ -306,6 +306,16 @@ fn snapshot_available(
     checkpoint_id: &str,
     scope: &str,
 ) -> Result<bool, RuntimeError> {
+    Ok(snapshot_scope(runner, paths, source, checkpoint_id, scope)?.is_some())
+}
+
+fn snapshot_scope(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    source: &str,
+    checkpoint_id: &str,
+    desired_scope: &str,
+) -> Result<Option<String>, RuntimeError> {
     let output = runner.run(
         paths,
         &[
@@ -320,14 +330,18 @@ fn snapshot_available(
         .map_err(|_| error("The runtime returned an invalid checkpoint list."))?;
     // A full snapshot contains the disks too, so it also satisfies a disk-only restore
     // (for example an imported checkpoint export, which always restores disks only).
-    let scope_matches =
-        |entry: &Value| entry["scope"] == scope || (scope == "disk" && entry["scope"] == "full");
-    Ok(entries.iter().any(|entry| {
-        entry["group"] == source
-            && entry["name"] == checkpoint_id
-            && scope_matches(entry)
-            && entry["availability"] == "ready"
-    }))
+    let scope_matches = |entry: &Value| {
+        entry["scope"] == desired_scope || (desired_scope == "disk" && entry["scope"] == "full")
+    };
+    Ok(entries
+        .iter()
+        .find(|entry| {
+            entry["group"] == source
+                && entry["name"] == checkpoint_id
+                && scope_matches(entry)
+                && entry["availability"] == "ready"
+        })
+        .and_then(|entry| entry["scope"].as_str().map(str::to_owned)))
 }
 
 fn verify_snapshot(
@@ -1070,13 +1084,18 @@ pub(super) fn start_pending(
     let material =
         crate::secrets::runtime_material(machine.name()).map_err(RuntimeError::Unavailable)?;
     secrets_runtime::validate_material(&material).map_err(RuntimeError::Invalid)?;
-    snapshot_ready(
+    let native_scope = snapshot_scope(
         runner,
         paths,
         &pending.source_workspace,
         &pending.checkpoint_id,
         &pending.state,
-    )?;
+    )?
+    .ok_or_else(|| {
+        error(
+        "The checkpoint is absent or incomplete in the runtime. No workspace state was changed.",
+    )
+    })?;
     let listed = runner.run(
         paths,
         &["list".into(), "--format".into(), "json".into()],
@@ -1171,6 +1190,9 @@ pub(super) fn start_pending(
     ];
     // A disk snapshot cold-boots by default. MicroSandbox's --disk-only
     // selects the disk from a *full* checkpoint and rejects file/disk captures.
+    if pending.state == "disk" && native_scope == "full" {
+        args.push("--disk-only".into());
+    }
     if pending.state == "full" {
         args.push("--cow-mem".into());
     } else if let MachineConfiguration::Vm {
@@ -2779,46 +2801,57 @@ pub(crate) fn discard_failed_capture(
     })
 }
 
-/// Launch recovery selects only members named in an unfinished capture or deletion
-/// journal. Other unowned data, regardless of its age or name, is left alone.
+pub(crate) struct Recovery {
+    pub(super) unresolved: HashMap<String, RuntimeError>,
+    pub(super) cleanup_error: Option<RuntimeError>,
+}
+
+/// Recovery selects only members named in an unfinished capture or deletion journal.
+/// Unknown dependencies preserve native data without blocking independent owners.
 pub(crate) fn recover_interrupted(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
-) -> Result<(), RuntimeError> {
-    retry_deleted_snapshots(runner, paths)?;
-    for machine in read_metadata(&paths.metadata)?
-        .machines
-        .iter()
-        .filter(|machine| machine.is_vm())
-    {
-        let mut record = load(paths, machine.id())?;
-        let Some(inflight) = record.inflight_checkpoint.clone() else {
-            continue;
-        };
-        let group = record
-            .snapshot_group
-            .clone()
-            .unwrap_or_else(|| machine.name().to_owned());
-        if !discard_failed_capture(
-            runner,
-            paths,
-            machine.id(),
-            (group, inflight.native_id().to_owned()),
-        ) {
-            return Err(error("Interrupted checkpoint data is still in use or could not be removed. It was preserved."));
+) -> Result<Recovery, RuntimeError> {
+    let metadata = read_metadata(&paths.metadata)?;
+    let mut recovery = Recovery {
+        unresolved: HashMap::new(),
+        cleanup_error: retry_deleted_snapshots(runner, paths).err(),
+    };
+    for machine in metadata.machines.iter().filter(|machine| machine.is_vm()) {
+        let result = (|| {
+            let mut record = load(paths, machine.id())?;
+            let Some(inflight) = record.inflight_checkpoint.clone() else {
+                return Ok(());
+            };
+            let group = record
+                .snapshot_group
+                .clone()
+                .unwrap_or_else(|| machine.name().to_owned());
+            if !discard_failed_capture(
+                runner,
+                paths,
+                machine.id(),
+                (group, inflight.native_id().to_owned()),
+            ) {
+                return Err(error("Interrupted checkpoint data is still in use or could not be removed. It was preserved."));
+            }
+            record.inflight_checkpoint = None;
+            record.checkpoint_operation = Some(Operation {
+                kind: "capture".into(),
+                status: "failed".into(),
+                stage: "Checkpoint interrupted".into(),
+                error: Some(
+                    "Silo closed before the checkpoint finished. Create the checkpoint again."
+                        .into(),
+                ),
+            });
+            save(paths, machine.id(), &record)
+        })();
+        if let Err(failure) = result {
+            recovery.unresolved.insert(machine.id().to_owned(), failure);
         }
-        record.inflight_checkpoint = None;
-        record.checkpoint_operation = Some(Operation {
-            kind: "capture".into(),
-            status: "failed".into(),
-            stage: "Checkpoint interrupted".into(),
-            error: Some(
-                "Silo closed before the checkpoint finished. Create the checkpoint again.".into(),
-            ),
-        });
-        save(paths, machine.id(), &record)?;
     }
-    Ok(())
+    Ok(recovery)
 }
 
 #[cfg(test)]
@@ -3012,6 +3045,63 @@ mod tests {
             load(&paths, ID).unwrap().snapshot_group.as_deref(),
             Some("silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9")
         );
+    }
+
+    #[test]
+    fn checkpoint_start_selects_native_scope_and_desired_restore_mode_separately() {
+        let _test_state = crate::test_support::global_state();
+        struct ScopeProbe {
+            scope: &'static str,
+            probe: RestoreProbe,
+        }
+        impl RuntimeRunner for ScopeProbe {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                let mut output = self.probe.run(paths, args, timeout)?;
+                if args[0] == "snapshot" {
+                    let mut entries: Value = serde_json::from_str(&output.stdout).unwrap();
+                    entries[0]["scope"] = self.scope.into();
+                    output.stdout = entries.to_string();
+                }
+                Ok(output)
+            }
+        }
+        for (native_scope, desired_mode, disk_only, cow_mem) in [
+            ("full", "disk", true, false),
+            ("disk", "disk", false, false),
+            ("full", "full", false, true),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            pending_import(&paths);
+            let mut record = load(&paths, ID).unwrap();
+            record.pending_checkpoint_restore.as_mut().unwrap().state = desired_mode.into();
+            save(&paths, ID, &record).unwrap();
+            let runner = ScopeProbe {
+                scope: native_scope,
+                probe: RestoreProbe(Mutex::new(Vec::new())),
+            };
+            assert!(start_pending(&runner, &paths, &machine())
+                .unwrap_err()
+                .to_string()
+                .contains("synthetic restore failure"));
+            let calls = runner.probe.0.lock().unwrap();
+            let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
+            assert_eq!(
+                restore.iter().any(|arg| arg == "--disk-only"),
+                disk_only,
+                "native={native_scope}, desired={desired_mode}: {restore:?}"
+            );
+            assert_eq!(restore.iter().any(|arg| arg == "--cow-mem"), cow_mem);
+            assert_eq!(
+                restore.iter().any(|arg| arg == "--cpus"),
+                desired_mode == "disk"
+            );
+        }
     }
 
     /// Records every command, answers like a runtime whose restore fails.
@@ -5454,6 +5544,47 @@ mod tests {
         assert_eq!(store.names(), [A, C, "user-made"]);
         assert!(load(&paths, ID).unwrap().inflight_checkpoint.is_none());
         assert_eq!(load(&paths, ID).unwrap().checkpoints.len(), 1);
+    }
+
+    #[test]
+    fn recovery_reports_unresolved_owner_and_continues_independent_captures() {
+        let _test_state = crate::test_support::global_state();
+        for damaged_history in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut fork = Record::default();
+            fork.inflight_checkpoint = Some(entry(C, "Interrupted branch", "manual"));
+            let paths = delete_fixture(&directory, vec![], Some(fork));
+            let mut record = load(&paths, ID).unwrap();
+            record.inflight_checkpoint = Some(entry(B, "Interrupted source", "manual"));
+            save(&paths, ID, &record).unwrap();
+            if damaged_history {
+                fs::write(path(&paths, ID), b"{broken").unwrap();
+            }
+            fs::write(cleanup_path(&paths), b"{broken-cleanup").unwrap();
+            let before = fs::read(path(&paths, ID)).unwrap();
+            let mut store = Store::new(vec![]).with("dev", B, "snap_b", None);
+            store.fail_remove = true;
+            let recovery = recover_interrupted(&store, &paths).unwrap();
+            assert_eq!(recovery.unresolved.len(), 1);
+            assert!(recovery.unresolved.contains_key(ID));
+            assert!(recovery.cleanup_error.is_some());
+            assert_eq!(fs::read(cleanup_path(&paths)).unwrap(), b"{broken-cleanup");
+            assert_eq!(fs::read(path(&paths, ID)).unwrap(), before);
+            assert_eq!(store.names(), [B]);
+            let recovered = load(&paths, FORK_ID).unwrap();
+            assert!(recovered.inflight_checkpoint.is_none());
+            assert_eq!(recovered.checkpoint_operation.unwrap().status, "failed");
+            store.fail_remove = false;
+            fs::remove_file(cleanup_path(&paths)).unwrap();
+            if damaged_history {
+                save(&paths, ID, &record).unwrap();
+            }
+            assert!(recover_interrupted(&store, &paths)
+                .unwrap()
+                .unresolved
+                .is_empty());
+            assert!(store.names().is_empty());
+        }
     }
 
     #[test]

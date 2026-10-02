@@ -28,8 +28,8 @@ account in NAME". The setup:
 6. writes the record last.
 
 A new VM takes the same path with an empty `/root`. Each step checks what an
-earlier run already did, so an interrupted setup finishes at the next start. If
-the setup fails, Silo stops the VM and shows the reason; Start retries. A record
+earlier run already did. Start retries interrupted setup; home conflicts require
+resolution first. If setup fails, Silo stops the VM and shows the reason. A record
 this Silo does not recognise, for example from a newer Silo, is never
 overwritten: the start fails and asks for an update.
 
@@ -53,6 +53,33 @@ Older Silo versions recorded the account in a runtime label,
 `silo.working-account=1`. Silo no longer reads or writes it; existing labels are
 ignored.
 
+## Home conflicts and retries
+
+Each legacy home copy checks every destination entry before copying that home's
+files. Existing directories merge; identical files and relocated links are left
+in place. A different file, link, or entry type stops setup with a `Home migration
+conflict` error naming the path. Destination links, including dangling links and
+links in parent directories, are never traversed. Both legacy homes and the
+conflicting destination entry stay in place. Preserve or move the named entry
+inside the guest before retrying Start. Copy failures can leave completed files;
+retry accepts their original or relocated contents without overwriting them.
+New files are staged beside their destination and published only after copying
+and launcher relocation finish. A partial file left by an earlier Silo reports
+a conflict and is preserved for resolution.
+
+Root's shell setup remains authoritative: regular shell files already in the new
+home are skipped during merging, then root's customized shell files replace
+them. Shell links and directories cause a conflict instead of being removed.
+Unchanged distribution defaults remain skipped.
+
+Python 3.12's [copytree contract](https://docs.python.org/3.12/library/shutil.html#shutil.copytree)
+preserves source links with `symlinks=True`, but `dirs_exist_ok=True` permits
+destination overwrites. It provides no destination-link preservation policy.
+The helper therefore preflights entries with
+[lstat](https://docs.python.org/3.12/library/pathlib.html#pathlib.Path.lstat)
+and copies missing files with the standard library's `copy2`, preserving the
+existing launcher relocation rules without scanning unrelated destination files.
+
 ## Verification
 
 Rust tests in `working_account.rs` cover the check, the setup command, the
@@ -65,6 +92,12 @@ temporary boot and a restore. The guest copy rules have Python tests:
 python3 -m unittest discover -s app/SiloUI/scripts -p test_working_account.py
 ```
 
+The destination-conflict tests use temporary synthetic homes only. They cover
+two-home merges, file and directory links, nested and dangling links, entry-type
+conflicts, unchanged credential and binary bytes, and interrupted-copy retries.
+These tests passed on Python 3.12.9 on macOS; the revised conflict policy has not
+been qualified in a live Ubuntu guest.
+
 `app/SiloUI/scripts/test-working-account-live.py` is the opt-in live test in a
 disposable VM. It covers missing tools, a UID collision, copied root files, an
 interrupted setup, a malformed record, and the account's exec, SSH, SFTP and Git
@@ -73,8 +106,8 @@ behaviour.
 ### History
 
 Earlier versions refused to start older VMs; a separate script, later an in-app
-action, moved them after taking a disk backup. The guest copy step is the same
-code. It was verified live on 2026-09-25 on disposable Ubuntu 24.04 x86-64 and
+action, moved them after taking a disk backup. The earlier guest copy policy
+was verified live on 2026-09-25 on disposable Ubuntu 24.04 x86-64 and
 ARM64 VMs and on an existing ARM64 VM, where Codex launched as `silo` with
 unchanged authentication. On 2026-09-30 an existing x86-64 VM on Linux moved
 with all 219,147 `/workspace` entries owned by `silo` and its 30,203 root home

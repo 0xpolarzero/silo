@@ -614,11 +614,12 @@ fn with_identity_fallback(
     }
     retried
 }
-pub(crate) fn ssh_tunnel_command(
+pub(crate) fn ssh_tunnel_commands(
     host_id: &str,
     local_port: u16,
     remote_port: u16,
-) -> Result<Command, String> {
+    socket: &Path,
+) -> Result<(Command, Command), String> {
     if local_port == 0 || remote_port == 0 {
         return Err("Invalid forwarded port.".into());
     }
@@ -627,17 +628,47 @@ pub(crate) fn ssh_tunnel_command(
         .into_iter()
         .find(|h| h.id == host_id)
         .ok_or("Saved computer not found.")?;
-    let mut command = ssh_for_address(&host.address)?;
+    Ok(tunnel_commands(
+        ssh_for_address(&host.address)?,
+        &host.address,
+        local_port,
+        remote_port,
+        socket,
+    ))
+}
+
+fn tunnel_commands(
+    mut command: Command,
+    address: &str,
+    local_port: u16,
+    remote_port: u16,
+    socket: &Path,
+) -> (Command, Command) {
     command.args([
         "-N",
         "-o",
         "ExitOnForwardFailure=yes",
+        "-o",
+        "ControlMaster=yes",
+        "-o",
+        "ControlPersist=no",
+        "-o",
+        "ForkAfterAuthentication=no",
+        "-o",
+        "ClearAllForwardings=no",
+        "-S",
+    ]);
+    command.arg(socket).args([
         "-L",
         &format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"),
         "--",
-        &host.address,
+        address,
     ]);
-    Ok(command)
+    // A control-only client cannot fall back to a new SSH connection or ProxyCommand.
+    let mut check = Command::new("/usr/bin/ssh");
+    check.args(["-F", "none", "-S"]).arg(socket);
+    check.args(["-O", "check", "--", address]);
+    (command, check)
 }
 
 #[tauri::command]
@@ -1304,7 +1335,7 @@ pub async fn remote_workspace_action(
     // Elapsed time counts from the command, like a local action.
     let started = std::time::Instant::now();
     let notice_app = app.clone();
-    let (notice_id, notice_action) = (vm_id.clone(), action.clone());
+    let (notice_id, notice_action, notice_host) = (vm_id.clone(), action.clone(), host_id.clone());
     let result = tauri::async_runtime::spawn_blocking(move || {
         call_remote_typed(
             &app,
@@ -1325,10 +1356,7 @@ pub async fn remote_workspace_action(
                 .and_then(|state| sandbox_name(state, &notice_id))
         })
         .unwrap_or_else(|| "this sandbox".into());
-    let sandbox = crate::notifications::NoticeSandbox {
-        id: notice_id,
-        name: name.clone(),
-    };
+    let sandbox = remote_notice_sandbox(&notice_host, &notice_id, &name);
     let outcome = match &result {
         Ok(_) => crate::notifications::Outcome::Succeeded,
         Err(error) if error.code == ErrorCode::Cancelled => {
@@ -1349,6 +1377,47 @@ pub async fn remote_workspace_action(
         crate::notifications::notify_native(&notice_app, notice);
     }
     result
+}
+
+fn remote_notice_sandbox(
+    host_id: &str,
+    vm_id: &str,
+    name: &str,
+) -> crate::notifications::NoticeSandbox {
+    crate::notifications::NoticeSandbox {
+        id: format!("silo-remote:{host_id}:{vm_id}"),
+        name: name.into(),
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+    use crate::notifications::{lifecycle_notice, Outcome, LONG_OPERATION};
+
+    #[test]
+    fn remote_notices_route_and_group_by_the_owning_computer() {
+        for host in ["office", "lab"] {
+            for outcome in [Outcome::Succeeded, Outcome::Failed("start failed")] {
+                let notice = lifecycle_notice(
+                    "start",
+                    "dev",
+                    Some(remote_notice_sandbox(host, "same-vm-id", "dev")),
+                    LONG_OPERATION,
+                    outcome,
+                )
+                .unwrap();
+                let target = format!("silo-remote:{host}:same-vm-id");
+                assert_eq!(
+                    notice.route(),
+                    json!({"tab": "workspaces", "workspace": target})
+                );
+                assert_eq!(notice.thread(), target);
+                assert_eq!(notice.key, format!("vm:{target}:lifecycle"));
+                assert_eq!(notice.sandbox.unwrap().name, "dev");
+            }
+        }
+    }
 }
 
 /// Display name of one sandbox in a remote application snapshot.
@@ -1386,7 +1455,7 @@ pub async fn remote_delete_machine(
     expected: crate::runtime::MachineConfiguration,
 ) -> Result<Value, BridgeError> {
     let notice_app = app.clone();
-    let deleted = vm_id.clone();
+    let deleted = format!("silo-remote:{host_id}:{vm_id}");
     let result = tauri::async_runtime::spawn_blocking(move || {
         call_remote_typed(
             &app,
@@ -2794,6 +2863,44 @@ mod identity_tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn published_port_readiness_uses_an_owned_foreground_master() {
+        let (forward, check) = tunnel_commands(
+            ssh_with_identity("office", None, Identity::SiloOnly).unwrap(),
+            "office",
+            43000,
+            32000,
+            Path::new("/tmp/ssh.sock"),
+        );
+        let args = arguments(&forward);
+        for option in [
+            "ExitOnForwardFailure=yes",
+            "ControlMaster=yes",
+            "ControlPersist=no",
+            "ForkAfterAuthentication=no",
+            "ClearAllForwardings=no",
+        ] {
+            assert!(args.windows(2).any(|pair| pair == ["-o", option]));
+        }
+        assert!(args.contains(&"-N".into()));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-L", "127.0.0.1:43000:127.0.0.1:32000"]));
+        assert_eq!(
+            arguments(&check),
+            [
+                "-F",
+                "none",
+                "-S",
+                "/tmp/ssh.sock",
+                "-O",
+                "check",
+                "--",
+                "office"
+            ]
+        );
     }
 
     #[test]

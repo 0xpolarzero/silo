@@ -4,16 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Switch } from "@/components/ui/switch"
 import { computerOfWorkspace, useChatGptApp, useComputerUseBridge, type ChatGptAppStore } from "./computer-use-bridge"
+import { computerUseLabel } from "./computer-use-labels"
 import type { ChatGptAppStatus, ComputerUseApproval, ComputerUseState, LinuxDesktopState } from "./linux-desktop-state"
-
-const stateLabels: Record<ComputerUseState["state"], string> = {
-  unavailable: "Unavailable",
-  preparing: "Preparing…",
-  installing: "Installing…",
-  ready: "Ready",
-  failed: "Setup failed",
-}
-export const computerUseLabel = (state: ComputerUseState["state"], cause?: ComputerUseState["cause"]) => state === "failed" && cause === "app-download" ? "Download failed" : stateLabels[state]
 
 function megabytes(bytes: number) {
   return `${Math.max(0, Math.round(bytes / 1_000_000)).toLocaleString("en-US")} MB`
@@ -30,22 +22,6 @@ function ErrorLine({ message, actionLabel, onAction, onDismiss, busy }: { messag
 
 /** What Silo tells the user about the ChatGPT app. It downloads it by itself: nothing to accept. */
 export const CHATGPT_DOWNLOAD_NOTE = "Silo downloads ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux desktop."
-
-/** The one-line state of a computer's ChatGPT app, for lists. */
-export function chatGptStatusText(status: ChatGptAppStatus | null) {
-  switch (status?.state) {
-    case "ready": return status.version ? `Ready ${status.version}` : "Ready"
-    case "downloading": {
-      const total = status.totalBytes ?? 0
-      return total > 0 ? `Downloading ${Math.min(100, Math.round(status.receivedBytes / total * 100))}%` : "Downloading"
-    }
-    case "verifying": return "Verifying the download"
-    case "extracting": return "Unpacking"
-    case "idle": return "Waiting to download"
-    case "failed": return "Failed"
-    default: return "Unknown"
-  }
-}
 
 /** Progress and result of preparing the ChatGPT app, read-only: a Retry button appears only with `onRetry`. */
 export function ChatGptAppProgress({ status, busy = false, onRetry }: { status: ChatGptAppStatus; busy?: boolean; onRetry?: () => void }) {
@@ -72,16 +48,19 @@ export function ChatGptAppProgress({ status, busy = false, onRetry }: { status: 
 
 /** The progress of the ChatGPT download of a sandbox's computer. `retry` adds Retry to a failure, which acts on that computer's download.
  * `fallbackReason` is shown with Retry until the status itself is read. */
-export function ChatGptAppStatusView({ store, retry = false, fallbackReason }: { store: ChatGptAppStore | undefined; retry?: boolean; fallbackReason?: string | null }) {
-  const { status, busy, error, loadError } = useChatGptApp(store)
+export function ChatGptAppStatusView({ store, retry = false, fallbackReason, active = true }: { store: ChatGptAppStore | undefined; retry?: boolean; fallbackReason?: string | null; active?: boolean }) {
+  const { status, busy, error, loadError, subscriptionError } = useChatGptApp(store, active)
+  const recovery = subscriptionError ?? loadError
+  const refresh = recovery ? <ErrorLine message={recovery} actionLabel="Refresh status" onAction={store ? () => { void store.refresh() } : undefined} /> : null
   const onRetry = retry && store ? () => { void store.retry() } : undefined
   if (!status) {
-    if (loadError) return <ErrorLine message={loadError} />
+    if (refresh) return refresh
     return fallbackReason ? <ErrorLine message={fallbackReason} actionLabel={onRetry ? "Retry" : undefined} onAction={onRetry} busy={busy} /> : null
   }
-  if (status.state === "ready" || status.state === "unknown") return fallbackReason ? <ErrorLine message={fallbackReason} /> : null
+  if (status.state === "ready" || status.state === "unknown") return <>{fallbackReason && <ErrorLine message={fallbackReason} />}{refresh}</>
   return <div className="grid gap-1.5">
     <ChatGptAppProgress status={status} busy={busy} onRetry={onRetry} />
+    {refresh}
     {error && <ErrorLine message={error} onDismiss={() => store?.dismissError()} />}
   </div>
 }
@@ -186,7 +165,7 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
 
 /** Reads and changes one sandbox's computer use. Renders nothing for pre-v4 sandboxes or without a bridge.
  * Mount with `key={workspace}`: its reads belong to one sandbox. */
-export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: string; pollMs?: number }) {
+export function ComputerUseSection({ workspace, pollMs = 5000, active = true }: { workspace: string; pollMs?: number; active?: boolean }) {
   const bridge = useComputerUseBridge()
   const [state, setState] = useState<LinuxDesktopState | null>(null)
   const [busy, setBusy] = useState(false)
@@ -208,10 +187,13 @@ export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: st
     finally { reading.current = false }
   }, [bridge, workspace])
   useEffect(() => {
-    const initial = window.setTimeout(() => { void refresh() }, 0)
-    const interval = window.setInterval(() => { void refresh() }, pollMs)
-    return () => { window.clearTimeout(initial); window.clearInterval(interval) }
-  }, [refresh, pollMs])
+    if (!active) return
+    const update = () => { if (document.visibilityState !== "hidden") void refresh() }
+    const initial = window.setTimeout(update, 0)
+    const interval = window.setInterval(update, pollMs)
+    document.addEventListener("visibilitychange", update)
+    return () => { window.clearTimeout(initial); window.clearInterval(interval); document.removeEventListener("visibilitychange", update) }
+  }, [refresh, pollMs, active])
   const run = useCallback(async (work: () => Promise<LinuxDesktopState>, optimistic?: (state: LinuxDesktopState) => LinuxDesktopState, announce?: string) => {
     if (working.current) return
     working.current = true
@@ -245,7 +227,7 @@ export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: st
   const needsApp = computerUse.state === "preparing" || downloadFailed
   return <ComputerUsePanel computerUse={computerUse} running={state.state === "running"} busy={busy} error={error} loadError={loadError} notice={notice}
     onDismissError={() => setError(null)} onReload={() => { void refresh() }}
-    chatGpt={needsApp ? <ChatGptAppStatusView store={bridge.chatGptFor(computerOfWorkspace(workspace))} retry={downloadFailed} fallbackReason={downloadFailed ? computerUse.reason : null} /> : undefined}
+    chatGpt={needsApp ? <ChatGptAppStatusView active={active} store={bridge.chatGptFor(computerOfWorkspace(workspace))} retry={downloadFailed} fallbackReason={downloadFailed ? computerUse.reason : null} /> : undefined}
     onApproval={mode => { void run(() => bridge.setApproval(workspace, mode), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, approval: mode, approvalApply: "pending", approvalApplyReason: null } : current.computerUse })) }}
     onSetup={() => { void run(() => bridge.setup(workspace), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, state: "installing", reason: null } : current.computerUse }), SETUP_DONE) }} />
 }

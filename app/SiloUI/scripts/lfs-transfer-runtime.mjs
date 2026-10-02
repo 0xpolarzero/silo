@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmod, copyFile, cp, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { fetchVerifiedFile } from './build-input.mjs'
@@ -11,6 +11,10 @@ export const LFS_TRANSFER_COMMIT = '971c0284dc33b1ed3f7ed9dde5d4fc0cee62db6b'
 export const LFS_TRANSFER_SOURCE_SHA256 = '92d6720202aa5a059c6683df78f1fa47722c0c48ff1dc4ebfc0bc8137d988702'
 export const LFS_TRANSFER_SOURCE_URL = `https://codeload.github.com/charmbracelet/git-lfs-transfer/tar.gz/${LFS_TRANSFER_COMMIT}`
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
+// Toolchain selection lines from the pinned source's go.mod; checked again on a cold build.
+const goSelection = 'go 1.25.0'
+const goBuildFlags = ['-mod=readonly', '-trimpath', '-buildvcs=false', '-ldflags=-s -w']
+const goRecipeEnvironment = ['GOFLAGS', 'GOEXPERIMENT', 'GOAMD64', 'GOARM64', 'GOFIPS140']
 
 export async function readGoCompilerLicense(compilerRoot, { run = execute, docsRoot = '/usr/share/doc' } = {}) {
   // Official Go puts LICENSE in GOROOT; Homebrew puts it beside libexec.
@@ -48,11 +52,37 @@ async function normalizeModes(directory) {
 
 // The server runs inside the Linux guest, including when Silo's host is macOS.
 // There is no stable upstream binary release; build the immutable source pin.
-export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchStream }) {
+export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchStream, run = execute }) {
   const architecture = lfsTransferGuestArchitecture(targetTriple)
   const tauriRoot = resolve(appRoot, 'src-tauri')
   const root = join(tauriRoot, 'runtime', 'lfs-transfer')
   const cache = join(tauriRoot, 'target', 'runtime-cache', 'git-lfs-transfer', LFS_TRANSFER_COMMIT)
+  const environment = { ...process.env, CGO_ENABLED: '0', GOOS: 'linux', GOARCH: architecture, GOWORK: 'off', GOSUMDB: 'sum.golang.org' }
+  await mkdir(cache, { recursive: true })
+  const context = await mkdtemp(join(cache, 'compiler-'))
+  let compiler
+  try {
+    // Resolve auto/+auto in the guest module's context, not the host app's cwd.
+    await writeFile(join(context, 'go.mod'), `module github.com/charmbracelet/git-lfs-transfer\n\n${goSelection}\n`)
+    const result = await run('go', ['env', '-json', 'GOVERSION', 'GOROOT', 'GOTOOLCHAIN', ...goRecipeEnvironment], {
+      cwd: context, env: environment,
+    })
+    compiler = JSON.parse(result.stdout)
+    if (!/^go\d+\.\d+\.\d+(?:[-\w.]*)$/.test(compiler.GOVERSION) || !compiler.GOROOT ||
+        ['GOTOOLCHAIN', ...goRecipeEnvironment].some(key => typeof compiler[key] !== 'string')) {
+      throw new Error('Cannot identify the effective Go compiler and build environment')
+    }
+  } finally {
+    await rm(context, { recursive: true, force: true })
+  }
+  const buildIdentity = {
+    goVersion: compiler.GOVERSION, goToolchain: compiler.GOTOOLCHAIN,
+    recipeSha256: sha256(await readFile(new URL(import.meta.url))),
+    environment: Object.fromEntries(goRecipeEnvironment.map(key => [key, compiler[key]])),
+  }
+  // Use the selected compiler for the build and notices, without another auto switch.
+  const go = join(compiler.GOROOT, 'bin/go')
+  const buildEnvironment = { ...environment, ...buildIdentity.environment, GOTOOLCHAIN: 'local', GOROOT: compiler.GOROOT }
   const cachedBuild = join(cache, 'builds', `linux-${architecture}`)
   const binaryPath = join(root, 'git-lfs-transfer')
   const manifestPath = join(root, 'manifest.json')
@@ -61,7 +91,8 @@ export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchStre
       const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8'))
       await readFile(join(directory, 'LICENSE-MIT.txt'))
       await readFile(join(directory, 'licenses', 'Go-LICENSE'))
-      return manifest.commit === LFS_TRANSFER_COMMIT && manifest.sourceSha256 === LFS_TRANSFER_SOURCE_SHA256 &&
+      return manifest.schemaVersion === 2 && JSON.stringify(manifest.buildIdentity) === JSON.stringify(buildIdentity) &&
+        manifest.commit === LFS_TRANSFER_COMMIT && manifest.sourceSha256 === LFS_TRANSFER_SOURCE_SHA256 &&
         manifest.architecture === architecture && manifest.binarySha256 === sha256(await readFile(join(directory, 'git-lfs-transfer')))
     } catch { return false }
   }
@@ -86,23 +117,25 @@ export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchStre
   await rm(stage, { recursive: true, force: true })
   await mkdir(stage, { recursive: true })
   try {
-    const listing = await execute('tar', ['-tzf', archivePath], { maxBuffer: 1024 * 1024 })
+    const listing = await run('tar', ['-tzf', archivePath], { maxBuffer: 1024 * 1024 })
     validateArchiveEntries(listing.stdout.trim().split('\n'), 'Git LFS transfer source')
     const source = join(cache, `source-${process.pid}`)
     await rm(source, { recursive: true, force: true })
     await mkdir(source, { recursive: true })
     try {
-      await execute('tar', ['-xzf', archivePath, '--strip-components=1', '-C', source])
-      await execute('go', ['build', '-mod=readonly', '-trimpath', '-buildvcs=false', '-ldflags=-s -w', '-o', join(stage, 'git-lfs-transfer'), '.'], {
+      await run('tar', ['-xzf', archivePath, '--strip-components=1', '-C', source])
+      const selection = (await readFile(join(source, 'go.mod'), 'utf8')).split('\n').filter(line => /^(go|toolchain)\s/.test(line)).join('\n')
+      if (selection !== goSelection) throw new Error('Pinned Git LFS transfer toolchain selection does not match go.mod')
+      await run(go, ['build', ...goBuildFlags, '-o', join(stage, 'git-lfs-transfer'), '.'], {
         cwd: source,
-        env: { ...process.env, CGO_ENABLED: '0', GOOS: 'linux', GOARCH: architecture, GOWORK: 'off', GOSUMDB: 'sum.golang.org' },
+        env: buildEnvironment,
         maxBuffer: 4 * 1024 * 1024,
       })
       await copyFile(join(source, 'LICENSE'), join(stage, 'LICENSE-MIT.txt'))
       const licenses = join(stage, 'licenses')
       await mkdir(licenses, { recursive: true })
-      const modules = await execute('go', ['list', '-mod=readonly', '-deps', '-f', '{{if .Module}}{{.Module.Path}}\t{{.Module.Dir}}{{end}}', '.'], {
-        cwd: source, env: { ...process.env, CGO_ENABLED: '0', GOOS: 'linux', GOARCH: architecture, GOWORK: 'off', GOSUMDB: 'sum.golang.org' },
+      const modules = await run(go, ['list', '-mod=readonly', '-deps', '-f', '{{if .Module}}{{.Module.Path}}\t{{.Module.Dir}}{{end}}', '.'], {
+        cwd: source, env: buildEnvironment,
       })
       for (const line of new Set(modules.stdout.trim().split('\n').filter(Boolean))) {
         const [module, directory] = line.split('\t')
@@ -112,16 +145,14 @@ export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchStre
         await mkdir(destination, { recursive: true })
         for (const notice of notices) await copyFile(join(directory, notice), join(destination, notice))
       }
-      const goRoot = await execute('go', ['env', 'GOROOT'])
-      const compilerRoot = goRoot.stdout.trim()
-      const compilerLicense = await readGoCompilerLicense(compilerRoot)
+      const compilerLicense = await readGoCompilerLicense(compiler.GOROOT, { run })
       await writeFile(join(licenses, 'Go-LICENSE'), compilerLicense)
     } finally {
       await rm(source, { recursive: true, force: true })
     }
     await chmod(join(stage, 'git-lfs-transfer'), 0o755)
     await writeFile(join(stage, 'manifest.json'), `${JSON.stringify({
-      schemaVersion: 1, distribution: 'charmbracelet/git-lfs-transfer', commit: LFS_TRANSFER_COMMIT,
+      schemaVersion: 2, distribution: 'charmbracelet/git-lfs-transfer', commit: LFS_TRANSFER_COMMIT, buildIdentity,
       sourceSha256: LFS_TRANSFER_SOURCE_SHA256, platform: 'linux', architecture,
       binarySha256: sha256(await readFile(join(stage, 'git-lfs-transfer'))),
     }, null, 2)}\n`)

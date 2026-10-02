@@ -103,7 +103,7 @@ pub(crate) async fn export_workspace_logs(
     .map_err(|_| "The log export task failed.".to_owned())?
 }
 
-fn write_requests(
+pub(crate) fn write_requests(
     output: &mut impl Write,
     requests: Vec<Query>,
     mut query: impl FnMut(Query) -> Result<Page, String>,
@@ -129,10 +129,15 @@ fn write_requests(
                 return Ok(false);
             }
             if request.cursor.is_none() {
+                let mut coverage_request = request.clone();
+                coverage_request.query = request
+                    .query
+                    .as_ref()
+                    .map(|_| "[Search text hidden]".into());
                 write_json_line(
                     output,
                     &serde_json::json!({
-                        "type": "coverage", "request": request,
+                        "type": "coverage", "request": coverage_request,
                         "oldestAvailableTimestamp": page.oldest_available_timestamp,
                         "newestAvailableTimestamp": page.newest_available_timestamp,
                         "totalMatches": page.total_matches,
@@ -223,6 +228,43 @@ mod tests {
         assert_eq!(records.last().unwrap()["computerName"], "Build computer");
         assert_eq!(records.last().unwrap()["session"], "42");
         assert_eq!(records.last().unwrap()["line"], "échec\nrecord 1000");
+    }
+
+    #[test]
+    fn export_hides_search_text_but_preserves_filtering_and_coverage() {
+        for text in [
+            "ghp_synthetic_export_search_secret",
+            "private customer lookup",
+        ] {
+            let request = Query {
+                sandbox_id: "vm-id".into(),
+                query: Some(text.into()),
+                source: Some("stderr".into()),
+                ..Query::default()
+            };
+            let mut output = Vec::new();
+            assert!(write_requests(
+                &mut output,
+                vec![request],
+                |request| {
+                    assert_eq!(request.query.as_deref(), Some(text));
+                    Ok(page(0, 0))
+                },
+                || false,
+            )
+            .unwrap());
+            let output = String::from_utf8(output).unwrap();
+            assert!(
+                !output.contains(text),
+                "Search input must stay out of shared exports"
+            );
+            let coverage: serde_json::Value =
+                serde_json::from_str(output.lines().nth(1).unwrap()).unwrap();
+            assert_eq!(coverage["request"]["sandboxId"], "vm-id");
+            assert_eq!(coverage["request"]["source"], "stderr");
+            assert_eq!(coverage["request"]["query"], "[Search text hidden]");
+            assert_eq!(coverage["totalMatches"], 0);
+        }
     }
 
     #[test]

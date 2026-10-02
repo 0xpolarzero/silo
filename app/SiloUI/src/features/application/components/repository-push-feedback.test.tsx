@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest"
 
 import { Toaster } from "@/components/ui/sonner"
 import type { RepositoryPushOperation } from "@/features/application/model/application-source"
-import { RepositoryPushButton, RepositoryPushFeedback, useRepositoryPushToasts } from "./repository-push-feedback"
+import { RepositoryPushButton, RepositoryPushFeedback } from "./repository-push-feedback"
+import { useRepositoryPushToasts } from "./use-repository-push-toasts"
 
 const target = { repository: "acme/silo", branch: "main", commit: "0123456789abcdef0123456789abcdef01234567" }
 const base = { workspace: "dev", repositoryPath: "acme/silo", commitCount: 2, target }

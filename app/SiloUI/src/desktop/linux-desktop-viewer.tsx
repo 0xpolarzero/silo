@@ -5,7 +5,7 @@ import { CircleAlert, Maximize, Monitor } from "lucide-react"
 import { parseLinuxDesktopState, type LinuxDesktopState, type DesktopAction } from "./linux-desktop-state"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { computerUseLabel } from "./computer-use-panel"
+import { computerUseLabel } from "./computer-use-labels"
 import { DesktopActionsMenu, NativeDesktopActionsMenu, type DesktopMenuProps } from "./linux-desktop-menu"
 
 // Guest pages draw inside Silo's window, so anything inside the frame,
@@ -123,9 +123,11 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
     finally { polling.current = false; if (currentRevision === revision.current) setBusy(false) }
   }, [workspace])
   useEffect(() => {
-    const initial = window.setTimeout(() => { void refresh() }, 0)
-    const interval = window.setInterval(() => { void refresh() }, 5000)
-    return () => { window.clearTimeout(initial); window.clearInterval(interval) }
+    const update = () => { if (document.visibilityState !== "hidden") void refresh() }
+    const initial = window.setTimeout(update, 0)
+    const interval = window.setInterval(update, 5000)
+    document.addEventListener("visibilitychange", update)
+    return () => { window.clearTimeout(initial); window.clearInterval(interval); document.removeEventListener("visibilitychange", update) }
   }, [refresh])
   // The backend connects only once the stream runs; legacy guests omit it.
   const streamReady = state?.state === "running" && (state.streamState == null || state.streamState === "running")

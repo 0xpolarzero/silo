@@ -9,6 +9,10 @@ on:
         description: Create versioned draft after all builds pass (requires vVERSION tag)
         type: boolean
         default: false
+      allow_stable:
+        description: Owner-approved draft of version 1.0.0 or later
+        type: boolean
+        default: false
       benchmark_ref:
         description: Optional full source commit for artifact-only benchmarks
         type: string
@@ -95,10 +99,15 @@ jobs:
           CREATE_DRAFT: ${{ github.event_name == 'push' || inputs.draft }}
           RELEASE_REF: ${{ github.ref }}
           BENCHMARK_SCHEDULE: ${{ inputs.benchmark_schedule }}
+          ALLOW_STABLE: ${{ inputs.allow_stable }}
         run: |
           set -euo pipefail
           version=$(python3 app/SiloUI/scripts/validate-release-version.py)
           if [[ "$CREATE_DRAFT" == true ]]; then
+            if [[ "${version%%.*}" != 0 && "$ALLOW_STABLE" != true ]]; then
+              echo '::error::Silo releases stay below 1.0.0; select allow_stable only for an owner-approved stable release.'
+              exit 1
+            fi
             if [[ "${BENCHMARK_SCHEDULE:-parallel}" == sequential ]]; then
               echo "::error::Sequential benchmarking is artifact-only."
               exit 1
@@ -230,4 +239,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: python3 app/SiloUI/scripts/publish-release.py "$RELEASE_VERSION"
+          ALLOW_STABLE: ${{ inputs.allow_stable }}
+        run: |
+          set --
+          if [[ "$ALLOW_STABLE" == true ]]; then
+            set -- --allow-stable
+          fi
+          python3 app/SiloUI/scripts/publish-release.py "$RELEASE_VERSION" "$@"

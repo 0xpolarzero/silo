@@ -8,4 +8,9 @@ export function stageLfsTransferRuntime(options: {
   appRoot: string
   targetTriple: string
   fetchStream: FetchStream
+  run?: (program: string, args: string[], options?: {
+    cwd?: string
+    env?: NodeJS.ProcessEnv
+    maxBuffer?: number
+  }) => Promise<{ stdout: string }>
 }): Promise<{ root: string; binaryPath: string; manifestPath: string }>

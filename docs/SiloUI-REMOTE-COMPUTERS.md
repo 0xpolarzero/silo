@@ -38,6 +38,31 @@ This describes graceful Quit, not process crashes or forced OS termination. Silo
 
 Legacy SSH entries remain saved connections. They are not assumed to be Silo hosts or converted into VMs. Operational configuration permits an empty inventory; onboarding retains its explicit initial setup flow.
 
+## Published-port readiness
+
+Each published-port tunnel runs the system OpenSSH client as a foreground master
+with `ExitOnForwardFailure=yes`, `ControlPersist=no`, and
+`ForkAfterAuthentication=no`. Its control socket lives in a unique mode-0700
+temporary directory. Silo waits for a successful `ssh -F none -S SOCKET -O check`
+reply and verifies that its child still runs before exposing the local endpoint.
+An unrelated listener taking the reserved port during authentication cannot
+provide that reply. The control-only check uses no host configuration and cannot
+start a new transport or ProxyCommand when the socket is absent.
+
+The [OpenSSH manual](https://man.openbsd.org/ssh.1) documents master control and
+`-O check`; [ssh_config](https://man.openbsd.org/ssh_config.5) documents forwarding
+failure and foreground lifetime options. OpenSSH 9.9p2's
+[`ssh_session2` and `ssh_init_forwarding`](https://github.com/openssh/openssh-portable/blob/V_9_9_P2/ssh.c)
+initialize local listeners, abort on a failed bind with `ExitOnForwardFailure`,
+then serve master control requests. This uses the supported OpenSSH control
+interface rather than adding a TCP relay. Supported macOS and Ubuntu systems
+supply OpenSSH with these options; its BSD-licensed implementation remains the
+OS vendor's maintenance responsibility. The private directory excludes other
+local users; it does not protect against a process already running as the same
+account. Readiness confirms forwarding setup, not guest application health.
+The `-N` transport and remote loopback destination preserve the existing
+`silo-remote` forced-command and `permitopen` contract.
+
 ## Validation
 
 Commands, counts, and final build evidence are recorded after the final verification run below. Automated tests use controlled subprocesses, sockets, and runtime responses; browser inspection uses deterministic fixture data. They do not prove real two-computer hypervisor operation.
