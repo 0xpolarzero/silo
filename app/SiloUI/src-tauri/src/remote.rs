@@ -783,33 +783,8 @@ pub async fn remote_setup_ssh_key(app: AppHandle, address: String) -> Result<(),
 fn key_setup_command(dir: &Path, address: &str) -> Result<String, String> {
     validate_address(address)?;
     let key = dir.join("id_ed25519");
-    if !key.exists() {
-        let status = Command::new("/usr/bin/ssh-keygen")
-            .args([
-                "-q",
-                "-t",
-                "ed25519",
-                "-N",
-                "",
-                "-C",
-                silo_key_comment(),
-                "-f",
-            ])
-            .arg(&key)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map_err(|e| e.to_string())?;
-        if !status.success() {
-            return Err("Could not create Silo’s SSH key.".into());
-        }
-    }
-    let public = fs::read_to_string(key.with_extension("pub"))
-        .map_err(|_| "Could not read Silo’s public SSH key.")?;
-    if public.len() > 1024 {
-        return Err("Invalid Silo SSH public key.".into());
-    }
+    crate::editor::key(&key)?;
+    let public = crate::editor::public_key(&key)?;
     let line = authorized_key_line(&public)?;
 
     let args = [
@@ -939,9 +914,15 @@ fn handshake_key_in(path: &Path, public: Option<&str>) -> Result<Value, BridgeEr
     Ok(Value::Null)
 }
 fn silo_public_key() -> Option<String> {
-    let public = fs::read_to_string(directory().ok()?.join("id_ed25519.pub")).ok()?;
-    silo_key_blob(&public).ok()?;
-    Some(public.trim().to_owned())
+    silo_public_key_in(&directory().ok()?)
+}
+fn silo_public_key_in(directory: &Path) -> Option<String> {
+    let key = directory.join("id_ed25519");
+    if !key.is_file() {
+        return None;
+    }
+    crate::editor::key(&key).ok()?;
+    crate::editor::public_key(&key).ok()
 }
 fn request_timeout(request: &Value) -> Duration {
     if matches!(
@@ -2732,6 +2713,60 @@ mod setup_tests {
         }
         assert!(commands >= 10);
     }
+    #[test]
+    fn key_setup_repairs_reused_key_permissions_and_ignores_stale_sidecars() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        key_setup_command(dir.path(), "me@office").unwrap();
+        let key = dir.path().join("id_ed25519");
+        let private = fs::read(&key).unwrap();
+        let public = crate::editor::public_key(&key).unwrap();
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o644)).unwrap();
+        let refused = Command::new("/usr/bin/ssh-keygen")
+            .args(["-y", "-f"])
+            .arg(&key)
+            .output()
+            .unwrap();
+        assert!(!refused.status.success());
+        fs::write(
+            key.with_extension("pub"),
+            "ssh-ed25519 AAAAstale old identity",
+        )
+        .unwrap();
+        let repaired = key_setup_command(dir.path(), "me@office").unwrap();
+        assert_eq!(
+            fs::metadata(&key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read(&key).unwrap(), private);
+        assert!(repaired.contains(&authorized_key_line(&public).unwrap()));
+        assert!(!repaired.contains("AAAAstale"));
+        fs::remove_file(key.with_extension("pub")).unwrap();
+        assert_eq!(
+            key_setup_command(dir.path(), "me@office").unwrap(),
+            repaired
+        );
+    }
+
+    #[test]
+    fn handshake_key_identity_comes_from_private_key_not_public_sidecar() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        assert!(silo_public_key_in(dir.path()).is_none());
+        assert!(!dir.path().join("id_ed25519").exists());
+        key_setup_command(dir.path(), "me@office").unwrap();
+        let key = dir.path().join("id_ed25519");
+        let public = crate::editor::public_key(&key).unwrap();
+        fs::write(
+            key.with_extension("pub"),
+            "ssh-ed25519 AAAAstale old identity",
+        )
+        .unwrap();
+        assert_eq!(silo_public_key_in(dir.path()), Some(public.clone()));
+        fs::remove_file(key.with_extension("pub")).unwrap();
+        assert_eq!(silo_public_key_in(dir.path()), Some(public));
+    }
+
     #[test]
     fn public_key_install_preserves_existing_unterminated_line_and_is_idempotent() {
         let _test_state = crate::test_support::global_state();
