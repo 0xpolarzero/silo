@@ -63,7 +63,9 @@ links in parent directories, are never traversed. Both legacy homes and the
 conflicting destination entry stay in place. Preserve or move the named entry
 inside the guest before retrying Start. Copy failures can leave completed files;
 retry accepts their original or relocated contents without overwriting them.
-A partially written file reports a conflict and is preserved for resolution.
+New files are staged beside their destination and published only after copying
+and launcher relocation finish. A partial file left by an earlier Silo reports
+a conflict and is preserved for resolution.
 
 Root's shell setup remains authoritative: regular shell files already in the new
 home are skipped during merging, then root's customized shell files replace

@@ -360,13 +360,15 @@ Supported packages:
 | Platform | Installer | In-app updates |
 | --- | --- | --- |
 | Apple Silicon macOS | DMG | Signed Tauri app archive |
-| Linux x86-64 | AppImage and Debian package | AppImage only |
-| Linux ARM64 | AppImage and Debian package | AppImage only |
+| Linux x86-64 | AppImage and Debian package | Signed AppImage replacement; Debian through authenticated APT |
+| Linux ARM64 | AppImage and Debian package | Signed AppImage replacement; Debian through authenticated APT |
 
 Linux builds target Ubuntu 24.04-compatible systems and require KVM for VMs.
 AppImage bundles application libraries but does not make glibc or GPU support
-universal. Debian upgrades use the package manager and download flow, never
-replace package-owned binaries in place. Intel macOS and Windows are unsupported.
+universal. Debian upgrades use authenticated APT from Silo or the system package
+manager and never replace package-owned binaries in place. See
+[in-app Debian updates](SiloUI-LINUX-UPDATES.md#in-app-debian-updates-14-september-2026).
+Intel macOS and Windows are unsupported.
 Linux packages keep runtime/Git helpers in `/usr/libexec/silo/tools`; they never
 overwrite system Git in `/usr/bin`. AppImage keeps its helpers inside the image.
 The guest image, native runtime, host Git/LFS tools and notices are packaged with
@@ -380,6 +382,12 @@ commit. The private key is stored in protected GitHub environment
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. Keep an independent secure backup. Losing
 the private key prevents updates to already installed applications. Never upload
 private keys, complete build directories, or local GitHub configuration artifacts.
+
+The macOS packager passes the signing password through Tauri's
+[password environment input](https://v2.tauri.app/reference/cli/#signer-sign),
+which the installed CLI also lists in `tauri signer sign --help`. Keep passwords
+out of command arguments: a failed subprocess reports its arguments in Python's
+exception text. Signing failures report only the exit code.
 
 The `release-signing` and `release-publish` environments require maintainer review
 and restrict execution to version tags. Artifact-only verification uses a fresh

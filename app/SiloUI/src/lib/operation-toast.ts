@@ -58,25 +58,34 @@ export type OperationAction = { label: string; onClick: () => void }
 
 /**
  * Notifications about a specific sandbox, so they can be dismissed when it is deleted (their
- * actions would point at a sandbox that no longer exists). Keyed by sandbox name.
+ * actions would point at a sandbox that no longer exists). Current sandbox names by toast ID.
  */
-const sandboxToasts = new Map<string, Set<string>>()
+const toastSandboxes = new Map<string, Set<string>>()
 
 function tagSandbox(id: string, sandbox: string | string[] | undefined) {
-  if (!sandbox) return
-  for (const name of Array.isArray(sandbox) ? sandbox : [sandbox]) {
-    const ids = sandboxToasts.get(name) ?? new Set<string>()
-    ids.add(id)
-    sandboxToasts.set(name, ids)
+  const names = new Set(sandbox ? Array.isArray(sandbox) ? sandbox : [sandbox] : [])
+  if (names.size) toastSandboxes.set(id, names)
+  else toastSandboxes.delete(id)
+  return () => {
+    if (toastSandboxes.get(id) === names) toastSandboxes.delete(id)
+  }
+}
+
+function resultCallbacks(id: string, sandbox: string | string[] | undefined, onDismiss?: () => void, action?: OperationAction) {
+  const untag = tagSandbox(id, sandbox)
+  const close = () => { untag(); onDismiss?.() }
+  return {
+    onDismiss: close,
+    onAutoClose: close,
+    action: action ? { ...action, onClick: () => { untag(); action.onClick() } } : undefined,
   }
 }
 
 /** Dismiss every notification tagged with this sandbox name. Call when the sandbox is deleted. */
 export function dismissSandboxToasts(name: string) {
-  const ids = sandboxToasts.get(name)
-  if (!ids) return
-  sandboxToasts.delete(name)
-  for (const id of ids) toast.dismiss(id)
+  for (const [id, names] of toastSandboxes) {
+    if (names.has(name)) dismissOperationToast(id)
+  }
 }
 
 /** Auto-dismiss delay of a quick confirmation (nothing to act on, finished fast). */
@@ -118,17 +127,17 @@ function mirror(category: Notice["category"], key: string, title: string, option
 }
 
 export function showOperationSuccess(id: string, title: string, options: OperationResultOptions = {}) {
-  tagSandbox(id, options.sandbox)
+  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss, options.action)
   const started = progressStarts.get(id)
   progressStarts.delete(id)
   const long = started !== undefined && Date.now() - started > LONG_OPERATION_MS
   const persist = options.persist ?? (Boolean(options.action) || long)
-  toast.success(title, { id, description: options.description, duration: persist ? Infinity : QUICK_TOAST_DURATION, closeButton: true, action: options.action, onDismiss: options.onDismiss, onAutoClose: options.onDismiss })
+  toast.success(title, { id, description: options.description, duration: persist ? Infinity : QUICK_TOAST_DURATION, closeButton: true, ...callbacks })
   if (long) mirror("completions", id, title, options)
 }
 
 export function showOperationFailure(id: string, title: string, options: OperationResultOptions & { retry?: () => void; tone?: "error" | "warning" } = {}) {
-  tagSandbox(id, options.sandbox)
+  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss, options.action ?? (options.retry ? { label: "Retry", onClick: options.retry } : undefined))
   progressStarts.delete(id)
   const notify = options.tone === "warning" ? toast.warning : toast.error
   notify(title, {
@@ -136,23 +145,22 @@ export function showOperationFailure(id: string, title: string, options: Operati
     description: options.description,
     duration: Infinity,
     closeButton: true,
-    action: options.action ?? (options.retry ? { label: "Retry", onClick: options.retry } : undefined),
-    onDismiss: options.onDismiss,
-    onAutoClose: options.onDismiss,
+    ...callbacks,
   })
   mirror("failures", id, title, options)
 }
 
 /** Close a notification (e.g. when the state it reported has gone away). */
 export function dismissOperationToast(id: string) {
+  toastSandboxes.delete(id)
   progressStarts.delete(id)
   toast.dismiss(id)
 }
 
 /** A neutral, short-lived notice for an outcome that is neither success nor failure (e.g. cancelled). */
 export function showOperationNotice(id: string, title: string, options: { description?: ReactNode; onDismiss?: () => void; duration?: number; sandbox?: string | string[] } = {}) {
-  tagSandbox(id, options.sandbox)
-  toast(title, { id, description: options.description, duration: options.duration ?? 4000, closeButton: true, onDismiss: options.onDismiss, onAutoClose: options.onDismiss })
+  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss)
+  toast(title, { id, description: options.description, duration: options.duration ?? 4000, closeButton: true, ...callbacks })
 }
 
 /**
@@ -162,9 +170,9 @@ export function showOperationNotice(id: string, title: string, options: { descri
  */
 export function showOperationProgress(id: string, options: OperationProgressOptions) {
   const { title, sandbox, ...body } = options
-  tagSandbox(id, sandbox)
+  const untag = tagSandbox(id, sandbox)
   if (!progressStarts.has(id)) progressStarts.set(id, options.startedAt ?? Date.now())
-  toast.loading(title, { id, duration: Infinity, description: createElement(OperationToastBody, { ...body, title }) })
+  toast.loading(title, { id, duration: Infinity, description: createElement(OperationToastBody, { ...body, title }), onDismiss: untag })
 }
 
 /** Backend-driven operation state understood by `useOperationProgressToast`. */

@@ -5,7 +5,7 @@ import { UpdatesCard, UpdateNotice } from "./updates"
 import { UpdatesProvider, type UpdateBackend, type UpdateSnapshot } from "./update-store"
 
 const state: UpdateSnapshot = { phase: "idle", lastChecked: null, retryAction: null, currentVersion: "0.1.0", availableVersion: null, releaseNotes: null, downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "macos", releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: null, errorDetails: null, installBlockReason: null, runningSandboxes: [], canInstall: true }
-function mount(initial: Partial<UpdateSnapshot> = {}, overrides: Partial<UpdateBackend> = {}) {
+function mount(initial: Partial<UpdateSnapshot> = {}, adjust: (backend: UpdateBackend) => void = () => {}) {
   let emit!: (value: UpdateSnapshot) => void
   const backend: UpdateBackend = {
     read: vi.fn(async () => ({ ...state, ...initial })),
@@ -15,9 +15,9 @@ function mount(initial: Partial<UpdateSnapshot> = {}, overrides: Partial<UpdateB
     install: vi.fn(async () => ({ ...state, phase: "installing" as const })),
     setAutomaticChecks: vi.fn(async (enabled) => ({ ...state, automaticChecks: enabled })),
     openRelease: vi.fn(async () => {}),
-    ...overrides,
   }
   const open = vi.fn()
+  adjust(backend)
   const view = render(<UpdatesProvider backend={backend}><UpdateNotice onOpen={open} /><UpdatesCard /></UpdatesProvider>)
   return { backend, open, view, emit: (patch: Partial<UpdateSnapshot>) => act(() => emit({ ...state, ...initial, ...patch })) }
 }
@@ -27,7 +27,7 @@ it("reconnects after a failed initial read without running an update action", as
   const stop = vi.fn()
   const read = vi.fn().mockRejectedValueOnce(new Error("private native failure")).mockResolvedValueOnce(state)
   const subscribe = vi.fn(async () => stop)
-  const { backend, view } = mount({}, { read, subscribe })
+  const { backend, view } = mount({}, backend => { backend.read = read; backend.subscribe = subscribe })
   expect(await screen.findByRole("alert")).toHaveTextContent("Silo could not load updates. Try again.")
   expect(screen.getByRole("alert")).not.toHaveTextContent("private native failure")
   await user.click(screen.getByRole("button", { name: "Retry" }))
@@ -47,7 +47,7 @@ it("cleans up a subscription that registers after the updates view unmounts", as
   let register!: (stop: () => void) => void
   const stop = vi.fn()
   const subscribe = vi.fn(() => new Promise<() => void>(resolve => { register = resolve }))
-  const { backend, view } = mount({}, { subscribe })
+  const { backend, view } = mount({}, backend => { backend.subscribe = subscribe })
   view.unmount()
   await act(async () => register(stop))
   expect(stop).toHaveBeenCalledOnce()
@@ -57,12 +57,25 @@ it("cleans up a subscription that registers after the updates view unmounts", as
 it.fails("bug: an obsolete initial read failure shows a connection error after a newer native event", async () => {
   let reject!: (error: Error) => void
   const read = vi.fn(() => new Promise<UpdateSnapshot>((_, fail) => { reject = fail }))
-  const { emit } = mount({}, { read })
+  const { emit } = mount({}, backend => { backend.read = read })
   await waitFor(() => expect(read).toHaveBeenCalledOnce())
   emit({ phase: "ready", availableVersion: "0.2.0" })
   expect(screen.getByRole("button", { name: "Restart and update" })).toBeEnabled()
   await act(async () => reject(new Error("Obsolete read failed")))
   expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})
+it("restores update events after returning to a window whose subscription failed", async () => {
+  const { backend, emit } = mount({}, backend => {
+    vi.mocked(backend.subscribe).mockRejectedValueOnce(new Error("event registration failed"))
+  })
+  expect(await screen.findByRole("alert")).toHaveTextContent("Silo could not load updates. Try again.")
+  fireEvent.focus(window)
+  await waitFor(() => expect(backend.subscribe).toHaveBeenCalledTimes(2))
+  expect(await screen.findByText("Version 0.1.0")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  emit({ phase: "available", availableVersion: "0.2.0" })
+  expect(screen.getByRole("status")).toHaveTextContent("Silo 0.2.0 is available.")
+  expect(backend.check).not.toHaveBeenCalled()
 })
 it("loads the installed version without a fake up-to-date result and persists automatic checks", async () => {
   const user = userEvent.setup()
