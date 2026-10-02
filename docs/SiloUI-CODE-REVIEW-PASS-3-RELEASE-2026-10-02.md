@@ -24,6 +24,7 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-04 | P2 | Direct publication bypasses the explicit stable-release opt-in | Fixed and folded: `5b18ec21` |
 | RL-05 | P3 | Release guide omits the implemented in-app Debian update | Corrected and folded: `17edafc6` |
 | RL-06 | P2 | Required minimum-macOS gate uses a runner with imminent brownouts | Open; replacement qualification required |
+| RL-07 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Confirmed; fix pending |
 
 ## Detailed findings
 
@@ -120,6 +121,22 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 **Rejecting test.** Run the exact constraint suite on the replacement's verified macOS 14 environment and attach its OS identity and results to a complete draft-verification run. Inject a gate failure and confirm draft creation stays blocked. A source assertion that merely changes `runs-on` or a newer-OS passing run rejects neither failure mode.
 
 **Status.** Left open because no qualified replacement runner or macOS 14 host was provided, and the shared task instructions prohibit app launches and network-heavy builds. Provisioning and qualifying a runner is not a small obvious source fix. No CI/environment configuration was changed to bypass this gate.
+
+## Verification and reproducibility
+
+### RL-07 Optional GNOME verifier uses obsolete tray and channel expectations
+
+**P2.** Confirmed at `ac8aaf87`. Locations: [linux_desktop_services.py](../app/SiloUI/scripts/linux_desktop_services.py), tray item selection, Open action and health fixture; [tray.rs](../app/SiloUI/src-tauri/src/tray.rs), Linux `menu` and `title`.
+
+**Trigger.** Enable the smoke harness's optional `SILO_LINUX_DESKTOP_SERVICES=gnome` mode against a current production or Dev fixture.
+
+**Evidence.** Native Linux tray code exports the menu label `Open Silo`; the GNOME helper selects `Open Silo…` and therefore raises `StopIteration` for the current menu even in production. For Dev, it first rejects the channel's `Silo Dev` tray title and window title because both comparisons require `Silo`. Its health-error injection also writes metadata under the production identifier regardless of the selected fixture identifier. These are source-confirmed adapter mismatches; no desktop service was launched.
+
+**Consequence.** The optional verification cannot reach its claimed native reopen, health notification, and Quit checks. The title and metadata assumptions also prevent extending that qualification to the Dev channel selected by the current build workflow. This is separate from RL-02's ordinary settings/autostart smoke paths.
+
+**Correction.** Match the actual Open action and derive tray/window names and health metadata from the selected channel. Keep the native menu's current shared action labels; changing product menus is outside this fixture correction.
+
+**Rejecting test.** Feed the extracted real GNOME menu selector a layout populated from the native tray's actual action labels. It must select Open and Quit. Exercise the tray-title predicate and health metadata path for both standard channel identifiers, requiring Dev state to remain under the Dev fixture root. Then qualify the full optional GNOME run separately.
 
 ## Verification and reproducibility
 
