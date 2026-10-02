@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -74,6 +74,29 @@ describe("repository push notifications", () => {
     expect(within(document.body).getByText("The remote branch changed.")).toBeInTheDocument()
     await userEvent.setup().click(within(document.body).getByRole("button", { name: "Retry" }))
     expect(onPush).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", 2, target)
+  })
+
+  it("announces an unknown push outcome without retrying or acknowledging it", async () => {
+    const { update, onDismiss, onPush } = setup([{ ...base, status: "pushing" }])
+    expect(await screen.findByText("Pushing 2 commits")).toBeInTheDocument()
+    const message = "Silo could not confirm this push. Check the branch on GitHub before pushing again."
+    update([{ ...base, status: "unknown", message }])
+    expect(await screen.findByText("Push outcome unknown · silo")).toBeInTheDocument()
+    expect(screen.getByText(message)).toBeInTheDocument()
+    expect(screen.queryByText("Pushing 2 commits")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole("button", { name: "Close toast" }))
+    await waitFor(() => expect(screen.queryByText(message)).not.toBeInTheDocument())
+    expect(onDismiss).not.toHaveBeenCalled()
+    expect(onPush).not.toHaveBeenCalled()
+  })
+
+  it("clears the unknown-outcome warning after the repository check acknowledges it", async () => {
+    const { update } = setup([{ ...base, status: "pushing" }])
+    update([{ ...base, status: "unknown", message: "Check this branch on GitHub before pushing again." }])
+    expect(await screen.findByText("Push outcome unknown · silo")).toBeInTheDocument()
+    update([])
+    await waitFor(() => expect(screen.queryByText("Push outcome unknown · silo")).not.toBeInTheDocument())
   })
 
   it("offers no notification Retry for a push without a confirmed target", async () => {
