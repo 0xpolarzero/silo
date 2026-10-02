@@ -981,6 +981,21 @@ fn running_child_matches(
             })
 }
 
+/// A built-in VM must have the read-only computer-use mount, whichever recovery path
+/// accepts it. Returns before any state changes, so the pending restore is preserved.
+fn require_mount(
+    observed: &InspectedSandbox,
+    machine: &MachineConfiguration,
+) -> Result<(), RuntimeError> {
+    if crate::computer_use::mount_present(&observed.config, machine) {
+        Ok(())
+    } else {
+        Err(error(
+            "The restored VM does not have the read-only computer-use folder. It was preserved for inspection; the pending restore is unchanged.",
+        ))
+    }
+}
+
 pub(super) fn start_pending(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
@@ -1074,6 +1089,8 @@ pub(super) fn start_pending(
             error("The previous restore attempt has no saved identity. It was preserved.")
         })?;
         if running_child_matches(&observed, machine.id(), attempt_id, &material, &policy) {
+            // Accepting the running VM must not skip the mount check a fresh restore gets.
+            require_mount(&observed, machine)?;
             record.pending_checkpoint_restore = None;
             record.checkpoint_operation = None;
             record.restore_attempted = false;
@@ -1104,6 +1121,9 @@ pub(super) fn start_pending(
             ));
         }
         if record.restore_attempt_ran {
+            // Checked before any recovery state is cleared: without the mount the
+            // attempt would start without computer use and the record could not show why.
+            require_mount(&observed, machine)?;
             // The attempt already ran and may hold changes; recreating it from the
             // checkpoint would silently discard them. Keep it as the sandbox and start it
             // like any other; only an explicit, confirmed action (such as Delete) discards it.
@@ -3075,6 +3095,75 @@ mod tests {
         assert!(!restore
             .iter()
             .any(|arg| arg == "-v" || arg.contains("/opt/silo")));
+        crate::computer_use::set_test_published_dir(None);
+    }
+
+    const ATTEMPT: &str = "6b79cf8f-70b3-4d2f-93d1-3b8b7a7c0001";
+
+    /// A runtime where the rejected restore left a stopped, already-run attempt with
+    /// the VM's labels but without the computer-use mount.
+    struct RejectedRestore(Mutex<Vec<Vec<String>>>);
+    impl RuntimeRunner for RejectedRestore {
+        fn run(
+            &self,
+            _paths: &RuntimePaths,
+            args: &[String],
+            _timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            self.0.lock().unwrap().push(args.to_vec());
+            let stdout = match args.first().map(String::as_str) {
+                Some("snapshot") => serde_json::json!([{
+                    "group":"silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
+                    "name":"silo-backup-0-330418-1790360984903",
+                    "scope":"disk", "availability":"ready"
+                }])
+                .to_string(),
+                Some("list") => serde_json::json!([{"name":"dev"}]).to_string(),
+                Some("inspect") => serde_json::json!({"name":"dev","status":"Stopped","config":{
+                    "labels":{"silo.managed":"true","silo.machine-id":ID,
+                        "silo.restore-attempt":ATTEMPT},
+                    "mounts":[{"type":"Owned","guest":"/workspace"}],
+                }})
+                .to_string(),
+                _ => panic!("a retry without the mount must not change the VM: {args:?}"),
+            };
+            Ok(CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn retrying_a_rejected_restore_still_requires_the_computer_use_mount() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let published = directory.path().join("published");
+        std::fs::create_dir(&published).unwrap();
+        crate::computer_use::set_test_published_dir(Some(published));
+        pending_import(&paths);
+        let mut record = load(&paths, ID).unwrap();
+        record.restore_attempted = true;
+        record.restore_attempt_ran = true;
+        record.restore_attempt_id = Some(ATTEMPT.into());
+        save(&paths, ID, &record).unwrap();
+        let runner = RejectedRestore(Mutex::new(Vec::new()));
+        let failure = start_pending(&runner, &paths, &built_in_machine())
+            .unwrap_err()
+            .to_string();
+        assert!(failure.contains("computer-use folder"), "{failure}");
+        // No command changed the VM, and the recovery state survives for the next Retry.
+        assert!(runner
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|args| matches!(args[0].as_str(), "snapshot" | "list" | "inspect")));
+        let kept = load(&paths, ID).unwrap();
+        assert!(kept.pending_checkpoint_restore.is_some());
+        assert!(kept.restore_attempted && kept.restore_attempt_ran);
+        assert_eq!(kept.restore_attempt_id.as_deref(), Some(ATTEMPT));
         crate::computer_use::set_test_published_dir(None);
     }
 
