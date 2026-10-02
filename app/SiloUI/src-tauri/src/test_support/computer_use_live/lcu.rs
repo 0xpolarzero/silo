@@ -134,7 +134,7 @@ fn live_lcu_drives_the_desktop_without_a_model() {
     eprintln!("lcu status: {report}");
     let report: Value = serde_json::from_str(report.split("\nEXIT:").next().unwrap()).unwrap();
     assert_eq!(report["compatibility"]["status"], "tested");
-    assert_eq!(report["lcu_version"], "0.8.2");
+    assert_eq!(report["lcu_version"], "0.8.3");
     let doctor = fixture.exec_in_session(
         name,
         "/opt/lcu/current/bin/lcu doctor --non-interactive --require-ready",
@@ -190,6 +190,11 @@ fn live_lcu_drives_the_desktop_without_a_model() {
         Some("1"),
         "{output}"
     );
+    assert_eq!(
+        mark(&output, "editor-processes-after-keys"),
+        Some("1"),
+        "{output}"
+    );
     assert_eq!(mark(&output, "terminal-window"), Some("found"), "{output}");
     assert_eq!(mark(&output, "done"), Some("yes"), "{output}");
 
@@ -200,13 +205,19 @@ fn live_lcu_drives_the_desktop_without_a_model() {
     );
     eprintln!("saved file:\n{saved}");
     let text = fixture
-        .exec(name, "root", "cat /home/silo/e2e-lcu-out*.txt")
+        .exec(name, "root", "cat /tmp/e2e-before-keys.txt")
         .unwrap();
     assert_eq!(
         text.trim_end_matches('\n'),
         "typed-by-typeText\npasted-text caf\u{e9}\nline2",
         "{text:?}"
     );
+    // LCU 0.8.3 translates window-targeted keys for GTK 4: ctrl+a, BackSpace, per-key typing
+    // and ctrl+s replaced the saved file's bytes.
+    let after_keys = fixture
+        .exec(name, "root", "cat /home/silo/e2e-lcu-out*.txt")
+        .unwrap();
+    assert_eq!(after_keys, "keys-ok\n", "{after_keys:?}");
     let perkey = fixture
         .exec(name, "root", "cat /tmp/e2e-perkey.txt")
         .unwrap();
