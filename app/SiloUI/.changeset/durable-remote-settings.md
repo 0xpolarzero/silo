@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Flush remote-management configuration directory changes before reporting a successful save.
+Save remote-management settings to disk before confirming success.
