@@ -85,6 +85,13 @@ Silo Dev is running, lists what it will copy, and asks before replacing anything
 Dev already has (previous files are kept as `*.bak-<time>`). Re-running is safe.
 Values are never printed.
 
+Imported private files and their backups use `0600`, including when the previous
+Dev file had broader permissions. Backups use the same atomic writer as imports:
+[Node's file writer](https://nodejs.org/docs/latest-v24.x/api/fs.html#fswritefilesyncfile-data-options)
+accepts creation permissions, while
+[the copy API's mode](https://nodejs.org/docs/latest-v24.x/api/fs.html#fscopyfilesyncsrc-dest-mode)
+controls copy flags rather than permissions. Public SSH keys use `0644`.
+
 Copied:
 
 - App preferences and onboarding completion: theme, reduce motion, notification
