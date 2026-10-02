@@ -19,6 +19,7 @@ use std::{
     collections::BTreeMap,
     fs,
     io::Read,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -198,10 +199,18 @@ fn observed_path(paths: &RuntimePaths, id: &str) -> Option<PathBuf> {
 }
 
 fn read_settings_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Computer-use settings must be a regular file.",
+        ));
+    }
     let mut bytes = Vec::new();
-    fs::File::open(path)?
-        .take(MAX_SETTINGS_BYTES + 1)
-        .read_to_end(&mut bytes)?;
+    file.take(MAX_SETTINGS_BYTES + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > MAX_SETTINGS_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
