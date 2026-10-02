@@ -24,12 +24,18 @@ const UNSUPPORTED_EDITOR: &str =
 /// A desktop entry's `Exec` tokens without field codes (`%U`) or Flatpak's
 /// file-forwarding markers (`@@`, `@@u`).
 pub(crate) fn exec_argv(tokens: impl IntoIterator<Item = String>) -> Vec<String> {
-    tokens
+    let mut argv: Vec<_> = tokens
         .into_iter()
         .filter(|token| {
             !(token.len() == 2 && token.starts_with('%')) && !matches!(token.as_str(), "@@" | "@@u")
         })
-        .collect()
+        .collect();
+    // Field-code removal can leave an empty file-argument section. Silo's
+    // appended options must still be parsed as options by the editor.
+    if argv.last().is_some_and(|argument| argument == "--") {
+        argv.pop();
+    }
+    argv
 }
 
 /// The program an `Exec` line runs, skipping `env [-i] [NAME=value]...` as
@@ -312,6 +318,23 @@ mod tests {
                 .map(OsString::from)
             );
         }
+    }
+
+    #[test]
+    fn desktop_file_separators_do_not_hide_silos_editor_options() {
+        let find = |name: &str| Some(PathBuf::from("/usr/bin").join(name));
+        let native = linux_editor_command(&tokens("code -- %F"), None, &find).unwrap();
+        assert!(native.args.is_empty());
+        let flatpak = linux_editor_command(
+            &tokens("flatpak run --command=code com.visualstudio.code -- @@ %F @@"),
+            Some("com.visualstudio.code"),
+            &find,
+        )
+        .unwrap();
+        assert_eq!(
+            flatpak.args,
+            ["run", "--command=code", "com.visualstudio.code"].map(OsString::from)
+        );
     }
 
     #[test]
