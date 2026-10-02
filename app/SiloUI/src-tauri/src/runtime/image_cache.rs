@@ -26,6 +26,9 @@ fn rebind(descriptor: &str, cache: &Path) -> Result<Option<String>, String> {
             continue;
         };
         if Path::new(path).starts_with(&own) {
+            if !Path::new(path).is_file() {
+                return Err("An image file is missing from this runtime's cache.".into());
+            }
             lines.push(line.to_owned());
             continue;
         }
@@ -277,6 +280,23 @@ mod tests {
             assert_eq!(cached_copy(path, &cache), None, "{path}");
         }
         assert_eq!(repair(&cache.join("absent")).unwrap(), 0);
+    }
+
+    #[test]
+    fn missing_files_in_the_current_cache_are_reported_without_rewriting_the_descriptor() {
+        let (_directory, cache) = cache();
+        let current = fs::canonicalize(&cache).unwrap();
+        let fsmeta = current.join("fsmeta").join(FSMETA);
+        let layer = current.join("layers").join(LAYER);
+        let vmdk = cache.join("vmdk/current.vmdk");
+        let text = descriptor(&fsmeta.display().to_string(), &layer.display().to_string());
+        fs::write(&vmdk, &text).unwrap();
+        fs::remove_file(&layer).unwrap();
+
+        assert!(repair(&cache).unwrap_err().contains("missing"));
+        assert_eq!(fs::read_to_string(&vmdk).unwrap(), text);
+        fs::write(&layer, [0; 512]).unwrap();
+        assert_eq!(repair(&cache).unwrap(), 0);
     }
 
     #[test]
