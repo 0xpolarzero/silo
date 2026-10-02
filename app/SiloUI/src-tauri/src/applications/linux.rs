@@ -524,6 +524,52 @@ mod tests {
     }
 
     #[test]
+    fn browser_desktop_selection_reaches_a_fake_launch_and_rechecks_removed_targets() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("Fixture browser");
+        let marker = directory.path().join("browser-argv");
+        crate::test_support::write_shell_script(
+            &executable,
+            format!(
+                "printf '%s' \"$1\" > '{}'\n",
+                marker.to_str().unwrap().replace('\'', "'\\''")
+            ),
+        );
+        let desktop = directory.path().join("browser.desktop");
+        fs::write(
+            &desktop,
+            format!(
+                "[Desktop Entry]\nType=Application\nName=Fixture browser\nExec=\"{}\" %u\n",
+                executable.display()
+            ),
+        )
+        .unwrap();
+        assert!(application_at(&executable).is_some());
+        assert!(super::super::browser_path(&executable, true).is_err());
+        let selected = application_at(&desktop).unwrap();
+        let path = super::super::browser_path(Path::new(&selected.path), true).unwrap();
+        let url = "https://example.test/?argument=$()&literal=semicolon;";
+        open_browser(Some(path), url).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if fs::read_to_string(&marker).is_ok_and(|argument| argument == url) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the fake browser did not receive the URL"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        fs::remove_file(&executable).unwrap();
+        assert!(application_at(&desktop).is_none());
+        assert!(open_browser(Some(path), url).is_err());
+        fs::remove_file(&desktop).unwrap();
+        assert!(application_at(&desktop).is_none());
+        assert!(open_browser(Some(path), url).is_err());
+    }
+
+    #[test]
     fn selected_executable_keeps_its_exact_path_and_requires_execute_permission() {
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("My editor.AppImage");
