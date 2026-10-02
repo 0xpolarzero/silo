@@ -65,3 +65,13 @@ The integrated `d7f7da17` moved inline Escape handling to document capture so ca
 - **Fix:** Ignore composing repository commands and identity Enter; prevent Radix's default Escape dismissal during composition.
 - **Tests:** Four repository keys retain selection and list visibility, then ordinary ArrowDown/Enter adds the intended repository. Two identity fields retain focus and avoid commits for composing Enter, then ordinary Enter commits once.
 - **Primary evidence:** [UI Events composition keyboard contract](https://w3c.github.io/uievents/#dom-keyboardevent-iscomposing); the same supported Radix Escape callback is used by the shared filter fix above.
+
+## FE-COMPONENTS-15 — P2 — Composing Escape discards popover form drafts
+
+- **File:line at discovery:** `app/SiloUI/src/components/confirm-popover.tsx:86–106` and `app/SiloUI/src/components/actions-menu.tsx:76`.
+- **Trigger:** Cancel an IME candidate with Escape while writing a checkpoint description or a name in an actions-menu form.
+- **Evidence:** Two new fixtures lose the whole dialog on composing Escape, unmounting its draft fields.
+- **Consequence:** Cancelling a text candidate discards the form draft and moves focus back to the opener.
+- **Fix:** Prevent Radix's default Escape dismissal when the event is composing in both shared popover hosts.
+- **Tests:** Both form hosts retain draft values and input focus during composing Escape, then close and restore the opener on ordinary Escape.
+- **Primary evidence:** [UI Events composition contract](https://w3c.github.io/uievents/#dom-keyboardevent-iscomposing) and installed Radix's supported `onEscapeKeyDown` callback, cited above.
