@@ -95,3 +95,15 @@ notice. Before the fix the handler received zero calls; after the fix it receive
 the notice. Focus retries failed registration without duplicating an active or
 in-flight subscription; disposal removes focus recovery and remains safe while
 registration is pending. This is a native-bridge fixture, without an app or VM.
+
+
+## Follow-up: failed queue registration hid the shutdown snapshot
+
+The subscribe-before-read correction left its rejection path without a queue
+read. When only queue event registration failed, a running cancellable backup
+was hidden behind the generic shutdown label. The regression rejects the queue
+subscription while native reads still work; it failed to find the backup label.
+The rejection path now reads a fallback snapshot unless disposed. Successful
+registration still precedes the initial read, preserving the subscription-gap
+fix. All 41 focused notice, settings, and shutdown tests pass; typecheck, targeted
+lint, and diff checks pass. Only native-bridge fixtures were used.
