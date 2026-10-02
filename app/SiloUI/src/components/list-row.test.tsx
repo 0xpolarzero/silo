@@ -5,6 +5,12 @@ import { describe, expect, it, vi } from "vitest"
 import { SandboxListRow } from "@/features/sandboxes/components/sandbox-list"
 
 describe("openable list rows", () => {
+  it("reveals complete text details when they are truncated", () => {
+    const detail = "Sandbox connection details ".repeat(20)
+    render(<SandboxListRow name="dev" kind="vm" detail={detail} />)
+    expect(screen.getByText(detail.trim())).toHaveAttribute("title", detail)
+  })
+
   it("keeps controls in the row detail independent of opening the row", async () => {
     const user = userEvent.setup()
     const onOpen = vi.fn()

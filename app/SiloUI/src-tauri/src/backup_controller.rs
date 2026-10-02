@@ -395,9 +395,13 @@ fn publish(app: &AppHandle, controller: &Controller) {
     let _ = app.emit("silo://application-state-changed", ());
 }
 
-/// Binary sizes, labelled GiB/MiB like the storage panel (E-41).
+/// Binary sizes, as the storage panel shows them (E-41).
 fn display_size(bytes: u64) -> String {
-    if bytes >= GIB {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else if bytes >= GIB {
         format!("{:.1} GiB", bytes as f64 / GIB as f64)
     } else {
         format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
@@ -438,20 +442,31 @@ pub(crate) async fn read_backup_state(
 }
 
 fn backup_state(controller: &Controller) -> Result<BackupState, String> {
-    let (journal_error, operation) = {
-        let view = controller.view.lock().map_err(|_| {
-            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
-        })?;
-        (view.journal_error.clone(), view.operation.clone())
+    let view = controller.view.lock().map_err(|_| {
+        "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+    })?;
+    let journal = recovery::snapshot(controller)?;
+    let busy = controller.busy.load(Ordering::Acquire);
+    // A worker saves its journal before publishing its view. A result must come
+    // from that same journal unless recovery failed and kept it pending for retry.
+    let operation = match (&view.operation, &journal) {
+        (Some(Operation::Result { .. }), Some(journal)) if !journal.is_pending() || busy => {
+            Some(journal.operation())
+        }
+        _ => view.operation.clone(),
     };
-    let availability_message = journal_error.or_else(|| {
-        recovery::unresolved(controller).unwrap_or(true).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
+    let availability_message = view.journal_error.clone().or_else(|| {
+        (!busy && journal.as_ref().is_some_and(recovery::Journal::is_pending)).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
     });
-    let result_unseen =
-        matches!(operation, Some(Operation::Result { .. })) && recovery::unseen(controller)?;
+    let result_unseen = matches!(operation, Some(Operation::Result { .. }))
+        && journal
+            .as_ref()
+            .is_some_and(recovery::Journal::is_unseen_result);
     Ok(BackupState {
         snapshot_id: controller.revision.load(Ordering::Relaxed).to_string(),
-        operation_id: recovery::token(controller)?,
+        operation_id: journal
+            .as_ref()
+            .map(|journal| journal.identity().to_string()),
         availability: if availability_message.is_some() {
             "unavailable"
         } else {
@@ -464,6 +479,12 @@ fn backup_state(controller: &Controller) -> Result<BackupState, String> {
     })
 }
 
+fn selected_path_text(path: &Path) -> Result<String, String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        "Silo cannot use paths containing non-UTF-8 names. Rename the affected file or folder, then choose it again.".into()
+    })
+}
+
 #[tauri::command]
 pub(crate) async fn choose_backup_destination(
     app: AppHandle,
@@ -472,15 +493,15 @@ pub(crate) async fn choose_backup_destination(
 ) -> Result<Option<String>, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
-    let starting_directory = controller
-        .view
-        .lock()
-        .map_err(|_| {
-            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
-        })?
-        .destination
-        .clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let starting_directory = controller
+            .view
+            .lock()
+            .map_err(|_| {
+                "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+            })?
+            .destination
+            .clone();
         let mut dialog = app
             .dialog()
             .file()
@@ -495,9 +516,10 @@ pub(crate) async fn choose_backup_destination(
         let path = selected.into_path().map_err(|error| error.to_string())?;
         let path = fs::canonicalize(&path)
             .map_err(|error| format!("Silo could not use the selected destination: {error}"))?;
+        let selected = selected_path_text(&path)?;
         remember_destination(&controller, path.clone());
         publish(&app, &controller);
-        Ok(Some(path.to_string_lossy().into_owned()))
+        Ok(Some(selected))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -520,7 +542,7 @@ pub(crate) async fn choose_backup_archive(
         selected
             .map(|path| path.into_path().map_err(|error| error.to_string()))
             .transpose()
-            .map(|path| path.map(|path| path.to_string_lossy().into_owned()))
+            .and_then(|path| path.map(|path| selected_path_text(&path)).transpose())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -539,10 +561,21 @@ pub(crate) async fn inspect_backup_archive(
 ) -> Result<ArchiveInspectionResult, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let path = PathBuf::from(archive_path);
-        let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let cancellation = register_inspection(&controller, request_id.clone());
+    let path = PathBuf::from(archive_path);
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    tauri::async_runtime::spawn_blocking(inspection_worker(controller, path, request_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn inspection_worker(
+    controller: Arc<Controller>,
+    path: PathBuf,
+    request_id: String,
+) -> impl FnOnce() -> Result<ArchiveInspectionResult, String> + Send {
+    // Register before dispatch so cancellation and replacement also cover queued work.
+    let cancellation = register_inspection(&controller, request_id.clone());
+    move || {
         let inspected = controller.service.inspect_archive(&path, &cancellation);
         finish_inspection(&controller, &request_id);
         match inspected {
@@ -573,9 +606,7 @@ pub(crate) async fn inspect_backup_archive(
                 reason: Some(error.to_string()),
             }),
         }
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    }
 }
 
 /// Stops the export file check started under `request_id`, if it is still running.
@@ -1888,6 +1919,7 @@ fn unpack_and_save(
         &id,
         &prepared.snapshot_group,
         &prepared.snapshot_member,
+        &prepared.runtime_config,
     )?;
     import_group.keep();
     Ok(())
@@ -1906,13 +1938,20 @@ fn commit_import(
     id: &str,
     group: &str,
     member: &str,
+    runtime_config: &Value,
 ) -> Result<(), String> {
     recovery::save_restore_identity(controller, id, group)?;
     let discard = |error: String| {
         let _ = recovery::discard_uncommitted_import(paths, controller, id, Some(group));
         Err(error)
     };
-    if let Err(error) = runtime::checkpoints::import_pending_restore(paths, id, group, member) {
+    if let Err(error) = runtime::checkpoints::import_pending_restore_with_environment(
+        paths,
+        id,
+        group,
+        member,
+        runtime_config,
+    ) {
         return discard(error.to_string());
     }
     let mut updated = original;
@@ -1944,7 +1983,7 @@ pub(crate) async fn cancel_backup_operation(
 }
 
 fn cancel_operation(controller: &Controller) -> Result<(), String> {
-    {
+    let operation_id = {
         let view = controller.view.lock().map_err(|_| {
             "Export and import status could not be read. Relaunch Silo and retry.".to_string()
         })?;
@@ -1965,8 +2004,11 @@ fn cancel_operation(controller: &Controller) -> Result<(), String> {
             .as_ref()
             .ok_or("No export or import is running.")?
             .cancel();
+        recovery::token(controller).ok().flatten()
+    };
+    if let Some(operation_id) = operation_id {
+        let _ = recovery::cancel(controller, &operation_id);
     }
-    let _ = recovery::cancel(controller);
     Ok(())
 }
 
@@ -2286,8 +2328,32 @@ mod tests {
     }
 
     #[test]
+    fn backup_picker_rejects_paths_that_would_select_a_different_file() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(std::ffi::OsString::from_vec(
+            b"/backups/sandbox-\xff.silo-backup".to_vec(),
+        ));
+        assert!(selected_path_text(&path).is_err());
+        assert!(selected_path_text(path.parent().unwrap()).is_ok());
+        let directory = PathBuf::from(std::ffi::OsString::from_vec(b"/backups/\xff".to_vec()));
+        assert!(selected_path_text(&directory).is_err());
+    }
+
+    #[test]
+    fn backup_picker_preserves_spaces_unicode_and_leading_dashes() {
+        let path = "/backups/日本語 dossier/-sandbox.silo-backup";
+        assert_eq!(selected_path_text(Path::new(path)).unwrap(), path);
+    }
+
+    #[test]
     fn export_sizes_label_binary_units() {
         let _test_state = crate::test_support::global_state();
+        assert_eq!(display_size(0), "0 B");
+        assert_eq!(display_size(1), "1 B");
+        assert_eq!(display_size(1023), "1023 B");
+        assert_eq!(display_size(1024), "1.0 KiB");
+        assert_eq!(display_size(4096), "4.0 KiB");
         assert_eq!(display_size(3 * GIB), "3.0 GiB");
         assert_eq!(display_size(5 * 1024 * 1024), "5.0 MiB");
     }
@@ -3193,6 +3259,83 @@ mod tests {
     }
 
     #[test]
+    fn a_new_journal_never_reports_the_previous_exports_success() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let previous = Operation::Result {
+            operation: "backup",
+            archive: completed_archive(),
+            running_names: Vec::new(),
+            target_name: None,
+            outcome: "success",
+            title: "Export complete".into(),
+            message: "Sandbox exported.".into(),
+            detail: None,
+        };
+        set_operation(&controller, previous).unwrap();
+        // The next export has saved its journal but has not replaced the view yet.
+        controller.busy.store(true, Ordering::Release);
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        let state = backup_state(&controller).unwrap();
+        assert_eq!(state.operation_id, recovery::token(&controller).unwrap());
+        assert!(
+            matches!(state.operation, Some(Operation::Running { .. })),
+            "a new export must not inherit the old success"
+        );
+        let current = Operation::Result {
+            operation: "backup",
+            archive: Archive {
+                archive_path: "/backups/new.silo-backup".into(),
+                ..completed_archive()
+            },
+            running_names: Vec::new(),
+            target_name: None,
+            outcome: "success",
+            title: "Export complete".into(),
+            message: "Sandbox exported.".into(),
+            detail: None,
+        };
+        recovery::complete(&controller, current);
+        let state = backup_state(&controller).unwrap();
+        let Some(Operation::Result { archive, .. }) = state.operation else {
+            panic!("the current journal's result must be reported");
+        };
+        assert_eq!(archive.archive_path, "/backups/new.silo-backup");
+    }
+
+    #[test]
+    fn a_failed_recovery_stays_visible_while_its_journal_is_pending() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        set_operation(
+            &controller,
+            failed_transfer(
+                "backup",
+                completed_archive(),
+                None,
+                "Recovery failed".into(),
+            ),
+        )
+        .unwrap();
+        let state = backup_state(&controller).unwrap();
+        assert_eq!(state.availability, "unavailable");
+        assert!(
+            matches!(state.operation, Some(Operation::Result { outcome: "failed", message, .. }) if message == "Recovery failed")
+        );
+    }
+
+    #[test]
     fn backup_state_reads_only_memory_and_reports_a_saved_operation_error() {
         let _test_state = crate::test_support::global_state();
         // The export folder is on a volume that no longer exists; reading state
@@ -3351,6 +3494,7 @@ mod tests {
             &id,
             GROUP,
             MEMBER,
+            &serde_json::json!({"env":[{"key":"PROJECT_MODE","value":"portable"}]}),
         )
         .unwrap();
         assert!(runtime::read_metadata(&paths.metadata)
@@ -3358,6 +3502,20 @@ mod tests {
             .machines
             .iter()
             .any(|machine| machine.id() == id));
+        let record: Value = serde_json::from_slice(
+            &fs::read(
+                paths
+                    .metadata
+                    .with_file_name("checkpoints")
+                    .join(format!("{id}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            record["desiredEnvironment"],
+            serde_json::json!([{"key":"PROJECT_MODE","value":"portable"}])
+        );
         let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
         assert!(saved.contains(&id) && saved.contains(GROUP), "{saved}");
     }
@@ -3385,7 +3543,8 @@ mod tests {
             imported_machine(&id),
             &id,
             GROUP,
-            MEMBER
+            MEMBER,
+            &Value::Null,
         )
         .is_err());
         assert!(!paths
@@ -3524,6 +3683,56 @@ mod tests {
         finish_inspection(&controller, "third");
         assert!(!cancel_inspection(&controller, "third"));
         assert!(!third.cancelled());
+    }
+
+    #[test]
+    fn a_queued_inspection_can_be_cancelled_before_its_worker_starts() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
+        let worker = inspection_worker(
+            controller.clone(),
+            directory.path().join("missing.silo-backup"),
+            "queued".into(),
+        );
+        assert!(cancel_inspection(&controller, "queued"));
+        let result = worker().unwrap();
+        assert!(!result.valid);
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("The operation was cancelled.")
+        );
+    }
+
+    #[test]
+    fn an_older_queued_inspection_cannot_cancel_a_newer_request() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
+        let older = inspection_worker(
+            controller.clone(),
+            directory.path().join("older.silo-backup"),
+            "older".into(),
+        );
+        let newer = inspection_worker(
+            controller.clone(),
+            directory.path().join("newer.silo-backup"),
+            "newer".into(),
+        );
+        let result = older().unwrap();
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("The operation was cancelled.")
+        );
+        assert!(cancel_inspection(&controller, "newer"));
+        assert_eq!(
+            newer().unwrap().reason.as_deref(),
+            Some("The operation was cancelled.")
+        );
     }
 
     #[test]

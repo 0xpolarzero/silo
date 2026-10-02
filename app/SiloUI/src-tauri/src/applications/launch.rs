@@ -24,23 +24,40 @@ const UNSUPPORTED_EDITOR: &str =
 /// A desktop entry's `Exec` tokens without field codes (`%U`) or Flatpak's
 /// file-forwarding markers (`@@`, `@@u`).
 pub(crate) fn exec_argv(tokens: impl IntoIterator<Item = String>) -> Vec<String> {
-    tokens
+    let mut argv: Vec<_> = tokens
         .into_iter()
         .filter(|token| {
             !(token.len() == 2 && token.starts_with('%')) && !matches!(token.as_str(), "@@" | "@@u")
         })
-        .collect()
+        .collect();
+    // Field-code removal can leave an empty file-argument section. Silo's
+    // appended options must still be parsed as options by the editor.
+    if argv.last().is_some_and(|argument| argument == "--") {
+        argv.pop();
+    }
+    argv
 }
 
-/// The program an `Exec` line runs, skipping `env [-i] [NAME=value]...` as
+/// The program an `Exec` line runs, skipping `env [-i] [-u NAME] [NAME=value]...` as
 /// snap entries use.
 pub(crate) fn exec_program(argv: &[String]) -> Option<&str> {
-    let mut tokens = argv.iter().map(String::as_str);
-    let first = tokens.next()?;
+    exec_program_index(argv).map(|index| argv[index].as_str())
+}
+
+fn exec_program_index(argv: &[String]) -> Option<usize> {
+    let mut tokens = argv.iter().enumerate();
+    let (_, first) = tokens.next()?;
     if Path::new(first).file_name() != Some(OsStr::new("env")) {
-        return Some(first);
+        return Some(0);
     }
-    tokens.find(|token| !token.starts_with('-') && !token.contains('='))
+    while let Some((index, token)) = tokens.next() {
+        if matches!(token.as_str(), "-u" | "--unset") {
+            tokens.next()?;
+        } else if !token.starts_with('-') && !token.contains('=') {
+            return Some(index);
+        }
+    }
+    None
 }
 
 fn file_name(path: &Path) -> &str {
@@ -51,6 +68,33 @@ fn executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+}
+
+fn with_exec_prefix(
+    argv: &[String],
+    index: usize,
+    command: EditorCommand,
+    find_program: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Result<EditorCommand, String> {
+    if index == 0 {
+        return Ok(command);
+    }
+    let program = if Path::new(&argv[0]).is_absolute() {
+        PathBuf::from(&argv[0])
+    } else {
+        find_program(&argv[0]).ok_or("The selected editor is unavailable.")?
+    };
+    if !executable_file(&program) {
+        return Err("The selected editor is unavailable.".into());
+    }
+    let mut args: Vec<_> = argv[1..index].iter().map(OsString::from).collect();
+    args.push(command.program.into_os_string());
+    args.extend(command.args);
+    Ok(EditorCommand {
+        program,
+        args,
+        zed: command.zed,
+    })
 }
 
 /// Resolves a Linux editor entry to its command-line launcher (G-06, G-25).
@@ -70,14 +114,42 @@ pub(crate) fn linux_editor_command(
             "dev.zed.Zed" => true,
             _ => return Err(UNSUPPORTED_EDITOR.into()),
         };
-        let program = find_program("flatpak").ok_or("The selected editor is unavailable.")?;
-        return Ok(EditorCommand {
-            program,
-            args: vec!["run".into(), app.into()],
-            zed,
-        });
+        let index = exec_program_index(argv).ok_or("The selected editor is unavailable.")?;
+        let token = &argv[index];
+        if file_name(Path::new(token)) != "flatpak" {
+            return Err("The selected editor is unavailable.".into());
+        }
+        let args = &argv[index + 1..];
+        if args.first().map(String::as_str) != Some("run")
+            || !args[1..].iter().any(|argument| argument == app)
+        {
+            return Err("The selected editor is unavailable.".into());
+        }
+        let program = if Path::new(token).is_absolute() {
+            PathBuf::from(token)
+        } else {
+            find_program(token).ok_or("The selected editor is unavailable.")?
+        };
+        if !executable_file(&program) {
+            return Err("The selected editor is unavailable.".into());
+        }
+        return with_exec_prefix(
+            argv,
+            index,
+            EditorCommand {
+                program,
+                args: args
+                    .iter()
+                    .filter(|argument| argument.as_str() != "--file-forwarding")
+                    .map(OsString::from)
+                    .collect(),
+                zed,
+            },
+            find_program,
+        );
     }
-    let token = exec_program(argv).ok_or("The selected editor is unavailable.")?;
+    let index = exec_program_index(argv).ok_or("The selected editor is unavailable.")?;
+    let token = &argv[index];
     let program = if Path::new(token).is_absolute() {
         PathBuf::from(token)
     } else {
@@ -96,11 +168,19 @@ pub(crate) fn linux_editor_command(
         }
         _ => return Err(UNSUPPORTED_EDITOR.into()),
     };
-    Ok(EditorCommand {
-        program,
-        args: Vec::new(),
-        zed,
-    })
+    if !executable_file(&program) {
+        return Err("The selected editor is unavailable.".into());
+    }
+    with_exec_prefix(
+        argv,
+        index,
+        EditorCommand {
+            program,
+            args: argv[index + 1..].iter().map(OsString::from).collect(),
+            zed,
+        },
+        find_program,
+    )
 }
 
 /// Commands that run the user's preferred terminal (G-07). The freedesktop
@@ -128,13 +208,6 @@ fn appimage_root() -> Option<PathBuf> {
     (root.is_absolute() && executable.starts_with(&root)).then_some(root)
 }
 
-fn inside(entry: &str, root: &str) -> bool {
-    entry == root
-        || entry
-            .strip_prefix(root)
-            .is_some_and(|rest| rest.starts_with('/'))
-}
-
 /// Environment changes that undo the AppImage's AppRun hooks for a child
 /// (G-24): every variable naming the mount point loses those entries (and is
 /// removed when nothing remains), so children such as gnome-terminal use the
@@ -143,10 +216,7 @@ pub(crate) fn appimage_child_environment(
     variables: impl IntoIterator<Item = (OsString, OsString)>,
     root: &Path,
 ) -> Vec<(OsString, Option<OsString>)> {
-    let Some(root) = root.to_str().map(|root| root.trim_end_matches('/')) else {
-        return Vec::new();
-    };
-    if root.is_empty() {
+    if root.as_os_str().is_empty() || root == Path::new("/") {
         return Vec::new();
     }
     let mut changes = Vec::new();
@@ -155,21 +225,24 @@ pub(crate) fn appimage_child_environment(
             changes.push((name, None));
             continue;
         }
-        let Some(text) = value.to_str() else { continue };
-        if !text.contains(root) {
-            continue;
-        }
-        let entries: Vec<_> = text.split(':').collect();
+        let entries: Vec<_> = std::env::split_paths(&value).collect();
         let kept: Vec<_> = entries
             .iter()
-            .copied()
-            .filter(|entry| !inside(&entry.replace("//", "/"), root))
+            .filter(|entry| !entry.starts_with(root))
             .collect();
         if kept.len() == entries.len() {
             continue;
         }
-        let kept: Vec<_> = kept.into_iter().filter(|entry| !entry.is_empty()).collect();
-        changes.push((name, (!kept.is_empty()).then(|| kept.join(":").into())));
+        let kept: Vec<_> = kept
+            .into_iter()
+            .filter(|entry| !entry.as_os_str().is_empty())
+            .collect();
+        changes.push((
+            name,
+            (!kept.is_empty()).then(|| {
+                std::env::join_paths(kept).expect("Paths from split_paths contain no separator")
+            }),
+        ));
     }
     changes
 }
@@ -271,17 +344,193 @@ mod tests {
     }
 
     #[test]
+    fn env_unset_operands_are_not_confused_with_the_editor_program() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("code");
+        executable(&program);
+        std::fs::write(
+            &program,
+            "#!/bin/sh\nprintf '%s\\n' \"${code-unset}\" \"$@\"\n",
+        )
+        .unwrap();
+        let argv = ["/usr/bin/env", "-u", "code", "code"].map(str::to_owned);
+        let command = linux_editor_command(&argv, None, &|_| Some(program.clone())).unwrap();
+        let output = Command::new(command.program)
+            .env("PATH", directory.path())
+            .env("code", "must be removed")
+            .args(command.args)
+            .arg("fixture.code-workspace")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "unset\nfixture.code-workspace\n"
+        );
+        for flag in ["-u", "--unset"] {
+            assert_eq!(
+                exec_program(&["env", flag, "EXAMPLE", "code"].map(str::to_owned)),
+                Some("code")
+            );
+            assert!(exec_program(&["env", flag].map(str::to_owned)).is_none());
+        }
+    }
+
+    #[test]
+    fn editor_entries_preserve_their_environment_wrapper_at_launch() {
+        let directory = tempfile::tempdir().unwrap();
+        for (name, app) in [("code", None), ("flatpak", Some("com.visualstudio.code"))] {
+            let program = directory.path().join(name);
+            executable(&program);
+            std::fs::write(
+                &program,
+                "#!/bin/sh\nprintf '%s\\n' \"$SILO_EDITOR_ENTRY_TEST\" \"$@\"\n",
+            )
+            .unwrap();
+            let mut argv = vec![
+                "/usr/bin/env".into(),
+                "SILO_EDITOR_ENTRY_TEST=selected environment".into(),
+                program.to_str().unwrap().into(),
+            ];
+            if app.is_some() {
+                argv.extend(["run".into(), "com.visualstudio.code".into()]);
+            }
+            let command = linux_editor_command(&argv, app, &nowhere).unwrap();
+            let output = Command::new(command.program)
+                .env_remove("SILO_EDITOR_ENTRY_TEST")
+                .args(command.args)
+                .arg("fixture.code-workspace")
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let text = String::from_utf8(output.stdout).unwrap();
+            assert!(
+                text.starts_with("selected environment\n"),
+                "{name}: {text:?}"
+            );
+            assert!(text.ends_with("fixture.code-workspace\n"));
+        }
+    }
+
+    #[test]
+    fn env_wrapped_editors_reject_missing_or_non_executable_launchers() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("code");
+        let argv = vec![
+            "/usr/bin/env".into(),
+            "A=b".into(),
+            program.to_str().unwrap().into(),
+        ];
+        assert!(linux_editor_command(&argv, None, &nowhere).is_err());
+        std::fs::write(&program, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(linux_editor_command(&argv, None, &nowhere).is_err());
+        executable(&program);
+        assert!(linux_editor_command(&argv, None, &nowhere).is_ok());
+    }
+
+    #[test]
+    fn flatpak_editor_preserves_the_selected_installation_and_command() {
+        let directory = tempfile::tempdir().unwrap();
+        let launcher = directory.path().join("flatpak");
+        executable(&launcher);
+        let find = |_: &str| Some(launcher.clone());
+        for branch in ["stable", "beta"] {
+            let argv = tokens(&format!(
+                "{} run --user --branch={branch} --arch=aarch64 --command=code --file-forwarding com.visualstudio.code @@ %F @@", launcher.display()
+            ));
+            let command =
+                linux_editor_command(&argv, Some("com.visualstudio.code"), &find).unwrap();
+            assert_eq!(
+                command.args,
+                [
+                    "run",
+                    "--user",
+                    &format!("--branch={branch}"),
+                    "--arch=aarch64",
+                    "--command=code",
+                    "com.visualstudio.code"
+                ]
+                .map(OsString::from)
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_file_separators_do_not_hide_silos_editor_options() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["code", "flatpak"] {
+            executable(&directory.path().join(name));
+        }
+        let find = |name: &str| Some(directory.path().join(name));
+        let native = linux_editor_command(&tokens("code -- %F"), None, &find).unwrap();
+        assert!(native.args.is_empty());
+        let flatpak = linux_editor_command(
+            &tokens("flatpak run --command=code com.visualstudio.code -- @@ %F @@"),
+            Some("com.visualstudio.code"),
+            &find,
+        )
+        .unwrap();
+        assert_eq!(
+            flatpak.args,
+            ["run", "--command=code", "com.visualstudio.code"].map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn native_editor_entries_keep_their_isolated_data_and_extensions() {
+        let directory = tempfile::tempdir().unwrap();
+        let electron = directory.path().join("code/code");
+        executable(&electron);
+        let cli = directory.path().join("code/bin/code");
+        executable(&cli);
+        std::fs::write(&cli, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        let argv = vec![
+            electron.to_str().unwrap().to_owned(),
+            "--user-data-dir=/tmp/isolated data".into(),
+            "--extensions-dir=/tmp/isolated extensions".into(),
+        ];
+        let command = linux_editor_command(&argv, None, &nowhere).unwrap();
+        let output = Command::new(command.program)
+            .args(command.args)
+            .args(["--profile", "Silo test", "fixture.code-workspace"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "--user-data-dir=/tmp/isolated data\n--extensions-dir=/tmp/isolated extensions\n--profile\nSilo test\nfixture.code-workspace\n"
+        );
+    }
+
+    #[test]
     fn snap_flatpak_and_zed_tarball_entries_are_launchable() {
-        let snap = tokens("env BAMF_DESKTOP_FILE_HINT=x /snap/bin/code --force-user-env %F");
+        let directory = tempfile::tempdir().unwrap();
+        let snap_program = directory.path().join("snap/bin/code");
+        executable(&snap_program);
+        let snap = tokens(&format!(
+            "/usr/bin/env BAMF_DESKTOP_FILE_HINT=x {} --force-user-env %F",
+            snap_program.display()
+        ));
         let command = linux_editor_command(&snap, None, &nowhere).unwrap();
         assert_eq!(
-            (command.program, command.zed),
-            (PathBuf::from("/snap/bin/code"), false)
+            (command.program, command.args, command.zed),
+            (
+                PathBuf::from("/usr/bin/env"),
+                vec![
+                    "BAMF_DESKTOP_FILE_HINT=x".into(),
+                    snap_program.into_os_string(),
+                    "--force-user-env".into()
+                ],
+                false
+            )
         );
 
-        let flatpak = |_: &str| Some(PathBuf::from("/usr/bin/flatpak"));
+        let launcher = directory.path().join("flatpak");
+        executable(&launcher);
+        let flatpak = |_: &str| Some(launcher.clone());
         let command = linux_editor_command(
-            &tokens("/usr/bin/flatpak run dev.zed.Zed %U"),
+            &tokens(&format!("{} run dev.zed.Zed %U", launcher.display())),
             Some("dev.zed.Zed"),
             &flatpak,
         )
@@ -289,12 +538,17 @@ mod tests {
         assert_eq!(
             command,
             EditorCommand {
-                program: "/usr/bin/flatpak".into(),
+                program: launcher.clone(),
                 args: vec!["run".into(), "dev.zed.Zed".into()],
                 zed: true
             }
         );
-        let command = linux_editor_command(&[], Some("com.visualstudio.code"), &flatpak).unwrap();
+        let command = linux_editor_command(
+            &tokens("flatpak run com.visualstudio.code %F"),
+            Some("com.visualstudio.code"),
+            &flatpak,
+        )
+        .unwrap();
         assert_eq!(
             command.args,
             [
@@ -351,6 +605,47 @@ mod tests {
             Some(listed[0].as_str())
         );
         assert_eq!(linux_terminal_default(&nowhere, &[]), None);
+    }
+
+    #[test]
+    fn appimage_cleanup_preserves_non_utf8_system_paths() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = Path::new("/tmp/.mount_Silo");
+        let system = OsString::from_vec(b"/opt/editor \xff/lib".to_vec());
+        let mut libraries = OsString::from("/tmp/.mount_Silo/usr/lib:");
+        libraries.push(&system);
+        libraries.push(":/tmp/.mount_Silo-other/lib");
+        let changes =
+            appimage_child_environment([(OsString::from("LD_LIBRARY_PATH"), libraries)], root);
+        let mut expected = system;
+        expected.push(":/tmp/.mount_Silo-other/lib");
+        assert_eq!(
+            changes,
+            [(OsString::from("LD_LIBRARY_PATH"), Some(expected))]
+        );
+    }
+
+    #[test]
+    fn appimage_cleanup_accepts_non_utf8_mounts_and_repeated_slashes() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = PathBuf::from(OsString::from_vec(b"/tmp/.mount_Silo \xff///".to_vec()));
+        let bundled = OsString::from_vec(b"/tmp//.mount_Silo \xff////usr/lib".to_vec());
+        let changes = appimage_child_environment(
+            [
+                (OsString::from("APPDIR"), root.as_os_str().to_owned()),
+                (OsString::from("LD_LIBRARY_PATH"), bundled),
+            ],
+            &root,
+        );
+        assert_eq!(
+            changes,
+            [
+                (OsString::from("APPDIR"), None),
+                (OsString::from("LD_LIBRARY_PATH"), None),
+            ]
+        );
     }
 
     #[test]

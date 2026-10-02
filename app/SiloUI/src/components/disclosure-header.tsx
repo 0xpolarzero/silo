@@ -29,8 +29,8 @@ export function DisclosureHeader({ title, detail, icon, actions, label, controls
       >
         {icon}
         <span className="min-w-0 flex-1">
-          <span className={cn("block truncate text-[13px] leading-4 font-medium text-foreground", titleClassName)}>{title}</span>
-          {detail != null && <span className={cn("block truncate text-[11px] leading-4 text-muted-foreground", detailClassName)}>{detail}</span>}
+          <span className={cn("block truncate text-[13px] leading-4 font-medium text-foreground", titleClassName)} title={typeof title === "string" ? title : undefined}>{title}</span>
+          {detail != null && <span className={cn("block truncate text-[11px] leading-4 text-muted-foreground", detailClassName)} title={typeof detail === "string" ? detail : undefined}>{detail}</span>}
         </span>
         <span className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground"><DisclosureIndicator /></span>
       </CollapsibleTrigger>

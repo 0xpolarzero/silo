@@ -122,6 +122,14 @@ it("preserves temporarily invalid custom memory only in an unfinished editor", (
   expect(setupMachineConfigurationRequestSchema.safeParse({ schemaVersion: 1, machines: [draft] }).success).toBe(false)
 })
 
+it("accepts the native CPU maximum and keeps larger counts only in unfinished input", () => {
+  const machine = { ...fixtureMachineDefaults[0], cpus: 255, maxCPUs: 255 }
+  expect(setupMachineConfigurationRequestSchema.safeParse({ schemaVersion: 1, machines: [machine] }).success).toBe(true)
+  const unfinished = { ...machine, cpus: 256, maxCPUs: 256 }
+  expect(machineEditorDraftSchema.safeParse({ draft: unfinished, insertAt: 0 }).success).toBe(true)
+  expect(setupMachineConfigurationRequestSchema.safeParse({ schemaVersion: 1, machines: [unfinished] }).success).toBe(false)
+})
+
 it("accepts custom CPUs and disks and rejects storage overflow", () => {
   const machine = { ...fixtureMachineDefaults[0], cpus: 3, maxCPUs: 5, memoryGiB: 12, maxMemoryGiB: 12, workspaceStorageGiB: 35, runtimeStorageGiB: 25 }
   const parse = (changes: object) => setupMachineConfigurationRequestSchema.safeParse({ schemaVersion: 1, machines: [{ ...machine, ...changes }] }).success

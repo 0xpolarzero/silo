@@ -12,8 +12,9 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     net::TcpListener,
+    path::Path,
     process::{Child, Command, Stdio},
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter};
@@ -25,6 +26,7 @@ struct Tunnel {
     child: Child,
     local_port: u16,
     remote_port: u16,
+    _directory: Option<tempfile::TempDir>,
 }
 impl Drop for Tunnel {
     fn drop(&mut self) {
@@ -52,12 +54,43 @@ struct Intent {
     local_port: u16,
     scheme: Option<String>,
 }
+#[derive(Debug)]
+struct Reconnect {
+    key: Key,
+    intent: Intent,
+    remote_port: u16,
+}
 #[derive(Default)]
 struct Tunnels {
     live: HashMap<Key, Tunnel>,
     intents: HashMap<Key, Intent>,
-    /// Keys a background reconnect is opening right now.
-    connecting: HashSet<Key>,
+    /// Each worker owns one attempt; replacement invalidates the previous worker.
+    connecting: HashMap<Key, Arc<Reconnect>>,
+    saves: HashMap<Key, Arc<()>>,
+    revisions: HashMap<String, Arc<()>>,
+}
+impl Tunnels {
+    fn revision(&self, host: &str) -> Option<Arc<()>> {
+        self.revisions.get(host).cloned()
+    }
+    fn changed(&mut self, host: &str) {
+        self.revisions.insert(host.into(), Arc::new(()));
+    }
+    fn has_connection(&self, key: &Key) -> bool {
+        self.live.contains_key(key)
+            || self.intents.contains_key(key)
+            || self.saves.contains_key(key)
+            || self.connecting.contains_key(key)
+    }
+    fn connection_count(&self) -> usize {
+        self.live
+            .keys()
+            .chain(self.intents.keys())
+            .chain(self.saves.keys())
+            .chain(self.connecting.keys())
+            .collect::<HashSet<_>>()
+            .len()
+    }
 }
 static TUNNELS: OnceLock<Mutex<Tunnels>> = OnceLock::new();
 /// A short data lock: never held while ssh starts or a port is probed.
@@ -67,8 +100,42 @@ fn tunnels() -> MutexGuard<'static, Tunnels> {
         "remote tunnels",
     )
 }
+/// A save remains current only until another save or removal supersedes it.
+struct PendingSave {
+    key: Key,
+    token: Arc<()>,
+}
+impl PendingSave {
+    fn new(key: Key) -> Result<Self, String> {
+        runtime::shutdown::ensure_accepting_operations()?;
+        let token = Arc::new(());
+        let mut tunnels = tunnels();
+        if !tunnels.has_connection(&key) && tunnels.connection_count() >= TUNNEL_LIMIT {
+            return Err("Close an unused connection before opening another port.".into());
+        }
+        tunnels.changed(&key.0);
+        tunnels.connecting.remove(&key);
+        tunnels.saves.insert(key.clone(), token.clone());
+        Ok(Self { key, token })
+    }
+    fn current(&self, tunnels: &Tunnels) -> bool {
+        tunnels
+            .saves
+            .get(&self.key)
+            .is_some_and(|token| Arc::ptr_eq(token, &self.token))
+    }
+}
+impl Drop for PendingSave {
+    fn drop(&mut self) {
+        let mut tunnels = tunnels();
+        if self.current(&tunnels) {
+            tunnels.saves.remove(&self.key);
+        }
+    }
+}
+
 const TUNNEL_LIMIT: usize = 128;
-/// How long a new tunnel may take to accept connections.
+/// How long a new tunnel may take to confirm forwarding.
 const READY_WITHIN: Duration = Duration::from_secs(12);
 /// How long the owner reuses its network state for polling controllers.
 const HOST_STATE_MAX_AGE: Duration = Duration::from_secs(2);
@@ -127,6 +194,7 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
     if let Some(error) = remote::offline(host) {
         return Err(error.into());
     }
+    let revision = tunnels().revision(host);
     let value = match remote::call_remote_typed(app, host, "network.state", json!({})) {
         Ok(value) => {
             remote::poll_succeeded(host);
@@ -139,15 +207,15 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
             return Err(error);
         }
     };
-    let projection = project_ports(value, host, &mut tunnels())?;
+    let projection = project_observed(value, host, revision, &mut tunnels())?;
     let Projection {
         value,
         closed,
         reconnect,
     } = projection;
     drop(closed);
-    for (key, intent, remote_port) in reconnect {
-        reconnect_in_background(app.clone(), key, intent, remote_port);
+    for request in reconnect {
+        reconnect_in_background(app.clone(), request);
     }
     Ok(value)
 }
@@ -156,9 +224,45 @@ struct Projection {
     value: Value,
     /// Tunnels to stop, dropped after the lock is released.
     closed: Vec<Tunnel>,
-    /// Intended tunnels to open again: key, intent, the owner's current endpoint.
-    reconnect: Vec<(Key, Intent, u16)>,
+    /// Intended tunnels to open again on the owner's current endpoint.
+    reconnect: Vec<Arc<Reconnect>>,
 }
+fn project_observed(
+    value: Value,
+    host: &str,
+    revision: Option<Arc<()>>,
+    tunnels: &mut Tunnels,
+) -> Result<Projection, String> {
+    let current = match (revision.as_ref(), tunnels.revisions.get(host)) {
+        (None, None) => true,
+        (Some(before), Some(now)) => Arc::ptr_eq(before, now),
+        _ => false,
+    };
+    if !current || tunnels.saves.keys().any(|key| key.0 == host) {
+        return Err("Network settings changed while refreshing. Refresh network services.".into());
+    }
+    project_ports(value, host, tunnels)
+}
+
+fn validate_remote_ports(value: &Value) -> Result<(), String> {
+    for row in value["workspaces"]
+        .as_array()
+        .ok_or("Invalid remote network state.")?
+    {
+        row["vmId"].as_str().ok_or("Missing remote VM identity.")?;
+        for port in row["ports"]
+            .as_array()
+            .ok_or("Invalid remote port state.")?
+        {
+            port["port"]
+                .as_u64()
+                .and_then(|n| u16::try_from(n).ok())
+                .ok_or("Invalid remote port.")?;
+        }
+    }
+    Ok(())
+}
+
 /// Rewrites the owner's rows for this computer: rows become remote targets, ports show this
 /// computer's tunnel (never the owner's loopback endpoint). Each sandbox gets the host
 /// name its websites open at here (C-24; the owner's own host choice is ignored).
@@ -168,6 +272,8 @@ fn project_ports(
     host: &str,
     tunnels: &mut Tunnels,
 ) -> Result<Projection, String> {
+    // Reject the whole response before changing tunnel ownership or scheduling workers.
+    validate_remote_ports(&value)?;
     let mut observed = HashSet::new();
     let mut closed = Vec::new();
     let mut reconnect = Vec::new();
@@ -223,9 +329,20 @@ fn project_ports(
                     if let Some(endpoint) = endpoint {
                         port["state"] = json!("waiting");
                         port["message"] = json!("Reconnecting to the other computer…");
-                        if tunnels.connecting.insert(key.clone()) {
-                            reconnect.push((key, intent, endpoint));
+                        let unchanged = tunnels.connecting.get(&key).is_some_and(|request| {
+                            request.remote_port == endpoint && request.intent == intent
+                        });
+                        if !unchanged {
+                            let request = Arc::new(Reconnect {
+                                key: key.clone(),
+                                intent,
+                                remote_port: endpoint,
+                            });
+                            tunnels.connecting.insert(key, request.clone());
+                            reconnect.push(request);
                         }
+                    } else {
+                        tunnels.connecting.remove(&key);
                     }
                 }
                 (None, None) => {
@@ -248,6 +365,7 @@ fn project_ports(
     for key in gone {
         closed.extend(tunnels.live.remove(&key));
         tunnels.intents.remove(&key);
+        tunnels.connecting.remove(&key);
     }
     Ok(Projection {
         value,
@@ -257,9 +375,9 @@ fn project_ports(
 }
 
 /// Starts ssh forwarding `local` (or any free port) to the owner's `remote_port` and waits
-/// until the local port accepts connections. Runs without the tunnels lock.
+/// for its private OpenSSH master to acknowledge readiness. Runs without the tunnels lock.
 fn open_tunnel(
-    command: impl FnOnce(u16) -> Result<Command, String>,
+    commands: impl FnOnce(u16, &Path) -> Result<(Command, Command), String>,
     local: Option<u16>,
     remote_port: u16,
     ready_within: Duration,
@@ -267,7 +385,13 @@ fn open_tunnel(
     let reservation = TcpListener::bind(("127.0.0.1", local.unwrap_or(0)))
         .map_err(|_| "This local port is already in use.")?;
     let local = reservation.local_addr().map_err(|e| e.to_string())?.port();
-    let mut command = command(local)?;
+    // Keep the control path short enough for macOS Unix sockets and private to this tunnel.
+    let directory = tempfile::Builder::new()
+        .prefix("silo-tunnel-")
+        .tempdir_in("/tmp")
+        .map_err(|_| "Could not prepare the SSH tunnel.")?;
+    let socket = directory.path().join("ssh.sock");
+    let (mut command, mut check) = commands(local, &socket)?;
     drop(reservation);
     let child = command
         .stdin(Stdio::null())
@@ -279,8 +403,8 @@ fn open_tunnel(
         child,
         local_port: local,
         remote_port,
+        _directory: Some(directory),
     };
-    // Probe the local listener; process creation alone does not mean forwarding succeeded.
     let until = Instant::now() + ready_within;
     loop {
         if !tunnel.alive() {
@@ -288,12 +412,9 @@ fn open_tunnel(
                 "SSH could not open this port. Check access and local port availability.".into(),
             );
         }
-        if std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], local)),
-            Duration::from_millis(100),
-        )
-        .is_ok()
-        {
+        // OpenSSH serves control requests after local forwarding setup. With
+        // ExitOnForwardFailure=yes, a bind failure never reaches this acknowledgement.
+        if socket.exists() && control_ready(&mut check, &mut tunnel, until)? {
             return Ok(tunnel);
         }
         if Instant::now() >= until {
@@ -303,41 +424,83 @@ fn open_tunnel(
     }
 }
 
-fn reconnect_in_background(app: AppHandle, key: Key, intent: Intent, remote_port: u16) {
+fn control_ready(
+    command: &mut Command,
+    tunnel: &mut Tunnel,
+    until: Instant,
+) -> Result<bool, String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Could not check the SSH tunnel.")?;
+    let result = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status.success() && tunnel.alive()),
+            Ok(None) => (),
+            Err(_) => break Err("Could not check the SSH tunnel.".into()),
+        }
+        if Instant::now() >= until {
+            break Err("Timed out opening the SSH tunnel.".into());
+        }
+        if !tunnel.alive() {
+            break Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
+fn reconnect_in_background(app: AppHandle, request: Arc<Reconnect>) {
     std::thread::spawn(move || {
         let opened = runtime::shutdown::ensure_accepting_operations().and_then(|()| {
             open_tunnel(
-                |local| remote::ssh_tunnel_command(&key.0, local, remote_port),
-                Some(intent.local_port),
-                remote_port,
+                |local, socket| {
+                    remote::ssh_tunnel_commands(&request.key.0, local, request.remote_port, socket)
+                },
+                Some(request.intent.local_port),
+                request.remote_port,
                 READY_WITHIN,
             )
         });
-        let unused = {
-            let mut tunnels = tunnels();
-            tunnels.connecting.remove(&key);
-            match opened {
-                // Only while the user still wants this port and nothing else reopened it.
-                Ok(tunnel)
-                    if tunnels.intents.get(&key) == Some(&intent)
-                        && !tunnels.live.contains_key(&key) =>
-                {
-                    tunnels.live.insert(key, tunnel);
-                    None
-                }
-                Ok(tunnel) => Some(tunnel),
-                Err(_) => None,
-            }
-        };
+        let unused = finish_reconnect(&request, opened);
         drop(unused);
         let _ = app.emit("silo://network-state-changed", ());
     });
+}
+
+fn finish_reconnect(request: &Arc<Reconnect>, opened: Result<Tunnel, String>) -> Option<Tunnel> {
+    let mut tunnels = tunnels();
+    let current = tunnels
+        .connecting
+        .get(&request.key)
+        .is_some_and(|pending| Arc::ptr_eq(pending, request));
+    if !current {
+        return opened.ok();
+    }
+    tunnels.connecting.remove(&request.key);
+    match opened {
+        Ok(tunnel)
+            if runtime::shutdown::ensure_accepting_operations().is_ok()
+                && tunnels.intents.get(&request.key) == Some(&request.intent)
+                && !tunnels.live.contains_key(&request.key) =>
+        {
+            tunnels.live.insert(request.key.clone(), tunnel);
+            None
+        }
+        Ok(tunnel) => Some(tunnel),
+        Err(_) => None,
+    }
 }
 
 /// Opens (or replaces) the tunnel for `key` and records the intent. The lock is taken only
 /// around map updates. A different local port is opened before the previous tunnel closes,
 /// so a failed replacement keeps the working one; reusing the same local port needs the
 /// previous tunnel closed first.
+#[cfg(test)]
 fn save_tunnel(
     key: Key,
     host_port: Option<u16>,
@@ -345,11 +508,22 @@ fn save_tunnel(
     endpoint: u16,
     open: impl FnOnce(Option<u16>) -> Result<Tunnel, String>,
 ) -> Result<(), String> {
+    finish_save(PendingSave::new(key)?, host_port, scheme, endpoint, open)
+}
+
+fn finish_save(
+    pending: PendingSave,
+    host_port: Option<u16>,
+    scheme: Option<String>,
+    endpoint: u16,
+    open: impl FnOnce(Option<u16>) -> Result<Tunnel, String>,
+) -> Result<(), String> {
+    let key = pending.key.clone();
     let (requested, blocking) = {
         let mut tunnels = tunnels();
         runtime::shutdown::ensure_accepting_operations()?;
-        if tunnels.live.len() >= TUNNEL_LIMIT && !tunnels.live.contains_key(&key) {
-            return Err("Close an unused connection before opening another port.".into());
+        if !pending.current(&tunnels) {
+            return Err("This port configuration was superseded. Refresh network services.".into());
         }
         // Automatic keeps the port this computer used before, so bookmarks keep working.
         let requested =
@@ -362,6 +536,7 @@ fn save_tunnel(
         if unchanged {
             let local_port = tunnels.live[&key].local_port;
             tunnels.intents.insert(key, Intent { local_port, scheme });
+            tunnels.changed(&pending.key.0);
             return Ok(());
         }
         let occupies = tunnels
@@ -384,6 +559,9 @@ fn save_tunnel(
         if runtime::shutdown::ensure_accepting_operations().is_err() {
             return Err("Silo is quitting.".into());
         }
+        if !pending.current(&tunnels) {
+            return Err("This port configuration was superseded. Refresh network services.".into());
+        }
         tunnels.intents.insert(
             key.clone(),
             Intent {
@@ -392,6 +570,7 @@ fn save_tunnel(
             },
         );
         tunnels.connecting.remove(&key);
+        tunnels.changed(&pending.key.0);
         tunnels.live.insert(key, tunnel)
     };
     drop(replaced);
@@ -420,6 +599,7 @@ pub async fn remote_save_network_port(
         {
             return Err("Invalid port configuration.".into());
         }
+        let pending = PendingSave::new((host_id.clone(), vm_id.clone(), port))?;
         let state = remote::call_remote_typed(
             &app,
             &host_id,
@@ -435,25 +615,31 @@ pub async fn remote_save_network_port(
             .and_then(|p| u16::try_from(p).ok())
             .ok_or("The remote VM port is not available yet. Check the VM service and retry.")?;
         let host = host_id.clone();
-        save_tunnel(
-            (host_id.clone(), vm_id, port),
-            host_port,
-            scheme,
-            endpoint,
-            |local| {
-                open_tunnel(
-                    |local| remote::ssh_tunnel_command(&host, local, endpoint),
-                    local,
-                    endpoint,
-                    READY_WITHIN,
-                )
-            },
-        )?;
+        finish_save(pending, host_port, scheme, endpoint, |local| {
+            open_tunnel(
+                |local, socket| remote::ssh_tunnel_commands(&host, local, endpoint, socket),
+                local,
+                endpoint,
+                READY_WITHIN,
+            )
+        })?;
         read(&app, &host_id)
     })
     .await
     .map_err(|e| e.to_string())?
 }
+fn forget_port(key: &Key) {
+    let closed = {
+        let mut tunnels = tunnels();
+        tunnels.changed(&key.0);
+        tunnels.saves.remove(key);
+        tunnels.connecting.remove(key);
+        tunnels.intents.remove(key);
+        tunnels.live.remove(key)
+    };
+    drop(closed);
+}
+
 /// Stops publishing the port on the owning computer, then closes this computer's tunnel.
 #[tauri::command]
 pub async fn remote_remove_network_port(
@@ -469,13 +655,7 @@ pub async fn remote_remove_network_port(
             "network.unpublish",
             json!({"vmId":vm_id,"port":port}),
         )?;
-        let closed = {
-            let mut tunnels = tunnels();
-            let key = (host_id.clone(), vm_id, port);
-            tunnels.intents.remove(&key);
-            tunnels.live.remove(&key)
-        };
-        drop(closed);
+        forget_port(&(host_id.clone(), vm_id, port));
         read(&app, &host_id)
     })
     .await
@@ -524,7 +704,12 @@ fn row_host<'a>(state: &'a Value, target: &str) -> Option<&'a str> {
 }
 /// Closes every tunnel (quit).
 pub(crate) fn close_all() {
-    let closed: Vec<Tunnel> = tunnels().live.drain().map(|(_, tunnel)| tunnel).collect();
+    let closed: Vec<Tunnel> = {
+        let mut tunnels = tunnels();
+        tunnels.saves.clear();
+        tunnels.connecting.clear();
+        tunnels.live.drain().map(|(_, tunnel)| tunnel).collect()
+    };
     drop(closed);
 }
 /// Closes a computer's live tunnels but keeps their intents, so they reopen on the same
@@ -532,6 +717,7 @@ pub(crate) fn close_all() {
 pub(crate) fn disconnect_host(host: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
+        tunnels.connecting.retain(|key, _| key.0 != host);
         let keys: Vec<Key> = tunnels
             .live
             .keys()
@@ -548,8 +734,10 @@ pub(crate) fn disconnect_host(host: &str) {
 pub(crate) fn close_host(host: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
+        tunnels.revisions.remove(host);
+        tunnels.saves.retain(|key, _| key.0 != host);
         tunnels.intents.retain(|key, _| key.0 != host);
-        tunnels.connecting.retain(|key| key.0 != host);
+        tunnels.connecting.retain(|key, _| key.0 != host);
         let keys: Vec<Key> = tunnels
             .live
             .keys()
@@ -581,6 +769,7 @@ mod tests {
             child: child(),
             local_port,
             remote_port,
+            _directory: None,
         }
     }
     fn intent(local_port: u16) -> Intent {
@@ -594,6 +783,20 @@ mod tests {
     }
     fn port(result: &Projection) -> &Value {
         &result.value["workspaces"][0]["ports"][0]
+    }
+
+    fn reconnect_targets(projection: &Projection) -> Vec<(Key, Intent, u16)> {
+        projection
+            .reconnect
+            .iter()
+            .map(|request| {
+                (
+                    request.key.clone(),
+                    request.intent.clone(),
+                    request.remote_port,
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -648,7 +851,10 @@ mod tests {
         // The VM restarted and the owner published the port on a new endpoint.
         let result = project_ports(observed(Some(32001)), "office", &mut tunnels).unwrap();
         assert_eq!(result.closed.len(), 1);
-        assert_eq!(result.reconnect, [(key("office"), intent(43000), 32001)]);
+        assert_eq!(
+            reconnect_targets(&result),
+            [(key("office"), intent(43000), 32001)]
+        );
         assert_eq!(port(&result)["configuredHostPort"], 43000);
         assert_eq!(port(&result)["state"], "waiting");
         // A reconnect already under way is not started twice.
@@ -663,7 +869,10 @@ mod tests {
         dead.child.wait().unwrap();
         tunnels.live.insert(key("office"), dead);
         let result = project_ports(observed(Some(32001)), "office", &mut tunnels).unwrap();
-        assert_eq!(result.reconnect, [(key("office"), intent(43000), 32001)]);
+        assert_eq!(
+            reconnect_targets(&result),
+            [(key("office"), intent(43000), 32001)]
+        );
     }
 
     #[test]
@@ -700,7 +909,254 @@ mod tests {
     }
 
     #[test]
+    fn a_reconnect_cannot_restore_a_tunnel_after_close_all() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        tunnels().intents.insert(key(&host), intent(43000));
+        let request = project_ports(observed(Some(32000)), &host, &mut tunnels())
+            .unwrap()
+            .reconnect
+            .pop()
+            .unwrap();
+        close_all();
+        let unused = finish_reconnect(&request, Ok(tunnel(43000, request.remote_port)));
+        let restored = tunnels().live.contains_key(&key(&host));
+        close_host(&host);
+        assert!(
+            unused.is_some(),
+            "cleanup did not invalidate the pending reconnect"
+        );
+        assert!(!restored, "a reconnect restored a tunnel after cleanup");
+    }
+
+    #[test]
+    fn an_older_reconnect_cannot_clear_a_newer_attempt() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        tunnels().intents.insert(key(&host), intent(43000));
+        let old = project_ports(observed(Some(32000)), &host, &mut tunnels())
+            .unwrap()
+            .reconnect
+            .pop()
+            .unwrap();
+        forget_port(&key(&host));
+        tunnels().intents.insert(key(&host), intent(43000));
+        let newer = project_ports(observed(Some(32001)), &host, &mut tunnels())
+            .unwrap()
+            .reconnect
+            .pop()
+            .unwrap();
+        let unused = finish_reconnect(&old, Ok(tunnel(43000, old.remote_port)));
+        let marked = tunnels().connecting.contains_key(&key(&host));
+        let stale = tunnels().live.contains_key(&key(&host));
+        let valid = finish_reconnect(&newer, Ok(tunnel(43000, newer.remote_port)));
+        let endpoint = tunnels()
+            .live
+            .get(&key(&host))
+            .map(|tunnel| tunnel.remote_port);
+        close_host(&host);
+        assert!(unused.is_some(), "an obsolete reconnect was committed");
+        assert!(marked, "the older worker cleared a newer attempt's marker");
+        assert!(!stale);
+        assert!(valid.is_none());
+        assert_eq!(endpoint, Some(32001));
+    }
+
+    #[test]
+    fn an_endpoint_change_replaces_the_pending_reconnect() {
+        let mut state = Tunnels::default();
+        state.intents.insert(key("office"), intent(43000));
+        let first = project_ports(observed(Some(32000)), "office", &mut state).unwrap();
+        assert_eq!(first.reconnect.len(), 1);
+        let second = project_ports(observed(Some(32001)), "office", &mut state).unwrap();
+        assert_eq!(
+            second.reconnect.len(),
+            1,
+            "a new endpoint waited for the obsolete attempt"
+        );
+    }
+
+    #[test]
+    fn an_invalid_snapshot_cannot_strand_a_reconnect() {
+        let mut state = Tunnels::default();
+        state.intents.insert(key("office"), intent(43000));
+        let mut invalid = observed(Some(32000));
+        invalid["workspaces"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"workspace":"bad","ports":[]}));
+        assert!(project_ports(invalid, "office", &mut state).is_err());
+        assert!(
+            !state.connecting.contains_key(&key("office")),
+            "no worker was started for the rejected snapshot"
+        );
+        let next = project_ports(observed(Some(32000)), "office", &mut state).unwrap();
+        assert_eq!(
+            reconnect_targets(&next),
+            [(key("office"), intent(43000), 32000)]
+        );
+    }
+
+    #[test]
+    fn an_invalid_snapshot_keeps_the_existing_tunnel() {
+        let mut state = Tunnels::default();
+        state.live.insert(key("office"), tunnel(43000, 32000));
+        state.intents.insert(key("office"), intent(43000));
+        let mut invalid = observed(Some(32001));
+        invalid["workspaces"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"vmId":"bad","ports":[{"port":65536}]}));
+        assert!(project_ports(invalid, "office", &mut state).is_err());
+        assert!(
+            state
+                .live
+                .get_mut(&key("office"))
+                .is_some_and(Tunnel::alive),
+            "a rejected snapshot closed the working tunnel"
+        );
+        assert!(state.connecting.is_empty());
+    }
+
+    #[test]
+    fn concurrent_saves_reserve_the_last_connection_slot() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        for vm in 0..TUNNEL_LIMIT - 1 {
+            tunnels()
+                .intents
+                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+        }
+        let first = PendingSave::new((host.clone(), "first".into(), 3000)).unwrap();
+        let second = PendingSave::new((host.clone(), "second".into(), 3000));
+        let rejected = second.is_err();
+        drop(second);
+        drop(first);
+        close_host(&host);
+        assert!(rejected, "two saves were admitted into the last slot");
+    }
+
+    #[test]
+    fn a_failed_save_releases_its_connection_slot() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        for vm in 0..TUNNEL_LIMIT - 1 {
+            tunnels()
+                .intents
+                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+        }
+        let failed = save_tunnel(
+            (host.clone(), "failed".into(), 3000),
+            None,
+            None,
+            32000,
+            |_| Err("SSH fixture failed".into()),
+        );
+        let next = PendingSave::new((host.clone(), "next".into(), 3000));
+        let admitted = next.is_ok();
+        drop(next);
+        close_host(&host);
+        assert!(failed.is_err());
+        assert!(admitted, "a failed open leaked its connection slot");
+    }
+
+    #[test]
+    fn disconnected_intents_keep_their_connection_slots() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        for vm in 0..TUNNEL_LIMIT {
+            tunnels()
+                .intents
+                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+        }
+        disconnect_host(&host);
+        let extra = PendingSave::new((host.clone(), "extra".into(), 3000));
+        let rejected = extra.is_err();
+        drop(extra);
+        // Editing an existing connection remains possible at the limit.
+        let existing = PendingSave::new((host.clone(), "0".into(), 3000));
+        let editable = existing.is_ok();
+        drop(existing);
+        close_host(&host);
+        assert!(rejected, "disconnecting freed slots promised to reconnects");
+        assert!(editable, "a configured connection could not be edited");
+    }
+
+    #[test]
+    fn an_older_poll_cannot_forget_a_newly_saved_tunnel() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        let key = key(&host);
+        let before = tunnels().revision(&host);
+        save_tunnel(key.clone(), None, Some("http".into()), 32000, |_| {
+            Ok(tunnel(43100, 32000))
+        })
+        .unwrap();
+        let mut state = tunnels();
+        let result = project_observed(json!({"workspaces":[]}), &host, before, &mut state);
+        let kept = state.live.contains_key(&key) && state.intents.contains_key(&key);
+        let current = state.revision(&host);
+        let fresh = project_observed(json!({"workspaces":[]}), &host, current, &mut state).unwrap();
+        let deleted = !state.live.contains_key(&key) && !state.intents.contains_key(&key);
+        drop(state);
+        drop(fresh);
+        close_host(&host);
+        assert!(result.is_err(), "an obsolete poll was applied");
+        assert!(kept, "an obsolete poll deleted the saved connection");
+        assert!(deleted, "a current deletion must still close the tunnel");
+    }
+
+    #[test]
+    fn polls_wait_for_their_own_hosts_pending_save() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        let pending = PendingSave::new(key(&host)).unwrap();
+        let mut state = tunnels();
+        let revision = state.revision(&host);
+        assert!(project_observed(json!({"workspaces":[]}), &host, revision, &mut state).is_err());
+        assert!(project_observed(json!({"workspaces":[]}), "other", None, &mut state).is_ok());
+        drop(state);
+        drop(pending);
+        close_host(&host);
+    }
+
+    #[test]
+    fn a_removed_port_is_not_restored_by_an_older_save() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        let key = key(&host);
+        let result = save_tunnel(key.clone(), None, Some("http".into()), 32000, |_| {
+            forget_port(&key);
+            Ok(tunnel(43100, 32000))
+        });
+        let mut state = tunnels();
+        let projection = project_ports(observed(None), &host, &mut state).unwrap();
+        let restored = state.live.contains_key(&key) || state.intents.contains_key(&key);
+        drop(state);
+        close_host(&host);
+        assert!(result.is_err(), "an obsolete save succeeded after removal");
+        assert!(!restored, "removal was undone by the older save");
+        assert_eq!(port(&projection)["configured"], false);
+    }
+
+    #[test]
+    fn a_save_removed_during_publication_never_opens_a_tunnel() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        let key = key(&host);
+        let pending = PendingSave::new(key.clone()).unwrap();
+        forget_port(&key);
+        let result = finish_save(pending, None, Some("http".into()), 32000, |_| {
+            panic!("an obsolete publication must not start SSH")
+        });
+        assert!(result.is_err());
+        assert!(!tunnels().saves.contains_key(&key));
+        close_host(&host);
+    }
+
+    #[test]
     fn saving_a_port_never_holds_the_lock_while_ssh_starts_and_keeps_the_old_tunnel_on_failure() {
+        let _guard = crate::test_support::global_state();
         let host = uuid::Uuid::new_v4().to_string();
         let key = key(&host);
         save_tunnel(key.clone(), None, Some("http".into()), 32000, |requested| {
@@ -756,18 +1212,19 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_tunnel_waits_for_the_local_listener() {
+    fn an_unrelated_listener_during_authentication_is_never_ready() {
         let sleeper = || {
             let mut command = Command::new("/bin/sleep");
             command.arg("30");
             command
         };
-        // Stands in for ssh's listener: binds the local port once Silo released its reservation.
+        // Another process takes the selected port while SSH is still authenticating.
         let listener = std::sync::Arc::new(Mutex::new(None));
-        let tunnel = open_tunnel(
-            |local| {
+        let mut worker = None;
+        let result = open_tunnel(
+            |local, _| {
                 let listener = listener.clone();
-                std::thread::spawn(move || {
+                worker = Some(std::thread::spawn(move || {
                     let bound = (0..200).find_map(|_| {
                         TcpListener::bind(("127.0.0.1", local)).ok().or_else(|| {
                             std::thread::sleep(Duration::from_millis(10));
@@ -775,30 +1232,42 @@ mod tests {
                         })
                     });
                     *listener.lock().unwrap() = bound;
-                });
-                Ok(sleeper())
+                }));
+                let mut command = Command::new("/bin/sh");
+                command.args(["-c", "sleep 0.3; exit 1"]);
+                Ok((command, Command::new("/usr/bin/false")))
             },
             None,
             32000,
-            Duration::from_secs(10),
-        )
-        .unwrap();
-        assert_ne!(tunnel.local_port, 0);
-        assert_eq!(tunnel.remote_port, 32000);
+            Duration::from_secs(5),
+        );
+        worker.unwrap().join().unwrap();
+        assert!(listener.lock().unwrap().is_some());
+        assert!(result.is_err(), "an unrelated listener was reported Ready");
         let exited = open_tunnel(
-            |_| Ok(Command::new("/usr/bin/false")),
+            |_, _| {
+                Ok((
+                    Command::new("/usr/bin/false"),
+                    Command::new("/usr/bin/false"),
+                ))
+            },
             None,
             32000,
             Duration::from_secs(5),
         );
         assert!(exited.unwrap_err().contains("could not open"));
-        let silent = open_tunnel(|_| Ok(sleeper()), None, 32000, Duration::from_millis(300));
+        let silent = open_tunnel(
+            |_, _| Ok((sleeper(), Command::new("/usr/bin/false"))),
+            None,
+            32000,
+            Duration::from_millis(300),
+        );
         assert_eq!(silent.unwrap_err(), "Timed out opening the SSH tunnel.");
         let taken = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = taken.local_addr().unwrap().port();
         assert_eq!(
             open_tunnel(
-                |_| Ok(sleeper()),
+                |_, _| Ok((sleeper(), Command::new("/usr/bin/false"))),
                 Some(port),
                 32000,
                 Duration::from_millis(300)
@@ -806,6 +1275,81 @@ mod tests {
             .unwrap_err(),
             "This local port is already in use."
         );
+    }
+
+    fn fixture_forward(local: u16, socket: &Path) -> Command {
+        let mut command = Command::new("python3");
+        command
+            .args([
+                "-c",
+                r#"
+import socket, sys, time
+# Delayed authentication, then local forwarding, then the control socket.
+time.sleep(0.15)
+listener = socket.socket()
+listener.bind(('127.0.0.1', int(sys.argv[1])))
+listener.listen()
+control = socket.socket(socket.AF_UNIX)
+control.bind(sys.argv[2])
+control.listen()
+time.sleep(30)
+"#,
+            ])
+            .arg(local.to_string())
+            .arg(socket);
+        command
+    }
+
+    #[test]
+    fn delayed_authentication_waits_for_a_successful_control_reply() {
+        let started = Instant::now();
+        let tunnel = open_tunnel(
+            |local, socket| {
+                let mut check = Command::new("/bin/sh");
+                check
+                    .args(["-c", "sleep 0.15; test -S \"$1\"", "check"])
+                    .arg(socket);
+                Ok((fixture_forward(local, socket), check))
+            },
+            None,
+            32000,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(std::net::TcpStream::connect(("127.0.0.1", tunnel.local_port)).is_ok());
+        assert_eq!(tunnel.remote_port, 32000);
+    }
+
+    #[test]
+    fn a_listener_and_control_socket_without_an_acknowledgement_are_not_ready() {
+        let result = open_tunnel(
+            |local, socket| {
+                Ok((
+                    fixture_forward(local, socket),
+                    Command::new("/usr/bin/false"),
+                ))
+            },
+            None,
+            32000,
+            Duration::from_millis(500),
+        );
+        assert_eq!(result.unwrap_err(), "Timed out opening the SSH tunnel.");
+    }
+
+    #[test]
+    fn a_stalled_control_reply_is_bounded_by_the_readiness_deadline() {
+        let result = open_tunnel(
+            |local, socket| {
+                let mut check = Command::new("/bin/sleep");
+                check.arg("30");
+                Ok((fixture_forward(local, socket), check))
+            },
+            None,
+            32000,
+            Duration::from_millis(500),
+        );
+        assert_eq!(result.unwrap_err(), "Timed out opening the SSH tunnel.");
     }
 
     #[test]

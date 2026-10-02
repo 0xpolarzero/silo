@@ -1,11 +1,11 @@
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
-import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
+import { useEffect, useEffectEvent, useId, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
 import { CopyPlus, GripVertical, Pencil, Plus, Trash2 } from "lucide-react"
+import { DropdownMenu } from "radix-ui"
 
 import { ConfirmPopover } from "@/components/confirm-popover"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
 import { Button } from "@/components/ui/button"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { configurationRequest } from "@/features/onboarding/model/machine-configuration"
 import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
@@ -15,6 +15,7 @@ import { machineSummary } from "@/features/sandboxes/model/machine-summary"
 import { deleteSandboxDescription, deleteSandboxTitle } from "@/features/sandboxes/model/delete-sandbox-copy"
 import { DeleteSandboxBody, type DeleteSandboxDetails } from "@/features/sandboxes/components/delete-sandbox-confirmation"
 import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
+import { restoreFocus } from "@/lib/focus"
 import type { HostCapacity } from "@/features/sandboxes/model/machine-limits"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
@@ -98,8 +99,22 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp, getHostCapacity, getMachineBusyReason, draftKey: editorDraftKey })
 
   const [addOpen, setAddOpen] = useState(false)
+  const addSelected = useRef<"editor" | "external" | null>(null)
   const [draggedID, setDraggedID] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState("")
+  const reorderHelpId = useId()
+  const headingId = useId()
+  const addButton = useRef<HTMLButtonElement>(null)
+  const editorTriggers = useRef(new Map<string, HTMLButtonElement>())
+  const previousEditor = useRef(editor)
+  useEffect(() => {
+    const closed = previousEditor.current
+    previousEditor.current = editor
+    if (!closed || editor || document.activeElement !== document.body) return
+    // The row is replaced while editing, so return to its newly mounted control.
+    const sourceId = closed.originalID ?? closed.displayAfterID
+    restoreFocus((sourceId ? editorTriggers.current.get(sourceId) : undefined) ?? addButton.current)
+  }, [editor])
 
   // Rows in this computer's saved order; rows it has not placed yet keep their place after them.
   const orderedMachines = useMemo(() => {
@@ -169,7 +184,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   useEffect(() => { reorderPending.current = false }, [machines])
 
   function reorder(id: string, targetIndex: number) {
-    if (interactionDisabled || reorderPending.current) return
+    if (interactionDisabled || editor || reorderPending.current) return
     // Reorder against the order captured when the drag/keyboard move began, so the change
     // carries that order as `expectedOrder` and does not fold in concurrent edits. A saved
     // display order has no configuration to conflict with, so it reorders the current rows.
@@ -220,7 +235,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   }
 
   function handleReorderKey(event: KeyboardEvent<HTMLElement>, machine: SetupMachineConfiguration) {
-    if (interactionDisabled) return
+    if (interactionDisabled || editor) return
     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return
     event.preventDefault()
     if (reorderPending.current) return
@@ -244,22 +259,29 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
 
   return (
     <>
-      <div aria-labelledby="machine-list-heading" className="flex h-full min-h-0 flex-col">
+      <div role="group" aria-labelledby={headingId} className="flex h-full min-h-0 flex-col">
         <ListHeader
-          heading={<h3 id="machine-list-heading" className={listHeadingClassName}>Sandboxes</h3>}
+          heading={<h3 id={headingId} className={listHeadingClassName}>Sandboxes</h3>}
           subtitle={summary ?? <>{sandboxCount} {sandboxCount === 1 ? "sandbox" : "sandboxes"} · {sandboxCount - remoteCount} on this computer · {remoteCount} on other computers · {sshHostCount} {sshHostCount === 1 ? "SSH host" : "SSH hosts"}</>}
-          actions={(importPopover ?? ((node: ReactNode) => node))(<Popover open={addOpen} onOpenChange={setAddOpen}>
-            <PopoverTrigger asChild>
-              <Button type="button" variant="outline" size="xs" aria-haspopup="menu" disabled={interactionDisabled} onClick={beginOperation}>
+          actions={(importPopover ?? ((node: ReactNode) => node))(<DropdownMenu.Root open={addOpen} onOpenChange={setAddOpen}>
+            <DropdownMenu.Trigger asChild>
+              <Button ref={addButton} type="button" variant="outline" size="xs" disabled={interactionDisabled}>
                 <Plus aria-hidden="true" data-icon="inline-start" /> Add
               </Button>
-            </PopoverTrigger>
-            <PopoverContent role="menu" aria-label="Add sandbox" align="end" className="grid w-48 gap-1 p-1">
-              <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { setAddOpen(false); startAdd("vm") }}>New sandbox</button>
-              <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { if (onConnectComputer) { setAddOpen(false); onConnectComputer() } else { setAddOpen(false); startAdd("ssh") } }}>{onConnectComputer ? "Connect computer…" : "Connect an SSH host…"}</button>
-              {onImportSandbox && <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { setAddOpen(false); onImportSandbox() }}>Import sandbox…</button>}
-            </PopoverContent>
-          </Popover>)}
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal><DropdownMenu.Content aria-label="Add sandbox" aria-labelledby={undefined} align="end" sideOffset={4} onCloseAutoFocus={event => {
+              // A selection hands focus to the editor or dialog it opens.
+              if (addSelected.current) {
+                event.preventDefault()
+                if (addSelected.current === "editor") setEditorFocusRequest(request => request + 1)
+                addSelected.current = null
+              }
+            }} className="silo-portal z-50 grid w-48 gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+              <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "editor"; startAdd("vm") }}>New sandbox</DropdownMenu.Item>
+              <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = onConnectComputer ? "external" : "editor"; if (onConnectComputer) onConnectComputer(); else startAdd("ssh") }}>{onConnectComputer ? "Connect computer…" : "Connect an SSH host…"}</DropdownMenu.Item>
+              {onImportSandbox && <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "external"; onImportSandbox() }}>Import sandbox…</DropdownMenu.Item>}
+            </DropdownMenu.Content></DropdownMenu.Portal>
+          </DropdownMenu.Root>)}
         />
 
         <SandboxList label="Configured sandboxes" className="max-h-full min-h-0" data-testid="machine-list">
@@ -271,6 +293,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : busyReason
               const presentation = getRowPresentation?.(machine)
               const rowInteractionsDisabled = interactionDisabled || Boolean(presentation?.suppressInteractions)
+              const reorderDisabled = rowInteractionsDisabled || Boolean(editor)
               const computerName = computers?.find(computer => computer.id === getComputerId?.(machine))?.name
               const deletionName = computerName ? `${machine.name} on ${computerName}` : machine.name
               return (
@@ -300,14 +323,15 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       detailClassName={presentation?.detailClassName}
                       leading={!reorderable(machine) ? <span aria-hidden="true" className="size-7 shrink-0" /> : <span
                         role="button"
-                        tabIndex={rowInteractionsDisabled ? -1 : 0}
-                        draggable={!editor && !rowInteractionsDisabled}
+                        tabIndex={reorderDisabled ? -1 : 0}
+                        draggable={!reorderDisabled}
                         aria-label={`Reorder ${machine.name}`}
-                        aria-disabled={rowInteractionsDisabled || undefined}
+                        aria-describedby={reorderHelpId}
+                        aria-disabled={reorderDisabled || undefined}
                         className="grid size-7 shrink-0 cursor-grab place-items-center rounded-md text-muted-foreground outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:cursor-grabbing aria-disabled:cursor-default aria-disabled:opacity-40"
-                        onKeyDown={(event) => { if (!rowInteractionsDisabled) handleReorderKey(event, machine) }}
+                        onKeyDown={(event) => { if (!reorderDisabled) handleReorderKey(event, machine) }}
                         onDragStart={(event) => {
-                          if (rowInteractionsDisabled) { event.preventDefault(); return }
+                          if (reorderDisabled) { event.preventDefault(); return }
                           beginOperation()
                           captureBaseline()
                           setDraggedID(machine.id)
@@ -318,7 +342,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       >
                         <GripVertical className="size-4" aria-hidden="true" />
                       </span>}
-                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu label={`More actions for ${machine.name}`} popovers={{
+                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu ref={node => { if (node) editorTriggers.current.set(machine.id, node); else editorTriggers.current.delete(machine.id) }} label={`More actions for ${machine.name}`} popovers={{
                         ...presentation.popovers,
                         delete: close => <DeleteSandboxBody
                           kind={machine.kind}
@@ -350,7 +374,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       ]} />}</> : undefined}
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
-                        <SandboxAction label={`Edit ${machine.name}`} tooltip={busyReason} disabled={interactionDisabled || Boolean(busyReason)} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
+                        <SandboxAction ref={node => { if (node) editorTriggers.current.set(machine.id, node); else editorTriggers.current.delete(machine.id) }} label={`Edit ${machine.name}`} tooltip={busyReason} disabled={interactionDisabled || Boolean(busyReason)} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
                         <SandboxAction tooltip={machine.kind === "vm" ? "Create a new empty sandbox with the same settings." : "Create a new SSH host connection with the same settings."} label={`Duplicate settings for ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
                           <CopyPlus />
                         </SandboxAction>
@@ -368,6 +392,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
             })}
         </SandboxList>
         {footer && <div className="mt-3 shrink-0">{footer}</div>}
+        <p id={reorderHelpId} className="sr-only">Use the Up and Down arrow keys to reorder.</p>
         <p className="sr-only" aria-live="polite">{announcement}</p>
       </div>
     </>

@@ -14,6 +14,7 @@ import socket
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -98,10 +99,23 @@ def read(name, default=None):
 
 
 def write(path, value):
-    temporary = path.with_suffix('.tmp')
-    temporary.write_text(json.dumps(value) + '\n')
-    temporary.chmod(0o600)
-    temporary.replace(path)
+    fd, temporary = tempfile.mkstemp(prefix=f'.{path.name}-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            output.write(json.dumps(value) + '\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def identity(pid):
@@ -765,7 +779,9 @@ def prepare_selkies_runtime(account):
 
 def start_selkies():
     if supervisor():
-        return
+        if selkies_session_state(selkies_state(), True) != 'failed':
+            return
+        stop()
     account = pwd.getpwnam(USER)
     if not SELKIES_EXECUTABLE.is_file() or not os.access(SELKIES_EXECUTABLE, os.X_OK):
         raise RuntimeError('Installed Selkies recipe is incomplete; run the explicit streamer update')
@@ -857,6 +873,13 @@ def supervise_selkies():
             restart_requested_flag = False
             return requested
 
+        def should_stop():
+            trim_logs()
+            # Reap exited session children even while only the stream is retried.
+            for child in session_children:
+                child.poll()
+            return stopping
+
         signal.signal(signal.SIGTERM, terminate)
         signal.signal(signal.SIGINT, terminate)
         signal.signal(signal.SIGUSR1, restart_stream)
@@ -884,7 +907,7 @@ def supervise_selkies():
             state['sessionState'] = 'running'
             write_selkies_state(state)
             supervise_selkies_stream(state, account, environment,
-                                     lambda: stopping, should_restart_stream)
+                                     should_stop, should_restart_stream)
         except Exception as error:
             failed = True
             (RUN / 'failed').write_text('Desktop service failed; inspect /var/log/silo-desktop.log\n')
@@ -1020,22 +1043,44 @@ def stop():
     (RUN / 'failed').unlink(missing_ok=True)
 
 
+def trim_log(fd):
+    with os.fdopen(fd, 'r+b') as log:
+        info = os.fstat(log.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size <= 1024 * 1024:
+            return
+        log.seek(-256 * 1024, os.SEEK_END)
+        tail = log.read()
+        log.seek(0)
+        log.write(tail)
+        log.truncate()
+
+
 def trim_logs():
-    # Bound logs without following links writable by the desktop user.
-    for path in [LOG, *HOME.glob('.vnc/*.log')]:
+    # Anchor user logs to opened directories; never traverse a user-writable link.
+    file_flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        trim_log(os.open(LOG, file_flags))
+    except OSError:
+        pass
+    try:
+        home = os.open(HOME, directory_flags)
         try:
-            fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(fd, 'r+b') as log:
-                info = os.fstat(log.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_size <= 1024 * 1024:
-                    continue
-                log.seek(-256 * 1024, os.SEEK_END)
-                tail = log.read()
-                log.seek(0)
-                log.write(tail)
-                log.truncate()
-        except OSError:
-            continue
+            directory = os.open('.vnc', directory_flags, dir_fd=home)
+            try:
+                for name in os.listdir(directory):
+                    if not name.endswith('.log'):
+                        continue
+                    try:
+                        trim_log(os.open(name, file_flags, dir_fd=directory))
+                    except OSError:
+                        continue
+            finally:
+                os.close(directory)
+        finally:
+            os.close(home)
+    except OSError:
+        pass
 
 
 def stop_display():

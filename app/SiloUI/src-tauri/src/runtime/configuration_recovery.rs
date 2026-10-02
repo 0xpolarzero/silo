@@ -124,6 +124,7 @@ pub(super) fn claim(
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
 ) -> Result<(), RuntimeError> {
+    use std::os::unix::fs::PermissionsExt;
     let Some(journal) = load(paths)? else {
         return Ok(());
     };
@@ -145,6 +146,7 @@ pub(super) fn claim(
     }
     let stage = tempfile::Builder::new()
         .prefix(".configuration-claim-")
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(&paths.volumes)
         .map_err(failure)?;
     let mut marker = fs::OpenOptions::new()
@@ -620,6 +622,27 @@ fn recover_inner(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claimed_workspace_directory_is_private() {
+        let _test_state = crate::test_support::global_state();
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        let machine = super::super::tests::vm();
+        let request = super::super::tests::request(vec![machine.clone()]);
+        begin(&paths, &request).unwrap();
+        claim(&paths, &machine).unwrap();
+        let folder = paths.volumes.join(machine.name());
+        assert_eq!(
+            fs::metadata(&folder).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::read_to_string(folder.join(OWNER)).unwrap(),
+            machine.id()
+        );
+    }
 
     #[cfg(unix)]
     #[test]

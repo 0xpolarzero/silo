@@ -37,6 +37,20 @@ function Harness({ backup, openSandbox = vi.fn() }: { backup: BackupController; 
 afterEach(() => { toast.dismiss() })
 
 describe("export notifications", () => {
+  it("does not start an export if another transfer begins while the folder picker is open", async () => {
+    let choose!: (path: string) => void
+    const backup = controller({}, { chooseDestination: vi.fn(() => new Promise<string>(resolve => { choose = resolve })) })
+    let transfer!: SandboxTransfer
+    const { rerender } = render(<Capture backup={backup} onTransfer={value => { transfer = value }} />)
+    const exporting = transfer.exportSandbox("dev")
+    const running: BackupOperation = { kind: "running", operation: "restore", archive, runningNames: [], progress: 30, phases: [] }
+    rerender(<Capture backup={{ ...backup, state: { ...backup.state, operation: running } }} onTransfer={value => { transfer = value }} />)
+    choose("/backups")
+    await expect(exporting).resolves.toBeNull()
+    expect(backup.actions.exportAndVerify).not.toHaveBeenCalled()
+    expect(backup.actions.cancelOperation).not.toHaveBeenCalled()
+  })
+
   it("starts the export after a folder is chosen and shows a running toast, not an inline panel", async () => {
     const backup = controller({}, { chooseDestination: vi.fn().mockResolvedValue("/Volumes/Backups") })
     const { rerender } = render(<Harness backup={backup} />)
@@ -112,6 +126,7 @@ describe("export notifications", () => {
     expect(screen.getByText("dev.silo-backup · 2 GiB")).toBeInTheDocument()
     fireEvent.click(await screen.findByRole("button", { name: /Show in (Finder|folder)/ }))
     expect(backup.actions.revealArchive).toHaveBeenCalledWith(archive)
+    expect(backup.actions.dismissOperation).toHaveBeenCalledOnce()
   })
 
   it("dismissing a result toast clears the backend operation", async () => {
@@ -245,6 +260,52 @@ describe("results present at load", () => {
 })
 
 describe("import notifications and popover", () => {
+  it("replaces an in-flight inspection and ignores its late failure", async () => {
+    const signals: AbortSignal[] = []
+    let rejectFirst!: (error: Error) => void
+    const next = { ...archive, sandboxes: ["api"] }
+    const chooseArchive = vi.fn().mockImplementationOnce((selected: (path: string) => void, signal: AbortSignal) => {
+      signals.push(signal)
+      selected("/first")
+      return new Promise((_, reject) => { rejectFirst = reject })
+    }).mockImplementationOnce(async (selected: (path: string) => void, signal: AbortSignal) => {
+      signals.push(signal)
+      selected("/second")
+      return { archive: next, valid: true }
+    })
+    const backup = controller({}, { chooseArchive })
+    render(<Harness backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Start import" }))
+    expect(await screen.findByText("Checking export")).toBeVisible()
+    fireEvent.click(screen.getByRole("button", { name: "Start import" }))
+    expect(await screen.findByRole("textbox", { name: "New sandbox name" })).toHaveValue("api-imported")
+    expect(signals[0].aborted).toBe(true)
+    expect(signals[1].aborted).toBe(false)
+    await act(async () => rejectFirst(new Error("Old inspection failed")))
+    expect(screen.getByRole("textbox", { name: "New sandbox name" })).toHaveValue("api-imported")
+    expect(screen.queryByText("Old inspection failed")).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole("button", { name: "Import" }))
+    await act(async () => { await Promise.resolve() })
+    expect(backup.actions.startRestore).toHaveBeenCalledExactlyOnceWith(next, "api-imported", "api")
+  })
+
+  it("aborts archive inspection on unmount without starting an import", async () => {
+    let signal!: AbortSignal
+    let finish!: (value: { archive: typeof archive; valid: boolean }) => void
+    const backup = controller({}, { chooseArchive: vi.fn((selected?: (path: string) => void, abort?: AbortSignal) => {
+      signal = abort!
+      selected?.("/export")
+      return new Promise<{ archive: typeof archive; valid: boolean }>(resolve => { finish = resolve })
+    }) })
+    const view = render(<Harness backup={backup} />)
+    fireEvent.click(screen.getByRole("button", { name: "Start import" }))
+    await screen.findByText("Checking export")
+    view.unmount()
+    expect(signal.aborted).toBe(true)
+    await act(async () => finish({ archive, valid: true }))
+    expect(backup.actions.startRestore).not.toHaveBeenCalled()
+  })
+
   it("validates the new name, blocks conflicts, offers a source select, and imports", async () => {
     const multi = { ...archive, sandboxes: ["dev", "api"] }
     const backup = controller({}, { chooseArchive: vi.fn().mockImplementation(async (onSelected?: (path: string) => void) => { onSelected?.("/p"); return { archive: multi, valid: true } }) })
@@ -301,11 +362,13 @@ describe("import notifications and popover", () => {
   it("shows an Open action on import success that navigates to the new sandbox", async () => {
     const openSandbox = vi.fn()
     const success: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: localVm.machine.name, outcome: "success", title: `${localVm.machine.name} is ready`, message: "ok" }
+    const backup = controller({ operation: success })
     const { rerender } = render(<Harness backup={controller()} openSandbox={openSandbox} />)
-    rerender(<Harness backup={controller({ operation: success })} openSandbox={openSandbox} />)
+    rerender(<Harness backup={backup} openSandbox={openSandbox} />)
     expect(await screen.findByText(`Imported ${localVm.machine.name}`)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Open" }))
     expect(openSandbox).toHaveBeenCalledWith(localVm.machine.id)
+    expect(backup.actions.dismissOperation).toHaveBeenCalledOnce()
   })
 
   it("finds the imported sandbox when Open is clicked, even if it appeared after the toast", async () => {

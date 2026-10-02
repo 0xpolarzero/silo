@@ -22,6 +22,41 @@ async function enterCustom(user: ReturnType<typeof userEvent.setup>, label: stri
 }
 
 describe("machine editor resource fields", () => {
+  it("caps presets at the runtime limit on a computer with more CPUs", async () => {
+    const onMachinesChange = vi.fn()
+    render(<TooltipProvider><MachineList machines={[]} onMachinesChange={onMachinesChange}
+      getHostCapacity={() => ({ logicalCPUs: 512, memoryGiB: 64 })} /></TooltipProvider>)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+    const ceiling = screen.getByRole("combobox", { name: "CPUs ceiling" })
+    const values = [...ceiling.querySelectorAll("option")].map(option => option.value)
+    expect(values).not.toContain("512")
+    expect(values).toContain("255")
+    await user.selectOptions(ceiling, "255")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(onMachinesChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ maxCPUs: 255 })])
+  })
+
+  it("shows the selected ceiling when switching to a computer with fewer CPUs", async () => {
+    const onCommitMachine = vi.fn().mockResolvedValue(undefined)
+    render(<TooltipProvider><MachineList machines={[]} onMachinesChange={vi.fn()} onCommitMachine={onCommitMachine}
+      computers={[{ id: "office", name: "Office", connected: true }]}
+      getHostCapacity={computer => computer === "" ? { logicalCPUs: 4, memoryGiB: 16 } : undefined} /></TooltipProvider>)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+    await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "office")
+    await user.selectOptions(screen.getByRole("combobox", { name: "CPUs ceiling" }), "12")
+    await user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), "")
+    const ceiling = screen.getByRole("spinbutton", { name: "CPUs ceiling custom (CPUs)" })
+    expect(ceiling).toHaveDisplayValue("12")
+    await user.clear(ceiling)
+    await user.type(ceiling, "4")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(onCommitMachine).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ maxCPUs: 4 }), undefined, "", [])
+  })
+
   it("caps custom CPU counts at what the runtime accepts", async () => {
     const { user } = await openNewSandbox()
     const input = await enterCustom(user, "CPUs ceiling", "CPUs", "12")
