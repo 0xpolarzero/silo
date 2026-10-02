@@ -103,12 +103,32 @@ fn running(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
 ) -> Result<Vec<RunningMachine>, String> {
-    if !paths.metadata.exists() {
-        return Ok(vec![]);
-    }
     let metadata = read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
     let mut result = vec![];
     let mut listed: Option<HashSet<String>> = None;
+    let unfinished: Vec<_> = configuration_recovery::shutdown_machines(paths)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|machine| {
+            !metadata.machines.iter().any(|saved| {
+                saved.is_vm() && saved.id() == machine.id() && saved.name() == machine.name()
+            })
+        })
+        .collect();
+    if !unfinished.is_empty() {
+        let present: HashSet<_> = list_managed(runner, paths)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        if let Some(machine) = unfinished
+            .iter()
+            .find(|machine| present.contains(machine.name()))
+        {
+            return Err(format!("{} has unfinished sandbox configuration. Retry or correct its setup before updating.", machine.name()));
+        }
+        listed = Some(present);
+    }
     for m in metadata.machines.iter().filter(|m| m.is_vm()) {
         // Unstarted forks, restores and imports have no runtime VM yet, so they
         // cannot be running and must not block updates.
@@ -279,6 +299,90 @@ pub(crate) fn recover(app: &AppHandle) -> Result<bool, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn uncommitted_runtime_vm_blocks_update_without_replaying_configuration() {
+        let _test_state = crate::test_support::global_state();
+        struct Runtime {
+            committed: Option<MachineConfiguration>,
+        }
+        impl RuntimeRunner for Runtime {
+            fn run(
+                &self,
+                _: &RuntimePaths,
+                args: &[String],
+                _: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                let stdout = match args[0].as_str() {
+                    "list" => json!([{"name":"unfinished"}]).to_string(),
+                    "inspect" => {
+                        let machine = self.committed.as_ref().unwrap();
+                        assert_eq!(args[1], machine.name());
+                        json!({"name":machine.name(),"status":"Stopped","config":{"labels":{"silo.managed":"true","silo.machine-id":machine.id()}}}).to_string()
+                    }
+                    _ => panic!("update inventory must not mutate VMs: {args:?}"),
+                };
+                Ok(CommandOutput {
+                    stdout,
+                    stderr: String::new(),
+                })
+            }
+        }
+        for has_committed in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = super::super::tests::paths(&dir);
+            let mut request: MachineConfigurationRequest = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+            let committed = has_committed.then(|| {
+                let mut machine = request.machines[0].clone();
+                if let MachineConfiguration::Vm { id, name, .. } = &mut machine {
+                    *id = uuid::Uuid::new_v4().to_string();
+                    *name = "committed".into();
+                }
+                machine
+            });
+            if let Some(machine) = &committed {
+                let saved = MachineConfigurationRequest {
+                    schema_version: 1,
+                    machines: vec![machine.clone()],
+                };
+                write_metadata(&paths.metadata, &saved).unwrap();
+                request.machines.push(machine.clone());
+            }
+            configuration_recovery::begin(&paths, &request).unwrap();
+            let error = running(&Runtime { committed }, &paths).unwrap_err();
+            assert!(error.contains("unfinished"), "{error}");
+            assert_eq!(
+                configuration_recovery::pending_request(&paths).unwrap(),
+                Some(request)
+            );
+            assert!(!path(&paths).exists());
+        }
+    }
+
+    #[test]
+    fn unfinished_configuration_without_a_runtime_vm_does_not_block_update() {
+        let _test_state = crate::test_support::global_state();
+        struct EmptyRuntime;
+        impl RuntimeRunner for EmptyRuntime {
+            fn run(
+                &self,
+                _: &RuntimePaths,
+                args: &[String],
+                _: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                assert_eq!(args[0], "list");
+                Ok(CommandOutput {
+                    stdout: "[]".into(),
+                    stderr: String::new(),
+                })
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let request = serde_json::from_value(json!({"schemaVersion":1,"machines":[{"kind":"vm","id":uuid::Uuid::new_v4().to_string(),"name":"unfinished","cpus":2,"maxCPUs":2,"memoryGiB":2,"maxMemoryGiB":2,"workspaceStorageGiB":10,"runtimeStorageGiB":10}]})).unwrap();
+        configuration_recovery::begin(&paths, &request).unwrap();
+        assert!(running(&EmptyRuntime, &paths).unwrap().is_empty());
+    }
+
     #[test]
     fn update_journal_round_trips_and_rejects_duplicate_or_unknown_identity() {
         let _test_state = crate::test_support::global_state();
