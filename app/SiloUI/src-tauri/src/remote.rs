@@ -1304,7 +1304,7 @@ pub async fn remote_workspace_action(
     // Elapsed time counts from the command, like a local action.
     let started = std::time::Instant::now();
     let notice_app = app.clone();
-    let (notice_id, notice_action) = (vm_id.clone(), action.clone());
+    let (notice_id, notice_action, notice_host) = (vm_id.clone(), action.clone(), host_id.clone());
     let result = tauri::async_runtime::spawn_blocking(move || {
         call_remote_typed(
             &app,
@@ -1325,10 +1325,7 @@ pub async fn remote_workspace_action(
                 .and_then(|state| sandbox_name(state, &notice_id))
         })
         .unwrap_or_else(|| "this sandbox".into());
-    let sandbox = crate::notifications::NoticeSandbox {
-        id: notice_id,
-        name: name.clone(),
-    };
+    let sandbox = remote_notice_sandbox(&notice_host, &notice_id, &name);
     let outcome = match &result {
         Ok(_) => crate::notifications::Outcome::Succeeded,
         Err(error) if error.code == ErrorCode::Cancelled => {
@@ -1349,6 +1346,47 @@ pub async fn remote_workspace_action(
         crate::notifications::notify_native(&notice_app, notice);
     }
     result
+}
+
+fn remote_notice_sandbox(
+    host_id: &str,
+    vm_id: &str,
+    name: &str,
+) -> crate::notifications::NoticeSandbox {
+    crate::notifications::NoticeSandbox {
+        id: format!("silo-remote:{host_id}:{vm_id}"),
+        name: name.into(),
+    }
+}
+
+#[cfg(test)]
+mod notice_tests {
+    use super::*;
+    use crate::notifications::{lifecycle_notice, Outcome, LONG_OPERATION};
+
+    #[test]
+    fn remote_notices_route_and_group_by_the_owning_computer() {
+        for host in ["office", "lab"] {
+            for outcome in [Outcome::Succeeded, Outcome::Failed("start failed")] {
+                let notice = lifecycle_notice(
+                    "start",
+                    "dev",
+                    Some(remote_notice_sandbox(host, "same-vm-id", "dev")),
+                    LONG_OPERATION,
+                    outcome,
+                )
+                .unwrap();
+                let target = format!("silo-remote:{host}:same-vm-id");
+                assert_eq!(
+                    notice.route(),
+                    json!({"tab": "workspaces", "workspace": target})
+                );
+                assert_eq!(notice.thread(), target);
+                assert_eq!(notice.key, format!("vm:{target}:lifecycle"));
+                assert_eq!(notice.sandbox.unwrap().name, "dev");
+            }
+        }
+    }
 }
 
 /// Display name of one sandbox in a remote application snapshot.
@@ -1386,7 +1424,7 @@ pub async fn remote_delete_machine(
     expected: crate::runtime::MachineConfiguration,
 ) -> Result<Value, BridgeError> {
     let notice_app = app.clone();
-    let deleted = vm_id.clone();
+    let deleted = format!("silo-remote:{host_id}:{vm_id}");
     let result = tauri::async_runtime::spawn_blocking(move || {
         call_remote_typed(
             &app,
