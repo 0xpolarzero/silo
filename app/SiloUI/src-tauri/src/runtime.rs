@@ -679,16 +679,51 @@ struct ListedSandbox {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(from = "RawInspectedSandbox")]
 pub(crate) struct InspectedSandbox {
     pub(crate) name: String,
     pub(crate) status: String,
     pub(crate) config: Value,
-    #[serde(default)]
     pub(crate) active_config: Option<Value>,
-    #[serde(default)]
     pub(crate) updated_at: Option<String>,
-    #[serde(default)]
     pub(crate) runtime_instance_id: Option<String>,
+    /// Whether the runtime's output has a `runtime_instance_id` entry at all (a null value
+    /// counts). Silo's runtime patch always writes it; a runtime without the patch never does.
+    pub(crate) runtime_instance_reported: bool,
+}
+
+#[derive(Deserialize)]
+struct RawInspectedSandbox {
+    name: String,
+    status: String,
+    config: Value,
+    #[serde(default)]
+    active_config: Option<Value>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    /// `None`: no entry. `Some(None)`: an entry that is null.
+    #[serde(default, deserialize_with = "present_or_null")]
+    runtime_instance_id: Option<Option<String>>,
+}
+
+fn present_or_null<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+impl From<RawInspectedSandbox> for InspectedSandbox {
+    fn from(raw: RawInspectedSandbox) -> Self {
+        Self {
+            name: raw.name,
+            status: raw.status,
+            config: raw.config,
+            active_config: raw.active_config,
+            updated_at: raw.updated_at,
+            runtime_instance_reported: raw.runtime_instance_id.is_some(),
+            runtime_instance_id: raw.runtime_instance_id.flatten(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -4568,6 +4603,41 @@ pub(crate) fn inspect_workspace(
     })
 }
 
+/// Silo's runtime patch makes `inspect` name the instance of a running sandbox. Computer-use
+/// setup and storage reclaim trust only that identity, so a runtime without it would silently
+/// disable both. The patch always writes the entry (null while no active run matches), so a
+/// running sandbox whose output has no entry at all comes from a runtime that lacks the
+/// capability: that is an explicit error here, and one diagnostic line per runtime.
+static INSTANCE_ID_WARNED: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
+
+/// The running instance a runtime reports for `inspected`: `None` when the sandbox is not
+/// running or its instance is not established yet.
+pub(crate) fn running_instance_id(
+    paths: &RuntimePaths,
+    inspected: &InspectedSandbox,
+) -> Result<Option<String>, RuntimeError> {
+    if let Some(instance) = inspected
+        .runtime_instance_id
+        .as_ref()
+        .filter(|instance| !instance.is_empty())
+    {
+        return Ok(Some(instance.clone()));
+    }
+    if inspected.runtime_instance_reported || !inspected.status.eq_ignore_ascii_case("running") {
+        return Ok(None);
+    }
+    let message = "The bundled runtime does not report running instances (its inspect output has no runtime_instance_id), so computer-use setup and storage reclaim are disabled. Reinstall Silo.";
+    let first = INSTANCE_ID_WARNED
+        .get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+        .lock()
+        .map(|mut warned| warned.insert(paths.executable.clone()))
+        .unwrap_or(true);
+    if first {
+        eprintln!("{message}");
+    }
+    Err(RuntimeError::Unavailable(message.into()))
+}
+
 /// Live runtime state of a Silo VM that may not exist in the runtime yet.
 pub(crate) enum VmRuntime {
     /// No runtime sandbox exists (a checkpoint restore is pending). It is stopped.
@@ -6441,7 +6511,7 @@ if [ "$1" = "{block_on}" ]; then touch "$MSB_HOME/blocked"; exec sleep 5; fi
         // The live runtime control socket requires a short root (104 bytes on macOS).
         let directory = tempfile::Builder::new()
             .prefix("silo-account-")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let paths = RuntimePaths {
             guest_image: PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image"),
@@ -10747,7 +10817,7 @@ exit 9
         // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new()
             .prefix("silo")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let storage = directory
             .path()
@@ -10787,7 +10857,7 @@ exit 9
         // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new()
             .prefix("silo")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let storage = directory.path().join("storage");
         let alias = runtime_home_alias(directory.path(), &storage);
@@ -10808,7 +10878,7 @@ exit 9
         // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new()
             .prefix("silo")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let other = directory.path().join("other");
         fs::create_dir(&other).unwrap();
@@ -10828,7 +10898,7 @@ exit 9
         // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new()
             .prefix("silo")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let storage = directory.path().join("storage");
         let alias = runtime_home_alias(directory.path(), &storage);
@@ -10851,7 +10921,7 @@ exit 9
         // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new()
             .prefix("silo")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let mut paths = paths(&directory);
         let storage = directory.path().join("storage");
@@ -10871,7 +10941,7 @@ exit 9
         // A short root keeps the modeled control.sock under macOS's 104-byte limit.
         let directory = tempfile::Builder::new()
             .prefix("silo")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let storage = directory.path().join("intended");
         let other = directory.path().join("existing");

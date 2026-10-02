@@ -111,6 +111,10 @@
     {
       "path": "patches/microsandbox-restore-starting-control-0.7.6.patch",
       "sha256": "b268376ed4cbf257f35d6f1d3559fbf154987572ce536544c28f94c25c9c2d5d"
+    },
+    {
+      "path": "patches/microsandbox-runtime-instance-id-0.7.6.patch",
+      "sha256": "3a1c70aaebb60e73f1d803c4a4026f1585639307ca12309573e609102dc4b9f1"
     }
   ]
 }

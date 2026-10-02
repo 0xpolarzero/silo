@@ -41,6 +41,29 @@ A pipe-coordinated fork reproduction confirmed that parent close left the lock
 busy until child exit. Separate test processes isolate the file descriptor table
 while preserving the cache's real locking and intentional inherited-child test.
 
+`configuration_recovery` tests fork the whole test process on purpose, which copies
+every descriptor open at that moment, including the worker-lock files of the
+`backup` command tests. A forked copy kept `cancel_asks_the_runtime_to_stop_before_killing_it`
+failing in nearly every full parallel run on Linux (its final zero-wait lock check
+saw the lock still busy) while it passed alone. The lock-releasing `backup` tests
+now take the shared isolation guard, which the forking tests also hold, so the two
+groups never overlap.
+
+## Live test temporary directories
+
+Live tests create their temporary directories under `/tmp` because the runtime's
+control socket needs a short absolute path (104 bytes on macOS). `/tmp` is a small
+tmpfs on many Linux hosts, so set `SILO_TEST_TMP` to a short directory on a larger
+file system (for example `/var/tmp/silo-t`) before running them:
+
+```sh
+SILO_TEST_TMP=/var/tmp/silo-t SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures \
+  cargo test --locked <live test> -- --ignored --nocapture
+```
+
+The helper is `test_support::live::temp_root`. Live computer-use tests pin the v4
+guest image themselves (`guest_image::pin_test_version`); ordinary tests default to v3.
+
 Keep environment overrides on child `Command` instances, filesystem state in
 owned temporary directories, and listener ports allocated by the OS. A test's
 workers must finish before its isolation guard or temporary directory drops.

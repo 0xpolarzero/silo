@@ -708,3 +708,48 @@ fn legacy_record_keeps_last_success_when_history_is_introduced() {
     save(&paths, machine.id(), &record).unwrap();
     assert_eq!(load(&paths, machine.id()).unwrap().history.len(), 1);
 }
+
+fn parsed(status: &str, instance: Option<Value>) -> InspectedSandbox {
+    let mut value = json!({"name":"dev", "status":status, "config": {}});
+    if let Some(instance) = instance {
+        value["runtime_instance_id"] = instance;
+    }
+    serde_json::from_value(value).unwrap()
+}
+
+#[test]
+fn a_reported_instance_is_the_running_identity() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = super::super::tests::paths(&directory);
+    let found = running_instance_id(&paths, &parsed("Running", Some(json!("run-1:t"))));
+    assert_eq!(found.unwrap().as_deref(), Some("run-1:t"));
+}
+
+#[test]
+fn a_stopped_sandbox_or_an_instance_not_established_yet_is_quietly_none() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = super::super::tests::paths(&directory);
+    // Stopped: nothing runs, whatever the runtime reports.
+    assert_eq!(
+        running_instance_id(&paths, &parsed("Stopped", None)).unwrap(),
+        None
+    );
+    // The runtime reports the entry but no active run matches yet (null).
+    let unestablished = parsed("Running", Some(Value::Null));
+    assert!(unestablished.runtime_instance_reported);
+    assert_eq!(running_instance_id(&paths, &unestablished).unwrap(), None);
+}
+
+#[test]
+fn a_runtime_without_instance_reporting_is_an_explicit_error_not_a_silent_skip() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = super::super::tests::paths(&directory);
+    // A runtime without the patch never writes the entry at all.
+    let unpatched = parsed("Running", None);
+    assert!(!unpatched.runtime_instance_reported);
+    let error = running_instance_id(&paths, &unpatched).unwrap_err();
+    assert!(
+        error.to_string().contains("runtime_instance_id"),
+        "the diagnostic names the missing capability: {error}"
+    );
+}

@@ -656,9 +656,10 @@ fn running_identity(
     if inspected.status != "Running" || !labelled {
         return None;
     }
-    inspected
-        .runtime_instance_id
-        .filter(|instance| !instance.is_empty())
+    // A runtime that lacks the capability is reported by name, not skipped silently.
+    runtime::running_instance_id(paths, &inspected)
+        .ok()
+        .flatten()
 }
 
 /// How long a queued apply waits for its turn before it gives up (the next boot or app

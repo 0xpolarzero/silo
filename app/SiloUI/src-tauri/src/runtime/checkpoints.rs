@@ -5970,7 +5970,7 @@ mod tests {
         // The live runtime control socket requires a short root (104 bytes on macOS).
         let directory = tempfile::Builder::new()
             .prefix("silo-ck-")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let paths = RuntimePaths {
             guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

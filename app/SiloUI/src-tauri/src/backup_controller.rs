@@ -3772,7 +3772,7 @@ mod tests {
         // The live runtime control socket requires a short root (104 bytes on macOS).
         let directory = tempfile::Builder::new()
             .prefix("silo-proof-")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let paths = runtime::RuntimePaths {
             guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -4265,7 +4265,7 @@ mod tests {
         // The live runtime control socket requires a short root (104 bytes on macOS).
         let directory = tempfile::Builder::new()
             .prefix("silo-ckpt-proof-")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let guest_image =
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime/guest-image");
@@ -4455,7 +4455,7 @@ mod tests {
         let archive = PathBuf::from(std::env::var("SILO_TEST_ARCHIVE").expect("archive path"));
         let directory = tempfile::Builder::new()
             .prefix("silo-old-")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let cold = runtime::RuntimePaths {
             guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -4571,9 +4571,11 @@ mod tests {
     fn live_built_in_computer_use_sets_up_and_survives_export_and_import() {
         crate::test_support::live::require_confirmation();
         let _test_state = crate::test_support::global_state();
+        // Tests default to the v3 image; computer use needs v4.
+        let _v4 = crate::runtime::guest_image::pin_test_version("ubuntu-24.04-v4");
         let directory = tempfile::Builder::new()
             .prefix("silo-cu-")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let guest_image = PathBuf::from(std::env::var("SILO_TEST_GUEST_IMAGE").unwrap());
         // Two computers: each has its own runtime home, metadata and published folder.
@@ -4916,13 +4918,14 @@ mod tests {
     fn live_built_in_desktop_boots_repeatedly() {
         crate::test_support::live::require_confirmation();
         let _test_state = crate::test_support::global_state();
+        let _v4 = crate::runtime::guest_image::pin_test_version("ubuntu-24.04-v4");
         let rounds: usize = std::env::var("SILO_BOOT_LOOP_ROUNDS")
             .ok()
             .and_then(|value| value.parse().ok())
             .unwrap_or(3);
         let directory = tempfile::Builder::new()
             .prefix("silo-boot-")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let guest_image = PathBuf::from(std::env::var("SILO_TEST_GUEST_IMAGE").unwrap());
         let source_published = crate::chatgpt_app::ensure_published_dir(

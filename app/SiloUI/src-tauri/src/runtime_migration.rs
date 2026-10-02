@@ -1288,7 +1288,7 @@ mod tests {
         // The runtime alias requires a short root to fit its Unix control socket path.
         let dir = tempfile::Builder::new()
             .prefix("sm")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let app_data = dir.path();
         let old = app_data.join("runtime");
@@ -1420,7 +1420,7 @@ mod tests {
         // Use /tmp rather than macOS TMPDIR: staged homes must fit Unix socket path limits.
         let dir = tempfile::Builder::new()
             .prefix("sm")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let app_data = dir.path();
         let old = app_data.join("runtime");

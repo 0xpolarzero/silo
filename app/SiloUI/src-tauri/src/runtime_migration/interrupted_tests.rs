@@ -50,7 +50,7 @@ fn previous_generation(leftovers: Leftovers) -> (tempfile::TempDir, runtime::Run
     // The runtime alias must keep Unix socket paths short, so use /tmp, not TMPDIR.
     let dir = tempfile::Builder::new()
         .prefix("si")
-        .tempdir_in("/tmp")
+        .tempdir_in(crate::test_support::live::temp_root())
         .unwrap();
     let app_data = dir.path();
     let old = app_data.join("runtime");

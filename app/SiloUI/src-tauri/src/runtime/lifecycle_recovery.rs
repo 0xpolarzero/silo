@@ -1000,7 +1000,7 @@ mod tests {
         crate::test_support::live::require_confirmation();
         let directory = tempfile::Builder::new()
             .prefix("silo-lifecycle-live-")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let paths = live_paths(directory.path());
         let name = "lifecycle-recovery-test";

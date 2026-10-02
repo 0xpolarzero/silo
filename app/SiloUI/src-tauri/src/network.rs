@@ -972,7 +972,7 @@ mod tests {
     fn control_reply(response: &str) -> Result<Vec<Published>, String> {
         use std::os::unix::net::UnixListener;
         // Keep the socket below macOS's pathname length limit.
-        let directory = tempfile::tempdir_in("/tmp").unwrap();
+        let directory = tempfile::tempdir_in(crate::test_support::live::temp_root()).unwrap();
         let path = directory.path().join("control.sock");
         let listener = UnixListener::bind(&path).unwrap();
         let response = response.to_owned();
@@ -1217,7 +1217,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let gate = runtime::operation_gate::OperationGate::new();
         let _guard = gate.vm("test-id", "dev", "Reconciling test ports").unwrap();
-        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let temp = tempfile::tempdir_in(crate::test_support::live::temp_root()).unwrap();
         let paths = temp_paths(&temp);
         write_config(&paths, &one_port("dev", 3000, true)).unwrap();
         let _ = std::thread::spawn(|| {
@@ -1281,7 +1281,7 @@ mod tests {
     #[cfg(unix)]
     fn repairing_one_vm_never_holds_the_network_lock_across_runtime_calls() {
         let _test_state = crate::test_support::global_state();
-        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let temp = tempfile::tempdir_in(crate::test_support::live::temp_root()).unwrap();
         let paths = temp_paths(&temp);
         let mut config = one_port("dev", 3000, true);
         config.mappings.push(Mapping {
@@ -1323,7 +1323,7 @@ mod tests {
     #[cfg(unix)]
     fn tombstone_cleanup_keeps_settings_saved_during_a_repair() {
         let _test_state = crate::test_support::global_state();
-        let temp = tempfile::tempdir_in("/tmp").unwrap();
+        let temp = tempfile::tempdir_in(crate::test_support::live::temp_root()).unwrap();
         let paths = temp_paths(&temp);
         let mut config = one_port("dev", 3000, true);
         // A removed port whose forward is already gone is pruned by the repair.
