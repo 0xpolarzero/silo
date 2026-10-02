@@ -396,6 +396,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let sshAccessError: string | null = null
   const sshReads = new Map<string, { dirty: boolean; promise: Promise<void> }>()
   const sshSaveRevisions = new Map<string, number>()
+  const sshReadRevisions = new Map<string, number>()
   let network: NetworkState | undefined
   let networkError: string | null = null
   const networkReads = new Map<string, { dirty: boolean; promise: Promise<void> }>()
@@ -464,7 +465,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     const entry = { dirty: false, promise: Promise.resolve() }
     entry.promise = (async () => { do {
       entry.dirty = false
-      const revision = sshSaveRevisions.get(owner)
+      const revision = sshReadRevisions.get(owner)
       const computer = remoteComputers.find(item => item.id === owner)
       let rows: SshAccessWorkspace[]
       let unavailable: string | null = null
@@ -480,7 +481,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         rows = unavailableSshRows(owner, computer?.name ?? remoteManagement?.name ?? "This computer", unavailable)
       }
       if (disposed) return
-      if (revision !== sshSaveRevisions.get(owner)) continue
+      if (revision !== sshReadRevisions.get(owner)) continue
       const current = remoteComputers.find(item => item.id === owner)
       if (owner && !current) return
       if (owner && !current?.connected) rows = unavailableSshRows(owner, current!.name, `SSH status on ${current!.name} is unavailable. Reconnect and refresh before changing access.`)
@@ -1684,16 +1685,17 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const remote = parseRemoteWorkspaceTarget(request.workspace)
       const owner = remote?.hostId ?? ""
       if (sshAccess?.workspaces.find(row => row.workspace === request.workspace)?.unavailable || (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected)) throw new Error("Refresh SSH status before changing access.")
-      const revision = (sshSaveRevisions.get(owner) ?? 0) + 1
-      sshSaveRevisions.set(owner, revision)
+      const revision = (sshSaveRevisions.get(request.workspace) ?? 0) + 1
+      sshSaveRevisions.set(request.workspace, revision)
+      sshReadRevisions.set(owner, (sshReadRevisions.get(owner) ?? 0) + 1)
       const { workspace: _workspace, ...settings } = request
       const result = parseSshAccessState(await native.invoke(remote ? "remote_save_ssh_access" : "save_ssh_access", remote ? { ...remote, ...settings } : { ...request }))
       if (result.workspaces.some(row => workspaceOwner(row.workspace) !== owner)) throw new Error("SSH response belongs to another computer.")
-      if (disposed || sshSaveRevisions.get(owner) !== revision) return
+      if (disposed || sshSaveRevisions.get(request.workspace) !== revision) return
       if (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected) return
-      sshSaveRevisions.set(owner, revision + 1)
-      const retained = sshAccess?.workspaces.filter(row => workspaceOwner(row.workspace) !== owner) ?? []
-      sshAccess = { workspaces: [...retained, ...result.workspaces] }
+      sshReadRevisions.set(owner, (sshReadRevisions.get(owner) ?? 0) + 1)
+      const retained = sshAccess?.workspaces.filter(row => row.workspace !== request.workspace) ?? []
+      sshAccess = { workspaces: [...retained, ...result.workspaces.filter(row => row.workspace === request.workspace)] }
       if (!remote) sshAccessError = null
       publish({ ...snapshot })
     },
