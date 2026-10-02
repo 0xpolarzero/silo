@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Avoid refreshing the application interface when periodic native reads return unchanged data.
+Avoid unnecessary interface refreshes when background checks find no changes.

@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Show backup refresh failures in Storage and reconnect failed change listeners when you choose Retry.
+Show backup refresh failures in Storage and make Retry restore automatic updates.

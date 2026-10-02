@@ -55,6 +55,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
   const mounted = useRef(false)
   const inFlight = useRef(false)
   const generation = useRef(0)
+  const failureDelay = useRef(0)
   const subscriptionStatus = useRef<"connecting" | "connected" | "failed">("connecting")
   const receiveSnapshot = useCallback((next: UpdateSnapshot) => {
     setSnapshot(current => JSON.stringify(current) === JSON.stringify(next) ? current : next)
@@ -66,7 +67,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
     let disposed = false
     let stop: (() => void) | undefined
     const receive = (next: UpdateSnapshot) => {
-      if (!disposed) { generation.current++; receiveSnapshot(next); setConnectionError(null) }
+      if (!disposed) { failureDelay.current = 0; generation.current++; receiveSnapshot(next); setConnectionError(null) }
     }
     void (async () => {
       let before = generation.current
@@ -103,19 +104,33 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
       try {
         const next = await backend.read()
         if (!disposed && !inFlight.current && generation.current === before) {
+          failureDelay.current = 0
           generation.current++
           receiveSnapshot(next)
           setConnectionError(null)
         }
       } catch {
-        if (!disposed && !inFlight.current && generation.current === before) setConnectionError("Silo could not refresh updates. Try again.")
+        if (!disposed && !inFlight.current && generation.current === before) {
+          failureDelay.current = Math.min(Math.max(failureDelay.current, 3000) * 2, 30000)
+          setConnectionError("Silo could not refresh updates. Try again.")
+        }
       } finally { reading = false }
     }
-    const onFocus = () => { void refresh() }
-    window.addEventListener("focus", onFocus)
     // VM activity changes the installation gate independently of update progress.
-    const timer = (snapshot?.phase === "ready" || snapshot?.retryAction === "install" || (snapshot?.packageKind === "debian" && snapshot?.phase === "available")) ? window.setInterval(onFocus, 3000) : undefined
-    return () => { disposed = true; window.removeEventListener("focus", onFocus); if (timer !== undefined) window.clearInterval(timer) }
+    const polling = snapshot?.phase === "ready" || snapshot?.retryAction === "install" || (snapshot?.packageKind === "debian" && snapshot?.phase === "available")
+    let timer: number | undefined
+    const onFocus = () => {
+      window.clearTimeout(timer)
+      void refresh().finally(() => {
+        if (!disposed && polling) {
+          window.clearTimeout(timer)
+          timer = window.setTimeout(onFocus, Math.max(3000, failureDelay.current))
+        }
+      })
+    }
+    window.addEventListener("focus", onFocus)
+    if (polling) timer = window.setTimeout(onFocus, 3000)
+    return () => { disposed = true; window.removeEventListener("focus", onFocus); window.clearTimeout(timer) }
   }, [backend, snapshot?.phase, snapshot?.retryAction, snapshot?.packageKind, receiveSnapshot])
   const run = (action: () => Promise<UpdateSnapshot | void>) => {
     if (inFlight.current) return

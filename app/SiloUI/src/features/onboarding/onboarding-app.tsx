@@ -23,6 +23,7 @@ import { ReviewStep } from "@/features/onboarding/steps/review-step"
 import { WorkspacesStep } from "@/features/onboarding/steps/workspaces-step"
 import type { OnboardingDraft } from "@/features/onboarding/model/onboarding-draft"
 import { useSettings } from "@/features/preferences/settings-store"
+import { SettingsSaveNotice } from "@/features/preferences/components/settings-save-notice"
 import { applicationPreferenceChanges } from "@/features/preferences/model/application-preferences"
 
 export interface OnboardingAppProps {
@@ -52,7 +53,7 @@ function OnboardingPanel({ step, activeStep, notice, children }: { step: Onboard
     style={{ visibility: active ? "visible" : "hidden" }}
     className="absolute inset-0 mt-0 flex h-full min-h-0 flex-col overflow-y-auto outline-none"
   >
-    <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-5 sm:px-6 sm:py-6">{active && notice}{children}</div>
+    <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-5 sm:px-6 sm:py-6">{active && <SettingsSaveNotice />}{active && notice}{children}</div>
   </TabsContent>
 }
 
@@ -96,11 +97,15 @@ function initialWorkspaceSelections(source: OnboardingSource): Record<string, Wo
   }))
 }
 
-function initialWorkspaceIdentities(source: OnboardingSource): Record<string, WorkspaceGitIdentity> {
+function defaultWorkspaceIdentity(source: OnboardingSource): WorkspaceGitIdentity {
   const { name = "", email = "" } = source.currentHostGitIdentity ?? {}
+  return { name, email, apply: Boolean(name.trim() && email.trim()) }
+}
+
+function initialWorkspaceIdentities(source: OnboardingSource): Record<string, WorkspaceGitIdentity> {
   return Object.fromEntries(source.machineConfigurations.map((workspace) => [
     workspace.name,
-    { name, email, apply: true },
+    defaultWorkspaceIdentity(source),
   ]))
 }
 
@@ -191,7 +196,7 @@ export function OnboardingApp({
     } : source
     return projectOnboarding(projectedSource, githubConnectionState)
   }, [githubConnectionState, source, machines])
-  const applicationPreferences = {
+  const applicationPreferences = useMemo(() => ({
     terminal: settings.terminal, editor: settings.editor, browser: settings.browser,
     terminalUseSystemDefault: settings.terminalUseSystemDefault,
     editorUseSystemDefault: settings.editorUseSystemDefault,
@@ -199,7 +204,11 @@ export function OnboardingApp({
     ...(settings.terminalPath && { terminalPath: settings.terminalPath }),
     ...(settings.editorPath && { editorPath: settings.editorPath }),
     ...(settings.browserPath && { browserPath: settings.browserPath }),
-  }
+  }), [settings])
+  const completionInputs = useRef({ applications: applicationPreferences, githubConnectionState })
+  useEffect(() => {
+    completionInputs.current = { applications: applicationPreferences, githubConnectionState }
+  }, [applicationPreferences, githubConnectionState])
   const availableRepositories = useMemo(
     () => uniqueRepositoryOptions(repositoryOptions ?? defaultRepositoryOptions(source)),
     [repositoryOptions, source],
@@ -272,8 +281,8 @@ export function OnboardingApp({
     let changed = false
     for (const { name } of current.machines) {
       const identity = workspaceValue(identities, name)
-      if (editedIdentities.current.has(name) || identity?.apply === false || identity?.name.trim() || identity?.email.trim()) continue
-      identities[name] = { ...host, apply: true }
+      if (editedIdentities.current.has(name) || (identity?.apply === false && policiesInitialized.current.has(name)) || identity?.name.trim() || identity?.email.trim()) continue
+      identities[name] = { ...host, apply: Boolean(host.name.trim() && host.email.trim()) }
       changed = true
     }
     if (!changed) return
@@ -343,12 +352,20 @@ export function OnboardingApp({
     for (const machine of pending.machines) {
       machines.splice(Math.min(existing.findIndex(({ id }) => id === machine.id), machines.length), 0, { ...machine })
     }
-    const host = { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }
+    const host = defaultWorkspaceIdentity(source)
+    const savedPolicies = new Map((repositoryPolicies ?? []).map((policy) => [policy.workspace, policy]))
     updateDraft({
       machines,
-      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceSelections, name) ?? []])),
-      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceIdentities, name) ?? host])),
-      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }])),
+      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceSelections, name) ?? savedPolicies.get(name)?.repositories.map((repository) => ({ ...repository })) ?? []])),
+      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceIdentities, name) ?? { ...(savedPolicies.get(name)?.identity ?? host) }])),
+      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => {
+        const policy = savedPolicies.get(name)
+        return [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? {
+          repositoryMode: policy?.repositoryMode ?? "selected" as const,
+          allRepositoriesAllowChanges: policy?.allRepositoriesAllowChanges ?? false,
+          ...(policy?.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}),
+        }]
+      })),
     })
     pending.run()
   }
@@ -376,7 +393,7 @@ export function OnboardingApp({
     const identities = Object.fromEntries(request.machines.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
       return [name, workspaceValue(current.workspaceIdentities, name) ?? (previousName ? workspaceValue(current.workspaceIdentities, previousName) : undefined)
-        ?? { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }]
+        ?? defaultWorkspaceIdentity(source)]
     }))
     const workspaceRepositoryAccess = Object.fromEntries(request.machines.map(({ id, name }) => [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? workspaceValue(current.workspaceRepositoryAccess, previousNameByID.get(id) ?? "") ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }]))
     updateDraft({ machines: request.machines, workspaceRepositoryAccess, workspaceSelections: selections, workspaceIdentities: identities, unfinishedMachineEditor: null })
@@ -399,9 +416,12 @@ export function OnboardingApp({
   }
 
   function completionRequest(): OnboardingCompletionRequest {
+    // A deletion confirmation can retain this callback across settings and
+    // connection changes. Read the latest inputs when the user confirms.
+    const { applications, githubConnectionState } = completionInputs.current
     return {
       machineConfiguration: { schemaVersion: 1, machines: [...currentDraft.current.machines] },
-      applications: applicationPreferences,
+      applications,
       github: {
         connectionState: githubConnectionState,
         workspaces: currentDraft.current.machines.map(({ name }) => ({

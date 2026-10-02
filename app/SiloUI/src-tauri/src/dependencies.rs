@@ -1457,13 +1457,79 @@ mod tests {
         let path = directory.path().join("manifest.json");
         let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let helper = format!("{module}::fifo_manifest_reader_helper");
         let result = run_bounded_with_timeout(
             &std::env::current_exe().unwrap(),
-            &["--exact", "tests::fifo_manifest_reader_helper"],
+            &["--exact", &helper],
             &[("SILO_TEST_MANIFEST_FIFO", path.as_path())],
             PROCESS_TIMEOUT,
         );
-        assert!(result.is_ok(), "{result:?}");
+        let output = result.expect("FIFO manifest reader must finish without a writer");
+        assert!(output.contains("1 passed"), "{output}");
+    }
+
+    #[cfg(unix)]
+    fn assert_guest_image_fifo_is_rejected(name: &str) {
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("guest-image");
+        fs::create_dir(&image).unwrap();
+        fs::write(image.join("image.tar.gz"), b"a").unwrap();
+        fs::write(
+            image.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "architecture": std::env::consts::ARCH,
+                "imageReference": "ghcr.io/0xpolarzero/silo-guest:test",
+                "imageDigest": format!("sha256:{}", "a".repeat(64)),
+                "archiveSha256": "b".repeat(64),
+                "archiveBytes": 1,
+                "unpackedBytes": 1,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let path = image.join(name);
+        fs::remove_file(&path).unwrap();
+        let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let helper = format!("{module}::guest_image_fifo_reader_helper");
+        let output = run_bounded_with_timeout(
+            &std::env::current_exe().unwrap(),
+            &["--exact", &helper, "--nocapture"],
+            &[("SILO_TEST_GUEST_IMAGE_FIFO", directory.path())],
+            PROCESS_TIMEOUT,
+        )
+        .expect("guest-image validation must not wait for a FIFO writer");
+        assert!(output.contains("1 passed"), "{output}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_manifest_fifo_is_rejected_before_the_collection_deadline() {
+        assert_guest_image_fifo_is_rejected("manifest.json");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_archive_fifo_is_rejected_before_the_collection_deadline() {
+        assert_guest_image_fifo_is_rejected("image.tar.gz");
+    }
+
+    #[test]
+    fn guest_image_fifo_reader_helper() {
+        let Some(directory) = std::env::var_os("SILO_TEST_GUEST_IMAGE_FIFO") else {
+            return;
+        };
+        let paths = ProbePaths {
+            executable_dir: PathBuf::from(&directory),
+            resource_dir: PathBuf::from(&directory),
+            frameworks_dir: Some(PathBuf::from(&directory)),
+        };
+        let check = microsandbox_check(&paths, Instant::now() + Duration::from_secs(2));
+        assert_eq!(check.status, CheckStatus::Failed, "{check:?}");
+        assert!(check.detail.contains("regular file"), "{check:?}");
     }
 
     #[test]

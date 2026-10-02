@@ -3,6 +3,21 @@
 Native unit tests use [shared fixtures](../app/SiloUI/src-tauri/src/test_support.rs)
 instead of acquiring the production operation gate to serialize unrelated tests.
 
+## Persisted configuration compatibility
+
+The runtime metadata fixture pins the schema-1 VM and SSH field names used before
+desktop configuration was added in `7e7fb3e4`. Deserializing and serializing that
+fixture must preserve its JSON fields and omit an absent desktop. Desktop fixtures
+also pin `startWithSandbox`'s default of true and `builtIn`'s default of false,
+including omission of the false built-in flag. These tests exercise Serde's
+[missing-field defaults and serialization rules](https://serde.rs/field-attrs.html)
+without the runtime or process-wide state.
+
+Update preferences retain unknown JSON fields through load/save using Serde's
+[flattened map](https://serde.rs/attr-flatten.html), while the automatic-check flag
+still requires a boolean. Temporary-file regressions exercise both choices,
+additive metadata, save/reload, and explicit repair of malformed preferences.
+
 ## Process-wide state
 
 `test_support::global_state()` guards tests in modules that reach the global

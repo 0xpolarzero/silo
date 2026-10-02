@@ -19,3 +19,15 @@ Fixed: `applications/macos.rs::open_browser` waited indefinitely for `/usr/bin/o
 Fixed: `editor.rs::public_key` used unbounded `ssh-keygen -y` output collection while connection preparation could hold the SSH-files mutex. The existing bounded editor subprocess runner now supports captured stdout; key extraction uses a temporary file and a five-second deadline. A timeout rejects any partial key, kills and reaps the owned helper, and returns the existing preparation error.
 
 The regression prints a valid-looking key before stalling and failed before the fix because the unbounded helper eventually succeeded. Both new helper tests pass after the fix. The isolated source harness also passes the existing disposable-key generation/validation test and all thirteen included launcher-policy tests (sixteen total). Formatting and whitespace checks pass. Focused Clippy reports one pre-existing `nonminimal_bool` warning in the unchanged `applications/launch.rs`; the changed code has no warnings. Fixtures use temporary files and synthetic subprocesses, with no app, VM, or real SSH key access.
+
+## Remote bridge IPC write timeout
+
+Fixed: `remote.rs::run_bridge` configured a request-specific read timeout but left its Unix-socket request write unbounded. A large request to an owner that stopped reading blocked before controller-disconnect monitoring began. Request writes now use a thirty-second socket write timeout. Successful guest SSH handshakes clear that timeout before starting the existing session stream.
+
+`bridge_request_write_times_out_when_owner_stops_reading` constrains the synthetic socket's send buffer, sends a one-MiB request to a non-reading peer, and requires the writer to settle with an error. It failed without the timeout and passes with a short injected timeout. The corrected fixture drops its peer before assertions so failure cleanup cannot wait on an unbounded writer. The source-extracted regression and focused Clippy pass; formatting and whitespace checks pass. No running app, remote host, or VM was accessed.
+
+## Remote IPC frame read deadline
+
+Fixed: socket frame reads used a fresh timeout for each read. A peer sending partial bytes within that interval could retain an incomplete request or reply indefinitely. `read_socket_frame` now gives the existing frame parser a reader that sets each socket read timeout to the remaining whole-frame budget. Owner requests retain their fifteen-second budget; bridge replies retain their existing operation-specific budget. Incomplete requests fail before authorization or dispatch, and successful SSH handshakes still clear the timeout for streaming.
+
+`slow_socket_frames_cannot_reset_read_deadline` failed against the per-read timeout because the complete slow frame was accepted. It passes with the whole-frame deadline. `socket_frame_completed_before_deadline_still_round_trips` preserves the successful case. The isolated source harness, focused Clippy, formatting, and whitespace checks pass. Tests use synthetic Unix socket pairs and never contact the app or a remote host.

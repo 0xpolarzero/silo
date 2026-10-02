@@ -100,6 +100,65 @@ const run = (home, keychain, options = {}) => importProductionSettings({
   home, platform: "darwin", keychain, isDevRunning: () => false, newId: () => "dddddddd-dddd-4ddd-8ddd-dddddddddddd", ...options,
 })
 
+test("file sync failure preserves Dev settings and removes private staging files", async t => {
+  const { home, source, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  fs.mkdirSync(target.config, { recursive: true })
+  const settings = path.join(target.config, "settings.json")
+  fs.writeFileSync(settings, "previous Dev settings")
+  const before = snapshot(source.config)
+  const keychain = productionKeychain()
+  t.mock.method(fs, "fsyncSync", () => { throw new Error("file sync failed") })
+  await assert.rejects(run(home, keychain, { yes: true }), /file sync failed/)
+  assert.equal(fs.readFileSync(settings, "utf8"), "previous Dev settings")
+  assert.deepEqual(fs.readdirSync(target.config), ["settings.json"])
+  assert.deepEqual(snapshot(source.config), before)
+  assert.deepEqual(keychain.writes, [])
+})
+
+test("interrupted import removes partially written private backup staging", async t => {
+  const { home, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  fs.mkdirSync(target.config, { recursive: true })
+  const settings = path.join(target.config, "settings.json")
+  fs.writeFileSync(settings, "previous private Dev settings")
+  const write = fs.writeFileSync
+  t.mock.method(fs, "writeFileSync", (file, bytes, options) => {
+    write(file, Buffer.from(bytes).subarray(0, 8), options)
+    throw new Error("interrupted write")
+  })
+  await assert.rejects(run(home, productionKeychain(), { yes: true }), /interrupted write/)
+  assert.equal(fs.readFileSync(settings, "utf8"), "previous private Dev settings")
+  assert.deepEqual(fs.readdirSync(target.config), ["settings.json"])
+})
+
+test("import syncs final file permissions before rename and rejects directory sync failure", async t => {
+  const { home, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const settings = path.join(target.config, "settings.json")
+  const synced = []
+  const fsync = fs.fsyncSync
+  t.mock.method(fs, "fsyncSync", fd => {
+    const info = fs.fstatSync(fd)
+    if (info.isFile()) {
+      assert.equal(fs.existsSync(settings), false)
+      assert.equal(info.mode & 0o777, 0o600)
+      assert.ok(info.size > 0)
+      synced.push("file")
+      fsync(fd)
+    } else {
+      assert.equal(info.isDirectory(), true)
+      assert.equal(info.ino, fs.statSync(target.config).ino)
+      assert.equal(JSON.parse(fs.readFileSync(settings, "utf8")).settings.theme, "dark")
+      synced.push("directory")
+      throw new Error("directory sync failed")
+    }
+  })
+  await assert.rejects(run(home, productionKeychain()), /directory sync failed/)
+  assert.deepEqual(synced, ["file", "directory"])
+  assert.deepEqual(fs.readdirSync(target.config), ["settings.json"])
+})
+
 test("copies the intended configuration into dev and nothing about sandboxes", async () => {
   const { home, target } = fixtureHome()
   const keychain = productionKeychain()

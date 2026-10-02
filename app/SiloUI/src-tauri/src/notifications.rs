@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tauri::{AppHandle, Emitter};
 
+use crate::system_integrations::NotificationDelivery;
+
 /// In-app toast event for backend-originated notices. Payload: `Notice`.
 pub(crate) const NOTICE_EVENT: &str = "silo://notice";
 
@@ -220,7 +222,7 @@ impl PendingDelivery {
 
     fn deliver(
         self,
-        send: impl FnOnce(&Notice) -> Result<(), String>,
+        send: impl FnOnce(&Notice) -> Result<NotificationDelivery, String>,
         clear: impl FnOnce(&[String]),
     ) {
         let mut submitted = self
@@ -236,7 +238,7 @@ impl PendingDelivery {
         if self.cancelled() {
             // Deletion can invalidate this request while the OS callback is pending.
             clear(&[self.notice.key]);
-        } else if result.is_ok() {
+        } else if matches!(result, Ok(NotificationDelivery::Delivered)) {
             *submitted = self.revision;
         }
         if result.is_err() {
@@ -689,7 +691,7 @@ mod tests {
                 assert!(notice.body.starts_with("first second "));
                 assert_eq!(notice.body.chars().count(), BODY_LIMIT);
                 assert!(notice.body.ends_with('\u{2026}'));
-                Ok(())
+                Ok(NotificationDelivery::Delivered)
             },
             |_| {},
         );
@@ -714,7 +716,7 @@ mod tests {
                     entered.send(()).unwrap();
                     waiting.recv_timeout(Duration::from_secs(5)).unwrap();
                     worker_active.lock().unwrap().insert(notice.key.clone());
-                    Ok(())
+                    Ok(NotificationDelivery::Delivered)
                 },
                 |keys| {
                     let mut active = clearing_active.lock().unwrap();
@@ -753,7 +755,7 @@ mod tests {
         pending.deliver(
             |_| {
                 submitted.set(true);
-                Ok(())
+                Ok(NotificationDelivery::Delivered)
             },
             |_| {},
         );
@@ -769,14 +771,14 @@ mod tests {
         newer.deliver(
             |notice| {
                 *visible.borrow_mut() = notice.title.clone();
-                Ok(())
+                Ok(NotificationDelivery::Delivered)
             },
             |_| {},
         );
         older.deliver(
             |notice| {
                 *visible.borrow_mut() = notice.title.clone();
-                Ok(())
+                Ok(NotificationDelivery::Delivered)
             },
             |_| {},
         );
@@ -802,16 +804,39 @@ mod tests {
                 second.deliver(
                     |_| {
                         submissions.set(submissions.get() + 1);
-                        Ok(())
+                        Ok(NotificationDelivery::Delivered)
                     },
                     |_| {},
                 );
                 submissions.set(submissions.get() + 1);
-                Ok(())
+                Ok(NotificationDelivery::Delivered)
             },
             |_| {},
         );
         assert_eq!(submissions.get(), 2);
+    }
+
+    #[test]
+    fn skipped_replacement_does_not_prevent_withdrawing_an_older_notice() {
+        let mut index = DeliveredIndex::default();
+        let active = std::cell::Cell::new(false);
+        let older = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        older.deliver(
+            |_| {
+                active.set(true);
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| active.set(false),
+        );
+        let withdrawal = index.withdraw("1");
+        let newer = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        // macOS permission denial and an absent Linux service both skip submission.
+        newer.deliver(|_| Ok(NotificationDelivery::Skipped), |_| active.set(false));
+        withdrawal.clear(|_| active.set(false));
+        assert!(
+            !active.get(),
+            "an unsent replacement must not preserve the old notification"
+        );
     }
 
     #[test]
@@ -822,7 +847,7 @@ mod tests {
         older.deliver(
             |_| {
                 active.set(true);
-                Ok(())
+                Ok(NotificationDelivery::Delivered)
             },
             |_| active.set(false),
         );
@@ -831,7 +856,7 @@ mod tests {
         newer.deliver(
             |_| {
                 active.set(true);
-                Ok(())
+                Ok(NotificationDelivery::Delivered)
             },
             |_| active.set(false),
         );

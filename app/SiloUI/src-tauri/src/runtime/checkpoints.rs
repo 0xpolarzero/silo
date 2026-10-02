@@ -28,6 +28,19 @@ impl Checkpoint {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Environment {
+    key: String,
+    value: String,
+}
+
+impl Environment {
+    fn valid(&self) -> bool {
+        !self.key.is_empty() && !self.key.contains(['=', '\0']) && !self.value.contains('\0')
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PendingRestore {
     pub(super) checkpoint_id: String,
@@ -75,6 +88,8 @@ pub(super) struct Record {
     restore_attempt_ran: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) desired_network_policy: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    desired_environment: Vec<Environment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     restore_journal: Option<RestoreJournal>,
     pub(super) pending_checkpoint_restore: Option<PendingRestore>,
@@ -144,6 +159,15 @@ pub(super) fn load(paths: &RuntimePaths, id: &str) -> Result<Record, RuntimeErro
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_err())
     {
         return Err(error("Checkpoint history is invalid; it was preserved."));
+    }
+    if record
+        .desired_environment
+        .iter()
+        .any(|entry| !entry.valid())
+    {
+        return Err(error(
+            "Checkpoint environment is invalid; it was preserved.",
+        ));
     }
     Ok(record)
 }
@@ -723,7 +747,7 @@ pub async fn create_checkpoint(
     workspace_id: String,
     name: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -895,11 +919,22 @@ pub(crate) fn export_source(
 /// Record an archive snapshot as a new stopped workspace. Snapshot loading
 /// only installs immutable data; activation is deliberately deferred to the
 /// common explicit-start path.
+#[cfg(test)]
 pub(crate) fn import_pending_restore(
     paths: &RuntimePaths,
     workspace_id: &str,
     source_group: &str,
     member: &str,
+) -> Result<(), RuntimeError> {
+    import_pending_restore_with_environment(paths, workspace_id, source_group, member, &Value::Null)
+}
+
+pub(crate) fn import_pending_restore_with_environment(
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    source_group: &str,
+    member: &str,
+    runtime_config: &Value,
 ) -> Result<(), RuntimeError> {
     // These are MicroSandbox snapshot selectors, not sandbox names. Require
     // the exact forms produced by Silo's v3 export/import before saving intent.
@@ -925,12 +960,28 @@ pub(crate) fn import_pending_restore(
             "Imported snapshot reference is invalid.".into(),
         ));
     }
+    let environment: Vec<Environment> = serde_json::from_value(
+        runtime_config
+            .get("env")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )
+    .map_err(|_| RuntimeError::Invalid("Imported environment is invalid.".into()))?;
+    if environment.iter().any(|entry| !entry.valid()) {
+        return Err(RuntimeError::Invalid(
+            "Imported environment is invalid.".into(),
+        ));
+    }
     // An import (and so a transfer) starts from this computer's default approval (ask) with
     // no attempt known, whatever policy a VM of this id had here: its first boot applies it
     // over the configuration the imported disk carries.
     crate::computer_use::forget(paths, workspace_id);
     let mut record = Record::default();
     record.snapshot_group = Some(source_group.to_owned());
+    record.desired_environment = environment
+        .into_iter()
+        .filter(|entry| entry.key != "GH_TOKEN")
+        .collect();
     record.pending_checkpoint_restore = Some(PendingRestore {
         checkpoint_id: member.to_owned(),
         source_workspace: source_group.to_owned(),
@@ -1216,6 +1267,12 @@ pub(super) fn start_pending(
     ] {
         args.extend(["--label".into(), label]);
     }
+    for entry in &record.desired_environment {
+        if entry.key != "GH_TOKEN" {
+            args.push(format!("--env={}={}", entry.key, entry.value));
+        }
+    }
+    args.extend(["--env".into(), "GH_TOKEN=$MSB_SILO_GITHUB".into()]);
     args.extend([
         "--secret".into(),
         super::secrets_runtime::SILO_GITHUB_SECRET_SPEC.into(),
@@ -1542,11 +1599,12 @@ fn fork_commit_with_metadata_writer(
         state: fork.scope.clone(),
     });
     child_record.desired_network_policy = Some(fork.desired_policy.clone());
+    child_record.desired_environment = load(paths, source.id())?.desired_environment;
     save(paths, &child_id, &child_record)?;
-    crate::computer_use::inherit_settings(paths, source.id(), &child_id);
     let mut copied_github = false;
     let mut copied_secrets = false;
     let result = (|| {
+        crate::computer_use::inherit_settings(paths, source.id(), &child_id)?;
         assignments
             .copy_github(source.name(), new_name)
             .map_err(RuntimeError::Unavailable)?;
@@ -1643,7 +1701,7 @@ pub async fn fork_checkpoint(
     checkpoint_id: Option<String>,
     new_name: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2046,7 +2104,7 @@ pub async fn restore_checkpoint(
     workspace_id: String,
     checkpoint_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2219,7 +2277,7 @@ pub async fn abandon_restore(
     app: AppHandle,
     workspace_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2489,7 +2547,7 @@ pub async fn delete_checkpoint(
     workspace_id: String,
     checkpoint_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2545,11 +2603,40 @@ fn usage_with(
 ) -> Result<CheckpointUsage, RuntimeError> {
     let machine = machine(paths, workspace_id)?;
     let record = load(paths, workspace_id)?;
-    let survey = survey(runner, paths)?;
+    if record.checkpoints.is_empty() {
+        return Ok(CheckpointUsage {
+            total_bytes: Some(0),
+            checkpoints: Vec::new(),
+        });
+    }
     let group = record
         .snapshot_group
         .clone()
         .unwrap_or_else(|| machine.name().to_owned());
+    let metadata = read_metadata(&paths.metadata)?;
+    let uses = native::uses(paths, &metadata)?;
+    let inventory = native::inventory(runner, paths)?;
+    let native_ids: HashSet<&str> = record
+        .checkpoints
+        .iter()
+        .map(Checkpoint::native_id)
+        .collect();
+    let positions = if inventory.iter().any(|member| {
+        member.group.as_deref() == Some(group.as_str())
+            && member
+                .name
+                .as_deref()
+                .is_some_and(|name| native_ids.contains(name))
+    }) {
+        native::lineage_positions(runner, paths)?
+    } else {
+        HashMap::new()
+    };
+    let survey = Survey {
+        uses,
+        inventory,
+        positions,
+    };
     let mut counted = HashSet::new();
     let mut total = Some(0u64);
     let mut checkpoints = Vec::with_capacity(record.checkpoints.len());
@@ -2628,7 +2715,8 @@ pub(super) fn storage_totals(
     if count == 0 {
         return (Some(0), 0);
     }
-    let Ok(inventory) = native::inventory(runner, paths) else {
+    let group = record.snapshot_group.as_deref().unwrap_or(sandbox);
+    let Ok(inventory) = native::inventory_in_group(runner, paths, group) else {
         return (None, count);
     };
     let keys: HashSet<native::Key> = native::record_uses(&record, sandbox)
@@ -3079,29 +3167,30 @@ mod tests {
         );
     }
 
+    struct ScopeProbe {
+        scope: &'static str,
+        probe: RestoreProbe,
+    }
+    impl RuntimeRunner for ScopeProbe {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            let mut output = self.probe.run(paths, args, timeout)?;
+            if args[0] == "snapshot" {
+                let mut entries: Value = serde_json::from_str(&output.stdout).unwrap();
+                entries[0]["scope"] = self.scope.into();
+                output.stdout = entries.to_string();
+            }
+            Ok(output)
+        }
+    }
+
     #[test]
     fn checkpoint_start_selects_native_scope_and_desired_restore_mode_separately() {
         let _test_state = crate::test_support::global_state();
-        struct ScopeProbe {
-            scope: &'static str,
-            probe: RestoreProbe,
-        }
-        impl RuntimeRunner for ScopeProbe {
-            fn run(
-                &self,
-                paths: &RuntimePaths,
-                args: &[String],
-                timeout: Duration,
-            ) -> Result<CommandOutput, RuntimeError> {
-                let mut output = self.probe.run(paths, args, timeout)?;
-                if args[0] == "snapshot" {
-                    let mut entries: Value = serde_json::from_str(&output.stdout).unwrap();
-                    entries[0]["scope"] = self.scope.into();
-                    output.stdout = entries.to_string();
-                }
-                Ok(output)
-            }
-        }
         for (native_scope, desired_mode, disk_only, cow_mem) in [
             ("full", "disk", true, false),
             ("disk", "disk", false, false),
@@ -3133,6 +3222,115 @@ mod tests {
                 restore.iter().any(|arg| arg == "--cpus"),
                 desired_mode == "disk"
             );
+        }
+    }
+
+    #[test]
+    fn checkpoint_start_reapplies_github_environment_for_current_host_profiles() {
+        let _test_state = crate::test_support::global_state();
+        for scope in ["disk", "full"] {
+            for authorized in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let paths = paths(&directory);
+                pending_import(&paths);
+                let mut record = load(&paths, ID).unwrap();
+                record.pending_checkpoint_restore.as_mut().unwrap().state = scope.into();
+                save(&paths, ID, &record).unwrap();
+                let profile = if authorized {
+                    serde_json::json!({"enabled":true,"readToken":"synthetic-current-token"})
+                        .to_string()
+                } else {
+                    DISABLED_GITHUB_PROFILE.into()
+                };
+                GITHUB_PROFILES
+                    .get_or_init(|| Mutex::new(HashMap::new()))
+                    .lock()
+                    .unwrap()
+                    .insert((paths.home.clone(), "dev".into()), profile.clone());
+                let runner = ScopeProbe {
+                    scope,
+                    probe: RestoreProbe(Mutex::new(Vec::new())),
+                };
+                assert!(start_pending(&runner, &paths, &machine())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("synthetic restore failure"));
+                let calls = runner.probe.0.lock().unwrap();
+                let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
+                assert!(
+                    restore
+                        .windows(2)
+                        .any(|pair| pair == ["--env", "GH_TOKEN=$MSB_SILO_GITHUB"]),
+                    "scope={scope}, authorized={authorized}: {restore:?}"
+                );
+                assert_eq!(github_environment(&paths, restore), profile);
+                assert!(!restore
+                    .iter()
+                    .any(|arg| arg.contains("synthetic-current-token")));
+                GITHUB_PROFILES
+                    .get()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .remove(&(paths.home.clone(), "dev".into()));
+            }
+        }
+    }
+
+    #[test]
+    fn an_import_preserves_environment_on_start_without_old_github_credentials() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let config = serde_json::json!({"env":[
+            {"key":"PROJECT_MODE","value":"portable value=with spaces"},
+            {"key":"-PORTABLE_FLAG","value":"literal"},
+            {"key":"GH_TOKEN","value":"synthetic-old-token"}
+        ]});
+        import_pending_restore_with_environment(
+            &paths,
+            ID,
+            "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
+            "silo-backup-0-330418-1790360984903",
+            &config,
+        )
+        .unwrap();
+        assert_eq!(load(&paths, ID).unwrap().desired_environment.len(), 2);
+        let runner = RestoreProbe(Mutex::new(Vec::new()));
+        assert!(start_pending(&runner, &paths, &machine())
+            .unwrap_err()
+            .to_string()
+            .contains("synthetic restore failure"));
+        let calls = runner.0.lock().unwrap();
+        let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
+        assert!(restore
+            .iter()
+            .any(|arg| arg == "--env=PROJECT_MODE=portable value=with spaces"));
+        assert!(restore
+            .iter()
+            .any(|arg| arg == "--env=-PORTABLE_FLAG=literal"));
+        assert!(restore
+            .windows(2)
+            .any(|pair| pair == ["--env", "GH_TOKEN=$MSB_SILO_GITHUB"]));
+        assert!(!fs::read_to_string(path(&paths, ID))
+            .unwrap()
+            .contains("synthetic-old-token"));
+        assert!(!restore
+            .iter()
+            .any(|arg| arg.contains("synthetic-old-token")));
+        for env in [
+            serde_json::json!([{"key":"BAD=KEY","value":"value"}]),
+            serde_json::json!([{"key":"KEY","value":"bad\u{0000}value"}]),
+            serde_json::json!([{"key":"KEY","value":"value","extra":true}]),
+        ] {
+            assert!(import_pending_restore_with_environment(
+                &paths,
+                ID,
+                "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
+                "silo-backup-0-330418-1790360984903",
+                &serde_json::json!({"env":env})
+            )
+            .is_err());
         }
     }
 
@@ -3934,6 +4132,21 @@ mod tests {
         let (error, ports) = crate::network::observe_saved_port_for_test(&paths, "dev", 3000);
         assert_eq!(error, None);
         assert_eq!(ports, vec![("waiting", None)]);
+
+        // A failed restore may already own a live VM. Its pending record must
+        // not hide that VM from terminal access or secret revocation checks.
+        record.restore_attempted = true;
+        save(&paths, ID, &record).unwrap();
+        assert!(matches!(
+            observe_vm(&pending, &paths, "dev").unwrap(),
+            VmRuntime::Present(_)
+        ));
+        assert!(crate::terminal::running_vm_with(&pending, &paths, "dev").is_ok());
+        assert_eq!(*pending.calls.lock().unwrap(), 2);
+        assert!(matches!(
+            observe_vm(&missing, &paths, "dev").unwrap(),
+            VmRuntime::Absent
+        ));
 
         // Other runtime failures still surface.
         let broken = crate::test_support::runner::ScriptedRunner::new([
@@ -4776,6 +4989,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let (paths, fork) = fork_fixture(&directory);
+        crate::computer_use::set_approval(&paths, ID, crate::computer_use::Approval::Auto).unwrap();
         let assignments = FakeAssignments::new(&[]);
         fork_commit(
             &journal_runner("Running", ""),
@@ -4791,6 +5005,10 @@ mod tests {
             .iter()
             .find(|machine| machine.name() == "branch")
             .unwrap();
+        assert_eq!(
+            crate::computer_use::settings(&paths, child.id()).approval,
+            crate::computer_use::Approval::Auto
+        );
         let pending = load(&paths, child.id())
             .unwrap()
             .pending_checkpoint_restore
@@ -4799,6 +5017,39 @@ mod tests {
         assert_eq!(pending.source_workspace, "dev");
         assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
         assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
+    }
+
+    #[test]
+    fn a_failed_approval_copy_does_not_publish_the_fork_or_leave_its_record() {
+        let _test_state = crate::test_support::global_state();
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        crate::computer_use::set_approval(&paths, ID, crate::computer_use::Approval::Auto).unwrap();
+        let policy_directory = paths.metadata.with_file_name("computer-use");
+        fs::set_permissions(&policy_directory, fs::Permissions::from_mode(0o500)).unwrap();
+        let assignments = FakeAssignments::new(&[]);
+        let result = fork_commit(
+            &journal_runner("Running", ""),
+            &paths,
+            &assignments,
+            &fork,
+            "branch",
+        );
+        fs::set_permissions(&policy_directory, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("computer-use setting"));
+        assert_eq!(record_ids(&paths), [ID]);
+        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+        assert!(assignments.github.lock().unwrap().is_empty());
+        assert!(assignments.secrets.lock().unwrap().is_empty());
+        assert_eq!(
+            crate::computer_use::settings(&paths, ID).approval,
+            crate::computer_use::Approval::Auto
+        );
+        assert_eq!(fs::read_dir(&policy_directory).unwrap().count(), 1);
     }
 
     #[test]
@@ -4930,8 +5181,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let (paths, fork) = fork_fixture(&directory);
+        crate::computer_use::set_approval(&paths, ID, crate::computer_use::Approval::Auto).unwrap();
         let parent = paths.metadata.parent().unwrap().to_path_buf();
-        // The checkpoint directory already exists, so only the inventory write fails.
+        // The checkpoint and approval directories exist, so only the inventory write fails.
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
         let assignments = FakeAssignments::new(&[]);
         let result = fork_commit(
@@ -4947,6 +5199,12 @@ mod tests {
         assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
         assert!(assignments.github.lock().unwrap().is_empty());
         assert!(assignments.secrets.lock().unwrap().is_empty());
+        assert_eq!(
+            fs::read_dir(paths.metadata.with_file_name("computer-use"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -5525,6 +5783,157 @@ mod tests {
                 .collect::<Vec<_>>(),
             [A]
         );
+    }
+
+    #[test]
+    fn checkpoint_usage_skips_runtime_surveys_without_native_members() {
+        let _test_state = crate::test_support::global_state();
+        struct Fleet {
+            store: Store,
+            count: usize,
+        }
+        impl RuntimeRunner for Fleet {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                if args[0] != "list" {
+                    return self.store.run(paths, args, timeout);
+                }
+                self.store.calls.lock().unwrap().push(args.to_vec());
+                Ok(CommandOutput {
+                    stdout: serde_json::to_string(
+                        &(0..self.count)
+                            .map(|index| serde_json::json!({"name": format!("sandbox-{index}")}))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                    stderr: String::new(),
+                })
+            }
+        }
+        let mut measured_calls = Vec::new();
+        for count in [1, 10, 100] {
+            for has_entry in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let entries = if has_entry {
+                    vec![entry(A, "Missing", "manual")]
+                } else {
+                    Vec::new()
+                };
+                let paths = delete_fixture(&directory, entries, None);
+                let fleet = Fleet {
+                    store: Store::new(vec![]).with("other-group", A, "snap_other", None),
+                    count,
+                };
+                let started = std::time::Instant::now();
+                survey(&fleet, &paths).unwrap();
+                let baseline = started.elapsed();
+                assert_eq!(fleet.store.calls.lock().unwrap().len(), count + 2);
+                fleet.store.calls.lock().unwrap().clear();
+                let started = std::time::Instant::now();
+                let usage = usage_with(&fleet, &paths, ID).unwrap();
+                let elapsed = started.elapsed();
+                let calls = fleet.store.calls.lock().unwrap();
+                eprintln!("usage: sandboxes={count} entry={has_entry} survey_calls={} survey={baseline:?} usage_calls={} usage={elapsed:?}", count + 2, calls.len());
+                assert_eq!(usage.total_bytes, Some(0));
+                assert_eq!(usage.checkpoints.len(), usize::from(has_entry));
+                measured_calls.push((calls.len(), usize::from(has_entry)));
+                if has_entry {
+                    assert_eq!(calls[0], ["snapshot", "list", "--format", "json"]);
+                    assert!(usage.checkpoints[0].delete_blocker.is_none());
+                }
+            }
+        }
+        for (actual, expected) in measured_calls {
+            assert_eq!(actual, expected);
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, Vec::new(), Some(Record::default()));
+        fs::write(path(&paths, FORK_ID), b"invalid history").unwrap();
+        let store = Store::new(vec![]);
+        let usage = usage_with(&store, &paths, ID).unwrap();
+        assert_eq!(usage.total_bytes, Some(0));
+        assert!(usage.checkpoints.is_empty());
+        assert!(store.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn checkpoint_usage_keeps_saved_dependencies_when_native_member_is_missing() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let mut pending = Record::default();
+        pending.pending_checkpoint_restore = Some(PendingRestore {
+            source_workspace: "dev".into(),
+            checkpoint_id: A.into(),
+            state: "full".into(),
+        });
+        let paths = delete_fixture(
+            &directory,
+            vec![entry(A, "Missing", "manual")],
+            Some(pending),
+        );
+        let store = Store::new(vec![("branch", None)]);
+        let usage = usage_with(&store, &paths, ID).unwrap();
+        assert_eq!(usage.checkpoints[0].used_by, ["branch"]);
+        assert!(usage.checkpoints[0]
+            .delete_blocker
+            .as_ref()
+            .unwrap()
+            .starts_with("Used by branch."));
+        assert_eq!(store.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_storage_totals_lists_only_the_selected_lineage_group() {
+        let _test_state = crate::test_support::global_state();
+        for group in [Some("source"), None] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = delete_fixture(&directory, vec![entry(A, "Base", "manual")], None);
+            let mut record = load(&paths, ID).unwrap();
+            record.snapshot_group = group.map(str::to_owned);
+            save(&paths, ID, &record).unwrap();
+            let group = group.unwrap_or("dev");
+            let store = Store::new(vec![]).with(group, A, "snap_a", None);
+            assert_eq!(storage_totals(&store, &paths, ID, "dev"), (None, 1));
+            assert_eq!(
+                *store.calls.lock().unwrap(),
+                [vec![
+                    "snapshot", "list", "--group", group, "--format", "json"
+                ]]
+            );
+        }
+    }
+
+    #[test]
+    fn checkpoint_usage_keeps_unconfigured_lineage_and_cross_group_children() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(A, "Base", "manual")], None);
+        let store =
+            Store::new(vec![("outside-silo", Some("snap_a"))]).with("dev", A, "snap_a", None);
+        let usage = usage_with(&store, &paths, ID).unwrap();
+        assert_eq!(usage.checkpoints[0].used_by, ["outside-silo"]);
+        assert!(usage.checkpoints[0]
+            .delete_blocker
+            .as_ref()
+            .unwrap()
+            .starts_with("Used by outside-silo."));
+
+        let store = Store::new(vec![]).with("dev", A, "snap_a", None).with(
+            "another-group",
+            B,
+            "snap_b",
+            Some("snap_a"),
+        );
+        let usage = usage_with(&store, &paths, ID).unwrap();
+        assert!(usage.checkpoints[0]
+            .delete_blocker
+            .as_ref()
+            .unwrap()
+            .contains("A later saved state"));
     }
 
     #[test]

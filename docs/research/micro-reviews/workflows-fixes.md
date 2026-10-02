@@ -33,6 +33,44 @@ no application changeset is required.
 - **Regression:** The workflow policy test fails before the setting is added and passes afterward. No hosted queue was exercised.
 - **Validation limitation:** Actionlint 1.7.12 rejects the supported `queue` key, tracked in [upstream issue 680](https://github.com/rhysd/actionlint/issues/680). Suppressing only `unexpected key "queue" for "concurrency" section` permits all remaining workflow checks to run; the policy test independently requires the supported value and cancellation combination.
 
+## WORKFLOWS-4: P3 — Pending final publication is replaced
+
+**P3**, `.github/workflows/publish-release.yml:13` before this fix. Three final
+publication requests in the shared group canceled the pending second request,
+even with cancellation of the running request disabled. Its draft remained
+unpublished until the owner retried. The supported `queue: max` setting now
+retains pending requests while preserving one publication at a time. The new
+publication policy regression failed before the change; the release workflow
+and publication fixture suites pass afterward. This uses the same supported
+GitHub queue contract and documented Actionlint exception as WORKFLOWS-3.
+
+## WORKFLOWS-5: P2 — Existing multi-architecture image tag can be overwritten
+
+The preflight checked `-arm64` and `-amd64` tags but omitted the unsuffixed
+multi-architecture tag that the workflow also publishes. If that tag exists
+while the architecture tags and GitHub release are absent, publication would
+replace its manifest. A transport fixture reproduced the missing rejection
+before the fix. The guard now requires confirmed absence of all three tags;
+fixtures cover the existing index and failed index lookups as well as successful
+first publication. This retains WORKFLOWS-2's external-writer race limitation.
+
+## WORKFLOWS-6: P2 — Failed guest archive writes wait on the producer indefinitely
+
+When compression or archive output fails, the pipeline destroys its streams but
+the exporter still waits for `docker save` to exit. A client waiting on its daemon
+can keep the build running until the workflow timeout. A synthetic ENOSPC output
+stream and a real disposable producer reproduced the hang: the test exceeded its
+eight-second deadline. The pipeline now terminates its own producer on failure,
+then waits for both results before removing staging files. The regression checks
+prompt failure, the original output error, unchanged prior artifacts, and no
+remaining staging directory, and that the fixture producer has exited. This uses
+Node's supported [stream pipeline](https://nodejs.org/api/stream.html#streampipelinesource-transforms-destination-callback)
+and [child-process signal](https://nodejs.org/api/child_process.html#subprocesskillsignal)
+APIs. SIGTERM targets only the directly spawned client; daemon state is not
+asserted. No Docker daemon or real images were used. Twelve ordinary guest-image
+tests pass; eleven live-image tests are intentionally skipped. Lint, typecheck,
+Rust formatting, and whitespace checks pass.
+
 ## Verification
 
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow`: 22 tests pass after the queue fix.

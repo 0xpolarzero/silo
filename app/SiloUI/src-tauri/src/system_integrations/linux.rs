@@ -319,12 +319,14 @@ fn notifications_proxy() -> Result<gio::DBusProxy, gio::glib::Error> {
 // Click routing is not implemented on Linux: it needs a GLib main loop to receive the
 // `ActionInvoked` signal, and desktops differ in whether they show a default action.
 // Notices still replace by key and are closed when their sandbox is deleted.
-pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(), String> {
+pub fn deliver_notification(
+    notice: &crate::notifications::Notice,
+) -> Result<super::NotificationDelivery, String> {
     use gio::glib::variant::ToVariant;
     let proxy =
         notifications_proxy().map_err(|_| "The desktop notification service is unavailable")?;
     let Some(owner) = proxy.name_owner() else {
-        return Ok(());
+        return Ok(super::NotificationDelivery::Skipped);
     };
     SERVER_IDS.deliver(&owner, &notice.key, |replaces| {
         // The standard has no permission prompt. The desktop controls suppression/DND.
@@ -365,7 +367,8 @@ pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(),
             .get::<(u32,)>()
             .map(|(id,)| id)
             .ok_or_else(|| "The desktop returned an invalid notification ID".into())
-    })
+    })?;
+    Ok(super::NotificationDelivery::Delivered)
 }
 
 pub fn clear_notifications(keys: &[String]) {

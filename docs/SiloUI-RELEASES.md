@@ -272,17 +272,31 @@ npm --prefix app/SiloUI run lint
 npm --prefix app/SiloUI test
 cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check
 cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked
+cargo test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked -p tauri-plugin-updater --lib
 npm --prefix app/SiloUI run test:release
 python3 -m unittest discover -s app/SiloUI/scripts -p 'test_*.py'
 ```
+
+`test:release` uses [Node's quoted recursive test glob](https://nodejs.org/docs/latest-v24.x/api/test.html#running-tests-from-the-command-line)
+`"scripts/**/*.test.mjs"`, so new script suites run without updating a filename
+list. `scripts/test_ci_coverage.py` verifies discovery and failure propagation
+with disposable new root and nested suites.
 
 Continuous integration runs the same checks. `.github/workflows/ci.yml` runs on
 every push to `main` and every pull request: frontend, script, website and demo
 checks; a blocking [Rust formatting check](https://github.com/rust-lang/rustfmt#verifying-code-is-formatted)
 using the pinned toolchain; the Rust
-suite with synthetic GitHub configuration; and a relative-link
+suites on Linux and macOS with synthetic GitHub configuration and the patched updater library tests;
+[Cargo's default package selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html#package-selection)
+runs only the root package, so the updater requires an explicit `-p` command; and a relative-link
 check of the Markdown documentation with [lychee](https://github.com/lycheeverse/lychee)
-in offline mode. To run that check locally, install lychee and run from the
+in offline mode. The macOS job also runs `test_macos_release.py` against
+ad hoc signed disposable binaries; the Linux discovery run skips these
+platform-specific cases. CI also explicitly runs Debian package lifecycle
+tests as root on its disposable Ubuntu runner, after ordinary non-root discovery.
+Local discovery keeps the lifecycle opt-in disabled because those tests install
+packages and write system APT paths. The jobs do not run the ignored live VM tests.
+To run the link check locally, install lychee and run from the
 repository root:
 
 ```sh
@@ -395,6 +409,15 @@ ephemeral signing key in `release-verification`; these packages are for tests an
 cannot update production installations. The public key override only occurs in
 that isolated workflow checkout. These are not public releases.
 
+Final publication uses one shared concurrency group with `queue: max`, preserving
+up to 100 pending requests instead of replacing the pending request when a third
+arrives. Publications remain serialized, and their version checks still reject
+an obsolete or already published version. GitHub [released the larger queue on
+May 7, 2026](https://github.blog/changelog/2026-05-07-github-actions-concurrency-groups-now-allow-larger-queues/).
+Actionlint 1.7.12's unsupported-key diagnostic is a known
+[upstream validation gap](https://github.com/rhysd/actionlint/issues/680), as
+described in the [workflow fix audit](research/micro-reviews/workflows-fixes.md).
+
 macOS uses ad-hoc signing and no notarization. A downloaded installation can
 require System Settings → Privacy & Security → Open Anyway. Do not instruct users
 to disable Gatekeeper globally. Update signatures are separate and always checked.
@@ -417,7 +440,12 @@ restrictions and records the two signature-enforcement controls as skipped.
 A passing hosted result does not establish signature enforcement. Public release
 also requires the full suite on a Mac with SIP enabled, including the minimum
 supported macOS version. GitHub currently provides
-macOS 14 runners until November 2, 2026. Before their retirement, replace this
+macOS 14 runners until November 2, 2026, with
+[announced October brownouts](https://github.com/actions/runner-images/issues/13518)
+that fail jobs before retirement. The first window is October 5 at 14:00 UTC
+through October 6 at 00:00 UTC. Draft creation requires this job, so qualify a
+maintained replacement before that window; rerunning outside brownout windows
+is only a temporary workaround. Before their retirement, replace this
 minimum-version proof with a maintained runner rather than silently omitting it.
 This CI test checks library enforcement, not nested VM execution.
 
@@ -698,3 +726,10 @@ stream-failure regression checks all three output destinations and verifies
 that the child is reaped. A descendant fixture inherits a separate pipe; EOF
 verifies that it also exits after forwarding fails. This does not test a real
 package build.
+
+The release dependency-cache build also owns its command's process group.
+Reading compiler output, forwarding diagnostics, and recording artifact JSON
+must complete before the command can be released. An exception stops the group
+and reaps its leader before the metadata file closes. Its synthetic regression
+injects a forwarding failure after a fixture command starts, verifies a signal
+exit, and checks that `waitpid` reports no unreaped child.

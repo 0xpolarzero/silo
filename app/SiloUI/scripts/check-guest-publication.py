@@ -1,4 +1,4 @@
-"""Refuse guest publication unless the release and both image tags are absent."""
+"""Refuse guest publication unless the release and every published image tag are absent."""
 import base64
 import json
 import os
@@ -55,14 +55,14 @@ def check(repository, release_tag, image, username, token):
     registry_token = body.get('token') if isinstance(body, dict) else None
     if status != 200 or not isinstance(registry_token, str) or not registry_token:
         raise ValueError(f'Registry authentication failed (HTTP {status}); no write is permitted')
-    for architecture in ('arm64', 'amd64'):
-        tag = f'{image[len(prefix):]}-{architecture}'
+    for suffix in ('-arm64', '-amd64', ''):
+        tag = f'{image[len(prefix):]}{suffix}'
         status, body = request_json(f'https://ghcr.io/v2/{name}/manifests/{tag}', {
             'Authorization': f'Bearer {registry_token}',
             'Accept': 'application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, '
                       'application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json'})
         if status == 200:
-            raise ValueError(f'Guest {architecture} image already exists; recover exact artifacts or increment the version')
+            raise ValueError(f'Guest {tag} image already exists; recover exact artifacts or increment the version')
         errors = body.get('errors') if isinstance(body, dict) else None
         if status != 404 or not isinstance(errors, list) or not errors or not all(
                 isinstance(error, dict) and error.get('code') in ('MANIFEST_UNKNOWN', 'NAME_UNKNOWN') for error in errors):

@@ -2388,7 +2388,7 @@ fn apply_github_policy_with(
     let _guard = match OPERATIONS
         .kind(operation_gate::OperationKind::GithubApply)
         .acquire_while(
-            operation_gate::Scope::Vm { id: vm_id },
+            operation_gate::Scope::Vm { id: vm_id.clone() },
             Some(workspace.to_owned()),
             &format!("Applying GitHub access to {workspace}"),
             &|| !superseded() && Instant::now() < deadline,
@@ -2415,6 +2415,12 @@ fn apply_github_policy_with(
     if superseded() {
         return Err(GITHUB_UPDATE_REPLACED.into());
     }
+    let machine = read_metadata(&paths.metadata)
+        .map_err(|error| error.to_string())?
+        .machines
+        .into_iter()
+        .find(|machine| machine.is_vm() && machine.id() == vm_id && machine.name() == workspace)
+        .ok_or("The sandbox identity changed. No GitHub access was applied.")?;
     let capability = run_msb(
         paths,
         &[if token_protocol {
@@ -2432,7 +2438,7 @@ fn apply_github_policy_with(
     }
     let inspected =
         inspect_workspace(&ProcessRunner, paths, workspace).map_err(|error| error.to_string())?;
-    ensure_managed(&inspected).map_err(|error| error.to_string())?;
+    ensure_machine_identity(&machine, &inspected).map_err(|error| error.to_string())?;
     if inspected
         .config
         .pointer("/labels/silo.github-protocol")
@@ -2559,7 +2565,7 @@ pub async fn read_application_state(
     app: AppHandle,
     refresh_repositories: Option<bool>,
 ) -> Result<ApplicationSource, BridgeError> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         crate::secrets::schedule_revocations(&app);
@@ -3127,7 +3133,7 @@ pub async fn workspace_action(
     name: String,
     path: Option<String>,
 ) -> Result<ApplicationSource, BridgeError> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     if matches!(action.as_str(), "open-editor" | "open-terminal") {
         shutdown::ensure_accepting_operations()?;
         return tauri::async_runtime::spawn_blocking(move || {
@@ -4032,7 +4038,7 @@ pub async fn retry_machine_configuration(
     request_id: Option<String>,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
     let failure_title = retry_workspace.as_deref().map_or_else(
@@ -4087,7 +4093,7 @@ pub async fn change_machine_configuration(
     request_id: Option<String>,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
     let failure_title = change.failure_title();
@@ -4669,17 +4675,19 @@ pub(crate) fn is_pending_restore(paths: &RuntimePaths, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Inspect a Silo VM without treating "not created yet" as a failure. A sandbox that
-/// is pending restore is decided from Silo's own record before the runtime is asked;
-/// a runtime that reports the sandbox as missing is likewise `Absent`.
+/// Inspect a Silo VM without treating "not created yet" as a failure. An unattempted
+/// restore is absent; after an attempt, inspect the VM it may have created. A runtime
+/// that reports the sandbox as missing is likewise `Absent`.
 pub(crate) fn observe_vm(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<VmRuntime, RuntimeError> {
     validate_name(name)?;
-    if is_pending_restore(paths, name) {
-        return Ok(VmRuntime::Absent);
+    if let Ok(id) = resolve_vm_id(paths, name) {
+        if checkpoints::pending_view(paths, &id, true)? {
+            return Ok(VmRuntime::Absent);
+        }
     }
     match inspect_workspace(runner, paths, name) {
         Ok(inspected) => Ok(VmRuntime::Present(inspected)),
@@ -5953,20 +5961,31 @@ pub(crate) fn validate_name(name: &str) -> Result<(), RuntimeError> {
 }
 
 pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, RuntimeError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(MachineConfigurationRequest {
-                schema_version: 1,
-                machines: Vec::new(),
-            })
-        }
+    Ok(
+        read_saved_metadata(path)?.unwrap_or(MachineConfigurationRequest {
+            schema_version: 1,
+            machines: Vec::new(),
+        }),
+    )
+}
+fn read_saved_metadata(path: &Path) -> Result<Option<MachineConfigurationRequest>, RuntimeError> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(RuntimeError::Unavailable(format!(
                 "Silo could not read its sandbox configuration: {error}"
             )))
         }
     };
+    let mut bytes = Vec::new();
+    file.take(MAX_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            RuntimeError::Unavailable(format!(
+                "Silo could not read its sandbox configuration: {error}"
+            ))
+        })?;
     if bytes.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(RuntimeError::Malformed(
             "Silo's sandbox configuration is too large.".into(),
@@ -5976,7 +5995,7 @@ pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, 
         RuntimeError::Malformed("Silo's saved sandbox configuration is invalid.".into())
     })?;
     validate_request(&request)?;
-    Ok(request)
+    Ok(Some(request))
 }
 
 /// Resolve a local VM's stable id from its current display name in fresh metadata.
@@ -6037,6 +6056,58 @@ pub(crate) fn write_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_large_input_memory_is_bounded() {
+        const PROBE: &str = "SILO_TEST_METADATA_MEMORY_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::metadata_large_input_memory_is_bounded",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            return;
+        }
+
+        fn peak_bytes() -> u64 {
+            // SAFETY: getrusage initializes the supplied rusage structure.
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
+            #[cfg(target_os = "macos")]
+            return usage.ru_maxrss as u64;
+            #[cfg(not(target_os = "macos"))]
+            return usage.ru_maxrss as u64 * 1024;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sandboxes.json");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        let before = peak_bytes();
+        assert!(
+            matches!(read_metadata(&path), Err(RuntimeError::Malformed(message))
+            if message == "Silo's sandbox configuration is too large.")
+        );
+        let extra = peak_bytes().saturating_sub(before);
+        eprintln!("large metadata peak RSS increase: {extra} bytes");
+        assert!(
+            extra < 32 * 1024 * 1024,
+            "oversized metadata allocated {extra} bytes"
+        );
+        assert_eq!(fs::metadata(&path).unwrap().len(), 128 * 1024 * 1024);
+    }
 
     #[test]
     fn auto_retry_retries_transient_failures_and_releases_the_gate_between_attempts() {
@@ -7041,7 +7112,7 @@ esac
         fs::write(&paths.executable, r#"#!/bin/sh
 case "$1" in
   --silo-github-protocol|--silo-github-token-protocol) echo 1 ;;
-  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
+  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.machine-id":"SILO_TEST_MACHINE_ID","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
   modify)
     printf '%s\n' "$*" >> "$MSB_HOME/modify-args"
     cat > "$MSB_HOME/modify-values"
@@ -7050,7 +7121,7 @@ case "$1" in
     while [ -f "$MSB_HOME/modify-block" ]; do sleep 0.05; done
     if [ -f "$MSB_HOME/modify-fail" ]; then echo "rejected $(cat "$MSB_HOME/modify-values")" >&2; exit 3; fi ;;
 esac
-"#).unwrap();
+"#.replace("SILO_TEST_MACHINE_ID", vm().id())).unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
     }
@@ -7087,6 +7158,72 @@ esac
             .parse()
             .unwrap();
         unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn github_update_rejects_a_replaced_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let script = fs::read_to_string(&paths.executable)
+            .unwrap()
+            .replace(vm().id(), "22222222-2222-4222-8222-222222222222");
+        fs::write(&paths.executable, script).unwrap();
+
+        let error = apply_github_policy_with(
+            &paths,
+            "dev",
+            1,
+            &github_profile("synthetic-scoped-token"),
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        assert!(cached_github_profile(&paths).is_none());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn github_update_rejects_a_replacement_saved_while_waiting() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let held = OPERATIONS.computer("Replacing test sandbox").unwrap();
+        let worker_paths = paths.clone();
+        let update = thread::spawn(move || {
+            apply_github_policy_with(
+                &worker_paths,
+                "dev",
+                1,
+                &github_profile("synthetic-scoped-token"),
+                Duration::from_secs(10),
+            )
+        });
+        wait_for_queue(&OPERATIONS, |queue| {
+            queue.waiting.iter().any(|entry| {
+                entry.kind == operation_gate::OperationKind::GithubApply
+                    && entry.vm_name.as_deref() == Some("dev")
+            })
+        });
+        let mut replacement = vm();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "22222222-2222-4222-8222-222222222222".into();
+        }
+        write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
+        drop(held);
+
+        let error = update.join().unwrap().unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        assert!(cached_github_profile(&paths).is_none());
+        forget_github_state(&paths.home, "dev");
     }
 
     #[test]
@@ -7949,7 +8086,7 @@ esac
         crate::test_support::paths(directory.path())
     }
 
-    fn vm() -> MachineConfiguration {
+    pub(super) fn vm() -> MachineConfiguration {
         MachineConfiguration::Vm {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "dev".into(),
@@ -7963,7 +8100,7 @@ esac
         }
     }
 
-    fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
+    pub(super) fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
         MachineConfigurationRequest {
             schema_version: 1,
             machines,
@@ -9788,6 +9925,48 @@ exit 9
     }
 
     #[test]
+    fn pending_secret_revocation_does_not_retire_a_running_failed_restore() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let pending: checkpoints::Record = serde_json::from_value(json!({
+            "version":1,
+            "checkpoints":[],
+            "restoreAttempted":true,
+            "pendingCheckpointRestore":{
+                "checkpointId":"c000000000000000000000000000000",
+                "sourceWorkspace":"source",
+                "state":"disk"
+            }
+        }))
+        .unwrap();
+        checkpoints::save(&paths, vm().id(), &pending).unwrap();
+        let record = pending_secret_fixture(&directory);
+        let mut removed = Vec::new();
+        let result = revoke_secret_with(
+            &StubRunner::successful_json(vec![
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+            ]),
+            &paths,
+            &record,
+            &mut |name| {
+                removed.push(name.to_owned());
+                Ok(())
+            },
+        )
+        .unwrap();
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        assert!(
+            !result,
+            "a running restore still exposes the revoked secret"
+        );
+        assert_eq!(removed, ["API_KEY"]);
+    }
+
+    #[test]
     fn pending_secret_retry_skips_busy_guests_and_rechecks_replacement_after_the_vm_settles() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10634,6 +10813,41 @@ exit 9
         assert!(read_metadata(&path).is_err());
         fs::write(&path, br#"{"schemaVersion":1,"machines":[]}"#).unwrap();
         assert!(read_metadata(&path).unwrap().machines.is_empty());
+    }
+
+    #[test]
+    fn pre_desktop_metadata_keeps_its_persisted_field_names_on_round_trip() {
+        let saved = json!({
+            "schemaVersion": 1,
+            "machines": [
+                {
+                    "kind": "vm",
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "name": "dev",
+                    "cpus": 2,
+                    "maxCPUs": 4,
+                    "memoryGiB": 2,
+                    "maxMemoryGiB": 4,
+                    "workspaceStorageGiB": 10,
+                    "runtimeStorageGiB": 5
+                },
+                {
+                    "kind": "ssh",
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "name": "remote",
+                    "host": "example.test",
+                    "user": "developer",
+                    "port": 2222
+                }
+            ]
+        });
+        let request: MachineConfigurationRequest = serde_json::from_value(saved.clone()).unwrap();
+        validate_request(&request).unwrap();
+        assert!(matches!(
+            request.machines[0],
+            MachineConfiguration::Vm { desktop: None, .. }
+        ));
+        assert_eq!(serde_json::to_value(&request).unwrap(), saved);
     }
 
     #[test]

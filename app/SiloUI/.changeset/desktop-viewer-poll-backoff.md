@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Back off desktop viewer health checks during connection failures and resume normal polling after recovery.
+Reduce repeated desktop viewer connection checks during failures and resume normal checks after recovery.

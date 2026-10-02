@@ -590,6 +590,14 @@ impl<R: MsbRunner> BackupService<R> {
         Ok(OperationGuard(&self.busy))
     }
 
+    fn staging_directory(&self, prefix: &str) -> io::Result<tempfile::TempDir> {
+        use std::os::unix::fs::PermissionsExt;
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir_in(&self.scratch_root)
+    }
+
     pub(crate) fn cleanup_interrupted_staging(&self) -> io::Result<()> {
         let entries = match fs::read_dir(&self.scratch_root) {
             Ok(entries) => entries,
@@ -634,9 +642,7 @@ impl<R: MsbRunner> BackupService<R> {
         validate_backup_request(&request)?;
         fs::create_dir_all(&self.scratch_root)?;
         self.check_export_space(&request, cancellation)?;
-        let stage = tempfile::Builder::new()
-            .prefix("backup-")
-            .tempdir_in(&self.scratch_root)?;
+        let stage = self.staging_directory("backup-")?;
         let mut payloads = Vec::with_capacity(request.sources.len());
         let mut total_payload_bytes = 0_u64;
 
@@ -1002,9 +1008,7 @@ impl<R: MsbRunner> BackupService<R> {
             return Err(BackupError::Conflict(request.new_name));
         }
         fs::create_dir_all(&self.scratch_root)?;
-        let stage = tempfile::Builder::new()
-            .prefix("restore-")
-            .tempdir_in(&self.scratch_root)?;
+        let stage = self.staging_directory("restore-")?;
         let store = self.native_store_root();
         let space = SpaceBudget {
             stage_free: (self.free_space)(stage.path())?,
@@ -1475,8 +1479,8 @@ fn descriptor_scope_supported(scope: Option<&str>, state_kind: Option<&str>) -> 
 /// descriptor: image, root layout, owned volumes, the default user and, for
 /// a full checkpoint, the VM geometry. Env, patches, init, rlimits and
 /// host-bound mounts have no descriptor field (it is closed with
-/// `deny_unknown_fields`), and host resources need explicit `msb restore`
-/// flags, which Silo never passes. So the descriptor must match the export
+/// `deny_unknown_fields`). Environment defaults are reapplied from the export
+/// manifest on Start; host-bound resources are not portable. The descriptor must match the export
 /// manifest's validated configuration exactly, and anything else in it is
 /// refused.
 fn compare_loaded_descriptor(
@@ -3318,18 +3322,29 @@ fn write_immutable_package(
     )?;
     let size_bytes = verified.size_bytes;
     check_cancelled(cancellation)?;
-    rename_without_replacing(temporary.path(), destination).map_err(|error| {
+    publish_package(temporary.path(), destination, parent, |parent| {
+        File::open(parent).and_then(|directory| directory.sync_all())
+    })?;
+    Ok(size_bytes)
+}
+
+fn publish_package(
+    source: &Path,
+    destination: &Path,
+    parent: &Path,
+    sync_directory: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<(), BackupError> {
+    rename_without_replacing(source, destination).map_err(|error| {
         if error.kind() == io::ErrorKind::AlreadyExists {
             BackupError::FileConflict(destination.display().to_string())
         } else {
             BackupError::Io(error)
         }
     })?;
-    if let Err(error) = File::open(parent).and_then(|directory| directory.sync_all()) {
-        let _ = fs::remove_file(destination);
-        return Err(BackupError::Io(error));
-    }
-    Ok(size_bytes)
+    // Publication has committed. Keep the verified archive when durability cannot
+    // be confirmed; the destination might already belong to another writer.
+    sync_directory(parent)?;
+    Ok(())
 }
 
 enum OpenRegularError {
@@ -3841,6 +3856,47 @@ mod tests {
             temp.path().join("scratch"),
             runner,
         )
+    }
+
+    #[test]
+    fn backup_staging_is_private_with_permissive_umask() {
+        const CHILD: &str = "SILO_PRIVATE_BACKUP_STAGE_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backup::tests::backup_staging_is_private_with_permissive_umask",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        // The child runs only this test; its umask cannot affect other test workers.
+        unsafe { libc::umask(0) };
+        let temp = tempfile::tempdir().unwrap();
+        let service = service(&temp, FakeRunner::default());
+        fs::create_dir_all(&service.scratch_root).unwrap();
+        for prefix in ["backup-", "restore-"] {
+            let stage = service.staging_directory(prefix).unwrap();
+            assert_eq!(
+                fs::metadata(stage.path()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            fs::write(stage.path().join("private-payload"), b"fixture").unwrap();
+            assert_eq!(
+                fs::read(stage.path().join("private-payload")).unwrap(),
+                b"fixture"
+            );
+        }
     }
 
     fn create_one(
@@ -6130,6 +6186,36 @@ mod tests {
             service.data_timeout(500 * 1024 * 1024 * 1024),
             Duration::from_secs(60 + 500 * 1024 / 16)
         );
+    }
+
+    #[test]
+    fn directory_sync_failure_preserves_published_files() {
+        let temp = tempfile::tempdir().unwrap();
+        for replace in [true, false] {
+            let source = temp.path().join(".export.tmp");
+            let destination = temp.path().join(format!("export-{replace}.silo-backup"));
+            fs::write(&source, b"verified export").unwrap();
+            let result = publish_package(&source, &destination, temp.path(), |_| {
+                if replace {
+                    let replacement = temp.path().join("replacement");
+                    fs::write(&replacement, b"another writer's file")?;
+                    fs::rename(&replacement, &destination)?;
+                }
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            });
+            assert!(
+                matches!(result, Err(BackupError::Io(error)) if error.raw_os_error() == Some(libc::EIO))
+            );
+            assert_eq!(
+                fs::read(&destination).unwrap(),
+                if replace {
+                    b"another writer's file".as_slice()
+                } else {
+                    b"verified export".as_slice()
+                }
+            );
+            assert!(!source.exists());
+        }
     }
 
     #[test]

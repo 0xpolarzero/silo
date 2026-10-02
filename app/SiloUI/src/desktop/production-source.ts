@@ -50,7 +50,7 @@ const githubStateShape = z.object({
   ]).optional(),
   workspaces: z.array(z.object({
     workspace: z.string(), identity: z.object({ name: z.string(), email: z.string(), apply: z.boolean() }),
-    authenticationMethod: z.enum(["oauth", "token"]).optional(),
+    authenticationMethod: z.enum(["oauth", "token"]).nullish().transform(value => value ?? undefined),
     repositoryMode: z.enum(["selected", "all"]).default("selected"), allRepositoriesAllowChanges: z.boolean().default(false),
     repositories: z.array(z.object({ repository: z.string(), allowPushes: z.boolean() })),
   })).optional(),
@@ -379,6 +379,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let remoteComputers: RemoteComputer[] = []
   let remoteManagement: RemoteManagement | undefined
   let remoteManagementError: string | undefined
+  let remoteManagementSequence = 0
+  let remoteManagementSaveSequence = 0
   let remoteComputersError: string | undefined
   const remoteSnapshots = new Map<string, ApplicationSource>()
   let remoteHosts: RemoteHost[] = []
@@ -413,6 +415,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let refreshRepositoriesOnReturn = false
   let githubMutationSequence = 0
   let githubMutationPending = false
+  let secretMutationSequence = 0
+  let appliedSecretMutation = 0
   const unlisten: Array<() => void> = []
   const listeners = new Set<() => void>()
   const pendingWorkspaceActions = new Set<string>()
@@ -585,9 +589,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function changeSecret(command: string, arguments_: Record<string, unknown>) {
+    const sequence = ++secretMutationSequence
     const secrets = z.array(secretShape).parse(await native.invoke(command, arguments_))
-    ++refreshSequence
-    if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
+    if (disposed) return
+    // An older whole-list reply cannot undo a later successful secret mutation.
+    if (sequence > appliedSecretMutation) {
+      appliedSecretMutation = sequence
+      ++refreshSequence
+      if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
+    }
     void refresh()
   }
 
@@ -720,8 +730,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       activities,
       workspaces: workspaces.map(({ lifecycleAction: _reported, ...workspace }) => {
         const target = workspaceTarget(workspace)
-        const failure = workspaceFailures.get(target)
-        const action = pendingLifecycle.get(target)
+        const failure = workspaceFailures.get(workspace.machine.id)
+        const action = pendingLifecycle.get(workspace.machine.id)
         // A resubmitted lifecycle action supersedes the last failure or cancellation
         // until it reports its own result.
         const current = action ? { ...workspace, lifecycleFailure: undefined, lifecycleFailureAction: undefined, lifecycleFailureCancelled: undefined } : { ...workspace, ...reportedCancellation(workspace, cancelledActions.get(target)) }
@@ -856,6 +866,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         try { hosts = z.array(remoteComputerSchema).parse(await native.invoke("remote_host_list")) }
         catch (cause) {
           if (disposed) return false
+          if (revision !== remoteListRevision) continue
           // The known computers stay listed; the failure is about the list itself.
           remoteComputersError = `Silo could not read its list of computers: ${errorMessage(cause)}`
           publish({ ...snapshot })
@@ -879,12 +890,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function readRemoteManagement() {
+    const sequence = ++remoteManagementSequence
     try {
       const management = remoteManagementSchema.parse(await native.invoke("remote_management_status"))
-      if (disposed) return
+      if (disposed || sequence !== remoteManagementSequence) return
       remoteManagement = management
       remoteManagementError = undefined
-    } catch (cause) { remoteManagementError = errorMessage(cause) }
+    } catch (cause) {
+      if (!disposed && sequence === remoteManagementSequence) remoteManagementError = errorMessage(cause)
+    }
   }
 
   async function refreshComputers(refreshRepositories = false) {
@@ -1120,17 +1134,17 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     })
   }
 
-  function setWorkspaceFailure(action: string, name: string, cause: unknown) {
-    const workspace = view.source?.workspaces.find(workspace => workspaceTarget(workspace) === name)
+  function setWorkspaceFailure(action: string, machineId: string, cause: unknown) {
+    const workspace = view.source?.workspaces.find(workspace => workspace.machine.id === machineId)
     if (!workspace) return
     const message = errorMessage(cause)
     // A user-requested cancellation is not a failure: record it as a neutral,
     // retryable state so the row shows "<Action> cancelled", not a red error.
     const cancelled = isCancelledError(cause)
     const label = `${action[0].toUpperCase()}${action.slice(1)}`
-    workspaceFailures.set(name, { machineId: workspace.machine.id, action, message: cancelled ? message : `${label} failed: ${message}`, cancelled })
+    workspaceFailures.set(machineId, { machineId, action, message: cancelled ? message : `${label} failed: ${message}`, cancelled })
     publish({ ...snapshot, source: snapshot.source ? { ...snapshot.source,
-      workspaces: snapshot.source.workspaces.map(item => workspaceTarget(item) === name ? { ...item, freshness: "stale" } : item),
+      workspaces: snapshot.source.workspaces.map(item => item.machine.id === machineId ? { ...item, freshness: "stale" } : item),
     } : null })
   }
 
@@ -1145,21 +1159,24 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       reportUnavailable(`${remoteComputers.find(computer => computer.id === remote.hostId)?.name ?? "The remote computer"} is offline. Reconnect to it before changing ${remoteDisplayName(name) ?? "the sandbox"}.`)
       return
     }
-    const key = `${action}:${name}`
-    if (pendingWorkspaceActions.has(key) || pendingLifecycle.has(name)) return
+    const machineId = view.source?.workspaces.find(workspace => workspaceTarget(workspace) === name)?.machine.id ?? name
+    const stillExists = () => view.source?.workspaces.some(workspace => workspace.machine.id === machineId)
+    const key = `${action}:${machineId}`
+    if (pendingWorkspaceActions.has(key) || pendingLifecycle.has(machineId)) return
     pendingWorkspaceActions.add(key)
     const lifecycle = action === "start" || action === "stop" || action === "restart" || action === "dismiss-error"
     // Submitting a lifecycle action supersedes any prior failure or cancellation for
     // this sandbox: the view hides it while the resubmitted action waits or runs.
     if (lifecycle) {
-      workspaceFailures.delete(name)
-      pendingLifecycle.set(name, action)
+      workspaceFailures.delete(machineId)
+      pendingLifecycle.set(machineId, action)
       publish({ ...snapshot })
     }
     void native.invoke<unknown>(remote && lifecycle ? "remote_workspace_action" : "workspace_action", remote && lifecycle ? { ...remote, action, name: remoteDisplayName(name), ...extras } : { action, name, ...extras })
       // The follow-up refresh is not awaited: the action is finished, so a repeat must
       // not be ignored while a slow remote snapshot settles.
       .then((result) => {
+        if (!stillExists()) return
         if (remote && !lifecycle) { void refreshComputers(); return }
         const previous = remote ? remoteSnapshots.get(remote.hostId) ?? null : snapshot.source
         let source = remote ? parseMutationSource(result, previous, parseRemoteApplicationSource) : parseMutationSource(result)
@@ -1170,8 +1187,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           source = { ...source, workspaces: previous.workspaces.map(row =>
             (remote ? row.machine.id === remote.vmId : workspaceTarget(row) === name) ? target ?? row : row) }
         }
-        if (lifecycle || workspaceFailures.get(name)?.action === action) workspaceFailures.delete(name)
-        if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
+        if (lifecycle || workspaceFailures.get(machineId)?.action === action) workspaceFailures.delete(machineId)
+        if (lifecycle && pendingLifecycle.get(machineId) === action) pendingLifecycle.delete(machineId)
         if (remote) {
           bumpRemote(remote.hostId)
           remoteSnapshots.set(remote.hostId, source)
@@ -1184,15 +1201,16 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         void refresh()
       })
       .catch((cause) => {
-        if (!remote) { setWorkspaceFailure(action, name, cause); return }
+        if (!stillExists()) return
+        if (!remote) { setWorkspaceFailure(action, machineId, cause); return }
         // One VM's failure (e.g. insufficient memory) belongs on that VM's row. Whether
         // the computer itself is reachable is decided by the next transport check.
-        if (lifecycle) { setWorkspaceFailure(action, name, cause); void refreshComputers(); return }
+        if (lifecycle) { setWorkspaceFailure(action, machineId, cause); void refreshComputers(); return }
         reportActionFailure(key, `Could not ${action.replace(/-/g, " ")}`, errorMessage(cause))
       })
       .finally(() => {
         pendingWorkspaceActions.delete(key)
-        if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
+        if (lifecycle && pendingLifecycle.get(machineId) === action) pendingLifecycle.delete(machineId)
         publish({ ...snapshot })
       })
   }
@@ -1481,6 +1499,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (operations.every((operation) => operation?.status === "succeeded")) return
       if (Date.now() >= deadline) throw new Error("GitHub access has not been verified in every sandbox. Retry to check again.")
       await setupDelay(500)
+      if (disposed) throw new Error("Silo closed before GitHub access was verified.")
       if (!acceptingSetup) throw quitting()
       github = githubStateShape.parse(await native.invoke("read_github_state"))
       if (!githubMutationPending && snapshot.source && (github.policyRevision ?? 0) >= (snapshot.source.github.policyRevision ?? 0)) publish({ ...snapshot, source: { ...snapshot.source, github } })
@@ -1592,7 +1611,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     exportLogs: async requests => z.boolean().parse(await native.invoke("export_workspace_logs", { requests })),
     cancelLogExport: async () => { await native.invoke("cancel_log_export") },
     setRemoteManagement: async enabled => {
-      remoteManagement = remoteManagementSchema.parse(await native.invoke("set_remote_management", { enabled }))
+      const sequence = ++remoteManagementSaveSequence
+      ++remoteManagementSequence
+      const management = remoteManagementSchema.parse(await native.invoke("set_remote_management", { enabled }))
+      if (disposed || sequence !== remoteManagementSaveSequence) return
+      ++remoteManagementSequence
+      remoteManagement = management
       remoteManagementError = undefined
       publish({ ...snapshot })
     },
@@ -1999,7 +2023,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.splice(0).forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
+    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; setupWaits.forEach(wake => wake()); refreshSequence++; unlisten.splice(0).forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
   }
 }
 
