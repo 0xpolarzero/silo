@@ -87,3 +87,19 @@ completed in 8.2 seconds with the longer limit. Original failures remain in
 `/tmp/silo-catalog-rerenders-merge*.log`. Typecheck, touched-file lint, formatting,
 and whitespace checks pass. The merge preserves own-property checks for sandbox
 names such as `constructor` alongside the stable empty-selection fallback.
+
+## Unchanged sandbox computer-use state
+
+Fixed in `desktop/computer-use-panel.tsx`. The sandbox's own five-second health
+read previously replaced panel state even when approval, readiness and details
+were unchanged. This is separate from the computer's download-status store.
+
+The `does not commit the computer-use panel for equal reads but shows changed
+approval` regression profiles the real panel with deterministic native replies.
+Ten equal polls caused ten React commits before the fix and zero after it.
+Changing approval to Auto on the following poll still checks the switch and
+produces one commit. All 125 focused computer-use and polling tests pass, including
+optimistic commands, errors, retries, stale reads, backoff and hidden views.
+The equality check only affects successful background reads; error clearance,
+revision guards and explicit actions retain their independent behavior. No
+latency, live sandbox or installed-app claim follows from these fixture counts.
