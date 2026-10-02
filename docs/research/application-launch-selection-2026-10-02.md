@@ -55,3 +55,21 @@ At the final merged checkout, the isolated `launch.rs` run passed all 13 tests, 
 The resolver recognized `env NAME=value code` and `env -i NAME=value flatpak run ...` entries but launched the resolved program without their prefix. The failing launch regression used a temporary executable that printed the environment value supplied in its entry; it received an empty value instead. Environment settings selecting editor data or runtime behavior therefore did not reach the editor.
 
 The command now retains the original environment launcher and prefix arguments around the resolved editor CLI. Both native and Flatpak adapters use the same prefix seam. [GNU env documentation](https://www.gnu.org/s/coreutils/manual/html_node/env-invocation.html) defines assignments and `-i` as changes to the child environment; Silo delegates those semantics to the original executable rather than implementing a second environment mechanism. The regression executes temporary native and Flatpak launchers, with the marker explicitly removed from the parent command environment.
+
+## APPLICATIONS-7: unset-option operands were mistaken for programs (P2)
+
+`exec_program` treated the operand of `env -u NAME` or `env --unset NAME` as the executable. Ordinary entries were rejected as unsupported editors; when the operand equaled the editor name, the resolver also rebuilt the prefix around the wrong token occurrence. The failing regression executed `env -u code code` under a fixture-only PATH: the child retained the `code` variable instead of removing it.
+
+The parser now consumes the unset operand and returns the actual program index. Editor resolution uses that index rather than searching for the first equal string. The same parser supplies Linux terminal identity. The regression verifies the executed child's environment and workspace argument, both unset option spellings, and rejection of a missing operand. No real editor or terminal is launched.
+
+## APPLICATIONS-8: SSH Include interpreted runtime paths as globs (P2)
+
+`editor.rs::include_line` quoted the directory as SSH configuration text but did not escape glob characters. A runtime directory named `ssh[fixture]` therefore produced an Include that missed the actual directory, and SSH-based editor aliases were unavailable. The rejecting regression runs the real `/usr/bin/ssh -G -F` configuration parser against temporary files and requires the included host's literal address to appear. It failed for the bracket fixture before the fix.
+
+The [OpenSSH Include reference](https://man.openbsd.org/ssh_config.5#Include) specifies glob expansion. The directory is now escaped for that expansion before the existing SSH configuration quoting, while the final `*.conf` remains a wildcard. The test covers brackets, question marks, asterisks, and backslashes. `ssh -G` only parses the fixture configuration; it does not connect to a VM or other host.
+
+## APPLICATIONS-9: macOS editor CLI permissions were not checked (P2)
+
+The macOS resolver accepted an existing bundled editor CLI with mode `0644`. Opening a remote folder then failed during process spawn instead of returning the established unavailable-editor error. The regression builds temporary VS Code and Zed bundles, transitions each CLI through missing, non-executable, and executable states, and requires resolution to succeed only in the last state. It failed on the non-executable VS Code fixture before the fix.
+
+The resolver now reuses the existing executable-file validation used by Linux editor handoffs. The pre-existing Zed handoff fixture also sets execute permission explicitly. The focused test links the real Foundation bundle reader and reads only temporary bundles; no editor or application is launched.

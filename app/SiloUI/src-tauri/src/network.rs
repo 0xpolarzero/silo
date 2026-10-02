@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     path::Path,
     sync::Mutex,
     time::Duration,
@@ -142,11 +142,15 @@ fn config_path(paths: &RuntimePaths) -> std::path::PathBuf {
 }
 fn read_config(paths: &RuntimePaths) -> Result<Configuration, String> {
     let path = config_path(paths);
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Configuration::default()),
         Err(_) => return Err("Could not read saved ports.".into()),
     };
+    let mut bytes = Vec::new();
+    file.take(128 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read saved ports.")?;
     if bytes.len() > 128 * 1024 {
         return Err("Saved ports are invalid.".into());
     }
@@ -312,6 +316,20 @@ fn socket_path(paths: &RuntimePaths, workspace: &str) -> std::path::PathBuf {
         .join(&digest[..24])
         .join("control.sock")
 }
+/// Forget saved forwarding intent before a deleted sandbox's name becomes reusable.
+pub(crate) fn workspace_removed(paths: &RuntimePaths, workspace: &str) -> Result<(), String> {
+    let forwarding = forwarding_lock(workspace);
+    let _forwarding = hold(&forwarding);
+    let _data = network_lock();
+    let mut config = read_config(paths)?;
+    let before = config.mappings.len();
+    config.mappings.retain(|m| m.workspace != workspace);
+    if config.mappings.len() != before {
+        write_config(paths, &config)?;
+    }
+    Ok(())
+}
+
 /// Observe one workspace's saved forwards with a single enabled mapping for `port`.
 #[cfg(test)]
 pub(crate) fn observe_saved_port_for_test(
@@ -975,6 +993,44 @@ pub(crate) fn reconcile_started(paths: &RuntimePaths, workspace: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_ports_accept_the_size_limit_and_reject_one_extra_byte() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(directory.path());
+        let mut bytes = br#"{"mappings":[]}"#.to_vec();
+        bytes.resize(128 * 1024, b' ');
+        fs::write(config_path(&paths), &bytes).unwrap();
+        assert!(read_config(&paths).unwrap().mappings.is_empty());
+        bytes.push(b' ');
+        fs::write(config_path(&paths), &bytes).unwrap();
+        assert_eq!(
+            read_config(&paths).err().unwrap(),
+            "Saved ports are invalid."
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oversized_saved_ports_stop_reading_before_the_input_closes() {
+        use std::{ffi::CString, os::unix::ffi::OsStrExt, sync::mpsc, thread};
+        let directory = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(directory.path());
+        let path = config_path(&paths);
+        let fifo = CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        let (release, released) = mpsc::channel();
+        let writer = thread::spawn(move || {
+            let mut file = fs::OpenOptions::new().write(true).open(path).unwrap();
+            file.write_all(&vec![b' '; 128 * 1024 + 1]).unwrap();
+            released.recv_timeout(Duration::from_secs(5)).is_ok()
+        });
+        let error = read_config(&paths).err().unwrap();
+        let _ = release.send(());
+        let stopped_before_eof = writer.join().unwrap();
+        assert_eq!(error, "Saved ports are invalid.");
+        assert!(stopped_before_eof, "oversized reader waited for EOF");
+    }
     #[cfg(unix)]
     fn control_reply(response: &str) -> Result<Vec<Published>, String> {
         use std::os::unix::net::UnixListener;

@@ -183,7 +183,11 @@ export function ComputerUseSection({ workspace, pollMs = 5000, active = true }: 
     const current = revision.current
     try {
       const next = await bridge.readState(workspace)
-      if (current === revision.current) { failureDelay.current = 0; setState(next); setLoadError(null) }
+      if (current === revision.current) {
+        failureDelay.current = 0
+        setState(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
+        setLoadError(null)
+      }
     } catch (cause) {
       if (current === revision.current) {
         failureDelay.current = Math.min(Math.max(failureDelay.current, pollMs) * 2, 30000)

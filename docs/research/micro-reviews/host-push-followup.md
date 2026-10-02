@@ -1,6 +1,6 @@
 # Host push follow-up review
 
-Scope: `app/SiloUI/src-tauri/src/host_push.rs` and `app/SiloUI/src-tauri/src/host_push_operations.rs`.
+Scope: `app/SiloUI/src-tauri/src/host_push.rs`, `app/SiloUI/src-tauri/src/host_push_operations.rs`, and adjacent publishing-cache code.
 
 ## HOST-PUSH-3: A current-session unknown push does not block another publication
 
@@ -21,3 +21,12 @@ Verification uses temporary journal fixtures and source-extracted Rust tests. No
 - **Consequence:** The nonzero exit became an ordinary failed operation, allowing a retry without checking the branch.
 - **Fix:** Interpret the existing porcelain response. Preserve explicit local and remote rejections as failures; treat a missing response or remote failure as unknown. [Git's output reference](https://git-scm.com/docs/git-push#_output) distinguishes a refused update from an unreported update and documents the tab-separated porcelain fields.
 - **Regression:** Exercise the process boundary with missing status, remote failure, local rejection, and remote rejection. The first two must be unknown and the latter two must preserve their actionable Git failure.
+
+## HOST-PUSH-5: Concurrent cache deletion fails another repository's push
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/host_push_cache.rs`, `sweep` and `Cache::discard`.
+- **Trigger:** A push discards a failed import under its repository lock while another push scans the cache root. The scan enumerates the first directory, then its owner removes it before size inspection.
+- **Consequence:** A missing file or directory becomes a fatal publishing-cache error in the unrelated push.
+- **Regression:** Hold the first repository lock, discard its directory after the scanner observes it, and assert the second repository's sweep and acquisition succeed while the first lock remains exclusive. The fixture failed before the fix.
+- **Fix:** Take the repository lock before inspection, tolerate a vanished directory, and treat active-cache sizing errors as advisory. Idle caches still undergo strict symlink and size validation.

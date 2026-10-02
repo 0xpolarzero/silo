@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react"
+import { act, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { describe, expect, it, vi } from "vitest"
+import { Menu } from "@tauri-apps/api/menu"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -17,6 +18,29 @@ vi.mock("@tauri-apps/api/dpi", () => ({ LogicalPosition: class {} }))
 const { NativeWorkspaceMenu } = await import("./native-workspace-menu")
 
 describe("native workspace menu", () => {
+  beforeEach(() => { menus.length = 0 })
+
+  it("closes a late menu without showing it after its sandbox row disappears", async () => {
+    let finish!: (menu: Menu) => void
+    vi.mocked(Menu.new).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    const popup = vi.fn().mockResolvedValue(undefined)
+    const close = vi.fn().mockResolvedValue(undefined)
+    const source = applicationSourceForScenario("complete")
+    const workspace = source.workspaces[0]!
+    const actions = {
+      listWorkspaceDirectory: fixtureDirectoryLoader(source.workspaces),
+      openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
+      startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(),
+      openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(),
+    } satisfies StatusBarActions
+    const view = render(<NativeWorkspaceMenu workspace={workspace} source={source} actions={actions} onFolders={vi.fn()} onConfirm={vi.fn()} />)
+    await userEvent.click(screen.getByRole("button", { name: `Actions for ${workspace.machine.name}` }))
+    view.unmount()
+    await act(async () => { finish({ popup, close } as unknown as Menu) })
+    expect(popup).not.toHaveBeenCalled()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it("targets a remote sandbox by computer, not by its bare name", async () => {
     const base = applicationSourceForScenario("complete")
     const local = base.workspaces[0]!
@@ -65,4 +89,53 @@ describe("native workspace menu", () => {
     sites.find((item) => item.text === "Copy port 3000 address")!.action!()
     expect(writeText).toHaveBeenCalledExactlyOnceWith("http://dev.localhost:43000")
   })
+})
+
+
+function menuProps() {
+  const source = applicationSourceForScenario("complete")
+  const workspace = { ...source.workspaces[0], state: "stopped" as const }
+  const actions = {
+    listWorkspaceDirectory: fixtureDirectoryLoader(source.workspaces),
+    openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
+    startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(),
+    openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(),
+  } satisfies StatusBarActions
+  return { source, workspace, actions, onFolders: vi.fn(), onConfirm: vi.fn() }
+}
+
+it("closes a late-created native menu without opening it after unmount", async () => {
+  let finish!: (menu: Menu) => void
+  vi.mocked(Menu.new).mockImplementationOnce(() => new Promise<Menu>(resolve => { finish = resolve }))
+  const menu = { popup: vi.fn(async () => {}), close: vi.fn(async () => {}) }
+  const props = menuProps()
+  const { unmount } = render(<NativeWorkspaceMenu {...props} />)
+  await userEvent.click(screen.getByRole("button", { name: `Actions for ${props.workspace.machine.name}` }))
+  unmount()
+  await act(async () => finish(menu as unknown as Menu))
+  expect(menu.popup).not.toHaveBeenCalled()
+  expect(menu.close).toHaveBeenCalledOnce()
+})
+
+it("ignores captured native menu actions after unmount", async () => {
+  menus.length = 0
+  const props = menuProps()
+  const { unmount } = render(<NativeWorkspaceMenu {...props} />)
+  await userEvent.click(screen.getByRole("button", { name: `Actions for ${props.workspace.machine.name}` }))
+  const start = menus[0].find(item => item.text === "Start")!
+  unmount()
+  start.action!()
+  expect(props.actions.startWorkspace).not.toHaveBeenCalled()
+})
+
+it("closes a tracking native menu when its controls unmount", async () => {
+  let finish!: () => void
+  const menu = { popup: vi.fn(() => new Promise<void>(resolve => { finish = resolve })), close: vi.fn(async () => {}) }
+  vi.mocked(Menu.new).mockResolvedValueOnce(menu as unknown as Menu)
+  const props = menuProps()
+  const { unmount } = render(<NativeWorkspaceMenu {...props} />)
+  await userEvent.click(screen.getByRole("button", { name: `Actions for ${props.workspace.machine.name}` }))
+  unmount()
+  expect(menu.close).toHaveBeenCalledOnce()
+  await act(async () => finish())
 })

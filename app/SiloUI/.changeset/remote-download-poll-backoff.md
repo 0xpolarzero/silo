@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Back off ChatGPT download status checks when a remote computer is unreachable, and restore normal polling after it reconnects.
+Reduce repeated ChatGPT download status checks when a remote computer is unreachable, and resume normal checks after it reconnects.

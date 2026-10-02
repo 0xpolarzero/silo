@@ -1,6 +1,9 @@
 """CI test selection must include new ordinary suites and platform-specific tests."""
 import json
 import os
+import re
+import shlex
+import tomllib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -48,6 +51,66 @@ class ReleaseDiscoveryTests(unittest.TestCase):
         result = self.run_script(fail=True)
         self.assertNotEqual(result.returncode, 0, 'the newly added failing suites were ignored')
         self.assertIn('new suite failed', result.stdout + result.stderr)
+
+
+class CargoCoverageTests(unittest.TestCase):
+    def test_ci_selects_local_patched_packages_with_unit_tests(self):
+        manifest = tomllib.loads((APP / 'src-tauri/Cargo.toml').read_text())
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        selected = set()
+        for command in re.findall(r'(?m)^ +(?:- )?run: (cargo test .+)$', workflow):
+            arguments = shlex.split(command)
+            self.assertIn('--locked', arguments)
+            if '-p' in arguments:
+                selected.add(arguments[arguments.index('-p') + 1])
+            else:
+                selected.add(manifest['package']['name'])
+        self.assertIn(manifest['package']['name'], selected)
+        for name, patch in manifest['patch']['crates-io'].items():
+            directory = APP / 'src-tauri' / patch['path']
+            if any('#[test]' in source.read_text() for source in directory.rglob('*.rs')):
+                with self.subTest(package=name):
+                    self.assertIn(name, selected, 'dependency unit tests are not run by root cargo test')
+
+
+class PlatformCoverageTests(unittest.TestCase):
+    def test_ci_exercises_macos_native_and_signing_suites(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        rust = re.search(r'(?ms)^  rust:\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow)[1]
+        runners = re.search(r'(?m)^ +runner: \[([^\]]+)\]', rust)
+        self.assertIsNotNone(runners, 'macOS cfg(test) modules cannot run on a Linux-only job')
+        self.assertIn('macos-15', [item.strip() for item in runners[1].split(',')])
+        self.assertIn('runs-on: ${{ matrix.runner }}', rust)
+        signing = [step for step in re.split(r'(?m)^ {6}- ', rust) if "-p 'test_macos_release.py'" in step]
+        self.assertEqual(len(signing), 1, 'the macOS signing suite must execute on macOS')
+        self.assertIn("if: runner.os == 'macOS'", signing[0])
+
+
+class DebianCoverageTests(unittest.TestCase):
+    def test_ci_opts_into_disposable_root_lifecycle_tests(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        commands = re.findall(r'(?m)^ +(?:- )?run: (sudo env .+)$', workflow)
+        lifecycle = [shlex.split(command) for command in commands if 'test_debian_installation.py' in command]
+        self.assertEqual(len(lifecycle), 1, 'ordinary discovery skips the root-only lifecycle suite')
+        self.assertIn('SILO_APT_LIFECYCLE_TEST=1', lifecycle[0])
+        self.assertEqual(lifecycle[0][:2], ['sudo', 'env'])
+        self.assertIn('pkexec', workflow, 'the lifecycle fixture requires the system authentication helper')
+
+
+class DocumentationCoverageTests(unittest.TestCase):
+    def test_ci_link_check_includes_tracked_first_party_markdown(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        step = workflow.split('      - name: Check relative links in documentation\n', 1)[1].split('\n  rust:', 1)[0]
+        command = ' '.join(step.split('        run: >-\n', 1)[1].splitlines())
+        covered = set()
+        for pattern in shlex.split(command):
+            if pattern.endswith('.md'):
+                covered.update(str(path.relative_to(ROOT)) for path in ROOT.glob(pattern) if path.is_file())
+        tracked = subprocess.check_output(['git', 'ls-files', '*.md'], cwd=ROOT, text=True).splitlines()
+        # The vendor tree contains upstream documentation for an intentionally partial crate copy.
+        expected = {name for name in tracked if '/vendor/' not in name}
+        missing = sorted(expected - covered)
+        self.assertEqual(missing, [], f'{len(missing)} Markdown files omitted: {missing[:12]}')
 
 
 if __name__ == '__main__':

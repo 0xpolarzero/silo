@@ -189,6 +189,70 @@ describe("production command behavior", () => {
     } finally { store.dispose() }
   })
 
+  it("does not resurrect removed secrets when an earlier save reply arrives late", async () => {
+    let finishSave!: (secrets: typeof source.secrets) => void
+    let finishRead!: (value: typeof source) => void
+    const pendingRead = new Promise<typeof source>(resolve => { finishRead = resolve })
+    let holdReads = false
+    const native = bridge({
+      read_application_state: () => holdReads ? pendingRead : structuredClone(source),
+      save_secret: () => new Promise<typeof source.secrets>(resolve => { finishSave = resolve }),
+      remove_secret: () => [],
+    })
+    const store = createProductionSource(native)
+    try {
+      await store.initialize()
+      holdReads = true
+      const save = store.applicationActions.saveSecret({ operation: "edit", id: source.secrets[0].id, name: source.secrets[0].name, workspaces: ["dev"], allowedDomains: ["api.example.test"] })
+      await store.applicationActions.removeSecret(source.secrets[0].id)
+      expect(store.getSnapshot().source!.secrets).toEqual([])
+      const published: Array<typeof source.secrets> = []
+      const stop = store.subscribe(() => { published.push(store.getSnapshot().source!.secrets) })
+      finishSave(source.secrets)
+      await save
+      expect(store.getSnapshot().source!.secrets).toEqual([])
+      expect(published.every(secrets => secrets.length === 0)).toBe(true)
+      stop()
+    } finally { finishRead({ ...source, secrets: [] }); store.dispose() }
+  })
+
+  it("accepts an earlier successful secret save when a later removal was rejected", async () => {
+    let finishSave!: (secrets: typeof source.secrets) => void
+    let finishRead!: (value: typeof source) => void
+    const pendingRead = new Promise<typeof source>(resolve => { finishRead = resolve })
+    let holdReads = false
+    const failure = { code: "credential_store_locked", message: "Unlock credential storage" }
+    const updated = source.secrets.map(secret => ({ ...secret, allowedDomains: ["api.example.test"] }))
+    const native = bridge({
+      read_application_state: () => holdReads ? pendingRead : structuredClone(source),
+      save_secret: () => new Promise<typeof source.secrets>(resolve => { finishSave = resolve }),
+      remove_secret: () => { throw failure },
+    })
+    const store = createProductionSource(native)
+    try {
+      await store.initialize()
+      holdReads = true
+      const save = store.applicationActions.saveSecret({ operation: "edit", id: source.secrets[0].id, name: source.secrets[0].name, workspaces: ["dev"], allowedDomains: ["api.example.test"] })
+      await expect(store.applicationActions.removeSecret(source.secrets[0].id)).rejects.toBe(failure)
+      finishSave(updated)
+      await save
+      expect(store.getSnapshot().source!.secrets).toEqual(updated)
+    } finally { finishRead({ ...source, secrets: updated }); store.dispose() }
+  })
+
+  it("does not start refreshes when a secret mutation completes after disposal", async () => {
+    let finishSave!: (secrets: typeof source.secrets) => void
+    const native = bridge({ save_secret: () => new Promise<typeof source.secrets>(resolve => { finishSave = resolve }) })
+    const store = createProductionSource(native)
+    await store.initialize()
+    native.invoke.mockClear()
+    const save = store.applicationActions.saveSecret({ operation: "edit", id: source.secrets[0].id, name: source.secrets[0].name, workspaces: ["dev"], allowedDomains: ["api.example.test"] })
+    store.dispose()
+    finishSave(source.secrets)
+    await save
+    expect(native.invoke.mock.calls.map(([command]) => command)).toEqual(["save_secret"])
+  })
+
   it("preserves a computer and its rows when native connection removal is rejected", async () => {
     const failure = { code: "settings_write_failed", message: "Connection not saved" }
     const native = bridge({

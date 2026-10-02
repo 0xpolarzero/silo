@@ -4,6 +4,61 @@ import { createMemorySettingsStore, createSettingsStore, type SettingsBackend, t
 const snapshot = (revision = 0, settings = {}): SettingsSnapshot => ({ revision, settings, onboardingDraft: null, saveError: null })
 
 describe("settings synchronization", () => {
+  it("delivers only the latest queued draft while preserving an in-flight write", async () => {
+    const draft = { currentStep: "github" as const, machines: [], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} }
+    let state = snapshot()
+    let acknowledge!: () => void
+    const writes: SettingsSnapshot["onboardingDraft"][] = []
+    const store = createSettingsStore({
+      subscribe: async () => () => {}, read: async () => state,
+      updateSettings: async () => state, flush: async () => {},
+      updateOnboardingDraft: async value => {
+        writes.push(value)
+        if (writes.length === 1) await new Promise<void>(resolve => { acknowledge = resolve })
+        state = { ...state, revision: state.revision + 1, onboardingDraft: value }
+        return state
+      },
+    })
+    try {
+      await store.initialize()
+      const first = store.updateOnboardingDraft(draft)
+      const second = store.updateOnboardingDraft({ ...draft, currentStep: "workspaces" })
+      const third = store.updateOnboardingDraft({ ...draft, currentStep: "review" })
+      const cleared = store.updateOnboardingDraft(null)
+      expect(store.getSnapshot().onboardingDraft).toBeNull()
+      acknowledge()
+      await Promise.all([first, second, third, cleared])
+      expect(writes).toEqual([draft, null])
+      expect(state.onboardingDraft).toBeNull()
+    } finally { store.dispose() }
+  })
+
+  it("does not replay a failed draft after setup has cleared recovery data", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {})
+    let state = snapshot()
+    let failing = true
+    const delivered: SettingsSnapshot["onboardingDraft"][] = []
+    const store = createSettingsStore({
+      subscribe: async () => () => {}, read: async () => state,
+      updateSettings: async () => state, flush: async () => {},
+      updateOnboardingDraft: async value => {
+        if (failing) throw new Error("Draft delivery unavailable")
+        delivered.push(value)
+        state = { ...state, revision: state.revision + 1, onboardingDraft: value }
+        return state
+      },
+    })
+    try {
+      await store.initialize()
+      await store.updateOnboardingDraft({ currentStep: "review", machines: [], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} })
+      await store.updateOnboardingDraft(null)
+      failing = false
+      await store.flush()
+      expect(delivered).toEqual([null])
+      expect(store.getSnapshot()).toMatchObject({ onboardingDraft: null, saveError: null })
+    } finally { store.dispose(); error.mockRestore() }
+  })
+
   it.each(["initial", "refresh"])("ignores a late %s read failure after a newer settings event", async phase => {
     let receive!: (value: SettingsSnapshot) => void
     let reject!: (error: Error) => void

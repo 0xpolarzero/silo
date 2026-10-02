@@ -29,7 +29,7 @@ Published version tags are never intentionally reused. For an image update,
 increment `GUEST_IMAGE_VERSION` in `app/SiloUI/scripts/build-guest-image.mjs`
 (and the recipe as needed); the workflow derives the release tag, title and
 container image names from it and from the publishing repository. The workflow refuses
-publication once its companion release or an architecture tag exists. If publication
+publication once its companion release, an architecture tag, or the multi-architecture tag exists. If publication
 fails halfway, recover the exact already-built artifacts; do not rebuild over the
 version. Otherwise increment the version.
 
@@ -58,8 +58,8 @@ outside the workflow's concurrency group.
 The supported Docker inspector cannot distinguish these failures reliably:
 its [registry client](https://github.com/docker/cli/blob/master/internal/registryclient/fetcher.go)
 can return the same missing-manifest error after unauthorized or unexpected HTTP
-responses. The preflight therefore uses Python's standard HTTP client for three
-read-only API operations, without a new registry tool or credential service.
+responses. The preflight therefore uses Python's standard HTTP client for
+read-only API requests, without a new registry tool or credential service.
 The [OCI Distribution 1.1.1 manifest and error contract](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md)
 provides typed registry failures; [GitHub's container registry authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
 supports the existing Actions job token. Keep builds and pushes in the maintained
@@ -127,15 +127,18 @@ VMs; restored backups also retain their guest systems.
 
 ## Guest image v3 publication
 
-The v3 recipe adds `sudo`, `python3` and `openssh-sftp-server`. Account setup
+This records the earlier v3 publication and account verification. The
+[current lock](../app/SiloUI/guest-image/image-lock.json) pins v4, described below.
+The v3 recipe added `sudo`, `python3` and `openssh-sftp-server`. Account setup
 uses these tools locally and refuses an image missing them. New-VM creation
-must not download or repair packages to establish the working account. The
-optional desktop retains its separate package and KasmVNC downloads.
+must not download or repair packages to establish the working account. At v3
+publication, the optional desktop used separate package and KasmVNC downloads;
+the [current desktop recipe](SiloUI-DESKTOP.md) uses Selkies.
 
 The public [v3 release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v3)
 was produced by [publication run 35546417121](https://github.com/0xpolarzero/silo/actions/runs/35546417121)
-from source `a9827c263df3daee28959b2c2073d85c6f980e9d`. The checked-in lock
-records these published archives:
+from source `a9827c263df3daee28959b2c2073d85c6f980e9d`. The v3 lock at publication
+recorded these archives:
 
 | Architecture | Compressed bytes | SHA-256 |
 | --- | ---: | --- |

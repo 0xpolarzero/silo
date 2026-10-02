@@ -45,6 +45,36 @@ function bridge(handler: Handler = () => undefined) {
 const count = (invoke: ReturnType<typeof vi.fn>, name: string) => invoke.mock.calls.filter(([command]) => command === name).length
 
 describe("machine configuration jobs", () => {
+  it("does not report an empty configuration as saved before sandbox state loads", async () => {
+    const mock = bridge()
+    const store = createProductionSource(mock.native)
+    try {
+      await expect(store.configureMachines({ schemaVersion: 1, machines: [] })).rejects.toThrow("configuration has not loaded")
+      expect(count(mock.invoke, "change_machine_configuration")).toBe(0)
+      expect(store.getSnapshot().source).toBeNull()
+    } finally { store.dispose() }
+  })
+
+  it("does not report an empty configuration as saved after the initial state read fails", async () => {
+    const mock = bridge(command => { if (command === "read_application_state") throw new Error("Read unavailable") })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      await expect(store.configureMachines({ schemaVersion: 1, machines: [] })).rejects.toThrow("configuration has not loaded")
+      expect(count(mock.invoke, "change_machine_configuration")).toBe(0)
+    } finally { store.dispose() }
+  })
+
+  it("resolves a loaded empty configuration without submitting native changes", async () => {
+    const mock = bridge(command => command === "read_application_state" ? { ...source, workspaces: [] } : undefined)
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      expect(await store.configureMachines({ schemaVersion: 1, machines: [] })).toMatchObject({ workspaces: [] })
+      expect(count(mock.invoke, "change_machine_configuration")).toBe(0)
+    } finally { store.dispose() }
+  })
+
   it("runs an identical retry again once the earlier one has finished (H-12)", async () => {
     const mock = bridge(command => command === "retry_machine_configuration" ? structuredClone(source) : undefined)
     const store = createProductionSource(mock.native)
@@ -271,6 +301,30 @@ describe("remote computer refresh", () => {
       await connecting
       expect(store.getSnapshot().source?.remoteComputers?.map(computer => computer.id)).toEqual(["office"])
       expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.machine.id === remoteTarget("office"))).toBe(true)
+    } finally { store.dispose() }
+  })
+
+  it("lists a newly connected computer after a superseded computer-list read fails", async () => {
+    const late = deferred<unknown>()
+    let lists = 0
+    let hosts: typeof office[] = []
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return ++lists === 2 ? late.promise.then(() => { throw new Error("Old list unavailable") }) : structuredClone(hosts)
+      if (command === "remote_host_snapshot") return remoteSource()
+      if (command === "connect_remote_host") { hosts = [office]; return office }
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const refresh = store.applicationActions.refreshRepositories!()
+      await vi.waitFor(() => expect(lists).toBe(2))
+      const connecting = store.applicationActions.connectComputer!("user@office")
+      await vi.waitFor(() => expect(count(mock.invoke, "remote_management_status")).toBeGreaterThan(2))
+      late.resolve(null)
+      await connecting
+      await refresh
+      expect(store.getSnapshot().source?.remoteComputers?.map(computer => computer.id)).toEqual(["office"])
+      expect(store.getSnapshot().source?.remoteComputersError).toBeUndefined()
     } finally { store.dispose() }
   })
 
@@ -526,6 +580,38 @@ describe("overlapping lifecycle responses", () => {
       restarted.resolve(result("running", "running"))
       await vi.waitFor(() => { expect(row(b)?.state).toBe("running"); expect(row(b)?.lifecycleAction).toBeUndefined() })
       expect(row(a)?.state).toBe("stopped")
+    } finally { store.dispose() }
+  })
+})
+
+describe("remote management response ordering", () => {
+  it.each([
+    { when: "before", fails: false }, { when: "before", fails: true },
+    { when: "during", fails: false }, { when: "during", fails: true },
+  ])("ignores an older status reply started $when a toggle (failure: $fails)", async ({ when, fails }) => {
+    const status = { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
+    const late = deferred<unknown>()
+    const toggle = deferred<unknown>()
+    let delayed = false
+    const mock = bridge(command => {
+      if (command === "remote_management_status") return delayed ? late.promise.then(value => { if (fails) throw new Error("Old status unavailable"); return value }) : status
+      if (command === "set_remote_management") return toggle.promise
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      delayed = true
+      const changing = when === "during" ? store.applicationActions.setRemoteManagement!(true) : undefined
+      const refresh = store.applicationActions.refreshRepositories!()
+      await vi.waitFor(() => expect(count(mock.invoke, "remote_management_status")).toBeGreaterThan(1))
+      const saving = changing ?? store.applicationActions.setRemoteManagement!(true)
+      toggle.resolve({ ...status, enabled: true })
+      await saving
+      expect(store.getSnapshot().source?.remoteManagement?.enabled).toBe(true)
+      late.resolve(status)
+      await refresh
+      expect(store.getSnapshot().source?.remoteManagement?.enabled).toBe(true)
+      expect(store.getSnapshot().source?.remoteManagementError).toBeUndefined()
     } finally { store.dispose() }
   })
 })

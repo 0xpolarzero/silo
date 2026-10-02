@@ -2388,7 +2388,7 @@ fn apply_github_policy_with(
     let _guard = match OPERATIONS
         .kind(operation_gate::OperationKind::GithubApply)
         .acquire_while(
-            operation_gate::Scope::Vm { id: vm_id },
+            operation_gate::Scope::Vm { id: vm_id.clone() },
             Some(workspace.to_owned()),
             &format!("Applying GitHub access to {workspace}"),
             &|| !superseded() && Instant::now() < deadline,
@@ -2415,6 +2415,12 @@ fn apply_github_policy_with(
     if superseded() {
         return Err(GITHUB_UPDATE_REPLACED.into());
     }
+    let machine = read_metadata(&paths.metadata)
+        .map_err(|error| error.to_string())?
+        .machines
+        .into_iter()
+        .find(|machine| machine.is_vm() && machine.id() == vm_id && machine.name() == workspace)
+        .ok_or("The sandbox identity changed. No GitHub access was applied.")?;
     let capability = run_msb(
         paths,
         &[if token_protocol {
@@ -2432,7 +2438,7 @@ fn apply_github_policy_with(
     }
     let inspected =
         inspect_workspace(&ProcessRunner, paths, workspace).map_err(|error| error.to_string())?;
-    ensure_managed(&inspected).map_err(|error| error.to_string())?;
+    ensure_machine_identity(&machine, &inspected).map_err(|error| error.to_string())?;
     if inspected
         .config
         .pointer("/labels/silo.github-protocol")
@@ -4669,17 +4675,19 @@ pub(crate) fn is_pending_restore(paths: &RuntimePaths, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Inspect a Silo VM without treating "not created yet" as a failure. A sandbox that
-/// is pending restore is decided from Silo's own record before the runtime is asked;
-/// a runtime that reports the sandbox as missing is likewise `Absent`.
+/// Inspect a Silo VM without treating "not created yet" as a failure. An unattempted
+/// restore is absent; after an attempt, inspect the VM it may have created. A runtime
+/// that reports the sandbox as missing is likewise `Absent`.
 pub(crate) fn observe_vm(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<VmRuntime, RuntimeError> {
     validate_name(name)?;
-    if is_pending_restore(paths, name) {
-        return Ok(VmRuntime::Absent);
+    if let Ok(id) = resolve_vm_id(paths, name) {
+        if checkpoints::pending_view(paths, &id, true)? {
+            return Ok(VmRuntime::Absent);
+        }
     }
     match inspect_workspace(runner, paths, name) {
         Ok(inspected) => Ok(VmRuntime::Present(inspected)),
@@ -4987,7 +4995,7 @@ fn start_at_launch_with(
     }
     let result = (|| {
         let inspected = inspect_workspace(runner, paths, name)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
             "created" | "stopped" => workspace_action_with(runner, paths, host, "start", name),
@@ -5168,6 +5176,8 @@ fn apply_whole_configuration_with_progress(
             progress("workspace-removal", machine.name(), 0);
             remove_machine_runtime(runner, paths, machine)?;
             changed = true;
+            crate::network::workspace_removed(paths, machine.name())
+                .map_err(RuntimeError::Unavailable)?;
             applied
                 .machines
                 .retain(|existing| existing.id() != machine.id());
@@ -5951,14 +5961,17 @@ pub(crate) fn validate_name(name: &str) -> Result<(), RuntimeError> {
 }
 
 pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, RuntimeError> {
+    Ok(
+        read_saved_metadata(path)?.unwrap_or(MachineConfigurationRequest {
+            schema_version: 1,
+            machines: Vec::new(),
+        }),
+    )
+}
+fn read_saved_metadata(path: &Path) -> Result<Option<MachineConfigurationRequest>, RuntimeError> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(MachineConfigurationRequest {
-                schema_version: 1,
-                machines: Vec::new(),
-            })
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(RuntimeError::Unavailable(format!(
                 "Silo could not read its sandbox configuration: {error}"
@@ -5982,7 +5995,7 @@ pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, 
         RuntimeError::Malformed("Silo's saved sandbox configuration is invalid.".into())
     })?;
     validate_request(&request)?;
-    Ok(request)
+    Ok(Some(request))
 }
 
 /// Resolve a local VM's stable id from its current display name in fresh metadata.
@@ -7099,7 +7112,7 @@ esac
         fs::write(&paths.executable, r#"#!/bin/sh
 case "$1" in
   --silo-github-protocol|--silo-github-token-protocol) echo 1 ;;
-  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
+  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.machine-id":"SILO_TEST_MACHINE_ID","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
   modify)
     printf '%s\n' "$*" >> "$MSB_HOME/modify-args"
     cat > "$MSB_HOME/modify-values"
@@ -7108,7 +7121,7 @@ case "$1" in
     while [ -f "$MSB_HOME/modify-block" ]; do sleep 0.05; done
     if [ -f "$MSB_HOME/modify-fail" ]; then echo "rejected $(cat "$MSB_HOME/modify-values")" >&2; exit 3; fi ;;
 esac
-"#).unwrap();
+"#.replace("SILO_TEST_MACHINE_ID", vm().id())).unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
     }
@@ -7145,6 +7158,72 @@ esac
             .parse()
             .unwrap();
         unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn github_update_rejects_a_replaced_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let script = fs::read_to_string(&paths.executable)
+            .unwrap()
+            .replace(vm().id(), "22222222-2222-4222-8222-222222222222");
+        fs::write(&paths.executable, script).unwrap();
+
+        let error = apply_github_policy_with(
+            &paths,
+            "dev",
+            1,
+            &github_profile("synthetic-scoped-token"),
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        assert!(cached_github_profile(&paths).is_none());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn github_update_rejects_a_replacement_saved_while_waiting() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let held = OPERATIONS.computer("Replacing test sandbox").unwrap();
+        let worker_paths = paths.clone();
+        let update = thread::spawn(move || {
+            apply_github_policy_with(
+                &worker_paths,
+                "dev",
+                1,
+                &github_profile("synthetic-scoped-token"),
+                Duration::from_secs(10),
+            )
+        });
+        wait_for_queue(&OPERATIONS, |queue| {
+            queue.waiting.iter().any(|entry| {
+                entry.kind == operation_gate::OperationKind::GithubApply
+                    && entry.vm_name.as_deref() == Some("dev")
+            })
+        });
+        let mut replacement = vm();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "22222222-2222-4222-8222-222222222222".into();
+        }
+        write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
+        drop(held);
+
+        let error = update.join().unwrap().unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        assert!(cached_github_profile(&paths).is_none());
+        forget_github_state(&paths.home, "dev");
     }
 
     #[test]
@@ -8007,7 +8086,7 @@ esac
         crate::test_support::paths(directory.path())
     }
 
-    fn vm() -> MachineConfiguration {
+    pub(super) fn vm() -> MachineConfiguration {
         MachineConfiguration::Vm {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "dev".into(),
@@ -8021,7 +8100,7 @@ esac
         }
     }
 
-    fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
+    pub(super) fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
         MachineConfigurationRequest {
             schema_version: 1,
             machines,
@@ -9846,6 +9925,48 @@ exit 9
     }
 
     #[test]
+    fn pending_secret_revocation_does_not_retire_a_running_failed_restore() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let pending: checkpoints::Record = serde_json::from_value(json!({
+            "version":1,
+            "checkpoints":[],
+            "restoreAttempted":true,
+            "pendingCheckpointRestore":{
+                "checkpointId":"c000000000000000000000000000000",
+                "sourceWorkspace":"source",
+                "state":"disk"
+            }
+        }))
+        .unwrap();
+        checkpoints::save(&paths, vm().id(), &pending).unwrap();
+        let record = pending_secret_fixture(&directory);
+        let mut removed = Vec::new();
+        let result = revoke_secret_with(
+            &StubRunner::successful_json(vec![
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+            ]),
+            &paths,
+            &record,
+            &mut |name| {
+                removed.push(name.to_owned());
+                Ok(())
+            },
+        )
+        .unwrap();
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        assert!(
+            !result,
+            "a running restore still exposes the revoked secret"
+        );
+        assert_eq!(removed, ["API_KEY"]);
+    }
+
+    #[test]
     fn pending_secret_retry_skips_busy_guests_and_rechecks_replacement_after_the_vm_settles() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10507,6 +10628,36 @@ exit 9
             assert_eq!(calls[2], vec!["start", "dev", "--quiet"]);
             assert_eq!(calls[3], vec!["inspect", "dev", "--format", "json"]);
             assert!(!calls.iter().any(|call| call[0] == "create"));
+        }
+    }
+
+    #[test]
+    fn launch_rejects_a_running_replacement_instead_of_reporting_the_selected_vm_ready() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        for wrong_name in [false, true] {
+            let mut observed = inspect(&paths, "Running");
+            if wrong_name {
+                observed["name"] = json!("replacement");
+            } else {
+                observed["config"]["labels"]["silo.machine-id"] =
+                    json!(uuid::Uuid::new_v4().to_string());
+            }
+            let runner = StubRunner::successful_json(vec![observed]);
+            let error =
+                start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap_err();
+            assert!(error.to_string().contains("identity changed"), "{error}");
+            assert!(
+                runner
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|call| call[0] == "inspect"),
+                "no replacement may be started"
+            );
         }
     }
 
@@ -11402,6 +11553,47 @@ exit 9
         let source = read_application_state_with(&unavailable_runtime, &paths).unwrap();
         assert!(source.workspaces.is_empty());
         assert!(unavailable_runtime.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn network_mappings_are_removed_before_a_deleted_name_can_be_reused() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let network = paths.metadata.with_file_name("network.json");
+        fs::write(
+            &network,
+            json!({"mappings":[
+                {"workspace":"dev","port":3000,"hostPort":43000,"scheme":"http","enabled":true},
+                {"workspace":"other","port":8080,"hostPort":null,"scheme":null,"enabled":true}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(&network).unwrap()).unwrap();
+        assert_eq!(saved["mappings"].as_array().unwrap().len(), 1);
+        assert_eq!(saved["mappings"][0]["workspace"], "other");
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+    }
+
+    #[test]
+    fn network_cleanup_failure_keeps_the_deleted_name_reserved_for_recovery() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = request(vec![vm()]);
+        write_metadata(&paths.metadata, &previous).unwrap();
+        fs::write(paths.metadata.with_file_name("network.json"), "invalid").unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]))
+            .unwrap_err();
+        assert!(error.to_string().contains("Saved ports are invalid"));
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), previous);
     }
 
     /// The runtime's sandbox `dev` as the bundled `msb` treats it: `inspect` reports its

@@ -37,6 +37,7 @@ struct Failure {
     until: Option<u64>,
     message: String,
     class: String,
+    workspace: Option<String>,
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -80,9 +81,14 @@ fn rate_class(authentication: &Authentication) -> String {
         Authentication::App { client_id, .. } => format!("app:{client_id}"),
     }
 }
-fn key(route: &str, body: &[u8]) -> String {
+fn key(route: &str, body: &[u8], workspace: Option<&str>) -> String {
     // Only hashes identify failed requests; credentials never appear in diagnostics.
     let mut hash = Sha256::new();
+    if let Some(workspace) = workspace {
+        hash.update(b"silo-github-workspace\0");
+        hash.update(workspace.len().to_le_bytes());
+        hash.update(workspace);
+    }
     hash.update(route);
     hash.update(body);
     format!("{:x}", hash.finalize())
@@ -171,6 +177,7 @@ impl Gates {
                 until: retry.then_some(until),
                 message: message.clone(),
                 class: class.into(),
+                workspace: None,
             },
         );
         message
@@ -205,12 +212,22 @@ pub(crate) fn reset_bearer_retries(token: &str) {
     let class = rate_class(&Authentication::Bearer(token.into()));
     gates().requests.retain(|_, failure| failure.class != class);
 }
+pub(crate) fn reset_workspace_retries(workspace: &str) {
+    gates()
+        .requests
+        .retain(|_, failure| failure.workspace.as_deref() != Some(workspace));
+}
 fn preflight(key: &str, class: &str) -> Result<(), String> {
     gates().check(key, class, now())
 }
+#[derive(Clone, Copy)]
+struct RequestGate<'a> {
+    key: &'a str,
+    class: &'a str,
+    workspace: Option<&'a str>,
+}
 fn failure(
-    key: &str,
-    class: &str,
+    request: RequestGate<'_>,
     retryable: bool,
     floor: u64,
     rate: bool,
@@ -218,9 +235,10 @@ fn failure(
     safe: bool,
 ) -> String {
     let jitter = u64::from(uuid::Uuid::new_v4().as_bytes()[0]);
-    gates().fail(
-        key.into(),
-        class,
+    let mut g = gates();
+    let message = g.fail(
+        request.key.into(),
+        request.class,
         now(),
         retryable,
         floor,
@@ -228,7 +246,9 @@ fn failure(
         jitter,
         message,
         safe,
-    )
+    );
+    g.requests.get_mut(request.key).unwrap().workspace = request.workspace.map(str::to_owned);
+    message
 }
 fn number(headers: &HeaderMap, name: &str) -> Option<u64> {
     headers.get(name)?.to_str().ok()?.parse().ok()
@@ -281,8 +301,7 @@ fn transport_retryable(safe: bool, sent: bool) -> bool {
     safe || !sent
 }
 fn response(
-    key: &str,
-    class: &str,
+    request: RequestGate<'_>,
     result: Result<Response, reqwest::Error>,
     safe: bool,
     revoke: bool,
@@ -290,8 +309,7 @@ fn response(
     let response = result.map_err(|error| {
         let sent = !error.is_connect();
         failure(
-            key,
-            class,
+            request,
             transport_retryable(safe, sent),
             0,
             false,
@@ -311,8 +329,7 @@ fn response(
         .read_to_end(&mut bytes)
         .map_err(|_| {
             failure(
-                key,
-                class,
+                request,
                 safe || retryable_response(status, &headers, &Value::Null, safe),
                 retry_after(&headers, now()),
                 is_rate_limit(status, &headers, &Value::Null),
@@ -322,8 +339,7 @@ fn response(
         })?;
     if bytes.len() as u64 > MAX_RESPONSE {
         return Err(failure(
-            key,
-            class,
+            request,
             false,
             0,
             false,
@@ -333,7 +349,7 @@ fn response(
     }
     let body: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
     if revoke && matches!(status, 204 | 404) {
-        gates().requests.remove(key);
+        gates().requests.remove(request.key);
         return Ok(serde_json::json!({"revoked":true}));
     }
     if (200..300).contains(&status) {
@@ -343,12 +359,11 @@ fn response(
             } else {
                 "GitHub rejected the token request.".into()
             };
-            return Err(failure(key, class, false, 0, false, &message, safe));
+            return Err(failure(request, false, 0, false, &message, safe));
         }
         if body.is_null() {
             return Err(failure(
-                key,
-                class,
+                request,
                 safe,
                 0,
                 false,
@@ -356,7 +371,7 @@ fn response(
                 safe,
             ));
         }
-        gates().requests.remove(key);
+        gates().requests.remove(request.key);
         return Ok(body);
     }
     let floor = retry_after(&headers, now());
@@ -371,7 +386,7 @@ fn response(
     } else {
         "GitHub access could not be updated."
     };
-    Err(failure(key, class, retryable, floor, rate, message, safe))
+    Err(failure(request, retryable, floor, rate, message, safe))
 }
 /// Only fixed GitHub destinations are accepted. Tokens never follow redirects.
 pub(crate) enum Authentication {
@@ -391,6 +406,12 @@ pub(crate) struct Request {
     pub revoke: bool,
 }
 pub(crate) fn send(request: Request) -> Result<Value, String> {
+    send_scoped(request, None)
+}
+pub(crate) fn send_for_workspace(request: Request, workspace: &str) -> Result<Value, String> {
+    send_scoped(request, Some(workspace))
+}
+fn send_scoped(request: Request, workspace: Option<&str>) -> Result<Value, String> {
     let url = reqwest::Url::parse(&request.url).map_err(|_| "Invalid GitHub destination.")?;
     if url.scheme() != "https"
         || !matches!(url.host_str(), Some("api.github.com" | "github.com"))
@@ -424,12 +445,25 @@ pub(crate) fn send(request: Request) -> Result<Value, String> {
             builder = builder.basic_auth(client_id, Some(client_secret));
         }
     }
-    let key = key(&format!("{} {}", request.method, request.url), &bytes);
+    let key = key(
+        &format!("{} {}", request.method, request.url),
+        &bytes,
+        workspace,
+    );
     preflight(&key, &class)?;
     if !request.body.is_null() {
         builder = builder.json(&request.body);
     }
-    response(&key, &class, builder.send(), request.safe, request.revoke)
+    response(
+        RequestGate {
+            key: &key,
+            class: &class,
+            workspace,
+        },
+        builder.send(),
+        request.safe,
+        request.revoke,
+    )
 }
 pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
     if !path.starts_with('/') || path.starts_with("//") {
@@ -448,6 +482,46 @@ pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn workspace_retry_preserves_other_workspaces_and_account_operations() {
+        let _test_state = crate::test_support::global_state();
+        let target = uuid::Uuid::new_v4().to_string();
+        let other = uuid::Uuid::new_v4().to_string();
+        let class = format!("app:{}", uuid::Uuid::new_v4());
+        let target_key = key("POST /mint", b"same-body", Some(&target));
+        let other_key = key("POST /mint", b"same-body", Some(&other));
+        let account_key = key("POST /mint", b"same-body", None);
+        assert_ne!(target_key, other_key);
+        assert_ne!(target_key, account_key);
+        for (key, workspace) in [
+            (&target_key, Some(target.as_str())),
+            (&other_key, Some(other.as_str())),
+            (&account_key, None),
+        ] {
+            wire_reply_for(
+                RequestGate {
+                    key,
+                    class: &class,
+                    workspace,
+                },
+                "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                    .into(),
+                false,
+                false,
+            )
+            .unwrap_err();
+        }
+        gates().restore_floor(&class, 5000);
+        reset_workspace_retries(&target);
+        let mut g = gates();
+        assert!(g.check(&target_key, &class, 5000).is_ok());
+        assert!(g.check(&target_key, &class, 4999).is_err());
+        assert!(g.check(&other_key, &class, u64::MAX).is_err());
+        assert!(g.check(&account_key, &class, u64::MAX).is_err());
+        g.requests.remove(&other_key);
+        g.requests.remove(&account_key);
+        g.rate_until.remove(&class);
+    }
     #[test]
     fn personal_token_retry_preserves_unrelated_failures_and_server_floors() {
         let _test_state = crate::test_support::global_state();
@@ -514,6 +588,23 @@ mod tests {
         safe: bool,
         revoke: bool,
     ) -> Result<Value, String> {
+        wire_reply_for(
+            RequestGate {
+                key,
+                class,
+                workspace: None,
+            },
+            reply,
+            safe,
+            revoke,
+        )
+    }
+    fn wire_reply_for(
+        request: RequestGate<'_>,
+        reply: String,
+        safe: bool,
+        revoke: bool,
+    ) -> Result<Value, String> {
         use std::io::Write;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
@@ -524,8 +615,7 @@ mod tests {
             stream.write_all(reply.as_bytes()).unwrap();
         });
         let result = response(
-            key,
-            class,
+            request,
             Client::builder()
                 .no_proxy()
                 .timeout(Duration::from_secs(5))

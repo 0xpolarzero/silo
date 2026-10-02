@@ -344,6 +344,7 @@ pub async fn save_github_personal_token(
                 changed(&app, Some(false))
             },
         )?;
+
         snapshot(&app)
     })
     .await
@@ -378,6 +379,43 @@ pub async fn remove_github_personal_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_personal_token_replacement_preserves_cached_and_stored_identity() {
+        let cache = SessionSecret::new();
+        let old = PersonalToken {
+            token: "github_pat_old".into(),
+            account: "old-account".into(),
+        };
+        let new = PersonalToken {
+            token: "github_pat_new".into(),
+            account: "new-account".into(),
+        };
+        let stored = std::cell::RefCell::new(Some(old.clone()));
+        cache.read(|| Ok(stored.borrow().clone())).unwrap();
+        assert!(cache
+            .replace(Some(new.clone()), || Err("store denied".into()))
+            .is_err());
+        assert!(cache.peek() == Some(Ok(Some(old.clone()))));
+        assert!(
+            cache
+                .read(|| panic!("replacement invalidated the cached identity"))
+                .unwrap()
+                == Some(old.clone())
+        );
+        assert!(*stored.borrow() == Some(old));
+        cache
+            .flush(|_| panic!("failed replacement was queued for later activation"))
+            .unwrap();
+        cache
+            .replace(Some(new.clone()), || {
+                *stored.borrow_mut() = Some(new.clone());
+                Ok(())
+            })
+            .unwrap();
+        assert!(cache.peek() == Some(Ok(Some(new.clone()))));
+        assert!(*stored.borrow() == Some(new));
+    }
+
     #[test]
     fn failed_personal_token_replacement_preserves_identity_until_retry() {
         let secret = SessionSecret::new();

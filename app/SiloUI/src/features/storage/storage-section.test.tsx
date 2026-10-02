@@ -148,7 +148,7 @@ describe("Settings, General: Storage", () => {
     expect(screen.queryByText("Pre-upgrade backup deleted")).not.toBeInTheDocument()
     expect(backend.remove).toHaveBeenCalledTimes(1)
     await act(async () => fail(new Error("Deletion is still unavailable.")))
-    expect(await screen.findAllByText("Deletion is still unavailable.")).toHaveLength(2)
+    await waitFor(() => expect(screen.getAllByText("Deletion is still unavailable.")).toHaveLength(2))
     expect(screen.queryByText("Pre-upgrade backup deleted")).not.toBeInTheDocument()
     expect(screen.getByRole("region", { name: "Storage" })).toBeVisible()
   })

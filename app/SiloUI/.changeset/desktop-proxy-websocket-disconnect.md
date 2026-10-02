@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Release desktop WebSocket connections when the viewer disconnects, even if the guest leaves its connection open.
+Release desktop streaming connections when the viewer disconnects, even if the sandbox keeps its connection open.

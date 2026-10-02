@@ -51,6 +51,25 @@ describe("ConfirmPopover", () => {
     expect(screen.getByText("Import?")).toBeInTheDocument()
   })
 
+  it("preserves focus on an outside control when an anchored form is dismissed", async () => {
+    function AnchoredForm() {
+      const [open, setOpen] = useState(false)
+      return <>
+        <FormPopover open={open} onOpenChange={setOpen} title="Import sandbox" confirmLabel="Import" onSubmit={vi.fn()}
+          anchor={<span><button type="button" onClick={() => setOpen(true)}>Add sandbox</button></span>}
+          fields={<input aria-label="Sandbox name" />} />
+        <button type="button">Another action</button>
+      </>
+    }
+    const user = userEvent.setup()
+    render(<AnchoredForm />)
+    await user.click(screen.getByRole("button", { name: "Add sandbox" }))
+    const outside = screen.getByRole("button", { name: "Another action" })
+    await user.click(outside)
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+    expect(outside).toHaveFocus()
+  })
+
   it.each(["Escape", "Cancel"])("returns focus to a button inside an external anchor after %s", async dismissal => {
     function AnchoredForm() {
       const [open, setOpen] = useState(false)

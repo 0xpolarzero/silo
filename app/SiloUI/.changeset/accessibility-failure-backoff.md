@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Back off accessibility checks when the guest accessibility bus is unavailable, and resume fast checks when new application content appears.
+Reduce repeated accessibility checks when a sandbox's accessibility service is unavailable, and resume frequent checks when application content changes.

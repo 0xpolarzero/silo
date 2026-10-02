@@ -13,6 +13,11 @@ including omission of the false built-in flag. These tests exercise Serde's
 [missing-field defaults and serialization rules](https://serde.rs/field-attrs.html)
 without the runtime or process-wide state.
 
+Update preferences retain unknown JSON fields through load/save using Serde's
+[flattened map](https://serde.rs/attr-flatten.html), while the automatic-check flag
+still requires a boolean. Temporary-file regressions exercise both choices,
+additive metadata, save/reload, and explicit repair of malformed preferences.
+
 ## Process-wide state
 
 `test_support::global_state()` guards tests in modules that reach the global

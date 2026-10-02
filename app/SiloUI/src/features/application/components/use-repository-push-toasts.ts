@@ -42,7 +42,10 @@ export function useRepositoryPushToasts(
       const cancelId = operation.status === "pushing" && onCancel
         ? queue?.running.find((entry) => entry.kind === "push" && entry.cancellable && entry.vmName === operation.workspace)?.id
         : undefined
-      const state = cancelId === undefined ? operation.status : `${operation.status}:${cancelId}`
+      const state = `${operation.status}:${JSON.stringify({
+        count: operation.commitCount, message: "message" in operation ? operation.message : undefined, cancelId,
+        repository: operation.target?.repository, branch: operation.target?.branch, commit: operation.target?.commit,
+      })}`
       next.set(id, state)
       const before = previous.get(id)
       if (before === state) continue
@@ -79,4 +82,3 @@ export function useRepositoryPushToasts(
     seen.current = next
   }, [enabled, operations, queue, onCancel])
 }
-

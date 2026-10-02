@@ -58,10 +58,12 @@ def build(arguments, *, root=APP, platform=sys.platform, run=subprocess.run):
     target = Path(json.loads(metadata.stdout)['target_directory'])
     if options.target:
         target /= options.target
-    bundle = target / 'release/bundle/macos' / f"{channel_names()['production']['productName']}.app"
+    production = channel_names()['production']
+    bundle = target / 'release/bundle/macos' / f"{production['productName']}.app"
     # Generate only the app here. Installers and updater archives must be made
     # after runtime finalization by package-macos-release.py.
-    config = json.dumps({'bundle': {'active': True, 'createUpdaterArtifacts': False,
+    config = json.dumps({'identifier': production['identifier'], 'productName': production['productName'],
+                         'bundle': {'active': True, 'createUpdaterArtifacts': False,
                                     'macOS': {'hardenedRuntime': True}}})
     args = arguments + ([] if options.bundles else ['--bundles', 'app'])
     run(tauri + args + ['--config', config], cwd=root, check=True)

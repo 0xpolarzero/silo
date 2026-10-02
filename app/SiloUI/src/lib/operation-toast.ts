@@ -25,7 +25,7 @@ export type { OperationCancel, OperationProgressOptions, OperationStep } from "@
  * loading → success (stays until the user closes it) or failure (stays, with Retry).
  * Use a stable `id` per operation so each phase replaces the previous toast in place.
  */
-export interface OperationToastCopy {
+interface OperationToastCopy {
   /** Shown while the action runs, e.g. "Pushing 2 commits". */
   loading: string
   /** Shown when it finishes, e.g. "Pushed 2 commits". */
@@ -36,7 +36,7 @@ export interface OperationToastCopy {
   description?: string
 }
 
-export interface OperationToastOptions {
+interface OperationToastOptions {
   /** Called by the failure toast's Retry action. Omit when a retry makes no sense. */
   retry?: () => void
   /** Extra success action, e.g. { label: "Show in Finder", onClick }. */
@@ -55,25 +55,25 @@ export function errorMessage(error: unknown): string {
  * A result-toast action. Always a label + handler so every notification renders the same
  * Sonner action button (never a hand-made `<Button>`, which would look different).
  */
-export type OperationAction = { label: string; onClick: (event: MouseEvent<HTMLButtonElement>) => void }
+type OperationAction = { label: string; onClick: (event: MouseEvent<HTMLButtonElement>) => void }
 
 /**
  * Notifications about a specific sandbox, so they can be dismissed when it is deleted (their
  * actions would point at a sandbox that no longer exists). Current sandbox targets by toast ID. Remote targets include their computer and VM IDs.
  */
-const toastSandboxes = new Map<string, Set<string>>()
+const toastSandboxes = new Map<string, { targets: Set<string>; sandboxId?: string }>()
 
-function tagSandbox(id: string, sandbox: string | string[] | undefined) {
-  const names = new Set(sandbox ? Array.isArray(sandbox) ? sandbox : [sandbox] : [])
-  if (names.size) toastSandboxes.set(id, names)
+function tagSandbox(id: string, sandbox: string | string[] | undefined, sandboxId?: string) {
+  const owner = { targets: new Set(sandbox ? Array.isArray(sandbox) ? sandbox : [sandbox] : []), sandboxId }
+  if (owner.targets.size || sandboxId) toastSandboxes.set(id, owner)
   else toastSandboxes.delete(id)
   return () => {
-    if (toastSandboxes.get(id) === names) toastSandboxes.delete(id)
+    if (toastSandboxes.get(id) === owner) toastSandboxes.delete(id)
   }
 }
 
-function resultCallbacks(id: string, sandbox: string | string[] | undefined, onDismiss?: () => void, action?: OperationAction) {
-  const untag = tagSandbox(id, sandbox)
+function resultCallbacks(id: string, sandbox: string | string[] | undefined, onDismiss?: () => void, action?: OperationAction, sandboxId?: string) {
+  const untag = tagSandbox(id, sandbox, sandboxId)
   let closed = false
   const close = () => {
     if (closed) return
@@ -93,13 +93,20 @@ function resultCallbacks(id: string, sandbox: string | string[] | undefined, onD
 
 /** Dismiss every notification tagged with this sandbox target. Call when the sandbox is deleted. */
 export function dismissSandboxToasts(target: string) {
-  for (const [id, names] of toastSandboxes) {
-    if (names.has(target)) dismissOperationToast(id)
+  for (const [id, owner] of toastSandboxes) {
+    if (owner.targets.has(target)) dismissOperationToast(id)
+  }
+}
+
+/** Dismiss notifications belonging to this sandbox incarnation, across names and computers. */
+export function dismissSandboxToastsById(sandboxId: string) {
+  for (const [id, owner] of toastSandboxes) {
+    if (owner.sandboxId === sandboxId) dismissOperationToast(id)
   }
 }
 
 /** Auto-dismiss delay of a quick confirmation (nothing to act on, finished fast). */
-export const QUICK_TOAST_DURATION = 4000
+const QUICK_TOAST_DURATION = 4000
 /** A progress notification visible at least this long makes its success notification persistent. */
 export const LONG_OPERATION_MS = 3000
 
@@ -107,7 +114,7 @@ export const LONG_OPERATION_MS = 3000
 const progressStarts = new Map<string, number>()
 
 /** Options shared by every finished-state notification. */
-export interface OperationResultOptions {
+interface OperationResultOptions {
   description?: ReactNode
   action?: OperationAction
   /** Sandbox(es) this notification is about; see `dismissSandboxToasts`. */
@@ -137,7 +144,7 @@ function mirror(category: Notice["category"], key: string, title: string, option
 }
 
 export function showOperationSuccess(id: string, title: string, options: OperationResultOptions = {}) {
-  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss, options.action)
+  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss, options.action, options.noticeSandbox?.id)
   const started = progressStarts.get(id)
   progressStarts.delete(id)
   const long = started !== undefined && Date.now() - started > LONG_OPERATION_MS
@@ -151,7 +158,7 @@ export function showOperationFailure(id: string, title: string, options: Operati
     label: "Retry",
     onClick: (event: MouseEvent<HTMLButtonElement>) => { event.preventDefault(); options.retry?.() },
   } : undefined)
-  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss, action)
+  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss, action, options.noticeSandbox?.id)
   progressStarts.delete(id)
   const notify = options.tone === "warning" ? toast.warning : toast.error
   notify(title, {

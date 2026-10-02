@@ -38,22 +38,32 @@ pub(crate) fn exec_argv(tokens: impl IntoIterator<Item = String>) -> Vec<String>
     argv
 }
 
-/// The program an `Exec` line runs, skipping `env [-i] [NAME=value]...` as
-/// snap entries use.
+/// The program an `Exec` line runs after env options and assignments.
 pub(crate) fn exec_program(argv: &[String]) -> Option<&str> {
-    let mut tokens = argv.iter().map(String::as_str);
-    let first = tokens.next()?;
+    exec_program_index(argv).map(|index| argv[index].as_str())
+}
+
+fn exec_program_index(argv: &[String]) -> Option<usize> {
+    let mut tokens = argv.iter().enumerate();
+    let (_, first) = tokens.next()?;
     if Path::new(first).file_name() != Some(OsStr::new("env")) {
-        return Some(first);
+        return Some(0);
     }
-    tokens.find(|token| !token.starts_with('-') && !token.contains('='))
+    while let Some((index, token)) = tokens.next() {
+        if matches!(token.as_str(), "-u" | "--unset" | "-C" | "--chdir") {
+            tokens.next()?;
+        } else if !token.starts_with('-') && !token.contains('=') {
+            return Some(index);
+        }
+    }
+    None
 }
 
 fn file_name(path: &Path) -> &str {
     path.file_name().and_then(OsStr::to_str).unwrap_or("")
 }
 
-fn executable_file(path: &Path) -> bool {
+pub(super) fn executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
@@ -103,11 +113,11 @@ pub(crate) fn linux_editor_command(
             "dev.zed.Zed" => true,
             _ => return Err(UNSUPPORTED_EDITOR.into()),
         };
-        let token = exec_program(argv).ok_or("The selected editor is unavailable.")?;
+        let index = exec_program_index(argv).ok_or("The selected editor is unavailable.")?;
+        let token = &argv[index];
         if file_name(Path::new(token)) != "flatpak" {
             return Err("The selected editor is unavailable.".into());
         }
-        let index = argv.iter().position(|argument| argument == token).unwrap();
         let args = &argv[index + 1..];
         if args.first().map(String::as_str) != Some("run")
             || !args[1..].iter().any(|argument| argument == app)
@@ -137,8 +147,8 @@ pub(crate) fn linux_editor_command(
             find_program,
         );
     }
-    let token = exec_program(argv).ok_or("The selected editor is unavailable.")?;
-    let index = argv.iter().position(|argument| argument == token).unwrap();
+    let index = exec_program_index(argv).ok_or("The selected editor is unavailable.")?;
+    let token = &argv[index];
     let program = if Path::new(token).is_absolute() {
         PathBuf::from(token)
     } else {
@@ -306,6 +316,40 @@ mod tests {
     }
 
     #[test]
+    fn env_working_directory_operands_do_not_replace_the_editor_program() {
+        let directory = tempfile::tempdir().unwrap();
+        let cli = directory.path().join("code");
+        executable(&cli);
+        std::fs::write(&cli, "#!/bin/sh\npwd\nprintf '%s\\n' \"$1\"\n").unwrap();
+        for option in ["-C", "--chdir"] {
+            let argv = vec![
+                "/usr/bin/env".into(),
+                option.into(),
+                directory.path().to_str().unwrap().into(),
+                cli.to_str().unwrap().into(),
+            ];
+            assert_eq!(exec_program(&argv), cli.to_str(), "{option}");
+            let launch = linux_editor_command(&argv, None, &nowhere).unwrap();
+            // macOS env supports the short option; GNU env on Linux supports both.
+            if option == "-C" || cfg!(target_os = "linux") {
+                let output = Command::new(launch.program)
+                    .args(launch.args)
+                    .arg("--profile")
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                assert_eq!(
+                    String::from_utf8(output.stdout).unwrap(),
+                    format!(
+                        "{}\n--profile\n",
+                        directory.path().canonicalize().unwrap().display()
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
     fn the_microsoft_package_entry_resolves_to_the_code_cli() {
         let root = tempfile::tempdir().unwrap();
         let electron = root.path().join("usr/share/code/code");
@@ -330,6 +374,39 @@ mod tests {
             linux_editor_command(&["code".into()], None, &move |_: &str| Some(found.clone()))
                 .unwrap();
         assert_eq!(command.program, path_cli);
+    }
+
+    #[test]
+    fn env_unset_operands_are_not_confused_with_the_editor_program() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("code");
+        executable(&program);
+        std::fs::write(
+            &program,
+            "#!/bin/sh\nprintf '%s\\n' \"${code-unset}\" \"$@\"\n",
+        )
+        .unwrap();
+        let argv = ["/usr/bin/env", "-u", "code", "code"].map(str::to_owned);
+        let command = linux_editor_command(&argv, None, &|_| Some(program.clone())).unwrap();
+        let output = Command::new(command.program)
+            .env("PATH", directory.path())
+            .env("code", "must be removed")
+            .args(command.args)
+            .arg("fixture.code-workspace")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "unset\nfixture.code-workspace\n"
+        );
+        for flag in ["-u", "--unset"] {
+            assert_eq!(
+                exec_program(&["env", flag, "EXAMPLE", "code"].map(str::to_owned)),
+                Some("code")
+            );
+            assert!(exec_program(&["env", flag].map(str::to_owned)).is_none());
+        }
     }
 
     #[test]

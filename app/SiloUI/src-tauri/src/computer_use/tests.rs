@@ -234,6 +234,35 @@ fn oversized_computer_use_policy_remains_unreadable_and_untouched() {
 }
 
 #[test]
+fn a_fifo_computer_use_record_is_refused_without_waiting_for_a_writer() {
+    use std::os::unix::fs::OpenOptionsExt;
+    let directory = tempfile::tempdir().unwrap();
+    let record = directory.path().join("policy.json");
+    let name = std::ffi::CString::new(record.as_os_str().as_encoded_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (send, receive) = std::sync::mpsc::channel();
+    let to_read = record.clone();
+    let reader = std::thread::spawn(move || {
+        send.send(read_settings_bytes(&to_read)).unwrap();
+    });
+    let result = receive.recv_timeout(Duration::from_secs(1));
+    if result.is_err() {
+        // Release a blocked read before failing so the fixture leaves no reader behind.
+        drop(
+            fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&record)
+                .unwrap(),
+        );
+    }
+    reader.join().unwrap();
+    assert!(result
+        .expect("settings reads must not wait for a FIFO writer")
+        .is_err());
+}
+
+#[test]
 fn oversized_computer_use_observation_is_ignored_without_changing_the_policy() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
@@ -346,7 +375,7 @@ fn forks_inherit_only_the_approval_and_deleted_vms_are_forgotten() {
     assert_eq!((inherited.applied, inherited.last), (None, None));
     assert_eq!(inherited.known, None);
     assert!(read_policy(&paths, child).needs_apply());
-    forget(&paths, VM_ID);
+    forget(&paths, VM_ID).unwrap();
     assert_eq!(settings(&paths, VM_ID), Settings::default());
     assert!(policy_path(&paths, child).unwrap().exists());
 }
