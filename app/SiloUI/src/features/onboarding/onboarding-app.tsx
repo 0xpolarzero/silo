@@ -129,7 +129,7 @@ function workspaceIdentitySummary(
 
   const summaries = [...appliedGroups.values()].map(({ identity, workspaces }) => {
     const target = workspaces.length === workspaceNames.length
-      ? `all ${workspaceNames.length} sandboxes`
+      ? `all ${workspaceNames.length} ${workspaceNames.length === 1 ? "sandbox" : "sandboxes"}`
       : workspaces.join(", ")
     return `${gitIdentityLabel(identity)} → ${target}`
   })
@@ -191,7 +191,7 @@ export function OnboardingApp({
     } : source
     return projectOnboarding(projectedSource, githubConnectionState)
   }, [githubConnectionState, source, machines])
-  const applicationPreferences = {
+  const applicationPreferences = useMemo(() => ({
     terminal: settings.terminal, editor: settings.editor, browser: settings.browser,
     terminalUseSystemDefault: settings.terminalUseSystemDefault,
     editorUseSystemDefault: settings.editorUseSystemDefault,
@@ -199,7 +199,11 @@ export function OnboardingApp({
     ...(settings.terminalPath && { terminalPath: settings.terminalPath }),
     ...(settings.editorPath && { editorPath: settings.editorPath }),
     ...(settings.browserPath && { browserPath: settings.browserPath }),
-  }
+  }), [settings])
+  const completionInputs = useRef({ applications: applicationPreferences, githubConnectionState })
+  useEffect(() => {
+    completionInputs.current = { applications: applicationPreferences, githubConnectionState }
+  }, [applicationPreferences, githubConnectionState])
   const availableRepositories = useMemo(
     () => uniqueRepositoryOptions(repositoryOptions ?? defaultRepositoryOptions(source)),
     [repositoryOptions, source],
@@ -399,9 +403,12 @@ export function OnboardingApp({
   }
 
   function completionRequest(): OnboardingCompletionRequest {
+    // A deletion confirmation can retain this callback across settings and
+    // connection changes. Read the latest inputs when the user confirms.
+    const { applications, githubConnectionState } = completionInputs.current
     return {
       machineConfiguration: { schemaVersion: 1, machines: [...currentDraft.current.machines] },
-      applications: applicationPreferences,
+      applications,
       github: {
         connectionState: githubConnectionState,
         workspaces: currentDraft.current.machines.map(({ name }) => ({
@@ -451,7 +458,7 @@ export function OnboardingApp({
   const repositoryLabel = repositoryCount === 1 ? "repository" : "repositories"
   const pushRepositoryLabel = pushEnabledRepositoryCount === 1 ? "repository" : "repositories"
   const githubSummary = githubConnectionState === "connected"
-    ? allWorkspaceCount > 0 ? `All authorized repositories in ${allWorkspaceCount} ${allWorkspaceCount === 1 ? "sandbox" : "sandboxes"} · ${allWriteWorkspaceCount} allowing GitHub changes` : `${repositoryCount} ${repositoryLabel} across ${configuredWorkspaceCount} of ${machines.length} sandboxes · ${pushEnabledRepositoryCount} ${pushRepositoryLabel} allowing GitHub changes`
+    ? allWorkspaceCount > 0 ? `All authorized repositories in ${allWorkspaceCount} ${allWorkspaceCount === 1 ? "sandbox" : "sandboxes"} · ${allWriteWorkspaceCount} allowing GitHub changes` : `${repositoryCount} ${repositoryLabel} across ${configuredWorkspaceCount} of ${machines.length} ${machines.length === 1 ? "sandbox" : "sandboxes"} · ${pushEnabledRepositoryCount} ${pushRepositoryLabel} allowing GitHub changes`
     : "GitHub not connected"
   const identitySummary = workspaceIdentitySummary(
     workspaceIdentities,
@@ -505,7 +512,7 @@ export function OnboardingApp({
             editedRepositoryAccess.current.add(workspace)
             updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })
           }}
-          workspaceIdentities={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceIdentities, name) ?? { name: "", email: "", apply: true }]))}
+          workspaceIdentities={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceIdentities, name) ?? { name: "", email: "", apply: false }]))}
           currentHostGitIdentity={source.currentHostGitIdentity}
           onConnect={actions.connectGitHub}
           onCancelConnection={actions.cancelGitHubConnection}

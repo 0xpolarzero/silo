@@ -121,10 +121,13 @@ function ComputersSection({ source, actions }: { source: ApplicationSource; acti
     shouldRestoreFocus.current = true
     setConnecting(false)
   }
+  const pending = useRef(false)
   async function perform(operation: () => Promise<void>) {
+    if (pending.current) return
+    pending.current = true
     setBusy(true)
     try { await operation() } catch (cause) { showActionFailure("Computer setting not changed", cause, () => { void perform(operation) }, { native: false }) }
-    finally { setBusy(false) }
+    finally { pending.current = false; setBusy(false) }
   }
   if (!actions.connectComputer) return null
   return <section aria-label="Computers" className="grid gap-3">

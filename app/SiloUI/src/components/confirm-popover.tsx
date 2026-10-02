@@ -85,9 +85,11 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
       </Tooltip>
       : trigger}
     <PopoverContent ref={contentElement} aria-labelledby={titleId} aria-describedby={descriptionId} align={align} side={side} collisionPadding={8} className="w-64 p-3 text-xs" onOpenAutoFocus={(event) => {
-      // Move focus into the popover ourselves so Escape and Enter always act on it.
+      const initialFocus = contentElement.current?.querySelector<HTMLElement>("[data-popover-initial-focus], input, textarea, select")
+      if (!initialFocus) return
+      // Prefer the form field or confirmation button; Radix handles action-only content.
       event.preventDefault()
-      contentElement.current?.querySelector<HTMLElement>("[data-popover-initial-focus], input, textarea, select")?.focus()
+      initialFocus.focus()
     }} onCloseAutoFocus={(event) => {
       if (!anchor) return
       event.preventDefault()

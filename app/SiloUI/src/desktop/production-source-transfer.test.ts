@@ -133,6 +133,25 @@ describe("export and verify", () => {
 
 // E-27: closing the import review stops the export file check it started.
 describe("export file check", () => {
+  it("does not start an inspection with an already aborted signal", async () => {
+    const { production, invoke } = await store(async () => "unused")
+    invoke.mockResolvedValue({ archive: exported, valid: true })
+    const abort = new AbortController()
+    abort.abort()
+    await expect(production.backupActions.inspectArchive(exported, abort.signal)).rejects.toMatchObject({ name: "AbortError" })
+    expect(invoke).not.toHaveBeenCalledWith("inspect_backup_archive", expect.anything())
+    production.dispose()
+  })
+
+  it("does not start inspection if selecting the archive aborts the request", async () => {
+    const { production, invoke } = await store(async () => "unused")
+    invoke.mockImplementation(async (command: string): Promise<unknown> => command === "choose_backup_archive" ? exported.archivePath : { archive: exported, valid: true })
+    const abort = new AbortController()
+    await expect(production.backupActions.chooseArchive(() => abort.abort(), abort.signal)).rejects.toMatchObject({ name: "AbortError" })
+    expect(invoke).not.toHaveBeenCalledWith("inspect_backup_archive", expect.anything())
+    production.dispose()
+  })
+
   it("tags the check with a request id, cancels it on abort, and changes no state", async () => {
     let finish: ((value: unknown) => void) | undefined
     const { production, invoke } = await store(async () => "unused")

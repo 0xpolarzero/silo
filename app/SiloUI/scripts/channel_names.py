@@ -19,5 +19,10 @@ def channel_names(source=SOURCE):
         return json.loads(result.stdout)
 
 
+def channel_for_identifier(identifier):
+    names = channel_names()
+    return names['production' if identifier == names['production']['identifier'] else 'development']
+
+
 if __name__ == '__main__':
     print(json.dumps(channel_names()))

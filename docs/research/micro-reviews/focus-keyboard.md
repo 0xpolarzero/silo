@@ -73,3 +73,40 @@ no real Quit request, app shutdown, or VM operation was exercised.
 Checks: all six Quit confirmation tests passed, including the existing
 main-window integration fixture. Frontend typecheck, touched-file oxlint,
 Rust formatting, and diff whitespace checks passed.
+
+## Import checking and rejection focus an available action
+
+The shared form popover always cancelled Radix's opening autofocus, even when
+there was no form field to focus. Checking and invalid import reviews have no
+fields, so focus stayed on the Add anchor instead of entering the popover.
+Both state regressions failed before the fix; output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/import-before.log`.
+
+The shell now defers to Radix's default autofocus when no preferred field or
+confirmation control exists. Checking focuses Cancel; a rejected export focuses
+Choose another file. The tests use Enter to activate these controls, then verify
+dismissal restores Add and no import starts. Field and confirmation autofocus
+still use the existing explicit targets. This uses the supported autofocus
+callbacks documented in the Radix source linked above.
+
+Checks: all 44 import, shared-popover, and sandbox-transfer tests passed.
+Frontend typecheck, touched-file oxlint, Rust formatting, and diff whitespace
+checks passed.
+
+## Escape dismisses operation cancellation questions
+
+Integration already fixed focus restoration after Keep going, recorded in
+`fe-components-fix-loop.md`; that instance was skipped. A separate missing
+Escape handler remained: pressing Escape while focused in the cancellation
+question left it open. The new regression failed because the Confirm cancel
+group remained rendered. Output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/toast-before.log`.
+
+The question now consumes Escape locally and returns to progress through the
+existing Keep going state transition and focus restoration. It respects handled
+and composition events. The regression verifies Cancel regains focus, the
+operation continues, and Enter can reopen the question and activate cancellation.
+
+Checks: all 21 operation-toast body and toast integration tests passed.
+Frontend typecheck, touched-file oxlint, Rust formatting, and diff whitespace
+checks passed.

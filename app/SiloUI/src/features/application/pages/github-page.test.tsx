@@ -53,6 +53,9 @@ describe("GitHub operation notifications", () => {
     expect(screen.getByText("GitHub settings applied")).toBeInTheDocument()
     await advanceTime(4_500)
     expect(screen.getByText("GitHub settings applied")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "Close toast" }))
+    await advanceTime(200)
+    expect(screen.queryByText("GitHub settings applied")).not.toBeInTheDocument()
   })
 
   it("never notifies for background applying then succeeded", async () => {

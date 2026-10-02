@@ -31,7 +31,9 @@ Development and packaging scripts read this API through the standalone
 directory, reads its JSON output, and deletes the executable; the Node adapter
 uses the same Python adapter. This requires Rust and Python 3.11 or newer but no
 Tauri build, GitHub configuration, or access to application state. It avoids a
-second registry of names or a parser tied to Rust source formatting. Static Tauri
+second registry of names or a parser tied to Rust source formatting. Linux
+verification harnesses use the same adapter for runtime aliases, including
+non-production identifiers, so Dev fixtures look under the Dev private home. Static Tauri
 configuration and documentation examples remain pinned by channel tests.
 
 ## Shared state that is now per channel

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import type { ComponentProps } from "react"
 import { TooltipProvider } from "@/components/ui/tooltip"
+import { Toaster } from "@/components/ui/sonner"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
 import { MachineEditorDraftsProvider } from "@/features/sandboxes/model/editor-drafts"
 import { MachineList } from "./machine-list"
@@ -24,6 +25,26 @@ async function editCpuLimit(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("unsaved sandbox edits across navigation", () => {
+  it("reports a rejected save after leaving and keeps the unsaved draft", async () => {
+    let reject!: (cause: unknown) => void
+    const pending = new Promise<void>((_resolve, fail) => { reject = fail })
+    const props = { onMachinesChange: vi.fn(), onCommitMachine: vi.fn(() => pending) }
+    const surface = (shown: boolean) => <><Toaster /><Surface shown={shown} {...props} /></>
+    const user = userEvent.setup()
+    const { rerender } = render(surface(true))
+    await editCpuLimit(user)
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    rerender(surface(false))
+    const error = new Error("This sandbox changed while your edit was waiting. Review it and try again.")
+    await act(async () => reject(error))
+    expect(await screen.findByText(`Could not save ${machine.name}`)).toBeVisible()
+    expect(screen.getByText(error.message)).toBeVisible()
+    rerender(surface(true))
+    expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
+    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+    expect(props.onCommitMachine).toHaveBeenCalledTimes(1)
+  })
+
   it("keeps a restored draft editable after a pending save is rejected", async () => {
     let reject!: (cause: unknown) => void
     const pending = new Promise<void>((_resolve, fail) => { reject = fail })

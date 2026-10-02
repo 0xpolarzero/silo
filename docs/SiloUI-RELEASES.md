@@ -417,7 +417,12 @@ restrictions and records the two signature-enforcement controls as skipped.
 A passing hosted result does not establish signature enforcement. Public release
 also requires the full suite on a Mac with SIP enabled, including the minimum
 supported macOS version. GitHub currently provides
-macOS 14 runners until November 2, 2026. Before their retirement, replace this
+macOS 14 runners until November 2, 2026, with
+[announced October brownouts](https://github.com/actions/runner-images/issues/13518)
+that fail jobs before retirement. The first window is October 5 at 14:00 UTC
+through October 6 at 00:00 UTC. Draft creation requires this job, so qualify a
+maintained replacement before that window; rerunning outside brownout windows
+is only a temporary workaround. Before their retirement, replace this
 minimum-version proof with a maintained runner rather than silently omitting it.
 This CI test checks library enforcement, not nested VM execution.
 
@@ -689,9 +694,12 @@ and package validation are outside this retry boundary; other errors fail
 immediately. This handles transient upstream download failures without
 repeating the expensive build phases.
 
-If forwarding stdout/stderr or writing the local log fails, the wrapper kills
-and reaps its bundle command before propagating that error. Python's
+Each bundle attempt runs in its own process group. If forwarding stdout/stderr
+or writing the local log fails, the wrapper stops that group and reaps its
+bundle command before propagating the error. Python's
 [`Popen` context manager](https://docs.python.org/3/library/subprocess.html#subprocess.Popen)
 waits for the child on exit; it does not stop it on an exception. The synthetic
 stream-failure regression checks all three output destinations and verifies
-that the child is reaped. This does not test a real package build.
+that the child is reaped. A descendant fixture inherits a separate pipe; EOF
+verifies that it also exits after forwarding fails. This does not test a real
+package build.

@@ -395,9 +395,13 @@ fn publish(app: &AppHandle, controller: &Controller) {
     let _ = app.emit("silo://application-state-changed", ());
 }
 
-/// Binary sizes, labelled GiB/MiB like the storage panel (E-41).
+/// Binary sizes, as the storage panel shows them (E-41).
 fn display_size(bytes: u64) -> String {
-    if bytes >= GIB {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else if bytes >= GIB {
         format!("{:.1} GiB", bytes as f64 / GIB as f64)
     } else {
         format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
@@ -2337,6 +2341,11 @@ mod tests {
     #[test]
     fn export_sizes_label_binary_units() {
         let _test_state = crate::test_support::global_state();
+        assert_eq!(display_size(0), "0 B");
+        assert_eq!(display_size(1), "1 B");
+        assert_eq!(display_size(1023), "1023 B");
+        assert_eq!(display_size(1024), "1.0 KiB");
+        assert_eq!(display_size(4096), "4.0 KiB");
         assert_eq!(display_size(3 * GIB), "3.0 GiB");
         assert_eq!(display_size(5 * 1024 * 1024), "5.0 MiB");
     }
