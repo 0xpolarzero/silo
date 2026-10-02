@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep manual ChatGPT app retries requested while a failed download worker is stopping.
+Keep your ChatGPT download retry request when the previous failed download is still stopping.

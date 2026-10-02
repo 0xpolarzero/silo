@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Reject malformed desktop viewer HTTP headers before forwarding them to the guest.
+Reject invalid desktop viewer requests before they reach the sandbox.
