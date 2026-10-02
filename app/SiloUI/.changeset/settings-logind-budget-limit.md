@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep sandbox shutdown inside short Linux inhibitor limits, with time reserved to release the inhibitor before it expires.
+Finish sandbox shutdown within short Linux logout and shutdown deadlines, leaving time to release the system's wait for Silo.

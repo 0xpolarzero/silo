@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Reconnect in-app native notices when the event connection initially fails and the Silo window regains focus.
+Restore in-app notifications when their connection initially fails and you return to the Silo window.
