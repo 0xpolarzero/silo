@@ -71,3 +71,17 @@ Fixed and folded in `7502c0cd`. All 17 module tests, Rust formatting, module Cli
 - **Consequence:** One transient failed connection closes the desktop's loopback port and prevents subsequent viewer requests. The existing backend health check retains a Proxy object and does not detect listener termination.
 - **Fix:** Retry the three transient connection/interruption error kinds; retain existing WouldBlock polling and cancellation behavior.
 - **Regression:** `transient_accept_errors_do_not_retire_the_listener` injects each error kind once and requires the production listener loop to attempt another accept. The seam uses the real TcpListener for subsequent calls and changes no signal handlers or file-descriptor limits.
+
+Fixed and folded in `378fa742`. All 18 module tests, Rust formatting, module Clippy with warnings denied, frontend typecheck, and frontend lint passed.
+
+## DESKTOP-PROXY-8 · P2 · Viewer health ignores an exited proxy listener
+
+- **Location:** `app/SiloUI/src-tauri/src/desktop_proxy.rs`, listener-worker exit; `app/SiloUI/src-tauri/src/desktop_viewer.rs`, `Viewer::healthy`.
+- **Trigger:** A terminal accept error ends the loopback listener worker while its owning Proxy and SSH tunnel remain in the viewer registry.
+- **Evidence:** Worker exit did not set the shared stopped flag, and `healthy` checked only that the Proxy existed and the tunnel was running. The regression waits for an injected terminal-error listener worker to exit, installs that Proxy with a live synthetic tunnel, and requests another attach. Before the fix, it failed because `begin_attach` returned Resize instead of a replacement connection.
+- **Consequence:** The normal visible-window health poll keeps resizing the child on a dead origin rather than reconnecting. Existing relays also lack a stop notification from the retired listener.
+- **Fix:** Mark the Proxy stopped when its accept loop exits, expose that state through `running`, and include it in the viewer's existing health predicate.
+- **Regression:** `a_failed_proxy_listener_reconnects_despite_a_live_tunnel` requires a Connect plan that returns both stale resources for cleanup. The fault callback's drop notification synchronizes listener exit; no process-wide limits or signals are changed.
+- **Verification seam:** The disposable harness includes the exact production proxy and owned-tunnel modules, extracts the viewer registry code and tests verbatim, and substitutes only the child-environment sanitizer with its identity behavior on this macOS fixture host. It tests synthetic sockets and an owned sleep process; it does not launch an app or establish live VM health.
+
+All 24 scoped proxy and viewer registry tests passed, as did touched-file Rust formatting, scoped Clippy with warnings denied, frontend typecheck, and frontend lint. The earlier focused native Cargo attempt stopped in the Tauri build script because the ignored `binaries/msb-aarch64-apple-darwin` runtime resource is absent; it did not run native tests.

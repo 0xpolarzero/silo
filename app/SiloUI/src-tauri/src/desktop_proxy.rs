@@ -351,6 +351,10 @@ fn serve_with_header_progress(
     Ok(())
 }
 impl Proxy {
+    pub(crate) fn running(&self) -> bool {
+        !self.stopped.load(Ordering::Acquire)
+    }
+
     /// `upstream` is the tunnel's Unix socket; `guest_port` is the guest's own
     /// listener, named in the Host and Origin headers the guest receives.
     pub fn start(
@@ -368,7 +372,7 @@ impl Proxy {
         )
     }
 
-    fn start_with_accept(
+    pub(crate) fn start_with_accept(
         upstream: PathBuf,
         guest_port: u16,
         username: &str,
@@ -441,6 +445,7 @@ impl Proxy {
                     Err(_) => break,
                 }
             }
+            worker_stop.store(true, Ordering::Release);
         });
         Ok(Self {
             port,
