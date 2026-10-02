@@ -1,4 +1,4 @@
-import { useRef } from "react"
+import { useEffect, useRef } from "react"
 import { Menu, type MenuOptions } from "@tauri-apps/api/menu"
 import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { MoreHorizontal } from "lucide-react"
@@ -11,32 +11,44 @@ import { workspaceMenuItems, type WorkspaceMenuItem } from "@/features/status-ba
 type NativeItems = NonNullable<MenuOptions["items"]>
 
 // The same items as the browser preview's Radix menu, as native menu entries.
-function nativeItems(items: WorkspaceMenuItem[]): NativeItems {
+function nativeItems(items: WorkspaceMenuItem[], active: () => boolean): NativeItems {
   return items.map((item): NativeItems[number] => {
     if (item.kind === "separator") return { item: "Separator" }
-    if (item.kind === "submenu") return { text: item.label, enabled: item.enabled, items: nativeItems(item.items) }
+    if (item.kind === "submenu") return { text: item.label, enabled: item.enabled, items: nativeItems(item.items, active) }
     if (item.kind === "copy") {
       return { text: item.label, action: () => {
+        if (!active()) return
         void navigator.clipboard.writeText(item.value).then(
-          () => showQuickConfirmation(item.copied),
-          (error) => showActionFailure(item.failed, error, undefined, { native: false }),
+          () => { if (active()) showQuickConfirmation(item.copied) },
+          (error) => { if (active()) showActionFailure(item.failed, error, undefined, { native: false }) },
         )
       } }
     }
-    return { text: item.label, enabled: item.enabled, action: item.run }
+    return { text: item.label, enabled: item.enabled, action: () => { if (active()) item.run() } }
   })
 }
 
 // HTML portals cannot draw outside the status webview. Let the OS own the
 // popup and its submenus, including screen-edge placement and keyboard tracking.
 export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: WorkspaceMenuProps) {
+  const mounted = useRef(false)
+  const ownedMenu = useRef<Menu | null>(null)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+      const menu = ownedMenu.current
+      ownedMenu.current = null
+      if (menu) void menu.close().catch(console.error)
+    }
+  }, [])
   const opening = useRef(false)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const { machine } = workspace
   const target = workspaceTarget(workspace)
 
   async function open(button: HTMLButtonElement) {
-    if (opening.current) return
+    if (!mounted.current || opening.current) return
     opening.current = true
     const bounds = button.getBoundingClientRect()
     const items = nativeItems(workspaceMenuItems(workspace, source, {
@@ -45,18 +57,27 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
       openTerminal: () => actions.openTerminal(target),
       chooseFolder: onFolders,
       openSite: (port) => actions.openSite(target, port),
-    }))
+    }), () => mounted.current)
     let menu: Menu | undefined
     try {
       menu = await Menu.new({ items })
+      if (!mounted.current) {
+        void menu.close().catch(console.error)
+        return
+      }
+      ownedMenu.current = menu
       await menu.popup(new LogicalPosition(bounds.left, bounds.bottom))
     } catch (error) {
+      if (!mounted.current) return
       console.error("Silo status menu:", error)
       showActionFailure("Could not open sandbox actions", error, () => { if (buttonRef.current) void open(buttonRef.current) }, { native: false })
     } finally {
       opening.current = false
-      // On macOS popup resolves after native menu tracking ends.
-      if (menu) void menu.close().catch(console.error)
+      // Release ownership before closing, including when unmount already closed it.
+      if (menu && ownedMenu.current === menu) {
+        ownedMenu.current = null
+        void menu.close().catch(console.error)
+      }
     }
   }
 
