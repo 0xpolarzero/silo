@@ -48,3 +48,13 @@ Verification uses temporary journal fixtures and source-extracted Rust tests. No
 - **Consequence:** Newer remote knowledge is lost, or the tracking ref for a different GitHub repository receives this job's commit.
 - **Regression:** A disposable Git repository supplies distinct pre-push, published, and concurrently fetched commits. Assert that the production tracking script preserves the fetched value and repointed origin, but updates unchanged and previously absent refs. The concurrent-fetch case failed before the fix.
 - **Fix:** Capture tracking and origin during export, verify origin still names the confirmed GitHub repository, and guard the metadata update with the captured URL and Git's expected-old-value check. [Git's update-ref reference](https://git-scm.com/docs/git-update-ref#_description) documents the atomic value comparison and empty old value for an absent ref.
+
+## HOST-PUSH-8: A symbolic tracking ref redirects publication metadata into a local branch
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/host_push.rs`, `UPDATE_TRACKING_REF`.
+- **Trigger:** The guest's remote tracking ref is symbolic and points to a local branch. Its resolved commit matches the captured expected value when publication finishes.
+- **Consequence:** Git follows the symbolic ref and updates the local branch to the published commit. This can rewind a branch with newer guest commits despite the expected-old-value guard.
+- **Regression:** Extend the disposable Git fixture with a symbolic tracking ref pointing to a local branch containing a newer commit. Assert that publication updates tracking while preserving the local branch. The production-script fixture failed before the fix and passed after it.
+- **Fix:** Pass `--no-deref` to the guarded tracking update. [Git's update-ref reference](https://git-scm.com/docs/git-update-ref#_description) documents that this updates the named ref itself instead of following symbolic pointers.
+- **Verification:** The focused source-extracted Rust test runs the production shell script against temporary Git repositories. No application or live VM is used; native compilation remains outside this verification because integration has known unrelated compile errors.
