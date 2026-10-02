@@ -143,7 +143,7 @@ impl Drop for PendingSave {
     }
 }
 
-const TUNNEL_LIMIT: usize = 128;
+pub(crate) const TUNNEL_LIMIT: usize = 128;
 /// How long a new tunnel may take to confirm forwarding.
 const READY_WITHIN: Duration = Duration::from_secs(12);
 /// How long the owner reuses its network state for polling controllers.
