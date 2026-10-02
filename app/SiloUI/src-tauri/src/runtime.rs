@@ -9745,7 +9745,7 @@ exit 9
         create_machine(&runner, &paths, &built_in_vm()).unwrap();
         crate::computer_use::set_test_published_dir(None);
         let calls = runner.calls.lock().unwrap();
-        let mount = format!("{}:/opt/silo/chatgpt:ro", published.display());
+        let mount = format!("{}:/opt/silo/chatgpt:ro,uid=0,gid=0", published.display());
         let create = &calls[3];
         let position = create.iter().position(|arg| arg == "-v").unwrap();
         assert_eq!(create[position + 1], mount);

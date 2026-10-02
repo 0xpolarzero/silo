@@ -3075,7 +3075,7 @@ mod tests {
         assert!(start_pending(&runner, &paths, &built_in_machine()).is_err());
         let calls = runner.0.lock().unwrap();
         let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
-        let mount = format!("{}:/opt/silo/chatgpt:ro", published.display());
+        let mount = format!("{}:/opt/silo/chatgpt:ro,uid=0,gid=0", published.display());
         assert!(
             restore
                 .windows(2)

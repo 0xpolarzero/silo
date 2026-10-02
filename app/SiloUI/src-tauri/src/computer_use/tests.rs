@@ -96,7 +96,10 @@ fn only_built_in_vms_get_the_mount_and_it_is_read_only() {
         let args = mount_args(&machine(true)).unwrap();
         assert_eq!(
             args,
-            ["-v", &format!("{}:/opt/silo/chatgpt:ro", dir.display())]
+            [
+                "-v",
+                &format!("{}:/opt/silo/chatgpt:ro,uid=0,gid=0", dir.display())
+            ]
         );
         let ssh = MachineConfiguration::Ssh {
             id: "s".into(),
@@ -1464,7 +1467,13 @@ fn the_shared_folder_is_prepared_again_when_the_start_up_attempt_failed() {
         dir.ends_with("chatgpt/published") && dir.is_dir(),
         "{dir:?}"
     );
-    assert_eq!(args, ["-v", &format!("{}:{GUEST_MOUNT}:ro", dir.display())]);
+    assert_eq!(
+        args,
+        [
+            "-v",
+            &format!("{}:{GUEST_MOUNT}:ro,uid=0,gid=0", dir.display())
+        ]
+    );
     // A preparation attempt registers it as well (the worker calls this every time).
     reset_published_for_test();
     let dir = register_published(&directory.path().join("chatgpt")).unwrap();
