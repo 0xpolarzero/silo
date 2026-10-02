@@ -80,6 +80,6 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
       expandedRows={expandedRows}
       onExpandedRowsChange={setExpandedRows}
       onLoadOlder={() => void loadOlder()}
-    /> : !busy && !error && !invalidRange && <EmptyState icon={<ScrollText />} title={historyLimited ? "Records exceed the list limit" : query || source || since || until ? "No results" : "No logs yet"} />}
+    /> : !busy && !error && !invalidRange && !unsupportedNotice && <EmptyState icon={<ScrollText />} title={historyLimited ? "Records exceed the list limit" : query || source || since || until ? "No results" : "No logs yet"} />}
   </div>
 }

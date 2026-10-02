@@ -17,3 +17,11 @@ command's failure from `set -e`. Assigning first preserves the failure status.
 
 No desktop, VM, credential store, release publication, or real signing key was
 used by these regressions.
+
+The desktop recipe also masked a package-list read failure in
+`for package in $(cat ...)`. The failed substitution produced an empty loop,
+so the recipe accepted the preinstalled desktop without checking its packages.
+The recipe now checks the read status before iterating. The guest fixture injects
+one failed read and requires the full repair path, including every bundled
+package, instead of accepting the image. A persistent read failure still stops
+the later installation at its existing checked assignment.

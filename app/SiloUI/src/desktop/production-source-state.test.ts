@@ -526,6 +526,43 @@ describe("overlapping lifecycle responses", () => {
   })
 })
 
+describe("checkpoint response ordering", () => {
+  it.each(["capture", "fork"] as const)("preserves a newer sibling lifecycle result after a late %s response", async kind => {
+    const initial = structuredClone(source)
+    initial.workspaces = initial.workspaces.filter(row => row.machine.kind === "vm").slice(0, 2).map(row => ({ ...row, state: "running" }))
+    const [a, b] = initial.workspaces
+    const pending = deferred<unknown>()
+    let reads = 0
+    const newer = { ...initial, workspaces: [{ ...a }, { ...b, state: "stopped" }] }
+    const mock = bridge(command => {
+      if (command === "read_application_state") return ++reads === 1 ? initial : new Promise(() => {})
+      if (command === "workspace_action") return newer
+      if (command === "create_checkpoint" || command === "fork_checkpoint") return pending.promise
+    })
+    const store = createProductionSource(mock.native)
+    const row = (id: string) => store.getSnapshot().source?.workspaces.find(item => item.machine.id === id)
+    try {
+      await store.initialize()
+      const checkpoint = { id: "captured", name: "Saved", createdAt: "2026-10-02T12:00:00Z", scope: "full" as const, reason: "manual" as const }
+      const action = kind === "capture" ? store.applicationActions.createCheckpoint!(a.machine.name, "Saved")
+        : store.applicationActions.forkCheckpoint!(a.machine.name, "point-1", "new-fork")
+      store.applicationActions.stopWorkspace(b.machine.name)
+      await vi.waitFor(() => {
+        expect(row(b.machine.id)?.state).toBe("stopped")
+        expect(row(b.machine.id)?.lifecycleAction).toBeUndefined()
+      })
+      const older = structuredClone(initial)
+      older.workspaces[0].checkpoints = [checkpoint]
+      if (kind === "fork") older.workspaces.push({ ...a, machine: { ...a.machine, id: "fork-id", name: "new-fork" }, state: "stopped" })
+      pending.resolve(older)
+      await action
+      expect(row(b.machine.id)?.state).toBe("stopped")
+      expect(row(a.machine.id)?.checkpoints).toEqual([checkpoint])
+      if (kind === "fork") expect(row("fork-id")).toMatchObject({ state: "stopped", machine: { name: "new-fork" } })
+    } finally { store.dispose() }
+  })
+})
+
 describe("overlapping state reads", () => {
   const withState = (state: "running" | "stopped", detail: string) => ({ ...structuredClone(source), workspaces: source.workspaces.map((workspace, index) => index === 0 ? { ...workspace, state, stateDetail: detail } : workspace) })
 

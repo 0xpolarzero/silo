@@ -8,7 +8,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
-from channel_names import channel_for_identifier
+from channel_names import channel_for_identifier, channel_names
 import signal
 import secrets
 import shlex
@@ -102,7 +102,7 @@ def run():
         environment = dict(os.environ)
         environment["HOME"] = str(Path(temporary) / "home")
         Path(environment["HOME"]).mkdir(mode=0o700)
-        identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.preview")
+        identifier = environment.get("SILO_LINUX_APPLICATION_ID", channel_names()["production"]["identifier"])
         for kind in ["CONFIG", "DATA", "CACHE"]:
             directory = Path(temporary) / kind.lower()
             directory.mkdir()
@@ -304,7 +304,7 @@ def run_lifecycle():
         raise RuntimeError("Outside a container, lifecycle mode requires an exact task-owned Lima hostname")
     if not Path(environment.get("HOME", "")).is_absolute():
         raise RuntimeError("The disposable container must provide its normal absolute HOME")
-    identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.preview.linux-checkpoints")
+    identifier = environment.get("SILO_LINUX_APPLICATION_ID", channel_names()["development"]["identifier"])
     app_data = data_home / identifier
     app_config = config_home / identifier
     settings = app_config / "settings.json"

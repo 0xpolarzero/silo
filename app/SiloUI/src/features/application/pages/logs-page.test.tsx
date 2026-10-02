@@ -406,13 +406,15 @@ describe("retained logs", () => {
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
   })
 
-  it("uses the unsupported remote error code as an update hint", async () => {
+  it.each(["", "needle"])("uses the unsupported remote error code as an update hint without claiming empty logs (query: %s)", async query => {
     const { workspace, actions } = fixture()
     const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:zeronival:dev-zeronival", name: "dev-zeronival" }, computer: { id: "zeronival", vmId: "dev-zeronival", name: "zeronival", address: "zeronival.local", connected: true } }
     actions.queryLogs = vi.fn(async () => { throw { code: "unsupported_remote_operation", message: "This computer cannot query logs." } })
-    render(<Logs workspaces={[remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    render(<Logs workspaces={[remote]} actions={actions} active query={query} onQueryChange={vi.fn()} />)
     expect(await screen.findByText("Update Silo on zeronival to see logs for dev-zeronival.")).toBeVisible()
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
+    expect(screen.queryByText("No logs yet")).not.toBeInTheDocument()
+    expect(screen.queryByText("No results")).not.toBeInTheDocument()
   })
 
 })

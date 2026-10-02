@@ -13,7 +13,9 @@ pub const MAX_AGE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 pub const SEGMENT_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub fn marker(path: &Path) -> PathBuf {
-    PathBuf::from(format!("{}.started", path.display()))
+    let mut marker = path.as_os_str().to_owned();
+    marker.push(".started");
+    PathBuf::from(marker)
 }
 pub fn mark(path: &Path, now: SystemTime) -> io::Result<()> {
     if fs::symlink_metadata(marker(path)).is_ok_and(|m| !m.is_file()) {
@@ -148,6 +150,35 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         TestDir(dir)
     }
+    #[test]
+    #[cfg(unix)]
+    fn age_marker_preserves_native_directory_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(std::ffi::OsString::from_vec(
+            b"/runtime \xff/logs/exec.log.1".to_vec(),
+        ));
+        assert_eq!(marker(&path), path.with_file_name("exec.log.1.started"));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn retention_expires_logs_under_non_utf8_directories() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = dir();
+        let logs = root.join(std::ffi::OsString::from_vec(b"logs \xff".to_vec()));
+        fs::create_dir(&logs).unwrap();
+        let path = logs.join("exec.log.1");
+        let now = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        fs::write(&path, "expired").unwrap();
+        mark(&path, now - MAX_AGE).unwrap();
+        assert_eq!(started(&path).unwrap(), now - MAX_AGE);
+        enforce_at(&logs, now, MAX_BYTES, MAX_AGE).unwrap();
+        assert!(!path.exists());
+        assert!(!logs.join("exec.log.1.started").exists());
+    }
+
     #[test]
     fn expires_oldest_segment_even_if_recently_modified() {
         let dir = dir();

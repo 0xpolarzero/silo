@@ -813,6 +813,62 @@ fn layered_workspace_reclaim_measures_the_whole_chain_and_guards_every_layer_len
 }
 
 #[test]
+fn qcow2_growth_during_reclaim_is_not_a_disk_capacity_change() {
+    let _test_state = crate::test_support::global_state();
+    struct GrowingDisk(PathBuf);
+    impl RuntimeRunner for GrowingDisk {
+        fn run(
+            &self,
+            _: &RuntimePaths,
+            args: &[String],
+            _: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            assert_eq!(args[0], "exec");
+            fs::OpenOptions::new()
+                .append(true)
+                .open(&self.0)
+                .unwrap()
+                .write_all(&vec![8u8; 4096])
+                .unwrap();
+            Ok(CommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+    for qcow2 in [true, false] {
+        let (_dir, paths, machine, observed) = fixture();
+        let disk = if qcow2 {
+            let head = workspace_dir(&paths, "dev").join("writable.qcow2");
+            fs::write(&head, vec![7u8; 8192]).unwrap();
+            head
+        } else {
+            owned_disk(&paths, "dev")
+        };
+        let result = trim(
+            &GrowingDisk(disk.clone()),
+            &paths,
+            &machine,
+            &observed,
+            TRIM_BUDGET,
+            now(),
+        );
+        let record = load(&paths, machine.id()).unwrap();
+        if qcow2 {
+            result.unwrap();
+            assert!(record.last_trim_at.is_some());
+            assert_eq!(record.last_reclaimed_bytes, Some(0));
+        } else {
+            assert!(result.unwrap_err().to_string().contains("size changed"));
+            assert!(record.last_trim_at.is_none());
+        }
+        let contents = fs::read(&disk).unwrap();
+        assert_eq!(&contents[..8192], &vec![7u8; 8192]);
+        assert_eq!(&contents[8192..], &vec![8u8; 4096]);
+    }
+}
+
+#[test]
 fn history_retains_latest_fifty_attempts_including_failures() {
     let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, observed) = fixture();

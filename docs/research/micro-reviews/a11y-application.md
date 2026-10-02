@@ -46,3 +46,32 @@ to preserve a meaningful keyboard sequence as content changes.
 Verification: both user-event tests in `remote-computers-settings.test.tsx`
 failed before the fix, then returned focus to Connect computer afterwards.
 The connection backend is a deterministic resolved mock; no SSH session is opened.
+
+## Import validation changed the name field's label
+
+Trigger: review an import with an invalid or already-used sandbox name. Error
+text nested inside the label changed the input's accessible name to include the
+whole error. Duplicate-name errors also lacked an associated description.
+
+The fix keeps a separate explicit label and connects either error through
+`aria-describedby`, following [WAI-ARIA's error-identification technique](https://www.w3.org/WAI/WCAG22/Techniques/aria/ARIA21).
+Import eligibility and validation messages remain unchanged.
+
+Verification: both format-error and duplicate-name fixtures in
+`import-popover.test.tsx` failed the stable-name assertion before the fix. They
+now verify the exact label, error description, invalid state, and disabled Import.
+
+## Dismissing native Quit confirmation lost keyboard position
+
+Trigger: while an input is focused, receive a native Quit request and dismiss the
+confirmation with Cancel or Escape. Radix's default restoration targets a dialog
+trigger, but this native-event dialog has none. Focus ended on the page body.
+
+The fix captures the focused element before opening and restores it through the
+supported close-autofocus callback. This follows the dialog dismissal example in
+[WCAG focus-order guidance](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html).
+The existing Quit decision and initial focus behavior are preserved.
+
+Verification: both dismissal regressions in `quit-request-confirmation.test.tsx`
+failed before the fix. They now restore the search field and still resolve the
+mocked Quit request to false. No native Quit or VM shutdown is exercised.

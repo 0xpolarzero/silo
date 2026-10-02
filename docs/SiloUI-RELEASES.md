@@ -652,6 +652,12 @@ with ordinary targets, quote-breaking input and command-substitution input.
 Current release callers supply fixed matrix values; this protects the reusable
 input boundary without changing release gates or published asset names.
 
+Linux verification and release-tooling checks cancel obsolete runs for the same
+pull request and workflow. Push and manual verification runs use their run IDs,
+so they stay independent. [GitHub concurrency groups](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+are repository-wide; including the workflow name prevents cross-workflow
+cancellation. Publication and release-build concurrency policies are unchanged.
+
 Artifact-only runs have independent concurrency groups, so they do not queue
 behind or displace a pending publication. Tagged and draft publications of the
 same release tag share one concurrency group per tag, so builds of different

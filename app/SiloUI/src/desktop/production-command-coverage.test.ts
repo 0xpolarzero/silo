@@ -26,6 +26,92 @@ function bridge(handlers: NativeCommandHandlers = {}) {
   return { invoke, listen: vi.fn(async () => () => {}) } as unknown as ProductionBridge & { invoke: typeof invoke }
 }
 
+describe("production archive inspection", () => {
+  it("does not inspect or announce a cancelled archive picker", async () => {
+    const native = bridge({ choose_backup_archive: () => null })
+    const store = createProductionSource(native)
+    const selected = vi.fn()
+    try {
+      await expect(store.backupActions.chooseArchive(selected)).resolves.toBeNull()
+      expect(selected).not.toHaveBeenCalled()
+      expect(native.invoke.mock.calls).toEqual([["choose_backup_archive"]])
+    } finally { store.dispose() }
+  })
+
+  it("ignores a picker reply after its caller aborts", async () => {
+    let choose!: (path: string) => void
+    const native = bridge({ choose_backup_archive: () => new Promise<string>(resolve => { choose = resolve }) })
+    const store = createProductionSource(native)
+    const selected = vi.fn()
+    const abort = new AbortController()
+    try {
+      const inspection = store.backupActions.chooseArchive(selected, abort.signal)
+      abort.abort()
+      choose(archive.archivePath)
+      await expect(inspection).resolves.toBeNull()
+      expect(selected).not.toHaveBeenCalled()
+      expect(native.invoke.mock.calls).toEqual([["choose_backup_archive"]])
+    } finally { store.dispose() }
+  })
+
+  it.each(["malformed", "rejected"] as const)("allows a fresh inspection after a %s reply and removes the old abort listener", async failureKind => {
+    const failure = { code: "archive_unreadable", message: "Reconnect the backup drive" }
+    let attempts = 0
+    const native = bridge({ inspect_backup_archive: () => {
+      if (++attempts === 1) {
+        if (failureKind === "rejected") throw failure
+        return { archive, valid: "yes" }
+      }
+      return { archive, valid: true }
+    } })
+    const store = createProductionSource(native)
+    const abort = new AbortController()
+    const before = store.getSnapshot()
+    try {
+      const first = store.backupActions.inspectArchive(archive, abort.signal)
+      if (failureKind === "rejected") await expect(first).rejects.toBe(failure)
+      else await expect(first).rejects.toThrow()
+      abort.abort()
+      await expect(store.backupActions.inspectArchive(archive)).resolves.toEqual({ archive, valid: true })
+      const requests = native.invoke.mock.calls.map(([command, args]) => {
+        expect(command).toBe("inspect_backup_archive")
+        expect(args).toEqual({ archivePath: archive.archivePath, requestId: expect.any(String) })
+        return args!.requestId
+      })
+      expect(requests).toHaveLength(2)
+      expect(new Set(requests).size).toBe(2)
+      expect(store.getSnapshot()).toBe(before)
+    } finally { store.dispose() }
+  })
+
+  it("cancels only the requested inspection and detaches the completed inspection's signal", async () => {
+    const finishes: Array<(result: unknown) => void> = []
+    const native = bridge({
+      inspect_backup_archive: () => new Promise(resolve => { finishes.push(resolve) }),
+      cancel_backup_inspection: () => undefined,
+    })
+    const store = createProductionSource(native)
+    const firstAbort = new AbortController()
+    const secondAbort = new AbortController()
+    const secondArchive = { ...archive, archivePath: "/backups/api.silo-backup" }
+    try {
+      const first = store.backupActions.inspectArchive(archive, firstAbort.signal)
+      const second = store.backupActions.inspectArchive(secondArchive, secondAbort.signal)
+      const requests = native.invoke.mock.calls.map(([, args]) => args!.requestId)
+      expect(new Set(requests).size).toBe(2)
+      expect(native.invoke).toHaveBeenNthCalledWith(2, "inspect_backup_archive", { archivePath: secondArchive.archivePath, requestId: requests[1] })
+      firstAbort.abort()
+      expect(native.invoke).toHaveBeenLastCalledWith("cancel_backup_inspection", { requestId: requests[0] })
+      finishes[0]({ archive, valid: false, reason: "Cancelled" })
+      finishes[1]({ archive: secondArchive, valid: true })
+      await expect(first).resolves.toMatchObject({ valid: false })
+      await expect(second).resolves.toEqual({ archive: secondArchive, valid: true })
+      secondAbort.abort()
+      expect(native.invoke.mock.calls.filter(([command]) => command === "cancel_backup_inspection")).toHaveLength(1)
+    } finally { store.dispose() }
+  })
+})
+
 describe("production command behavior", () => {
   it.each([
     ["authorizeComputer", "remote_authorize_ssh"],

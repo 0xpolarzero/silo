@@ -439,7 +439,10 @@ fn trim_triggered(
             .metadata()
             .map_err(|_| failure("The owned workspace disk length could not be verified."))?
             .len();
-        disks.push((disk, original_length));
+        let qcow2 = disk_path
+            .extension()
+            .is_some_and(|extension| extension == "qcow2");
+        disks.push((disk, original_length, qcow2));
     }
     if disks.is_empty() {
         return Err(failure(
@@ -469,7 +472,7 @@ fn trim_triggered(
     // Check every layer even after the first failure, so each shortened one is repaired.
     let length_result = disks
         .iter()
-        .map(|(disk, original_length)| preserve_length(disk, *original_length))
+        .map(|(disk, original_length, qcow2)| preserve_length(disk, *original_length, *qcow2))
         .fold(Ok(()), |first: Result<(), RuntimeError>, next| {
             first.and(next)
         });
@@ -497,7 +500,7 @@ fn trim_triggered(
     result.map_err(|_| failure(record.last_error.as_deref().unwrap()))
 }
 
-fn preserve_length(disk: &File, original_length: u64) -> Result<(), RuntimeError> {
+fn preserve_length(disk: &File, original_length: u64, qcow2: bool) -> Result<(), RuntimeError> {
     let length = disk
         .metadata()
         .map_err(|_| failure("The workspace disk length could not be verified."))?
@@ -507,7 +510,9 @@ fn preserve_length(disk: &File, original_length: u64) -> Result<(), RuntimeError
             .map_err(|_| failure("The runtime shortened the workspace disk and its length could not be restored. Keep the VM stopped and repair its disk."))?;
         return Err(failure("The runtime shortened the workspace disk; its original length was restored. Update the runtime before reclaiming again."));
     }
-    if length != original_length {
+    // A qcow2 file grows as the running guest allocates host clusters; its file
+    // length is independent of the virtual disk capacity.
+    if length != original_length && !qcow2 {
         return Err(failure(
             "The workspace disk size changed during reclamation.",
         ));

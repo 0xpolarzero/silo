@@ -58,6 +58,21 @@ class WorkflowPinTests(unittest.TestCase):
             self.assertIn(f"'{directory}'", config)
 
 
+class WorkflowConcurrencyTests(unittest.TestCase):
+    def test_verification_supersedes_only_the_same_pull_request(self):
+        for name in ['linux-verification.yml', 'release-tooling.yml']:
+            with self.subTest(workflow=name):
+                workflow = (GITHUB / 'workflows' / name).read_text()
+                concurrency = re.search(r'(?m)^concurrency:\n((?: +[^\n]*\n)+)', workflow)
+                self.assertIsNotNone(concurrency, 'obsolete PR checks run without a concurrency limit')
+                config = concurrency[1]
+                group = re.search(r'(?m)^ +group: (.+)$', config)[1]
+                self.assertIn('github.workflow', group)
+                self.assertRegex(group, r"github.event_name == 'pull_request' && github.ref \|\| github.run_id")
+                cancel = re.search(r'(?m)^ +cancel-in-progress: (.+)$', config)[1]
+                self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
+
+
 class WorkflowInputTests(unittest.TestCase):
     def test_linux_collection_preserves_globs_and_asset_names(self):
         workflow = (GITHUB / 'workflows/release-platform.yml').read_text()
