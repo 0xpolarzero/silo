@@ -618,38 +618,24 @@ fn available_install_space(parent: &Path) -> Result<u64, String> {
 enum InstallError {
     /// Nothing was installed (sandboxes were restored where possible); retry the install.
     Failed(String),
-    /// The package is installed, but this process could not be replaced.
-    NotRestarted(String),
 }
 impl From<String> for InstallError {
     fn from(error: String) -> Self {
         Self::Failed(error)
     }
 }
-/// `exec` skips `RunEvent::Exit` and every `Drop`, so first close what exit closes
-/// (SSH tunnels and listeners, desktop viewers); otherwise their helper processes
-/// keep the ports and the new instance cannot bind them. `restart` returns only if
-/// the process could not be replaced: the stopped sandboxes are then resumed.
-fn restart_after_install(
-    close: impl FnOnce(),
-    restart: impl FnOnce() -> String,
-    resume: impl FnOnce() -> Result<(), String>,
-) -> InstallError {
+/// `exec` skips exit cleanup, so close helpers and release the instance claim first.
+/// A failed replacement must exit without reopening admission or restoring sandboxes:
+/// this process no longer owns the claim. Startup restores the saved running set.
+fn restart_after_install(close: impl FnOnce(), restart: impl FnOnce() -> String) -> ! {
     close();
     let error = restart();
-    InstallError::NotRestarted(match resume() {
-        Ok(()) => error,
-        Err(resume) => format!("{error}\nSandboxes could not resume: {resume}"),
-    })
-}
-fn relaunch_required(snapshot: &mut Snapshot, details: String) {
-    snapshot.phase = "error".into();
-    snapshot.error =
-        Some("Silo was updated but could not restart. Quit and reopen Silo to finish.".into());
-    snapshot.error_details = Some(details);
-    snapshot.retry_action = Some("relaunch".into());
-    snapshot.install_status = None;
-    snapshot.can_install = false;
+    use std::io::Write;
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "{error}\nSilo has closed. Reopen Silo to finish the update and restore its sandboxes."
+    );
+    std::process::exit(1)
 }
 /// Debian installs through APT with system authentication. Authentication, the
 /// source check, the refresh and the download all happen while sandboxes keep
@@ -695,13 +681,11 @@ fn install_debian(app: &AppHandle, version: &str, consent: bool) -> Result<(), I
         }
         return Err(InstallError::Failed(error));
     }
-    // Close admission before releasing installation guards. The update journal
-    // retains the running set for startup to restore after restart. Keep the VM
-    // operation gate: the SSH monitor cannot reopen listeners, and a failed restart
-    // resumes the sandboxes under it.
+    // Keep installation guards and shutdown admission closed until this process
+    // is replaced or exits. Startup owns recovery from the retained update journal.
     crate::runtime::shutdown::begin();
-    drop((admission, backup, github, secrets));
-    let outcome = restart_after_install(
+    let _guards = (admission, backup, github, secrets, runtime);
+    restart_after_install(
         || {
             crate::ssh_access::close_all();
             crate::remote_network::close_all();
@@ -711,13 +695,7 @@ fn install_debian(app: &AppHandle, version: &str, consent: bool) -> Result<(), I
             crate::single_instance::release(app);
         },
         debian::restart,
-        || {
-            crate::runtime::shutdown::cancel();
-            crate::runtime::update_recovery::restore_locked(app)
-        },
-    );
-    drop(runtime);
-    Err(outcome)
+    )
 }
 #[tauri::command]
 pub(crate) async fn install_update(
@@ -798,12 +776,6 @@ pub(crate) async fn install_update(
     }).await.unwrap_or_else(|_| Err(InstallError::Failed("Update installation was interrupted. Relaunch Silo to restore the saved sandbox state, then download the update again.".into())));
     match result {
         Ok(()) => get_update_state(app).await,
-        Err(InstallError::NotRestarted(details)) => modify(&app, |s| {
-            // Offering the installed version again would reinstall and stop sandboxes again.
-            s.update = None;
-            s.bytes = None;
-            relaunch_required(&mut s.snapshot, details);
-        }),
         Err(InstallError::Failed(e)) => fail(
             &app,
             if is_debian {
@@ -931,53 +903,64 @@ mod tests {
         ));
     }
     #[test]
-    fn restart_closes_tunnels_first_and_a_failed_exec_resumes_sandboxes_and_asks_to_relaunch() {
-        let events = std::cell::RefCell::new(vec![]);
-        let outcome = restart_after_install(
-            || events.borrow_mut().push("close tunnels and listeners"),
-            || {
-                events.borrow_mut().push("exec");
-                "exec failed".into()
-            },
-            || {
-                events.borrow_mut().push("resume sandboxes");
-                Ok(())
-            },
-        );
-        assert_eq!(
-            events.into_inner(),
-            ["close tunnels and listeners", "exec", "resume sandboxes"]
-        );
-        let InstallError::NotRestarted(details) = outcome else {
-            panic!("an installed package must not be offered for reinstallation");
-        };
-        assert_eq!(details, "exec failed");
-        let InstallError::NotRestarted(details) = restart_after_install(
-            || {},
-            || "exec failed".into(),
-            || Err("dev: start failed".into()),
-        ) else {
-            panic!("an installed package must not be offered for reinstallation");
-        };
-        assert!(details.contains("exec failed") && details.contains("dev: start failed"));
-        let mut state = snapshot("installing");
-        state.install_status = Some("Installing Silo…".into());
-        state.can_install = true;
-        relaunch_required(&mut state, details);
-        assert_eq!(state.phase, "error");
-        assert_eq!(state.retry_action.as_deref(), Some("relaunch"));
-        assert!(state
-            .error
-            .as_deref()
-            .unwrap()
-            .contains("Quit and reopen Silo"));
-        assert!(state
-            .error_details
-            .as_deref()
-            .unwrap()
-            .contains("dev: start failed"));
-        assert!(!state.can_install && state.install_status.is_none());
+    fn reexec_replaces_or_exits_without_resuming_writes() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        const CHILD: &str = "SILO_REEXEC_TEST_DIRECTORY";
+        const REPLACE: &str = "SILO_REEXEC_TEST_REPLACE";
+        if let Some(directory) = std::env::var_os(CHILD) {
+            let directory = PathBuf::from(directory);
+            let mutation = directory.join("mutation");
+            let worker = std::thread::spawn(move || -> () {
+                restart_after_install(
+                    || fs::write(directory.join("released"), b"claim released").unwrap(),
+                    || {
+                        assert!(directory.join("released").exists());
+                        let error = if std::env::var_os(REPLACE).is_some() {
+                            Command::new("/bin/sh").args(["-c", "exit 0"]).exec()
+                        } else {
+                            Command::new(directory.join("missing-executable")).exec()
+                        };
+                        format!("exec failed: {error}")
+                    },
+                )
+            });
+            worker.join().unwrap();
+            fs::write(mutation, b"ordinary write resumed").unwrap();
+            return;
+        }
+        for replace in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "updates::tests::reexec_replaces_or_exits_without_resuming_writes",
+                    "--nocapture",
+                ])
+                .env(CHILD, directory.path())
+                .env("HOME", directory.path())
+                .env_remove(REPLACE);
+            if replace {
+                command.env(REPLACE, "1");
+            }
+            let output = command.output().unwrap();
+            assert!(directory.path().join("released").exists());
+            assert!(
+                !directory.path().join("mutation").exists(),
+                "ordinary mutations must not resume after releasing the instance claim"
+            );
+            assert_eq!(output.status.code(), Some(if replace { 0 } else { 1 }));
+            if !replace {
+                let error = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    error.contains("exec failed") && error.contains("Reopen Silo"),
+                    "{error}"
+                );
+            }
+        }
     }
+
     #[test]
     fn readiness_probe_never_rejects_concurrent_operations() {
         // The settings card polls readiness every few seconds while an update is ready.

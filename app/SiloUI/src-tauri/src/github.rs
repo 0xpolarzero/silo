@@ -1656,10 +1656,16 @@ fn scopes(d: &Document, policy: &Value) -> Result<Vec<GrantScope>, String> {
     let selected = policy["repositories"]
         .as_array()
         .ok_or("Invalid repository selection.")?;
+    let matches = |repo: &Value, selection: &Value| {
+        repo["name"]
+            .as_str()
+            .zip(selection["repository"].as_str())
+            .is_some_and(|(catalog, saved)| catalog.eq_ignore_ascii_case(saved))
+    };
     if !all
         && selected
             .iter()
-            .any(|s| !d.repositories.iter().any(|r| r["name"] == s["repository"]))
+            .any(|s| !d.repositories.iter().any(|r| matches(r, s)))
     {
         return Err(
             "A selected repository is no longer authorized by GitHub. Update the selection.".into(),
@@ -1667,7 +1673,7 @@ fn scopes(d: &Document, policy: &Value) -> Result<Vec<GrantScope>, String> {
     }
     let mut groups = std::collections::BTreeMap::<u64, GrantScope>::new();
     for repo in &d.repositories {
-        let selection = selected.iter().find(|s| s["repository"] == repo["name"]);
+        let selection = selected.iter().find(|s| matches(repo, s));
         if !all && selection.is_none() {
             continue;
         }
@@ -4026,6 +4032,27 @@ mod tests {
             );
         });
     }
+    #[test]
+    fn selected_scopes_preserve_access_when_catalog_capitalization_changes() {
+        let _test_state = crate::test_support::global_state();
+        let d = Document {
+            access_enabled: true,
+            account: Some("owner".into()),
+            repositories: vec![
+                json!({"name":"OWNER/Project","ownerId":7,"id":11}),
+                json!({"name":"OWNER/Other","ownerId":7,"id":12}),
+            ],
+            ..Default::default()
+        };
+        let policy = json!({"repositoryMode":"selected","repositories":[{"repository":"owner/project","allowPushes":true}]});
+        let desired = scopes(&d, &policy).unwrap();
+        assert_eq!(desired.len(), 1);
+        assert_eq!(desired[0].owner, 7);
+        assert_eq!(desired[0].ids, vec![11]);
+        assert_eq!(desired[0].writes, vec![11]);
+        assert_eq!(desired[0].login, "OWNER");
+    }
+
     #[test]
     fn invalid_remaining_selection_never_preserves_removed_repository_access() {
         let _test_state = crate::test_support::global_state();
