@@ -122,7 +122,9 @@ absolute).
 - ChatGPT runtime dependencies and LCU system packages, so LCU installs with
   `--skip-system --offline`.
 - Pinned LCU release archive, hash-checked, staged for installation in the VM
-  (done: `guest/lcu-lock.json`, LCU 0.8.1, `/usr/local/share/silo/lcu/`).
+  (done: `guest/lcu-lock.json`, `/usr/local/share/silo/lcu/`). The published v4 image
+  stages LCU 0.8.1; Silo now pins LCU 0.8.2 (below), which a VM downloads and
+  verifies at setup until a new image stages it.
 - Accessibility: dconf `toolkit-accessibility=true` system default and an
   autostarted AT-SPI attribute poller for Chromium/Electron.
 - GNOME Text Editor as the `text/plain` default instead of Mousepad.
@@ -142,7 +144,7 @@ absolute).
 - Every computer does this itself at its own start, remote ones included; a
   controller never prepares an app for another computer.
 
-Done: lock (`lcuVersion` 0.8.1), download, verification, extraction and
+Done: lock (`lcuVersion` 0.8.2), download, verification, extraction and
 publication under `<app data>/chatgpt/published/`, started automatically at app
 start with retries (2026-10-02, replacing the one-time notice), cached status
 reads and a computer-level Retry. See [ChatGPT app](SiloUI-CHATGPT-APP.md).
@@ -208,7 +210,7 @@ change. Record final sizes and add a `minor` changeset.
 
 macOS arm64 (Silo main plus the fixes below, MicroSandbox 0.7.6 built from `runtime-inputs.json`,
 bundled `msb` ad-hoc signed with `Entitlements.plist`, published v4 image
-`ubuntu-24.04-v4-arm64`, ChatGPT 26.928.31416 downloaded by Silo's own downloader, LCU 0.8.1).
+`ubuntu-24.04-v4-arm64`, ChatGPT 26.928.31416 downloaded by Silo's own downloader, LCU 0.8.1, the pin at that time).
 Real code paths through the opt-in live tests listed in
 [Rust test support](SiloUI-RUST-TEST-SUPPORT.md#live-tests-and-temporary-directories); fixture
 homes under `/tmp`, `e2e-*` sandboxes, live data, no packaged app. The Linux x86-64 computer was not used.
@@ -404,3 +406,21 @@ replaced by a model in which the host drives the guest and the guest cannot veto
   (a host-side MCP gate), which is a different product decision. The documentation and the
   panel say once that the switch configures the agents' approval prompts and is not a
   security boundary inside the sandbox.
+
+### LCU 0.8.2 pin (2026-10-02)
+
+Silo pins LCU 0.8.2 (`guest/lcu-lock.json`, `chatgpt-app-lock.json` `lcuVersion`).
+0.8.2 fixes the Linux X11 "Operation not permitted" for every harness: it supplies
+Codex's disabled sandbox-state `_meta` by default, so a bare MCP client reaches the
+display. Silo must never set the opt-out `LCU_NODE_REPL_SANDBOX=host`. It also
+documents GTK4 input behavior. `scripts/install.py` (including `SYSTEM_PACKAGES`) is
+identical between v0.8.1 and v0.8.2, so the v4 image's package set is unaffected.
+
+The published `ubuntu-24.04-v4` image still stages the LCU 0.8.1 archive. The guest
+helper (`silo-computer-use.py`, `archive_path`) uses the staged archive only when its
+SHA-256 equals the lock, so on those VMs it downloads the locked URL (guest VMs have
+network by default), verifies the hash and installs 0.8.2 in place over an existing
+0.8.1 install (`installed_for` compares `lcu_version`) at the next boot or sync.
+Offline consequence: until a new image stages 0.8.2, computer use setup needs
+network once per VM (the earlier install keeps running meanwhile). Guest tests cover
+mismatch, download, install and upgrade of an existing install.
