@@ -25,10 +25,10 @@ pub(super) fn attempt() -> Attempt {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Journal {
+pub(super) struct Journal {
     version: u32,
-    previous: MachineConfigurationRequest,
-    request: MachineConfigurationRequest,
+    pub(super) previous: MachineConfigurationRequest,
+    pub(super) request: MachineConfigurationRequest,
 }
 
 fn path(paths: &RuntimePaths) -> PathBuf {
@@ -39,7 +39,7 @@ fn path(paths: &RuntimePaths) -> PathBuf {
 fn failure(error: impl std::fmt::Display) -> RuntimeError {
     RuntimeError::Unavailable(format!("Could not recover sandbox configuration: {error}"))
 }
-fn load(paths: &RuntimePaths) -> Result<Option<Journal>, RuntimeError> {
+pub(super) fn load(paths: &RuntimePaths) -> Result<Option<Journal>, RuntimeError> {
     let file = match File::open(path(paths)) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -446,6 +446,7 @@ pub(super) fn recover_at_paths(
     let Some(journal) = load(paths)? else {
         return Ok(());
     };
+    let journal = normalize_desktop_intent(paths, journal)?;
     // Drain a surviving child before inspecting state. The caller holds the
     // operation gate (computer scope), which serializes the application-level
     // recovery transaction against all other VM-changing work.
@@ -461,6 +462,29 @@ pub(super) fn recover_at_paths(
         progress,
     )?;
     finish(paths)
+}
+
+/// A journal written by an older Silo has no desktop defaults. Apply the ones an explicit
+/// retry would, and re-save the intent atomically, so replay (which defaults the same way
+/// before `begin` compares with the journal) matches what is saved.
+pub(super) fn normalize_desktop_intent(
+    paths: &RuntimePaths,
+    mut journal: Journal,
+) -> Result<Journal, RuntimeError> {
+    // Machines already committed count as existing: their desktop settings are kept.
+    let mut known = journal.previous.clone();
+    for machine in read_metadata(&paths.metadata)?.machines {
+        if !known.machines.iter().any(|old| old.id() == machine.id()) {
+            known.machines.push(machine);
+        }
+    }
+    let mut request = journal.request.clone();
+    apply_desktop_defaults(paths, &known, &mut request);
+    if request != journal.request {
+        journal.request = request;
+        write(paths, &journal)?;
+    }
+    Ok(journal)
 }
 
 pub(super) fn prepare_retry(

@@ -363,6 +363,18 @@ pub(crate) enum ChangeRejection {
 /// it is replaced in place by `replacement`, or removed when `replacement` is `None`.
 /// Every other machine and the overall order are preserved. Shared by the local and
 /// remote change paths so both apply against fresh state instead of a stale snapshot.
+fn without_built_in(machine: &MachineConfiguration) -> MachineConfiguration {
+    let mut machine = machine.clone();
+    if let MachineConfiguration::Vm {
+        desktop: Some(desktop),
+        ..
+    } = &mut machine
+    {
+        desktop.built_in = false;
+    }
+    machine
+}
+
 pub(crate) fn change_machine(
     machines: &mut Vec<MachineConfiguration>,
     id: &str,
@@ -371,7 +383,9 @@ pub(crate) fn change_machine(
 ) -> Result<(), ChangeRejection> {
     let position = machines.iter().position(|m| m.id() == id);
     let current = position.map(|index| &machines[index]);
-    if current != expected {
+    // `desktop.builtIn` is the owner's decision: a controller from before it existed
+    // never sees it, so it takes no part in the comparison.
+    if current.map(without_built_in).as_ref() != expected.map(without_built_in).as_ref() {
         return Err(ChangeRejection::Stale);
     }
     if replacement.is_some_and(|m| m.id() != id) {
@@ -381,7 +395,23 @@ pub(crate) fn change_machine(
         return Err(ChangeRejection::Missing);
     }
     match (position, replacement) {
-        (Some(index), Some(machine)) => machines[index] = machine.clone(),
+        (Some(index), Some(machine)) => {
+            // ...and the owner's value survives the replacement.
+            let mut machine = machine.clone();
+            if let (
+                MachineConfiguration::Vm {
+                    desktop: Some(next),
+                    ..
+                },
+                Some(was),
+            ) = (
+                &mut machine,
+                crate::desktop::configuration(&machines[index]),
+            ) {
+                next.built_in = was.built_in;
+            }
+            machines[index] = machine;
+        }
         (Some(index), None) => {
             machines.remove(index);
         }
@@ -7881,6 +7911,30 @@ esac
             .unwrap()
             .iter()
             .any(|args| args[0] == "create" || args[0] == "remove"));
+    }
+
+    #[test]
+    fn recovery_normalizes_a_journaled_creation_from_before_the_built_in_desktop() {
+        let _test_state = crate::test_support::global_state();
+        let _v4 = guest_image::pin_test_version("ubuntu-24.04-v4");
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        // A 0.7.4-era journal: an unfinished creation with no desktop settings.
+        let old = request(vec![vm()]);
+        assert!(configuration_recovery::begin(&paths, &old).is_ok());
+        let journal = configuration_recovery::load(&paths).unwrap().unwrap();
+        let journal = configuration_recovery::normalize_desktop_intent(&paths, journal).unwrap();
+        assert!(crate::computer_use::is_built_in(
+            &journal.request.machines[0]
+        ));
+        // Replay defaults the same way and must now match the saved intent.
+        let mut replayed = old.clone();
+        apply_desktop_defaults(&paths, &journal.previous, &mut replayed);
+        configuration_recovery::begin(&paths, &replayed).unwrap();
+        let saved = configuration_recovery::pending_request(&paths)
+            .unwrap()
+            .unwrap();
+        assert_eq!(saved, replayed);
     }
 
     #[test]

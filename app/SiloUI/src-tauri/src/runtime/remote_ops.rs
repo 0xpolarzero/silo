@@ -493,6 +493,45 @@ mod tests {
         assert_eq!(machines, vec![b]);
         assert!(change_machine(&mut machines, "a", Some(&a), None).is_err());
     }
+
+    fn with_desktop(mut machine: MachineConfiguration, built_in: bool) -> MachineConfiguration {
+        if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+            *desktop = Some(crate::desktop::DesktopConfiguration {
+                start_with_sandbox: true,
+                built_in,
+            });
+        }
+        machine
+    }
+
+    #[test]
+    fn an_older_controllers_edit_that_cannot_see_built_in_still_applies() {
+        let _test_state = crate::test_support::global_state();
+        let owned = with_desktop(vm("a"), true);
+        // The older controller parsed the snapshot and lost `builtIn`.
+        let expected = with_desktop(vm("a"), false);
+        let mut edited = with_desktop(vm("a"), false);
+        if let MachineConfiguration::Vm { cpus, .. } = &mut edited {
+            *cpus = 3;
+        }
+        let mut machines = vec![owned.clone()];
+        change_machine(&mut machines, "a", Some(&expected), Some(&edited)).unwrap();
+        assert!(crate::computer_use::is_built_in(&machines[0]));
+        assert!(matches!(
+            &machines[0],
+            MachineConfiguration::Vm { cpus: 3, .. }
+        ));
+        // A real difference is still stale.
+        let mut other = expected.clone();
+        if let MachineConfiguration::Vm { cpus, .. } = &mut other {
+            *cpus = 1;
+        }
+        assert!(change_machine(&mut machines, "a", Some(&other), None).is_err());
+        // Deleting works from the older controller too.
+        let expected = with_desktop(edited, false);
+        change_machine(&mut machines, "a", Some(&expected), None).unwrap();
+        assert!(machines.is_empty());
+    }
 }
 
 pub(crate) fn local_vm_name(app: &AppHandle, id: &str) -> Result<String, String> {
