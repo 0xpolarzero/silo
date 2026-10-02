@@ -48,6 +48,13 @@ above for current behavior and build commands.
 - [Review remediation design notes](SiloUI-REVIEW-DESIGN-NOTES.md): Phase 0 decision records (options checked against upstream tools, recommended decision, implementation outline, owner questions) for the review items marked design.
 - [Codebase review, 2026-09-29](research/codebase-review-2026-09-29.md): ranked findings from a read-only review of the whole app — owner decisions, release blockers, security, data loss, stuck states, performance, UX, CI, tests and code health.
 - Follow-up review records, 2026-10-02: [release tooling](SiloUI-CODE-REVIEW-PASS-3-RELEASE-2026-10-02.md), [security](SiloUI-CODE-REVIEW-PASS-3-SECURITY-2026-10-02.md), [guest bridge](SiloUI-CODE-REVIEW-PASS-3-GUEST-BRIDGE-2026-10-02.md), and [computer use](SiloUI-CODE-REVIEW-PASS-3-COMPUTER-USE-2026-10-02.md). Findings and verification describe the recorded commits; compare HEAD before reopening an item.
+- [Micro-reviews](research/micro-reviews/): focused findings and regression evidence from the fix loop, including [status, storage and updates](research/micro-reviews/fe-status-storage-updates-fixes.md). Each record states its scope and verification limits.
+
+The comprehensive `SiloUI-CODE-REVIEW-2026-10-02.md` report (R-01 through R-26)
+and `SiloUI-CODE-REVIEW-PASS-2-2026-10-02.md` (R-27 through R-37, plus historical
+R-38) remain untracked in the main checkout's `docs/` directory. They are local
+review evidence, unavailable in a fresh clone. Their findings describe their
+recorded revisions; check current code before treating an item as open.
 
 ### Runtime, checkpoints and network
 
@@ -77,9 +84,12 @@ above for current behavior and build commands.
 - [Logging and retention audit](SiloUI-LOGGING-AUDIT.md): current storage limits, log and activity presentation, and retention gaps.
 - [Development and release optimization plan](SiloUI-WORKFLOW-OPTIMIZATION-PLAN.md): measured bottlenecks, ranked changes, and benchmark acceptance gates.
 - [Workflow performance](SiloUI-WORKFLOW-PERFORMANCE.md): implementation, controlled measurements and hosted comparison.
+- [Workflow measurement data](measurements/): recorded dependency-cache and cold, cached and warm workflow samples used by the performance documents.
 - [Native compilation experiment](SiloUI-NATIVE-COMPILATION-EXPERIMENT.md): measured test-target reduction and the compiler-cache acceptance gate.
 - [Frontend test performance](SiloUI-FRONTEND-TEST-PERFORMANCE.md): controlled environment-split measurements.
 - [Frontend startup bundle baseline, 2026-10-02](research/frontend-startup-bundle-2026-10-02.md): O-03 production artifact sizes, heavy modules, and the evidence required before splitting.
+- [Streaming build inputs, 2026-10-02](research/stream-build-inputs-2026-10-02.md): verified file staging, bounded downloads, synthetic memory measurements and regression coverage; full runtime preparation was not measured.
+- [Application launch selection, 2026-10-02](research/application-launch-selection-2026-10-02.md): preserving Flatpak desktop-entry selectors and targeting the selected Ghostty bundle, with resolver and escaping tests rather than live application launches.
 - [Guest image size experiment](SiloUI-GUEST-IMAGE-SIZE.md): measured image-size tradeoffs.
 - [Codex skills and context audit](CODEX-CONTEXT-AUDIT-2026-09-14.md): agent instruction and skill-trigger recommendations for working on this repository.
 - [Jev for natural-language commands](SiloUI-JEV-RESEARCH.md): primary-source findings, command-palette fit, limitations and proposed evaluation.
