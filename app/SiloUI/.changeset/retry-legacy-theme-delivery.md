@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Retry importing a saved legacy theme after a temporary native delivery failure, without requiring another app launch.
+Retry restoring a theme saved by an older Silo version after a temporary settings failure, without requiring an app restart.
