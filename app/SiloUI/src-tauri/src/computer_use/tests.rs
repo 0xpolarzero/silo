@@ -1076,7 +1076,7 @@ fn an_app_that_is_not_there_yet_is_not_a_result_and_the_apply_stays_pending() {
         .unwrap()
         .join()
         .unwrap();
-    assert_eq!(settings(&paths, &id).last, None);
+    assert!(settings(&paths, &id).last.is_none());
     assert_eq!(answer_of(&paths, &id, true)["approvalApply"], "pending");
     // When the app becomes ready the apply runs for real.
     boot_of(test_gate(), &guest, &paths)
@@ -2262,4 +2262,155 @@ fn the_runtimes_exec_timeout_is_a_timed_out_attempt_not_an_unreachable_sandbox()
             "{detail}"
         );
     }
+}
+
+#[test]
+fn only_a_stop_or_restart_key_preempts_the_helper() {
+    let id = vm(40);
+    for (key, preempts) in [
+        (format!("vm:{id}:stop"), true),
+        (format!("vm:{id}:restart"), true),
+        (format!("vm:{id}:start"), false),
+        (format!("vm:{id}:dismiss-error"), false),
+        (format!("vm:{id}:modify"), false),
+        // Another VM's key and a malformed one never name this VM's stop.
+        (format!("vm:{}:stop", vm(41)), false),
+        (format!("vm:{id}stop"), false),
+    ] {
+        assert_eq!(lifecycle_key_preempts(Some(&key), &id), preempts, "{key}");
+    }
+    assert!(
+        lifecycle_key_preempts(None, &id),
+        "an unnamed action is safe-sided"
+    );
+}
+
+fn queue_keyed(
+    gate: &'static runtime::operation_gate::OperationGate,
+    id: &str,
+    action: &str,
+) -> std::thread::JoinHandle<()> {
+    let (id, action) = (id.to_owned(), action.to_owned());
+    std::thread::spawn(move || {
+        drop(
+            gate.kind(runtime::operation_gate::OperationKind::Lifecycle)
+                .acquire(
+                    runtime::operation_gate::Scope::Vm { id: id.clone() },
+                    Some("dev".into()),
+                    &format!("{action} dev"),
+                    Some(format!("vm:{id}:{action}")),
+                )
+                .unwrap(),
+        );
+    })
+}
+
+fn wait_until_queued(
+    gate: &'static runtime::operation_gate::OperationGate,
+    id: &str,
+    count: usize,
+) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while gate.waiting_lifecycle_keys(id).len() < count {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "operation never queued"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_queued_start_or_dismiss_error_does_not_cancel_a_running_apply() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(42);
+    write_machines_of(&paths, &id);
+    set_approval(&paths, &id, Approval::Auto).unwrap();
+    let (guest, entered) = hanging(&id);
+    let gate = test_gate();
+    let handle = apply_with(gate, guest, &paths, "dev", Trigger::Boot).unwrap();
+    entered.recv_timeout(Duration::from_secs(10)).unwrap();
+    let start = queue_keyed(gate, &id, "start");
+    let dismiss = queue_keyed(gate, &id, "dismiss-error");
+    wait_until_queued(gate, &id, 2);
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        !handle.is_finished(),
+        "a harmless operation cancelled the apply"
+    );
+    assert!(settings(&paths, &id).last.is_none());
+    // A stop still ends it promptly, and the queued work then runs.
+    let stop = queue_keyed(gate, &id, "stop");
+    handle.join().unwrap();
+    for thread in [start, dismiss, stop] {
+        thread.join().unwrap();
+    }
+    assert_eq!(
+        settings(&paths, &id).last.unwrap().reason.as_deref(),
+        Some("cancelled")
+    );
+}
+
+#[test]
+fn a_queued_start_or_dismiss_error_does_not_cancel_manual_setup() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(43);
+    write_machines_of(&paths, &id);
+    let (guest, entered) = hanging(&id);
+    let gate = test_gate();
+    let handle = manual_setup(gate, guest, paths.clone(), id.clone());
+    entered.recv_timeout(Duration::from_secs(10)).unwrap();
+    let start = queue_keyed(gate, &id, "start");
+    let dismiss = queue_keyed(gate, &id, "dismiss-error");
+    wait_until_queued(gate, &id, 2);
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        !handle.is_finished(),
+        "a harmless operation cancelled setup"
+    );
+    let restart = queue_keyed(gate, &id, "restart");
+    assert!(matches!(
+        handle.join().unwrap(),
+        Err(RuntimeError::Cancelled { .. })
+    ));
+    for thread in [start, dismiss, restart] {
+        thread.join().unwrap();
+    }
+}
+
+#[test]
+fn an_attempt_whose_marker_cannot_be_saved_does_not_run_the_helper() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(44);
+    set_approval(&paths, &id, Approval::Auto).unwrap();
+    // The settings directory can no longer be written: a file takes its place.
+    let settings_directory = directory_of(&paths);
+    std::fs::remove_dir_all(&settings_directory).unwrap();
+    std::fs::write(&settings_directory, b"not a directory").unwrap();
+    let recorder = Recorder::new("{\"apply\":{\"outcome\":\"applied\",\"reason\":null}}\n");
+    let result = setup_with(
+        test_gate(),
+        &recorder,
+        &paths,
+        &machine_of(&id, true),
+        true,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    );
+    assert!(
+        matches!(result, Err(RuntimeError::Unavailable(_))),
+        "{result:?}"
+    );
+    assert!(
+        recorder.scripts().is_empty(),
+        "the helper ran without a marker"
+    );
+    // Writable again, the next attempt proceeds and the failure text exists for the panel.
+    std::fs::remove_file(&settings_directory).unwrap();
+    set_approval(&paths, &id, Approval::Auto).unwrap();
+    assert!(begin_attempt(&paths, &id, Approval::Auto).is_ok());
+    assert_eq!(read_policy(&paths, &id).unfinished, Some(Approval::Auto));
+    assert!(approval_reason_text("state-not-saved").contains("could not save"));
 }

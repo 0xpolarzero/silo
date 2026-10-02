@@ -284,14 +284,22 @@ fn record_attempt(paths: &RuntimePaths, id: &str, attempt: Attempt) {
     let _ = write_atomic(paths, policy_path(paths, id), &policy);
 }
 
-/// Marks an attempt for `mode` as started and returns the marker it replaced, so an run
-/// that turns out not to be an attempt can put it back (`restore_unfinished`).
-fn begin_attempt(paths: &RuntimePaths, id: &str, mode: Approval) -> Option<Approval> {
+/// Marks an attempt for `mode` as started and returns the marker it replaced, so a run
+/// that turns out not to be an attempt can put it back (`restore_unfinished`). The marker is
+/// what makes an interrupted attempt visible after a crash, so an attempt that cannot save it
+/// (full disk, permissions, an unreadable policy) does not start.
+fn begin_attempt(
+    paths: &RuntimePaths,
+    id: &str,
+    mode: Approval,
+) -> Result<Option<Approval>, RuntimeError> {
     let _lock = lock_policies();
-    let mut policy = read_policy_checked(paths, id)?;
+    let mut policy = read_policy_checked(paths, id).ok_or_else(|| {
+        RuntimeError::Unavailable("Silo could not read the computer-use setting.".into())
+    })?;
     let previous = policy.unfinished.replace(mode);
-    let _ = write_atomic(paths, policy_path(paths, id), &policy);
-    previous
+    write_atomic(paths, policy_path(paths, id), &policy)?;
+    Ok(previous)
 }
 
 fn restore_unfinished(paths: &RuntimePaths, id: &str, previous: Option<Approval>) {
@@ -693,7 +701,24 @@ fn run_attempt(
     force: bool,
     boot: bool,
 ) -> Run {
-    let previous = begin_attempt(paths, id, mode);
+    let previous = match begin_attempt(paths, id, mode) {
+        Ok(previous) => previous,
+        Err(error) => {
+            // Never run the helper without the marker: a crash would leave no trace of the
+            // attempt. The failure is kept when the setting can be written at all.
+            record_attempt(
+                paths,
+                id,
+                Attempt {
+                    mode,
+                    outcome: Outcome::Failed,
+                    at: unix_seconds(),
+                    reason: Some("state-not-saved".into()),
+                },
+            );
+            return Err(error);
+        }
+    };
     let run = run_helper(runner, paths, name, mode, force, boot);
     match attempt_of(mode, &run) {
         Some(attempt) => record_attempt(paths, id, attempt),
@@ -749,11 +774,27 @@ const GATE_WAIT: Duration = Duration::from_secs(10 * 60);
 /// Label of the apply's queue entry; other work is never preempted by an identical one.
 const SYNC_LABEL: &str = "Setting up computer use in";
 
+/// Whether a queued lifecycle operation (its dedup key, `vm:<id>:<action>`) must end the helper's
+/// turn. Only work that takes the VM away does: a stop or restart. A start of a VM that is
+/// already running (the helper only runs in one), a dismissed error and any other action can
+/// wait for the helper to finish. An operation without a key says nothing about its action, so it
+/// takes the safe side and preempts.
+fn lifecycle_key_preempts(key: Option<&str>, id: &str) -> bool {
+    let Some(key) = key else {
+        return true;
+    };
+    key.strip_prefix("vm:")
+        .and_then(|rest| rest.strip_prefix(id))
+        .and_then(|rest| rest.strip_prefix(':'))
+        .is_some_and(|action| matches!(action, "stop" | "restart"))
+}
+
 /// Ends the helper's turn quickly when work that must not wait queues for it: a stop or
 /// delete of the same VM (a delete is computer-wide and names its targets, see
 /// `OperationGate::removing`), or a computer-wide shutdown (Quit, update). Sets the running
 /// operation's cancel flag, which the runtime's polling loops observe by killing the
-/// child. The cut-short apply is recorded as such and tried again at the next boot or
+/// child. A start of the already-running VM, a dismissed error or any other queued
+/// operation waits instead (`lifecycle_key_preempts`). The cut-short apply is recorded as such and tried again at the next boot or
 /// app start; a stopped VM has nothing to apply.
 struct Preempt {
     done: Arc<std::sync::atomic::AtomicBool>,
@@ -781,12 +822,13 @@ impl Preempt {
                                 && match entry.kind {
                                     // Quit or update: computer-wide, whatever VM it names.
                                     OperationKind::Shutdown => true,
-                                    OperationKind::Lifecycle => {
-                                        entry.vm_id.as_deref() == Some(id.as_str())
-                                    }
                                     _ => false,
                                 }
-                        });
+                        })
+                        || gate
+                            .waiting_lifecycle_keys(&id)
+                            .iter()
+                            .any(|key| lifecycle_key_preempts(key.as_deref(), &id));
                     if blocked {
                         token.store(true, Ordering::SeqCst);
                         return;
@@ -1011,6 +1053,7 @@ fn approval_reason_text(code: &str) -> &'static str {
         "cancelled" => "Applying was interrupted. Silo tries again when the sandbox starts.",
         "timed-out" => "Applying took too long. Silo tries again when the sandbox starts.",
         "unreachable" => "Silo could not reach the sandbox to apply it. Silo tries again when the sandbox starts.",
+        "state-not-saved" => "Silo could not save the computer-use setting, so it did not apply it. Free some disk space or check permissions, then choose Set up computer use.",
         "invalid-report" => "The sandbox returned an unreadable answer. Silo tries again when the sandbox starts.",
         "setup-partial" => "Some agents could not be configured. Details are in /var/log/silo-computer-use.log in the sandbox.",
         "mount-missing" | "mount-writable" => reason_text(code),
