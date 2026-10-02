@@ -191,3 +191,21 @@ it("retains sandbox ownership while Retry waits for backend-driven progress", as
   await act(async () => { await vi.advanceTimersByTimeAsync(500) })
   expect(screen.queryByText("Waiting retry")).not.toBeInTheDocument()
 })
+
+
+it.each(["Retry", "Open"])("clears the previous %s action when a toast becomes progress", async (label) => {
+  render(<Host />)
+  const id = `progress-clears-${label}`
+  const action = vi.fn()
+  act(() => {
+    if (label === "Retry") showOperationFailure(id, "Failed before retry", { retry: action, native: false })
+    else showOperationSuccess(id, "Previous success", { action: { label, onClick: action } })
+  })
+  await tick()
+  expect(screen.getByRole("button", { name: label })).toBeInTheDocument()
+  act(() => showOperationProgress(id, { title: "Next operation", cancel: { onCancel: vi.fn() } }))
+  await tick()
+  expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument()
+  expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument()
+  act(() => dismissOperationToast(id))
+})
