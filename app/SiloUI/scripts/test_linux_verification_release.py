@@ -1,11 +1,13 @@
 """Check the workflow and desktop fixture agree without launching a native app."""
 import ast
 import json
+import os
 from pathlib import Path
 import re
 import shlex
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from build_desktop import build
 
@@ -25,6 +27,29 @@ def expression(name):
 
 
 class LinuxVerificationTests(unittest.TestCase):
+    def test_smoke_environment_keeps_home_and_xdg_state_inside_the_fixture(self):
+        fixture = next(node for node in RUN.body if isinstance(node, ast.With))
+        statements = []
+        for statement in fixture.body:
+            if isinstance(statement, ast.With):
+                break
+            statements.append(statement)
+        prelude = compile(ast.Module(body=statements, type_ignores=[]), 'smoke-environment', 'exec')
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as caller:
+            sentinel = Path(caller) / '.silo-dev/desktop-remote/config.json'
+            sentinel.parent.mkdir(parents=True)
+            sentinel.write_text('existing caller state')
+            namespace = {'temporary': temporary, 'os': os, 'Path': Path}
+            with patch.dict(os.environ, {'HOME': caller}):
+                exec(prelude, namespace)
+            environment = namespace['environment']
+            for key in ('HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME'):
+                with self.subTest(key=key):
+                    path = Path(environment[key])
+                    self.assertTrue(path.is_relative_to(temporary), path)
+                    self.assertTrue(path.is_dir(), path)
+            self.assertEqual(sentinel.read_text(), 'existing caller state')
+
     def test_workflow_build_and_fixture_paths_use_the_same_channel(self):
         command = re.search(r'run: npm run desktop:build -- ([^\n]+)', WORKFLOW).group(1)
         with tempfile.TemporaryDirectory() as temporary:
