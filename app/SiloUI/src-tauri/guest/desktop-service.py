@@ -765,7 +765,9 @@ def prepare_selkies_runtime(account):
 
 def start_selkies():
     if supervisor():
-        return
+        if selkies_session_state(selkies_state(), True) != 'failed':
+            return
+        stop()
     account = pwd.getpwnam(USER)
     if not SELKIES_EXECUTABLE.is_file() or not os.access(SELKIES_EXECUTABLE, os.X_OK):
         raise RuntimeError('Installed Selkies recipe is incomplete; run the explicit streamer update')
@@ -857,6 +859,12 @@ def supervise_selkies():
             restart_requested_flag = False
             return requested
 
+        def should_stop():
+            # Reap exited session children even while only the stream is retried.
+            for child in session_children:
+                child.poll()
+            return stopping
+
         signal.signal(signal.SIGTERM, terminate)
         signal.signal(signal.SIGINT, terminate)
         signal.signal(signal.SIGUSR1, restart_stream)
@@ -884,7 +892,7 @@ def supervise_selkies():
             state['sessionState'] = 'running'
             write_selkies_state(state)
             supervise_selkies_stream(state, account, environment,
-                                     lambda: stopping, should_restart_stream)
+                                     should_stop, should_restart_stream)
         except Exception as error:
             failed = True
             (RUN / 'failed').write_text('Desktop service failed; inspect /var/log/silo-desktop.log\n')
