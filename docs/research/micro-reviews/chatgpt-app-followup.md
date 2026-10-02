@@ -41,3 +41,13 @@ Scope: the native ChatGPT app implementation and adjacent computer-use state int
 - **Regression:** `backs off malformed remote download status and restores polling after recovery` failed because a second request arrived before the first backoff interval. It verifies every delay through the 30-second cap, then recovery and normal polling.
 - **Fix:** Apply the existing failed-read backoff to unreadable response payloads.
 - **Verification:** The red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/malformed-status-red.log`; both focused frontend files passed, 130 tests total, and Node 24 typecheck and lint passed. Verification uses deterministic frontend fixtures only.
+
+## CHATGPT-APP-8: Busy storage skips validation of the shared mount folder
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/chatgpt_app.rs`, `ensure_published_dir_nowait`.
+- **Trigger:** The storage lock is held and `published` is a symlink. The nonblocking path skips `open_storage` and canonicalizes the symlink without the directory validation performed by the normal path.
+- **Consequence:** VM mount preparation accepts an outside folder instead of rejecting the invalid shared ChatGPT directory. Lock contention changes the folder validation policy.
+- **Regression:** `a_busy_storage_lock_does_not_allow_a_symlinked_mount_folder` failed before the fix. It holds the real storage lock, confirms that an ordinary mount resolves without waiting, replaces the folder with a symlink, and checks rejection without touching the target.
+- **Fix:** Open the published subdirectory without following symlinks and validate ownership even when preparation is skipped for lock contention.
+- **Verification:** Red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/busy-mount-red.log`; the actual download/storage source and hardening/HTTP regressions passed together in the disposable harness, 33 tests total. Rust formatting, Node 24 typecheck, and lint passed. Temporary directories only, with no app or VM launch.
