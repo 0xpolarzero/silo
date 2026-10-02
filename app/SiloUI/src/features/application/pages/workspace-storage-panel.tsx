@@ -61,17 +61,21 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
     if (reclaimSpace) showOperationProgress(toastId, { title: 'Reclaiming unused space', step: 'Your files stay available' })
     try {
       const value = await (reclaimSpace ? reclaim! : read)(workspaceId)
-      if (requests.current.generation !== request) return
-      setStorage(value)
-      dismissOperationToast(`storage-read:${workspaceId}`)
+      const current = requests.current.generation === request
+      if (current) {
+        setStorage(value)
+        dismissOperationToast(`storage-read:${workspaceId}`)
+      }
+      // The operation's notification outlives the panel that started it.
       if (reclaimSpace) {
-        if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: value.lastError, retry: () => void latestLoad.current?.(true) })
+        if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: value.lastError, retry: current ? () => void latestLoad.current?.(true) : undefined })
         else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: `Freed ${where}.`, persist: true, noticeSandbox })
       }
     } catch (cause) {
-      if (requests.current.generation === request) {
-        if (reclaimSpace) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: errorMessage(cause), retry: () => void latestLoad.current?.(true) })
-        else showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
+      const current = requests.current.generation === request
+      if (reclaimSpace) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: errorMessage(cause), retry: current ? () => void latestLoad.current?.(true) : undefined })
+      if (current) {
+        if (!reclaimSpace) showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
         if (reclaimSpace) {
           try {
             const value = await read(workspaceId)
