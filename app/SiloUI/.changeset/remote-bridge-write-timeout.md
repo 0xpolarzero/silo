@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Stop stalled remote bridge request writes when the receiving Silo instance no longer reads its connection.
+Report a timeout when the receiving Silo instance stops accepting a remote request.
