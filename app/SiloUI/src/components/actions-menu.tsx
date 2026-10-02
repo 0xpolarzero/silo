@@ -73,7 +73,7 @@ export function ActionsMenu({ label, items, onClose, disabled = false, ref, popo
       })}
     </DropdownMenu.Content></DropdownMenu.Portal>
     </DropdownMenu.Root>
-    <PopoverContent aria-label={panelAction?.accessibleLabel ?? panelAction?.label ?? label} align="end" className="w-64 p-3 text-xs" onOpenAutoFocus={() => { interactedOutside.current = false }} onInteractOutside={() => { interactedOutside.current = true }} onCloseAutoFocus={event => { event.preventDefault(); if (!interactedOutside.current) trigger.current?.focus(); interactedOutside.current = false }}>
+    <PopoverContent aria-label={panelAction?.accessibleLabel ?? panelAction?.label ?? label} align="end" className="w-64 p-3 text-xs" onOpenAutoFocus={() => { interactedOutside.current = false }} onInteractOutside={() => { interactedOutside.current = true }} onCloseAutoFocus={event => { event.preventDefault(); if (!interactedOutside.current) trigger.current?.focus(); interactedOutside.current = false }} onEscapeKeyDown={event => { if (event.isComposing) event.preventDefault() }}>
       {render?.(close)}
     </PopoverContent>
   </Popover>

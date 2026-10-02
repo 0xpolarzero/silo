@@ -1,9 +1,28 @@
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { ActionsMenu } from "./actions-menu"
-import { ConfirmBody } from "./confirm-popover"
+import { ConfirmBody, FormBody } from "./confirm-popover"
 import { TooltipProvider } from "./ui/tooltip"
+
+it("retains a menu form when Escape cancels an IME candidate", async () => {
+  const user = userEvent.setup()
+  render(<TooltipProvider><ActionsMenu label="More actions" items={[{ label: "Fork", popover: "fork" }]}
+    popovers={{ fork: close => <FormBody title="Fork dev" confirmLabel="Fork" fields={<input aria-label="New name" defaultValue="draft" />} onSubmit={vi.fn()} onClose={close} /> }} />
+  </TooltipProvider>)
+  const trigger = screen.getByRole("button", { name: "More actions" })
+  await user.click(trigger)
+  await user.click(screen.getByRole("menuitem", { name: "Fork" }))
+  const input = screen.getByRole("textbox", { name: "New name" })
+  await waitFor(() => expect(input).toHaveFocus())
+  fireEvent.keyDown(input, { key: "Escape", isComposing: true })
+  expect(screen.getByRole("dialog", { name: "Fork" })).toBeVisible()
+  expect(input).toHaveValue("draft")
+  expect(input).toHaveFocus()
+  await user.keyboard("{Escape}")
+  expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+  await waitFor(() => expect(trigger).toHaveFocus())
+})
 
 it.each(["menu", "palette"] as const)("names a confirmation opened through the %s", async source => {
   const user = userEvent.setup()
