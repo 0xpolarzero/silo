@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Flush SSH connection-file directory changes before reporting a successful editor configuration update.
+Save SSH connection files to disk before confirming an editor configuration update.
