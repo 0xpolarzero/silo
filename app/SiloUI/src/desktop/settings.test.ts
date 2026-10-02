@@ -47,6 +47,20 @@ afterEach(() => {
 })
 
 describe("native settings transport", () => {
+  it.each(["cpus", "maxCPUs"])("does not restore a saved %s count the native command cannot deserialize", async field => {
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    const machine = { ...fixtureMachineDefaults[0], cpus: 1, maxCPUs: 255, [field]: 256 }
+    if (field === "cpus") machine.maxCPUs = 256
+    native.invoke.mockResolvedValue({ ...snapshot(1, { theme: "dark" }), onboardingDraft: {
+      currentStep: "review", machines: [machine], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {},
+    } })
+    const settings = store()
+    await settings.initialize()
+    expect(settings.getSnapshot().onboardingDraft).toBeNull()
+    expect(settings.getSnapshot().settings.theme).toBe("dark")
+    expect(settings.getSnapshot().saveError).toBeNull()
+  })
+
   it("imports a saved legacy theme only when absent, keeping its original storage key", async () => {
     localStorage.setItem("silo-theme", "dark")
     native.invoke.mockImplementation(async (command: string) => command === "import_legacy_theme"
