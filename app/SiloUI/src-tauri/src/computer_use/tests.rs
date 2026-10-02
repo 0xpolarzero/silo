@@ -346,7 +346,7 @@ fn forks_inherit_only_the_approval_and_deleted_vms_are_forgotten() {
     assert_eq!((inherited.applied, inherited.last), (None, None));
     assert_eq!(inherited.known, None);
     assert!(read_policy(&paths, child).needs_apply());
-    forget(&paths, VM_ID);
+    forget(&paths, VM_ID).unwrap();
     assert_eq!(settings(&paths, VM_ID), Settings::default());
     assert!(policy_path(&paths, child).unwrap().exists());
 }

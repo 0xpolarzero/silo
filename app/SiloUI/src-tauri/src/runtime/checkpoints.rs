@@ -799,7 +799,7 @@ pub(super) fn view_pending(record: &Record, name: &str) -> Option<PendingRestore
 }
 
 pub(crate) fn forget_removed(paths: &RuntimePaths, id: &str) -> Result<(), RuntimeError> {
-    crate::computer_use::forget(paths, id);
+    crate::computer_use::forget(paths, id)?;
     let target = path(paths, id);
     match fs::remove_file(target) {
         Ok(()) => File::open(directory(paths))
@@ -928,7 +928,7 @@ pub(crate) fn import_pending_restore(
     // An import (and so a transfer) starts from this computer's default approval (ask) with
     // no attempt known, whatever policy a VM of this id had here: its first boot applies it
     // over the configuration the imported disk carries.
-    crate::computer_use::forget(paths, workspace_id);
+    crate::computer_use::forget(paths, workspace_id)?;
     let mut record = Record::default();
     record.snapshot_group = Some(source_group.to_owned());
     record.pending_checkpoint_restore = Some(PendingRestore {
@@ -2966,6 +2966,30 @@ mod tests {
         );
         // A bare word that is neither a backup member nor a checkpoint id is rejected.
         assert!(import_pending_restore(&paths, ID, group, "imported-member").is_err());
+    }
+
+    #[test]
+    fn failed_computer_use_cleanup_keeps_checkpoint_history_for_retry() {
+        let _test_state = crate::test_support::global_state();
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        save(&paths, ID, &Record::default()).unwrap();
+        crate::computer_use::set_approval(&paths, ID, crate::computer_use::Approval::Auto).unwrap();
+        let policy_directory = paths.metadata.with_file_name("computer-use");
+        fs::set_permissions(&policy_directory, fs::Permissions::from_mode(0o500)).unwrap();
+        let result = forget_removed(&paths, ID);
+        fs::set_permissions(&policy_directory, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result.is_err(), "cleanup reported success: {result:?}");
+        assert!(path(&paths, ID).is_file(), "cleanup lost its retry record");
+        assert_eq!(
+            crate::computer_use::settings(&paths, ID).approval,
+            crate::computer_use::Approval::Auto
+        );
+        forget_removed(&paths, ID).unwrap();
+        assert!(!path(&paths, ID).exists());
+        assert!(!policy_directory.join(format!("{ID}.json")).exists());
+        forget_removed(&paths, ID).unwrap();
     }
 
     #[test]
