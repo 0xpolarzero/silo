@@ -346,6 +346,37 @@ class Apply(Guest):
         self.setup_output = 'Codex: MCP failed: boom\n'
         self.assertEqual(cu.apply('ask')['apply']['outcome'], 'failed')
 
+    def test_an_unrelated_phase_failing_keeps_the_explicit_approval_success(self):
+        # LCU v0.8.1 prints a failed cleanup and carries on with the registration and approval.
+        self.setup_code = 1
+        self.setup_output = ('Codex: old skill cleanup failed: skill installer exited 1: EACCES\n'
+                             'Codex: MCP registered.\nCodex: approval auto: added.\n'
+                             'Error: 1 registration step(s) failed. Completed steps remain installed.\n')
+        result = cu.apply('auto')
+        self.assertEqual(result['apply'], {'approval': 'auto', 'outcome': 'applied', 'reason': None})
+        self.assertEqual(result['agents'], ['codex'])
+        # The readiness check still ran.
+        self.assertTrue(any(argv[0].endswith('lcu-session') for argv, *_ in self.commands))
+        self.assertEqual(self.receipt()['approvalOutcome'], 'applied')
+
+    def test_a_failure_after_the_configuration_was_saved_keeps_the_approval_success(self):
+        # `lcu setup` exits 2 when its own desktop readiness check fails after saving.
+        self.setup_code = 2
+        self.setup_output = ('Claude Code: MCP registered.\nClaude Code: approval ask: removed.\n'
+                             'Codex: MCP registered.\nCodex: approval ask: removed.\n')
+        self.assertEqual(cu.apply('ask')['apply']['outcome'], 'applied')
+
+    def test_a_cleanup_failure_beside_a_real_failure_is_partial_or_failed_by_what_was_configured(self):
+        self.setup_code = 1
+        self.setup_output = ('Claude Code: old skill cleanup failed: boom\nClaude Code: MCP registered.\n'
+                             'Claude Code: approval auto: added.\n'
+                             'Codex: MCP failed: installer exited 1\n')
+        result = cu.apply('auto')
+        self.assertEqual(result['apply'], {'approval': 'auto', 'outcome': 'partial', 'reason': 'setup-partial'})
+        self.assertTrue(any(argv[0].endswith('lcu-session') for argv, *_ in self.commands))
+        self.setup_output = 'Codex: old skill cleanup failed: boom\nCodex: MCP failed: installer exited 1\n'
+        self.assertEqual(cu.apply('auto')['apply']['outcome'], 'failed')
+
     def test_nothing_configured_and_a_failing_exit_is_failed(self):
         self.setup_code = 2
         self.setup_output = 'No agents detected\n'
