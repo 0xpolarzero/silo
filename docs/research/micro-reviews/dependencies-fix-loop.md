@@ -25,3 +25,13 @@ Scope: `app/SiloUI/src-tauri/src/dependencies.rs`. The deadline fix also updates
 The deadline process regressions failed before implementation; the oversized-file and directory regressions also failed before their fix. Exact-source Rust harnesses under `/tmp/silo-codex-target/verification/dependencies/` passed 22 tests, including all dependency-module tests and three guest-image validation tests. These harnesses omit the unchanged Tauri command wrapper and link the shared compiled dependencies; they do not qualify the complete native application build.
 
 The dependency-store Vitest file passed 11 tests. Node 24.11.1 typecheck, touched-file lint, and Cargo formatting checks passed for the first fix. Formatting also passed after the second fix. The focused Cargo invocation used explicit synthetic GitHub configuration and was stopped after remaining queued on the shared artifact-directory lock; no Cargo test result is claimed. The FIFO child filter derives its namespace from the test module and its parent verifies that exactly one child test passed; this also passed with the harness nested under the real dependency-module namespace. All process/file fixtures were disposable; no app, VM, credentials, or production data was used.
+
+
+## DEPENDENCIES-3 · P2 · Guest-image FIFOs bypass preflight deadlines and block preparation
+
+- **File:line:** `app/SiloUI/src-tauri/src/guest_image.rs:109` and `:136` in the reviewed source, blocking opens of `manifest.json` and `image.tar.gz`; `unpack` reopens the archive at line 212.
+- **Trigger:** Replace either bundled guest-image input with a FIFO without a writer. A valid ordinary manifest accompanies the archive case.
+- **Consequence:** Preflight never reaches the deadline checks after `File::open`; guest-image preparation also holds `IMPORT_LOCK` while blocked, preventing later preparations from progressing.
+- **Fix:** Open bundled inputs nonblocking, validate the opened descriptor as a regular file, and use the same guard when decompression reopens the archive.
+- **Regression:** Two parent-bounded child-process tests exercise the actual MicroSandbox check with manifest/archive FIFOs. Both failed with `Timeout` before the fix; each child must reject the input as bundle damage and report exactly one passing test after the fix. Existing valid-image and corruption fixtures still run.
+- **Verification:** Rust fixtures use exact dependency/guest-validator source in the shared-target harness. The native Cargo run is queued with synthetic GitHub configuration; no app or VM launch is involved.

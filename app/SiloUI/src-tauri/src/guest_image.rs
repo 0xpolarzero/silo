@@ -77,6 +77,29 @@ fn valid_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
+fn open_bundle_file(path: &Path) -> Result<File, String> {
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| "Silo's bundled VM image is missing. Reinstall Silo and retry.")?;
+    if !file
+        .metadata()
+        .map_err(|_| "Silo's VM image could not be read.")?
+        .is_file()
+    {
+        return Err(
+            "Silo's bundled VM image input is not a regular file. Reinstall Silo and retry.".into(),
+        );
+    }
+    Ok(file)
+}
+
 /// Inspect bundled resources only. This never creates/imports a runtime cache.
 #[cfg(test)]
 pub(crate) fn validate_bundle(resource_dir: &Path) -> Result<GuestImageManifest, String> {
@@ -106,8 +129,7 @@ fn validate_directory_until(
         }
     };
     check_deadline()?;
-    let file = File::open(directory.join("manifest.json"))
-        .map_err(|_| "Silo's bundled VM image is missing. Reinstall Silo and retry.")?;
+    let file = open_bundle_file(&directory.join("manifest.json"))?;
     let mut bytes = Vec::new();
     file.take(64 * 1024 + 1)
         .read_to_end(&mut bytes)
@@ -133,8 +155,7 @@ fn validate_directory_until(
     {
         return Err("Silo's VM image information is invalid. Reinstall Silo.".into());
     }
-    let mut archive = File::open(directory.join("image.tar.gz"))
-        .map_err(|_| "Silo's bundled VM image is missing. Reinstall Silo and retry.")?;
+    let mut archive = open_bundle_file(&directory.join("image.tar.gz"))?;
     if archive
         .metadata()
         .map_err(|_| "Silo's VM image could not be read.")?
@@ -209,7 +230,7 @@ fn check_space(directory: &Path, required: u64) -> Result<(), String> {
 }
 
 fn unpack(archive: &Path, output: &mut File, expected_bytes: u64) -> Result<(), String> {
-    let input = File::open(archive).map_err(|_| "Silo's bundled VM image could not be opened.")?;
+    let input = open_bundle_file(archive)?;
     let mut decoder = GzDecoder::new(input).take(expected_bytes + 1);
     let written = std::io::copy(&mut decoder, output).map_err(|_| {
         "Silo's bundled VM image could not be unpacked. Check disk space and retry."
