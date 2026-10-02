@@ -23,12 +23,23 @@ remain readable. A lifecycle regression checks the persisted journal and both
 activity and sandbox-failure IPC data. The retained-reader regression checks
 first pages, pagination, context, and JSONL export.
 
+## LOG-SECRETS-3: Signed and encoded credential queries reach logs
+
+Azure SAS `sig` query parameters did not match assignment markers, and URL
+query names such as `%74oken` bypassed matching before decoding. The unchanged
+retained reader returned a synthetic query token. The existing parser now
+decodes query names before matching assignment markers and recognizes cloud
+signature parameters. Public query parameters remain readable. The same
+reader/export regression covers the affected URLs, and Unicode prefixes cannot
+split a character while extracting a URL. Primary cloud-provider
+references are recorded in the log policy document.
+
 ## Verification
 
 Before/after regressions executed extracted, unchanged production filter,
 retained-reader, and export-writer functions against the shared compiled Rust
-dependencies. Both defects failed before correction. The final extracted-source
-run passed all 28 retained-reader/export tests and five filter tests. Native
+dependencies. All three defects failed before correction. The final extracted-source
+run passed all 30 retained-reader/export tests and five filter tests. Native
 Cargo test jobs use synthetic GitHub configuration and the shared target; they
 were queued on its lock at fold time. Formatting, Node 24 typecheck, and lint
 passed. Local evidence is ignored under

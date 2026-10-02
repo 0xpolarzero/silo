@@ -1284,6 +1284,9 @@ mod tests {
             "client --api-key synthetic-key",
             "client --client-secret synthetic-secret",
             "client --access_token synthetic-token",
+            "download https://example.test/blob?sv=2026-02-06&sp=r&sig=synthetic-signature",
+            "fetch https://example.test/?%74oken=synthetic-query-token",
+            "fetch https://example.test/?api%5Fkey=synthetic-query-key",
         ]
         .iter()
         .enumerate()
