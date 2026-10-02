@@ -5,6 +5,7 @@ import { toast } from "sonner"
 import { Toaster } from "@/components/ui/sonner"
 import { SettingsProvider } from "@/features/preferences/settings-store"
 import { NetworkPage } from "./network-page"
+import { remoteWorkspaceTarget } from "../model/remote-computers"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions, NetworkState } from "../model/application-source"
 afterEach(() => { toast.dismiss() })
@@ -211,4 +212,26 @@ it("disables adding ports with a tooltip while the sandbox is stopped", async ()
   expect(screen.getByRole("button",{name:"Add port"})).toBeDisabled()
   await user.hover(screen.getByRole("button",{name:"Add port"}).parentElement!)
   expect(await screen.findAllByText(`Start ${stopped[0].machine.name} to add ports`)).not.toHaveLength(0)
+})
+
+
+it.each(["local", "remote"])("isolates %s discovery errors from a healthy same-named sandbox on another computer", async failing => {
+  const local = workspaces[0]
+  const target = remoteWorkspaceTarget("office", local.machine.id)
+  const remote = { ...local, machine: { ...local.machine, id: target }, computer: { id: "office", name: "Office Mac", address: "user@office", connected: true, vmId: local.machine.id } }
+  const state: NetworkState = { workspaces: [
+    { workspace: "dev", error: failing === "local" ? "Local discovery failed" : null, ports: [network.workspaces[0].ports[0]] },
+    { workspace: target, error: failing === "remote" ? "Remote discovery failed" : null, ports: [{ ...network.workspaces[0].ports[0], hostPort: 44000 }] },
+  ] }
+  const actions = { refreshNetwork: vi.fn(async () => {}), openNetworkPort: vi.fn(async () => {}) } as unknown as ApplicationActions
+  const user = userEvent.setup()
+  render(<NetworkPage workspaces={[local, remote]} browser="Firefox" network={state} error={failing === "local" ? "Could not check network services." : null} actions={actions} active />)
+  const healthy = screen.getByRole("row", { name: new RegExp(failing === "remote" ? "43000" : "44000") })
+  const failed = screen.getByRole("row", { name: new RegExp(failing === "remote" ? "44000" : "43000") })
+  expect(within(healthy).getByText("Reachable")).toBeVisible()
+  expect(within(failed).getByText("Unknown")).toBeVisible()
+  expect(within(failed).queryByRole("button", { name: "Open port 3000 in browser" })).not.toBeInTheDocument()
+  await user.click(within(healthy).getByRole("button", { name: "Open port 3000 in browser" }))
+  expect(actions.openNetworkPort).toHaveBeenCalledWith(failing === "remote" ? "dev" : target, 3000)
+  if (failing === "remote") expect(screen.getByRole("alert")).toHaveTextContent("dev (Office Mac): Remote discovery failed")
 })
