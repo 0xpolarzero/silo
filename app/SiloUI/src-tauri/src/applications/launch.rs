@@ -92,6 +92,9 @@ pub(crate) fn linux_editor_command(
         } else {
             find_program(token).ok_or("The selected editor is unavailable.")?
         };
+        if !executable_file(&program) {
+            return Err("The selected editor is unavailable.".into());
+        }
         return Ok(EditorCommand {
             program,
             args: args
@@ -122,6 +125,9 @@ pub(crate) fn linux_editor_command(
         }
         _ => return Err(UNSUPPORTED_EDITOR.into()),
     };
+    if !executable_file(&program) {
+        return Err("The selected editor is unavailable.".into());
+    }
     Ok(EditorCommand {
         program,
         args: argv[index + 1..].iter().map(OsString::from).collect(),
@@ -290,11 +296,31 @@ mod tests {
     }
 
     #[test]
+    fn env_wrapped_editors_reject_missing_or_non_executable_launchers() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("code");
+        let argv = vec![
+            "/usr/bin/env".into(),
+            "A=b".into(),
+            program.to_str().unwrap().into(),
+        ];
+        assert!(linux_editor_command(&argv, None, &nowhere).is_err());
+        std::fs::write(&program, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(linux_editor_command(&argv, None, &nowhere).is_err());
+        executable(&program);
+        assert!(linux_editor_command(&argv, None, &nowhere).is_ok());
+    }
+
+    #[test]
     fn flatpak_editor_preserves_the_selected_installation_and_command() {
-        let find = |_: &str| Some(PathBuf::from("/usr/bin/flatpak"));
+        let directory = tempfile::tempdir().unwrap();
+        let launcher = directory.path().join("flatpak");
+        executable(&launcher);
+        let find = |_: &str| Some(launcher.clone());
         for branch in ["stable", "beta"] {
             let argv = tokens(&format!(
-                "/usr/bin/flatpak run --user --branch={branch} --arch=aarch64 --command=code --file-forwarding com.visualstudio.code @@ %F @@"
+                "{} run --user --branch={branch} --arch=aarch64 --command=code --file-forwarding com.visualstudio.code @@ %F @@", launcher.display()
             ));
             let command =
                 linux_editor_command(&argv, Some("com.visualstudio.code"), &find).unwrap();
@@ -315,7 +341,11 @@ mod tests {
 
     #[test]
     fn desktop_file_separators_do_not_hide_silos_editor_options() {
-        let find = |name: &str| Some(PathBuf::from("/usr/bin").join(name));
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["code", "flatpak"] {
+            executable(&directory.path().join(name));
+        }
+        let find = |name: &str| Some(directory.path().join(name));
         let native = linux_editor_command(&tokens("code -- %F"), None, &find).unwrap();
         assert!(native.args.is_empty());
         let flatpak = linux_editor_command(
@@ -358,20 +388,24 @@ mod tests {
 
     #[test]
     fn snap_flatpak_and_zed_tarball_entries_are_launchable() {
-        let snap = tokens("env BAMF_DESKTOP_FILE_HINT=x /snap/bin/code --force-user-env %F");
+        let directory = tempfile::tempdir().unwrap();
+        let snap_program = directory.path().join("snap/bin/code");
+        executable(&snap_program);
+        let snap = tokens(&format!(
+            "env BAMF_DESKTOP_FILE_HINT=x {} --force-user-env %F",
+            snap_program.display()
+        ));
         let command = linux_editor_command(&snap, None, &nowhere).unwrap();
         assert_eq!(
             (command.program, command.args, command.zed),
-            (
-                PathBuf::from("/snap/bin/code"),
-                vec!["--force-user-env".into()],
-                false
-            )
+            (snap_program, vec!["--force-user-env".into()], false)
         );
 
-        let flatpak = |_: &str| Some(PathBuf::from("/usr/bin/flatpak"));
+        let launcher = directory.path().join("flatpak");
+        executable(&launcher);
+        let flatpak = |_: &str| Some(launcher.clone());
         let command = linux_editor_command(
-            &tokens("/usr/bin/flatpak run dev.zed.Zed %U"),
+            &tokens(&format!("{} run dev.zed.Zed %U", launcher.display())),
             Some("dev.zed.Zed"),
             &flatpak,
         )
@@ -379,7 +413,7 @@ mod tests {
         assert_eq!(
             command,
             EditorCommand {
-                program: "/usr/bin/flatpak".into(),
+                program: launcher.clone(),
                 args: vec!["run".into(), "dev.zed.Zed".into()],
                 zed: true
             }
