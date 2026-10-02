@@ -7,6 +7,20 @@ import type { GitHubAccessEditorProps } from "@/features/github/components/githu
 const props: GitHubAccessEditorProps = { workspaces: [], connectionState: "connected", repositoryOptions: [], workspaceSelections: {}, workspaceIdentities: {}, currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: vi.fn(), onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn() }
 
 describe("GitHub setup feedback", () => {
+  it.each([
+    [0, 83_999, "01:23"],
+    [1000, 84_999, "01:23"],
+    [1000, 0, "00:00"],
+    [0, 0, "00:00"],
+    [undefined, 83_999, "00:00"],
+  ])("formats elapsed time from %s to %s as %s", (start, end, expected) => {
+    const event = { schemaVersion: 1, type: "progress", requestId: "github", phase: "github", message: "Applying GitHub settings", safeForDisplay: true } as const
+    render(<GitHubStep {...props} queueItems={[
+      { id: "githubRun", label: "Save GitHub", status: "succeeded" },
+      { id: "githubVerify", label: "Verify GitHub", status: "succeeded" },
+    ]} activityEvents={[{ ...event, timestamp: start }, { ...event, timestamp: end }]} />)
+    expect(screen.getByLabelText("Elapsed time").textContent).toBe(expected)
+  })
   it("lets browser authorization be reopened or cancelled while connecting", async () => {
     const user = userEvent.setup()
     const onCancelConnection = vi.fn()

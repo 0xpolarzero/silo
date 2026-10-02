@@ -1,10 +1,10 @@
 # Silo third code review pass: release and CI, 2026-10-02
 
-This pass reviews release tooling, workflow gates, updater artifacts, release documentation, and development/production channel separation. Findings are added as their evidence is confirmed; an empty ledger is not a release-readiness claim.
+This pass reviews release tooling, workflow gates, updater artifacts, release documentation, and development/production channel separation. The ledger records eleven new findings: ten P2 and one P3. Ten are fixed or corrected and folded; RL-06 remains open because its correction requires a qualified macOS 14 execution environment. These results do not establish release readiness.
 
 ## Revision and scope
 
-Initial revision: `f94219259d081ae3297887d0a5660faac22f2d3e`, branch `codex/review-release-ci`. Each finding records its confirmation and subsequent fix separately because integration changes during this pass.
+Initial revision: `f94219259d081ae3297887d0a5660faac22f2d3e`, branch `codex/review-release-ci`. Each finding records its confirmation and subsequent fix separately because integration changes during this pass. Final code-verification cutoff: `8e497736`. Later integration merges are recorded by Git and do not extend this verification claim. RL-07, RL-08 and RL-10 came from concurrent release-script review commits folded into integration; their original evidence is attributed below, and their regressions were rerun here.
 
 The first two reports were read from the main checkout before review. This ledger excludes R-01 through R-38 and previously recorded improvement opportunities, including APT retention (R-13), website/demo CI coverage (R-14), LFS compiler identity (R-20), and independent draft-asset authentication (O-11).
 
@@ -24,11 +24,11 @@ No release was published or signed, and no repository or remote release tag was 
 | RL-04 | P2 | Direct publication bypasses the explicit stable-release opt-in | Fixed and folded: `5b18ec21` |
 | RL-05 | P3 | Release guide omits the implemented in-app Debian update | Corrected and folded: `17edafc6` |
 | RL-06 | P2 | Required minimum-macOS gate uses a runner with imminent brownouts | Open; replacement qualification required |
-| RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed: `abae62fe` |
-| RL-08 | P2 | Failed license staging replaces the MicroSandbox sidecar without its manifest | Fixed; regression passes |
+| RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed and folded: `abae62fe` |
+| RL-08 | P2 | Failed license staging replaces the MicroSandbox sidecar without its manifest | Fixed and folded: `3329b2b3` |
 | RL-09 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Fixed and folded: `028ce994` |
-| RL-10 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed: `8102c670` |
-| RL-11 | P2 | Lifecycle guest probes use the production alias for Dev | Confirmed; fix pending |
+| RL-10 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed and folded: `8102c670` |
+| RL-11 | P2 | Lifecycle guest probes use the production alias for Dev | Fixed and folded: `f7cec265`, `b64a60e5` |
 
 ## Detailed findings
 
@@ -62,7 +62,7 @@ No release was published or signed, and no repository or remote release tag was 
 
 **Rejecting test.** Run the actual build-wrapper seam with the workflow's build arguments, resolve its configuration identifier, and evaluate the harness's fixture path expressions with the workflow environment. Settings and autostart paths must match that identifier's channel. Then qualify the full WebDriver smoke on Linux; deterministic path checks alone do not prove native GUI behavior.
 
-**Status.** Fixed and folded in `5a14fe19`. The new path regression failed before the fix; both path tests, all eight wrapper tests and both workflow-pin checks pass. These tests execute the actual wrapper and extracted harness expressions, not WebDriver. This is internal verification tooling and needs no application changeset.
+**Status.** Fixed and folded in `5a14fe19`. The new path regression failed before the fix; both path tests, all eight wrapper tests and both workflow-pin checks pass. These tests execute the actual wrapper and extracted harness expressions, not WebDriver. This is internal verification tooling and needs no application changeset. The local default-binary path is also a debug build: follow-up `b64a60e5` defaults the smoke fixture to Dev and forwards that identifier to the optional GNOME adapter. Explicit production fixtures retain their released paths.
 
 ### RL-03 Desktop smoke isolation leaves HOME-dependent state live
 
@@ -110,6 +110,8 @@ No release was published or signed, and no repository or remote release tag was 
 
 **Rejecting test.** Review the table against the package-kind branches in `install_update`: macOS uses the signed app archive, AppImage uses signed replacement, and Debian uses authenticated APT. Keep all three represented. This is a prose correction; no implementation-mirroring test was added and no package was installed.
 
+**Status.** Corrected and folded in `17edafc6`; no application changeset is needed.
+
 ### RL-06 Required minimum-macOS gate uses a runner with imminent brownouts
 
 **P2; scheduled availability failure, not an observed hosted run.** Confirmed at `071ca883` against the primary runner announcement on 2026-10-02. Locations: [release.yml](../.github/workflows/release.yml), `macos-minimum-constraints` and the draft job's required dependencies; [SiloUI-RELEASES.md](SiloUI-RELEASES.md), minimum-version runner qualification.
@@ -124,40 +126,40 @@ No release was published or signed, and no repository or remote release tag was 
 
 **Rejecting test.** Run the exact constraint suite on the replacement's verified macOS 14 environment and attach its OS identity and results to a complete draft-verification run. Inject a gate failure and confirm draft creation stays blocked. A source assertion that merely changes `runs-on` or a newer-OS passing run rejects neither failure mode.
 
-**Status.** Left open because no qualified replacement runner or macOS 14 host was provided, and the shared task instructions prohibit app launches and network-heavy builds. Provisioning and qualifying a runner is not a small obvious source fix. No CI/environment configuration was changed to bypass this gate.
+**Status.** Left open because no qualified replacement runner or macOS 14 host was provided, and the shared task instructions prohibit app launches and network-heavy builds. Provisioning and qualifying a runner is not a small obvious source fix. The release guide now records the first brownout and the temporary rerun limitation. No CI/environment configuration was changed to bypass this gate.
 
 ### RL-07 MicroSandbox fallback executable cache ignores compiler flags and build recipe
 
-**P2.** The compiled cache key in `microsandbox-runtime.mjs` included source,
-patches, agent bytes, compiler version, target, and features, but omitted the
-staging recipe and inherited Cargo compiler flags. A changed `RUSTFLAGS` could
-therefore reuse a previous executable after fallback cache restoration.
+**P2.** Location: [microsandbox-runtime.mjs](../app/SiloUI/scripts/microsandbox-runtime.mjs), compiled executable cache identity. Confirmed by concurrent review before `abae62fe`.
 
-**Evidence.** The real staging/cache orchestration with deterministic external
-tools compiled eight times across the existing capability/source cases. Changing
-`RUSTFLAGS` left that count at eight instead of nine. No native build was run.
+**Trigger.** Restore the fallback executable cache, then change the staging recipe or inherited Cargo compiler flags without changing source, patches, agent bytes, compiler version, target or features.
 
-**Correction and status.** Fixed: the key includes the staging script digest and
-the four documented Cargo flag environment inputs. The regression checks rebuilds
-for changed plain, encoded, build-wide, and target-specific flags, and reuse when
-those inputs remain unchanged. The focused runtime staging tests pass.
+**Evidence.** The concurrent review executed real staging/cache orchestration with deterministic external tools. It compiled eight times across existing capability/source cases; changing `RUSTFLAGS` left the count at eight instead of nine. The cache key omitted both the recipe digest and compiler flags. No native build was run. The focused staging suite was independently rerun here.
+
+**Consequence.** Runtime preparation can silently retain an executable built under obsolete compiler policy, even though the current build invocation requests different flags or a corrected recipe.
+
+**Correction.** Include the staging script digest and the four Cargo flag environment inputs in compiled-cache identity. The release guide now describes these inputs.
+
+**Rejecting test.** Change plain, encoded, build-wide and target-specific flags and require a rebuild for each. Keep the inputs unchanged and require reuse; changes to previously covered source/capability inputs must still invalidate the executable.
+
+**Status.** Fixed and folded by concurrent review in `abae62fe`. All thirteen focused runtime-staging tests passed here. This is internal preparation tooling and needs no application changeset.
 
 ### RL-08 Failed license staging replaces the MicroSandbox sidecar without its manifest
 
-**P2.** `stageRuntime` published the compiled sidecar before fetching and verifying
-the remaining licenses and writing the new resource manifest. A later download
-failure left the previously prepared manifest and library alongside a replacement
-sidecar with a different digest.
+**P2.** Location: [microsandbox-runtime.mjs](../app/SiloUI/scripts/microsandbox-runtime.mjs), `stageRuntime` output publication. Confirmed by concurrent review before `3329b2b3`.
 
-**Evidence.** A fixture first prepared a complete runtime, then attempted a new
-compiled executable with an unavailable license URL. The call rejected, but the
-sidecar contained the replacement bytes. The regression failed on the original
-sidecar comparison; no native executable or network request was used.
+**Trigger.** Prepare a complete runtime, then stage a newly compiled executable while a later license fetch fails.
 
-**Correction and status.** Fixed: sidecar publication follows complete resource
-and manifest staging. The regression now verifies that a failed license fetch
-preserves all three previously prepared outputs. This does not claim atomic
-publication across a process crash or final filesystem errors.
+**Evidence.** The concurrent fixture ran real staging with deterministic external adapters. The second call rejected on the license URL, but the sidecar contained replacement bytes while the old library and manifest remained. Its rejecting regression failed on the original sidecar comparison. No native executable or network request was used. The focused staging suite was independently rerun here.
+
+**Consequence.** A failed preparation corrupts the previously usable runtime set: the sidecar digest no longer matches its retained manifest. Retrying cannot rely on the prior complete outputs remaining intact.
+
+**Correction.** Publish the sidecar after resource and manifest staging completes. Keep late license failures before any replacement of the sidecar.
+
+**Rejecting test.** Force a license failure after a new sidecar is ready and require all three previously prepared outputs to retain their original bytes. A successful-stage-only test or checking only the manifest would miss this failure.
+
+**Status.** Fixed and folded by concurrent review in `3329b2b3`. All thirteen focused runtime-staging tests passed here. This establishes preservation for the tested staging failure; it does not establish atomic publication across a process crash or final filesystem errors. No application changeset is needed.
+
 ### RL-09 Optional GNOME verifier uses obsolete tray and channel expectations
 
 **P2.** Confirmed at `ac8aaf87`. Locations: [linux_desktop_services.py](../app/SiloUI/scripts/linux_desktop_services.py), tray item selection, Open action and health fixture; [tray.rs](../app/SiloUI/src-tauri/src/tray.rs), Linux `menu` and `title`.
@@ -172,21 +174,25 @@ publication across a process crash or final filesystem errors.
 
 **Rejecting test.** Feed the extracted real GNOME menu selector a layout populated from the native tray's actual action labels. It must select Open and Quit. Exercise the tray-title predicate and health metadata path for both standard channel identifiers, requiring Dev state to remain under the Dev fixture root. Then qualify the full optional GNOME run separately.
 
+**Status.** Fixed and folded in `028ce994`; merge correction `ee4419c5` follows the integrated native menu change. Integrated `466b6ae8` reads product names from `channel.rs`. No application changeset is needed.
+
+**Integration follow-up for RL-09.** A subsequent native channel-name change made Open and Quit labels use the product name. The merged regression caught the obsolete literal adapter and failed with `StopIteration`. The adapter and source-derived menu regression now cover `Open Silo` / `Quit Silo` and `Open Silo Dev` / `Quit Silo Dev`; both channel cases pass.
+
 ### RL-10 Package identity gate accepts another Debian package or macOS Dev bundle
 
-**P2.** The final metadata verifier checked Debian version/architecture but not
-`Package`, and macOS version/CPU but not `CFBundleIdentifier`. Correctly versioned
-artifacts belonging to another application or the Dev channel therefore passed.
+**P2.** Location: [verify-release-metadata.py](../app/SiloUI/scripts/verify-release-metadata.py), final package identity checks. Confirmed by concurrent review before `8102c670`.
 
-**Evidence.** Synthetic signed-package contents for both Debian architectures
-with `Package: unrelated`, plus ARM64 macOS archives with Dev/other identifiers,
-all passed before the correction. Four rejecting subcases failed. These fixtures
-exercise the metadata verifier, not cryptographic signing or publication.
+**Trigger.** Supply a correctly versioned and architected Debian package belonging to another application, or a macOS archive with the Dev/another bundle identifier, to the final metadata verifier.
 
-**Correction and status.** Fixed: Debian packages must identify `silo`; macOS
-archives must use the production identifier from the tracked Tauri configuration.
-Positive production fixtures still pass. The Linux fixture builds real `.deb`
-files with `dpkg-deb` and accepts `silo` while rejecting an unrelated package.
+**Evidence.** The concurrent regression supplied synthetic package contents for both Debian architectures with `Package: unrelated`, plus ARM64 macOS archives with Dev/other identifiers. Four rejecting subcases failed because all were accepted. These fixtures exercise metadata verification, not signing or publication. Their tests were rerun here; the real Debian-container case is skipped on this macOS host because `dpkg-deb` is unavailable.
+
+**Consequence.** Version/architecture checks alone do not ensure that a signed artifact is the production Silo application. A wrong package can pass the metadata gate and be assigned a production updater asset name.
+
+**Correction.** Require Debian `Package: silo` and the production macOS identifier from tracked Tauri configuration, in addition to existing version/architecture checks.
+
+**Rejecting test.** Accept the production macOS fixture and reject Dev/other identifiers. Reject the wrong Debian package name for both architectures; on Linux, build real `.deb` fixtures and accept `silo` while rejecting the unrelated package. Keep prior old-version/wrong-architecture rejections.
+
+**Status.** Fixed and folded by concurrent review in `8102c670`. Synthetic identity regressions passed here; real Debian qualification remains a Linux check. This is release verification tooling and needs no application changeset.
 
 ### RL-11 Lifecycle guest probes use the production alias for Dev
 
@@ -202,10 +208,20 @@ files with `dpkg-deb` and accepts `silo` while rejecting an unrelated package.
 
 **Rejecting test.** Execute the actual guest probe with synthetic aliases for Dev, production, and the historical identifier. Only the matching alias exists; the recorded CLI environment must receive that alias as `MSB_HOME`. The default must select Dev. No app, VM, CLI executable, or real HOME is needed.
 
-**Status.** Regression fails before the correction in three subcases; fix pending.
+**Status.** Fixed and folded in `f7cec265`, then `b64a60e5` adopted the integrated native-name reader from `466b6ae8` instead of duplicating identifiers/private directory names. The first regression failed in three subcases; the follow-up also rejected changed Dev identifiers/private directories before correction. All 23 focused fixture/channel/wrapper/workflow tests pass. No application changeset is needed.
 
 
-**Integration follow-up for RL-09.** A subsequent native channel-name change made Open and Quit labels use the product name. The merged regression caught the obsolete literal adapter and failed with `StopIteration`. The adapter and source-derived menu regression now cover `Open/ Quit Silo` and `Open/ Quit Silo Dev`; both channel cases pass.
+## Other reviewed boundaries and limits
+
+[release-platform.yml](../.github/workflows/release-platform.yml) compiles production bundles under `src-tauri/target/release-compile/<target>/release/bundle`. The macOS finalizer receives the app at that path; Linux packaging copies the single expected Debian/AppImage outputs to fixed release asset names. [publish-release.py](../app/SiloUI/scripts/publish-release.py) maps `darwin-aarch64`, `linux-x86_64` and `linux-aarch64` to those updater assets. The inspected producer/consumer paths agree; no bundle was generated or opened in this pass.
+
+[package-macos-release.py](../app/SiloUI/scripts/package-macos-release.py) finalizes and verifies the app's VM signature policy before regenerating its `.app.tar.gz` and DMG. It signs the regenerated updater archive, and [verify-release-signatures.py](../app/SiloUI/scripts/verify-release-signatures.py) independently verifies each signature with the committed production public key. The final publication gate also verifies asset membership, checksums, package metadata and feed mappings. The existing O-11 draft-asset trust finding remains excluded; these observations are not independent build provenance or live updater proof. See the upstream [Tauri CLI](https://v2.tauri.app/reference/cli/) and [updater requirements](https://v2.tauri.app/plugin/updater/).
+
+Signing secrets are scoped to packaging/signing steps; synthetic native-test configuration is separate. Public runtime/dependency cache exporters validate allowed archive members and reject application/private build outputs in the exercised fixtures. [ci.yml](../.github/workflows/ci.yml) runs ordinary frontend/script/native checks; [linux-packaging.yml](../.github/workflows/linux-packaging.yml) installs/removes a disposable Debian package and inspects AppImage tool layout. This pass reviewed their source and workflow-pin checks without executing hosted jobs or package installers. Passing packaging does not establish KVM or installed-app behavior.
+
+The host-name scan covered `.silo`, production identifiers/Keychain services, `silo-remote`, and Silo editor profile names across native sources and scripts. Runtime aliases, editor/remote private directories, Keychain services, bridge links and autostart identities use `channel.rs` in the inspected native consumers. The shared `silo-remote:` URL protocol, `.silo-backup` format suffix, guest policy markers and fixture expectations are separate contracts. Owner-invoked production-settings import intentionally handles both channels and was not executed. RL-02, RL-03, RL-09 and RL-11 record concrete fixture-channel failures found by this scan. The integrated script-name reader now executes the native channel API without building the application; its mutation test follows renamed Dev fields.
+
+No full Linux WebDriver/GNOME run, real Debian install, signed version-to-version updater, bundled VM execution, SIP-enabled macOS constraint run or replacement-runner qualification was performed. No native application was launched and no production data was used. Rust verification was formatting only plus the small channel-name exporter exercised by Python tests. Full `test:release`, macOS signing tests and full Python discovery were deliberately not used because this task prohibits signing, tagging and heavy/live work. No actionlint or complete hosted workflow execution was performed; extracted workflow shell commands and pinned-action assertions were tested.
 
 ## Verification and reproducibility
 
@@ -219,6 +235,28 @@ RL-03: the same focused command passed 13 tests. Lint (2 existing warnings) and 
 
 RL-04: `python3 -m unittest test_publish_release test_release_publication test_release_workflow test_workflow_pins` (with the scripts directory on PYTHONPATH) passed 33 tests; Node 24.11.1 `node --test app/SiloUI/scripts/release.test.mjs` passed 27. Typecheck, lint without warnings, and Rust formatting passed before commit. Logs prefixed `rl04-` retain failures and passing results. The initial Python diagnostic omitted synthetic GH_REPO and failed fixture setup; the corrected diagnostic reached the unexpected mocked GitHub calls. An intermediate shell regression caught macOS Bash 3's empty-array/nounset behavior; positional arguments replaced that array before the final pass.
 
+## Final verification cutoff
+
+Final fixture/check results below apply to code at `8e497736`, plus the report/documentation completion. Output is retained under ignored `app/SiloUI/src-tauri/target/verification/release-review-2026-10-02/`.
+
+| Check | Result |
+| --- | --- |
+| Python 3.12 focused release, cache, wrapper, fixture, identity and workflow suite | 114 tests: 113 passed, 1 skipped (`dpkg-deb` unavailable) |
+| Node 24.11.1 positive selection of stable-publication adapter regression | 1 passed; real tag-creation fixture excluded |
+| Vitest runtime staging/cache regressions (`src/test/microsandbox-runtime.test.ts --maxWorkers=1`) | 13 passed |
+| `npm --prefix app/SiloUI run typecheck` | Passed |
+| `npm --prefix app/SiloUI run lint` | Passed without warnings |
+| `CARGO_TARGET_DIR=/tmp/silo-codex-target cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check` | Passed |
+| `git diff --check`; relative-file targets in both edited documents | Passed; this checks files, not web availability or every heading anchor |
+
+The Python command was `PYTHONPATH=app/SiloUI/scripts python3.12 -m unittest test_desktop_release test_linux_verification_release test_linux_desktop_services test_channel_names test_publish_release test_release_publication test_release_workflow test_release_metadata test_release_bundle_retry test_release_runtime_transfer test_release_cache test_release_dependency_identity test_release_dependency_cache test_release_dependency_integration test_workflow_pins`. Logs are `final-python-cutoff.log`, `final-node-focused.log` and `final-runtime-cutoff.log`. Compiler/build messages inside cache fixtures come from fake external adapters; no application compilation occurred.
+
+RL-11's original failure log is named `rl10-before.log` because integration assigned RL-10 to the concurrent package-identity finding before this branch folded. Its passing output is `rl11-after.log`; the native-name/default follow-up retains `channel-followup-{before,after}.log`.
+
+The full Node adapter suite passed 27 tests in earlier runs but created unsigned fixture tags. The attempted negative exclusion filter also ran that test; it was not a valid filtered verification. The final positive selection `node --test --test-name-pattern='explicit stable publication passes' app/SiloUI/scripts/release.test.mjs` passed exactly one test without running the real Changesets tag fixture. Messages about pushing/dispatching in this suite come from fake command adapters; no real push or publication occurred.
+
+The eleven-entry ledger includes three independently authored concurrent findings and their integration fixes. Report commits were folded from the initial scaffold onward, including conflict resolutions that preserved both authors' findings. None of these internal tooling/documentation changes needs an application changeset. Versions were not bumped in the task repository, changesets were not consumed there, and no real release operation was performed.
+
 ## Next action
 
-Trace release validation through platform artifacts and publication, then check host-name consumers against both build channels.
+Qualify a maintained macOS 14 runner before the first announced brownout on October 5 at 14:00 UTC, retaining the blocking minimum-version constraint gate and recording its OS identity and results. RL-06 remains open until that evidence exists.

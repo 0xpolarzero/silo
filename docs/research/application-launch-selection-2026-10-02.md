@@ -49,3 +49,9 @@ Each behavior regression failed before its correction. The full Cargo test build
 All inputs were temporary fixtures. No packaged bundle was inspected or launched, and no live editor, terminal, VM, production state, or credential store was exercised. Linux GIO discovery and actual application handoffs remain outside this verification.
 
 At the final merged checkout, the isolated `launch.rs` run passed all 13 tests, including two AppImage regressions folded by another task. Direct `clippy-driver` analysis completed with the existing `nonminimal_bool` warning at `launch.rs:30`; an additional strict `-D warnings` run rejected that expression. No new Clippy warning was reported.
+
+## APPLICATIONS-6: editor environment prefixes were discarded (P2)
+
+The resolver recognized `env NAME=value code` and `env -i NAME=value flatpak run ...` entries but launched the resolved program without their prefix. The failing launch regression used a temporary executable that printed the environment value supplied in its entry; it received an empty value instead. Environment settings selecting editor data or runtime behavior therefore did not reach the editor.
+
+The command now retains the original environment launcher and prefix arguments around the resolved editor CLI. Both native and Flatpak adapters use the same prefix seam. [GNU env documentation](https://www.gnu.org/s/coreutils/manual/html_node/env-invocation.html) defines assignments and `-i` as changes to the child environment; Silo delegates those semantics to the original executable rather than implementing a second environment mechanism. The regression executes temporary native and Flatpak launchers, with the marker explicitly removed from the parent command environment.

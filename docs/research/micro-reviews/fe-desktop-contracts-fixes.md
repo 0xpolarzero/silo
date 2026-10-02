@@ -44,6 +44,16 @@ The initial read-only audit remains in the shared review worktree. These additio
 - **Fix:** Report every unreadable status read while retaining the last readable status.
 - **Regression:** Read Ready, return `null`, require the read error and Refresh action, then return Idle and require the error to clear.
 
+## fe-desktop-contracts-5: Successful deletion retains an obsolete backup read error
+
+- **Severity:** P3
+- **Location:** `app/SiloUI/src/features/storage/pre-upgrade-backup.tsx`, successful `remove` path.
+- **Trigger:** Load a backup, fail a later status read, then successfully delete the backup.
+- **Consequence:** The backup is cleared but the earlier load error remains. Storage therefore shows an erroneous "could not check for it" row after native deletion confirmed absence. Reads triggered during deletion can be discarded by the existing deletion sequence guard.
+- **Evidence:** `clears a previous read failure once deletion confirms the backup is gone` failed with `"Backup read failed"` instead of a cleared error.
+- **Fix:** Clear the read error when deletion succeeds; retain independent subscription failures.
+- **Regression:** A successful deletion clears both the cached backup and an obsolete read failure.
+
 ## Rejected menu-lifetime hypothesis
 
 The pinned versions are Tauri 2.11.5 and muda 0.19.3. GTK popup completion is not an early-dismissal defect in this checkout: [muda's pinned GTK implementation](https://github.com/tauri-apps/muda/blob/muda-v0.19.3/src/platform_impl/gtk/mod.rs#L1416-L1500) iterates GTK until cancel or selection-done, and [Tauri's menu implementation](https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/menu/menu.rs#L43-L81) waits for its main-thread call. No menu-lifetime fix was made on that premise.

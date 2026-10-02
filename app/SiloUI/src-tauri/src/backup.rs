@@ -590,6 +590,14 @@ impl<R: MsbRunner> BackupService<R> {
         Ok(OperationGuard(&self.busy))
     }
 
+    fn staging_directory(&self, prefix: &str) -> io::Result<tempfile::TempDir> {
+        use std::os::unix::fs::PermissionsExt;
+        tempfile::Builder::new()
+            .prefix(prefix)
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir_in(&self.scratch_root)
+    }
+
     pub(crate) fn cleanup_interrupted_staging(&self) -> io::Result<()> {
         let entries = match fs::read_dir(&self.scratch_root) {
             Ok(entries) => entries,
@@ -634,9 +642,7 @@ impl<R: MsbRunner> BackupService<R> {
         validate_backup_request(&request)?;
         fs::create_dir_all(&self.scratch_root)?;
         self.check_export_space(&request, cancellation)?;
-        let stage = tempfile::Builder::new()
-            .prefix("backup-")
-            .tempdir_in(&self.scratch_root)?;
+        let stage = self.staging_directory("backup-")?;
         let mut payloads = Vec::with_capacity(request.sources.len());
         let mut total_payload_bytes = 0_u64;
 
@@ -1002,9 +1008,7 @@ impl<R: MsbRunner> BackupService<R> {
             return Err(BackupError::Conflict(request.new_name));
         }
         fs::create_dir_all(&self.scratch_root)?;
-        let stage = tempfile::Builder::new()
-            .prefix("restore-")
-            .tempdir_in(&self.scratch_root)?;
+        let stage = self.staging_directory("restore-")?;
         let store = self.native_store_root();
         let space = SpaceBudget {
             stage_free: (self.free_space)(stage.path())?,
@@ -3841,6 +3845,47 @@ mod tests {
             temp.path().join("scratch"),
             runner,
         )
+    }
+
+    #[test]
+    fn backup_staging_is_private_with_permissive_umask() {
+        const CHILD: &str = "SILO_PRIVATE_BACKUP_STAGE_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "backup::tests::backup_staging_is_private_with_permissive_umask",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        // The child runs only this test; its umask cannot affect other test workers.
+        unsafe { libc::umask(0) };
+        let temp = tempfile::tempdir().unwrap();
+        let service = service(&temp, FakeRunner::default());
+        fs::create_dir_all(&service.scratch_root).unwrap();
+        for prefix in ["backup-", "restore-"] {
+            let stage = service.staging_directory(prefix).unwrap();
+            assert_eq!(
+                fs::metadata(stage.path()).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+            fs::write(stage.path().join("private-payload"), b"fixture").unwrap();
+            assert_eq!(
+                fs::read(stage.path().join("private-payload")).unwrap(),
+                b"fixture"
+            );
+        }
     }
 
     fn create_one(

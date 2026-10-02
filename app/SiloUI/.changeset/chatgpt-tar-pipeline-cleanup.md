@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Clean up the unpacking process when ChatGPT package extraction cannot start its second tool.
+Clean up unfinished extraction when ChatGPT package unpacking fails to start.

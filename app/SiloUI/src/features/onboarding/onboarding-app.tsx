@@ -191,7 +191,7 @@ export function OnboardingApp({
     } : source
     return projectOnboarding(projectedSource, githubConnectionState)
   }, [githubConnectionState, source, machines])
-  const applicationPreferences = {
+  const applicationPreferences = useMemo(() => ({
     terminal: settings.terminal, editor: settings.editor, browser: settings.browser,
     terminalUseSystemDefault: settings.terminalUseSystemDefault,
     editorUseSystemDefault: settings.editorUseSystemDefault,
@@ -199,7 +199,11 @@ export function OnboardingApp({
     ...(settings.terminalPath && { terminalPath: settings.terminalPath }),
     ...(settings.editorPath && { editorPath: settings.editorPath }),
     ...(settings.browserPath && { browserPath: settings.browserPath }),
-  }
+  }), [settings])
+  const completionInputs = useRef({ applications: applicationPreferences, githubConnectionState })
+  useEffect(() => {
+    completionInputs.current = { applications: applicationPreferences, githubConnectionState }
+  }, [applicationPreferences, githubConnectionState])
   const availableRepositories = useMemo(
     () => uniqueRepositoryOptions(repositoryOptions ?? defaultRepositoryOptions(source)),
     [repositoryOptions, source],
@@ -399,9 +403,12 @@ export function OnboardingApp({
   }
 
   function completionRequest(): OnboardingCompletionRequest {
+    // A deletion confirmation can retain this callback across settings and
+    // connection changes. Read the latest inputs when the user confirms.
+    const { applications, githubConnectionState } = completionInputs.current
     return {
       machineConfiguration: { schemaVersion: 1, machines: [...currentDraft.current.machines] },
-      applications: applicationPreferences,
+      applications,
       github: {
         connectionState: githubConnectionState,
         workspaces: currentDraft.current.machines.map(({ name }) => ({
