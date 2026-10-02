@@ -235,9 +235,9 @@ fn settle(
     intent: &mut Intent,
     initial: InspectedSandbox,
 ) -> Result<(), RuntimeError> {
-    runtime_activity::resume(paths, &mut intent.event, &intent.machine_id).map_err(error)?;
+    runtime_activity::resume(paths, &mut intent.event, &intent.machine_id);
     let result = advance(runner, paths, host, intent, initial);
-    runtime_activity::finish(paths, &mut intent.event, &result).map_err(error)?;
+    runtime_activity::finish(paths, &mut intent.event, &result);
     // A user cancel retires the intent: the next launch must not resume an
     // action the user explicitly abandoned.
     let cancelled = matches!(result, Err(RuntimeError::Cancelled { .. }));
@@ -307,7 +307,7 @@ pub(super) fn perform(
         Ok(initial) => initial,
         Err(failure) => {
             let result = Err(failure);
-            runtime_activity::finish(paths, &mut intent.event, &result).map_err(error)?;
+            runtime_activity::finish(paths, &mut intent.event, &result);
             return result;
         }
     };
@@ -318,7 +318,7 @@ pub(super) fn perform(
         let result = Err(RuntimeError::Invalid(format!(
             "Replaced by the requested {action} action."
         )));
-        runtime_activity::finish(paths, &mut previous.event, &result).map_err(error)?;
+        runtime_activity::finish(paths, &mut previous.event, &result);
     }
     settle(runner, paths, host, &mut intent, initial)
 }
@@ -364,8 +364,7 @@ pub(super) fn forget_removed(
             &Err(RuntimeError::Invalid(
                 "Sandbox was removed before this action finished.".into(),
             )),
-        )
-        .map_err(error)?;
+        );
         fs::remove_file(target)
             .map_err(|_| error("Removed sandbox action progress could not be cleared."))?;
         File::open(directory(paths))
@@ -402,7 +401,7 @@ pub(crate) fn retire_except(
         if file != path(paths, &intent.machine_id) || resuming.contains(&intent.machine_id) {
             continue;
         }
-        runtime_activity::retire(paths, &mut intent.event).map_err(error)?;
+        runtime_activity::retire(paths, &mut intent.event);
         fs::remove_file(&file)
             .map_err(|_| error("A saved sandbox action could not be retired."))?;
         retired = true;
@@ -511,6 +510,7 @@ fn recover_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     const ID: &str = "00000000-0000-4000-8000-000000000001";
     struct Fake {
         state: Mutex<String>,
@@ -520,6 +520,7 @@ mod tests {
         stop_times_out: bool,
         start_wins: bool,
         replaced: bool,
+        fail_history_on_mutation: bool,
     }
     impl Fake {
         fn new(state: &str) -> Self {
@@ -531,6 +532,7 @@ mod tests {
                 stop_times_out: false,
                 start_wins: false,
                 replaced: false,
+                fail_history_on_mutation: false,
             }
         }
         fn mutations(&self) -> Vec<String> {
@@ -546,12 +548,19 @@ mod tests {
     impl RuntimeRunner for Fake {
         fn run(
             &self,
-            _paths: &RuntimePaths,
+            paths: &RuntimePaths,
             args: &[String],
             _timeout: Duration,
         ) -> Result<CommandOutput, RuntimeError> {
             let action = args[0].as_str();
             self.calls.lock().unwrap().push(action.into());
+            if action != "inspect" && self.fail_history_on_mutation {
+                fs::set_permissions(
+                    paths.metadata.parent().unwrap(),
+                    fs::Permissions::from_mode(0o555),
+                )
+                .unwrap();
+            }
             if action == "start" && self.cancel_start {
                 return Err(RuntimeError::Cancelled {
                     operation: "start dev".into(),
@@ -633,6 +642,99 @@ mod tests {
         store(paths, &value).unwrap();
         value
     }
+    #[test]
+    fn malformed_history_does_not_block_lifecycle_actions() {
+        let _test_state = crate::test_support::global_state();
+        for (action, state, commands) in [
+            ("stop", "Running", vec!["stop"]),
+            ("start", "Stopped", vec!["start"]),
+            ("restart", "Running", vec!["stop", "start"]),
+        ] {
+            let (_dir, paths, _) = setup();
+            let history = paths.metadata.with_file_name("sandbox-activity.json");
+            fs::write(&history, "{broken-json").unwrap();
+            let runner = Fake::new(state);
+            perform(&runner, &paths, &host(), action, "dev").unwrap();
+            assert_eq!(runner.mutations(), commands);
+            assert!(!has_intent(&paths, ID));
+            assert_eq!(fs::read(&history).unwrap(), b"{broken-json");
+            assert!(runtime_activity::read(&paths)
+                .unwrap()
+                .iter()
+                .any(|event| event["title"] == "Activity history unavailable"
+                    && event["tone"] == "warning"));
+        }
+    }
+
+    #[test]
+    fn history_failure_after_start_preserves_outcome_and_retires_intent() {
+        let _test_state = crate::test_support::global_state();
+        for cancelled in [false, true] {
+            let (_dir, paths, _) = setup();
+            let mut runner = Fake::new("Stopped");
+            runner.cancel_start = cancelled;
+            runner.fail_history_on_mutation = true;
+            let result = perform(&runner, &paths, &host(), "start", "dev");
+            fs::set_permissions(
+                paths.metadata.parent().unwrap(),
+                fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+            if cancelled {
+                assert!(matches!(result, Err(RuntimeError::Cancelled { .. })));
+            } else {
+                result.unwrap();
+            }
+            assert_eq!(runner.mutations(), vec!["start"]);
+            assert!(!has_intent(&paths, ID));
+            // The history remains readable even though its completion could not be saved.
+            let history = paths.metadata.with_file_name("sandbox-activity.json");
+            let entries: Vec<Value> = serde_json::from_slice(&fs::read(history).unwrap()).unwrap();
+            assert!(entries.iter().all(|event| event["completed"] == false));
+            assert!(runtime_activity::read(&paths)
+                .unwrap()
+                .iter()
+                .any(|event| event["title"] == "Activity history unavailable"
+                    && event["tone"] == "warning"));
+            let relaunch = Fake::new("Stopped");
+            assert_eq!(
+                recover_with(&relaunch, &paths, &host()).unwrap(),
+                Recovered::default()
+            );
+            assert!(relaunch.mutations().is_empty());
+        }
+    }
+
+    #[test]
+    fn malformed_history_does_not_block_intent_retirement() {
+        let _test_state = crate::test_support::global_state();
+        let (_dir, paths, _) = setup();
+        pending(&paths, "start", Phase::StartPending);
+        fs::write(
+            paths.metadata.with_file_name("sandbox-activity.json"),
+            "{broken-json",
+        )
+        .unwrap();
+        retire_except(&paths, &HashSet::new()).unwrap();
+        assert!(!has_intent(&paths, ID));
+        let runner = Fake::new("Stopped");
+        assert_eq!(
+            recover_with(&runner, &paths, &host()).unwrap(),
+            Recovered::default()
+        );
+        assert!(runner.mutations().is_empty());
+    }
+
+    #[test]
+    fn intent_write_failure_still_blocks_runtime_mutation() {
+        let _test_state = crate::test_support::global_state();
+        let (_dir, paths, _) = setup();
+        fs::write(directory(&paths), "not a directory").unwrap();
+        let runner = Fake::new("Running");
+        assert!(perform(&runner, &paths, &host(), "stop", "dev").is_err());
+        assert!(runner.mutations().is_empty());
+    }
+
     #[test]
     fn restart_recovers_each_checkpoint_without_repeating_a_finished_stop_or_restart() {
         let _test_state = crate::test_support::global_state();
