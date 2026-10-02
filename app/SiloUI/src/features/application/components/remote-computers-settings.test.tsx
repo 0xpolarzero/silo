@@ -350,3 +350,21 @@ it("ignores a computer setting Retry after the settings controls unmount", async
   await user.click(retry)
   expect(setRemoteManagement).toHaveBeenCalledOnce()
 })
+
+
+it.each([false, true])("ignores connection completion after its form unmounts (replace=%s)", async replace => {
+  let finish!: () => void
+  const connect = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  if (replace) connect.mockRejectedValueOnce(new Error("Office is already saved at owner@old-office"))
+  const onClose = vi.fn()
+  const { unmount } = render(<ConnectComputerForm connect={connect} onClose={onClose} />)
+  fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: "owner@office" } })
+  fireEvent.submit(screen.getByRole("form", { name: "Connect computer" }))
+  if (replace) {
+    await screen.findByRole("alert")
+    fireEvent.click(screen.getByRole("button", { name: "Use this address" }))
+  }
+  unmount()
+  await act(async () => finish())
+  expect(onClose).not.toHaveBeenCalled()
+})
