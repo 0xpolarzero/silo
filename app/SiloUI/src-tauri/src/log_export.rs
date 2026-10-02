@@ -103,7 +103,7 @@ pub(crate) async fn export_workspace_logs(
     .map_err(|_| "The log export task failed.".to_owned())?
 }
 
-fn write_requests(
+pub(crate) fn write_requests(
     output: &mut impl Write,
     requests: Vec<Query>,
     mut query: impl FnMut(Query) -> Result<Page, String>,

@@ -382,18 +382,21 @@ fn sensitive_assignment(lower: &str) -> bool {
 }
 
 pub(super) fn log_text(body: &str) -> String {
-    let mut in_pem = false;
+    log_text_with_pem(body, &mut false)
+}
+
+pub(super) fn log_text_with_pem(body: &str, in_pem: &mut bool) -> String {
     strip_ansi(body)
         .lines()
         .map(|line| {
             let lower = line.to_ascii_lowercase();
             // Hide whole PEM blocks, not only their BEGIN line.
             if lower.contains("-----begin") {
-                in_pem = true;
+                *in_pem = true;
             }
-            let pem = in_pem;
+            let pem = *in_pem;
             if lower.contains("-----end") {
-                in_pem = false;
+                *in_pem = false;
             }
             if pem
                 || sensitive_assignment(&lower)
