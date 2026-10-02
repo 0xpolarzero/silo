@@ -33,8 +33,13 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: Value) -> Result<V
     }
     // Inventory changes (upsert/delete) stay computer-scoped: they rewrite the shared
     // metadata file. They run once, holding the gate for the whole operation.
+    let removed: Vec<String> = (method == "runtime.delete")
+        .then(|| params["vmId"].as_str().map(str::to_owned))
+        .flatten()
+        .into_iter()
+        .collect();
     let _guard = OPERATIONS
-        .computer("Applying remote change")
+        .removing(&removed, "Applying remote change")
         .map_err(BridgeError::from)?;
     shutdown::ensure_accepting_operations()?;
     let mut request = read_metadata(&paths.metadata).map_err(BridgeError::from)?;

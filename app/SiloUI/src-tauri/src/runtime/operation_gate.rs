@@ -148,6 +148,9 @@ struct Entry {
     /// Internal background housekeeping that must not surface in the published queue
     /// snapshot. It still holds the gate for mutual exclusion; only its visibility differs.
     hidden: bool,
+    /// Ids of the sandboxes this computer-wide operation deletes, so work running on one
+    /// of them can yield to it (see `removal_queued`). Empty for everything else.
+    removes: Vec<String>,
 }
 
 impl Entry {
@@ -247,6 +250,7 @@ impl State {
             cancel: Arc::new(AtomicBool::new(false)),
             expected: None,
             hidden: false,
+            removes: Vec::new(),
         }
     }
 }
@@ -331,6 +335,8 @@ thread_local! {
     static RUNNING: Cell<Option<(*const OperationGate, u64)>> = const { Cell::new(None) };
     /// Depth of `uncancellable` sections on this thread.
     static MASKED: Cell<usize> = const { Cell::new(0) };
+    /// Sandboxes the next admission on this thread deletes (see `OperationGate::removing`).
+    static REMOVES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
 /// True when the current thread holds an operation guard. Entry points documented
@@ -563,6 +569,27 @@ impl OperationGate {
         self.kind(OperationKind::Other).computer(label)
     }
 
+    /// Wait for a computer-wide turn that deletes the sandboxes `ids`, so that work
+    /// running on one of them can see the deletion queued (`removal_queued`).
+    pub(crate) fn removing(
+        &self,
+        ids: &[String],
+        label: &str,
+    ) -> Result<OperationGuard<'_>, GateError> {
+        REMOVES.with(|removes| *removes.borrow_mut() = ids.to_vec());
+        let guard = self.computer(label);
+        REMOVES.with(|removes| removes.borrow_mut().clear());
+        guard
+    }
+
+    /// Whether a deletion of sandbox `id` is waiting for its turn.
+    pub(crate) fn removal_queued(&self, id: &str) -> bool {
+        self.lock()
+            .waiting
+            .iter()
+            .any(|entry| entry.removes.iter().any(|removed| removed == id))
+    }
+
     /// Wait for a turn to change one VM, identified by its stable `id`. `name` is the
     /// current display name captured for the queue; ordering keys on `id` alone.
     pub(crate) fn vm(
@@ -621,7 +648,8 @@ impl OperationGate {
         if key.is_some() && state.waiting.iter().any(|entry| entry.key == key) {
             return Err(GateError::AlreadyQueued);
         }
-        let entry = state.entry(scope, vm_name, kind, label, key);
+        let mut entry = state.entry(scope, vm_name, kind, label, key);
+        entry.removes = REMOVES.with(|removes| std::mem::take(&mut *removes.borrow_mut()));
         let id = entry.id;
         state.touch(&entry.scope, false);
         state.waiting.push_back(entry);

@@ -388,6 +388,8 @@ enum Reply {
     Report(&'static str, Option<&'static str>),
     TimedOut,
     Unreachable,
+    /// The runtime ran `msb exec` and it failed with this explanation.
+    Failed(&'static str),
 }
 
 /// A guest that answers like the helper: `inspect` as a running labelled VM, `status`,
@@ -491,6 +493,11 @@ impl RuntimeRunner for Guest {
                 operation: "exec".into(),
             }),
             Reply::Unreachable => Err(RuntimeError::Unavailable("guest unreachable".into())),
+            Reply::Failed(detail) => Err(RuntimeError::Failed {
+                operation: "exec".into(),
+                exit_code: Some(1),
+                detail: detail.into(),
+            }),
             Reply::Report(outcome, reason) => {
                 // `lcu setup` changed the configuration of the agents it reached.
                 if outcome != "failed" {
@@ -1100,12 +1107,29 @@ fn setup_reruns_with_force_applies_the_chosen_mode_and_returns_the_guest_status(
     let id = vm(15);
     set_approval(&paths, &id, Approval::Auto).unwrap();
     let recorder = Recorder::new("noise\n{\"state\":\"ready\",\"apply\":{\"approval\":\"auto\",\"outcome\":\"applied\",\"reason\":null}}\n");
-    let status = setup_with(&recorder, &paths, &machine_of(&id, true), true).unwrap();
+    let idle = || Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let status = setup_with(
+        test_gate(),
+        &recorder,
+        &paths,
+        &machine_of(&id, true),
+        true,
+        idle(),
+    )
+    .unwrap();
     assert_eq!(status["state"], "ready");
     assert!(recorder.scripts()[0].contains("silo-computer-use apply --approval auto --force"));
     assert_eq!(settings(&paths, &id).applied, Some(Approval::Auto));
     let broken = Recorder::new("not json");
-    assert!(setup_with(&broken, &paths, &machine_of(&id, true), false).is_err());
+    assert!(setup_with(
+        test_gate(),
+        &broken,
+        &paths,
+        &machine_of(&id, true),
+        false,
+        idle()
+    )
+    .is_err());
     assert_eq!(
         settings(&paths, &id).last.unwrap().reason.as_deref(),
         Some("invalid-report")
@@ -1896,4 +1920,249 @@ fn the_shared_folder_is_prepared_again_when_the_start_up_attempt_failed() {
     let dir = register_published(&directory.path().join("chatgpt")).unwrap();
     assert_eq!(published_dir(), Some(dir));
     reset_published_for_test();
+}
+
+// ------------------------------------------------- review follow-ups
+
+#[test]
+fn choosing_ask_while_auto_applies_converges_even_after_a_successful_ask() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(20);
+    write_machines_of(&paths, &id);
+    let guest = Guest::new(&id);
+    let gate = test_gate();
+    // Ask is applied successfully first.
+    boot_of(gate, &guest, &paths).unwrap().join().unwrap();
+    assert_eq!(settings(&paths, &id).applied, Some(Approval::Ask));
+    let machine = machine_of(&id, true);
+    let (entered, entered_receiver) = std::sync::mpsc::channel();
+    let release = Arc::new(std::sync::Barrier::new(2));
+    *guest.stall.lock().unwrap() = Some((entered, release.clone()));
+    let auto = apply_approval_in(gate, guest.clone(), &paths, &machine, Approval::Auto, true)
+        .unwrap()
+        .unwrap();
+    entered_receiver
+        .recv_timeout(Duration::from_secs(10))
+        .unwrap();
+    // Back to ask while auto is still running. The ask result from before must not leave
+    // the choice pending: whether a follow-up is scheduled or not, the running turn
+    // converges on the current choice.
+    let back =
+        apply_approval_in(gate, guest.clone(), &paths, &machine, Approval::Ask, true).unwrap();
+    release.wait();
+    auto.join().unwrap();
+    if let Some(back) = back {
+        back.join().unwrap();
+    }
+    assert_eq!(guest.modes(), ["ask", "auto", "ask"]);
+    assert_eq!(guest.configured().as_deref(), Some("ask"));
+    let state = answer_of(&paths, &id, true);
+    assert_eq!(
+        (
+            state["approval"].as_str(),
+            state["appliedApproval"].as_str(),
+            state["approvalApply"].as_str()
+        ),
+        (Some("ask"), Some("ask"), Some("applied"))
+    );
+    assert!(!is_pending(&id));
+}
+
+#[test]
+fn a_delete_of_the_vm_cancels_a_running_apply_and_another_vms_delete_does_not() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(21);
+    write_machines_of(&paths, &id);
+    let (guest, entered) = hanging(&id);
+    let gate = test_gate();
+    let handle = apply_with(gate, guest, &paths, "dev", Trigger::Boot).unwrap();
+    entered.recv_timeout(Duration::from_secs(10)).unwrap();
+    let other = vm(22);
+    let queued = std::thread::spawn(move || {
+        drop(gate.removing(&[other], "Deleting other").unwrap());
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!handle.is_finished(), "another VM's delete leaves it alone");
+    let started = std::time::Instant::now();
+    drop(gate.removing(&[id.clone()], "Deleting dev").unwrap());
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "delete waited {:?}",
+        started.elapsed()
+    );
+    handle.join().unwrap();
+    queued.join().unwrap();
+    assert_eq!(
+        settings(&paths, &id).last.unwrap().reason.as_deref(),
+        Some("cancelled")
+    );
+}
+
+/// Runs the manual setup on its own thread inside the VM's cancellable turn, like the
+/// desktop action does.
+fn manual_setup(
+    gate: &'static runtime::operation_gate::OperationGate,
+    guest: Arc<Hanging>,
+    paths: RuntimePaths,
+    id: String,
+) -> std::thread::JoinHandle<Result<Value, RuntimeError>> {
+    std::thread::spawn(move || {
+        let turn = gate.vm(&id, "dev", "Updating dev desktop").unwrap();
+        turn.allow_cancel();
+        setup_with(
+            gate,
+            guest.as_ref(),
+            &paths,
+            &machine_of(&id, true),
+            true,
+            turn.cancel_token(),
+        )
+    })
+}
+
+#[test]
+fn manual_setup_is_cancelled_by_a_stop_of_the_vm_and_by_quit() {
+    for (n, shutdown) in [(23, false), (24, true)] {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let id = vm(n);
+        write_machines_of(&paths, &id);
+        let (guest, entered) = hanging(&id);
+        let gate = test_gate();
+        let handle = manual_setup(gate, guest, paths.clone(), id.clone());
+        entered.recv_timeout(Duration::from_secs(10)).unwrap();
+        let started = std::time::Instant::now();
+        let waiting = if shutdown {
+            gate.kind(runtime::operation_gate::OperationKind::Shutdown)
+                .computer("Quitting")
+                .unwrap()
+        } else {
+            gate.kind(runtime::operation_gate::OperationKind::Lifecycle)
+                .vm(&id, "dev", "Stopping dev")
+                .unwrap()
+        };
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "waited {:?}",
+            started.elapsed()
+        );
+        drop(waiting);
+        assert!(matches!(
+            handle.join().unwrap(),
+            Err(RuntimeError::Cancelled { .. })
+        ));
+        assert_eq!(
+            settings(&paths, &id).last.unwrap().reason.as_deref(),
+            Some("cancelled")
+        );
+    }
+}
+
+#[test]
+fn an_attempt_that_never_ended_is_applied_again_even_when_the_last_result_matches() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(25);
+    write_machines_of(&paths, &id);
+    set_approval(&paths, &id, Approval::Auto).unwrap();
+    let guest = Guest::new(&id);
+    let gate = test_gate();
+    boot_of(gate, &guest, &paths).unwrap().join().unwrap();
+    assert!(!read_policy(&paths, &id).needs_apply());
+    // A forced setup (a new harness was installed) dies before it records a result.
+    struct Crashing;
+    impl RuntimeRunner for Crashing {
+        fn run(
+            &self,
+            _: &RuntimePaths,
+            _: &[String],
+            _: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            panic!("the app was killed");
+        }
+    }
+    let machine = machine_of(&id, true);
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = setup_with(
+            gate,
+            &Crashing,
+            &paths,
+            &machine,
+            true,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+    }));
+    assert!(crashed.is_err());
+    let stored = read_policy(&paths, &id);
+    assert_eq!(stored.last.as_ref().unwrap().outcome, Outcome::Applied);
+    assert_eq!(stored.unfinished, Some(Approval::Auto));
+    assert!(stored.needs_apply());
+    assert_eq!(answer_of(&paths, &id, false)["approvalApply"], "pending");
+    // The next app start applies it again, and the result replaces the marker.
+    let runner: SharedRunner = guest.clone();
+    let handles = reconcile_in(gate, &runner, &paths, &["dev".to_owned()]);
+    assert_eq!(handles.len(), 1);
+    for handle in handles {
+        handle.join().unwrap();
+    }
+    assert_eq!(guest.modes(), ["auto", "auto"]);
+    let stored = read_policy(&paths, &id);
+    assert_eq!(stored.unfinished, None);
+    assert!(!stored.needs_apply());
+    assert_eq!(answer_of(&paths, &id, true)["approvalApply"], "applied");
+}
+
+#[test]
+fn a_run_that_was_not_an_attempt_leaves_the_unfinished_marker_as_it_was() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(26);
+    write_machines_of(&paths, &id);
+    let guest = Guest::new(&id);
+    guest.plan([Reply::Report("failed", Some("app-missing"))]);
+    boot_of(test_gate(), &guest, &paths)
+        .unwrap()
+        .join()
+        .unwrap();
+    let stored = read_policy(&paths, &id);
+    assert_eq!((stored.unfinished, stored.last), (None, None));
+}
+
+#[test]
+fn the_runtimes_exec_timeout_is_a_timed_out_attempt_not_an_unreachable_sandbox() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(27);
+    write_machines_of(&paths, &id);
+    set_approval(&paths, &id, Approval::Auto).unwrap();
+    let guest = Guest::new(&id);
+    // MicroSandbox's `msb exec --timeout 900s` ends this way (drive_stream in exec.rs).
+    guest.plan([Reply::Failed("Error: exec timed out after 900s")]);
+    boot_of(test_gate(), &guest, &paths)
+        .unwrap()
+        .join()
+        .unwrap();
+    let last = settings(&paths, &id).last.unwrap();
+    assert_eq!(
+        (last.outcome, last.reason.as_deref()),
+        (Outcome::Failed, Some("timed-out"))
+    );
+    // Other failures of the command stay unreachable.
+    for detail in [
+        "exec session ended without exit event",
+        "the sandbox timed out after 5s",
+    ] {
+        guest.plan([Reply::Failed(detail)]);
+        boot_of(test_gate(), &guest, &paths)
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(
+            settings(&paths, &id).last.unwrap().reason.as_deref(),
+            Some("unreachable"),
+            "{detail}"
+        );
+    }
 }
