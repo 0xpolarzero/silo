@@ -75,3 +75,11 @@ retains its existing rendering and caller-owned tooltip behavior.
 Regression: long string fixtures in `list-row.test.tsx`,
 `disclosure-header.test.tsx`, and `status-badge.test.tsx` failed for missing titles
 before the fix. Existing row action and disclosure keyboard tests still pass.
+
+## Secret restart notice
+
+The 10 px "Restart to apply" text used `amber-600` in light mode. The regression
+renders `SecretsPage` with a restart-required secret, reads the actual notice
+class and installed Tailwind palette, and reproduces 3.19:1 on white. Change the
+light class to the existing warning-text shade `amber-700`; retain `amber-400`
+in dark mode. Both shades now pass AA on every neutral theme surface.
