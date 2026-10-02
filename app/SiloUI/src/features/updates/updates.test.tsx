@@ -5,7 +5,7 @@ import { UpdatesCard, UpdateNotice } from "./updates"
 import { UpdatesProvider, type UpdateBackend, type UpdateSnapshot } from "./update-store"
 
 const state: UpdateSnapshot = { phase: "idle", lastChecked: null, retryAction: null, currentVersion: "0.1.0", availableVersion: null, releaseNotes: null, downloadedBytes: 0, totalBytes: null, automaticChecks: true, packageKind: "macos", releaseUrl: "https://github.com/0xpolarzero/silo/releases", error: null, errorDetails: null, installBlockReason: null, runningSandboxes: [], canInstall: true }
-function mount(initial: Partial<UpdateSnapshot> = {}) {
+function mount(initial: Partial<UpdateSnapshot> = {}, adjust: (backend: UpdateBackend) => void = () => {}) {
   let emit!: (value: UpdateSnapshot) => void
   const backend: UpdateBackend = {
     read: vi.fn(async () => ({ ...state, ...initial })),
@@ -17,9 +17,23 @@ function mount(initial: Partial<UpdateSnapshot> = {}) {
     openRelease: vi.fn(async () => {}),
   }
   const open = vi.fn()
+  adjust(backend)
   render(<UpdatesProvider backend={backend}><UpdateNotice onOpen={open} /><UpdatesCard /></UpdatesProvider>)
   return { backend, open, emit: (patch: Partial<UpdateSnapshot>) => act(() => emit({ ...state, ...initial, ...patch })) }
 }
+it("restores update events after returning to a window whose subscription failed", async () => {
+  const { backend, emit } = mount({}, backend => {
+    vi.mocked(backend.subscribe).mockRejectedValueOnce(new Error("event registration failed"))
+  })
+  expect(await screen.findByRole("alert")).toHaveTextContent("Silo could not load updates. Try again.")
+  fireEvent.focus(window)
+  await waitFor(() => expect(backend.subscribe).toHaveBeenCalledTimes(2))
+  expect(await screen.findByText("Version 0.1.0")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  emit({ phase: "available", availableVersion: "0.2.0" })
+  expect(screen.getByRole("status")).toHaveTextContent("Silo 0.2.0 is available.")
+  expect(backend.check).not.toHaveBeenCalled()
+})
 it("loads the installed version without a fake up-to-date result and persists automatic checks", async () => {
   const user = userEvent.setup()
   const { backend } = mount()
