@@ -104,6 +104,11 @@ has its own 125 MiB retention budget. Execution floods cannot evict console
 records either. Retention runs in the pinned runtime patch, whose
 `logging_retention.rs` matches Silo's `log_retention.rs` byte for byte, including
 regressions for floods in both directions and shared runtime/kernel eviction.
+Age-marker filenames append `.started` to the native
+[`Path::as_os_str`](https://doc.rust-lang.org/std/path/struct.Path.html#method.as_os_str)
+bytes, preserving non-UTF-8 runtime directories instead of replacing bytes through
+display text. The shared module tests this boundary on Unix and actual expiry in
+such a directory on Linux.
 
 Copy copies the records currently fetched, with identifying context.
 Export… saves all matching pages through the native save dialog as JSON
@@ -125,6 +130,10 @@ pagination, lifecycle diagnostics, and exports reach the UI. The existing
 and [passwords](https://docs.rs/url/latest/url/struct.Url.html#method.password),
 including token-only usernames and percent-encoded credentials. Public URLs and
 email addresses remain readable. This filtering runs after runtime persistence.
+Command lines with password, passphrase, token, secret, key, credential, or user
+options are also hidden. The filter recognizes separated long-option words
+and [curl's `-u` credential option](https://curl.se/docs/manpage.html#-u),
+because its username/password value does not need an assignment or URL.
 
 The pinned runtime's [retention patch](../app/SiloUI/patches/microsandbox-log-retention-desktop-start-0.7.6.patch)
 renames older segments to increasing numeric suffixes. Silo uses numeric suffix

@@ -1,8 +1,68 @@
 import assert from "node:assert/strict"
-import { execFileSync } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import { readFileSync } from "node:fs"
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { gunzipSync } from "node:zlib"
+import { createHash } from "node:crypto"
 import test from "node:test"
 import { GUEST_IMAGE_VERSION, guestImageMetadata, lcuArchive, verifyGuestImage } from "./build-guest-image.mjs"
+
+test("metadata CLI works through a symlink to the script", async t => {
+  const root = await mkdtemp(join(tmpdir(), "silo-guest-cli-link-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const entry = join(root, "guest-image.mjs")
+  await symlink(new URL("./build-guest-image.mjs", import.meta.url), entry)
+  const result = spawnSync(process.execPath, [entry, "metadata"], { encoding: "utf8",
+    env: { ...process.env, GITHUB_REPOSITORY: "fixture/silo" } })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, new RegExp(`^version=${GUEST_IMAGE_VERSION}$`, "m"))
+  assert.match(result.stdout, /^image=ghcr.io\/fixture\/silo-guest:/m)
+})
+
+for (const saveExit of [1, 0]) {
+  test(`guest archive publication preserves complete outputs when docker save exits ${saveExit}`, async t => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "silo-guest-save-")))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const scripts = join(root, "scripts")
+    const guest = join(root, "src-tauri/guest")
+    const output = join(root, "src-tauri/guest-image-artifacts/arm64")
+    const commands = join(root, "commands")
+    for (const directory of [scripts, guest, output, commands]) await mkdir(directory, { recursive: true })
+    const script = join(scripts, "build-guest-image.mjs")
+    await writeFile(script, await readFile(new URL("./build-guest-image.mjs", import.meta.url)))
+    await writeFile(join(guest, "lcu-lock.json"), await readFile(new URL("../src-tauri/guest/lcu-lock.json", import.meta.url)))
+    await writeFile(join(guest, "verify-tools.sh"), "true\n")
+    await writeFile(join(root, "package.json"), '{"repository":{"url":"https://github.com/fixture/silo"}}')
+    await writeFile(join(output, "image.tar.gz"), "previous verified archive")
+    await writeFile(join(output, "manifest.json"), "previous manifest")
+    const docker = `#!${process.execPath}
+const args = process.argv.slice(2)
+if (args[0] === 'image' && args[1] === 'inspect') console.log(JSON.stringify([{ Id: 'sha256:fixture' }]))
+if (args[0] === 'run' && args.at(-1) === '/usr/local/share/silo-packages.txt') console.log('fixture-package\\t1')
+if (args[0] === 'image' && args[1] === 'save') {
+  process.stdout.write('saved image fixture', () => process.exit(${saveExit}))
+}
+`
+    await writeFile(join(commands, "docker"), docker, { mode: 0o755 })
+    const result = spawnSync(process.execPath, [script, "arm64"], { encoding: "utf8", env: {
+      ...process.env, PATH: `${commands}:${dirname(process.execPath)}`, GITHUB_REPOSITORY: "fixture/silo", GITHUB_SHA: "fixture",
+    } })
+    assert.equal(result.status, saveExit, result.stderr)
+    if (saveExit) {
+      assert.equal(await readFile(join(output, "image.tar.gz"), "utf8"), "previous verified archive")
+      assert.equal(await readFile(join(output, "manifest.json"), "utf8"), "previous manifest")
+    } else {
+      const archive = await readFile(join(output, "image.tar.gz"))
+      assert.equal(gunzipSync(archive).toString(), "saved image fixture")
+      const manifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"))
+      assert.equal(manifest.archiveSha256, createHash("sha256").update(archive).digest("hex"))
+      assert.equal(manifest.archiveBytes, archive.length)
+    }
+    assert.deepEqual((await readdir(output)).sort(), ["image.tar.gz", "manifest.json"])
+  })
+}
 
 test("publication names derive from the recipe version and the publishing repository", () => {
   assert.deepEqual(guestImageMetadata({ GITHUB_REPOSITORY: "Example-Owner/silo" }), {

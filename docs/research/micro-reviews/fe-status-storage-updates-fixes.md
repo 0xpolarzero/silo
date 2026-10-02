@@ -27,3 +27,13 @@ The test `keeps a failed update connection visible when focus returns during lis
 - **Evidence:** The regression test `retries opening manual installers after the release page failed to open` failed with one `openRelease` call where two were required. The fallback Retry branch called `updates.check()` for this state.
 - **Suggested fix:** Route Retry to `openRelease()` when the available manual update's action is View installers.
 - **Regression test:** Reject the first `openRelease()`, click Retry, and assert the second browser action runs without invoking the update checker or downloader.
+
+## fe-status-storage-updates-5: Queued folder reads start after the picker closes
+
+- **Severity:** P3
+- **Location:** `app/SiloUI/src/features/status-bar/status-folder-picker.tsx:28`.
+- **Trigger:** Rapidly visit several cached folders while three directory requests are pending, then close the picker before one request completes.
+- **Consequence:** Queued reads for folders that are no longer visible still invoke the VM directory loader after the picker unmounts. Closing the picker only removes its polling timer and window listeners; it does not cancel queued backend work.
+- **Evidence:** The regression test `cancels queued directory reads when the folder picker closes` queued `/workspace/c`, unmounted, completed `/workspace/a`, and observed a new loader call for `/workspace/c`. The directory store already supports canceling queued work through `invalidateWorkspace()`.
+- **Suggested fix:** Invalidate the picker's workspace requests on unmount or target replacement. Keep the store reusable through StrictMode's cleanup replay rather than permanently disposing it during that replay.
+- **Regression tests:** Navigate cached folders until a read queues, unmount, settle an active read, and assert the queued path is never requested. Under StrictMode, assert folders still load and opening becomes enabled after setup replays.

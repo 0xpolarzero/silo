@@ -26,7 +26,7 @@ No installed app, live VM, production HOME, Keychain, or remote computer is used
 
 ### GB-02 Failed older-key restriction is hidden by a successful handshake
 
-**Priority:** P2. **Status:** open; correction needs an explicit migration-result contract.
+**Priority:** P2. **Status:** fixed in this commit; handshake errors now reach the controller.
 
 **Trigger:** Upgrade an owner with an older unrestricted Silo key, then handshake when rewriting `authorized_keys` fails, or when the file is symlink-managed.
 
@@ -107,4 +107,8 @@ GB-01 extends `remote::setup_tests::public_key_install_preserves_existing_unterm
 - Bridge review covered address validation, shell argument construction, public-key input, installation and repointing, key restrictions and upgrade, framed replies/version rejection, local socket admission, and guest-stream routing. Public-key comments are not evaluated as shell source; the literal-input fixture remains covered. Protocol version mismatch fails closed; this is not a promise of interoperability with protocol 1.
 - Vendor review covered `SILO-PATCH.md`, installer delegation, same-filesystem staging, archive root/type checks, directory swap/rename, synchronization, and interruption/cleanup tests. New guest/vendor defects were not confirmed in this pass. Linux AppImage replacement and actual signed application launches remain unqualified.
 
-Next action: implement and test an explicit older-key migration result for GB-02.
+Next action: replace owner forwarding with the existing guest SSH transport for GB-03.
+
+## Follow-up fix loop
+
+GB-02: the production migration helper now rejects an externally managed file only when it retains the calling controller's known unrestricted Silo line. Missing keys, unrelated personal keys, and already restricted lines remain valid. Failed replacement reaches the normal bridge error reply with a repair instruction; managed targets remain unchanged. The new `handshake_reports_failed_key_upgrade_and_preserves_managed_files` fixture failed before the fix (`Ok(Null)` instead of an error), then passed for symlink management, denied replacement, repair/retry, already restricted, absent, and no-key cases. The fixture harness extracts the production functions and maintained tests, uses shared cached Rust dependencies, and supplies only channel/lock/error wrappers; it is not a live sshd test. Restriction applies to subsequent authentications, not the already authenticated upgrade session.

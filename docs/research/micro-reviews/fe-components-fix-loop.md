@@ -21,3 +21,24 @@ Scope: `app/SiloUI/src/components/`, correctness and accessibility defects found
 - **Suggested fix:** Clamp stored keyboard selection to the current result list before committing its render.
 - **Regression:** `filter-combobox.test.tsx` shrinks an open list, checks a valid active descendant, and selects it with Enter.
 - **Verification:** The new case failed before the fix; focused tests and the required checks are run before commit.
+
+## FE-COMPONENTS-6 — P3 — Older clipboard completion overwrites newer feedback
+
+- **File:line at discovery:** `app/SiloUI/src/components/copy-button.tsx:24–32`.
+- **Trigger:** Click Copy twice before the first clipboard write completes; let the second finish, then settle the first with the opposite result.
+- **Evidence:** Each completion unconditionally updates the same status and starts a reset timer. Deferred clipboard fixtures fail in both orders: late success changes the latest failure to success, and late failure changes the latest success to failure.
+- **Consequence:** The button announces the result of an older attempt instead of the user's latest attempt.
+- **Suggested fix:** Assign each write an attempt token; only the latest mounted attempt may change feedback or start its reset timer.
+- **Regression:** `copy-button.test.tsx` controls the two clipboard promises and checks that both latest-success and latest-failure feedback survive an older opposite completion.
+- **Verification:** Both new cases failed before the fix; focused tests and the required checks are run before commit.
+- **Integration:** Concurrent commit `dfebec66` supplied the same attempt guard while this fix was being checked. The merge retains that implementation and its cleanup tests, adds both opposite-result regressions from this review, and drops the duplicate changeset.
+
+## FE-COMPONENTS-7 — P2 — Keeping a transfer running loses keyboard position
+
+- **File:line at discovery:** `app/SiloUI/src/components/operation-toast-body.tsx:76–82` and `99`.
+- **Trigger:** Open an import or export toast's cancellation confirmation, then activate Keep going with Enter.
+- **Evidence:** Keep going switches the conditional body back to progress, unmounting the focused button without restoring focus. The new keyboard regression fails because Cancel is rendered but focus remains on the document.
+- **Consequence:** The user loses their keyboard position while the transfer continues and cannot reopen its cancellation prompt with Enter.
+- **Suggested fix:** Retain the Cancel button ref and restore it after leaving the confirmation, using the existing focus helper.
+- **Regression:** `operation-toast-body.test.tsx` enters the prompt, keeps going with Enter, checks Cancel focus, and reopens the prompt with Enter without invoking cancellation.
+- **Verification:** The new case failed before the fix; focused tests and the required checks are run before commit.

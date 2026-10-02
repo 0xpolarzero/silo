@@ -19,6 +19,21 @@ function deferred<T>() {
 afterEach(() => vi.useRealTimers())
 
 describe("cached log history", () => {
+  it.each([false, true])("names the owning computers for equally named sandbox failures (older page: %s)", async older => {
+    const { options, workspace } = fixture()
+    const remote = { ...workspace, machine: { ...workspace.machine, id: "remote" }, computer: { id: "office", name: "Office Mac", address: "owner@office", connected: true, vmId: "vm-1" } }
+    options.workspaces = [workspace, remote]
+    let fail = !older
+    options.loader = vi.fn(async request => {
+      if (fail) throw new Error("Connection lost")
+      return fixtureLogPage(request.computerId ? remote : workspace, { ...request, limit: 2 })
+    })
+    const view = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    if (older) { fail = true; await act(() => view.result.current.loadOlder()) }
+    expect(view.result.current.error).toBe(`${workspace.machine.name} (This computer): Connection lost; ${workspace.machine.name} (Office Mac): Connection lost`)
+  })
+
   it.each([false, true])("preserves a structured failure message and retries the failed read (older page: %s)", async older => {
     const { options, workspace, loader } = fixture()
     const message = "The connection was lost. Reconnect this computer, then retry."

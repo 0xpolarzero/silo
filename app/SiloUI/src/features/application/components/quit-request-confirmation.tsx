@@ -3,6 +3,7 @@ import { AlertDialog } from "radix-ui"
 
 import type { QuitRequest } from "@/desktop/settings"
 import { Button } from "@/components/ui/button"
+import { restoreFocus } from "@/lib/focus"
 import { quitConfirmationDetail } from "@/features/status-bar/quit-confirmation-model"
 
 /** `connectQuitConfirmation` from `desktop/settings`: opts the window in and routes each Quit request to `ask`. */
@@ -22,6 +23,7 @@ interface PendingQuit {
 export function QuitRequestConfirmation({ connect }: { connect?: ConnectQuitConfirmation }) {
   const [pending, setPending] = useState<PendingQuit | null>(null)
   const quitButton = useRef<HTMLButtonElement>(null)
+  const previousFocus = useRef<HTMLElement | null>(null)
 
   useEffect(() => {
     if (!connect) return
@@ -56,7 +58,14 @@ export function QuitRequestConfirmation({ connect }: { connect?: ConnectQuitConf
     <AlertDialog.Portal>
       <AlertDialog.Overlay className="fixed inset-0 z-50 bg-black/20" />
       {/* Like the tray's inline confirmation, Return confirms. */}
-      <AlertDialog.Content onOpenAutoFocus={(event) => { event.preventDefault(); quitButton.current?.focus() }} className="fixed top-1/2 left-1/2 z-50 grid w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 gap-2 rounded-xl border border-border bg-popover p-4 text-xs text-popover-foreground shadow-2xl outline-none">
+      <AlertDialog.Content onOpenAutoFocus={(event) => {
+        previousFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+        event.preventDefault()
+        quitButton.current?.focus()
+      }} onCloseAutoFocus={(event) => {
+        event.preventDefault()
+        restoreFocus(previousFocus.current)
+      }} className="fixed top-1/2 left-1/2 z-50 grid w-[calc(100%-2rem)] max-w-sm -translate-x-1/2 -translate-y-1/2 gap-2 rounded-xl border border-border bg-popover p-4 text-xs text-popover-foreground shadow-2xl outline-none">
         <AlertDialog.Title className="text-[13px] font-medium">Quit Silo?</AlertDialog.Title>
         <AlertDialog.Description className="text-muted-foreground">{detail}</AlertDialog.Description>
         <div className="mt-1 flex justify-end gap-2">

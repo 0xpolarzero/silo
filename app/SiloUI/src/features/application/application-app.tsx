@@ -143,12 +143,13 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     ...(settings.browserPath && { browserPath: settings.browserPath }),
   }
   const activeRuntimeRepair = source.runtimeRepair
-  const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute)
+  const initialWorkspaceId = initialRoute?.workspace ? resolveSandboxId(initialRoute.workspace) : undefined
+  const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute && { ...initialRoute, workspace: initialWorkspaceId })
   const { tab: activeTab, workspaceSection, settingsSection } = navigation
   const workspaces = source.workspaces
   const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<Set<string>>(() => new Set(
     source.workspaces
-      .filter(({ machine }) => machine.name === initialRoute?.workspace || machine.id === initialRoute?.workspace)
+      .filter(({ machine }) => machine.id === initialWorkspaceId)
       .map(({ machine }) => machine.id),
   ))
   const [logQuery, setLogQuery] = useState("")
@@ -249,7 +250,8 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   })
 
   function resolveSandboxId(value: string) {
-    return source.workspaces.find((workspace) => workspace.machine.id === value || workspace.machine.name === value || workspaceTarget(workspace) === value)?.machine.id ?? value
+    return (source.workspaces.find((workspace) => workspace.machine.id === value)
+      ?? source.workspaces.find((workspace) => workspaceTarget(workspace) === value))?.machine.id ?? value
   }
 
   // History never keeps a page for a sandbox that no longer exists (deleted, or gone after a
@@ -257,8 +259,8 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const { forgetSandboxes } = navigation
   useEffect(() => {
     const known = new Set<string>()
-    for (const workspace of source.workspaces) known.add(workspace.machine.id).add(workspace.machine.name).add(workspaceTarget(workspace))
-    for (const machine of sandboxConfigurationOperation?.candidate.machines ?? []) known.add(machine.id).add(machine.name)
+    for (const workspace of source.workspaces) known.add(workspace.machine.id)
+    for (const machine of sandboxConfigurationOperation?.candidate.machines ?? []) known.add(machine.id)
     forgetSandboxes((workspace) => known.has(workspace))
   }, [source.workspaces, sandboxConfigurationOperation, forgetSandboxes])
 
@@ -268,7 +270,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     if (route.workspace && !wantsSection) { navigation.openSandbox(resolveSandboxId(route.workspace), route.sandboxTab); return }
     if (route.workspace || wantsSection) {
       setSelectedWorkspaceIds(new Set(source.workspaces
-        .filter(({ machine }) => machine.id === route.workspace || machine.name === route.workspace)
+        .filter(({ machine }) => route.workspace !== undefined && machine.id === resolveSandboxId(route.workspace))
         .map(({ machine }) => machine.id)))
     }
     if (route.workspaceSection || route.workspace) navigation.selectWorkspaceSection(route.workspaceSection ?? "overview")

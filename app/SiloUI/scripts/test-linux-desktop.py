@@ -23,6 +23,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.options import BaseOptions
 from selenium.webdriver.support.ui import WebDriverWait
+from channel_names import channel_names
 
 ROOT = Path(__file__).resolve().parent.parent
 EVIDENCE = Path(os.environ.get("SILO_LINUX_EVIDENCE", ROOT / "test-results/linux"))
@@ -101,7 +102,9 @@ def run():
         environment = dict(os.environ)
         environment["HOME"] = str(Path(temporary) / "home")
         Path(environment["HOME"]).mkdir(mode=0o700)
-        identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.preview")
+        names = channel_names()
+        identifier = environment.get("SILO_LINUX_APPLICATION_ID", names["development"]["identifier"])
+        environment["SILO_LINUX_APPLICATION_ID"] = identifier
         for kind in ["CONFIG", "DATA", "CACHE"]:
             directory = Path(temporary) / kind.lower()
             directory.mkdir()
@@ -303,8 +306,9 @@ def run_lifecycle():
         raise RuntimeError("Outside a container, lifecycle mode requires an exact task-owned Lima hostname")
     if not Path(environment.get("HOME", "")).is_absolute():
         raise RuntimeError("The disposable container must provide its normal absolute HOME")
-    identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.dev")
-    state_dir_name = ".silo" if identifier == "org.silo.preview" else ".silo-dev"
+    names = channel_names()
+    identifier = environment.get("SILO_LINUX_APPLICATION_ID", names["development"]["identifier"])
+    state_dir_name = names["production" if identifier == names["production"]["identifier"] else "development"]["stateDir"]
     app_data = data_home / identifier
     app_config = config_home / identifier
     settings = app_config / "settings.json"

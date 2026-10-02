@@ -4,9 +4,8 @@ import { z } from "zod"
 export const bridgeErrorCodes = [
   "update_in_progress", "unsupported_remote_operation", "cancelled", "already_queued", "busy", "not_found", "internal",
 ] as const
-export type BridgeErrorCode = (typeof bridgeErrorCodes)[number]
+type BridgeErrorCode = (typeof bridgeErrorCodes)[number]
 export const bridgeErrorSchema = z.object({ code: z.enum(bridgeErrorCodes), message: z.string() })
-export type BridgeError = z.infer<typeof bridgeErrorSchema>
 
 export function hasBridgeErrorCode(cause: unknown, code: BridgeErrorCode): boolean {
   const parsed = bridgeErrorSchema.safeParse(cause)

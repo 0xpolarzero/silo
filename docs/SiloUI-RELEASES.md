@@ -652,6 +652,12 @@ with ordinary targets, quote-breaking input and command-substitution input.
 Current release callers supply fixed matrix values; this protects the reusable
 input boundary without changing release gates or published asset names.
 
+Linux verification and release-tooling checks cancel obsolete runs for the same
+pull request and workflow. Push and manual verification runs use their run IDs,
+so they stay independent. [GitHub concurrency groups](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+are repository-wide; including the workflow name prevents cross-workflow
+cancellation. Publication and release-build concurrency policies are unchanged.
+
 Artifact-only runs have independent concurrency groups, so they do not queue
 behind or displace a pending publication. Tagged and draft publications of the
 same release tag share one concurrency group per tag, so builds of different
@@ -683,9 +689,12 @@ and package validation are outside this retry boundary; other errors fail
 immediately. This handles transient upstream download failures without
 repeating the expensive build phases.
 
-If forwarding stdout/stderr or writing the local log fails, the wrapper kills
-and reaps its bundle command before propagating that error. Python's
+Each bundle attempt runs in its own process group. If forwarding stdout/stderr
+or writing the local log fails, the wrapper stops that group and reaps its
+bundle command before propagating the error. Python's
 [`Popen` context manager](https://docs.python.org/3/library/subprocess.html#subprocess.Popen)
 waits for the child on exit; it does not stop it on an exception. The synthetic
 stream-failure regression checks all three output destinations and verifies
-that the child is reaped. This does not test a real package build.
+that the child is reaped. A descendant fixture inherits a separate pipe; EOF
+verifies that it also exits after forwarding fails. This does not test a real
+package build.

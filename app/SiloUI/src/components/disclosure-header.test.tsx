@@ -6,6 +6,14 @@ import { DisclosureHeader } from "./disclosure-header"
 import { Collapsible, CollapsibleContent } from "./ui/collapsible"
 
 describe("shared disclosure header", () => {
+  it("reveals complete text titles and captions when they are truncated", () => {
+    const title = "Remote computer name ".repeat(15)
+    const detail = "Connection details ".repeat(20)
+    render(<Collapsible><DisclosureHeader title={title} detail={detail} /></Collapsible>)
+    expect(screen.getByText(title.trim())).toHaveAttribute("title", title)
+    expect(screen.getByText(detail.trim())).toHaveAttribute("title", detail)
+  })
+
   it("toggles from its title, caption, caret and keyboard without triggering sibling actions", async () => {
     const user = userEvent.setup()
     const copy = vi.fn()

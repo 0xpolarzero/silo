@@ -14,9 +14,11 @@ describe("machine editor while saving", () => {
       isMachineCreated={() => true} isMachineRunning={() => false}
       initialEditorDraft={{ draft: machine, originalID: machine.id, insertAt: 0 }} /></TooltipProvider>)
     const user = userEvent.setup()
+    expect(screen.queryByRole("status")).not.toBeInTheDocument()
     await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "2")
     await user.click(screen.getByRole("button", { name: "Save" }))
     expect(await screen.findByRole("button", { name: "Saving…" })).toBeDisabled()
+    expect(screen.getByRole("status")).toHaveTextContent(`Saving ${machine.name}…`)
     expect(screen.getByRole("combobox", { name: "CPUs" })).toBeDisabled()
     expect(screen.getByRole("combobox", { name: "Memory" })).toBeDisabled()
   })

@@ -26,6 +26,26 @@ function fakeConnection() {
   } }
 }
 
+it.each(["Escape", "Cancel"])("restores the previous keyboard position after cancelling Quit with %s", async (dismissal) => {
+  const user = userEvent.setup()
+  const connection = fakeConnection()
+  render(<><button>Workspace action</button><QuitRequestConfirmation connect={connection.connect} /></>)
+  await waitFor(() => expect(connection.connect).toHaveBeenCalled())
+  const previous = screen.getByRole("button", { name: "Workspace action" })
+  await user.click(previous)
+  const reply = connection.ask({ requestId: 1, sandboxes: ["dev"] })
+  const dialog = await screen.findByRole("alertdialog", { name: "Quit Silo?" })
+  expect(within(dialog).getByRole("button", { name: "Quit and stop" })).toHaveFocus()
+  await user.tab()
+  expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus()
+  await user.tab({ shift: true })
+  expect(within(dialog).getByRole("button", { name: "Quit and stop" })).toHaveFocus()
+  if (dismissal === "Escape") await user.keyboard("{Escape}")
+  else await user.click(within(dialog).getByRole("button", { name: "Cancel" }))
+  await expect(reply).resolves.toBe(false)
+  await waitFor(() => expect(previous).toHaveFocus())
+})
+
 it("asks before Quit stops running sandboxes, with the tray's wording, and answers each request", async () => {
   const user = userEvent.setup()
   const connection = fakeConnection()
@@ -56,6 +76,21 @@ it("still asks when the running sandboxes could not be read", async () => {
   await waitFor(() => expect(connection.connect).toHaveBeenCalled())
   void connection.ask({ requestId: 1, sandboxes: [] })
   expect(await screen.findByRole("alertdialog", { name: "Quit Silo?" })).toHaveAccessibleDescription(/could not check which sandboxes are running/)
+})
+
+it.each(["Cancel", "Escape"])("restores the previous keyboard position after dismissing Quit with %s", async (dismissal) => {
+  const user = userEvent.setup()
+  const connection = fakeConnection()
+  render(<><input aria-label="Sandbox search" /><QuitRequestConfirmation connect={connection.connect} /></>)
+  await waitFor(() => expect(connection.connect).toHaveBeenCalled())
+  const search = screen.getByRole("textbox", { name: "Sandbox search" })
+  await user.click(search)
+  const quit = connection.ask({ requestId: 1, sandboxes: ["dev"] })
+  const dialog = await screen.findByRole("alertdialog", { name: "Quit Silo?" })
+  if (dismissal === "Cancel") await user.click(within(dialog).getByRole("button", { name: "Cancel" }))
+  else await user.keyboard("{Escape}")
+  await expect(quit).resolves.toBe(false)
+  await waitFor(() => expect(search).toHaveFocus())
 })
 
 it("keeps Silo open and stops listening when the window's UI goes away mid-question", async () => {

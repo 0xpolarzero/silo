@@ -313,3 +313,47 @@ describe("SSH badge", () => {
     expect(badge().querySelector(".lucide-triangle-alert")).toBeNull()
   })
 })
+
+
+it.each(["save", "connection"])("blocks an old SSH Retry while another %s is pending", async operation => {
+  let finish!: () => void
+  const pending = new Promise<void>(resolve => { finish = resolve })
+  const save = vi.fn().mockRejectedValueOnce(new Error("SSH save failed."))
+    .mockImplementationOnce(() => pending).mockResolvedValue(undefined)
+  const { user, actions } = setup({}, save)
+  await expand(user)
+  const toggle = screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" })
+  await user.click(toggle)
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  if (operation === "save") await user.click(toggle)
+  else {
+    vi.mocked(actions.sshConnection!).mockImplementationOnce(() => pending.then(() => null))
+    await selectAction(user, "Copy local SSH command")
+  }
+  const saves = operation === "save" ? 2 : 1
+  expect(toggle).toBeDisabled()
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(saves)
+  expect(toggle).toBeDisabled()
+  await act(async () => finish())
+  expect(toggle).toBeEnabled()
+})
+
+
+it("blocks an old SSH Retry for connection preparation while a save is pending", async () => {
+  let finish!: () => void
+  const save = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  const { user, actions } = setup({}, save)
+  vi.mocked(actions.sshConnection!).mockRejectedValueOnce(new Error("SSH preparation failed."))
+  await expand(user)
+  await selectAction(user, "Copy local SSH command")
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  const toggle = screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" })
+  await user.click(toggle)
+  expect(toggle).toBeDisabled()
+  await user.click(retry)
+  expect(actions.sshConnection).toHaveBeenCalledOnce()
+  expect(toggle).toBeDisabled()
+  await act(async () => finish())
+  expect(toggle).toBeEnabled()
+})

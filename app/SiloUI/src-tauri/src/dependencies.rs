@@ -21,6 +21,7 @@ const PROCESS_TIMEOUT: Duration = Duration::from_secs(3);
 #[cfg(target_os = "linux")]
 const MAX_HASH_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_OUTPUT: u64 = 8 * 1024;
+const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 // Embed reviewed source inputs; never derive approval from staged package metadata.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -236,13 +237,38 @@ fn expected_target() -> Option<&'static str> {
 }
 
 fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError> {
-    let bytes = fs::read(path).map_err(|error| match error.kind() {
+    let unreadable = |error: io::Error| match error.kind() {
         io::ErrorKind::NotFound => ProbeError::Missing(format!("{} is missing", path.display())),
         io::ErrorKind::PermissionDenied => {
             ProbeError::Unreadable(format!("{} cannot be read", path.display()))
         }
         _ => ProbeError::Unreadable(format!("{} could not be read: {error}", path.display())),
-    })?;
+    };
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Inspect the opened descriptor without waiting for a FIFO writer.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options.open(path).map_err(unreadable)?;
+    if !file.metadata().map_err(unreadable)?.is_file() {
+        return Err(ProbeError::Malformed(format!(
+            "{} is not a regular manifest file",
+            path.display()
+        )));
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_MANIFEST_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(unreadable)?;
+    if bytes.len() as u64 > MAX_MANIFEST_BYTES {
+        return Err(ProbeError::Malformed(format!(
+            "{} exceeds the manifest size limit",
+            path.display()
+        )));
+    }
     serde_json::from_slice(&bytes).map_err(|_| {
         ProbeError::Malformed(format!("{} is not a valid Silo manifest", path.display()))
     })
@@ -1397,6 +1423,58 @@ mod tests {
             linux_system_version_result("broken", "x86_64-unknown-linux-gnu").status,
             CheckStatus::Failed
         );
+    }
+
+    #[test]
+    fn oversized_manifest_is_rejected_before_deserialization() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.json");
+        let mut bytes = vec![b' '; MAX_MANIFEST_BYTES as usize];
+        bytes.extend_from_slice(b"{}");
+        fs::write(&path, bytes).unwrap();
+        assert!(matches!(
+            read_json::<serde_json::Value>(&path),
+            Err(ProbeError::Malformed(_))
+        ));
+        fs::write(&path, b"{}").unwrap();
+        assert_eq!(
+            read_json::<serde_json::Value>(&path).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn non_file_manifest_is_bundle_damage_rather_than_a_permission_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = read_json::<serde_json::Value>(directory.path()).unwrap_err();
+        assert!(matches!(error, ProbeError::Malformed(_)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_manifest_is_rejected_without_waiting_for_a_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("manifest.json");
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let result = run_bounded_with_timeout(
+            &std::env::current_exe().unwrap(),
+            &["--exact", "tests::fifo_manifest_reader_helper"],
+            &[("SILO_TEST_MANIFEST_FIFO", path.as_path())],
+            PROCESS_TIMEOUT,
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    #[test]
+    fn fifo_manifest_reader_helper() {
+        let Some(path) = std::env::var_os("SILO_TEST_MANIFEST_FIFO") else {
+            return;
+        };
+        assert!(matches!(
+            read_json::<serde_json::Value>(Path::new(&path)),
+            Err(ProbeError::Malformed(_))
+        ));
     }
 
     #[test]

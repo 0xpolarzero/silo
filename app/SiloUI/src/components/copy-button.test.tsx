@@ -7,6 +7,27 @@ import { CopyButton } from "./copy-button"
 const labels = { idle: "Copy command", copied: "Command copied", failed: "Copy failed" }
 afterEach(() => { vi.useRealTimers() })
 describe("CopyButton icons and feedback", () => {
+  it.each([false, true])("keeps the latest clipboard result when an earlier request settles late (latest fails: %s)", async latestFails => {
+    const user = userEvent.setup()
+    let resolveFirst!: () => void
+    let rejectFirst!: (error: Error) => void
+    const first = new Promise<void>((resolve, reject) => { resolveFirst = resolve; rejectFirst = reject })
+    const write = vi.spyOn(navigator.clipboard, "writeText").mockReturnValueOnce(first)
+    if (latestFails) write.mockRejectedValueOnce(new Error("Clipboard denied"))
+    else write.mockResolvedValueOnce(undefined)
+    render(<CopyButton value="ssh root@127.0.0.1" labels={labels} />)
+    const button = screen.getByRole("button", { name: "Copy command" })
+    await user.click(button)
+    await user.click(button)
+    const latestLabel = latestFails ? "Copy failed" : "Command copied"
+    expect(screen.getByRole("button", { name: latestLabel })).toBe(button)
+    await act(async () => {
+      if (latestFails) resolveFirst()
+      else rejectFirst(new Error("Earlier clipboard request failed"))
+      await first.catch(() => {})
+    })
+    expect(screen.getByRole("button", { name: latestLabel })).toBe(button)
+  })
   it("resolves the current text only when copying", async () => {
     const user = userEvent.setup()
     const value = vi.fn(() => "first page")
