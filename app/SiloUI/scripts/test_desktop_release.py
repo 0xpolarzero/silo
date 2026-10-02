@@ -98,6 +98,26 @@ class DesktopBuildTests(unittest.TestCase):
         self.assertEqual(command[-3], 'src-tauri/tauri.linux.package.conf.json')
         self.assertEqual(json.loads(command[-1]), {'bundle': {'createUpdaterArtifacts': False}})
 
+    def test_tauri_configuration_precedes_raw_cargo_arguments(self):
+        cases = [('darwin', ['--debug', '--no-bundle']),
+                 ('linux', ['--debug', '--bundles', 'deb']),
+                 ('linux', ['--bundles', 'deb'])]
+        for platform, options in cases:
+            self.calls.clear()
+            with self.subTest(platform=platform, options=options):
+                build(options + ['--', '--locked'], root=self.root, platform=platform, run=self.command)
+                command = self.calls[0][0]
+                separator = command.index('--')
+                self.assertEqual(command[separator + 1:], ['--locked'])
+                tauri_arguments = command[3:separator]
+                if '--debug' in options:
+                    self.assertIn('src-tauri/tauri.dev.conf.json', tauri_arguments)
+                if platform == 'linux':
+                    self.assertIn('src-tauri/tauri.linux.package.conf.json', tauri_arguments)
+                    self.assertEqual(json.loads(tauri_arguments[-1]), {
+                        'bundle': {'createUpdaterArtifacts': False},
+                    })
+
     def test_distribution_artifacts_cannot_be_made_before_finalization(self):
         for args in (['--bundles', 'dmg'], ['--bundles=all'], ['-b', 'app', 'dmg'],
                      ['--target', 'universal-apple-darwin'], ['--', '--target-dir', 'elsewhere']):
