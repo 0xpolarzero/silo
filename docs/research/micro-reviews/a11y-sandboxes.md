@@ -53,3 +53,11 @@ Scope: `app/SiloUI/src/features/sandboxes/`. Verification uses deterministic fro
 - Fix: expose the computer badge as an ancillary note, matching SecretChangesLabel; use a named group for each disk value and a focus-visible ring.
 - Coverage: keyboard access to the offline computer note and its tooltip; normal tab order through resource controls to the two named read-only groups with disabled selects.
 - Primary sources: WAI-ARIA [generic role](https://www.w3.org/TR/wai-aria-1.2/#generic) and [note role](https://www.w3.org/TR/wai-aria-1.2/#note).
+
+## Reorder handle omits its keyboard instructions
+
+- Trigger: focus a sandbox's Reorder control with assistive technology.
+- Evidence: the regression failed because its accessible description was empty. The handle only responds to Up/Down, with no visible text or associated instructions explaining that interaction.
+- Consequence: a keyboard user encounters a button without knowing how to change the order.
+- Fix: associate each handle with shared offscreen arrow-key instructions using a per-list id.
+- Coverage: the described handle submits the expected reordered configuration, retains focus when the source publishes the new order, and updates the existing polite live announcement.

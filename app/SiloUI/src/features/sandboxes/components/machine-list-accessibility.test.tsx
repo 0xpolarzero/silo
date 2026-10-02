@@ -104,3 +104,20 @@ it.each(["Edit", "Duplicate settings for"])("focuses the editor after selecting 
   await user.click(screen.getByRole("menuitem", { name: `${action} ${machine.name}` }))
   await waitFor(() => expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveFocus())
 })
+
+it("describes the reorder keys and announces a keyboard move without losing focus", async () => {
+  const first = productionMachineDefaults[0]
+  const second = { ...first, id: "00000000-0000-4000-8000-0000000000ff", name: "second" }
+  const onMachinesChange = vi.fn()
+  const view = (machines: typeof first[]) => <TooltipProvider><MachineList machines={machines} onMachinesChange={onMachinesChange} /></TooltipProvider>
+  const { rerender } = render(view([first, second]))
+  const user = userEvent.setup()
+  const reorder = screen.getByRole("button", { name: `Reorder ${first.name}` })
+  expect(reorder).toHaveAccessibleDescription("Use the Up and Down arrow keys to reorder.")
+  reorder.focus()
+  await user.keyboard("{ArrowDown}")
+  expect(onMachinesChange).toHaveBeenCalledExactlyOnceWith([second, first], [first, second])
+  rerender(view([second, first]))
+  expect(reorder).toHaveFocus()
+  expect(screen.getByText(`${first.name} moved to position 2 of 2.`)).toHaveAttribute("aria-live", "polite")
+})
