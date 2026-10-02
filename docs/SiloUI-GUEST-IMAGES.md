@@ -52,6 +52,18 @@ Normal `npm run runtime:prepare` downloads that exact archive once and stages it
 under `src-tauri/runtime/guest-image`. It does not require Docker. Cached or local
 artifacts must pass the same checksum; mismatches never silently reach an app.
 
+Preparation streams each archive through incremental SHA-256 verification into
+an exclusive temporary file beside its destination, then renames it only after
+verification succeeds. Cached guest archives are verified in 1 MiB chunks.
+Downloads stop at the architecture's pinned compressed length and have a
+10-minute deadline covering response headers and body. An interrupted,
+truncated, oversized or altered replacement leaves the previous archive and
+manifest intact. Local approved artifacts use the same streaming verifier.
+MicroSandbox, Git and Git LFS source downloads share the file pipeline; inputs
+without a pinned length have a 1 GiB cap, and license downloads have a 4 MiB cap.
+See [streaming build-input measurements](research/stream-build-inputs-2026-10-02.md)
+for peak memory, preparation timings and regression coverage.
+
 To produce a candidate image locally, with Docker available:
 
 ```sh

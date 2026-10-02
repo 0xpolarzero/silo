@@ -1,3 +1,4 @@
+import { Readable } from "node:stream"
 import { execFileSync, type ExecFileSyncOptions } from "node:child_process"
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
@@ -96,7 +97,7 @@ describe("bundled MicroSandbox release staging", () => {
       targetTriple,
       selected,
       licenses: [],
-      fetchBytes: async () => Buffer.from("corrupt-msb"),
+      fetchStream: async () => Readable.from([Buffer.from("corrupt-msb")]),
     })).rejects.toThrow("msb-darwin-aarch64 checksum mismatch")
     await expect(stat(join(appRoot, "src-tauri/runtime/microsandbox/manifest.json"))).rejects.toThrow()
   })
@@ -124,24 +125,27 @@ describe("bundled MicroSandbox release staging", () => {
       await writeFile(join(appRoot, patchInput.path), patches[index])
     }
 
-    const fetchBytes = vi.fn(async (url: string) => {
-      if (url.endsWith(`/${selected.executableAsset}`)) return executable
-      if (url.endsWith(`/${selected.agentdAsset}`)) return agentd
-      if (url === sourceArtifact.url) return source
-      if (url.endsWith(`/${selected.libraryAsset}`)) return library
-      if (url === licenses[0].url) return apache
+    const fetchStream = vi.fn(async (url: string) => {
+      if (url.endsWith(`/${selected.executableAsset}`)) return Readable.from([executable])
+      if (url.endsWith(`/${selected.agentdAsset}`)) return Readable.from([agentd])
+      if (url === sourceArtifact.url) return Readable.from([source])
+      if (url.endsWith(`/${selected.libraryAsset}`)) return Readable.from([library])
+      if (url === licenses[0].url) return Readable.from([apache])
       throw new Error(`unexpected URL: ${url}`)
     })
-    fetchBytes.mockImplementation(async (url: string) => {
-      if (url.endsWith(`/${selected.executableAsset}`)) return executable
-      if (url.endsWith(`/${selected.agentdAsset}`)) return agentd
-      if (url === sourceArtifact.url) return source
-      if (url.endsWith(`/${selected.libraryAsset}`)) return library
-      if (url === licenses[0].url) return apache
+    fetchStream.mockImplementation(async (url: string) => {
+      if (url.endsWith(`/${selected.executableAsset}`)) return Readable.from([executable])
+      if (url.endsWith(`/${selected.agentdAsset}`)) return Readable.from([agentd])
+      if (url === sourceArtifact.url) return Readable.from([source])
+      if (url.endsWith(`/${selected.libraryAsset}`)) return Readable.from([library])
+      if (url === licenses[0].url) return Readable.from([apache])
       throw new Error(`unexpected URL: ${url}`)
     })
-    const buildExecutable = vi.fn(async () => executable)
-    const staged = await stageRuntime({ appRoot, targetTriple, fetchBytes, selected, licenses, sourceArtifact, buildExecutable, verifyExecutable: false })
+    const buildExecutable = vi.fn(async ({ sourceArchive }: { sourceArchive: string }) => {
+      expect(await readFile(sourceArchive)).toEqual(source)
+      return executable
+    })
+    const staged = await stageRuntime({ appRoot, targetTriple, fetchStream, selected, licenses, sourceArtifact, buildExecutable, verifyExecutable: false })
 
     expect(staged.executablePath).toBe(join(appRoot, "src-tauri/binaries/msb-aarch64-apple-darwin"))
     expect(staged.libraryPath).toBe(join(appRoot, "src-tauri/runtime/microsandbox/aarch64-apple-darwin/lib/libkrunfw.5.dylib"))
@@ -163,7 +167,7 @@ describe("bundled MicroSandbox release staging", () => {
     })
     expect(manifest.library).not.toHaveProperty("resourcePath")
     expect(buildExecutable).toHaveBeenCalledOnce()
-    expect(fetchBytes).toHaveBeenCalledTimes(5)
+    expect(fetchStream).toHaveBeenCalledTimes(5)
   })
 
   it("reuses an unchanged compiled runtime but rebuilds when verified embedded agent bytes change", async () => {
@@ -191,11 +195,11 @@ describe("bundled MicroSandbox release staging", () => {
       await mkdir(join(appRoot, "patches"), { recursive: true })
       await writeFile(join(appRoot, patch.path), await readFile(join(process.cwd(), patch.path)))
     }
-    const fetchBytes = async (url: string) => {
-      if (url === sourceArtifact.url) return source
-      if (url.endsWith(`/${selected.executableAsset}`)) return releaseExecutable
-      if (url.endsWith(`/${selected.agentdAsset}`)) return agentd
-      if (url.endsWith(`/${selected.libraryAsset}`)) return library
+    const fetchStream = async (url: string) => {
+      if (url === sourceArtifact.url) return Readable.from([source])
+      if (url.endsWith(`/${selected.executableAsset}`)) return Readable.from([releaseExecutable])
+      if (url.endsWith(`/${selected.agentdAsset}`)) return Readable.from([agentd])
+      if (url.endsWith(`/${selected.libraryAsset}`)) return Readable.from([library])
       throw new Error(`Unexpected download: ${url}`)
     }
     // Exercise the real download verifier, build-cache lookup, compiler orchestration,
@@ -238,7 +242,7 @@ describe("bundled MicroSandbox release staging", () => {
     }) as typeof execFileSync
     try {
       await vi.mocked(execFileSync).withImplementation(compiler, async () => {
-        const stage = () => stageRuntime({ appRoot, targetTriple, fetchBytes, selected, licenses: [], sourceArtifact, verifyExecutable: false })
+        const stage = () => stageRuntime({ appRoot, targetTriple, fetchStream, selected, licenses: [], sourceArtifact, verifyExecutable: false })
         const first = await stage()
         const firstBytes = await readFile(first.executablePath)
         expect(firstBytes.toString()).toBe("compiled runtime:agent revision one")

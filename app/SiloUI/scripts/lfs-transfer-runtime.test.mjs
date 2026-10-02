@@ -1,3 +1,4 @@
+import { Readable } from 'node:stream'
 import assert from 'node:assert/strict'
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -41,7 +42,7 @@ test('changed effective Go flags reject a previously compiled executable', async
     run: async (...args) => {
       await probeCompiler(...args)
       return { stdout: JSON.stringify({ ...compiler, GOFLAGS: '-tags=changed' }) }
-    }, fetchBytes: async () => { throw new Error('Rebuild required') } }), /Rebuild required/)
+    }, fetchStream: async () => { throw new Error('Rebuild required') } }), /Rebuild required/)
 })
 
 for (const name of ['source digest', 'binary digest']) {
@@ -58,7 +59,7 @@ for (const name of ['source digest', 'binary digest']) {
       await writeFile(path, JSON.stringify(manifest))
     }
     await assert.rejects(stageLfsTransferRuntime({ appRoot, targetTriple: 'aarch64-apple-darwin', run: probeCompiler,
-      fetchBytes: async () => { throw new Error('Rebuild required') } }), /Rebuild required/)
+      fetchStream: async () => { throw new Error('Rebuild required') } }), /Rebuild required/)
   })
 }
 
@@ -76,7 +77,7 @@ for (const location of ['runtime/lfs-transfer', `target/runtime-cache/git-lfs-tr
       await compiledFixture(join(appRoot, 'src-tauri', location), identity ?? null)
       let downloads = 0
       await assert.rejects(stageLfsTransferRuntime({ appRoot, targetTriple: 'aarch64-apple-darwin', run: probeCompiler,
-        fetchBytes: async () => { downloads++; return Buffer.from('unverified rebuild source') } }), /source checksum mismatch/)
+        fetchStream: async () => { downloads++; return Readable.from([Buffer.from('unverified rebuild source')]) } }), /source checksum mismatch/)
       assert.equal(downloads, 1, 'Rejected executable must enter the verified source build path')
     })
   }
@@ -92,7 +93,7 @@ test('compiler selection changes reject both caches even when their binary diges
     run: async (...args) => {
       await probeCompiler(...args)
       return { stdout: JSON.stringify({ ...compiler, GOVERSION: 'go1.25.2' }) }
-    }, fetchBytes: async () => { throw new Error('Rebuild required') } }), /Rebuild required/)
+    }, fetchStream: async () => { throw new Error('Rebuild required') } }), /Rebuild required/)
 })
 
 test('Debian Go uses the copyright notice of the package owning its compiler', async t => {
@@ -140,7 +141,7 @@ test('unverified source is rejected before any Go build can execute', async t =>
   t.after(() => rm(root, { recursive: true, force: true }))
   await assert.rejects(stageLfsTransferRuntime({ appRoot: root, targetTriple: 'aarch64-apple-darwin',
     run: probeCompiler,
-    fetchBytes: async () => Buffer.from('not the pinned source') }), /checksum mismatch/)
+    fetchStream: async () => Readable.from([Buffer.from('not the pinned source')]) }), /checksum mismatch/)
 })
 
 
@@ -160,7 +161,7 @@ test('cached module licenses stay writable across repeated native resource copie
     binarySha256: createHash('sha256').update(binary).digest('hex'),
   }))
   const options = { appRoot, targetTriple: 'aarch64-apple-darwin', run: probeCompiler,
-    fetchBytes: async () => { throw new Error('A valid compiled cache needs no download') } }
+    fetchStream: async () => { throw new Error('A valid compiled cache needs no download') } }
   const result = await stageLfsTransferRuntime(options)
   const notice = join(result.root, 'licenses/example-module/LICENSE')
   assert.equal((await stat(notice)).mode & 0o777, 0o644)
