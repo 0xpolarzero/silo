@@ -1,27 +1,14 @@
-# Dependencies fix-loop review
+# Dependencies micro-review
 
-Scope: `app/SiloUI/src-tauri/src/dependencies.rs`. The deadline fix also updates its guest-image validator and the frontend dependency-store regression tests.
+Scope: `app/SiloUI/src-tauri/src/dependencies.rs`.
 
-## DEPENDENCIES-1 · P2 · Native probe deadlines outlast the frontend watchdog
+Read-only source review. Checked the first, second, and third review reports for duplicates. No builds, tests, app launches, or source changes were performed.
 
-- **File:line:** `app/SiloUI/src-tauri/src/dependencies.rs:1160` in the initial reviewed source's serial `collect` path (original review: line 1133).
-- **Trigger:** Six successful macOS signature probes taking 2.6 seconds each use 15.6 seconds, before host/version probes finish. Each probe stays below its native three-second deadline.
-- **Consequence:** The frontend's 15-second watchdog replaces all rows with timeouts and discards the eventual complete report, including successful checks.
-- **Suggested fix:** Share a native collection deadline shorter than the frontend watchdog, preserve completed results, and stop unfinished probes.
-- **Regression:** Expired deadlines cannot start another subprocess; successive probes share the remaining budget; guest-image validation observes the same deadline; a partial native report arriving before the watchdog retains successful checks and specific recovery text.
-- **Status:** Fixed and folded in `2947f602`. Native collection now has a 12-second budget; subprocesses and hashing consume that budget. This is a cooperative deadline around file reads, not a guarantee that a blocked filesystem syscall will return on time.
+## DEPENDENCIES-1 · P2 · Serial probe budgets exceed the UI report deadline
 
-## DEPENDENCIES-2 · P2 · Manifest reads have no byte or file-type bound
-
-- **File:line:** `app/SiloUI/src-tauri/src/dependencies.rs:238`, `read_json`.
-- **Trigger:** Replace a runtime/Git manifest with a very large JSON file, or a FIFO without a writer. The original `fs::read` allocates for the entire file and blocks opening a FIFO before parsing or timeout checks. A directory also becomes an unreadable/permissions result rather than bundle damage.
-- **Consequence:** A damaged manifest can exhaust application memory or strand a native dependency-check worker indefinitely. Retrying after the frontend watchdog abandons that worker can start additional blocked workers.
-- **Suggested fix:** Open without waiting for FIFO writers, verify the opened descriptor represents a regular file, and bound reading before deserialization.
-- **Regression:** A valid JSON object with over 64 KiB of leading whitespace is rejected while a small object remains accepted; directories are classified as malformed; a FIFO without any writer is rejected by a child-process test with a parent-enforced deadline.
-- **Status:** Fixed by limiting manifests to 64 KiB plus one overflow byte and checking file type on the nonblocking opened descriptor.
-
-## Verification
-
-The deadline process regressions failed before implementation; the oversized-file and directory regressions also failed before their fix. Exact-source Rust harnesses under `/tmp/silo-codex-target/verification/dependencies/` passed 22 tests, including all dependency-module tests and three guest-image validation tests. These harnesses omit the unchanged Tauri command wrapper and link the shared compiled dependencies; they do not qualify the complete native application build.
-
-The dependency-store Vitest file passed 11 tests. Node 24.11.1 typecheck, touched-file lint, and Cargo formatting checks passed for the first fix. Formatting also passed after the second fix. The focused Cargo invocation used explicit synthetic GitHub configuration and remained queued on the shared artifact-directory lock; no Cargo test result is claimed. All process/file fixtures were disposable; no app, VM, credentials, or production data was used.
+- **File:line:** `app/SiloUI/src-tauri/src/dependencies.rs:1133` (serial collection), with per-process deadlines at lines 18 and 433.
+- **Trigger:** On macOS, each of the six signature verifications succeeds in 2.6 seconds. The two runtime signatures run serially at lines 845–850, and the four Git signatures run serially at lines 1005–1019. Their combined 15.6 seconds already exceeds the frontend watchdog, even before the OS, virtualization, and version probes. Every individual signature verification remains within its three-second native deadline.
+- **Evidence:** `verify_macos_signature` delegates to the three-second `run_bounded` at lines 787–795. `collect` synchronously completes the system, virtualization, and runtime checks before starting Git checks, then returns one complete report. There is no collection deadline. `app/SiloUI/src/desktop/dependencies.ts:65–70` sets a 15,000 ms watchdog; lines 82–88 clear the active request and replace every row with a timeout; line 91 discards the subsequently returned report. The native path contains eleven serial process probes on a successful macOS run, with an aggregate per-process budget of 33 seconds.
+- **Consequence:** A report containing successful checks is discarded, and onboarding presents every dependency as timed out. Retry repeats the failure when the same probe timings persist. Completed checks also disappear when a later check consumes the remaining UI budget.
+- **Suggested fix:** Define and enforce a request-level deadline compatible with the frontend watchdog, allowing time to deliver the report. Pass the remaining budget into probes and preserve completed check results when that budget expires. Coordinate the frontend deadline with the native budget; independent checks can run concurrently if their isolation is preserved.
+- **Regression test:** Inject a deterministic probe runner and clock into collection. Model six successful macOS signature probes taking 2.6 seconds each and fast successful version/host probes. Drive the dependency store watchdog with the resulting collection timing. Assert that the native report is delivered before abandonment, completed checks retain their results, and unfinished checks receive explicit timeout results. Also cover one late failing probe so its specific remediation is retained.
