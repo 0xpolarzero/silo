@@ -1,5 +1,5 @@
 //! A privileged local shell and an unprivileged guest child webview.
-use crate::{desktop_proxy::Proxy, editor, remote, remote_access, runtime};
+use crate::{desktop_proxy::Proxy, editor, owned_tunnel::Tunnel, remote, remote_access, runtime};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap,
@@ -7,10 +7,9 @@ use std::{
     os::unix::{
         fs::{FileTypeExt, MetadataExt},
         net::UnixStream,
-        process::CommandExt,
     },
     path::{Path, PathBuf},
-    process::{Child, ChildStdin, Command, Stdio},
+    process::Command,
     sync::{Mutex, OnceLock},
     time::{Duration, Instant},
 };
@@ -19,80 +18,6 @@ use tauri::{
     WebviewWindowBuilder, Window,
 };
 
-/// Runs the forward in its own process group and ends the whole group (ssh
-/// and its ProxyCommand) when Silo's end of stdin closes: on Drop, and also
-/// when Silo crashes or is force-quit, since the kernel closes it then (G-16).
-/// `kill 0` is safe only because the group is the tunnel's own.
-const WATCHDOG: &str = r#"exec 3<&0 </dev/null
-"$@" 3<&- &
-child=$!
-{ read -r _ <&3; kill -s TERM 0; } &
-exec 3<&-
-wait "$child"
-kill -s TERM 0
-"#;
-
-/// The ssh forward and the private directory holding its Unix socket (G-04).
-struct Tunnel {
-    /// The watchdog shell, leader of the tunnel's process group.
-    child: Child,
-    /// Silo's end of the watchdog pipe; closing it ends the tunnel.
-    stdin: Option<ChildStdin>,
-    /// Set once the leader is reaped: its group id may then be reused.
-    exited: bool,
-    /// Removed after the child is reaped (fields drop after `drop`).
-    _directory: Option<tempfile::TempDir>,
-}
-impl Tunnel {
-    fn spawn(command: &Command, directory: Option<tempfile::TempDir>) -> std::io::Result<Self> {
-        let mut child = crate::applications::launch::sanitize_child(&mut Command::new("/bin/sh"))
-            .arg("-c")
-            .arg(WATCHDOG)
-            .arg("silo-desktop-tunnel")
-            .arg(command.get_program())
-            .args(command.get_args())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()?;
-        let stdin = child.stdin.take();
-        Ok(Self {
-            child,
-            stdin,
-            exited: false,
-            _directory: directory,
-        })
-    }
-    fn running(&mut self) -> bool {
-        if !self.exited && !matches!(self.child.try_wait(), Ok(None)) {
-            self.exited = true;
-        }
-        !self.exited
-    }
-}
-impl Drop for Tunnel {
-    fn drop(&mut self) {
-        drop(self.stdin.take());
-        if !self.running() {
-            return;
-        }
-        // The unreaped leader keeps the group id reserved, so this reaches only
-        // the tunnel's own processes. ssh and the shell exit on TERM at once.
-        let group = self.child.id() as i32;
-        unsafe { libc::killpg(group, libc::SIGTERM) };
-        let deadline = Instant::now() + Duration::from_millis(500);
-        while Instant::now() < deadline {
-            if !self.running() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        unsafe { libc::killpg(group, libc::SIGKILL) };
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 struct Viewer {
     workspace: String,
     proxy: Option<Proxy>,
@@ -729,6 +654,7 @@ mod input_tests {
 #[cfg(test)]
 mod transport_tests {
     use super::*;
+    use std::process::Stdio;
 
     #[test]
     fn desktop_forward_uses_pinned_ssh_config_and_a_private_socket() {
@@ -894,7 +820,7 @@ mod transport_tests {
         let mut tunnel = Tunnel::spawn(&forward, None).unwrap();
         let pid = recorded_pid(&pid_file);
         // A crash or force-quit closes Silo's end of the pipe without Drop.
-        drop(tunnel.stdin.take());
+        tunnel.close_lifetime_pipe();
         assert!(ended(pid), "the forward outlived Silo");
         let deadline = Instant::now() + Duration::from_secs(5);
         while tunnel.running() {

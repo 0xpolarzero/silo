@@ -63,6 +63,19 @@ account. Readiness confirms forwarding setup, not guest application health.
 The `-N` transport and remote loopback destination preserve the existing
 `silo-remote` forced-command and `permitopen` contract.
 
+Published-port and desktop forwards share `owned_tunnel.rs`. Its watchdog shell
+leads a dedicated process group and watches a pipe held by the controller. EOF
+on controller crash or exit terminates the group, including ordinary
+ProxyCommand descendants. Closing a tunnel also closes the pipe and performs
+bounded group cleanup. Explicit group signals are sent only while the owned
+leader is unreaped, preventing a reused process-group ID from being targeted.
+SSH stays in the foreground; user `ControlPersist` or
+`ForkAfterAuthentication` settings cannot detach this tunnel from its owner.
+No process-name sweep or change to the remote bridge is involved. Subprocess
+fixture tests verify controller termination, listener closure, descendant exit,
+and survival of an unrelated process; real OpenSSH/ProxyCommand crash behavior
+still requires separate platform qualification.
+
 ## Validation
 
 Commands, counts, and final build evidence are recorded after the final verification run below. Automated tests use controlled subprocesses, sockets, and runtime responses; browser inspection uses deterministic fixture data. They do not prove real two-computer hypervisor operation.

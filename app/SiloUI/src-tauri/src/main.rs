@@ -34,6 +34,7 @@ mod log_export;
 mod log_retention;
 mod network;
 mod notifications;
+mod owned_tunnel;
 mod pre_upgrade_backup;
 mod remote;
 mod remote_access;
