@@ -42,9 +42,9 @@ pub(crate) const LONG_OPERATION: std::time::Duration = std::time::Duration::from
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct NoticeSandbox {
-    /// Stable VM id (local or remote). Groups notices and clears them on deletion.
+    /// Stable VM id, qualified by computer when remote. Routes, groups and clears notices.
     pub id: String,
-    /// Display name, shown in text and used to open the sandbox on click.
+    /// Display name, shown in notification text.
     pub name: String,
 }
 
@@ -76,7 +76,7 @@ impl Notice {
     /// `desktop/use-main-route.ts`.
     pub(crate) fn route(&self) -> Value {
         match &self.sandbox {
-            Some(sandbox) => serde_json::json!({"tab": "workspaces", "workspace": sandbox.name}),
+            Some(sandbox) => serde_json::json!({"tab": "workspaces", "workspace": sandbox.id}),
             None => serde_json::json!({"tab": "workspaces"}),
         }
     }
@@ -530,13 +530,48 @@ mod tests {
         let mut notice = failure("k", "t", "b", sandbox());
         assert_eq!(
             notice.route(),
-            json!({"tab": "workspaces", "workspace": "dev"})
+            json!({"tab": "workspaces", "workspace": "1"})
+        );
+        notice.sandbox.as_mut().unwrap().name = "renamed".into();
+        assert_eq!(
+            notice.route(),
+            json!({"tab": "workspaces", "workspace": "1"})
         );
         assert_eq!(notice.thread(), "1");
         notice.sandbox = None;
         assert_eq!(notice.route(), json!({"tab": "workspaces"}));
         assert_eq!(notice.thread(), "failures");
     }
+    #[test]
+    fn clearing_remote_notices_preserves_other_computers_with_the_same_vm_id() {
+        let mut index = DeliveredIndex::default();
+        for id in [
+            "same-id",
+            "silo-remote:office:same-id",
+            "silo-remote:lab:same-id",
+        ] {
+            index.record(&failure(
+                &format!("vm:{id}:lifecycle"),
+                "dev is running",
+                "",
+                Some(NoticeSandbox {
+                    id: id.into(),
+                    name: "dev".into(),
+                }),
+            ));
+        }
+        assert_eq!(
+            index.take("silo-remote:office:same-id"),
+            ["vm:silo-remote:office:same-id:lifecycle"]
+        );
+        assert!(index.take("silo-remote:office:same-id").is_empty());
+        assert_eq!(index.take("same-id"), ["vm:same-id:lifecycle"]);
+        assert_eq!(
+            index.take("silo-remote:lab:same-id"),
+            ["vm:silo-remote:lab:same-id:lifecycle"]
+        );
+    }
+
     #[test]
     fn delivered_index_tracks_and_clears_per_sandbox() {
         let mut index = DeliveredIndex::default();

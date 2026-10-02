@@ -545,3 +545,29 @@ it("keeps an unsaved sandbox edit while visiting another section (I-37)", async 
   await user.click(sandboxSections.getByRole("button", { name: "All sandboxes" }))
   expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
 })
+
+
+it.each(["local", "office", "lab"])("notification routes keep the next action on %s despite duplicate names and a rename", async (owner) => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const local = source.workspaces[0]
+  const vmId = local.machine.id
+  source.remoteComputers = ["office", "lab"].map(id => ({ id, name: id, address: `user@${id}`, connected: true }))
+  for (const computer of source.remoteComputers) {
+    source.workspaces.push({
+      ...structuredClone(local),
+      computer: { ...computer, vmId },
+      machine: { ...local.machine, id: `silo-remote:${computer.id}:${vmId}` },
+    })
+  }
+  const target = owner === "local" ? vmId : `silo-remote:${owner}:${vmId}`
+  const openTerminal = vi.fn()
+  const user = userEvent.setup()
+  const { rerender } = render(<ApplicationPreview source={source} actions={{ openTerminal }} initialRoute={{ workspace: target }} />)
+  await user.click(screen.getByRole("button", { name: /^Open .* in Terminal$/ }))
+  expect(openTerminal).toHaveBeenLastCalledWith(owner === "local" ? local.machine.name : target)
+  const renamed = structuredClone(source)
+  renamed.workspaces.find(workspace => workspace.machine.id === target)!.machine.name = "renamed"
+  rerender(<ApplicationPreview source={renamed} actions={{ openTerminal }} initialRoute={{ workspace: target }} />)
+  await user.click(screen.getByRole("button", { name: /^Open .* in Terminal$/ }))
+  expect(openTerminal).toHaveBeenLastCalledWith(owner === "local" ? "renamed" : target)
+})
