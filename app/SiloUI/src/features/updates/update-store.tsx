@@ -1,5 +1,5 @@
 /* oxlint-disable react/only-export-components */
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react"
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react"
 import { z } from "zod"
 
 export const updateSnapshotSchema = z.object({
@@ -40,6 +40,12 @@ export interface Updates {
 const Context = createContext<Updates | null>(null)
 export const useUpdates = () => useContext(Context)
 
+function canRequestInstall(snapshot: UpdateSnapshot | null) {
+  return Boolean(snapshot && snapshot.packageKind !== "manual" && snapshot.canInstall
+    && (snapshot.phase === "ready" || snapshot.retryAction === "install" || (snapshot.packageKind === "debian" && snapshot.phase === "available"))
+    && !["checking", "downloading", "installing"].includes(snapshot.phase))
+}
+
 export function UpdatesProvider({ backend, children }: { backend: UpdateBackend; children: ReactNode }) {
   const [snapshot, setSnapshot] = useState<UpdateSnapshot | null>(null)
   const [connectionError, setConnectionError] = useState<string | null>(null)
@@ -49,40 +55,47 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
   const mounted = useRef(false)
   const inFlight = useRef(false)
   const generation = useRef(0)
-  const subscriptionFailed = useRef(false)
+  const subscriptionStatus = useRef<"connecting" | "connected" | "failed">("connecting")
+  const receiveSnapshot = useCallback((next: UpdateSnapshot) => {
+    setSnapshot(current => JSON.stringify(current) === JSON.stringify(next) ? current : next)
+    setConfirmVersion((version) => canRequestInstall(next) && version === next.availableVersion ? version : null)
+  }, [])
   useEffect(() => {
     mounted.current = true
-    subscriptionFailed.current = false
+    subscriptionStatus.current = "connecting"
     let disposed = false
     let stop: (() => void) | undefined
     const receive = (next: UpdateSnapshot) => {
-      if (!disposed) { generation.current++; setSnapshot(next); setConnectionError(null) }
+      if (!disposed) { generation.current++; receiveSnapshot(next); setConnectionError(null) }
     }
     void (async () => {
       let before = generation.current
       try {
         stop = await backend.subscribe(receive)
         if (disposed) { stop(); return }
+        subscriptionStatus.current = "connected"
         before = generation.current
         const next = await backend.read()
         if (!disposed && generation.current === before) receive(next)
       } catch {
         if (!disposed && (!stop || generation.current === before)) {
-          subscriptionFailed.current = !stop
+          if (!stop) subscriptionStatus.current = "failed"
           setConnectionError("Silo could not load updates. Try again.")
         }
       }
     })()
     return () => { disposed = true; mounted.current = false; stop?.() }
-  }, [backend, connection])
+  }, [backend, connection, receiveSnapshot])
   useEffect(() => {
     let disposed = false
     let reading = false
     const refresh = async () => {
       if (reading || inFlight.current) return
-      if (subscriptionFailed.current) {
-        subscriptionFailed.current = false
-        setConnection((value) => value + 1)
+      if (subscriptionStatus.current !== "connected") {
+        if (subscriptionStatus.current === "failed") {
+          subscriptionStatus.current = "connecting"
+          setConnection((value) => value + 1)
+        }
         return
       }
       reading = true
@@ -91,7 +104,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
         const next = await backend.read()
         if (!disposed && !inFlight.current && generation.current === before) {
           generation.current++
-          setSnapshot(next)
+          receiveSnapshot(next)
           setConnectionError(null)
         }
       } catch {
@@ -103,7 +116,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
     // VM activity changes the installation gate independently of update progress.
     const timer = (snapshot?.phase === "ready" || snapshot?.retryAction === "install" || (snapshot?.packageKind === "debian" && snapshot?.phase === "available")) ? window.setInterval(onFocus, 3000) : undefined
     return () => { disposed = true; window.removeEventListener("focus", onFocus); if (timer !== undefined) window.clearInterval(timer) }
-  }, [backend, snapshot?.phase, snapshot?.retryAction, snapshot?.packageKind])
+  }, [backend, snapshot?.phase, snapshot?.retryAction, snapshot?.packageKind, receiveSnapshot])
   const run = (action: () => Promise<UpdateSnapshot | void>) => {
     if (inFlight.current) return
     inFlight.current = true
@@ -113,7 +126,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
     const before = generation.current
     void action().then((next) => {
       // A command response must not replace newer progress emitted by the native updater.
-      if (mounted.current && next && generation.current === before) setSnapshot(next)
+      if (mounted.current && next && generation.current === before) receiveSnapshot(next)
     }).catch(() => {
       if (mounted.current) setConnectionError("The update action could not finish. Try again.")
     }).finally(() => {
@@ -121,13 +134,11 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
       if (mounted.current) setPending(false)
     })
   }
-  const canRequestInstall = snapshot?.packageKind !== "manual" && snapshot?.canInstall
-    && (snapshot.phase === "ready" || snapshot.retryAction === "install" || (snapshot.packageKind === "debian" && snapshot.phase === "available"))
-    && !["checking", "downloading", "installing"].includes(snapshot.phase)
+  const canInstall = canRequestInstall(snapshot)
   return <Context value={{ snapshot, connectionError, pending,
-    installConfirmation: Boolean(canRequestInstall && confirmVersion && confirmVersion === snapshot?.availableVersion),
+    installConfirmation: Boolean(canInstall && confirmVersion && confirmVersion === snapshot?.availableVersion),
     requestInstall: () => {
-      if (!canRequestInstall || inFlight.current) return
+      if (!canInstall || inFlight.current) return
       if (snapshot?.runningSandboxes.length) setConfirmVersion(snapshot.availableVersion)
       else { setConfirmVersion(null); run(() => backend.install(false)) }
     },

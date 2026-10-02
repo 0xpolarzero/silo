@@ -185,7 +185,8 @@ impl DeliveredIndex {
         gate
     }
 
-    fn prepare(&mut self, notice: Notice) -> PendingDelivery {
+    fn prepare(&mut self, mut notice: Notice) -> PendingDelivery {
+        notice.body = bounded_body(&notice.body);
         // Withdrawal must include keys whose OS delivery has not finished yet.
         self.record(&notice);
         let gate = self.gate(&notice.key);
@@ -674,6 +675,23 @@ mod tests {
         assert_eq!(
             index.take("silo-remote:lab:same-id"),
             ["vm:silo-remote:lab:same-id:lifecycle"]
+        );
+    }
+
+    #[test]
+    fn frontend_notice_bodies_are_bounded_before_system_delivery() {
+        let mut notice = failure("vm:1:lifecycle", "t", "b", sandbox());
+        // Frontend mirrors deserialize Notice directly rather than using failure().
+        notice.body = format!("first\nsecond\t{}", "x".repeat(500));
+        let pending = DeliveredIndex::default().prepare(notice);
+        pending.deliver(
+            |notice| {
+                assert!(notice.body.starts_with("first second "));
+                assert_eq!(notice.body.chars().count(), BODY_LIMIT);
+                assert!(notice.body.ends_with('\u{2026}'));
+                Ok(())
+            },
+            |_| {},
         );
     }
 

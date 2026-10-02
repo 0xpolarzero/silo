@@ -24,3 +24,22 @@ This measures React invalidations, not native read time, CPU, or live VM health.
 React's [useSyncExternalStore contract](https://react.dev/reference/react/useSyncExternalStore)
 requires unchanged store data to retain snapshot identity; React compares snapshots
 with `Object.is` and renders when that identity changes. Consulted 2026-10-02.
+
+## Unchanged update status
+
+Fixed in `features/updates/update-store.tsx`. While an update is ready, the provider
+reads the installation gate every three seconds. Each reply previously replaced
+snapshot state and recreated context, including for the application consumer.
+
+The `keeps consumers stable across equal polls and events but updates the
+installation gate` regression measured 11 extra consumer renders for ten equal
+polls and one equal event. Retaining equal state reduces that to zero. The test
+then changes the installation gate through polling and events and verifies the
+button disables and enables. All 52 focused update/provider/desktop tests pass.
+The generation counter still advances on equal replies, preserving stale-response
+rejection. Pending actions and connection errors still update independently.
+
+React's [useState bailout](https://react.dev/reference/react/useState#setstate) skips
+children when the next state is identical; [context propagation](https://react.dev/reference/react/useContext#optimizing-re-renders-when-passing-objects-and-functions)
+otherwise updates consumers whenever the provider passes a new object. Consulted
+2026-10-02. These fixture counts establish avoided renders, not a CPU benchmark.

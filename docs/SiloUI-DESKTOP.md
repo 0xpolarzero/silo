@@ -100,6 +100,14 @@ ready with no setup. Implementation: `src-tauri/src/computer_use.rs`,
 mounted app is described in [ChatGPT app](SiloUI-CHATGPT-APP.md) and the design
 in the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
 
+The guest receipt writer applies the final `0644` permissions before flushing
+the temporary file, then syncs the parent directory after replacement. It returns
+a receipt only after both syncs succeed, following the same
+[Linux durability requirement](https://man7.org/linux/man-pages/man2/fsync.2.html)
+as desktop preferences. Failure-injection tests inspect the complete receipt
+and permissions before publication and reject success after a directory-sync
+error. They use temporary paths without running a VM.
+
 - **Image.** The pinned LCU archive (`guest/lcu-lock.json`, SHA-256 verified at
   build) is staged unextracted in `/usr/local/share/silo/lcu/`. LCU itself and
   any OpenAI file are not in the image.
@@ -162,6 +170,10 @@ in the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
 
 Legacy VMs: `setup-lcu` keeps working for VMs created before v4 with the 0.4.0
 lock (`guest/lcu-legacy-lock.json`); it is refused for built-in VMs.
+Its receipt writer uses the same file-sync, replacement and directory-sync
+sequence as desktop preferences. Failed file synchronization preserves the
+previous receipt, and failed directory synchronization rejects completion.
+Tests inject both failures and verify cleanup and retry using temporary paths.
 
 LCU installation on VMs created before v4 is separate and unchanged.
 

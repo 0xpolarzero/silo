@@ -109,12 +109,19 @@ impl Outcome {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Attempt {
     pub(crate) mode: Approval,
+    #[serde(deserialize_with = "saved_outcome")]
     pub(crate) outcome: Outcome,
     /// Seconds since the Unix epoch.
     pub(crate) at: u64,
     /// A stable code (see `reason_text`); only for a failure or a partial application.
     #[serde(default)]
     pub(crate) reason: Option<String>,
+}
+
+fn saved_outcome<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Outcome, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    // A newer outcome cannot prove success, but must not discard the user's choice.
+    Ok(Outcome::parse(&value).unwrap_or(Outcome::Failed))
 }
 
 /// The VM's approval policy, kept in `<storage>/computer-use/<id>.json`: the mode the user
@@ -1307,20 +1314,34 @@ pub(crate) fn setup_with(
     cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Value, RuntimeError> {
     // Like an apply, the run yields to a queued stop or delete of this VM and to Quit.
-    let _preempt = Preempt::watch(gate, machine.id(), cancel);
+    let _preempt = Preempt::watch(gate, machine.id(), cancel.clone());
     let policy = policy_for_apply(paths, machine.id());
-    let mode = policy.approval;
+    let mut mode = policy.approval;
+    let mut force = force;
     let _pending = policy.needs_apply().then(|| Pending::begin(machine.id()));
-    run_attempt(
-        runner,
-        paths,
-        machine.id(),
-        machine.name(),
-        mode,
-        force,
-        false,
-    )
-    .map(|(status, _)| status)
+    loop {
+        let run = run_attempt(
+            runner,
+            paths,
+            machine.id(),
+            machine.name(),
+            mode,
+            force,
+            false,
+        );
+        // A queued follow-up can expire while manual setup holds the turn, so
+        // finish applying the current choice here just as a background apply does.
+        if matches!(
+            &run,
+            Err(RuntimeError::Cancelled { .. }) | Ok((_, Report::NotReady))
+        ) || cancel.load(std::sync::atomic::Ordering::SeqCst)
+            || read_policy(paths, machine.id()).approval == mode
+        {
+            return run.map(|(status, _)| status);
+        }
+        mode = policy_for_apply(paths, machine.id()).approval;
+        force = false;
+    }
 }
 
 /// Stores the VM's approval mode and, when it runs, applies it on a background thread

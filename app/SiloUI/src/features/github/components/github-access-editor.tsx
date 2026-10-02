@@ -69,31 +69,40 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
   const listboxId = useId()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
-  const [activeIndex, setActiveIndex] = useState(0)
+  const [activeOption, setActiveOption] = useState<string>()
   const selectedNames = useMemo(
     () => new Set(selectedRepositories.map(({ repository }) => repository.toLowerCase())),
     [selectedRepositories],
   )
-  const results = repositoryOptions.filter((repository) => (
-    !selectedNames.has(repository.toLowerCase()) && repository.toLowerCase().includes(query.trim().toLowerCase())
-  ))
+  function matchingRepositories(searchQuery: string) {
+    return repositoryOptions.filter((repository) => (
+      !selectedNames.has(repository.toLowerCase()) && repository.toLowerCase().includes(searchQuery.trim().toLowerCase())
+    ))
+  }
+  const results = matchingRepositories(query)
 
   const searchActions = [
     ...(onManageRepositories ? [{ label: "Add more repositories on GitHub", run: onManageRepositories, icon: ExternalLink }] : []),
   ]
-  const optionCount = results.length + searchActions.length
+  const optionNames = [...results, ...searchActions.map(({ label }) => label)]
+  const activeIndex = activeOption === undefined ? -1 : optionNames.indexOf(activeOption)
+
+  function openResults() {
+    if (!open) setActiveOption(optionNames[0])
+    setOpen(true)
+  }
 
   function runAction(index: number) {
     searchActions[index]?.run()
     setOpen(false)
-    setActiveIndex(0)
+    setActiveOption(undefined)
   }
 
   function add(repository: string) {
     if (disabled || selectedNames.has(repository.toLowerCase())) return
     onAdd(repository)
     setQuery("")
-    setActiveIndex(0)
+    setActiveOption(undefined)
     setOpen(false)
   }
 
@@ -108,27 +117,27 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
             aria-autocomplete="list"
             aria-expanded={!disabled && open}
             aria-controls={listboxId}
-            aria-activedescendant={open && activeIndex < optionCount ? `${listboxId}-${activeIndex}` : undefined}
+            aria-activedescendant={!disabled && open && activeIndex >= 0 ? `${listboxId}-${activeIndex}` : undefined}
             className="pl-8 text-xs"
             disabled={disabled}
             placeholder="Search repositories…"
             value={query}
-            onFocus={() => setOpen(true)}
-            onClick={() => setOpen(true)}
+            onFocus={openResults}
+            onClick={openResults}
             onChange={(event) => {
               setQuery(event.target.value)
-              setActiveIndex(0)
+              setActiveOption(matchingRepositories(event.target.value)[0] ?? searchActions[0]?.label)
               setOpen(true)
             }}
             onKeyDown={(event) => {
               if (event.key === "ArrowDown") {
                 event.preventDefault()
                 setOpen(true)
-                setActiveIndex((current) => Math.min(current + 1, Math.max(0, optionCount - 1)))
+                setActiveOption(optionNames[Math.min(activeIndex + 1, Math.max(0, optionNames.length - 1))])
               } else if (event.key === "ArrowUp") {
                 event.preventDefault()
-                setActiveIndex((current) => Math.max(0, current - 1))
-              } else if (event.key === "Enter" && open && activeIndex < optionCount) {
+                setActiveOption(optionNames[Math.max(0, activeIndex - 1)])
+              } else if (event.key === "Enter" && open && activeIndex >= 0) {
                 event.preventDefault()
                 if (results[activeIndex]) add(results[activeIndex])
                 else runAction(activeIndex - results.length)
@@ -156,7 +165,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
             className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus:bg-accent aria-selected:bg-accent"
             disabled={disabled}
             onMouseDown={(event) => event.preventDefault()}
-            onMouseEnter={() => setActiveIndex(index)}
+            onMouseEnter={() => setActiveOption(repository)}
             onClick={() => add(repository)}
           >
             <span className="min-w-0 break-all">{repository}</span>
@@ -173,7 +182,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
             aria-selected={activeIndex === results.length + index}
             className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus:bg-accent aria-selected:bg-accent ${index === 0 ? "mt-1 border-t border-border" : ""}`}
             onMouseDown={(event) => event.preventDefault()}
-            onMouseEnter={() => setActiveIndex(results.length + index)}
+            onMouseEnter={() => setActiveOption(action.label)}
             onClick={() => runAction(index)}
           >
             <action.icon aria-hidden="true" className="size-3 shrink-0" />

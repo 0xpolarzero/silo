@@ -2,12 +2,16 @@
 
 Audited `codex/r14-website-docs` after merging `codex/integration` at
 `88d6289f`; checked the classifications again after the test fix and integration
-merge at `4c8e11c1`. This is a source and fixture audit, not live qualification.
+merge at `4c8e11c1`. The sync at `b8e6fa62` added the notice race below;
+integration fixed it in `cf9a38f8`, present at the later sync `f8004588`.
+This is a source and fixture audit, not live qualification.
 No production code changed.
 
 The requested patterns (`#[ignore`, `it.skip`, `test.skip`, `describe.skip`,
 `it.todo`, `.fails(`) found 25 Rust ignores and no Vitest exclusions or expected
-failures. The wider audit also checked Node's `{ skip: ... }`, Python's
+failures at the initial snapshot. The `b8e6fa62` sync added one `it.fails` case,
+which `cf9a38f8` subsequently re-enabled. The final inventory has no Vitest exclusions.
+The wider audit also checked Node's `{ skip: ... }`, Python's
 `skipUnless` and `skipTest`. Rust iterator `.skip()` calls are not test exclusions.
 
 ## Re-enabled hermetic test
@@ -85,7 +89,21 @@ lifecycle parent is
 
 ## Bugs and verification limits
 
-No new Silo bug was established by this audit.
+At `b8e6fa62`, [`notices.test.ts`](../app/SiloUI/src/desktop/notices.test.ts) contained
+`it.fails("bug: disposed notice subscription forwards events before pending registration completes", ...)`,
+introduced by integration commit `ae2c0f51`. It hid a real Silo bug:
+[`listenForNotices`](../app/SiloUI/src/desktop/notices.ts) set `stopped` on
+disposal, but its event callback never checked that flag. A backend event received
+before the pending registration resolved still reached the disposed handler.
+
+Temporarily changing only `it.fails` to `it` produced four passes and one failure:
+the handler was called once after disposal (`notices.test.ts:78`). The expected
+failure annotation was restored. This cannot be re-enabled by correcting the
+test without weakening its disposal contract; production changes were outside
+this task. Integration then landed `cf9a38f8`, adding the event-delivery guard
+and removing `it.fails`. The focused notice suite now passes all five tests.
+No confirmed hidden Silo bug remains open in this inventory.
+
 The ZCode TLS test intentionally reproduces a documented third-party bug and
 checks the trust-propagation repair; see the
 [TLS investigation](SiloUI-ZCODE-TLS-INVESTIGATION.md). Its negative controls

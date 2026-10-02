@@ -16,22 +16,27 @@ export function PersonalTokenConnection({ status, onSave, onRemove }: {
   const [editing, setEditing] = useState(false)
   const [token, setToken] = useState("")
   const [busy, setBusy] = useState(false)
-  const operation = useRef({ pending: false, generation: 0, mounted: false })
+  const operation = useRef({ pending: false, generation: 0, mounted: false, removalFailureShown: false })
   useEffect(() => {
     const state = operation.current
     state.mounted = true
     return () => {
       state.mounted = false
       state.generation++
-      dismissOperationToast(removalFailureToastId)
+      if (state.removalFailureShown) dismissOperationToast(removalFailureToastId)
     }
   }, [])
+  function dismissRemovalFailure() {
+    if (!operation.current.removalFailureShown) return
+    operation.current.removalFailureShown = false
+    dismissOperationToast(removalFailureToastId)
+  }
   const connected = status?.state === "connected"
   async function save() {
     if (!onSave || !token.trim() || operation.current.pending || !operation.current.mounted) return
     operation.current.pending = true
     operation.current.generation++
-    dismissOperationToast(removalFailureToastId)
+    dismissRemovalFailure()
     const value = token.trim()
     setToken("")
     setBusy(true)
@@ -43,10 +48,15 @@ export function PersonalTokenConnection({ status, onSave, onRemove }: {
     if (!onRemove || operation.current.pending || !operation.current.mounted || generation !== operation.current.generation) return
     operation.current.pending = true
     const removalGeneration = ++operation.current.generation
-    dismissOperationToast(removalFailureToastId)
+    dismissRemovalFailure()
     setBusy(true)
     try { await onRemove(); if (operation.current.mounted) { setEditing(false); setToken("") } }
-    catch { if (operation.current.mounted) showActionFailure("Could not remove token", "Check credential-store access and try again.", () => void remove(removalGeneration), { native: false }) }
+    catch {
+      if (operation.current.mounted) {
+        operation.current.removalFailureShown = true
+        showActionFailure("Could not remove token", "Check credential-store access and try again.", () => void remove(removalGeneration), { native: false })
+      }
+    }
     finally { operation.current.pending = false; if (operation.current.mounted) setBusy(false) }
   }
   return <ListCard className="shrink-0">

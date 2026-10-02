@@ -206,6 +206,28 @@ test("running twice with --yes is idempotent", async () => {
   assert.deepEqual([...snapshot(target.config), ...snapshot(target.state)].filter(entry => !entry.includes(".bak-")), first)
 })
 
+test("backups of private Dev files use private modes even when the old files were readable", async t => {
+  const { home, source, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const keychain = productionKeychain()
+  await run(home, keychain)
+  const productionBefore = snapshot(source.state)
+  const key = path.join(target.state, "desktop-remote", "id_ed25519")
+  const settings = path.join(target.config, "settings.json")
+  for (const file of [key, settings]) {
+    fs.writeFileSync(file, "old private Dev contents")
+    fs.chmodSync(file, 0o666)
+  }
+  await run(home, keychain, { yes: true, now: () => new Date("2026-01-02T03:04:05.000Z") })
+  for (const file of [key, settings]) {
+    const backup = `${file}.bak-2026-01-02T03-04-05-000Z`
+    assert.equal(fs.readFileSync(backup, "utf8"), "old private Dev contents")
+    assert.equal(fs.statSync(backup).mode & 0o777, 0o600)
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+  }
+  assert.deepEqual(snapshot(source.state), productionBefore)
+})
+
 test("missing or damaged production state is skipped, not fatal", async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "silo-import-empty-"))
   const lines = []

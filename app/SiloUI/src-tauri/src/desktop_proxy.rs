@@ -74,7 +74,8 @@ fn request_header(
     let mut lines = header.split("\r\n");
     let first = lines.next().ok_or(())?;
     let parts: Vec<_> = first.split(' ').collect();
-    if parts.len() != 3
+    if first.bytes().any(|byte| byte.is_ascii_control())
+        || parts.len() != 3
         || !matches!(parts[0], "GET" | "POST" | "HEAD")
         || !parts[1].starts_with('/')
         || parts[1].starts_with("//")
@@ -91,6 +92,12 @@ fn request_header(
     for line in lines.filter(|line| !line.is_empty()) {
         let (name, value) = line.split_once(':').ok_or(())?;
         if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return Err(());
+        }
+        if value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() && byte != b'\t')
+        {
             return Err(());
         }
         let value = value.trim();
@@ -150,13 +157,13 @@ fn forward_body(
     mut remaining: u64,
     stop: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
+    deadline: Option<Instant>,
 ) {
     let _ = from.read_timeout(Some(Duration::from_millis(250)));
     let _ = to.write_timeout(Some(Duration::from_secs(5)));
-    let deadline = Instant::now() + Duration::from_secs(120);
     let mut bytes = [0; 32 * 1024];
     while remaining > 0
-        && Instant::now() < deadline
+        && deadline.is_none_or(|at| Instant::now() < at)
         && !stop.load(Ordering::Acquire)
         && !ended.load(Ordering::Acquire)
     {
@@ -191,18 +198,19 @@ fn relay(
     mut to: impl Stream,
     stop: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
-    idle_timeout: Option<Duration>,
+    deadline: Option<Instant>,
 ) {
     let poll_interval = Duration::from_millis(250);
-    let _ = from.read_timeout(Some(
-        idle_timeout.map_or(poll_interval, |timeout| timeout.min(poll_interval)),
-    ));
+    let _ = from.read_timeout(Some(deadline.map_or(poll_interval, |at| {
+        at.saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1))
+            .min(poll_interval)
+    })));
     let _ = to.write_timeout(Some(Duration::from_secs(5)));
     let mut bytes = [0; 32 * 1024];
-    let mut last_progress = Instant::now();
     while !stop.load(Ordering::Acquire)
         && !ended.load(Ordering::Acquire)
-        && idle_timeout.is_none_or(|timeout| last_progress.elapsed() < timeout)
+        && deadline.is_none_or(|at| Instant::now() < at)
     {
         match from.read(&mut bytes) {
             Ok(0) => break,
@@ -210,7 +218,6 @@ fn relay(
                 if to.write_all(&bytes[..n]).is_err() {
                     break;
                 }
-                last_progress = Instant::now();
             }
             Err(e)
                 if matches!(
@@ -260,7 +267,7 @@ fn serve_with_header_progress(
     token: &str,
     authorization: &str,
     stop: Arc<AtomicBool>,
-    http_response_idle_timeout: Duration,
+    http_timeout: Duration,
     mut header_progress: impl FnMut(&TcpStream, usize),
 ) -> std::io::Result<()> {
     // On macOS, accepted sockets inherit the listener's O_NONBLOCK setting.
@@ -291,6 +298,7 @@ fn serve_with_header_progress(
         )?;
         return Ok(());
     };
+    let deadline = (!header.websocket).then(|| Instant::now() + http_timeout);
     let mut server = match UnixStream::connect(upstream) {
         Ok(server) => server,
         Err(_) => {
@@ -307,15 +315,21 @@ fn serve_with_header_progress(
     let ended = Arc::new(AtomicBool::new(false));
     let peer_end = ended.clone();
     let peer_stop = stop.clone();
-    let idle_timeout = (!header.websocket).then_some(http_response_idle_timeout);
     let writer = thread::spawn(move || {
         if header.websocket {
-            relay(incoming, outgoing, peer_stop, peer_end, None);
+            relay(incoming, outgoing, peer_stop, peer_end, deadline);
         } else {
-            forward_body(incoming, outgoing, header.body_length, peer_stop, peer_end);
+            forward_body(
+                incoming,
+                outgoing,
+                header.body_length,
+                peer_stop,
+                peer_end,
+                deadline,
+            );
         }
     });
-    relay(server, client, stop, ended.clone(), idle_timeout);
+    relay(server, client, stop, ended.clone(), deadline);
     ended.store(true, Ordering::Release);
     let _ = writer.join();
     Ok(())
@@ -428,6 +442,57 @@ mod tests {
         }
     }
     #[test]
+    fn control_characters_cannot_bypass_header_sanitization() {
+        let base = "GET / HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nCookie: session=secret\r\n";
+        for field in [
+            "X-Note: harmless\nAuthorization: Basic attacker",
+            "X-Note: harmless\rCookie: leaked=secret",
+            "X-Note: harmless\0suffix",
+            "X-Note: harmless\u{000b}suffix",
+            "Content-Length: 0\n",
+            "Upgrade: websocket\r",
+        ] {
+            assert!(
+                request_header(
+                    &format!("{base}{field}\r\n\r\n"),
+                    8000,
+                    "session",
+                    "secret",
+                    9000,
+                    "real",
+                )
+                .is_err(),
+                "accepted malformed field: {field:?}",
+            );
+        }
+        for target in [
+            "/path\nX:injected",
+            "/path\rX:injected",
+            "/path\0",
+            "/path\t",
+        ] {
+            assert!(request_header(
+                &format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nCookie: session=secret\r\n\r\n"),
+                8000,
+                "session",
+                "secret",
+                9000,
+                "real",
+            )
+            .is_err());
+        }
+        assert!(request_header(
+            &format!("{base}X-Note: two\twords\r\n\r\n"),
+            8000,
+            "session",
+            "secret",
+            9000,
+            "real",
+        )
+        .is_ok());
+    }
+
+    #[test]
     fn forwards_authenticated_http_and_rejects_missing_cookie() {
         let (_directory, upstream, socket) = guest();
         let proxy = Proxy::start(socket, 6901, "silo", "password").unwrap();
@@ -476,6 +541,112 @@ mod tests {
             }));
         }
         worker.join().unwrap();
+    }
+
+    #[test]
+    fn stalled_http_response_closes_both_connections_at_deadline() {
+        stalled_http_request("GET", "");
+    }
+
+    #[test]
+    fn continuing_response_bytes_do_not_extend_http_deadline() {
+        let (mut guest, source) = UnixStream::pair().unwrap();
+        let (destination, mut client) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            relay(
+                source,
+                destination,
+                worker_stop,
+                Arc::new(AtomicBool::new(false)),
+                Some(Instant::now() + Duration::from_millis(50)),
+            );
+            done_tx.send(()).unwrap();
+        });
+        let producer = thread::spawn(move || {
+            for _ in 0..100 {
+                if guest.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let completed = done_rx.recv_timeout(Duration::from_millis(300));
+        stop.store(true, Ordering::Release);
+        worker.join().unwrap();
+        producer.join().unwrap();
+        assert!(
+            completed.is_ok(),
+            "response progress extended the total deadline"
+        );
+        let mut received = Vec::new();
+        client.read_to_end(&mut received).unwrap();
+        assert!(!received.is_empty());
+    }
+
+    #[test]
+    fn incomplete_http_upload_closes_both_connections_at_deadline() {
+        stalled_http_request("POST", "Content-Length: 5\r\n");
+    }
+
+    fn stalled_http_request(method: &str, headers: &str) {
+        let (_directory, upstream, socket) = guest();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = serve_with_header_progress(
+                accepted,
+                port,
+                &socket,
+                6901,
+                "session",
+                "secret",
+                "auth",
+                worker_stop,
+                Duration::from_millis(50),
+                |_, _| {},
+            );
+            done_tx.send(result).unwrap();
+        });
+        write!(
+            client,
+            "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: session=secret\r\n{headers}\r\n"
+        )
+        .unwrap();
+        let (mut guest, _) = upstream.accept().unwrap();
+        guest
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0];
+        while !request.ends_with(b"\r\n\r\n") {
+            guest.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        // Keep the guest connection open without sending a response.
+        let completed = done_rx.recv_timeout(Duration::from_secs(1));
+        stop.store(true, Ordering::Release);
+        worker.join().unwrap();
+        assert!(
+            completed.is_ok(),
+            "stalled HTTP request exceeded its deadline"
+        );
+        assert!(completed.unwrap().is_ok());
+        assert_eq!(client.read(&mut byte).unwrap(), 0);
+        guest.read_to_end(&mut Vec::new()).unwrap();
     }
 
     #[test]

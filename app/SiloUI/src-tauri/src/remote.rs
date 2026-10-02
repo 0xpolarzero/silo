@@ -975,7 +975,8 @@ fn run_exchange(
                 return Ok(exit);
             }
             if Instant::now() > deadline
-                || stdout.metadata().map_err(failed)?.len() > LIMIT as u64 + 4
+                || stdout.metadata().map_err(failed)?.len()
+                    > (LIMIT + 4 + REPLY_PREAMBLE.len() + REPLY_SEARCH_LIMIT) as u64
                 || stderr.metadata().map_err(failed)?.len() > 65536
             {
                 return Err(Failure::Failed("Remote operation timed out. Its outcome is unknown; reconnect and inspect before issuing another change.".into()));
@@ -3190,6 +3191,29 @@ sys.stdout.buffer.write(pathlib.Path(sys.argv[1]).read_bytes())
         );
         assert!(matches!(result, Err(Failure::Failed(message)) if message.contains("size limit")));
         assert!(!marker.exists());
+    }
+
+    #[test]
+    fn exchange_accepts_a_near_limit_reply_after_shell_output() {
+        let _test_state = crate::test_support::global_state();
+        let value = json!({"payload":"x".repeat(LIMIT - 64)});
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let output = [vec![b'x'; 1024], reply(&json!({"result":value}))].concat();
+        fs::write(file.path(), output).unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", r#"cat "$0"; exec sleep 0.2"#])
+            .arg(file.path());
+        let result = run_exchange(
+            command,
+            &json!({"method":"runtime.snapshot"}),
+            Instant::now() + Duration::from_secs(5),
+        );
+        assert!(
+            result.as_ref() == Ok(&value),
+            "valid bounded reply was rejected: {:?}",
+            result.as_ref().err()
+        );
     }
 
     #[test]

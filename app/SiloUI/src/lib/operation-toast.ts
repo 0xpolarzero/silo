@@ -180,7 +180,7 @@ export function showOperationProgress(id: string, options: OperationProgressOpti
   const { title, sandbox, ...body } = options
   const untag = tagSandbox(id, sandbox)
   if (!progressStarts.has(id)) progressStarts.set(id, options.startedAt ?? Date.now())
-  toast.loading(title, { id, duration: Infinity, description: createElement(OperationToastBody, { ...body, title }), onDismiss: untag })
+  toast.loading(title, { id, duration: Infinity, action: undefined, description: createElement(OperationToastBody, { ...body, title }), onDismiss: untag })
 }
 
 /** Backend-driven operation state understood by `useOperationProgressToast`. */

@@ -399,7 +399,7 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
         .is_some_and(|port| port.fract() == 0. && (1. ..=65535.).contains(&port))
 }
 
-// This boundary accepts unfinished text, but never accepts auth, runtime state, or arbitrary fields.
+// This boundary accepts unfinished text, but never accepts credentials, runtime state, or arbitrary fields.
 // TypeScript applies the existing domain validation before a draft is used as configuration.
 fn valid_draft(value: &Value) -> bool {
     if value.is_null() {
@@ -466,9 +466,12 @@ fn valid_draft(value: &Value) -> bool {
                         only_fields(
                             policy,
                             &["repositoryMode", "allRepositoriesAllowChanges"],
-                            &[],
+                            &["authenticationMethod"],
                         ) && matches!(policy["repositoryMode"].as_str(), Some("selected" | "all"))
                             && policy["allRepositoriesAllowChanges"].is_boolean()
+                            && policy.get("authenticationMethod").is_none_or(|method| {
+                                matches!(method.as_str(), Some("oauth" | "token"))
+                            })
                     })
                 })
             })
@@ -1591,6 +1594,34 @@ mod tests {
     }
 
     #[test]
+    fn authentication_method_survives_draft_restart_and_rejects_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(path.clone()));
+        let mut draft = unfinished_draft();
+        for method in ["token", "oauth"] {
+            draft["workspaceRepositoryAccess"] = json!({"dev":{
+                "repositoryMode":"selected","allRepositoriesAllowChanges":false,
+                "authenticationMethod":method
+            }});
+            store.update_draft(draft.clone()).unwrap();
+            assert_eq!(
+                SettingsStore::load(Some(path.clone()))
+                    .snapshot()
+                    .onboarding_draft,
+                draft
+            );
+        }
+        for invalid in [json!("unknown"), json!(null), json!(true), json!(1)] {
+            draft["workspaceRepositoryAccess"]["dev"]["authenticationMethod"] = invalid;
+            assert!(!valid_draft(&draft));
+        }
+        draft["workspaceRepositoryAccess"]["dev"]["authenticationMethod"] = json!("token");
+        draft["workspaceRepositoryAccess"]["dev"]["token"] = json!("secret");
+        assert!(!valid_draft(&draft));
+    }
+
+    #[test]
     fn all_repository_intent_survives_restart_and_rejects_malformed_access() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("settings.json");
@@ -1758,9 +1789,9 @@ mod tests {
     #[test]
     fn invalid_saved_machine_semantics_protect_the_entire_original_file() {
         let mut candidates = Vec::new();
-        let mut empty = unfinished_draft();
-        empty["machines"] = json!([]);
-        candidates.push(empty);
+        let mut malformed = unfinished_draft();
+        malformed["machines"] = json!({});
+        candidates.push(malformed);
         for (field, invalid) in [
             ("id", json!("not-a-uuid")),
             ("name", json!("Invalid name")),

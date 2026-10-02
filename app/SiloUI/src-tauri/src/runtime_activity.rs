@@ -408,6 +408,20 @@ fn sensitive_assignment(lower: &str) -> bool {
         })
 }
 
+fn credential_url(line: &str) -> bool {
+    line.match_indices("://").any(|(at, _)| {
+        let start = line[..at]
+            .rfind(|ch: char| !ch.is_ascii_alphanumeric() && !matches!(ch, '+' | '-' | '.'))
+            .map_or(0, |index| index + 1);
+        let candidate = line[start..].split_whitespace().next().unwrap_or("");
+        reqwest::Url::parse(candidate)
+            .or_else(|_| {
+                reqwest::Url::parse(candidate.trim_end_matches(['"', '\'', '>', ')', ']', '}']))
+            })
+            .is_ok_and(|url| !url.username().is_empty() || url.password().is_some())
+    })
+}
+
 pub(super) fn log_text(body: &str) -> String {
     log_text_with_pem(body, &mut false)
 }
@@ -427,6 +441,7 @@ pub(super) fn log_text_with_pem(body: &str, in_pem: &mut bool) -> String {
             }
             if pem
                 || sensitive_assignment(&lower)
+                || credential_url(line)
                 || [
                     "authorization",
                     "bearer ",
@@ -454,6 +469,34 @@ pub(super) fn log_text_with_pem(body: &str, in_pem: &mut bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn log_text_hides_url_credentials_without_hiding_public_urls() {
+        for line in [
+            "fetch https://alice:synthetic-password@example.test/repo",
+            "git clone 'https://synthetic-token@example.test/repo'",
+            "connect(postgresql://alice:synthetic-password@localhost/db)",
+            "remote=https://alice:synthetic%2Dpassword@example.test/repo",
+            "https://:synthetic-password@example.test/repo",
+            "connect('postgresql://alice:synthetic-password@localhost')",
+            "fetch https://alice:synthetic'password@example.test/repo",
+            "fetch https://alice:synthetic)password@example.test/repo",
+            "fetch https://alice:synthetic-password@[::1]",
+        ] {
+            assert_eq!(
+                log_text(line),
+                "[Sensitive runtime output hidden]",
+                "{line}"
+            );
+        }
+        for line in [
+            "fetch https://example.test/repo",
+            "fetch https://example.test/team@main/repo",
+            "fetch https://example.test/?contact=alice@example.test",
+            "connection failed for alice@example.test",
+        ] {
+            assert_eq!(log_text(line), line);
+        }
+    }
     #[test]
     fn log_text_hides_common_secret_assignments_and_pem_blocks() {
         for line in [

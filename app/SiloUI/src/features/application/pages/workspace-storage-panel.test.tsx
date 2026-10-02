@@ -16,6 +16,12 @@ function Panel(props: React.ComponentProps<typeof WorkspaceStoragePanel>) { retu
 const gib = 1024 ** 3
 const storage: WorkspaceStorageState = { history: [], workspaceHostBytes: 36 * gib, runtimeHostBytes: 5 * gib, checkpointHostBytes: 3 * gib, checkpointCount: 2, workspaceUsedBytes: gib, workspaceCapacityBytes: 64 * gib, lastReclaimedBytes: null, lastTrimAt: null, lastError: null }
 
+it.each([[1, "attempt"], [2, "attempts"]])("pluralizes the reclaim history label for %i %s", async (count, noun) => {
+  const history = Array.from({ length: count }, (_, i) => ({ at: 1000 + i, trigger: "manual", reclaimedBytes: 0, error: null }))
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, history })} reclaim={vi.fn()} />)
+  expect(await screen.findByRole("button", { name: `Reclaim history, ${count} ${noun}` })).toBeVisible()
+})
+
 it("distinguishes host allocation from guest usage and reports measured recovery", async () => {
   const read = vi.fn().mockResolvedValue(storage)
   let finish!: (value: WorkspaceStorageState) => void

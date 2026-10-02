@@ -43,3 +43,29 @@ Preference-fix verification: the extracted production helper and scheduler passe
 - **Status:** Fixed. The complete Debian module is compiled directly against cached `tempfile` and tested with local synthetic subprocesses. No administrator helper or package manager is launched.
 
 Diagnostic-fix verification: the rejecting test failed before the change and all 7 Debian module tests passed afterward. Rust formatting, typecheck, lint, and diff whitespace checks passed. The tail read remains capped at 16 KiB.
+
+## UPDATES-NATIVE-4: Closing progress output bypasses the preparation timeout
+
+- **Priority:** P2.
+- **Location:** `app/SiloUI/src-tauri/src/updates/debian.rs:94–109`, `139–140` before the fix.
+- **Trigger:** The authentication/helper process closes stdout before emitting `ready` but continues running past the preparation deadline.
+- **Evidence:** The subprocess fixture closes stdout and executes a two-second sleep with a 100 ms preparation deadline. Before the fix, channel disconnection breaks the timed receive loop and enters unbounded `child.wait()`. The rejecting test took 2.02 seconds and returned the wrong completion error instead of the timeout.
+- **Consequence:** The advertised preparation timeout is bypassed; the caller retains admission, backup, GitHub, and secret guards while the process remains alive. Sandboxes are not stopped in this case. This is separate from the deliberately unbounded post-go-ahead installation in UPDATES-NATIVE-2.
+- **Suggested fix:** Keep checking the original preparation deadline while waiting for a process whose progress pipe closed. On expiration, use the existing pre-install cancellation/reaping policy; retain post-go-ahead ownership semantics.
+- **Test that catches it:** `a_closed_progress_pipe_does_not_bypass_prepare_timeout` requires the timeout result within one second and asserts sandbox preparation is never called.
+- **Status:** Fixed and checked with the complete Debian module and synthetic subprocesses.
+
+Closed-progress fix verification: the rejecting fixture failed before the change, then all 8 Debian module tests passed. Formatting, typecheck, lint, and diff whitespace checks passed. Earlier queued Cargo requests were stopped after verifying their executable command, owner, and exact worktree; one consolidated `cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked updates::` request remains queued against `/tmp/silo-codex-target` with explicit synthetic GitHub values.
+
+## UPDATES-NATIVE-5: Repairing preferences leaves the startup read error visible
+
+- **Priority:** P3.
+- **Location:** `app/SiloUI/src-tauri/src/updates.rs:295–331` before the fix.
+- **Trigger:** Start with corrupt update preferences, then successfully save automatic checks as disabled.
+- **Evidence:** Startup stores the preference read failure in the error snapshot and disables checks. The save command persists the replacement and changes only the automatic-check flag and schedule, leaving the old error/phase intact. Disabled automatic checks never run a successful check to clear it. The temporary-directory regression repaired a corrupt JSON file but failed because the returned snapshot still contained the read error.
+- **Consequence:** The card continues asking the user to save the preference again after that exact repair succeeded.
+- **Suggested fix:** Clear the identified preference read error after successful persistence; preserve unrelated download/install failures and in-flight phases.
+- **Test that catches it:** `saving_preferences_clears_the_read_error_but_preserves_update_failures` repairs a real corrupt preference file with checks disabled, requires an idle/error-free snapshot, then verifies a download failure survives another preference save.
+- **Status:** Fixed.
+
+Repaired-preference verification: the rejecting test failed before the fix, then all 9 extracted helper/scheduler tests passed. Formatting, typecheck, lint, and diff whitespace checks passed. Clearing is restricted to the identified preference read error in the error phase, so a preference save cannot reopen admission during an in-flight check or erase a download/install failure.

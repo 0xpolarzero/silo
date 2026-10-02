@@ -773,11 +773,13 @@ fn authorize_controller(
     let mut keys = config.keys;
     if !keys.contains(&entry) {
         let tag = format!("{CONTROLLER_TAG}{controller}");
-        keys.retain(|key| {
-            key.split_whitespace().nth(2) != Some(tag.as_str())
-                && normalize_key(key).ok().as_deref() != Some(public)
-        });
-        keys.push(entry);
+        keys.retain(|key| key.split_whitespace().nth(2) != Some(tag.as_str()));
+        if !keys
+            .iter()
+            .any(|key| normalize_key(key).ok().as_deref() == Some(public))
+        {
+            keys.push(entry);
+        }
     }
     save_with(
         paths,
@@ -1412,6 +1414,36 @@ sys.stdin.buffer.read()
             );
         }
         assert_eq!(read(&p).unwrap()[0].keys, keys);
+    }
+
+    #[test]
+    fn controller_registration_preserves_matching_user_key() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        remote_fixture(&p);
+        let (public, controller) = controller_identity(&dir, "laptop");
+        let mut c = config();
+        c.port = unused_port();
+        let user_entry = format!("{public} user laptop");
+        c.keys.push(user_entry.clone());
+        remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
+        connect(&p, &c, &public, &controller).unwrap();
+        assert!(read(&p).unwrap()[0].keys.contains(&user_entry));
+        let (replacement, _) = controller_identity(&dir, "replacement");
+        connect(&p, &c, &replacement, &controller).unwrap();
+        let mut disabled = read(&p).unwrap()[0].clone();
+        disabled.enabled = false;
+        remote_with(&p, "ssh.access.save", &remote_request(&disabled)).unwrap();
+        assert_eq!(read(&p).unwrap()[0].keys, c.keys);
+        let mut reenabled = read(&p).unwrap()[0].clone();
+        reenabled.enabled = true;
+        remote_with(&p, "ssh.access.save", &remote_request(&reenabled)).unwrap();
+        assert!(read(&p).unwrap()[0].keys.contains(&user_entry));
+        assert!(!read(&p).unwrap()[0]
+            .keys
+            .iter()
+            .any(|key| key.starts_with(&replacement)));
     }
 
     #[test]

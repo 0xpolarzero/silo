@@ -198,8 +198,12 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   const memoryPresets = presetsWithin(supportedMemoryGiB, capacity?.memoryGiB)
 
   useEffect(() => {
-    firstField.current?.focus()
-    firstField.current?.scrollIntoView?.({ block: "nearest" })
+    // Let the opening menu finish its focus restoration before entering the editor.
+    const frame = requestAnimationFrame(() => {
+      firstField.current?.focus()
+      firstField.current?.scrollIntoView?.({ block: "nearest" })
+    })
+    return () => cancelAnimationFrame(frame)
   }, [focusRequest])
 
   useEffect(() => {

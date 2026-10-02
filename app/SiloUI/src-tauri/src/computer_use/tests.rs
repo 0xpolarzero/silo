@@ -213,6 +213,47 @@ fn a_damaged_settings_file_means_ask() {
 }
 
 #[test]
+fn unfamiliar_saved_attempt_outcome_preserves_the_approval_choice() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    fs::create_dir_all(directory_of(&paths)).unwrap();
+    let saved = br#"{"approval":"auto","applied":"auto","last":{"mode":"auto","outcome":"future-outcome","at":1790000000}}"#;
+    fs::write(policy_path(&paths, VM_ID).unwrap(), saved).unwrap();
+
+    let stored = settings(&paths, VM_ID);
+    assert!(!stored.unreadable);
+    assert_eq!(stored.approval, Approval::Auto);
+    assert_eq!(stored.applied, Some(Approval::Auto));
+    assert_eq!(stored.last.as_ref().unwrap().outcome, Outcome::Failed);
+    let policy = read_policy_checked(&paths, VM_ID).unwrap();
+    assert!(policy.needs_apply());
+    write_atomic(&paths, policy_path(&paths, VM_ID), &policy).unwrap();
+    assert_eq!(settings(&paths, VM_ID), stored);
+    assert!(Outcome::parse("future-outcome").is_none());
+}
+
+#[test]
+fn unfamiliar_saved_approval_modes_remain_unreadable() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    fs::create_dir_all(directory_of(&paths)).unwrap();
+    for saved in [
+        br#"{"approval":"future-mode"}"#.as_slice(),
+        br#"{"approval":"auto","applied":"future-mode"}"#,
+        br#"{"approval":"auto","unfinished":"future-mode"}"#,
+        br#"{"approval":"auto","last":{"mode":"future-mode","outcome":"applied","at":1}}"#,
+        br#"{"approval":"auto","last":{"mode":"auto","outcome":null,"at":1}}"#,
+    ] {
+        fs::write(policy_path(&paths, VM_ID).unwrap(), saved).unwrap();
+        assert!(settings(&paths, VM_ID).unreadable);
+        assert_eq!(
+            fs::read(policy_path(&paths, VM_ID).unwrap()).unwrap(),
+            saved
+        );
+    }
+}
+
+#[test]
 fn a_policy_of_an_older_version_keeps_its_choice_and_applies_again() {
     // Older files carry a revision and a generation; both are ignored, the choice stays,
     // and with no attempt on record the next boot applies it.
@@ -2413,4 +2454,49 @@ fn an_attempt_whose_marker_cannot_be_saved_does_not_run_the_helper() {
     assert!(begin_attempt(&paths, &id, Approval::Auto).is_ok());
     assert_eq!(read_policy(&paths, &id).unfinished, Some(Approval::Auto));
     assert!(approval_reason_text("state-not-saved").contains("could not save"));
+}
+
+#[test]
+fn manual_setup_converges_on_a_choice_saved_while_its_helper_runs() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(32);
+    write_machines_of(&paths, &id);
+    set_approval(&paths, &id, Approval::Auto).unwrap();
+    let guest = Guest::new(&id);
+    let gate = test_gate();
+    let (entered, receiver) = std::sync::mpsc::channel();
+    let release = Arc::new(std::sync::Barrier::new(2));
+    *guest.stall.lock().unwrap() = Some((entered, release.clone()));
+    let worker = {
+        let (guest, paths, id) = (guest.clone(), paths.clone(), id.clone());
+        std::thread::spawn(move || {
+            let turn = gate.vm(&id, "dev", "Updating dev desktop").unwrap();
+            turn.allow_cancel();
+            setup_with(
+                gate,
+                guest.as_ref(),
+                &paths,
+                &machine_of(&id, true),
+                true,
+                turn.cancel_token(),
+            )
+        })
+    };
+    receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+    // Saving the choice is independent of the follow-up worker's admission. That
+    // worker can expire while this manual turn runs, so the turn must converge itself.
+    set_approval(&paths, &id, Approval::Ask).unwrap();
+    release.wait();
+    let status = worker.join().unwrap().unwrap();
+    assert_eq!(guest.modes(), ["auto", "ask"]);
+    assert_eq!(guest.configured().as_deref(), Some("ask"));
+    assert_eq!(status["apply"]["approval"], "ask");
+    let stored = read_policy(&paths, &id);
+    assert_eq!(
+        (stored.approval, stored.applied),
+        (Approval::Ask, Some(Approval::Ask))
+    );
+    assert!(!stored.needs_apply());
+    assert!(!is_pending(&id));
 }
