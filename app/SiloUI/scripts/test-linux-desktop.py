@@ -99,6 +99,8 @@ def run():
     passed = False
     with tempfile.TemporaryDirectory(prefix="silo-linux-ui-") as temporary:
         environment = dict(os.environ)
+        environment["HOME"] = str(Path(temporary) / "home")
+        Path(environment["HOME"]).mkdir(mode=0o700)
         identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.preview")
         for kind in ["CONFIG", "DATA", "CACHE"]:
             directory = Path(temporary) / kind.lower()
