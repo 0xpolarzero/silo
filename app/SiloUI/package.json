@@ -39,7 +39,7 @@
     "release:sync": "node scripts/sync-release.mjs",
     "release:draft": "node scripts/release.mjs draft",
     "release:publish": "node scripts/release.mjs publish",
-    "test:release": "node --test scripts/preflight.test.mjs scripts/release.test.mjs scripts/lfs-transfer-runtime.test.mjs scripts/build-guest-image.test.mjs scripts/linux-package-tools.test.mjs scripts/zcode-tls.test.mjs scripts/import-production-settings.test.mjs",
+    "test:release": "node --test scripts/preflight.test.mjs scripts/release.test.mjs scripts/lfs-transfer-runtime.test.mjs scripts/build-guest-image.test.mjs scripts/build-input.test.mjs scripts/guest-image.test.mjs scripts/guest-image-memory.test.mjs scripts/linux-package-tools.test.mjs scripts/zcode-tls.test.mjs scripts/import-production-settings.test.mjs",
     "dev:import-production-settings": "node scripts/import-production-settings.mjs"
   },
   "dependencies": {

@@ -1,3 +1,5 @@
+import type { FetchStream } from "./build-input.mjs"
+
 export interface GitRuntimeTarget {
   archive: string
   sha256: string
@@ -31,7 +33,7 @@ export function validateArchiveEntries(entries: string[], label: string): void
 export function stageGitRuntime(options: {
   appRoot: string
   targetTriple: string
-  fetchBytes: (url: string) => Promise<ArrayBufferView>
+  fetchStream: FetchStream
   selected?: GitRuntimeTarget
   licenses?: GitLicenseArtifact[]
   extractArchive?: (archiveFile: string, destination: string) => Promise<void>

@@ -1,3 +1,4 @@
+import { Readable } from "node:stream"
 import assert from 'node:assert/strict'
 import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -50,7 +51,7 @@ test('unverified source is rejected before any Go build can execute', async t =>
   const root = await mkdtemp(join(tmpdir(), 'silo-lfs-packaging-'))
   t.after(() => rm(root, { recursive: true, force: true }))
   await assert.rejects(stageLfsTransferRuntime({ appRoot: root, targetTriple: 'aarch64-apple-darwin',
-    fetchBytes: async () => Buffer.from('not the pinned source') }), /checksum mismatch/)
+    fetchStream: async () => Readable.from([Buffer.from('not the pinned source')]) }), /checksum mismatch/)
 })
 
 
@@ -70,7 +71,7 @@ test('cached module licenses stay writable across repeated native resource copie
     binarySha256: createHash('sha256').update(binary).digest('hex'),
   }))
   const options = { appRoot, targetTriple: 'aarch64-apple-darwin',
-    fetchBytes: async () => { throw new Error('A valid compiled cache needs no download') } }
+    fetchStream: async () => { throw new Error('A valid compiled cache needs no download') } }
   const result = await stageLfsTransferRuntime(options)
   const notice = join(result.root, 'licenses/example-module/LICENSE')
   assert.equal((await stat(notice)).mode & 0o777, 0o644)
