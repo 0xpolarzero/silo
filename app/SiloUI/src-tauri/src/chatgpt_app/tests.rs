@@ -741,3 +741,19 @@ fn live_download_of_the_pinned_arm64_package() {
         full.bytes
     );
 }
+
+#[test]
+fn status_events_identify_their_computer() {
+    let local = event_payload(serde_json::to_value(Status::Verifying).unwrap(), None);
+    assert_eq!(
+        local,
+        serde_json::json!({ "state": "verifying", "computer": null })
+    );
+    let remote = event_payload(
+        serde_json::json!({ "state": "downloading", "receivedBytes": 1, "totalBytes": 2 }),
+        Some("host-1"),
+    );
+    assert_eq!(remote["computer"], "host-1");
+    assert_eq!(remote["state"], "downloading");
+    assert_eq!(remote["receivedBytes"], 1);
+}

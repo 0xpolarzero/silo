@@ -107,7 +107,7 @@ surface and its fixtures; there is no on-page selector, so edit the URL.
 | `unseen-result` | `interrupted-import`, `interrupted-export`, `set-aside`: an export or import result Silo has not shown yet (see below) | `src/fixtures/transfer-result-notice.ts` |
 | `resource-notice` | `create-storage`, `start-memory` | `src/fixtures/application-resources.ts` |
 | `operations` | `running`, `stuck` | `src/fixtures/operation-queue.ts` |
-| `computer-use`, `chatgpt` | Built-in computer use: `unavailable`, `needs-consent`, `preparing`, `installing`, `ready`, `failed`, `untested`, `auto`, `pre-v4`; ChatGPT app: `notConsented`, `idle`, `downloading`, `verifying`, `extracting`, `ready`, `failed`, `failed-final`. Either selector enables the Computer use section (sandbox page, `dev`), the new-sandbox notice and the `view=desktop` header | `src/fixtures/computer-use.ts` |
+| `computer-use`, `chatgpt` | Built-in computer use: `unavailable`, `needs-consent`, `preparing`, `installing`, `ready`, `failed`, `untested`, `auto`, `unknown-approval`, `pre-v4`; ChatGPT app: `notConsented`, `idle`, `downloading`, `verifying`, `extracting`, `ready`, `failed`, `failed-final`. Either selector enables the Computer use section (sandbox page, `dev`), the new-sandbox notice and the `view=desktop` header | `src/fixtures/computer-use.ts` |
 | `appearance` | `light`, `dark`; otherwise the fixture's theme preference | `src/fixtures/preview.tsx` |
 
 For example, `/preview.html?view=status-bar&status-bar=long-list` or
