@@ -396,11 +396,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let sshAccess: SshAccessState | undefined
   let sshAccessError: string | null = null
   const sshReads = new Map<string, { dirty: boolean; promise: Promise<void> }>()
+  const sshFailures = new Map<string, { delay: number; nextRead: number }>()
   const sshSaveRevisions = new Map<string, number>()
   const sshReadRevisions = new Map<string, number>()
   let network: NetworkState | undefined
   let networkError: string | null = null
   const networkReads = new Map<string, { dirty: boolean; promise: Promise<void> }>()
+  const networkFailures = new Map<string, { delay: number; nextRead: number }>()
   const networkReadRevisions = new Map<string, number>()
   const networkSaveRevisions = new Map<string, number>()
   let operationQueue: OperationQueue | undefined
@@ -460,7 +462,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return Promise.race([read, timeout]).finally(() => clearTimeout(timer))
   }
 
-  function readSshOwner(owner: string): Promise<void> {
+  function readSshOwner(owner: string, background = false): Promise<void> {
+    if (background && (sshFailures.get(owner)?.nextRead ?? 0) > Date.now()) return Promise.resolve()
     const pending = sshReads.get(owner)
     if (pending) { pending.dirty = true; return pending.promise }
     const entry = { dirty: false, promise: Promise.resolve() }
@@ -475,7 +478,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const result = parseSshAccessState(await waitForService(native.invoke(owner ? "remote_ssh_access_state" : "read_ssh_access_state", owner ? { hostId: owner } : undefined)))
         if (result.workspaces.some(row => workspaceOwner(row.workspace) !== owner)) throw new Error("SSH response belongs to another computer.")
         rows = result.workspaces
+        sshFailures.delete(owner)
       } catch (cause) {
+        const delay = Math.min((sshFailures.get(owner)?.delay ?? 5000) * 2, 60_000)
+        sshFailures.set(owner, { delay, nextRead: Date.now() + delay })
         unavailable = !owner ? "Could not check SSH access."
           : isUnsupportedRemote(cause) ? `Update Silo on ${computer?.name} to manage SSH access. That version does not support remote SSH management.`
           : `SSH status on ${computer?.name} is unavailable. Reconnect and refresh before changing access.`
@@ -494,8 +500,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return entry.promise
   }
 
-  function refreshSshAccess(): Promise<void> {
-    return Promise.all([readSshOwner(""), ...remoteComputers.map(computer => readSshOwner(computer.id))]).then(() => {})
+  function refreshSshAccess(options?: { background?: boolean }): Promise<void> {
+    return Promise.all([readSshOwner("", options?.background), ...remoteComputers.map(computer => readSshOwner(computer.id, options?.background))]).then(() => {})
   }
 
   function unavailableNetworkRows(owner: string, error: string): NetworkState["workspaces"] {
@@ -509,7 +515,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   // Events received during an owner's read request one follow-up for that owner.
-  function readNetworkOwner(owner: string): Promise<void> {
+  function readNetworkOwner(owner: string, background = false): Promise<void> {
+    if (background && (networkFailures.get(owner)?.nextRead ?? 0) > Date.now()) return Promise.resolve()
     const pending = networkReads.get(owner)
     if (pending) { pending.dirty = true; return pending.promise }
     const entry = { dirty: false, promise: Promise.resolve() }
@@ -524,7 +531,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         const result = parseNetworkState(await waitForService(native.invoke(owner ? "remote_network_state" : "read_network_state", owner ? { hostId: owner } : undefined)))
         if (result.workspaces.some(row => workspaceOwner(row.workspace) !== owner)) throw new Error("Network response belongs to another computer.")
         rows = result.workspaces
+        networkFailures.delete(owner)
       } catch (cause) {
+        const delay = Math.min((networkFailures.get(owner)?.delay ?? 5000) * 2, 60_000)
+        networkFailures.set(owner, { delay, nextRead: Date.now() + delay })
         unavailable = !owner ? "Could not check network services." : isUnsupportedRemote(cause) ? `Update Silo on ${computer?.name} to see network services.` : errorMessage(cause)
         rows = unavailableNetworkRows(owner, unavailable)
       }
@@ -541,8 +551,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     return entry.promise
   }
 
-  function refreshNetwork(): Promise<void> {
-    return Promise.all([readNetworkOwner(""), ...remoteComputers.map(computer => readNetworkOwner(computer.id))]).then(() => {})
+  function refreshNetwork(options?: { background?: boolean }): Promise<void> {
+    return Promise.all([readNetworkOwner("", options?.background), ...remoteComputers.map(computer => readNetworkOwner(computer.id, options?.background))]).then(() => {})
   }
   function refreshOperationQueue(): Promise<void> {
     if (operationQueueRequest) { operationQueueDirty = true; return operationQueueRequest }
@@ -888,6 +898,11 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           const host = hosts.find(host => host.id === id)
           if (!host || host.address !== remoteHosts.find(previous => previous.id === id)?.address) remoteFailures.delete(id)
         }
+        for (const failures of [sshFailures, networkFailures]) for (const id of failures.keys()) {
+          if (!id) continue
+          const host = hosts.find(host => host.id === id)
+          if (!host || host.address !== remoteHosts.find(previous => previous.id === id)?.address) failures.delete(id)
+        }
         remoteHosts = hosts
         remoteComputers = hosts.flatMap(host => {
           const known = remoteComputers.find(item => item.id === host.id)
@@ -1037,7 +1052,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (source && activeConfiguration) source = { ...source, sandboxConfigurationOperation: activeConfiguration }
     localStateUpdating = configurationUpdating
     publish({ ...snapshot, source, backup, loading: configurationUpdating && !source, error, localUpdating: configurationUpdating && source !== null && (snapshot.source === null || snapshot.localUpdating === true) })
-    void refreshNetwork()
+    void refreshNetwork({ background })
     // One remote read per refresh; one that started during this refresh is recent enough.
     if (remotePasses === remotePassesAtStart) void refreshComputers(false, background)
   }
