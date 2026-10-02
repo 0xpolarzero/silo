@@ -3347,7 +3347,7 @@ fn publish_package(
     Ok(())
 }
 
-enum OpenRegularError {
+pub(crate) enum OpenRegularError {
     NotRegular,
     Io(io::Error),
 }
@@ -3356,7 +3356,7 @@ enum OpenRegularError {
 /// then check the opened handle itself, so a path swapped after an earlier
 /// check can neither redirect the read nor hang it. The returned metadata
 /// (and its length) belongs to the handle that will be read.
-fn open_regular_file(path: &Path) -> Result<(File, fs::Metadata), OpenRegularError> {
+pub(crate) fn open_regular_file(path: &Path) -> Result<(File, fs::Metadata), OpenRegularError> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = OpenOptions::new()
         .read(true)
