@@ -1,3 +1,4 @@
+import { useLifecycleToasts } from "../model/use-lifecycle-toasts"
 import { ForkBody } from "../components/fork-popover"
 import { runCheckpointOperation, syncCheckpointProgress } from "../model/checkpoint-operation-toast"
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
@@ -15,7 +16,7 @@ import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditin
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { CircleAlert, Code, Download, GitFork, HardDrive, History, KeyRound, Loader2, Monitor, Play, RotateCw, Square, Terminal } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
-import { dismissOperationToast, dismissSandboxToasts, showActionFailure, showOperationFailure, showOperationNotice, showOperationProgress } from "@/lib/operation-toast"
+import { dismissOperationToast, dismissSandboxToasts, showActionFailure } from "@/lib/operation-toast"
 
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
 import { ConfirmBody } from "@/components/confirm-popover"
@@ -30,7 +31,6 @@ import { Progress } from "@/components/ui/progress"
 import { setupMachineConfigurationSchema, type SetupMachineConfiguration, type SiloProgressEvent } from "@/contracts/silo"
 import { WorkspaceStateLabel } from "@/features/application/components/application-ui"
 import { WorkspaceStatus } from "@/features/application/components/workspace-status"
-import { emptyOperationQueue, waitingOperationForVm, waitingStatusText, cancelledActionLabel } from "@/features/application/model/operation-queue"
 import type {
   ApplicationActions,
   ApplicationSource,
@@ -54,9 +54,6 @@ export interface SandboxPageRequest {
   workspaceId: string
   request: SandboxCommandRequest
 }
-
-/** A lifecycle action shows a progress notification only if it is still running after this long. */
-const LIFECYCLE_TOAST_DELAY_MS = 800
 
 const attentionPriority: Record<SandboxIconState, number> = {
   error: 0,
@@ -239,7 +236,7 @@ function WorkspaceActions({ workspace, availability, readOnly, guard }: { worksp
   </>
 }
 
-export function OverviewPage({ active = true, readOnly = false,
+export function OverviewPage({ active = true, readOnly = false, notifyOperations = true,
   source,
   actions,
   backup,
@@ -260,6 +257,8 @@ export function OverviewPage({ active = true, readOnly = false,
 }: {
   active?: boolean
   readOnly?: boolean
+  /** Standalone pages own notifications; ApplicationApp owns them across navigation. */
+  notifyOperations?: boolean
   newSandboxRequest?: number
   onNewSandboxRequestHandled?: (id: number) => void
   /** A palette command for a sandbox's page: its folder picker, Fork or Delete popover. */
@@ -285,6 +284,7 @@ export function OverviewPage({ active = true, readOnly = false,
   /** Navigate to another section (Files/Network filtered to a sandbox, or the Secrets tab). */
   onNavigate?: (route: ApplicationInitialRoute) => void
 }) {
+  useLifecycleToasts(source, actions, { enabled: notifyOperations, readOnly })
   useSshAccessRefresh(readOnly ? undefined : actions.refreshSshAccess, active)
   // The editor folder picker replaces the page for the route it was opened from. It closes
   // for good when that route changes (palette, status panel, Back/Forward, another section)
@@ -460,14 +460,6 @@ export function OverviewPage({ active = true, readOnly = false,
     }
   }
 
-  /** Re-submits a failed lifecycle action, guarded like any other request. */
-  function lifecycleRetry(workspace: ApplicationWorkspace): (() => void) | undefined {
-    const action = workspace.lifecycleFailureAction ?? "start"
-    if (readOnly || !workspace.lifecycleFailure || action === "dismiss-error") return undefined
-    // The failed request was already confirmed, so Retry asks nothing again.
-    return lifecycleLater(workspace, action, true)
-  }
-
   /** A sandbox's ⋯ menu actions and popovers, built once for its list row and its page. The
    * page and the list append their own Edit, Duplicate, Add Linux desktop and Delete items. */
   function sandboxMenu(workspace: ApplicationWorkspace): { items: MenuAction[]; popovers?: MenuPopovers } {
@@ -496,37 +488,6 @@ export function OverviewPage({ active = true, readOnly = false,
     if (restartPrompt) popovers.restart = close => <ConfirmBody tone={restartPrompt.tone} title={restartPrompt.title} description={restartPrompt.description} confirmLabel={restartPrompt.confirmLabel} onClose={close} onConfirm={lifecycleLater(workspace, "restart", true)} />
     return { items, popovers }
   }
-
-  // Lifecycle failures and cancellations arrive from the backend as workspace state. Toast each
-  // new one (both the list and the detail page render from here); failures already present at
-  // first load keep only their row state label.
-  const seenLifecycleFailures = useRef<Map<string, string> | null>(null)
-  const lifecycleToasts = useEffectEvent((all: ApplicationWorkspace[]) => {
-    const current = new Map<string, string>()
-    for (const workspace of all) {
-      if (workspace.lifecycleFailure) current.set(`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, `${workspace.lifecycleFailureAction ?? ""}|${workspace.lifecycleFailure}`)
-    }
-    const previous = seenLifecycleFailures.current
-    seenLifecycleFailures.current = current
-    if (!previous) return
-    for (const workspace of all) {
-      const key = `${workspace.computer?.id ?? ""}:${workspace.machine.id}`
-      const signature = current.get(key)
-      if (!signature || previous.get(key) === signature) continue
-      const action = workspace.lifecycleFailureAction ?? "start"
-      const name = workspace.machine.name
-      const id = `lifecycle:${key}`
-      if (workspace.lifecycleFailureCancelled) {
-        showOperationNotice(id, cancelledActionLabel(action))
-        continue
-      }
-      if (action === "dismiss-error") continue
-      const verb = action === "restart" ? "restart" : action === "stop" ? "stop" : "start"
-      dismissOperationToast(id)
-      showOperationFailure(id, `Could not ${verb} ${name}`, { description: workspace.lifecycleFailure ? <ErrorDetails message={workspace.lifecycleFailure} diagnostic={workspace.lifecycleFailureDiagnostic} /> : undefined, retry: lifecycleRetry(workspace), sandbox: name, native: false })
-    }
-  })
-  useEffect(() => { lifecycleToasts(source.workspaces) }, [source.workspaces])
 
   // Checkpoint operations report through one progress notification each (see
   // model/checkpoint-operation-toast). Both the list and the detail page render from here, so
@@ -577,42 +538,6 @@ export function OverviewPage({ active = true, readOnly = false,
       failureTitle: `Could not create fork ${name}`,
     })
   }
-
-  // Lifecycle Start/Stop/Restart: a progress notification appears only if the action takes
-  // longer than a moment (instant ones never flash) and is dismissed when it finishes; the row
-  // state already shows the outcome. Failures keep their own retryable notification.
-  const lifecycleProgress = useRef(new Map<string, { timer?: number; shown: boolean; startedAt: number }>())
-  const trackLifecycle = useEffectEvent((all: ApplicationWorkspace[]) => {
-    const tracked = lifecycleProgress.current
-    const live = new Set<string>()
-    for (const workspace of all) {
-      const action = workspace.lifecycleAction
-      if (!action || action === "dismiss-error") continue
-      const key = `${workspace.computer?.id ?? ""}:${workspace.machine.id}`
-      live.add(key)
-      const id = `lifecycle:${key}`
-      const name = workspace.machine.name
-      const title = action === "restart" ? `Restarting ${name}` : action === "stop" ? `Stopping ${name}` : `Starting ${name}`
-      const waiting = !workspace.computer ? waitingOperationForVm(source.operationQueue ?? emptyOperationQueue, workspace.machine.id) : undefined
-      const step = waiting && source.operationQueue ? waitingStatusText(source.operationQueue, waiting) : action === "restart" ? "Restarting…" : action === "stop" ? "Stopping…" : "Starting…"
-      const existing = tracked.get(key)
-      const entry = existing ?? { shown: false, startedAt: Date.now() } as { timer?: number; shown: boolean; startedAt: number }
-      const show = () => showOperationProgress(id, { title, step, startedAt: entry.startedAt, sandbox: name })
-      if (!existing) {
-        tracked.set(key, entry)
-        entry.timer = window.setTimeout(() => { entry.shown = true; entry.timer = undefined; show() }, LIFECYCLE_TOAST_DELAY_MS)
-      } else if (entry.shown) show()
-    }
-    for (const [key, entry] of tracked) {
-      if (live.has(key)) continue
-      if (entry.timer) window.clearTimeout(entry.timer)
-      if (entry.shown && !all.some(workspace => `${workspace.computer?.id ?? ""}:${workspace.machine.id}` === key && workspace.lifecycleFailure)) dismissOperationToast(`lifecycle:${key}`)
-      tracked.delete(key)
-    }
-  })
-  // Declared before the failure effect so a failed action's Retry toast replaces the dismissal.
-  useEffect(() => { trackLifecycle(source.workspaces) }, [source.workspaces, source.operationQueue])
-  useEffect(() => () => { for (const entry of lifecycleProgress.current.values()) if (entry.timer) window.clearTimeout(entry.timer) }, [])
 
   const pickerRoute = `${active}:${selectedId ?? ""}:${activeSandboxTab}`
   const openFolderPicker = (workspaceId: string) => setFolderPicker({ workspaceId, route: pickerRoute })
