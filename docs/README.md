@@ -21,7 +21,7 @@ has been exercised.
 | Area | Documents |
 | --- | --- |
 | Build and release | [Build from source](SiloUI-BUILD-FROM-SOURCE.md), [build channels (production and Dev)](SiloUI-BUILD-CHANNELS.md), [release workflow and CI](SiloUI-RELEASES.md), [Linux system updates](SiloUI-LINUX-UPDATES.md), [distribution acceptance](SiloUI-DISTRIBUTION-PLAN.md), [release history](releases/) |
-| Runtime | [Packaging](SiloUI-RUNTIME-PACKAGING.md), [bundled guest images](SiloUI-GUEST-IMAGES.md), [SSH agent TLS regression](SiloUI-ZCODE-TLS-INVESTIGATION.md), and the dated [runtime and backup decision log](SiloUI-RUNTIME-BACKUP-FINDINGS.md) (validated against MicroSandbox 0.6.17 unless a section says otherwise; Silo now bundles 0.7.2, and the Backup page it describes became per-sandbox Export and Import) |
+| Runtime | [Packaging](SiloUI-RUNTIME-PACKAGING.md), [bundled guest images](SiloUI-GUEST-IMAGES.md), [SSH agent TLS regression](SiloUI-ZCODE-TLS-INVESTIGATION.md), and the [current runtime pins](../app/SiloUI/runtime-inputs.json). The dated [runtime and backup decision log](SiloUI-RUNTIME-BACKUP-FINDINGS.md) was validated against MicroSandbox 0.6.17 unless a section says otherwise; its Backup page became per-sandbox Export and Import. |
 | Checkpoints | [Checkpoint implementation plan and qualification](SiloUI-CHECKPOINTS-PLAN.md), [snapshot lineage groups](research/silo-snapshot-lineage-groups-2026-09-26.md) |
 | Native tests | [Rust test support and live-test boundaries](SiloUI-RUST-TEST-SUPPORT.md) |
 | Platform verification | [Linux](SiloUI-LINUX-VERIFICATION.md), [Linux verification session, 2026-09-30](research/linux-verification-2026-09-30.md), [Linux acceptance, 2026-09-25](research/silo-linux-acceptance-2026-09-25.md), [macOS VM library loading](SiloUI-LIBRARY-CONSTRAINTS.md), [dependencies, export and import testing](SiloUI-DEPENDENCIES-BACKUP-TESTING.md) |
@@ -41,7 +41,7 @@ above for current behavior and build commands.
 ### Review remediation
 
 - [Release dry run, 2026-09-30](research/release-dry-run-2026-09-30.md): non-publishing all-target release verification for A-01, A-04, A-08 and A-09.
-- [Review remediation plan](SiloUI-REVIEW-REMEDIATION-PLAN.md): full ledger of all 397 review findings with fixes and verification, work packages, phases, merge-queue orchestration and live verification sessions.
+- [Review remediation plan](SiloUI-REVIEW-REMEDIATION-PLAN.md): ledger of the 2026-09-29 review findings with landed-fix statuses and verification, plus the original work packages, phases, merge-queue orchestration and live verification sessions.
 - [Review remediation design notes](SiloUI-REVIEW-DESIGN-NOTES.md): Phase 0 decision records (options checked against upstream tools, recommended decision, implementation outline, owner questions) for the review items marked design.
 - [Codebase review, 2026-09-29](research/codebase-review-2026-09-29.md): ranked findings from a read-only review of the whole app — owner decisions, release blockers, security, data loss, stuck states, performance, UX, CI, tests and code health.
 
