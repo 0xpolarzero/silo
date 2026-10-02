@@ -6,6 +6,8 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(any(test, target_os = "linux"))]
+mod notification_ids;
 #[cfg(target_os = "linux")]
 use linux as platform;
 #[cfg(target_os = "macos")]
