@@ -4723,7 +4723,7 @@ mod tests {
                     paths,
                     name,
                     "root",
-                    "cat /var/lib/silo-computer-use/approval.json",
+                    "cat /var/lib/silo-computer-use/receipt.json",
                 )
                 .unwrap(),
             )
@@ -4746,19 +4746,25 @@ mod tests {
         assert_eq!(status["computerUse"]["compatibility"], "tested");
 
         // 2. The user switches the source to auto approval; the guest applies it.
-        crate::computer_use::apply_approval_with(
-            &runtime::ProcessRunner,
+        if let Some(apply) = crate::computer_use::apply_approval_with(
+            std::sync::Arc::new(runtime::ProcessRunner),
             &source,
             &machine,
             crate::computer_use::Approval::Auto,
             true,
         )
-        .unwrap();
+        .unwrap()
+        {
+            apply.join().unwrap();
+        }
         let source_policy = crate::computer_use::settings(&source, machine.id());
         let source_guest = applied(&source, source_name);
-        eprintln!("source guest approval: {source_guest}");
+        eprintln!("source guest receipt: {source_guest}");
         assert_eq!(source_guest["approval"], "auto");
-        assert_eq!(source_guest["revision"], source_policy.revision);
+        assert_eq!(
+            source_policy.applied,
+            Some(crate::computer_use::Approval::Auto)
+        );
         let status = wait_ready(&source, source_name);
         assert_eq!(status["computerUse"]["approval"], "auto");
         assert_eq!(status["computerUse"]["state"], "ready", "{status}");
@@ -4868,13 +4874,27 @@ mod tests {
         assert!(report.contains("ro,"), "{report}");
 
         // 7. The effective approval is the target's policy, not what the disk carried.
+        // The boot's apply records its result a moment after the state turns ready.
+        let started = std::time::Instant::now();
+        while crate::computer_use::settings(&target, imported.id())
+            .applied
+            .is_none()
+        {
+            assert!(
+                started.elapsed() < Duration::from_secs(120),
+                "no apply result"
+            );
+            std::thread::sleep(Duration::from_secs(2));
+        }
         let target_policy = crate::computer_use::settings(&target, imported.id());
         assert_eq!(target_policy.approval, crate::computer_use::Approval::Ask);
-        assert!(target_policy.revision > source_policy.revision);
+        assert_eq!(
+            target_policy.applied,
+            Some(crate::computer_use::Approval::Ask)
+        );
         let target_guest = applied(&target, target_name);
-        eprintln!("target guest approval: {target_guest}");
+        eprintln!("target guest receipt: {target_guest}");
         assert_eq!(target_guest["approval"], "ask");
-        assert_eq!(target_guest["revision"], target_policy.revision);
         assert_eq!(status["computerUse"]["approval"], "ask");
 
         let _ = runtime::run_msb(

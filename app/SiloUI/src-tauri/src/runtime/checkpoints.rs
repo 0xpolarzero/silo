@@ -911,6 +911,10 @@ pub(crate) fn import_pending_restore(
             "Imported snapshot reference is invalid.".into(),
         ));
     }
+    // An import (and so a transfer) starts from this computer's default approval (ask) with
+    // no attempt known, whatever policy a VM of this id had here: its first boot applies it
+    // over the configuration the imported disk carries.
+    crate::computer_use::forget(paths, workspace_id);
     let mut record = Record::default();
     record.snapshot_group = Some(source_group.to_owned());
     record.pending_checkpoint_restore = Some(PendingRestore {
