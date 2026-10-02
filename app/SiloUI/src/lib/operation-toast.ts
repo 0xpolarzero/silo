@@ -231,8 +231,8 @@ export function showQuickConfirmation(title: string, description?: string) {
  * notification. Pass `native: false` for a failure that is not the result of background
  * work (a cancelled file dialog, a validation message).
  */
-export function showActionFailure(title: string, error: unknown, retry?: () => void, options: { native?: boolean; noticeSandbox?: NoticeSandbox } = {}) {
-  const id = `action-failure:${title}`
+export function showActionFailure(title: string, error: unknown, retry?: () => void, options: { id?: string; native?: boolean; noticeSandbox?: NoticeSandbox } = {}) {
+  const id = options.id ?? `action-failure:${title}`
   const description = errorMessage(error)
   toast.error(title, {
     id,
