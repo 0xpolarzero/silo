@@ -136,9 +136,14 @@ fn read() -> Option<HostIdentity> {
 /// dialog when no developer directory provides Git. An optional default must never
 /// open that dialog, so the shim is skipped unless a developer Git exists.
 fn installer_shim(path: &Path) -> bool {
-    cfg!(target_os = "macos")
-        && path == Path::new("/usr/bin/git")
-        && !developer_git_installed(&developer_directories())
+    cfg!(target_os = "macos") && installer_shim_with(path, &developer_directories())
+}
+fn installer_shim_with(path: &Path, directories: &[PathBuf]) -> bool {
+    (path == Path::new("/usr/bin/git")
+        || path
+            .canonicalize()
+            .is_ok_and(|resolved| resolved == Path::new("/usr/bin/git")))
+        && !developer_git_installed(directories)
 }
 fn developer_directories() -> Vec<PathBuf> {
     // `xcode-select --switch` records its choice in this link; the defaults follow.
@@ -337,6 +342,20 @@ mod tests {
             tools
         ]));
         assert!(!installer_shim(Path::new("/opt/homebrew/bin/git")));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn git_shortcuts_do_not_bypass_the_installer_shim_check() {
+        let root = tempfile::tempdir().unwrap();
+        let shortcut = root.path().join("git");
+        std::os::unix::fs::symlink("/usr/bin/git", &shortcut).unwrap();
+        let missing_tools = [root.path().join("missing-developer-tools")];
+        assert!(installer_shim_with(&shortcut, &missing_tools));
+        let tools = root.path().join("CommandLineTools");
+        std::fs::create_dir_all(tools.join("usr/bin")).unwrap();
+        std::fs::write(tools.join("usr/bin/git"), b"developer git").unwrap();
+        assert!(!installer_shim_with(&shortcut, &[tools]));
     }
 
     #[test]
