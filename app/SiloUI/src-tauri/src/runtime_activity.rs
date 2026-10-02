@@ -102,6 +102,27 @@ fn store(paths: &RuntimePaths, event: &Event) -> Result<(), String> {
         .map_err(|_| "Sandbox activity could not be synced.".to_string())
 }
 
+// A failed history write cannot change a lifecycle result. Keep a warning for
+// this session even if a later write succeeds, since an outcome may be missing.
+static HISTORY_WARNINGS: OnceLock<Mutex<HashMap<PathBuf, Value>>> = OnceLock::new();
+
+fn warn(paths: &RuntimePaths, message: &str) {
+    let mut warning = history_warning("sandbox");
+    warning["detail"] = format!("{message} Sandbox actions can still run.").into();
+    HISTORY_WARNINGS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(path(paths), warning);
+}
+
+fn record(paths: &RuntimePaths, event: &Event) {
+    // store leaves unreadable history untouched rather than overwriting it.
+    if let Err(message) = store(paths, event) {
+        warn(paths, &message);
+    }
+}
+
 pub(super) fn begin(
     paths: &RuntimePaths,
     action: &str,
@@ -127,7 +148,7 @@ pub(super) fn begin(
         cancelled: false,
         process: std::process::id(),
     };
-    store(paths, &event)?;
+    record(paths, &event);
     Ok(event)
 }
 
@@ -135,11 +156,7 @@ pub(super) fn matches(event: &Event, action: &str, workspace: &str) -> bool {
     event.action == action && event.workspace == workspace
 }
 
-pub(super) fn resume(
-    paths: &RuntimePaths,
-    event: &mut Event,
-    machine_id: &str,
-) -> Result<(), String> {
+pub(super) fn resume(paths: &RuntimePaths, event: &mut Event, machine_id: &str) {
     event.machine_id = machine_id.into();
     event.process = std::process::id();
     event.completed = false;
@@ -147,14 +164,10 @@ pub(super) fn resume(
     event.diagnostic = None;
     event.dismissed = false;
     event.cancelled = false;
-    store(paths, event)
+    record(paths, event);
 }
 
-pub(super) fn finish(
-    paths: &RuntimePaths,
-    event: &mut Event,
-    result: &Result<(), RuntimeError>,
-) -> Result<(), String> {
+pub(super) fn finish(paths: &RuntimePaths, event: &mut Event, result: &Result<(), RuntimeError>) {
     event.completed = true;
     event.cancelled = matches!(result, Err(RuntimeError::Cancelled { .. }));
     let report = result
@@ -166,23 +179,26 @@ pub(super) fn finish(
     // Logs and bounded) is kept separately for a Details disclosure.
     event.failure = report.as_ref().map(|report| report.summary.clone());
     event.diagnostic = report.and_then(|report| report.diagnostic);
-    store(paths, event)
+    record(paths, event);
 }
 
 /// Settle an action that is being retired without running (D-22): an unfinished
 /// entry becomes cancelled; a finished one (for example a failed start kept for
 /// Retry) keeps its recorded outcome.
-pub(super) fn retire(paths: &RuntimePaths, event: &mut Event) -> Result<(), String> {
+pub(super) fn retire(paths: &RuntimePaths, event: &mut Event) {
     // A saved action holds the entry as it was when saved; the journal has its outcome.
     let journaled = events(paths)
-        .map_err(|error| error.to_string())?
+        .unwrap_or_else(|error| {
+            warn(paths, &error.to_string());
+            Vec::new()
+        })
         .into_iter()
         .find(|entry| entry.id == event.id);
     if event.completed || journaled.is_some_and(|entry| entry.completed) {
-        return Ok(());
+        return;
     }
     let operation = format!("{} {}", event.action, event.workspace);
-    finish(paths, event, &Err(RuntimeError::Cancelled { operation }))
+    finish(paths, event, &Err(RuntimeError::Cancelled { operation }));
 }
 
 /// Summary and diagnostic of a recorded failure. Journals written before the
@@ -311,9 +327,20 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
         }
         entry
     }));
+    if let Some(warning) = HISTORY_WARNINGS
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&path(paths))
+        .cloned()
+    {
+        warnings.retain(|entry| entry["id"] != warning["id"]);
+        warnings.push(warning);
+    }
+    result.sort_by(|a, b| b["occurredAt"].as_str().cmp(&a["occurredAt"].as_str()));
+    result.truncate(LIMIT - warnings.len());
     result.extend(warnings);
     result.sort_by(|a, b| b["occurredAt"].as_str().cmp(&a["occurredAt"].as_str()));
-    result.truncate(LIMIT);
     Ok(result)
 }
 
@@ -468,8 +495,7 @@ mod tests {
             &Err(RuntimeError::Cancelled {
                 operation: "start dev".into(),
             }),
-        )
-        .unwrap();
+        );
         assert!(failures(&paths).unwrap().is_empty());
         let entry = &read(&paths).unwrap()[0];
         assert_eq!(entry["title"], "Start cancelled");
@@ -482,7 +508,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = super::super::tests::paths(&dir);
         let mut first = begin(&paths, "start", "dev", "vm-1").unwrap();
-        finish(&paths, &mut first, &Ok(())).unwrap();
+        finish(&paths, &mut first, &Ok(()));
         let mut entries: Vec<Value> =
             serde_json::from_slice(&fs::read(path(&paths)).unwrap()).unwrap();
         let mut unknown = entries[0].clone();
@@ -496,7 +522,7 @@ mod tests {
         }
         fs::write(path(&paths), serde_json::to_vec(&entries).unwrap()).unwrap();
         let mut next = begin(&paths, "stop", "dev", "vm-1").unwrap();
-        finish(&paths, &mut next, &Ok(())).unwrap();
+        finish(&paths, &mut next, &Ok(()));
         let stored = events(&paths).unwrap();
         assert!(stored.len() <= LIMIT);
         assert!(stored.iter().all(|event| event.action != "hibernate"));
@@ -511,7 +537,7 @@ mod tests {
             operation: "Starting the sandbox".into(),
             exit_code: Some(1),
             detail: "\u{1b}[31mlibkrunfw could not load: different Team IDs\u{1b}[0m\nTOKEN=private-value".into(),
-        })).unwrap();
+        }));
         // The summary is one actionable line; the runtime's explanation is separate.
         let entry = &read(&paths).unwrap()[0];
         let detail = entry["detail"].as_str().unwrap();
@@ -532,7 +558,7 @@ mod tests {
             .contains("different Team IDs"));
         assert!(!failures(&paths).unwrap().contains_key("replacement-vm"));
         let mut retry = begin(&paths, "start", "dev", "vm-1").unwrap();
-        finish(&paths, &mut retry, &Ok(())).unwrap();
+        finish(&paths, &mut retry, &Ok(()));
         assert!(!failures(&paths).unwrap().contains_key("vm-1"));
         assert!(read(&paths).unwrap().iter().any(|entry| entry["diagnostic"]
             .as_str()
@@ -571,8 +597,7 @@ mod tests {
                 exit_code: Some(1),
                 detail: "TOKEN=private-value".into(),
             }),
-        )
-        .unwrap();
+        );
         let values = read(&paths).unwrap();
         assert_eq!(values[0]["tone"], "danger");
         assert!(!serde_json::to_string(&values)
@@ -601,8 +626,7 @@ mod tests {
             &paths,
             &mut event,
             &Err(RuntimeError::Invalid("Boot failed".into())),
-        )
-        .unwrap();
+        );
         acknowledge_failure(&paths, "replacement-vm").unwrap();
         assert!(failures(&paths).unwrap().contains_key("vm-1"));
         acknowledge_failure(&paths, "vm-1").unwrap();
@@ -633,8 +657,7 @@ mod tests {
                 exit_code: Some(1),
                 detail: "💥".repeat(20_000),
             }),
-        )
-        .unwrap();
+        );
         assert!(fs::metadata(path(&paths)).unwrap().len() <= MAX_OUTPUT_BYTES);
         assert!(events(&paths).unwrap().len() < 134);
         let stored = events(&paths).unwrap().last().unwrap().clone();
