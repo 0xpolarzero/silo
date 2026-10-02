@@ -35,3 +35,13 @@ Fixed and folded in `10fd55ff`. Snapshots retain their metadata VM UUID, and pag
 - **Consequence:** A selected destination containing a previous complete export is replaced by an incomplete artifact that describes unavailable remote records as zero matches, followed by a "Logs saved" toast.
 - **Fix:** Reject an unsupported page with an update instruction before writing its coverage. Existing atomic export cleanup preserves the destination and removes partial output.
 - **Regression:** `unsupported_remote_logs_do_not_replace_an_existing_export` checks a mixed supported/unsupported export, the returned update instruction, the existing file contents, and removal of the temporary output. All 12 extracted-source export tests pass against actual request/page types and production writer/file-publication functions. Fixtures use temporary files only.
+
+## NATIVE-ENTRY-5: Single-instance PATH lookup selects a non-executable file
+
+- **Priority:** P3.
+- **Location:** `app/SiloUI/src-tauri/src/single_instance.rs::resolve_program`.
+- **Trigger:** A PATH directory contains a non-executable `silo-ui` file before the directory containing the launched executable.
+- **Evidence:** The resolver selected the first regular file without checking execute bits. A fixture launches a temporary shell script through the same PATH: the operating system skips the non-executable decoy and runs the later script, while the original resolver returns the decoy. The regression failed with those two different paths.
+- **Consequence:** The second-instance dialog can incorrectly claim a different build is running and display a path that was not launched.
+- **Fix:** Require a regular file with execute bits for PATH candidates, matching Silo's existing executable-discovery checks. Update the old PATH fixture to use executable permissions.
+- **Validation:** Four extracted-source tests pass, including the process-boundary regression, absolute/relative/PATH resolution, build-byte comparison, and plugin ordering. The child process is a temporary fixture script; no Silo application is launched.
