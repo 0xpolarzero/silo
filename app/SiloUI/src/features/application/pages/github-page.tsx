@@ -8,7 +8,7 @@ import { githubFailure } from "./github-failure"
 import { InlineConfirmation } from "@/components/inline-confirmation"
 import { Button } from "@/components/ui/button"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
+import { dismissOperationToast, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 import type {
   ApplicationActions,
   ApplicationGitHubConfiguration,
@@ -134,6 +134,10 @@ export function GitHubPage({
     () => draftFromSource(source.github.workspaces, source.github.hostIdentity, source.workspaces.filter(w => !w.computer)),
     [source.github.hostIdentity, source.github.workspaces, source.workspaces],
   )
+  const workspaceOwners = useMemo(
+    () => new Map(source.workspaces.filter(workspace => !workspace.computer).map(({ machine }) => [machine.name, machine.id])),
+    [source.workspaces],
+  )
   const [draft, setDraft] = useState(() => copyDraft(sourceDraft))
   const [connectionState, setConnectionState] = useState(source.github.state)
   const [accessEnabled, setAccessEnabled] = useState(source.github.accessEnabled ?? true)
@@ -144,8 +148,12 @@ export function GitHubPage({
   const rejectedSaves = useRef(new Set<string>())
   const pendingSaves = useRef(new Map<string, number>())
   const saveIntents = useRef(new Map<string, ApplicationGitHubConfiguration["workspaces"][number]>())
-  const sourceDraftKey = useRef(JSON.stringify(sourceDraft))
+  const workspaceOwnersRef = useRef(workspaceOwners)
+  const sourceDraftKey = useRef(JSON.stringify([sourceDraft, [...workspaceOwners]]))
   const sourceOperationsKey = useRef(JSON.stringify([source.github.policyRevision, source.github.workspaceOperations]))
+  // Only operations the user started here notify; remember their toasts for owner changes.
+  const userInitiated = useRef(new Set<string>())
+  const toastWorkspaces = useRef(new Set<string>())
   const catalogAvailable = source.github.repositoryCatalogStatus?.status !== "unavailable"
   const tokenConnected = source.github.personalToken?.state === "connected"
   const applying = Object.values(workspaceOperations).some((operation) => operation.status === "applying")
@@ -156,9 +164,20 @@ export function GitHubPage({
   }, [busy, onBusyChange])
 
   useEffect(() => {
-    const key = JSON.stringify(sourceDraft)
+    const key = JSON.stringify([sourceDraft, [...workspaceOwners]])
     if (sourceDraftKey.current === key) return
     sourceDraftKey.current = key
+    const changedOwners = new Set<string>()
+    for (const [name, id] of workspaceOwnersRef.current) {
+      if (workspaceOwners.get(name) === id) continue
+      changedOwners.add(name)
+      pendingSaves.current.delete(name)
+      rejectedSaves.current.delete(name)
+      saveIntents.current.delete(name)
+      userInitiated.current.delete(name)
+      if (toastWorkspaces.current.delete(name)) dismissOperationToast(`github-apply:${name}`)
+    }
+    workspaceOwnersRef.current = workspaceOwners
     const submittedIdentities = identityIntent.current
     const next = copyDraft(sourceDraft)
     for (const [workspace, policy] of saveIntents.current) {
@@ -172,11 +191,11 @@ export function GitHubPage({
     // oxlint-disable-next-line react/set-state-in-effect
     setDraft((current) => {
       for (const [workspace, identity] of Object.entries(current.identities)) {
-        if (next.identities[workspace] && !sameIdentity(submittedIdentities[workspace], identity)) next.identities[workspace] = identity
+        if (!changedOwners.has(workspace) && next.identities[workspace] && !sameIdentity(submittedIdentities[workspace], identity)) next.identities[workspace] = identity
       }
       return next
     })
-  }, [sourceDraft])
+  }, [sourceDraft, workspaceOwners])
 
   useEffect(() => {
     // oxlint-disable-next-line react/set-state-in-effect
@@ -206,16 +225,13 @@ export function GitHubPage({
   workspacesRef.current = source.workspaces
   const announced = useRef(new Map<string, string>(Object.entries(workspaceOperations).map(([name, operation]) => [name, `${operation.status}|${operation.message}`])))
 
-  // Only operations the user started here notify. Background verification and renewal update
-  // the small inline label but never toast.
-  const userInitiated = useRef(new Set<string>())
-
   useEffect(() => {
     for (const [name, operation] of Object.entries(workspaceOperations)) {
       const key = `${operation.status}|${operation.message}`
       if (announced.current.get(name) === key) continue
       announced.current.set(name, key)
       if (!userInitiated.current.has(name)) continue
+      toastWorkspaces.current.add(name)
       if (operation.status !== "applying") userInitiated.current.delete(name)
       const id = `github-apply:${name}`
       const machine = workspacesRef.current.find((workspace) => !workspace.computer && workspace.machine.name === name)?.machine
@@ -228,7 +244,10 @@ export function GitHubPage({
           description: `${name}: ${firstLine(failure.details)}`,
           sandbox: name,
           noticeSandbox,
-          retry: failure.canRetry ? () => retryRef.current(name) : undefined,
+          retry: failure.canRetry && machine ? () => {
+            const current = workspacesRef.current.find(workspace => !workspace.computer && workspace.machine.name === name)
+            if (current?.machine.id === machine.id) retryRef.current(name)
+          } : undefined,
         })
       }
     }
