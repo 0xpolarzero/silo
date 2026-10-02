@@ -71,9 +71,10 @@ Use disposable VMs for this walkthrough.
    Startup memory pressure uses the approved advisory; it is not an invented
    universal minimum. Disk failures report the real operation error.
 
-GitHub authentication, repository cloning/pushing and other unimplemented
-workspace tools remain separate work. Their actions return explicit errors;
-empty lists do not pretend that discovery or synchronization succeeded.
+GitHub authentication and host Push are implemented separately; see
+[GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md). Repository selection
+controls access, and tools inside the VM clone repositories through that access.
+This walkthrough's storage checks do not verify GitHub authorization or pushing.
 
 ## Export a sandbox
 
@@ -128,15 +129,17 @@ The ignored Rust test
 production create, identity, export and import functions with disposable paths.
 `real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk` covers
 checkpoint export the same way.
-It requires the built app and a working host hypervisor. Use the bundled runtime,
+It requires prepared guest-image resources, the built app and a working host
+hypervisor. Configure native tests through the [release guide's local setup](SiloUI-RELEASES.md#local-setup).
+Use the bundled Dev runtime,
 which Tauri signs with the Hypervisor entitlement; the raw build-cache executable
 cannot boot a macOS VM:
 
 ```sh
 SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures \
-SILO_TEST_MSB="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app/Contents/MacOS/msb" \
-SILO_TEST_LIBKRUNFW="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app/Contents/Frameworks/libkrunfw.5.dylib" \
-cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml \
+SILO_TEST_MSB="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app/Contents/MacOS/msb" \
+SILO_TEST_LIBKRUNFW="$PWD/app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app/Contents/Frameworks/libkrunfw.5.dylib" \
+cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked \
   real_backup_restore_preserves_root_and_workspace_without_original_cache \
   -- --ignored --nocapture
 ```
@@ -151,11 +154,12 @@ and checks that the existing VM and its cached disks remain intact. It cleans up
 
 ## Coverage limits
 
-macOS is the available live verification host. Unit tests cover failure mapping,
+The original checks recorded below used macOS. Unit tests cover failure mapping,
 archive traversal/integrity, cancellation, name collisions and resource handling.
-Linux code and packaging inputs are covered by source and focused tests, but
-neither Linux architecture is live-qualified on this Mac. Run the same real
-create/export/import flow on supported arm64 and x86_64 Linux before release.
+Later Linux runs are recorded in [Linux verification](SiloUI-LINUX-VERIFICATION.md)
+and [Linux acceptance](research/silo-linux-acceptance-2026-09-25.md), with exact
+packages, runtime versions and host limits. Those dated runs do not qualify the
+current HEAD or every platform; verify the intended package and workflow before release.
 An ad-hoc debug signature is not notarization or release-signing verification.
 
 ## Interrupted import cleanup limit
@@ -254,8 +258,12 @@ operation error rather than hiding the outcome.
 To check optional GitHub setup, leave GitHub disconnected and continue to Review.
 Saved repository choices remain in the draft but are excluded from submission
 until GitHub is connected. Git author choices still apply. Click Finish: setup
-must complete without a repository-setup error. Connected repository selections
-still fail explicitly because repository setup is not implemented.
+must complete without a repository-setup error. With GitHub connected, setup
+saves the selected/all repository policy and waits for each sandbox to acknowledge
+that access before marking completion. A failed or replaced policy keeps setup
+incomplete. The [production setup adapter](../app/SiloUI/src/desktop/production-source.ts)
+and its [fixture tests](../app/SiloUI/src/desktop/production-setup.test.ts) cover this
+acknowledgement; they do not prove live GitHub access.
 
 On Review, each verified sandbox must show **Complete**, matching its Sandboxes
 row. Git author shows **Complete** only after saving and verification succeed;
