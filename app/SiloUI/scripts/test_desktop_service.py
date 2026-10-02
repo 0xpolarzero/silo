@@ -785,6 +785,46 @@ class DesktopLifecycle(unittest.TestCase):
         self.assertNotIn('secret', json.dumps(result))
         self.assertNotIn('password', result)
 
+    def test_selkies_supervision_bounds_logs_with_open_append_descriptors(self):
+        log = self.root / 'service.log'
+        log.write_bytes(b'old' * (1024 * 1024))
+        handlers = {}
+        waits = []
+        session = [SimpleNamespace(pid=pid, poll=lambda: None) for pid in (10, 11, 12)]
+
+        def start(_commands, _environment, _account, state, children, _stopping):
+            children.extend(session)
+            state['sessionProcesses'] = [{'pid': child.pid} for child in session]
+
+        with log.open('ab', buffering=0) as appender:
+            def wait(timeout):
+                # Every monitor cycle must retain the recent output, even though
+                # the children keep their original append descriptors open.
+                self.assertLessEqual(log.stat().st_size, 1024 * 1024)
+                if waits:
+                    self.assertEqual(log.read_bytes(), waits[-1][-256 * 1024:])
+                payload = bytes([len(waits) + 65]) * (1280 * 1024)
+                appender.write(payload)
+                waits.append(payload)
+                if len(waits) == 3:
+                    handlers[service.signal.SIGTERM](service.signal.SIGTERM, None)
+
+            stream = SimpleNamespace(pid=13, poll=lambda: None, wait=wait)
+            with patch.object(service, 'streamer_backend', return_value='selkies'), \
+                 patch.object(service, 'HOME', self.root / 'home'), \
+                 patch.object(service, 'LOG', log), \
+                 patch.object(service, 'identity', return_value='supervisor-start'), \
+                 patch.object(service.signal, 'signal', side_effect=lambda sig, fn: handlers.update({sig: fn})), \
+                 patch.object(service.pwd, 'getpwnam', return_value='account'), \
+                 patch.object(service, 'start_session_processes', side_effect=start), \
+                 patch.object(service, 'launch_selkies_streamer', return_value=(stream, {'pid': 13})), \
+                 patch.object(service, 'selkies_http_ready', return_value=True), \
+                 patch.object(service, 'stop_managed_child'):
+                service.supervise_selkies()
+        self.assertFalse((service.RUN / 'failed').exists())
+        self.assertEqual(len(waits), 3)
+        self.assertEqual(log.read_bytes(), waits[-1][-256 * 1024:])
+
     def test_log_bounds_preserve_tail_and_do_not_follow_symlinks(self):
         home = self.root / 'home'
         logs = home / '.vnc'
