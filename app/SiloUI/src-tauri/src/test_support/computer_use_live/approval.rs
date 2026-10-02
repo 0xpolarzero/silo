@@ -3,6 +3,55 @@ use super::Fixture;
 use crate::runtime;
 use serde_json::Value;
 
+const INSTALL_HARNESS_PACKAGES: &str = r#"install_output=$(npm install -g --prefix /usr/local @openai/codex @anthropic-ai/claude-code 2>&1) || {
+    printf '%s\n' "$install_output" | tail -2
+    exit 1
+}
+printf '%s\n' "$install_output" | tail -2
+"#;
+
+#[test]
+fn harness_package_install_rejects_npm_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    crate::test_support::write_shell_script(
+        &directory.path().join("npm"),
+        "printf 'install failed\\n' >&2; exit 23",
+    );
+    let output = std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            &format!("set -e; {INSTALL_HARNESS_PACKAGES}; printf 'accepted\\n'"),
+        ])
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", directory.path().display()),
+        )
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("accepted"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("install failed"));
+}
+
+#[test]
+fn harness_package_install_keeps_successful_output_tail() {
+    let directory = tempfile::tempdir().unwrap();
+    crate::test_support::write_shell_script(
+        &directory.path().join("npm"),
+        "printf 'progress\\ninstalled\\nready\\n'",
+    );
+    let output = std::process::Command::new("/bin/sh")
+        .args(["-c", &format!("set -e; {INSTALL_HARNESS_PACKAGES}")])
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", directory.path().display()),
+        )
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"installed\nready\n");
+}
+
 /// Reads a guest file as root; empty when it does not exist.
 fn guest_file(fixture: &Fixture, name: &str, path: &str) -> String {
     fixture
@@ -15,11 +64,11 @@ fn guest_file(fixture: &Fixture, name: &str, path: &str) -> String {
 fn install_harnesses(fixture: &Fixture, name: &str) -> bool {
     let output = fixture.exec_status(
         name,
-        "set -e; cd /tmp; case \"$(uname -m)\" in x86_64) node_arch=x64;; aarch64|arm64) node_arch=arm64;; *) echo \"unsupported guest architecture $(uname -m)\"; exit 1;; esac; \
+        &format!("set -e; cd /tmp; case \"$(uname -m)\" in x86_64) node_arch=x64;; aarch64|arm64) node_arch=arm64;; *) echo \"unsupported guest architecture $(uname -m)\"; exit 1;; esac; \
          curl -fsSL -m 180 \"https://nodejs.org/dist/v22.11.0/node-v22.11.0-linux-$node_arch.tar.xz\" -o node.tar.xz; \
          mkdir -p /tmp/nodejs; tar -xJf node.tar.xz -C /tmp/nodejs --strip-components=1; cp /tmp/nodejs/bin/node /usr/local/bin/node; \
-         PATH=/tmp/nodejs/bin:$PATH npm install -g --prefix /usr/local @openai/codex @anthropic-ai/claude-code 2>&1 | tail -2; \
-         which codex claude; runuser -u silo -- env HOME=/home/silo codex --version; runuser -u silo -- env HOME=/home/silo claude --version",
+         export PATH=/tmp/nodejs/bin:$PATH; {INSTALL_HARNESS_PACKAGES}; \
+         which codex claude; runuser -u silo -- env HOME=/home/silo codex --version; runuser -u silo -- env HOME=/home/silo claude --version"),
     );
     eprintln!("harness install:\n{output}");
     output.contains("EXIT:0")
