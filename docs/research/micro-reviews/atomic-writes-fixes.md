@@ -61,3 +61,15 @@ before the change. Three exact-source persistence tests passed after the fix,
 including existing failure/cancellation preservation and 1,001 JSONL rows with
 Unicode, using Rust 1.94.0 with warnings denied. The harness isolates the writer
 from Tauri dialogs and log-query adapters; root skips the permission fixture.
+
+## Saved ports: fixed
+
+`network.rs::write_config` acknowledged a file replacement without synchronizing
+the configuration directory. It now completes that sync and propagates failure.
+The real permission fixture verifies a disabled mapping remains fully readable
+after publication, rejects success and confirms retry after restoring access.
+The regression failed before the fix; it and the existing size-limit and bounded
+FIFO-reader regressions passed afterward. The exact-source harness includes the
+production runtime-path type and fixture, configuration types, validator,
+reader and writer, compiled with Rust 1.94.0 and warnings denied. It runs no
+runtime forwarding or Tauri adapter; root skips the permission fixture.
