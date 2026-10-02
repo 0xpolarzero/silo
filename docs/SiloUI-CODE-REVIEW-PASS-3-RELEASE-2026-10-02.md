@@ -24,8 +24,9 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-04 | P2 | Direct publication bypasses the explicit stable-release opt-in | Fixed and folded: `5b18ec21` |
 | RL-05 | P3 | Release guide omits the implemented in-app Debian update | Corrected and folded: `17edafc6` |
 | RL-06 | P2 | Required minimum-macOS gate uses a runner with imminent brownouts | Open; replacement qualification required |
-| RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed and folded: `abae62fe` |
-| RL-08 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Confirmed; fix pending |
+| RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed: `abae62fe` |
+| RL-08 | P2 | Failed license staging replaces the MicroSandbox sidecar without its manifest | Fixed; regression passes |
+| RL-09 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Confirmed; fix pending |
 
 ## Detailed findings
 
@@ -139,7 +140,23 @@ the four documented Cargo flag environment inputs. The regression checks rebuild
 for changed plain, encoded, build-wide, and target-specific flags, and reuse when
 those inputs remain unchanged. The focused runtime staging tests pass.
 
-### RL-08 Optional GNOME verifier uses obsolete tray and channel expectations
+### RL-08 Failed license staging replaces the MicroSandbox sidecar without its manifest
+
+**P2.** `stageRuntime` published the compiled sidecar before fetching and verifying
+the remaining licenses and writing the new resource manifest. A later download
+failure left the previously prepared manifest and library alongside a replacement
+sidecar with a different digest.
+
+**Evidence.** A fixture first prepared a complete runtime, then attempted a new
+compiled executable with an unavailable license URL. The call rejected, but the
+sidecar contained the replacement bytes. The regression failed on the original
+sidecar comparison; no native executable or network request was used.
+
+**Correction and status.** Fixed: sidecar publication follows complete resource
+and manifest staging. The regression now verifies that a failed license fetch
+preserves all three previously prepared outputs. This does not claim atomic
+publication across a process crash or final filesystem errors.
+### RL-09 Optional GNOME verifier uses obsolete tray and channel expectations
 
 **P2.** Confirmed at `ac8aaf87`. Locations: [linux_desktop_services.py](../app/SiloUI/scripts/linux_desktop_services.py), tray item selection, Open action and health fixture; [tray.rs](../app/SiloUI/src-tauri/src/tray.rs), Linux `menu` and `title`.
 

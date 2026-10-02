@@ -75,10 +75,11 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   }
 
   /** Opening is instant, so it has no loading phase: a failure stays until closed, with Retry. */
-  async function open(workspace: string, port: number) {
+  async function open(workspace: ApplicationWorkspace, port: number) {
+    const location = workspace.computer ? `${workspace.machine.name} · ${workspace.computer.name}` : workspace.machine.name
     const attempt = async () => {
-      try { await actions.openNetworkPort!(workspace, port) }
-      catch (cause) { showActionFailure(`Could not open port ${port}`, typeof cause === "string" ? cause : errorMessage(cause), () => void attempt(), { noticeSandbox: (() => { const machine = workspaces.find(item => workspaceTarget(item) === workspace)?.machine; return machine ? { id: machine.id, name: machine.name } : undefined })() }) }
+      try { await actions.openNetworkPort!(workspaceTarget(workspace), port) }
+      catch (cause) { showActionFailure(`Could not open port ${port} · ${location}`, typeof cause === "string" ? cause : errorMessage(cause), () => void attempt(), { id: `network-port-open:${workspace.machine.id}:${port}`, noticeSandbox: { id: workspace.machine.id, name: workspace.machine.name } }) }
     }
     await attempt()
   }

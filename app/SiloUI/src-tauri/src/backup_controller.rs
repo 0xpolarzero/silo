@@ -1953,7 +1953,7 @@ pub(crate) async fn cancel_backup_operation(
 }
 
 fn cancel_operation(controller: &Controller) -> Result<(), String> {
-    {
+    let operation_id = {
         let view = controller.view.lock().map_err(|_| {
             "Export and import status could not be read. Relaunch Silo and retry.".to_string()
         })?;
@@ -1974,8 +1974,11 @@ fn cancel_operation(controller: &Controller) -> Result<(), String> {
             .as_ref()
             .ok_or("No export or import is running.")?
             .cancel();
+        recovery::token(controller).ok().flatten()
+    };
+    if let Some(operation_id) = operation_id {
+        let _ = recovery::cancel(controller, &operation_id);
     }
-    let _ = recovery::cancel(controller);
     Ok(())
 }
 

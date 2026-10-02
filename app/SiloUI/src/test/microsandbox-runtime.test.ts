@@ -168,6 +168,16 @@ describe("bundled MicroSandbox release staging", () => {
     expect(manifest.library).not.toHaveProperty("resourcePath")
     expect(buildExecutable).toHaveBeenCalledOnce()
     expect(fetchStream).toHaveBeenCalledTimes(5)
+
+    const originalManifest = await readFile(staged.manifestPath)
+    await expect(stageRuntime({
+      appRoot, targetTriple, fetchStream, selected, sourceArtifact, verifyExecutable: false,
+      buildExecutable: async () => Buffer.from("replacement compiled executable"),
+      licenses: [{ ...licenses[0], name: "new-license.txt", url: "https://example.test/missing-license" }],
+    })).rejects.toThrow("unexpected URL")
+    expect(await readFile(staged.executablePath)).toEqual(executable)
+    expect(await readFile(staged.manifestPath)).toEqual(originalManifest)
+    expect(await readFile(staged.libraryPath)).toEqual(library)
   })
 
   it("reuses an unchanged compiled runtime but rebuilds when verified embedded agent bytes change", async () => {
