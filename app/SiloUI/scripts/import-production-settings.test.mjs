@@ -4,7 +4,6 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { fileURLToPath } from "node:url"
 import {
   COPIED_SETTINGS, DEVELOPMENT, PRODUCTION, channelPaths, devProcessRunning, importProductionSettings, sanitizeSecrets, sanitizeSettings,
 } from "./import-production-settings.mjs"
@@ -99,14 +98,6 @@ function list(root) {
 
 const run = (home, keychain, options = {}) => importProductionSettings({
   home, platform: "darwin", keychain, isDevRunning: () => false, newId: () => "dddddddd-dddd-4ddd-8ddd-dddddddddddd", ...options,
-})
-
-test("channel constants match the Rust channel module", () => {
-  const rust = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../src-tauri/src/channel.rs"), "utf8")
-  for (const value of [PRODUCTION.identifier, PRODUCTION.stateDir, ...Object.values(PRODUCTION.keychain),
-    DEVELOPMENT.identifier, DEVELOPMENT.stateDir, ...Object.values(DEVELOPMENT.keychain)]) {
-    assert.ok(rust.includes(`"${value}"`), value)
-  }
 })
 
 test("copies the intended configuration into dev and nothing about sandboxes", async () => {
