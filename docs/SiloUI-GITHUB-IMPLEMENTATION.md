@@ -133,6 +133,12 @@ is optional in GitHub's [OpenAPI installation schema](https://github.com/github/
 Scoping accepts an omitted ID and rejects a mismatched or malformed ID when present;
 owner, suspension and repository permission checks still apply.
 
+GitHub distinguishes [incorrect App credentials from an invalid refresh token](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app#troubleshooting).
+Only `bad_refresh_token` tells the disconnect flow that its stored refresh
+credential cannot renew. Other OAuth errors keep revocation pending and retain
+the credential, rather than reporting a completed disconnect after a configuration
+failure. Provider error descriptions are never included in diagnostics.
+
 ## Verification
 
 Latest completed checks for the server-free conversion:
