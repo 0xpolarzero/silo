@@ -62,12 +62,9 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
         }
         "guest.prepare" => {
             // Authorizes a remote key inside one VM's guest; wait its turn per VM.
-            let name = vm_name(app, params)?;
             let paths = runtime::runtime_paths(app)?;
-            let vm_id = runtime::resolve_vm_id(&paths, &name).map_err(|e| e.to_string())?;
-            let _guard = runtime::OPERATIONS
-                .vm(&vm_id, &name, &format!("Preparing access to {name}"))
-                .map_err(|e| e.to_string())?;
+            let (_guard, name) =
+                prepare_guest_target(&runtime::OPERATIONS, &paths, string(params, "vmId")?)?;
             let user = crate::working_account::inspect_user(&paths, &name)?;
             crate::working_account::require_client_protocol(params)?;
             let public = crate::editor::authorize_remote(
@@ -174,6 +171,19 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
     }
 }
 
+fn prepare_guest_target<'a>(
+    gate: &'a runtime::operation_gate::OperationGate,
+    paths: &runtime::RuntimePaths,
+    id: &str,
+) -> Result<(runtime::operation_gate::OperationGuard<'a>, String), String> {
+    let name = runtime::remote_ops::local_vm_name_in(paths, id)?;
+    let guard = gate
+        .vm(id, &name, &format!("Preparing access to {name}"))
+        .map_err(|e| e.to_string())?;
+    let name = runtime::remote_ops::local_vm_name_in(paths, id)?;
+    Ok((guard, name))
+}
+
 pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Result<Child, String> {
     if method != "guest.ssh" {
         return Err("Unsupported guest connection.".into());
@@ -226,6 +236,79 @@ pub(crate) fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn save_guest_target(paths: &runtime::RuntimePaths, id: &str, name: &str) {
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![runtime::MachineConfiguration::Vm {
+                    id: id.into(),
+                    name: name.into(),
+                    cpus: 1,
+                    max_cpus: 2,
+                    memory_gib: 2,
+                    max_memory_gib: 4,
+                    workspace_storage_gib: 10,
+                    runtime_storage_gib: 10,
+                    desktop: None,
+                }],
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn queued_guest_preparation_preserves_the_requested_vm_identity() {
+        use std::time::{Duration, Instant};
+        let original = "00000000-0000-4000-8000-000000000001";
+        let replacement = "00000000-0000-4000-8000-000000000002";
+        for replace in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = crate::test_support::paths(dir.path());
+            save_guest_target(&paths, original, "dev");
+            let gate = runtime::operation_gate::OperationGate::new();
+            let computer = gate.computer("Change configuration").unwrap();
+            std::thread::scope(|scope| {
+                let prepare = scope.spawn(|| {
+                    prepare_guest_target(&gate, &paths, original).map(|(_guard, name)| name)
+                });
+                let until = Instant::now() + Duration::from_secs(5);
+                while gate.snapshot().waiting.is_empty() {
+                    assert!(Instant::now() < until, "preparation never queued");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                assert_eq!(gate.snapshot().waiting[0].vm_id.as_deref(), Some(original));
+                if replace {
+                    save_guest_target(&paths, replacement, "dev");
+                } else {
+                    save_guest_target(&paths, original, "renamed");
+                }
+                drop(computer);
+                let result = prepare.join().unwrap();
+                if replace {
+                    assert!(result.is_err(), "preparation accepted the replacement VM");
+                } else {
+                    assert_eq!(result.unwrap(), "renamed");
+                }
+            });
+            assert!(gate.is_idle());
+        }
+    }
+
+    #[test]
+    fn guest_preparation_accepts_an_unchanged_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(dir.path());
+        let id = "00000000-0000-4000-8000-000000000001";
+        save_guest_target(&paths, id, "dev");
+        let gate = runtime::operation_gate::OperationGate::new();
+        let (guard, name) = prepare_guest_target(&gate, &paths, id).unwrap();
+        assert_eq!(name, "dev");
+        assert_eq!(gate.snapshot().running[0].vm_id.as_deref(), Some(id));
+        drop(guard);
+        assert!(gate.is_idle());
+    }
+
     #[test]
     fn remote_targets_never_fall_back_to_local_names() {
         let host = uuid::Uuid::new_v4();

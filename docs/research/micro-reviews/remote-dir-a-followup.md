@@ -43,3 +43,15 @@ The full application Cargo test and Cargo Clippy requests never progressed beyon
 - **Regression:** Actual framed replies from a bounded disposable child exercise empty/array replies, non-string errors, and conflicting result/error fields. Positive cases preserve explicit null and modern/legacy reported errors. The tests use the unchanged transport and framing source with cached dependencies and the relevant bridge-error code. No live SSH session, app, production data, or VM is used.
 
 The envelope regressions pass after correction (2 passed), including modern and legacy error compatibility. Focused Rust 1.94.0 Clippy reports no warnings; Cargo formatting and whitespace checks pass. This validates the extracted transport module and controlled child protocol, not a full native app build or a live stream session.
+
+## REMOTE-DIR-A-5: Queued guest-access preparation can target a replacement VM
+
+- **Priority:** P2.
+- **Location:** `app/SiloUI/src-tauri/src/remote_access.rs`, `guest.prepare` dispatch.
+- **Trigger:** A request for VM A resolves its name and waits behind a computer-wide configuration operation. That operation replaces A with VM B under the same name or renames A before releasing the gate.
+- **Evidence:** The dispatcher resolved the request UUID to a name, resolved that name back to a UUID for admission, then retained the old name for user inspection, folder validation, and SSH host-key preparation. The extracted guest-target seam reproduced acceptance of the replaced name under the real operation gate. Its queued identity regression failed with `preparation accepted the replacement VM`; the unchanged-VM regression passed.
+- **Consequence:** Access preparation can inspect the replacement guest and prepare its host identity under the original request's admission. A rename can also send preparation to the obsolete name. This does not claim that a deleted UUID can later establish a live stream, which independently resolves the UUID again.
+- **Fix:** Admit on the explicit request UUID, then resolve that UUID again after admission. Return a missing-VM error before guest access when it was deleted; use the fresh name when it was renamed. Reuse the existing metadata lookup through `local_vm_name_in` for the native app adapter and the guest preparation seam.
+- **Regression:** Hold an isolated computer gate, queue preparation for A, replace or rename its metadata, then release the gate. Reject replacement, preserve rename, and retain unchanged-VM admission. The disposable seam harness uses the real operation gate and copied target-selection functions with synthetic metadata adapters; it never accesses a guest or real host configuration.
+
+Both guest-target regressions pass after correction. Focused Rust 1.94.0 Clippy reports no warnings; Cargo formatting and whitespace checks pass. These fixture checks validate queue admission and identity selection; they do not establish live guest access.
