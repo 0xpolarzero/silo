@@ -293,7 +293,7 @@ fn is_rate_limit(status: u16, headers: &HeaderMap, body: &Value) -> bool {
         || message.contains("abuse detection")
 }
 fn retryable_response(status: u16, headers: &HeaderMap, body: &Value, safe: bool) -> bool {
-    is_rate_limit(status, headers, body) || (status >= 500 && safe)
+    is_rate_limit(status, headers, body) || ((status == 408 || status >= 500) && safe)
 }
 /// A connection failure means nothing was sent, so even a non-idempotent request
 /// can be retried automatically; only a failure after sending has an unknown outcome.
@@ -630,6 +630,48 @@ mod tests {
         );
         server.join().unwrap();
         result
+    }
+    #[test]
+    fn request_timeouts_retry_safe_reads_without_replaying_unsafe_writes() {
+        let _test_state = crate::test_support::global_state();
+        for safe in [true, false] {
+            let key = uuid::Uuid::new_v4().to_string();
+            let class = uuid::Uuid::new_v4().to_string();
+            let error = wire_reply(
+                &key,
+                &class,
+                "HTTP/1.1 408 Request Timeout\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                    .into(),
+                safe,
+                false,
+            )
+            .unwrap_err();
+            let mut g = gates();
+            if safe {
+                let until = g.requests[&key]
+                    .until
+                    .expect("safe read stopped after HTTP 408");
+                assert!(error.contains("Retrying"));
+                assert!(g.check(&key, &class, until - 1).is_err());
+                assert!(g.check(&key, &class, until).is_ok());
+            } else {
+                assert!(g.requests[&key].until.is_none());
+                assert!(g.check(&key, &class, u64::MAX).is_err());
+            }
+            g.requests.remove(&key);
+        }
+        assert!(!retryable_response(
+            401,
+            &HeaderMap::new(),
+            &Value::Null,
+            true
+        ));
+        assert!(!retryable_response(
+            404,
+            &HeaderMap::new(),
+            &Value::Null,
+            true
+        ));
     }
     #[test]
     fn interrupted_successful_body_retries_safe_reads_but_not_ambiguous_writes() {
