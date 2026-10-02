@@ -49,3 +49,15 @@ contains a separate router-level fix for queued delivery and withdrawal ordering
 SDK's Apple-event constants match shutdown routing. Tauri's setup callback runs
 synchronously within tao's application launch callback, before it returns, so the
 notification delegate installation satisfies the SDK's launch ordering.
+
+## Follow-up: expired Quit flush acknowledgment
+
+`src/desktop/settings.ts` caught a rejected `begin_settings_flush` invocation
+and continued through setup draining, saving, and completing Quit. A delayed
+request from a shutdown that has already finished or been cancelled can therefore
+continue its completion handshake without owning the native flush phase.
+The rejecting production-store fixture observed `beforeFlush` running after the
+native acknowledgment rejected. The fix stops at that boundary and does not
+cancel a different shutdown in response to an acknowledgment it never acquired.
+The accepted-flush save and error/cancellation behavior remain covered by the
+existing settings transport tests. No native app or real VM was used.

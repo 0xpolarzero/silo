@@ -175,6 +175,26 @@ describe("native settings transport", () => {
     await vi.waitFor(() => expect(native.handlers.has("settings:flush-request")).toBe(true))
   })
 
+  it("ignores a flush request when native shutdown no longer accepts its acknowledgment", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "begin_settings_flush") throw new Error("No shutdown is awaiting acknowledgment")
+      return snapshot()
+    })
+    const settings = store()
+    await settings.initialize()
+    const beforeFlush = vi.fn(async () => {})
+    cleanups.push(await connectSettingsLifecycle(settings, true, beforeFlush))
+    native.invoke.mockClear()
+    native.handlers.get("settings:flush-request")?.({ payload: null })
+    await vi.waitFor(() => expect(logged).toHaveBeenCalledWith(
+      "Silo settings shutdown acknowledgment:", expect.any(Error),
+    ))
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    expect(beforeFlush).not.toHaveBeenCalled()
+    expect(native.invoke.mock.calls.map(([command]) => command)).toEqual(["begin_settings_flush"])
+  })
+
   it("waits for setup work after claiming shutdown and before flushing settings", async () => {
     native.invoke.mockResolvedValue(snapshot())
     const settings = store()
