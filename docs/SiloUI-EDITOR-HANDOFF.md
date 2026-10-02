@@ -10,6 +10,12 @@ Editor handoff rejects ASCII control characters in folder names. The URL parser 
 
 Silo creates an Ed25519 client identity in its private runtime home, adds only its public key to MicroSandbox authorization, and pins the VM's locally stored SSH host public key. The guest does not receive either private key. SSH uses `IdentitiesOnly`, disables the agent, and requires the pinned host key. Each exact VM alias has a private configuration file. One `Include` line is prepended to the user's SSH configuration; the existing bytes are preserved and repeated actions do not duplicate the include. A symlinked `~/.ssh` or `~/.ssh/config` (stow, chezmoi) is followed to the folder or file it points to when this account owns it, and the file is replaced atomically so the link stays in place. When the target can't be changed (for example a read-only home-manager file in the Nix store) or the link is broken, the error names the exact `Include` line to add by hand; once it is there, Silo writes nothing. Oversized or non-regular configuration files still fail explicitly. Terminals for remote sandboxes pass `-F` and never touch `~/.ssh/config`.
 
+Reusing a connection key repairs group or other access to `0600` through the
+existing atomic private-file writer, preserving the key bytes and identity.
+[OpenSSH's key loader](https://github.com/openssh/openssh-portable/blob/V_9_9_P2/authfile.c#L86-L111)
+rejects account-owned private keys with any group or other permission bits, even
+when their parent directory is private. Already private keys need no rewrite.
+
 Supported adapters:
 
 - Zed: bundled CLI on macOS or discovered executable on Linux, with an encoded `ssh://alias/path` URI (the user comes from the alias's SSH configuration).

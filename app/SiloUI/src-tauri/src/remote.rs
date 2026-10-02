@@ -36,6 +36,8 @@ fn silo_key_comment() -> &'static str {
 /// preamble before each bridge reply.
 const VERSION: u32 = 2;
 const LIMIT: usize = 4 * 1024 * 1024;
+const MAX_CONFIG_BYTES: usize = 1024 * 1024;
+const CONFIG_TOO_LARGE: &str = "Remote management settings exceed the 1 MiB safety limit.";
 static CONFIG_LOCK: Mutex<()> = Mutex::new(());
 /// Serializes `config.json` reads and writes. Every holder reloads the file (written
 /// atomically) after locking, so a panic under the lock leaves no in-memory state to
@@ -133,9 +135,18 @@ fn read_config() -> Result<Config, String> {
     read_config_in(&directory()?)
 }
 fn read_config_in(dir: &Path) -> Result<Config, String> {
-    match fs::read(dir.join("config.json")) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|_| "Remote management settings are damaged.".into()),
+    match fs::File::open(dir.join("config.json")) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            file.take(MAX_CONFIG_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|error| error.to_string())?;
+            if bytes.len() > MAX_CONFIG_BYTES {
+                return Err(CONFIG_TOO_LARGE.into());
+            }
+            serde_json::from_slice(&bytes)
+                .map_err(|_| "Remote management settings are damaged.".into())
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             let config = Config {
                 host_id: uuid::Uuid::new_v4().to_string(),
@@ -152,9 +163,12 @@ fn save_config(config: &Config) -> Result<(), String> {
     save_config_in(&directory()?, config)
 }
 fn save_config_in(dir: &Path, config: &Config) -> Result<(), String> {
+    let bytes = serde_json::to_vec(config).map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_CONFIG_BYTES {
+        return Err(CONFIG_TOO_LARGE.into());
+    }
     let mut temp = tempfile::NamedTempFile::new_in(dir).map_err(|e| e.to_string())?;
-    temp.write_all(&serde_json::to_vec(config).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    temp.write_all(&bytes).map_err(|e| e.to_string())?;
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
     temp.persist(dir.join("config.json"))
         .map_err(|e| e.to_string())?;
@@ -344,16 +358,16 @@ pub async fn remove_remote_host(app: AppHandle, host_id: String) -> Result<(), S
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = config_lock();
         let mut config = read_config()?;
+        // Keep the computer available for retry if its local key cleanup fails.
+        if let Ok(paths) = crate::runtime::runtime_paths(&app) {
+            crate::ssh_connection::forget_host(&paths.home, &host_id)?;
+        }
         config.hosts.retain(|h| h.id != host_id);
         save_config(&config)?;
         drop(_guard);
         poll_succeeded(&host_id);
         crate::remote_network::close_host(&host_id);
         crate::desktop_viewer::close_host(&host_id);
-        // This computer's SSH keys for that computer's sandboxes are no longer needed (C-15).
-        if let Ok(paths) = crate::runtime::runtime_paths(&app) {
-            let _ = crate::ssh_connection::forget_host(&paths.home, &host_id);
-        }
         Ok(())
     })
     .await
@@ -1108,7 +1122,15 @@ fn send_change(
     mut send: impl FnMut(&Value) -> Result<Value, Failure>,
 ) -> Result<Value, BridgeError> {
     let mut delays = delays.iter();
+    let quit = crate::runtime::shutdown::generation();
     loop {
+        if crate::runtime::shutdown::generation() != quit {
+            return Err(BridgeError::new(
+                ErrorCode::Cancelled,
+                "The remote action was cancelled when Silo began shutting down. Refresh the remote computer to check its state.",
+            ));
+        }
+        crate::runtime::shutdown::ensure_accepting_operations()?;
         let remaining = deadline.saturating_duration_since(Instant::now());
         // Queued work must start early enough to finish while this computer still waits.
         request["startWithinMs"] = json!((remaining / 2).as_millis() as u64);
@@ -3560,6 +3582,34 @@ mod dispatch_tests {
     }
 
     #[test]
+    fn a_lost_change_is_not_retried_after_a_failed_quit_reopens_admission() {
+        let _test_state = crate::test_support::global_state();
+        struct Reopen;
+        impl Drop for Reopen {
+            fn drop(&mut self) {
+                crate::runtime::shutdown::cancel();
+            }
+        }
+        let _reopen = Reopen;
+        let mut request = json!({"method":"runtime.action","operationId":"fixed"});
+        let mut attempts = 0;
+        let result = send_change(
+            &mut request,
+            Instant::now() + Duration::from_secs(60),
+            &[Duration::ZERO],
+            |_| {
+                attempts += 1;
+                crate::runtime::shutdown::begin();
+                crate::runtime::shutdown::cancel();
+                Err(Failure::Lost("dropped".into()))
+            },
+        );
+        assert_eq!(attempts, 1);
+        assert_eq!(result.unwrap_err().code, ErrorCode::Cancelled);
+        assert!(crate::runtime::shutdown::ensure_accepting_operations().is_ok());
+    }
+
+    #[test]
     fn a_lost_change_is_sent_again_with_the_same_identity() {
         let _test_state = crate::test_support::global_state();
         let mut request = json!({"method":"runtime.action","operationId":"fixed"});
@@ -3695,4 +3745,55 @@ mod ssh_authorization_tests {
 pub(crate) fn log_identity() -> Result<(String, String), String> {
     let _guard = config_lock();
     Ok((read_config()?.host_id, name()))
+}
+
+#[cfg(test)]
+mod config_io_limit_tests {
+    use super::*;
+
+    const LIMIT_BYTES: usize = 1024 * 1024;
+
+    #[test]
+    fn remote_config_accepts_the_limit_and_rejects_one_extra_byte_without_rewriting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let mut bytes = br#"{"hostId":"fixture-owner","enabled":true,"hosts":[]}"#.to_vec();
+        bytes.resize(LIMIT_BYTES, b' ');
+        fs::write(&path, &bytes).unwrap();
+        let config = read_config_in(directory.path()).unwrap();
+        assert_eq!(config.host_id, "fixture-owner");
+        assert!(config.enabled);
+        bytes.push(b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            read_config_in(directory.path())
+                .err()
+                .expect("oversized read must fail"),
+            "Remote management settings exceed the 1 MiB safety limit."
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn remote_config_oversized_save_preserves_the_previous_settings() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let mut config = Config {
+            host_id: "fixture-owner".into(),
+            enabled: true,
+            hosts: vec![],
+        };
+        save_config_in(directory.path(), &config).unwrap();
+        let previous = fs::read(&path).unwrap();
+        config.hosts.push(RemoteHost {
+            id: "fixture-host".into(),
+            name: "x".repeat(LIMIT_BYTES),
+            address: "example.test".into(),
+        });
+        assert_eq!(
+            save_config_in(directory.path(), &config).unwrap_err(),
+            "Remote management settings exceed the 1 MiB safety limit."
+        );
+        assert_eq!(fs::read(&path).unwrap(), previous);
+    }
 }

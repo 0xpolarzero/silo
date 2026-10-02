@@ -46,3 +46,17 @@ to preserve a meaningful keyboard sequence as content changes.
 Verification: both user-event tests in `remote-computers-settings.test.tsx`
 failed before the fix, then returned focus to Connect computer afterwards.
 The connection backend is a deterministic resolved mock; no SSH session is opened.
+
+## Import validation changed the name field's label
+
+Trigger: review an import with an invalid or already-used sandbox name. Error
+text nested inside the label changed the input's accessible name to include the
+whole error. Duplicate-name errors also lacked an associated description.
+
+The fix keeps a separate explicit label and connects either error through
+`aria-describedby`, following [WAI-ARIA's error-identification technique](https://www.w3.org/WAI/WCAG22/Techniques/aria/ARIA21).
+Import eligibility and validation messages remain unchanged.
+
+Verification: both format-error and duplicate-name fixtures in
+`import-popover.test.tsx` failed the stable-name assertion before the fix. They
+now verify the exact label, error description, invalid state, and disabled Import.

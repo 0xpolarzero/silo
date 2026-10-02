@@ -2164,31 +2164,31 @@ fn run_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
 /// worker was started. Never needs the user: the app is downloaded on every computer
 /// that runs Silo.
 pub(crate) fn ensure_in_background(app: &tauri::AppHandle) -> bool {
-    let Some(claim) = auto::WORKER.claim() else {
-        auto::RETRY.wake();
+    let Some(claim) = auto::WORKER.claim(&auto::RETRY) else {
         return false;
     };
     let app = app.clone();
     let spawned = std::thread::Builder::new()
         .name("chatgpt-app".into())
         .spawn(move || {
-            let _claim = claim;
             auto::lower_priority();
             let ready_app = app.clone();
-            auto::settle(
-                || {
-                    run_prepare(&app).unwrap_or_else(|error| Status::Failed {
-                        reason: error,
-                        retryable: true,
-                    })
-                },
-                |delay| auto::RETRY.wait(delay),
-                move || {
-                    // Running built-in VMs set computer use up now instead of at their next boot.
-                    crate::computer_use::app_ready(&ready_app);
-                    collect_unused(&ready_app);
-                },
-            );
+            claim.run(&auto::RETRY, || {
+                auto::settle(
+                    || {
+                        run_prepare(&app).unwrap_or_else(|error| Status::Failed {
+                            reason: error,
+                            retryable: true,
+                        })
+                    },
+                    |delay| auto::RETRY.wait(delay),
+                    || {
+                        // Running built-in VMs set computer use up now instead of at their next boot.
+                        crate::computer_use::app_ready(&ready_app);
+                        collect_unused(&ready_app);
+                    },
+                )
+            });
         })
         .is_ok();
     spawned

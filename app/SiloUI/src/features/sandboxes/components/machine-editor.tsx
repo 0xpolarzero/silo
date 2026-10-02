@@ -194,12 +194,16 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   }
   // Offer only what the computer can run; the runtime rejects ceilings above it.
   const maximums = resourceMaximums(capacity)
-  const cpuPresets = presetsWithin(supportedCPUs, capacity?.logicalCPUs)
-  const memoryPresets = presetsWithin(supportedMemoryGiB, capacity?.memoryGiB)
+  const cpuPresets = presetsWithin(supportedCPUs, capacity ? maximums.cpus : undefined)
+  const memoryPresets = presetsWithin(supportedMemoryGiB, capacity ? maximums.memoryGiB : undefined)
 
   useEffect(() => {
-    firstField.current?.focus()
-    firstField.current?.scrollIntoView?.({ block: "nearest" })
+    // Let the opening menu finish its focus restoration before entering the editor.
+    const frame = requestAnimationFrame(() => {
+      firstField.current?.focus()
+      firstField.current?.scrollIntoView?.({ block: "nearest" })
+    })
+    return () => cancelAnimationFrame(frame)
   }, [focusRequest])
 
   useEffect(() => {
@@ -338,6 +342,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
       </section>}
       </fieldset>
 
+      <p role={saving ? "status" : undefined} aria-live="polite" aria-atomic="true" className="sr-only">{saving ? `Saving ${draft.name}…` : ""}</p>
       {blockedReason && !saving && <p id={blockedReasonId} role="status" className="text-right text-[11px] text-muted-foreground">{blockedReason}</p>}
       {stopPending ? <InlineConfirmation active onDismiss={dismissStop}>
         <div role="group" aria-label={`Stop ${stopTarget} and save?`} className="grid gap-2 rounded-md border border-border px-3 py-2">

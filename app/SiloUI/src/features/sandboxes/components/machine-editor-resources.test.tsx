@@ -22,6 +22,22 @@ async function enterCustom(user: ReturnType<typeof userEvent.setup>, label: stri
 }
 
 describe("machine editor resource fields", () => {
+  it("caps presets at the runtime limit on a computer with more CPUs", async () => {
+    const onMachinesChange = vi.fn()
+    render(<TooltipProvider><MachineList machines={[]} onMachinesChange={onMachinesChange}
+      getHostCapacity={() => ({ logicalCPUs: 512, memoryGiB: 64 })} /></TooltipProvider>)
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+    const ceiling = screen.getByRole("combobox", { name: "CPUs ceiling" })
+    const values = [...ceiling.querySelectorAll("option")].map(option => option.value)
+    expect(values).not.toContain("512")
+    expect(values).toContain("255")
+    await user.selectOptions(ceiling, "255")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(onMachinesChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ maxCPUs: 255 })])
+  })
+
   it("shows the selected ceiling when switching to a computer with fewer CPUs", async () => {
     const onCommitMachine = vi.fn().mockResolvedValue(undefined)
     render(<TooltipProvider><MachineList machines={[]} onMachinesChange={vi.fn()} onCommitMachine={onCommitMachine}

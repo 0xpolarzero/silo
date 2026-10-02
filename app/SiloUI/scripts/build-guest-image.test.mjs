@@ -1,13 +1,59 @@
 import assert from "node:assert/strict"
-import { createHash } from "node:crypto"
-import { gunzipSync } from "node:zlib"
-import { execFileSync, spawn } from "node:child_process"
+import { execFileSync, spawnSync } from "node:child_process"
 import { readFileSync } from "node:fs"
-import test from "node:test"
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { GUEST_IMAGE_VERSION, buildGuestImage, guestImageMetadata, lcuArchive, verifyGuestImage } from "./build-guest-image.mjs"
+import { dirname, join } from "node:path"
+import { gunzipSync } from "node:zlib"
+import { createHash } from "node:crypto"
+import test from "node:test"
+import { GUEST_IMAGE_VERSION, guestImageMetadata, lcuArchive, verifyGuestImage } from "./build-guest-image.mjs"
+
+for (const saveExit of [1, 0]) {
+  test(`guest archive publication preserves complete outputs when docker save exits ${saveExit}`, async t => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "silo-guest-save-")))
+    t.after(() => rm(root, { recursive: true, force: true }))
+    const scripts = join(root, "scripts")
+    const guest = join(root, "src-tauri/guest")
+    const output = join(root, "src-tauri/guest-image-artifacts/arm64")
+    const commands = join(root, "commands")
+    for (const directory of [scripts, guest, output, commands]) await mkdir(directory, { recursive: true })
+    const script = join(scripts, "build-guest-image.mjs")
+    await writeFile(script, await readFile(new URL("./build-guest-image.mjs", import.meta.url)))
+    await writeFile(join(guest, "lcu-lock.json"), await readFile(new URL("../src-tauri/guest/lcu-lock.json", import.meta.url)))
+    await writeFile(join(guest, "verify-tools.sh"), "true\n")
+    await writeFile(join(root, "package.json"), '{"repository":{"url":"https://github.com/fixture/silo"}}')
+    await writeFile(join(output, "image.tar.gz"), "previous verified archive")
+    await writeFile(join(output, "manifest.json"), "previous manifest")
+    const docker = `#!${process.execPath}
+const args = process.argv.slice(2)
+if (args[0] === 'image' && args[1] === 'inspect') console.log(JSON.stringify([{ Id: 'sha256:fixture' }]))
+if (args[0] === 'run' && args.at(-1) === '/usr/local/share/silo-packages.txt') console.log('fixture-package\\t1')
+if (args[0] === 'image' && args[1] === 'save') {
+  process.stdout.write('saved image fixture', () => process.exit(${saveExit}))
+}
+`
+    await writeFile(join(commands, "docker"), docker, { mode: 0o755 })
+    const result = spawnSync(process.execPath, [script, "arm64"], { encoding: "utf8", env: {
+      ...process.env, PATH: `${commands}:${dirname(process.execPath)}`, GITHUB_REPOSITORY: "fixture/silo", GITHUB_SHA: "fixture",
+    } })
+    assert.equal(result.status, saveExit, result.stderr)
+    if (saveExit) {
+      assert.equal(await readFile(join(output, "image.tar.gz"), "utf8"), "previous verified archive")
+      assert.equal(await readFile(join(output, "manifest.json"), "utf8"), "previous manifest")
+    } else {
+      const archive = await readFile(join(output, "image.tar.gz"))
+      assert.equal(gunzipSync(archive).toString(), "saved image fixture")
+      const manifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"))
+      assert.equal(manifest.archiveSha256, createHash("sha256").update(archive).digest("hex"))
+      assert.equal(manifest.archiveBytes, archive.length)
+      assert.equal(manifest.unpackedBytes, Buffer.byteLength("saved image fixture"))
+      assert.equal(manifest.architecture, "aarch64")
+      assert.deepEqual(manifest.packages, { "fixture-package": "1" })
+    }
+    assert.deepEqual((await readdir(output)).sort(), ["image.tar.gz", "manifest.json"])
+  })
+}
 
 test("publication names derive from the recipe version and the publishing repository", () => {
   assert.deepEqual(guestImageMetadata({ GITHUB_REPOSITORY: "Example-Owner/silo" }), {
@@ -143,45 +189,5 @@ for (const [name, mutation] of [
         execFileSync(command, mutated, { stdio: "pipe" })
       },
     }))
-  })
-}
-
-
-for (const exitCode of [19, 0]) {
-  test(exitCode ? "failed guest export preserves the previous archive and manifest" : "successful guest export publishes matching archive metadata", async t => {
-    const outputDirectory = await mkdtemp(join(tmpdir(), "silo-guest-export-"))
-    t.after(() => rm(outputDirectory, { recursive: true, force: true }))
-    await writeFile(join(outputDirectory, "image.tar.gz"), "previous archive")
-    await writeFile(join(outputDirectory, "manifest.json"), "previous manifest")
-    const run = (command, args) => {
-      if (command === "git") return "fixture-revision"
-      assert.equal(command, "docker")
-      if (args[0] === "image") return JSON.stringify([{ Id: "fixture-image" }])
-      if (args.includes("cat")) return "fixture-package\t1.0\n"
-      return ""
-    }
-    const start = (command, args) => {
-      assert.equal(command, "docker")
-      assert.deepEqual(args.slice(0, 2), ["image", "save"])
-      return spawn(process.execPath, ["-e", `process.stdout.write("fixture saved image"); setTimeout(() => process.exit(${exitCode}), 50)`], {
-        stdio: ["ignore", "pipe", "ignore"], env: { HOME: outputDirectory },
-      })
-    }
-    if (exitCode) {
-      await assert.rejects(buildGuestImage("arm64", { outputDirectory, run, start }), /docker save exited 19/)
-      assert.equal(await readFile(join(outputDirectory, "image.tar.gz"), "utf8"), "previous archive")
-      assert.equal(await readFile(join(outputDirectory, "manifest.json"), "utf8"), "previous manifest")
-    } else {
-      await buildGuestImage("arm64", { outputDirectory, run, start })
-      const archive = await readFile(join(outputDirectory, "image.tar.gz"))
-      const manifest = JSON.parse(await readFile(join(outputDirectory, "manifest.json"), "utf8"))
-      assert.equal(gunzipSync(archive).toString(), "fixture saved image")
-      assert.equal(manifest.archiveSha256, createHash("sha256").update(archive).digest("hex"))
-      assert.equal(manifest.archiveBytes, archive.length)
-      assert.equal(manifest.unpackedBytes, Buffer.byteLength("fixture saved image"))
-      assert.equal(manifest.architecture, "aarch64")
-      assert.deepEqual(manifest.packages, { "fixture-package": "1.0" })
-    }
-    assert.deepEqual((await readdir(outputDirectory)).sort(), ["image.tar.gz", "manifest.json"])
   })
 }

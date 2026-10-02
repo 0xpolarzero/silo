@@ -134,6 +134,11 @@ class HistoryStore {
     for (const listener of this.listeners) listener()
   }
   private errorMessage() { return [...this.errors.values()].join("; ") }
+  private sandboxLabel(workspace: ApplicationWorkspace) {
+    const name = workspace.machine.name
+    const ambiguous = this.requests.some(request => ownerKey(request.workspace) !== ownerKey(workspace) && request.workspace.machine.name === name)
+    return ambiguous ? `${name} (${workspace.computer?.name ?? "This computer"})` : name
+  }
   private retain(results: CachedResult[], older: boolean): Partial<Snapshot> {
     const ordered = results.flatMap(result => result.page.entries.map(entry => ({ entry }))).sort(newestFirst)
     const retained = new Set<LogEntry>()
@@ -193,7 +198,7 @@ class HistoryStore {
       else {
         const retained = previous.get(key)
         if (retained) results.push(retained)
-        this.errors.set(key, `${workspace.machine.name}: ${errorMessage(value.reason)}`)
+        this.errors.set(key, `${this.sandboxLabel(workspace)}: ${errorMessage(value.reason)}`)
       }
     }
     const historyLimited = this.snapshot.historyLimited && results.some(result => previous.get(ownerKey(result.workspace)) === result)
@@ -220,7 +225,7 @@ class HistoryStore {
       const result = requested[index]
       const key = ownerKey(result.workspace)
       if (value.status === "rejected") {
-        this.errors.set(key, `${result.workspace.machine.name}: ${errorMessage(value.reason)}`)
+        this.errors.set(key, `${this.sandboxLabel(result.workspace)}: ${errorMessage(value.reason)}`)
         this.failedPaging.add(key)
         continue
       }
@@ -233,7 +238,7 @@ class HistoryStore {
       for (const entry of page.entries) merged.set(entryKey(entry), entry)
       const didNotAdvance = Boolean(page.nextCursor && (cursors.has(page.nextCursor) || merged.size === result.page.entries.length || result.frontier && !page.entries.some(entry => newestFirst({ entry }, { entry: result.frontier! }) > 0)))
       if (didNotAdvance) {
-        this.errors.set(key, `${result.workspace.machine.name}: Log history did not advance. Refresh to continue.`)
+        this.errors.set(key, `${this.sandboxLabel(result.workspace)}: Log history did not advance. Refresh to continue.`)
         this.stalled = true
       }
       const entries = [...merged.values()].sort((a, b) => newestFirst({ entry: a }, { entry: b }))

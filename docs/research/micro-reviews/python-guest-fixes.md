@@ -31,3 +31,32 @@ two-run migration regression checks Latin-1 comments, CRLF preservation,
 home-path relocation, PATH setup, and unchanged originals. It failed with
 `UnicodeDecodeError` before the fix. The focused suite passed 18 tests on
 Python 3.12, including the inherited atomic-publication regressions.
+
+## UTF-8-decodable binaries are rewritten as launchers
+
+`launcher_contents` treated every UTF-8-decodable file beneath `bin` as text.
+A valid WebAssembly module with a custom section containing `/root/tool`
+was rewritten to `/home/silo/tool` without updating its section length, corrupting
+the copied module. The source remained intact, but retry retained the bad copy.
+
+The [WebAssembly binary format](https://webassembly.github.io/spec/core/binary/modules.html#binary-customsec)
+defines the module header and length-delimited custom sections used by the
+fixture. Skip text relocation for files containing NUL bytes. The regression
+checks exact binary bytes and retry behavior using the real `copy_home` function;
+existing launcher relocation tests continue to exercise text scripts. The
+focused suite passed 19 tests on Python 3.12. A disposable Node
+`WebAssembly.validate` check accepted the original fixture and rejected its
+path-expanded bytes.
+
+## Manifest line comments produce false command errors
+
+`check-command-manifest.py` extracted quoted names from line comments in
+`build.rs`, while its handler parser already ignored line comments. A valid
+manifest containing an inline comment naming `"reveal"` and a disabled
+`// "retired",` entry produced false duplicate and unregistered-command errors.
+
+The [Rust reference](https://doc.rust-lang.org/reference/comments.html#non-doc-comments)
+treats ordinary comments as whitespace. Apply the existing line-comment
+handling to the manifest body. The fixture regression failed with both false
+errors before the fix; real repository sources remain covered by the existing
+test. This changes an internal CI checker, so no app changeset is needed.

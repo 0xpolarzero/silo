@@ -25,3 +25,42 @@ so titles preserve the existing hidden-character disclosure.
 Regression: file-tree and status-folder-picker tests supply long names and
 bidirectional control characters, then require complete sanitized titles.
 Existing navigation and path tests continue to check the original guest paths.
+
+## Destructive text and button tints
+
+The destructive button uses the destructive token as text over a translucent
+fill of the same token. Its light default state on the page background measured
+3.99:1 and its dark hover state measured 4.36:1. On the muted surface, the old
+token also measured only 4.37:1 without a tint in light mode, and 3.28:1 over
+the dark hover tint.
+
+Darken the light destructive token and lighten the dark token, with lower
+chroma to stay within sRGB. Use 10%/20% fills in both themes. The regression
+reads the button variant's actual default and hover alpha values and checks
+error text and both button states on every neutral surface. The worst resulting
+pair is 4.65:1 in light mode and 4.81:1 in dark mode.
+
+The chromatic test uses the public-domain inverse transform from
+[OKLab's author](https://bottosson.github.io/posts/oklab/#converting-from-linear-srgb-to-oklab)
+and WCAG's sRGB luminance weights. This is a deterministic token check, not a
+packaged-app visual audit.
+
+## Unbroken tooltip text
+
+Compile the shared tooltip's class string with the installed Tailwind compiler,
+then render a 400-character unbroken name in a browser fixture. Before the fix,
+the tooltip had a 224 px client width and a 2,527 px scroll width at an 800 px
+viewport. The page grew to 2,567 px. This reproduces long file paths and names
+extending past the tooltip background.
+
+Use `overflow-wrap: anywhere` on the shared tooltip, and allow its label to
+shrink in the shortcut flex row. The
+[CSS Text specification](https://www.w3.org/TR/css-text-3/#overflow-wrap-property)
+defines emergency breaks and their contribution to intrinsic sizing for this
+value. After compiling the changed classes, both plain and shortcut tooltip
+fixtures have 224 px client and scroll widths; all 400 characters remain visible.
+
+Verification used static HTML fixtures in Chromium through Playwright, not a
+native bundle or live sandbox. Local evidence: `/tmp/silo-css-tooltip-before.html`
+and `/tmp/silo-css-tooltip-after.html`. No class-string unit assertion was added:
+the browser's measured text overflow is the relevant check.

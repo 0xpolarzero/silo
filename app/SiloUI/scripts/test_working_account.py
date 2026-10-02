@@ -57,6 +57,20 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertEqual((home / '.local/bin/binary').read_bytes(), binary)
         self.assertEqual((source / '.local/bin/binary').read_bytes(), binary)
 
+    def test_non_utf8_script_launcher_relocates_paths_without_changing_other_bytes(self):
+        source, home = self.root / 'source', self.root / 'home'
+        (source / '.local/bin').mkdir(parents=True)
+        original = source / '.local/bin/tool'
+        contents = b'#!/root/.local/bin/python\r\n# caf\xe9\r\nprint("/home/silo-desktop/data")\r\n'
+        original.write_bytes(contents)
+        original.chmod(0o750)
+        for _ in range(2):
+            guest.copy_home(source, home)
+        expected = b'#!/home/silo/.local/bin/python\r\n# caf\xe9\r\nprint("/home/silo/data")\r\n'
+        self.assertEqual((home / '.local/bin/tool').read_bytes(), expected)
+        self.assertEqual((home / '.local/bin/tool').stat().st_mode & 0o777, 0o750)
+        self.assertEqual(original.read_bytes(), contents)
+
     def test_home_copy_skips_transient_pipes_and_preserves_files(self):
         source, destination = self.root / 'root', self.root / 'silo'
         source.mkdir()
@@ -65,6 +79,19 @@ class WorkingAccountTests(unittest.TestCase):
         guest.copy_home(source, destination)
         self.assertFalse((destination / 'agent.pipe').exists())
         self.assertEqual((destination / 'saved').read_text(), 'saved work')
+
+    def test_utf8_decodable_binary_in_bin_is_copied_without_path_relocation(self):
+        source, destination = self.root / 'root', self.root / 'silo'
+        (source / '.local/bin').mkdir(parents=True)
+        # A WebAssembly module with a custom section holding an old home path.
+        binary = b'\x00asm\x01\x00\x00\x00\x00\x0f\x04path/root/tool'
+        binary.decode('utf-8')
+        original = source / '.local/bin/tool.wasm'
+        original.write_bytes(binary)
+        for _ in range(2):
+            guest.copy_home(source, destination)
+            self.assertEqual((destination / '.local/bin/tool.wasm').read_bytes(), binary)
+        self.assertEqual(original.read_bytes(), binary)
 
     def test_two_home_merge_preserves_external_directory_link_target(self):
         root, desktop, home, external = [self.root / name for name in ('root', 'desktop', 'home', 'external')]

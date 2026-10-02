@@ -48,9 +48,18 @@ test("file write failure closes the source and removes staging files", async t =
 })
 
 for (const mode of ["headers", "body", "status", "chunked"]) {
-  test(`HTTP ${mode} obeys the deadline and publication policy`, async t => {
+  test(`HTTP ${mode} obeys the deadline and publication policy`, { timeout: 10_000 }, async t => {
     const { root, file } = await setup(t)
+    const deadlines = []
+    const timeout = t.mock.method(AbortSignal, "timeout", () => {
+      const deadline = new AbortController()
+      deadlines.push(deadline)
+      return deadline.signal
+    })
+    const expire = () => deadlines.at(-1).abort(new DOMException("Fixture deadline expired", "TimeoutError"))
+    const requested = Promise.withResolvers()
     const server = createServer((req, res) => {
+      requested.resolve()
       if (mode === "headers") return
       if (mode === "status") { res.writeHead(503); res.end("unavailable"); return }
       res.writeHead(200)
@@ -61,15 +70,26 @@ for (const mode of ["headers", "body", "status", "chunked"]) {
     t.after(() => { server.closeAllConnections(); server.close() })
     await new Promise(resolve => server.listen(0, "127.0.0.1", resolve))
     const url = `http://127.0.0.1:${server.address().port}/archive`
-    const operation = fetchVerifiedFile(fetchStream, url, digest, "fixture", file, { bytes: bytes.length, timeoutMs: 100 })
+    const fetchInput = async (url, options) => {
+      const source = await fetchStream(url, options)
+      if (mode === "body") source.once("data", expire)
+      return source
+    }
+    const operation = fetchVerifiedFile(fetchInput, url, digest, "fixture", file, { bytes: bytes.length, timeoutMs: 100 })
     if (mode === "chunked") {
       assert.equal(await operation, file)
       assert.deepEqual(await readFile(file), bytes)
       await fetchVerifiedFile(async () => { throw new Error("Must reuse cache") }, url, digest, "fixture", file, { bytes: bytes.length })
     } else {
-      await assert.rejects(operation, mode === "status" ? /Download failed \(503\)/ : /abort|timeout/i)
+      const rejected = assert.rejects(operation, mode === "status" ? /Download failed \(503\)/ : /abort|timeout/i)
+      if (mode === "headers") {
+        await requested.promise
+        expire()
+      }
+      await rejected
       assert.equal(await readFile(file, "utf8"), "previous")
     }
+    assert.deepEqual(timeout.mock.calls.slice(0, 2).map(call => call.arguments[0]), [100, 100])
     assert.deepEqual(await readdir(root), ["archive.tar.gz"])
   })
 }

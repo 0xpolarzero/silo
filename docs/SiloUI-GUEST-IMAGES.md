@@ -33,6 +33,19 @@ publication once its companion release or an architecture tag exists. If publica
 fails halfway, recover the exact already-built artifacts; do not rebuild over the
 version. Otherwise increment the version.
 
+Guest publication keeps one shared concurrency group with GitHub's supported
+`queue: max` setting, so up to 100 pending runs wait instead of replacing one
+another. This preserves distinct version requests while serializing their
+existence checks and pushes. The default queue holds only one pending run even
+with `cancel-in-progress: false`; a third request cancels the second. See
+[GitHub's concurrency queue contract](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+GitHub [released this setting on May 7, 2026](https://github.blog/changelog/2026-05-07-github-actions-concurrency-groups-now-allow-larger-queues/).
+Actionlint 1.7.12 still rejects that supported key, tracked in
+[upstream issue 680](https://github.com/rhysd/actionlint/issues/680). When using
+that version locally, suppress only its `unexpected key "queue" for "concurrency"
+section` diagnostic; keep the policy test that requires `queue: max` and
+`cancel-in-progress: false`, and keep all other validation enabled.
+
 Publication preflight reads GitHub's release-by-tag endpoint and GHCR's manifest
 endpoint with the job token. Only a confirmed release HTTP 404 and registry
 HTTP 404 with `MANIFEST_UNKNOWN` or `NAME_UNKNOWN` permit a build. Authentication,
@@ -91,6 +104,10 @@ node app/SiloUI/scripts/build-guest-image.mjs amd64
 ```
 
 Build outputs are ignored under `src-tauri/guest-image-artifacts/<architecture>`.
+Docker export is compressed into a temporary archive. The builder waits for both
+the export process and compression to succeed before replacing `image.tar.gz`.
+A failed export removes temporary output and preserves the previous archive and
+manifest; it never marks a partial gzip stream as the new candidate.
 The Dockerfile-specific ignore file limits the Docker context to the recipe and
 setup script. Build credentials and unrelated app files are not sent to Docker.
 The base Ubuntu index is pinned. Apt packages are resolved at image publication

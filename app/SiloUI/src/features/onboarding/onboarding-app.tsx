@@ -60,6 +60,10 @@ function repositoryKey(repository: string): string {
   return repository.toLowerCase()
 }
 
+function workspaceValue<T>(values: Record<string, T> | undefined, name: string): T | undefined {
+  return values && Object.hasOwn(values, name) ? values[name] : undefined
+}
+
 function uniqueRepositoryOptions(repositories: readonly string[]): string[] {
   const seen = new Set<string>()
   return repositories.filter((repository) => {
@@ -112,7 +116,7 @@ function workspaceIdentitySummary(
   const notApplied: string[] = []
 
   for (const workspace of workspaceNames) {
-    const identity = identities[workspace]
+    const identity = workspaceValue(identities, workspace)
     if (!identity?.apply) {
       notApplied.push(workspace)
       continue
@@ -267,7 +271,7 @@ export function OnboardingApp({
     const identities = { ...current.workspaceIdentities }
     let changed = false
     for (const { name } of current.machines) {
-      const identity = identities[name]
+      const identity = workspaceValue(identities, name)
       if (editedIdentities.current.has(name) || identity?.apply === false || identity?.name.trim() || identity?.email.trim()) continue
       identities[name] = { ...host, apply: true }
       changed = true
@@ -342,9 +346,9 @@ export function OnboardingApp({
     const host = { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }
     updateDraft({
       machines,
-      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, current.workspaceSelections[name] ?? []])),
-      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, current.workspaceIdentities[name] ?? host])),
-      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => [name, current.workspaceRepositoryAccess?.[name] ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }])),
+      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceSelections, name) ?? []])),
+      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceIdentities, name) ?? host])),
+      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }])),
     })
     pending.run()
   }
@@ -367,14 +371,14 @@ export function OnboardingApp({
     const previousNameByID = new Map(current.machines.map(({ id, name }) => [id, name]))
     const selections = Object.fromEntries(request.machines.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
-      return [name, current.workspaceSelections[name] ?? (previousName ? current.workspaceSelections[previousName] : undefined) ?? []]
+      return [name, workspaceValue(current.workspaceSelections, name) ?? (previousName ? workspaceValue(current.workspaceSelections, previousName) : undefined) ?? []]
     }))
     const identities = Object.fromEntries(request.machines.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
-      return [name, current.workspaceIdentities[name] ?? (previousName ? current.workspaceIdentities[previousName] : undefined)
+      return [name, workspaceValue(current.workspaceIdentities, name) ?? (previousName ? workspaceValue(current.workspaceIdentities, previousName) : undefined)
         ?? { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }]
     }))
-    const workspaceRepositoryAccess = Object.fromEntries(request.machines.map(({ id, name }) => [name, current.workspaceRepositoryAccess?.[name] ?? current.workspaceRepositoryAccess?.[previousNameByID.get(id) ?? ""] ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }]))
+    const workspaceRepositoryAccess = Object.fromEntries(request.machines.map(({ id, name }) => [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? workspaceValue(current.workspaceRepositoryAccess, previousNameByID.get(id) ?? "") ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }]))
     updateDraft({ machines: request.machines, workspaceRepositoryAccess, workspaceSelections: selections, workspaceIdentities: identities, unfinishedMachineEditor: null })
     submitChecked(() => actions.saveMachineConfiguration(configurationRequest(currentDraft.current.machines), ...submissionOptions()))
   }
@@ -391,7 +395,7 @@ export function OnboardingApp({
 
   function resetWorkspaceIdentity(workspace: string) {
     if (!source.currentHostGitIdentity) return
-    updateWorkspaceIdentity(workspace, { ...currentDraft.current.workspaceIdentities[workspace], ...source.currentHostGitIdentity })
+    updateWorkspaceIdentity(workspace, { ...(workspaceValue(currentDraft.current.workspaceIdentities, workspace) ?? { apply: false }), ...source.currentHostGitIdentity })
   }
 
   function completionRequest(): OnboardingCompletionRequest {
@@ -402,9 +406,9 @@ export function OnboardingApp({
         connectionState: githubConnectionState,
         workspaces: currentDraft.current.machines.map(({ name }) => ({
           workspace: name,
-          ...(githubConnectionState === "connected" ? currentDraft.current.workspaceRepositoryAccess?.[name] : undefined),
-          repositories: githubConnectionState === "connected" ? [...(currentDraft.current.workspaceSelections[name] ?? [])] : [],
-          identity: { ...(currentDraft.current.workspaceIdentities[name] ?? { name: "", email: "", apply: false }) },
+          ...(githubConnectionState === "connected" ? workspaceValue(currentDraft.current.workspaceRepositoryAccess, name) : undefined),
+          repositories: githubConnectionState === "connected" ? [...(workspaceValue(currentDraft.current.workspaceSelections, name) ?? [])] : [],
+          identity: { ...(workspaceValue(currentDraft.current.workspaceIdentities, name) ?? { name: "", email: "", apply: false }) },
         })),
       },
     }
@@ -433,12 +437,15 @@ export function OnboardingApp({
   }
 
   const machineNames = machines.map(({ name }) => name)
-  const allWorkspaceCount = machineNames.filter((name) => draft.workspaceRepositoryAccess?.[name]?.repositoryMode === "all").length
-  const allWriteWorkspaceCount = machineNames.filter((name) => draft.workspaceRepositoryAccess?.[name]?.repositoryMode === "all" && draft.workspaceRepositoryAccess[name].allRepositoriesAllowChanges).length
-  const configuredWorkspaceCount = machineNames.filter((name) => (workspaceSelections[name] ?? []).length > 0).length
-  const repositoryCount = machineNames.reduce((total, name) => total + (workspaceSelections[name] ?? []).length, 0)
+  const allWorkspaceCount = machineNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.repositoryMode === "all").length
+  const allWriteWorkspaceCount = machineNames.filter((name) => {
+    const access = workspaceValue(draft.workspaceRepositoryAccess, name)
+    return access?.repositoryMode === "all" && access.allRepositoriesAllowChanges
+  }).length
+  const configuredWorkspaceCount = machineNames.filter((name) => (workspaceValue(workspaceSelections, name) ?? []).length > 0).length
+  const repositoryCount = machineNames.reduce((total, name) => total + (workspaceValue(workspaceSelections, name) ?? []).length, 0)
   const pushEnabledRepositoryCount = machineNames.reduce(
-    (total, name) => total + (workspaceSelections[name] ?? []).filter(({ allowPushes }) => allowPushes).length,
+    (total, name) => total + (workspaceValue(workspaceSelections, name) ?? []).filter(({ allowPushes }) => allowPushes).length,
     0,
   )
   const repositoryLabel = repositoryCount === 1 ? "repository" : "repositories"
@@ -491,14 +498,14 @@ export function OnboardingApp({
           tokenConnected={tokenConnected}
           notice={operationError ? <p role="alert" className="text-xs text-destructive">{operationError}</p> : undefined}
           repositoryOptions={availableRepositories}
-          workspaceSelections={workspaceSelections}
-          workspaceRepositoryAccess={draft.workspaceRepositoryAccess}
+          workspaceSelections={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceSelections, name) ?? []]))}
+          workspaceRepositoryAccess={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(draft.workspaceRepositoryAccess, name) ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }]))}
           onWorkspaceRepositoryAccessChange={(workspace, access) => {
             if (access.authenticationMethod !== currentDraft.current.workspaceRepositoryAccess?.[workspace]?.authenticationMethod) editedAuthenticationMethods.current.add(workspace)
             editedRepositoryAccess.current.add(workspace)
             updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })
           }}
-          workspaceIdentities={workspaceIdentities}
+          workspaceIdentities={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceIdentities, name) ?? { name: "", email: "", apply: true }]))}
           currentHostGitIdentity={source.currentHostGitIdentity}
           onConnect={actions.connectGitHub}
           onCancelConnection={actions.cancelGitHubConnection}

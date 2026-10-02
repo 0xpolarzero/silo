@@ -55,14 +55,14 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
   const mounted = useRef(false)
   const inFlight = useRef(false)
   const generation = useRef(0)
-  const subscriptionFailed = useRef(false)
+  const subscriptionStatus = useRef<"connecting" | "connected" | "failed">("connecting")
   const receiveSnapshot = useCallback((next: UpdateSnapshot) => {
-    setSnapshot(next)
+    setSnapshot(current => JSON.stringify(current) === JSON.stringify(next) ? current : next)
     setConfirmVersion((version) => canRequestInstall(next) && version === next.availableVersion ? version : null)
   }, [])
   useEffect(() => {
     mounted.current = true
-    subscriptionFailed.current = false
+    subscriptionStatus.current = "connecting"
     let disposed = false
     let stop: (() => void) | undefined
     const receive = (next: UpdateSnapshot) => {
@@ -73,12 +73,13 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
       try {
         stop = await backend.subscribe(receive)
         if (disposed) { stop(); return }
+        subscriptionStatus.current = "connected"
         before = generation.current
         const next = await backend.read()
         if (!disposed && generation.current === before) receive(next)
       } catch {
         if (!disposed && (!stop || generation.current === before)) {
-          subscriptionFailed.current = !stop
+          if (!stop) subscriptionStatus.current = "failed"
           setConnectionError("Silo could not load updates. Try again.")
         }
       }
@@ -90,9 +91,11 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
     let reading = false
     const refresh = async () => {
       if (reading || inFlight.current) return
-      if (subscriptionFailed.current) {
-        subscriptionFailed.current = false
-        setConnection((value) => value + 1)
+      if (subscriptionStatus.current !== "connected") {
+        if (subscriptionStatus.current === "failed") {
+          subscriptionStatus.current = "connecting"
+          setConnection((value) => value + 1)
+        }
         return
       }
       reading = true

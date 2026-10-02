@@ -303,7 +303,8 @@ def run_lifecycle():
         raise RuntimeError("Outside a container, lifecycle mode requires an exact task-owned Lima hostname")
     if not Path(environment.get("HOME", "")).is_absolute():
         raise RuntimeError("The disposable container must provide its normal absolute HOME")
-    identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.preview.linux-checkpoints")
+    identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.dev")
+    state_dir_name = ".silo" if identifier == "org.silo.preview" else ".silo-dev"
     app_data = data_home / identifier
     app_config = config_home / identifier
     settings = app_config / "settings.json"
@@ -472,7 +473,7 @@ def run_lifecycle():
 
             def guest_for(target, command, expected=None):
                 storage_home = app_data / "runtime-checkpoints-converted/microsandbox"
-                runtime_alias = Path(environment["HOME"]) / ".silo" / hashlib.sha256(os.fsencode(storage_home)).hexdigest()[:12]
+                runtime_alias = Path(environment["HOME"]) / state_dir_name / hashlib.sha256(os.fsencode(storage_home)).hexdigest()[:12]
                 if not runtime_alias.is_dir():
                     raise AssertionError(f"Converted runtime home alias is missing: {runtime_alias}")
                 completed = subprocess.run([

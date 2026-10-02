@@ -18,3 +18,20 @@ Scope: `app/SiloUI/src/features/sandboxes/`. Verification uses deterministic fro
 - Consequence: the next Tab starts from the document instead of the sandbox the user was editing.
 - Fix: retain refs to Add and each row's edit/menu control. When an editor closes with focus lost to the body, restore focus to the recreated source row control, falling back to Add for a new or deleted sandbox.
 - Coverage: cancellation from Add, Edit, the row menu, and Duplicate; successful asynchronous save; preserve focus when another control already received it.
+
+## Duplicate menu dismissal steals editor focus
+
+- Trigger: select Duplicate settings from a sandbox row's More actions menu.
+- Evidence: the new Duplicate regression failed because focus returned to the row menu instead of Sandbox name. The paired Edit regression passed. Unlike Edit, Duplicate keeps the source row and its menu trigger mounted.
+- Cause: the editor focused its first field synchronously, before Radix FocusScope's deferred unmount restoration (`@radix-ui/react-focus-scope/dist/index.mjs`, installed dependency).
+- Fix: schedule the initial editor focus for the next animation frame, with cancellation on unmount, matching the existing form-popover pattern.
+- Coverage: both row-menu Edit and Duplicate end with focus on Sandbox name.
+
+## Saving progress has no live announcement
+
+- Trigger: Save settings while the native commit remains pending.
+- Evidence: the waiting-state regression failed because there was no status region. Only the disabled Save button changed its text to Saving….
+- Consequence: screen readers have no live status message for the pending save while editing controls are unavailable.
+- Fix: keep an initially empty polite status region mounted and update it with the sandbox name while saving.
+- Coverage: the real MachineList commit path with an unresolved synthetic promise exposes Saving and locks its fields.
+- Primary source: [W3C status messages guidance](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html), including waiting states and non-displayed contextual text.

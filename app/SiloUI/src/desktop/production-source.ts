@@ -1,5 +1,5 @@
 import { bridgeErrorMessage, hasBridgeErrorCode } from "@/contracts/bridge-error"
-import { defaultSettings } from "@/features/preferences/model/settings"
+import { defaultSettings, settingSchemas } from "@/features/preferences/model/settings"
 import { workspaceStorageStateSchema } from "@/features/application/model/workspace-storage"
 import { isUnsupportedRemote, logPageSchema } from "@/features/application/model/logs"
 import { invoke } from "@tauri-apps/api/core"
@@ -201,6 +201,13 @@ const sandboxConfigurationOperationShape = z.discriminatedUnion("status", [
 const preferencesShape = z.object({
   terminal: z.string(), editor: z.string(), browser: z.string(), launchAtLogin: z.boolean(),
   startWorkspacesAtLaunch: z.boolean(), reduceMotion: z.boolean(),
+  startupWorkspaceIds: settingSchemas.startupWorkspaceIds.optional().catch(undefined),
+  terminalPath: settingSchemas.terminalPath.optional().catch(undefined),
+  editorPath: settingSchemas.editorPath.optional().catch(undefined),
+  browserPath: settingSchemas.browserPath.optional().catch(undefined),
+  terminalUseSystemDefault: settingSchemas.terminalUseSystemDefault.optional().catch(undefined),
+  editorUseSystemDefault: settingSchemas.editorUseSystemDefault.optional().catch(undefined),
+  browserUseSystemDefault: settingSchemas.browserUseSystemDefault.optional().catch(undefined),
 }).passthrough()
 const backupSummaryShape = z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() })
 

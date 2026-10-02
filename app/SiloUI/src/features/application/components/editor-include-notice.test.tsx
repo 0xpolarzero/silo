@@ -18,6 +18,48 @@ function notice(store: SettingsStore, backend: Backend) {
 const region = { name: "Add a line to your SSH configuration" }
 const otherLine = 'Include "/Users/ada/.silo/a81e55c0d2f4/ssh/*.conf"'
 
+it("keeps a corrected SSH configuration hidden when an older read finishes later", async () => {
+  const backend = createFixtureEditorInclude()
+  let finish!: (line: string | null) => void
+  const read = backend.read
+  backend.read = vi.fn().mockImplementationOnce(() => new Promise<string | null>(resolve => { finish = resolve })).mockImplementation(read)
+  render(notice(createMemorySettingsStore(), backend))
+
+  act(() => backend.set(null))
+  await waitFor(() => expect(backend.read).toHaveBeenCalledTimes(2))
+  await act(async () => finish(fixtureEditorIncludeLine))
+  expect(screen.queryByRole("region", region)).not.toBeInTheDocument()
+
+  act(() => backend.set(otherLine))
+  expect(await screen.findByRole("region", region)).toHaveTextContent(otherLine)
+})
+
+it("ignores a replaced backend's pending read and releases its late subscription", async () => {
+  const first = createFixtureEditorInclude()
+  let finishRead!: (line: string | null) => void
+  let finishSubscribe!: (stop: () => void) => void
+  first.read = vi.fn(() => new Promise<string | null>(resolve => { finishRead = resolve }))
+  first.subscribe = vi.fn(() => new Promise<() => void>(resolve => { finishSubscribe = resolve }))
+  const store = createMemorySettingsStore()
+  const view = render(notice(store, first))
+  const second = createFixtureEditorInclude(otherLine)
+  view.rerender(notice(store, second))
+  expect(await screen.findByRole("region", region)).toHaveTextContent(otherLine)
+
+  const stop = vi.fn()
+  await act(async () => {
+    finishRead(fixtureEditorIncludeLine)
+    finishSubscribe(stop)
+  })
+  expect(stop).toHaveBeenCalledOnce()
+  expect(screen.getByRole("region", region)).toHaveTextContent(otherLine)
+  expect(screen.getByRole("region", region)).not.toHaveTextContent(fixtureEditorIncludeLine)
+
+  fireEvent.focus(window)
+  await waitFor(() => expect(second.calls).toEqual(["read", "read"]))
+  expect(first.read).toHaveBeenCalledOnce()
+})
+
 it("shows the line to add with its explanation and a copy button, until dismissed", async () => {
   const user = userEvent.setup()
   const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)

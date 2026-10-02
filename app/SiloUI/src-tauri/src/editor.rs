@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     fs,
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -332,7 +332,12 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 pub(crate) fn key(path: &Path) -> Result<(), String> {
-    if !read_regular(path)?.is_empty() {
+    let bytes = read_regular(path)?;
+    if !bytes.is_empty() {
+        let metadata = fs::symlink_metadata(path).map_err(|_| FAILED)?;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            write_private(path, &bytes)?;
+        }
         return Ok(());
     }
     let mut command = Command::new("/usr/bin/ssh-keygen");
@@ -343,17 +348,27 @@ pub(crate) fn key(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn public_key(path: &Path) -> Result<String, String> {
-    let output = applications::launch::sanitize_child(&mut Command::new("/usr/bin/ssh-keygen"))
-        .args(["-y", "-f"])
-        .arg(path)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
+    let mut command = Command::new("/usr/bin/ssh-keygen");
+    command.args(["-y", "-f"]).arg(path);
+    public_key_from_command(&mut command, Duration::from_secs(5))
+}
+
+fn public_key_from_command(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    let mut output = tempfile::tempfile().map_err(|_| FAILED)?;
+    run_with_stdout(
+        command,
+        timeout,
+        Stdio::from(output.try_clone().map_err(|_| FAILED)?),
+    )?;
+    output.seek(SeekFrom::Start(0)).map_err(|_| FAILED)?;
+    let mut text = String::new();
+    output
+        .take(4097)
+        .read_to_string(&mut text)
         .map_err(|_| FAILED)?;
-    if !output.status.success() {
+    if text.len() > 4096 {
         return Err(FAILED.into());
     }
-    let text = String::from_utf8(output.stdout).map_err(|_| FAILED)?;
     let mut fields = text.split_whitespace();
     let kind = fields.next().ok_or(FAILED)?;
     let value = fields.next().ok_or(FAILED)?;
@@ -566,9 +581,13 @@ fn host_patterns(config: &Path, alias: &str, name: &str) -> String {
 }
 
 fn run(command: &mut Command, timeout: Duration) -> Result<(), String> {
+    run_with_stdout(command, timeout, Stdio::null())
+}
+
+fn run_with_stdout(command: &mut Command, timeout: Duration, stdout: Stdio) -> Result<(), String> {
     let mut child = applications::launch::sanitize_child(command)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(stdout)
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| FAILED)?;
@@ -1113,6 +1132,30 @@ mod tests {
     }
 
     #[test]
+    fn public_key_output_from_a_stalled_helper_is_rejected() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'ssh-ed25519 test'; exec /bin/sleep 0.2"]);
+        assert!(public_key_from_command(&mut command, Duration::from_millis(20)).is_err());
+    }
+
+    #[test]
+    fn public_key_helper_requires_successful_completion() {
+        for (script, expected) in [
+            ("printf 'ssh-ed25519 test'", Some("ssh-ed25519 test")),
+            ("printf 'ssh-ed25519 test'; exit 1", None),
+        ] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", script]);
+            assert_eq!(
+                public_key_from_command(&mut command, Duration::from_secs(1))
+                    .ok()
+                    .as_deref(),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn remote_authorization_accepts_only_plain_ed25519_public_keys() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("controller");
@@ -1187,6 +1230,23 @@ mod tests {
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert!(write_private(&link, b"replace").is_err());
         assert_eq!(fs::read(&file).unwrap(), b"Host existing\n  User user\n");
+    }
+
+    #[test]
+    fn reused_ssh_keys_repair_broad_permissions_without_rotating_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("client");
+        key(&file).unwrap();
+        let private = fs::read(&file).unwrap();
+        let public = public_key(&file).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o666)).unwrap();
+        key(&file).unwrap();
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read(&file).unwrap(), private);
+        assert_eq!(public_key(&file).unwrap(), public);
     }
 
     #[test]

@@ -26,6 +26,14 @@ production; any other identifier is treated as development, so a stray build can
 never touch production data. Unit tests pin every production name to its released
 value and require every development name to differ.
 
+Development and packaging scripts read this API through the standalone
+`scripts/channel_names.rs` exporter. The Python adapter compiles it in a temporary
+directory, reads its JSON output, and deletes the executable; the Node adapter
+uses the same Python adapter. This requires Rust and Python 3.11 or newer but no
+Tauri build, GitHub configuration, or access to application state. It avoids a
+second registry of names or a parser tied to Rust source formatting. Static Tauri
+configuration and documentation examples remain pinned by channel tests.
+
 ## Shared state that is now per channel
 
 | State | Production (unchanged) | Development |

@@ -40,11 +40,37 @@ class WorkflowPinTests(unittest.TestCase):
                     self.assertRegex(rest, r'^\s+# v\d+(\.\d+)*$')
         self.assertGreater(checked, 0)
 
+    def test_checkout_does_not_persist_repository_credentials(self):
+        checked = 0
+        for path in GITHUB.glob('workflows/*.yml'):
+            for step in re.split(r'^ {6}- ', path.read_text(), flags=re.M):
+                if not re.search(r'(?:^|\n +)uses: actions/checkout@', step):
+                    continue
+                checked += 1
+                with self.subTest(file=path.name):
+                    self.assertRegex(step, r'(?m)^ {10}persist-credentials: false$')
+        self.assertGreater(checked, 0)
+
     def test_dependabot_updates_workflow_and_composite_actions(self):
         config = (GITHUB / 'dependabot.yml').read_text()
         self.assertIn('package-ecosystem: github-actions', config)
         for directory in ['/'] + [f'/.github/actions/{path.name}' for path in GITHUB.glob('actions/*')]:
             self.assertIn(f"'{directory}'", config)
+
+
+class WorkflowConcurrencyTests(unittest.TestCase):
+    def test_verification_supersedes_only_the_same_pull_request(self):
+        for name in ['linux-verification.yml', 'release-tooling.yml']:
+            with self.subTest(workflow=name):
+                workflow = (GITHUB / 'workflows' / name).read_text()
+                concurrency = re.search(r'(?m)^concurrency:\n((?: +[^\n]*\n)+)', workflow)
+                self.assertIsNotNone(concurrency, 'obsolete PR checks run without a concurrency limit')
+                config = concurrency[1]
+                group = re.search(r'(?m)^ +group: (.+)$', config)[1]
+                self.assertIn('github.workflow', group)
+                self.assertRegex(group, r"github.event_name == 'pull_request' && github.ref \|\| github.run_id")
+                cancel = re.search(r'(?m)^ +cancel-in-progress: (.+)$', config)[1]
+                self.assertEqual(cancel, "${{ github.event_name == 'pull_request' }}")
 
 
 class WorkflowInputTests(unittest.TestCase):

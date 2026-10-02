@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import stat
 import tarfile
@@ -20,6 +21,54 @@ SPEC.loader.exec_module(setup_lcu)
 
 
 class LcuSetupTests(unittest.TestCase):
+    def test_receipt_file_sync_failure_preserves_previous_status_and_retries(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            receipt = state / 'lcu.json'
+            before = b'{"status":"installing"}\n'
+            receipt.write_bytes(before)
+            with (mock.patch.object(setup_lcu, 'STATE', state),
+                  mock.patch.object(setup_lcu, 'RECEIPT', receipt)):
+                with mock.patch.object(setup_lcu.os, 'fsync', side_effect=OSError('disk full')):
+                    with self.assertRaisesRegex(OSError, 'disk full'):
+                        setup_lcu.write_receipt({'status': 'ready'})
+                self.assertEqual(receipt.read_bytes(), before)
+                self.assertEqual(list(state.iterdir()), [receipt])
+                setup_lcu.write_receipt({'status': 'ready'})
+            self.assertEqual(json.loads(receipt.read_text()), {'status': 'ready'})
+            self.assertEqual(stat.S_IMODE(receipt.stat().st_mode), 0o600)
+
+    def test_receipt_syncs_file_then_directory_and_propagates_directory_failure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            receipt = state / 'lcu.json'
+            receipt.write_text('{"status":"installing"}\n')
+            synced = []
+            fsync = os.fsync
+
+            def sync(fd):
+                info = os.fstat(fd)
+                if stat.S_ISREG(info.st_mode):
+                    self.assertEqual(json.loads(receipt.read_text())['status'], 'installing')
+                    self.assertEqual(json.loads(os.pread(fd, info.st_size, 0)), {'status': 'ready'})
+                    self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+                    synced.append('file')
+                    fsync(fd)
+                else:
+                    self.assertTrue(stat.S_ISDIR(info.st_mode))
+                    self.assertEqual(info.st_ino, state.stat().st_ino)
+                    self.assertEqual(json.loads(receipt.read_text())['status'], 'ready')
+                    synced.append('directory')
+                    raise OSError('directory sync failed')
+
+            with (mock.patch.object(setup_lcu, 'STATE', state),
+                  mock.patch.object(setup_lcu, 'RECEIPT', receipt),
+                  mock.patch.object(setup_lcu.os, 'fsync', side_effect=sync)):
+                with self.assertRaisesRegex(OSError, 'directory sync failed'):
+                    setup_lcu.write_receipt({'status': 'ready'})
+            self.assertEqual(synced, ['file', 'directory'])
+            self.assertEqual(list(state.iterdir()), [receipt])
+
     def test_native_desktop_patch_is_source_guarded_and_resealed(self):
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / 'lcu-0.4.0-linux-x64'

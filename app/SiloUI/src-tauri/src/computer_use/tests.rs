@@ -213,6 +213,47 @@ fn a_damaged_settings_file_means_ask() {
 }
 
 #[test]
+fn unfamiliar_saved_attempt_outcome_preserves_the_approval_choice() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    fs::create_dir_all(directory_of(&paths)).unwrap();
+    let saved = br#"{"approval":"auto","applied":"auto","last":{"mode":"auto","outcome":"future-outcome","at":1790000000}}"#;
+    fs::write(policy_path(&paths, VM_ID).unwrap(), saved).unwrap();
+
+    let stored = settings(&paths, VM_ID);
+    assert!(!stored.unreadable);
+    assert_eq!(stored.approval, Approval::Auto);
+    assert_eq!(stored.applied, Some(Approval::Auto));
+    assert_eq!(stored.last.as_ref().unwrap().outcome, Outcome::Failed);
+    let policy = read_policy_checked(&paths, VM_ID).unwrap();
+    assert!(policy.needs_apply());
+    write_atomic(&paths, policy_path(&paths, VM_ID), &policy).unwrap();
+    assert_eq!(settings(&paths, VM_ID), stored);
+    assert!(Outcome::parse("future-outcome").is_none());
+}
+
+#[test]
+fn unfamiliar_saved_approval_modes_remain_unreadable() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    fs::create_dir_all(directory_of(&paths)).unwrap();
+    for saved in [
+        br#"{"approval":"future-mode"}"#.as_slice(),
+        br#"{"approval":"auto","applied":"future-mode"}"#,
+        br#"{"approval":"auto","unfinished":"future-mode"}"#,
+        br#"{"approval":"auto","last":{"mode":"future-mode","outcome":"applied","at":1}}"#,
+        br#"{"approval":"auto","last":{"mode":"auto","outcome":null,"at":1}}"#,
+    ] {
+        fs::write(policy_path(&paths, VM_ID).unwrap(), saved).unwrap();
+        assert!(settings(&paths, VM_ID).unreadable);
+        assert_eq!(
+            fs::read(policy_path(&paths, VM_ID).unwrap()).unwrap(),
+            saved
+        );
+    }
+}
+
+#[test]
 fn a_policy_of_an_older_version_keeps_its_choice_and_applies_again() {
     // Older files carry a revision and a generation; both are ignored, the choice stays,
     // and with no attempt on record the next boot applies it.
