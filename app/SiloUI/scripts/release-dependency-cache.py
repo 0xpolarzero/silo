@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tomllib
@@ -92,22 +93,31 @@ def build(args):
     command = [str(app / 'node_modules/.bin/tauri'), 'build', '--target', args.target, '--no-bundle', '--ci',
                '--', '--locked', '--timings', '--message-format=json']
     with (args.state / 'messages.jsonl').open('w') as output:
-        process = subprocess.Popen(command, cwd=app, env=dict(os.environ, CARGO_TARGET_DIR=str(target_dir), CARGO_HOME=str(cargo_home)),
-                                   stdout=subprocess.PIPE, text=True)
-        for line in process.stdout:
+        with subprocess.Popen(command, cwd=app, env=dict(os.environ, CARGO_TARGET_DIR=str(target_dir), CARGO_HOME=str(cargo_home)),
+                              stdout=subprocess.PIPE, text=True, start_new_session=True) as process:
             try:
-                row = json.loads(line)
-            except json.JSONDecodeError:
-                print(line, end='', flush=True)
-                continue
-            output.write(json.dumps(row) + '\n')
-            if row.get('reason') == 'compiler-message':
-                rendered = row.get('message', {}).get('rendered')
-                if rendered:
-                    print(rendered, end='' if rendered.endswith('\n') else '\n', file=sys.stderr, flush=True)
-            if row.get('reason') == 'compiler-artifact' and row.get('package_id') == root and row.get('executable'):
-                artifacts.append(row)
-        code = process.wait()
+                for line in process.stdout:
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        print(line, end='', flush=True)
+                        continue
+                    output.write(json.dumps(row) + '\n')
+                    if row.get('reason') == 'compiler-message':
+                        rendered = row.get('message', {}).get('rendered')
+                        if rendered:
+                            print(rendered, end='' if rendered.endswith('\n') else '\n', file=sys.stderr, flush=True)
+                    if row.get('reason') == 'compiler-artifact' and row.get('package_id') == root and row.get('executable'):
+                        artifacts.append(row)
+                code = process.wait()
+            except BaseException:
+                # Keep the group ID reserved until its compiler children stop.
+                if process.returncode is None:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                raise
     if code:
         return code
     if not artifacts or any(row.get('fresh') is not False for row in artifacts):

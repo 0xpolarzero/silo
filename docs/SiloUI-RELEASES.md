@@ -698,3 +698,10 @@ stream-failure regression checks all three output destinations and verifies
 that the child is reaped. A descendant fixture inherits a separate pipe; EOF
 verifies that it also exits after forwarding fails. This does not test a real
 package build.
+
+The release dependency-cache build also owns its command's process group.
+Reading compiler output, forwarding diagnostics, and recording artifact JSON
+must complete before the command can be released. An exception stops the group
+and reaps its leader before the metadata file closes. Its synthetic regression
+injects a forwarding failure after a fixture command starts, verifies a signal
+exit, and checks that `waitpid` reports no unreaped child.
