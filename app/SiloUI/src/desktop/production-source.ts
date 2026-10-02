@@ -1438,15 +1438,16 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (lastGitHubJob?.key === key) return lastGitHubJob.promise
     const promise = enqueueSetup(["githubRun", "githubVerify"], async (job) => {
       await identityJob
-      if (request.github.connectionState === "connected") {
+      const policies = request.github.workspaces.filter((policy) => request.github.connectionState === "connected" || policy.authenticationMethod === "token")
+      if (policies.length > 0) {
         const previous = snapshot.source?.github
         // Setup never turns GitHub access on or off: an explicit Disable access stays in effect.
-        let github = await githubMutation("save_github_configuration", { configuration: { baseRevision: previous?.policyRevision, hostIdentity: snapshot.source?.github.hostIdentity ?? null, workspaces: request.github.workspaces.map((policy) => ({ repositoryMode: "selected", allRepositoriesAllowChanges: false, ...policy })) } })
+        let github = await githubMutation("save_github_configuration", { configuration: { baseRevision: previous?.policyRevision, hostIdentity: snapshot.source?.github.hostIdentity ?? null, workspaces: policies.map((policy) => ({ repositoryMode: "selected", allRepositoriesAllowChanges: false, ...policy })) } })
         if (previous?.policyRevision === github.policyRevision && previous?.workspaceOperations?.some(({ status }) => status === "failed") && github.workspaceOperations?.some(({ status }) => status === "failed")) github = await githubMutation("retry_github_configuration")
         setJobStatus(job, ["githubRun"], "succeeded")
         setJobStatus(job, ["githubVerify"], "running")
         recordGitHubActivity(job.activityId, "github", "GitHub settings saved. Waiting for each sandbox to confirm access.")
-        await waitForGitHubAccess(github, request.github.workspaces.map(({ workspace }) => workspace))
+        await waitForGitHubAccess(github, policies.map(({ workspace }) => workspace))
       }
     }, activityId)
     lastGitHubJob = { key, promise }
