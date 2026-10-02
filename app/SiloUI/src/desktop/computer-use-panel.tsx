@@ -49,15 +49,18 @@ export function ChatGptAppProgress({ status, busy = false, onRetry }: { status: 
 /** The progress of the ChatGPT download of a sandbox's computer. `retry` adds Retry to a failure, which acts on that computer's download.
  * `fallbackReason` is shown with Retry until the status itself is read. */
 export function ChatGptAppStatusView({ store, retry = false, fallbackReason, active = true }: { store: ChatGptAppStore | undefined; retry?: boolean; fallbackReason?: string | null; active?: boolean }) {
-  const { status, busy, error, loadError } = useChatGptApp(store, active)
+  const { status, busy, error, loadError, subscriptionError } = useChatGptApp(store, active)
+  const recovery = subscriptionError ?? loadError
+  const refresh = recovery ? <ErrorLine message={recovery} actionLabel="Refresh status" onAction={store ? () => { void store.refresh() } : undefined} /> : null
   const onRetry = retry && store ? () => { void store.retry() } : undefined
   if (!status) {
-    if (loadError) return <ErrorLine message={loadError} />
+    if (refresh) return refresh
     return fallbackReason ? <ErrorLine message={fallbackReason} actionLabel={onRetry ? "Retry" : undefined} onAction={onRetry} busy={busy} /> : null
   }
-  if (status.state === "ready" || status.state === "unknown") return fallbackReason ? <ErrorLine message={fallbackReason} /> : null
+  if (status.state === "ready" || status.state === "unknown") return <>{fallbackReason && <ErrorLine message={fallbackReason} />}{refresh}</>
   return <div className="grid gap-1.5">
     <ChatGptAppProgress status={status} busy={busy} onRetry={onRetry} />
+    {refresh}
     {error && <ErrorLine message={error} onDismiss={() => store?.dismissError()} />}
   </div>
 }
