@@ -88,3 +88,22 @@ test("runtime preparation rejects a bad patch before invoking rustc or downloadi
   assert.match(result.stderr, /Runtime preflight: invalid patches\[0\]\.sha256 mismatch/)
   assert.doesNotMatch(result.stderr, /rustc|Download failed/)
 })
+
+
+for (const [script, args, error] of [
+  ["preflight.mjs", [], /Runtime preflight: invalid patches\[0\]\.sha256 mismatch/],
+  ["release.mjs", ["invalid-action"], /Use npm run release:draft or npm run release:publish/],
+  ["sync-release.mjs", [], /nonzero stable version/],
+]) {
+  test(`${script} executes its rejecting gate through a symlink`, t => {
+    const { root, inputs } = fixture(t)
+    cpSync(join(source, "scripts"), join(root, "scripts"), { recursive: true })
+    writeFileSync(join(root, inputs.patches[0].path), "bad patch")
+    writeFileSync(join(root, "package.json"), JSON.stringify({ version: "0.0.0" }))
+    const link = join(root, `linked-${script}`)
+    symlinkSync(join(root, "scripts", script), link)
+    const result = spawnSync(process.execPath, [link, ...args], { encoding: "utf8", env: { PATH: "", HOME: root } })
+    assert.equal(result.status, 1, result.stderr)
+    assert.match(result.stderr, error)
+  })
+}

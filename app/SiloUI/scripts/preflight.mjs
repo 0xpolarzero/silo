@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { readFileSync, realpathSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync } from "node:fs"
 import { dirname, relative, resolve, sep } from "node:path"
 import { fileURLToPath } from "node:url"
 
@@ -70,7 +70,7 @@ export function preflight(root = appRoot) {
   return inputs
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { preflight(); console.log("Runtime preflight passed (approved inputs and patch digest).") }
   catch (error) { console.error(error.message); process.exitCode = 1 }
 }
