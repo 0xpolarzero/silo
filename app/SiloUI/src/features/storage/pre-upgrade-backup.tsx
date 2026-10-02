@@ -60,23 +60,24 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
   const [loadError, setLoadError] = useState<string | null>(null)
   const [removing, setRemoving] = useState(false)
   const removal = useRef(false)
+  const reads = useRef({ sequence: 0 })
   const refresh = useRef<() => Promise<void>>(async () => {})
 
   useEffect(() => {
     if (!backend) return
     let live = true
-    let sequence = 0
+    const requests = reads.current
     let unsubscribe: (() => void) | undefined
     refresh.current = async () => {
-      const mine = ++sequence
+      const mine = ++requests.sequence
       try {
         const next = await backend.read()
-        if (!live || mine !== sequence) return
+        if (!live || mine !== requests.sequence) return
         setBackup(next)
         setLoadError(null)
         setLoaded(true)
       } catch (cause) {
-        if (live && mine === sequence) { setLoadError(message(cause)); setLoaded(true) }
+        if (live && mine === requests.sequence) { setLoadError(message(cause)); setLoaded(true) }
       }
     }
     void backend.subscribe(() => { void refresh.current() }).then(stop => {
@@ -103,9 +104,11 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
   const remove = useCallback(async () => {
     if (!backend || removal.current) return
     removal.current = true
+    ++reads.current.sequence
     setRemoving(true)
     try {
       await backend.remove()
+      ++reads.current.sequence
       setBackup(null)
     } catch (cause) {
       // A failed deletion may have removed part of it: show what is left.
