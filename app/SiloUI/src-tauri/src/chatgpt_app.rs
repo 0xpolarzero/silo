@@ -1779,10 +1779,12 @@ pub(crate) fn ensure_published_dir(root: &Path) -> Result<PathBuf, Error> {
 /// published folder is only resolved.
 pub(crate) fn ensure_published_dir_nowait(root: &Path) -> Result<PathBuf, Error> {
     let failed = || Error::retry("Silo could not prepare its ChatGPT app folder.");
-    Dir::open_root(root, true).map_err(|_| failed())?;
+    let base = Dir::open_root(root, true).map_err(|_| failed())?;
     if let Some(_lock) = RootLock::try_take(root)? {
         open_storage(root, true).map_err(|_| failed())?;
     }
+    // Lock contention skips preparation, not validation of the folder to mount.
+    base.subdir("published", false).map_err(|_| failed())?;
     fs::canonicalize(published_path(root)).map_err(|_| failed())
 }
 
