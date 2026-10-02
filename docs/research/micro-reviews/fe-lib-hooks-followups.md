@@ -72,3 +72,12 @@ A broader caller run passed 100 of 101 tests; the existing 6,001-record log-wind
 - Consequence: The timer captures the first snapshot and announces “Waiting for background maintenance…” even though the operation is running. With no further snapshot change, that incorrect step remains visible.
 - Fix: Refresh the pending entry's display callback on every snapshot and invoke that callback when the original delay expires.
 - Test: Move a lifecycle operation out of its queue at 400 ms, then assert that its first toast at 800 ms says “Starting…”. This failed with the stale waiting step before the implementation; exact output is saved in `/tmp/fe-lib-hooks-8-red.log`.
+
+## FE-LIB-HOOKS-9: Queue handoffs bypass the quick-operation delay
+
+- Priority: P3.
+- File: `app/SiloUI/src/features/application/components/operation-queue-panel.tsx`, `OperationQueueToast`.
+- Trigger: A previously displayed operation finishes, and the next snapshot contains only a newly started operation without an intervening empty queue.
+- Consequence: The retained boolean debounce state immediately displays the new operation, including operations that finish inside the intended 500 ms delay.
+- Fix: Associate the completed delay with the earliest entry's start time, so a fresh queue waits for its own delay without briefly publishing a new toast first.
+- Test: Replace an old running operation with a fresh one, assert no immediate notification, then assert it appears at 500 ms. The rendered fixture failed before the fix; output is saved in `/tmp/fe-lib-hooks-9-red.log`.
