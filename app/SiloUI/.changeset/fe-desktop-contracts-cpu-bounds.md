@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Validate saved sandbox CPU counts against the native runtime's 255-CPU limit.
+Reject unsupported saved sandbox CPU counts, including values above 255.

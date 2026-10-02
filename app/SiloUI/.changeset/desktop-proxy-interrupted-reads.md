@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Retry interrupted desktop viewer socket reads instead of disconnecting or truncating requests and responses.
+Handle interrupted desktop viewer reads without disconnecting or losing part of a request or response.

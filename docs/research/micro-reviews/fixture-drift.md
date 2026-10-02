@@ -17,3 +17,21 @@ its files.`, also exposed a frontend allowlist mismatch. The directory store now
 translates that known error to the existing sandbox terminology instead of
 hiding it behind a generic failure. Checks use deterministic fixtures only;
 no installed app or live VM is covered.
+
+## Log pages
+
+The static log-page helper accepted more than 200 records, had no response-byte
+budget, omitted owner names/session, and used a remote UI target as the native
+sandbox ID. It also treated source `all` as no matches, paginated context windows,
+and accepted query failures that native rejects with structured bridge errors.
+The native [log query](../../../app/SiloUI/src-tauri/src/runtime_logs.rs),
+`cached_page`, `read`, and `context` establish the 200-record/1 MiB response bounds,
+the unfiltered 101-record context, and the query failure wording.
+
+Regressions fail against the old helper and now cover those cases. History tests
+use bounded native-sized responses to exercise retention, including cursor
+cycles and inactive-cache eviction. The UI eviction/export regression uses long
+records across several byte-limited pages instead of an impossible 3,000-record
+response. The malformed-response regression remains intentionally malformed to
+check frontend containment. Static log pages do not simulate native index
+caching or file retention.

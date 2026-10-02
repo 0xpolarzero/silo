@@ -60,3 +60,24 @@ treats ordinary comments as whitespace. Apply the existing line-comment
 handling to the manifest body. The fixture regression failed with both false
 errors before the fix; real repository sources remain covered by the existing
 test. This changes an internal CI checker, so no app changeset is needed.
+
+## Build wrappers mistake arbitrary JSON output for Cargo messages
+
+`release-dependency-cache.py` and `dependency-cache-benchmark.py` parsed all
+valid JSON stdout lines as Cargo message dictionaries. A temporary executable
+printing `null` before a compiler artifact made both real build functions raise
+`AttributeError`, before waiting for the process or preserving its exit status.
+
+The [Cargo JSON message contract](https://doc.rust-lang.org/cargo/reference/external-tools.html#json-messages)
+defines object messages and explicitly permits arbitrary output from other
+tools. Treat non-object JSON as ordinary tool output, exclude it from the
+artifact inventory, and close the exhausted stdout pipe before waiting. Real
+temporary executable regressions cover null, array, string, number, and boolean
+output and invalid UTF-8 bytes; release-build success and exit 19; benchmark artifact freshness and
+synthetic configuration verification. No Cargo compilation or runtime
+preparation runs in these tests. Both focused groups failed before the fix.
+An invalid UTF-8 byte also raised `UnicodeDecodeError` before the JSON parser;
+decode the stream as UTF-8 with replacement, matching the guest computer-use
+command helper's existing treatment of diagnostic output.
+The dependency-tool suite passed 33 tests on Python 3.12 with
+`ResourceWarning` promoted to an error.

@@ -636,11 +636,16 @@ impl ShutdownState {
             .phase
             == Self::APPROVED
     }
+    #[cfg(test)]
     fn cancel(&self) -> bool {
+        self.cancel_with(|| {})
+    }
+    fn cancel_with(&self, reopen: impl FnOnce()) -> bool {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
         if state.session_deadline.is_some() || state.phase == Self::APPROVED {
             return false;
         }
+        reopen();
         state.phase = 0;
         true
     }
@@ -933,12 +938,13 @@ fn finish_exit(app: &AppHandle, frontend_completed: bool, generation: Option<u64
 }
 
 fn cancel_exit(app: &AppHandle, message: String) {
-    if !app.state::<ShutdownState>().cancel() {
+    if !app.state::<ShutdownState>().cancel_with(|| {
+        crate::runtime::shutdown::cancel();
+        crate::system_shutdown::cancel(app);
+        let _ = app.emit("silo://shutdown-state-changed", false);
+    }) {
         return;
     }
-    crate::runtime::shutdown::cancel();
-    crate::system_shutdown::cancel(app);
-    let _ = app.emit("silo://shutdown-state-changed", false);
     // Startup remains cancelled: a failed Quit must not automatically restart VMs
     // that have already stopped. Manual controls become available again.
     if let Some(window) = app.get_webview_window("main") {
@@ -2112,7 +2118,12 @@ mod tests {
         assert!(state.claim_exit(false));
         let deadline = Instant::now();
         state.begin_session_end(deadline);
-        state.cancel();
+        let mut reopened = false;
+        assert!(!state.cancel_with(|| reopened = true));
+        assert!(
+            !reopened,
+            "session termination must not reopen VM admission"
+        );
         assert_eq!(state.session_deadline(), Some(deadline));
         assert!(state.expire_session(deadline));
     }

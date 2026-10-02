@@ -4,6 +4,7 @@ import json
 import io
 import os
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -52,7 +53,7 @@ class ReleaseDependencyIntegrationTests(unittest.TestCase):
         (self.state / 'metadata.json').write_text(json.dumps({'resolve': {'root': 'app'}}))
         for code, fresh, expected in [(19, False, 19), (0, True, None), (0, False, 0)]:
             row = {'reason': 'compiler-artifact', 'package_id': 'app', 'executable': '/unused', 'fresh': fresh}
-            process = argparse.Namespace(stdout=[json.dumps(row) + '\n'], wait=lambda: code)
+            process = argparse.Namespace(stdout=io.StringIO(json.dumps(row) + '\n'), wait=lambda: code)
             with self.subTest(code=code, fresh=fresh), patch.object(DEPS.subprocess, 'Popen', return_value=process):
                 if expected is None:
                     with self.assertRaises(ValueError):
@@ -63,12 +64,31 @@ class ReleaseDependencyIntegrationTests(unittest.TestCase):
     def test_failed_compiler_streams_rendered_diagnostics_and_retains_inventory(self):
         (self.state / 'metadata.json').write_text(json.dumps({'resolve': {'root': 'app'}}))
         diagnostic = {'reason': 'compiler-message', 'message': {'rendered': 'error[E0308]: mismatched types\n'}}
-        process = argparse.Namespace(stdout=[json.dumps(diagnostic) + '\n'], wait=lambda: 101)
+        process = argparse.Namespace(stdout=io.StringIO(json.dumps(diagnostic) + '\n'), wait=lambda: 101)
         stderr = io.StringIO()
         with patch.object(DEPS.subprocess, 'Popen', return_value=process), patch.object(DEPS.sys, 'stderr', stderr):
             self.assertEqual(DEPS.build(self.args), 101)
         self.assertEqual(stderr.getvalue(), diagnostic['message']['rendered'])
         self.assertEqual(json.loads((self.state / 'messages.jsonl').read_text()), diagnostic)
+
+    def test_build_treats_non_object_json_as_tool_output_and_preserves_exit_status(self):
+        (self.state / 'metadata.json').write_text(json.dumps({'resolve': {'root': 'app'}}))
+        runner = self.app / 'node_modules/.bin/tauri'
+        runner.parent.mkdir(parents=True)
+        row = {'reason': 'compiler-artifact', 'package_id': 'app',
+               'executable': '/unused', 'fresh': False}
+        noise = b'null\n[]\n"tool output"\n42\ntrue\nbad\xff\n'
+        for code in (0, 19):
+            with self.subTest(code=code):
+                runner.write_text(f'#!{sys.executable}\nimport sys\n'
+                                  f'sys.stdout.buffer.write({noise!r})\n'
+                                  f'print({json.dumps(row)!r})\nsys.exit({code})\n')
+                runner.chmod(0o755)
+                stdout = io.StringIO()
+                with patch.object(DEPS.sys, 'stdout', stdout):
+                    self.assertEqual(DEPS.build(self.args), code)
+                self.assertTrue(stdout.getvalue().startswith(noise.decode('utf-8', errors='replace')))
+                self.assertEqual((self.state / 'messages.jsonl').read_text(), json.dumps(row) + '\n')
 
     def test_workflow_reader_writer_and_signing_order(self):
         root = Path(__file__).resolve().parents[3]

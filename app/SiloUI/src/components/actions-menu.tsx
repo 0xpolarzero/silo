@@ -57,6 +57,7 @@ export function ActionsMenu({ label, items, onClose, disabled = false, ref, popo
   const reduceMotion = useReduceMotion()
   const close = () => setPanel(null)
   const render = panel ? popovers?.[panel] : undefined
+  const panelAction = items.find(item => item.popover === panel)
   return <Popover open={Boolean(render)} onOpenChange={open => { if (!open) close() }}>
     <DropdownMenu.Root onOpenChange={open => { if (!open) onClose?.() }}>
     <Tooltip><TooltipTrigger asChild><DropdownMenu.Trigger asChild><PopoverAnchor asChild><Button ref={node => { trigger.current = node; if (typeof ref === "function") ref(node); else if (ref) ref.current = node }} variant="ghost" size="icon-xs" aria-label={label} disabled={disabled}><Ellipsis /></Button></PopoverAnchor></DropdownMenu.Trigger></TooltipTrigger><TooltipContent>{label}</TooltipContent></Tooltip>
@@ -71,7 +72,7 @@ export function ActionsMenu({ label, items, onClose, disabled = false, ref, popo
       })}
     </DropdownMenu.Content></DropdownMenu.Portal>
     </DropdownMenu.Root>
-    <PopoverContent align="end" className="w-64 p-3 text-xs" onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus() }}>
+    <PopoverContent aria-label={panelAction?.accessibleLabel ?? panelAction?.label} align="end" className="w-64 p-3 text-xs" onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus() }}>
       {render?.(close)}
     </PopoverContent>
   </Popover>

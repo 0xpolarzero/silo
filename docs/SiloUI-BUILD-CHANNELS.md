@@ -31,7 +31,11 @@ Development and packaging scripts read this API through the standalone
 directory, reads its JSON output, and deletes the executable; the Node adapter
 uses the same Python adapter. This requires Rust and Python 3.11 or newer but no
 Tauri build, GitHub configuration, or access to application state. It avoids a
-second registry of names or a parser tied to Rust source formatting. Static Tauri
+second registry of names or a parser tied to Rust source formatting. Linux
+verification harnesses use the same adapter for runtime aliases, including
+non-production identifiers, so Dev fixtures look under the Dev private home. Production app bundle roots, disk-image volume names, release asset names and
+package identity checks also read the exporter; production output names stay
+unchanged. Static Tauri
 configuration and documentation examples remain pinned by channel tests.
 
 ## Shared state that is now per channel
@@ -99,6 +103,13 @@ Dev file had broader permissions. Backups use the same atomic writer as imports:
 accepts creation permissions, while
 [the copy API's mode](https://nodejs.org/docs/latest-v24.x/api/fs.html#fscopyfilesyncsrc-dest-mode)
 controls copy flags rather than permissions. Public SSH keys use `0644`.
+The writer sets final permissions and
+[syncs the open file](https://nodejs.org/docs/latest-v24.x/api/fs.html#fsfsyncsyncfd)
+before rename, then syncs the containing directory before continuing. Directory
+sync is required separately by the [Linux fsync contract](https://man7.org/linux/man-pages/man2/fsync.2.html).
+Failures close descriptors and remove partial private staging files. Fixture
+tests inject partial writes and file/directory sync failures using temporary
+HOMEs and an in-memory Keychain; they never run the importer against live data.
 
 Copied:
 

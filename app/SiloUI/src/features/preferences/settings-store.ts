@@ -138,17 +138,21 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
 
   function initialize() {
     initialization ??= (async () => {
+      let before = confirmed.revision
       try {
         if (!unsubscribe) {
           const stop = await backend.subscribe(receive)
           if (disposed) { stop(); return }
           unsubscribe = stop
         }
+        before = confirmed.revision
         const snapshot = await backend.read()
         if (!pending.length) transportError = null
         receive(snapshot)
         publish()
-      } catch (error) { failed(error) }
+      } catch (error) {
+        if (!disposed && (!unsubscribe || confirmed.revision === before)) failed(error)
+      }
     })().finally(() => { initialization = null })
     return initialization
   }

@@ -1043,22 +1043,44 @@ def stop():
     (RUN / 'failed').unlink(missing_ok=True)
 
 
+def trim_log(fd):
+    with os.fdopen(fd, 'r+b') as log:
+        info = os.fstat(log.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_size <= 1024 * 1024:
+            return
+        log.seek(-256 * 1024, os.SEEK_END)
+        tail = log.read()
+        log.seek(0)
+        log.write(tail)
+        log.truncate()
+
+
 def trim_logs():
-    # Bound logs without following links writable by the desktop user.
-    for path in [LOG, *HOME.glob('.vnc/*.log')]:
+    # Anchor user logs to opened directories; never traverse a user-writable link.
+    file_flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    try:
+        trim_log(os.open(LOG, file_flags))
+    except OSError:
+        pass
+    try:
+        home = os.open(HOME, directory_flags)
         try:
-            fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK)
-            with os.fdopen(fd, 'r+b') as log:
-                info = os.fstat(log.fileno())
-                if not stat.S_ISREG(info.st_mode) or info.st_size <= 1024 * 1024:
-                    continue
-                log.seek(-256 * 1024, os.SEEK_END)
-                tail = log.read()
-                log.seek(0)
-                log.write(tail)
-                log.truncate()
-        except OSError:
-            continue
+            directory = os.open('.vnc', directory_flags, dir_fd=home)
+            try:
+                for name in os.listdir(directory):
+                    if not name.endswith('.log'):
+                        continue
+                    try:
+                        trim_log(os.open(name, file_flags, dir_fd=directory))
+                    except OSError:
+                        continue
+            finally:
+                os.close(directory)
+        finally:
+            os.close(home)
+    except OSError:
+        pass
 
 
 def stop_display():
