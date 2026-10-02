@@ -135,6 +135,7 @@ export function FilterCombobox<Value extends string>({
               key={option.value}
               id={`${listboxId}-${index}`}
               type="button"
+              tabIndex={-1}
               role="option"
               aria-selected={index === activeIndex}
               className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus:bg-accent aria-selected:bg-accent"
