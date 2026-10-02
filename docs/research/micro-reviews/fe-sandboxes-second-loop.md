@@ -29,3 +29,12 @@ Scope: `app/SiloUI/src/features/sandboxes/` and adjacent sandbox configuration a
 - **Evidence:** Both rendered regressions failed on an enabled Save button after publishing a running checkpoint operation.
 - **Fix:** Include running checkpoints in the shared sandbox editing busy reason, which also rechecks menu saves and deletions.
 - **Regression:** `overview-availability.test.tsx` covers both editor surfaces, accessible blocking text, and restored Save with the draft intact after completion.
+
+## FE-SANDBOXES-11: Navigation drops conflict and review notices
+
+- **Priority:** P2.
+- **Trigger:** Receive a stale save rejection or review concurrent changes, then leave the editor's surface and return.
+- **Consequence:** The draft and rebased baseline survive, but the conflict actions or explicit description of overwritten concurrent values disappear.
+- **Evidence:** Both rendered regressions failed because the restored editor had no conflict alert or review status.
+- **Fix:** Store and restore conflict and review state with the existing in-memory editor draft.
+- **Regression:** `machine-editor-drafts.test.tsx` covers navigation before and after Review changes, including retained draft values and both sides of the CPU conflict.
