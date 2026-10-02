@@ -47,6 +47,16 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertTrue((destination / '.local/bin/tool').read_text().startswith('#!/home/silo/.local/bin/python'))
         self.assertTrue((source / '.local/bin/tool').read_text().startswith('#!/root/'))
 
+    def test_utf8_decodable_binary_launcher_is_preserved_byte_for_byte(self):
+        source, home = self.root / 'source', self.root / 'home'
+        (source / '.local/bin').mkdir(parents=True)
+        binary = b'\x00\x01/root/binary-data\n/home/silo-desktop/data'
+        (source / '.local/bin/binary').write_bytes(binary)
+        guest.copy_home(source, home)
+        guest.copy_home(source, home)
+        self.assertEqual((home / '.local/bin/binary').read_bytes(), binary)
+        self.assertEqual((source / '.local/bin/binary').read_bytes(), binary)
+
     def test_home_copy_skips_transient_pipes_and_preserves_files(self):
         source, destination = self.root / 'root', self.root / 'silo'
         source.mkdir()
