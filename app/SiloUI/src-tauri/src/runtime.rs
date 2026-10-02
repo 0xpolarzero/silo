@@ -2388,7 +2388,7 @@ fn apply_github_policy_with(
     let _guard = match OPERATIONS
         .kind(operation_gate::OperationKind::GithubApply)
         .acquire_while(
-            operation_gate::Scope::Vm { id: vm_id },
+            operation_gate::Scope::Vm { id: vm_id.clone() },
             Some(workspace.to_owned()),
             &format!("Applying GitHub access to {workspace}"),
             &|| !superseded() && Instant::now() < deadline,
@@ -2415,6 +2415,12 @@ fn apply_github_policy_with(
     if superseded() {
         return Err(GITHUB_UPDATE_REPLACED.into());
     }
+    let machine = read_metadata(&paths.metadata)
+        .map_err(|error| error.to_string())?
+        .machines
+        .into_iter()
+        .find(|machine| machine.is_vm() && machine.id() == vm_id && machine.name() == workspace)
+        .ok_or("The sandbox identity changed. No GitHub access was applied.")?;
     let capability = run_msb(
         paths,
         &[if token_protocol {
@@ -2432,7 +2438,7 @@ fn apply_github_policy_with(
     }
     let inspected =
         inspect_workspace(&ProcessRunner, paths, workspace).map_err(|error| error.to_string())?;
-    ensure_managed(&inspected).map_err(|error| error.to_string())?;
+    ensure_machine_identity(&machine, &inspected).map_err(|error| error.to_string())?;
     if inspected
         .config
         .pointer("/labels/silo.github-protocol")
@@ -7099,7 +7105,7 @@ esac
         fs::write(&paths.executable, r#"#!/bin/sh
 case "$1" in
   --silo-github-protocol|--silo-github-token-protocol) echo 1 ;;
-  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
+  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.machine-id":"SILO_TEST_MACHINE_ID","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
   modify)
     printf '%s\n' "$*" >> "$MSB_HOME/modify-args"
     cat > "$MSB_HOME/modify-values"
@@ -7108,7 +7114,7 @@ case "$1" in
     while [ -f "$MSB_HOME/modify-block" ]; do sleep 0.05; done
     if [ -f "$MSB_HOME/modify-fail" ]; then echo "rejected $(cat "$MSB_HOME/modify-values")" >&2; exit 3; fi ;;
 esac
-"#).unwrap();
+"#.replace("SILO_TEST_MACHINE_ID", vm().id())).unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
     }
@@ -7145,6 +7151,72 @@ esac
             .parse()
             .unwrap();
         unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn github_update_rejects_a_replaced_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let script = fs::read_to_string(&paths.executable)
+            .unwrap()
+            .replace(vm().id(), "22222222-2222-4222-8222-222222222222");
+        fs::write(&paths.executable, script).unwrap();
+
+        let error = apply_github_policy_with(
+            &paths,
+            "dev",
+            1,
+            &github_profile("synthetic-scoped-token"),
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        assert!(cached_github_profile(&paths).is_none());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn github_update_rejects_a_replacement_saved_while_waiting() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let held = OPERATIONS.computer("Replacing test sandbox").unwrap();
+        let worker_paths = paths.clone();
+        let update = thread::spawn(move || {
+            apply_github_policy_with(
+                &worker_paths,
+                "dev",
+                1,
+                &github_profile("synthetic-scoped-token"),
+                Duration::from_secs(10),
+            )
+        });
+        wait_for_queue(&OPERATIONS, |queue| {
+            queue.waiting.iter().any(|entry| {
+                entry.kind == operation_gate::OperationKind::GithubApply
+                    && entry.vm_name.as_deref() == Some("dev")
+            })
+        });
+        let mut replacement = vm();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "22222222-2222-4222-8222-222222222222".into();
+        }
+        write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
+        drop(held);
+
+        let error = update.join().unwrap().unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        assert!(cached_github_profile(&paths).is_none());
+        forget_github_state(&paths.home, "dev");
     }
 
     #[test]
