@@ -28,3 +28,14 @@ configuration I/O tests passed afterward in a harness containing the exact
 production configuration types, reader, writer and tests, compiled with Rust
 1.94.0 and warnings denied. This isolates persistence; it does not run the
 Tauri or SSH adapters, and root skips the permission boundary.
+
+## Editor SSH files: fixed
+
+Both `editor.rs::write_private` and `replace_file` returned after atomic rename
+without directory synchronization. They now sync the parent and propagate
+failure. A real permission fixture checks both writers, including their distinct
+permission rules, complete publication and absence of temporary files. The new
+regression failed before correction; it and the existing byte-preservation and
+symlink-refusal test passed with the exact production file functions isolated
+from the editor adapters, using Rust 1.94.0 and warnings denied. Root skips the
+permission fixture. No live SSH connection or editor was used.
