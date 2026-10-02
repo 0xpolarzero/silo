@@ -1464,6 +1464,13 @@ fn read_snapshot_descriptor(artifact: &Path) -> Result<Value, BackupError> {
     serde_json::from_slice(&bytes).map_err(|_| invalid())
 }
 
+fn descriptor_scope_supported(scope: Option<&str>, state_kind: Option<&str>) -> bool {
+    matches!(
+        (scope, state_kind),
+        (Some("file" | "disk"), Some("file")) | (Some("checkpoint" | "full"), Some("checkpoint"))
+    )
+}
+
 /// The restorable configuration a MicroSandbox snapshot carries is its
 /// descriptor: image, root layout, owned volumes, the default user and, for
 /// a full checkpoint, the VM geometry. Env, patches, init, rlimits and
@@ -1502,9 +1509,13 @@ fn compare_loaded_descriptor(
         return Err("its descriptor names another checkpoint".into());
     }
     let state_kind = descriptor.pointer("/state/kind").and_then(Value::as_str);
-    match (object.get("scope").and_then(Value::as_str), state_kind) {
-        (Some("disk"), Some("file")) | (Some("full"), Some("checkpoint")) => {}
-        _ => return Err("its capture scope is not supported".into()),
+    // MicroSandbox's descriptor names its scope `file` or `checkpoint`, the same
+    // word as `state.kind` (0.7.2 through 0.7.6: `SnapshotScope` serializes with
+    // `rename = "file"` / `"checkpoint"`). The runtime's index and `snapshot list`
+    // call the same scopes `disk` and `full`; accept those spellings here too, so
+    // a descriptor written with the index names is never refused.
+    if !descriptor_scope_supported(object.get("scope").and_then(Value::as_str), state_kind) {
+        return Err("its capture scope is not supported".into());
     }
 
     // Image: same reference and, when the export recorded it, the same digest.
@@ -3512,7 +3523,7 @@ mod tests {
         serde_json::json!({
             "schema": "microsandbox.snapshot/1",
             "snapshot_id": "snap_11111111111111111111111111111111",
-            "scope": "disk",
+            "scope": "file",
             "state": {"kind": "file", "disk_format": "qcow2", "filesystem": "ext4", "virtual_size": 1, "head": "layer_1", "layers": []},
             "capture": {"created_at": "2026-09-30T00:00:00Z", "source_lineage": "dev", "source_checkpoint": null, "consistency": "crash_consistent"},
             "image": {"reference": config["image"]["Oci"]["reference"], "manifest_digest": format!("sha256:{}", "c".repeat(64))},
@@ -4278,7 +4289,7 @@ mod tests {
         // Captured with 2 of 6 CPUs, 1 of 32 GiB memory and a 30 GiB
         // workspace; the sandbox now has 4 CPUs, 16 GiB and 60 GiB.
         let mut descriptor = loaded_descriptor_for(&managed_config("dev"));
-        descriptor["scope"] = "full".into();
+        descriptor["scope"] = "checkpoint".into();
         descriptor["state"] = serde_json::json!({
             "kind": "checkpoint",
             "checkpoint_id": "ckpt",
@@ -6008,10 +6019,54 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_scope_names_are_the_runtimes_and_the_index_spellings() {
+        // Real descriptors written by `msb snapshot create` (see test_support/msb-descriptor).
+        for fixture in [include_str!(
+            "test_support/msb-descriptor/checkpoint-0.7.6.json"
+        )] {
+            let descriptor: Value = serde_json::from_str(fixture).unwrap();
+            assert!(descriptor_scope_supported(
+                descriptor["scope"].as_str(),
+                descriptor.pointer("/state/kind").and_then(Value::as_str)
+            ));
+        }
+        for (scope, kind, supported) in [
+            ("file", "file", true),
+            ("checkpoint", "checkpoint", true),
+            ("disk", "file", true),
+            ("full", "checkpoint", true),
+            ("file", "checkpoint", false),
+            ("checkpoint", "file", false),
+            ("disk", "checkpoint", false),
+            ("full", "file", false),
+            ("resumable", "checkpoint", false),
+        ] {
+            assert_eq!(
+                descriptor_scope_supported(Some(scope), Some(kind)),
+                supported,
+                "{scope}/{kind}"
+            );
+        }
+        assert!(!descriptor_scope_supported(None, Some("file")));
+        // Both spellings of a disk capture import; a disk scope on a checkpoint state does not.
+        for scope in ["file", "disk"] {
+            let (result, _) = import_with_descriptor(|descriptor| {
+                descriptor["scope"] = scope.into();
+            });
+            assert!(result.is_ok(), "{scope}");
+        }
+        let (result, removed) = import_with_descriptor(|descriptor| {
+            descriptor["scope"] = "checkpoint".into();
+        });
+        assert!(refused_because(result).contains("capture scope"));
+        assert_eq!(removed.len(), 2);
+    }
+
+    #[test]
     fn full_checkpoint_import_requires_its_captured_geometry() {
         let full = |vcpus: u64| {
             move |descriptor: &mut Value| {
-                descriptor["scope"] = "full".into();
+                descriptor["scope"] = "checkpoint".into();
                 descriptor["state"] = serde_json::json!({
                     "kind": "checkpoint",
                     "checkpoint_id": "ckpt",
