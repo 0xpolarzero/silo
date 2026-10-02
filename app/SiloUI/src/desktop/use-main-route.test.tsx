@@ -50,3 +50,26 @@ it("still delivers a pending route when a later drain finds no route", async () 
   await act(async () => finish({ workspace: "pending", workspaceSection: "logs" }))
   expect(result.current).toEqual({ workspace: "pending", workspaceSection: "logs" })
 })
+
+it("leaves a pending route for the active listener after StrictMode cleanup", async () => {
+  const notify: Array<() => void> = []
+  const register: Array<(stop: () => void) => void> = []
+  mocks.listen.mockImplementation((_name, handler) => {
+    notify.push(handler)
+    return new Promise<() => void>(resolve => { register.push(resolve) })
+  })
+  let pending: unknown = { workspace: "pending", workspaceSection: "logs" }
+  mocks.invoke.mockImplementation(async () => {
+    const next = pending
+    pending = null
+    return next
+  })
+  const { result } = renderHook(() => useMainRoute(true), { reactStrictMode: true })
+  expect(notify).toHaveLength(2)
+  await act(async () => { notify[0]() })
+  const stop = vi.fn()
+  await act(async () => { register[0](stop); register[1](vi.fn()) })
+  expect(stop).toHaveBeenCalledOnce()
+  expect(result.current).toEqual({ workspace: "pending", workspaceSection: "logs" })
+  expect(mocks.invoke).toHaveBeenCalledExactlyOnceWith("take_main_route")
+})
