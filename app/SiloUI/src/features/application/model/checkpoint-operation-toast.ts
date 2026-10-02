@@ -65,6 +65,7 @@ function show(entry: { spec: CheckpointOperationSpec; startedAt: number }, stage
 }
 
 export async function runCheckpointOperation(spec: CheckpointOperationSpec): Promise<boolean> {
+  for (const entry of active.values()) if (entry.spec.target === spec.target) return false
   const entry = { spec, startedAt: Date.now() }
   active.set(spec.id, entry)
   show(entry)

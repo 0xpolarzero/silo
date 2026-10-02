@@ -19,3 +19,11 @@ Cleanup now clears timers, dismisses owned progress, and clears tracking entries
 ## Production source startup subscriptions
 
 `startLiveUpdates` awaited six registrations before checking disposal. A registration completing after disposal stayed active until every later registration completed, and previously acquired handles were released twice. Startup now checks disposal immediately after each registration, stops the late handle, and skips subsequent registrations. Disposal drains the owned handle list, and callbacks ignore disposed sources. Deferred registration tests cover the first, middle, and final registration boundaries without invoking native reads.
+
+## Main route consumption after cleanup
+
+`useMainRoute` guarded state publication but still called `take_main_route` after disposal. The native command consumes the pending route with `Option::take` in `status_panel.rs`, so the obsolete listener discarded navigation intended for the active listener. A StrictMode regression with deferred registrations reproduces the missing route. The receiver now checks disposal before consuming native state.
+
+## Tray panel event lifetime
+
+`StatusPanel` forwarded open events after cleanup and left registration rejection unhandled. Under StrictMode, its obsolete listener could focus and reset the active view while registration was pending. The effect now guards callbacks, releases late registrations, and handles rejection. Fixture tests verify one live focus callback, disposal of both replayed registrations, no callback after unmount, and a handled registration error.

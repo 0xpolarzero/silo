@@ -43,3 +43,23 @@ Scope: `app/SiloUI/src/lib/` and `app/SiloUI/src/hooks/`. Follow-up to the untra
 - Fix: Explicitly clear `action` when rendering progress.
 - Test: Replace both a Retry failure and an Open success with same-ID progress; assert their old actions are absent and the new Cancel control remains.
 - Primary source: [Sonner v2.0.8 state updates](https://github.com/emilkowalski/sonner/blob/v2.0.8/src/state.ts), whose existing-ID update spreads previous toast properties before supplied data. Supplying an undefined action removes the previous action through the supported toast options.
+
+
+## FE-LIB-HOOKS-7: Result actions do not acknowledge dismissal
+
+- Priority: P3.
+- File: `app/SiloUI/src/lib/operation-toast.ts`, `resultCallbacks`.
+- Trigger: Click an imported sandbox result's Open action or an export result's reveal action. Transfer results supply `onDismiss` to acknowledge the stored result (`features/application/components/sandbox-transfer.tsx:140–161`). Sonner removes the toast after an action without invoking `onDismiss`; the library wrapper previously only removed ownership.
+- Consequence: The toast disappears without acknowledging the transfer result, so an unseen result can reappear on the next launch. The rendered regression clicked Open and observed zero dismissal-callback calls.
+- Fix: Invoke the dismissal callback when an action permits automatic closure, and guard it against duplicate closure callbacks. Actions that prevent dismissal, including Retry, retain the result until a real closure or replacement.
+- Test: Click a result action and assert its handler and dismissal callback each run once, including when the dismissal callback explicitly dismisses the toast. Verify Retry does not acknowledge a still-visible result.
+- Primary source: [Sonner v2.0.8 action handling](https://github.com/emilkowalski/sonner/blob/v2.0.8/src/index.tsx) calls `deleteToast` after the action without calling the toast's dismissal callback, unlike its explicit close-button handler.
+
+
+## Verification
+
+All fixes were developed in `codex-fix-fe-lib-hooks` on `codex/fix-fe-lib-hooks`, with a failing fixture before each implementation, a patch changeset, and an individual commit folded into `codex/integration`. No native app, real VM, production state, or real credentials were used.
+
+Focused checks include `npm --prefix app/SiloUI test --` with the changed library suites, sidebar fixture, remote-deletion fixture, file-tree fixture, operation-toast suite, and transfer suite. The integrated scope check passed 63 tests across seven files; the final action-dismissal check passed 66 tests across three files. Frontend typecheck, touched-file oxlint, `git diff --check`, and Rust 1.94.0 formatting checks passed.
+
+A broader caller run passed 100 of 101 tests; the existing 6,001-record log-window fixture exceeded its five-second default timeout. Its focused retry also timed out at five seconds, then passed with `--maxWorkers=1 --testTimeout=15000` in 6.12 seconds. Exact output is preserved in `/tmp/fe-lib-hooks-integrated-check.log`, `/tmp/fe-lib-hooks-log-window-recheck.log`, and `/tmp/fe-lib-hooks-log-window-budget-check.log`. No timeout settings were changed in the repository.

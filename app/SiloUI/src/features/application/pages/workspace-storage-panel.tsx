@@ -112,7 +112,9 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
     icon: Layers,
     label: 'Checkpoints',
     value: host(storage?.checkpointHostBytes),
-    help: checkpointCount === 0
+    help: !storage
+      ? loading ? 'Reading saved checkpoint usage…' : 'Refresh storage to check saved checkpoints.'
+      : checkpointCount === 0
       ? `No checkpoints are saved ${where}.`
       : `${checkpointCount === 1 ? '1 checkpoint' : `${checkpointCount} checkpoints`} saved ${where}, each counted in full; copies that share blocks can use less. Delete ones you no longer need in Checkpoints.`,
   }
@@ -145,7 +147,7 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
       {loading && <div role="status" aria-label="Reading storage" className="sr-only">Reading storage…</div>}
       {storage?.lastError && !reclaiming && <p className="flex items-start gap-2 text-destructive"><CircleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />{storage.lastError}</p>}
 
-      <ReclaimHistory history={storage?.history ?? []} open={historyOpen} onOpenChange={setHistoryOpen} />
+      {storage && <ReclaimHistory history={storage.history} open={historyOpen} onOpenChange={setHistoryOpen} />}
     </section>
   </TooltipProvider>
 }

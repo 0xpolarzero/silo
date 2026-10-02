@@ -3,7 +3,7 @@ import ast
 from pathlib import Path
 import unittest
 
-from channel_names import channel_names
+from channel_names import channel_for_identifier, channel_names
 
 
 SOURCE = Path(__file__).with_name('linux_desktop_services.py')
@@ -43,6 +43,7 @@ class DesktopServiceFixtureTests(unittest.TestCase):
                              'Path': Path,
                              'prop': lambda *args: name, 'destination': 'fixture', 'path': '/fixture'}
                 namespace['names'] = channel_names()
+                namespace['channel_for_identifier'] = channel_for_identifier
                 namespace['identifier'] = eval(expression('identifier'), namespace)
                 namespace['product_name'] = eval(expression('product_name'), namespace)
                 self.assertTrue(eval(compile(ast.Expression(title), str(SOURCE), 'eval'), namespace))
