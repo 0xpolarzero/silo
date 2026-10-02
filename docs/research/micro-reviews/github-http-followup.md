@@ -12,3 +12,21 @@ Scope: `app/SiloUI/src-tauri/src/github_http.rs`.
 - **Regression:** A wire test returns HTTP 503 with a ten-minute wait, clears per-request retries, checks that preflight remains blocked, and restores exported floors into fresh gate state. It verifies blocking before the deadline, admission at the deadline, and admission for another credential class.
 
 The original GITHUB-HTTP-1 audit remains in the shared review worktree. Its interrupted-body regression failed before the fix and passed afterward. Verification uses local HTTP fixtures and the actual source module; no app, VM, or live credential was used.
+
+## GITHUB-HTTP-3 — P2: Separate tokens bypass a known shared-account primary limit
+
+- **File:line:** `app/SiloUI/src-tauri/src/github_http.rs:74`.
+- **Trigger:** OAuth and a personal access token belong to the same GitHub account. One receives a primary-limit response with `x-ratelimit-remaining: 0` and a future reset time; the other makes an API request before that reset.
+- **Evidence:** `rate_class` hashes each bearer token independently. `Gates::check` consults only the supplied token's class, so the first token's floor does not block the second. The existing `one_credentials_rate_limit_never_delays_another_credential` test explicitly confirms this independence. [GitHub's primary rate-limit contract](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#primary-rate-limit-for-authenticated-users) combines a user's personal-token requests with requests made on that user's behalf by OAuth and GitHub Apps. The transport accepts no account identity. This is a source-and-protocol finding; no live account was exercised.
+- **Consequence:** Silo can send another request against an account budget whose reset deadline it already knows. Token rotation also changes the class for the same account.
+- **Suggested fix:** Associate authenticated-user primary floors with a verified stable account identity and rate-limit resource. Keep distinct accounts independent and retain separate treatment for App authentication and secondary limits. Do not replace the current classes with a global floor that blocks unrelated accounts.
+- **Test that would catch it:** Give two synthetic tokens the same verified account ID, impose a primary floor through one, and assert that the other is blocked until reset. Give a third token another account ID and assert it remains admissible. Include token rotation for the first account.
+- **Status:** Skipped. Correct identity and resource plumbing crosses `github.rs`, `github_personal_token.rs`, and `github_tokens.rs`, beyond the assigned file scope. A transport-only global gate would reintroduce cross-account interference.
+
+## Fix-loop verification
+
+- GITHUB-HTTP-1: fixed and folded as `f9f4363a`; the local interrupted-body regression failed before the fix.
+- GITHUB-HTTP-2: fixed and folded as `64afd708`; the local service-wait regression failed before the fix.
+- After both fixes, all 17 tests in the actual `github_http.rs` passed in a temporary Rust harness using cached dependencies. The harness supplies only a test-isolation mutex in place of the application's test-support module. Exact red/green output is retained under `/tmp/silo-codex-target/verification/github-http/`.
+- Rust formatting and diff whitespace checks passed. Focused Clippy passed with the existing argument-count warning and harness-only dead-code warnings. Frontend typecheck/lint do not apply to this Rust-only change.
+- The native Cargo regression run uses synthetic GitHub configuration and the required shared target. It remains queued behind that target's artifact lock at the time of this entry.
