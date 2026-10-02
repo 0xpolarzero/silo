@@ -138,6 +138,26 @@ fn stop_local_vms_with(
         .filter(|machine| machine.is_vm() && present.contains(machine.name()))
     {
         let committed_vm = committed.iter().any(|entry| entry.id() == machine.id());
+        // A replacement may reuse a removed VM's name. Its journal retains both
+        // identities, but only the identity actually present needs to stop.
+        if machines.iter().any(|other| {
+            other.is_vm() && other.name() == machine.name() && other.id() != machine.id()
+        }) && inspect_workspace(runner, paths, machine.name()).is_ok_and(|observed| {
+            observed.name == machine.name()
+                && ensure_managed(&observed).is_ok()
+                && machines.iter().any(|other| {
+                    other.is_vm()
+                        && other.name() == machine.name()
+                        && other.id() != machine.id()
+                        && observed
+                            .config
+                            .pointer("/labels/silo.machine-id")
+                            .and_then(Value::as_str)
+                            == Some(other.id())
+                })
+        }) {
+            continue;
+        }
         // A VM that is already stopped with no saved action needs no stop and
         // no "Sandbox stopped" activity entry. Anything else goes through
         // perform, which verifies identity and settles transitions.
@@ -689,6 +709,57 @@ mod tests {
                 .unwrap()
                 .values()
                 .all(|state| state == if stopped { "Stopped" } else { "Running" }));
+        }
+    }
+
+    #[test]
+    fn quit_stops_the_present_identity_when_configuration_reuses_a_removed_vms_name() {
+        let _test_state = crate::test_support::global_state();
+        struct Replacement(Runner, String);
+        impl RuntimeRunner for Replacement {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                let mut output = self.0.run(paths, args, timeout)?;
+                if args[0] == "inspect" && args[1] == "first" {
+                    let mut value: Value = serde_json::from_str(&output.stdout).unwrap();
+                    value["config"]["labels"]["silo.machine-id"] = json!(self.1);
+                    output.stdout = value.to_string();
+                }
+                Ok(output)
+            }
+        }
+        for committed in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = setup(&dir);
+            let mut replacement = read_metadata(&paths.metadata).unwrap();
+            let new_id = uuid::Uuid::new_v4().to_string();
+            if let MachineConfiguration::Vm { id, .. } = &mut replacement.machines[0] {
+                *id = new_id.clone();
+            }
+            configuration_recovery::begin(&paths, &replacement).unwrap();
+            if committed {
+                write_metadata(&paths.metadata, &replacement).unwrap();
+            } else {
+                let mut after_removal = replacement.clone();
+                after_removal.machines.remove(0);
+                write_metadata(&paths.metadata, &after_removal).unwrap();
+            }
+            let runner = Replacement(runner(None), new_id);
+            stop_local_vms_with(&runner, &paths, &|_, _, _| {}).unwrap();
+            assert!(runner
+                .0
+                .states
+                .lock()
+                .unwrap()
+                .values()
+                .all(|status| status == "Stopped"));
+            assert!(configuration_recovery::pending_request(&paths)
+                .unwrap()
+                .is_some());
         }
     }
 
