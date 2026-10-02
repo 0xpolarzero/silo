@@ -193,6 +193,22 @@ describe("sidebar hover preview", () => {
     expect(sidebar).toHaveAttribute("data-collapsed", "true")
   })
 
+  it("retains a preview when Tab moves from the toggle into the sidebar", () => {
+    const { toggle, sidebar } = renderSidebar()
+    fireEvent.pointerEnter(toggle)
+    wait(200)
+    act(() => toggle.focus())
+    fireEvent.pointerLeave(toggle)
+    fireEvent.keyDown(toggle, { key: "Tab" })
+    act(() => screen.getByRole("button", { name: "Files" }).focus())
+    wait(250)
+    expect(sidebar).toHaveAttribute("data-previewing", "true")
+    expect(screen.getByRole("button", { name: "Files" })).toHaveFocus()
+    act(() => screen.getByRole("button", { name: "Page content" }).focus())
+    wait(200)
+    expect(sidebar).toHaveAttribute("data-previewing", "false")
+  })
+
   it("does not reveal previously hovered tooltips when the sidebar collapses", () => {
     const { toggle } = renderSidebar()
     fireEvent.click(toggle)
