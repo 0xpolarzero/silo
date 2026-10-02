@@ -11,6 +11,7 @@ import {
   dismissOperationToast,
   dismissSandboxToasts,
   LONG_OPERATION_MS,
+  runWithOperationToast,
   showActionFailure,
   showOperationFailure,
   showOperationNotice,
@@ -27,6 +28,28 @@ beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); delivered.mock
 afterEach(() => { dismissOperationToast("op"); vi.useRealTimers() })
 
 describe("system notice mirroring", () => {
+  it.each(["busy", "future_error"])("shows a structured %s error message in action and system notifications", async (code) => {
+    render(<Host />)
+    const message = "Another sandbox operation is running. Wait for it to finish, then retry."
+    act(() => showActionFailure("Could not open sandbox", { code, message }))
+    await tick()
+    expect(screen.getByText(message)).toBeInTheDocument()
+    expect(screen.queryByText("[object Object]")).not.toBeInTheDocument()
+    expect(delivered.mock.calls[0][0].body).toBe(message)
+  })
+
+  it("keeps the native error message when a background operation rejects", async () => {
+    render(<Host />)
+    const message = "This Silo version does not support that remote operation."
+    await act(async () => {
+      await runWithOperationToast("op", { loading: "Opening sandbox", success: "Sandbox opened", failure: "Could not open sandbox" },
+        () => Promise.reject({ code: "unsupported_remote_operation", message }))
+    })
+    await tick()
+    expect(screen.getByText(message)).toBeInTheDocument()
+    expect(delivered.mock.calls[0][0].body).toBe(message)
+  })
+
   it("mirrors a failure as a failures notice keyed by the toast id", () => {
     showOperationFailure("op", "Push failed", { description: "rejected", noticeSandbox: sandbox })
     expect(delivered).toHaveBeenCalledExactlyOnceWith({ category: "failures", key: "op", title: "Push failed", body: "rejected", sandbox })
