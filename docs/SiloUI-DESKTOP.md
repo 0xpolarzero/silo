@@ -51,8 +51,9 @@ the text default. The image describes itself in
   `Start desktop with sandbox` on when the bundled image is v4 or later
   (`desktop::default_new_vm_desktops`, applied when the configuration is saved),
   and `desktop.builtIn: true`. Creation then runs the same install action as the
-  explicit flow, so no user step is needed; an explicit startup choice in the
-  request is kept. `builtIn` is Silo's to decide: a value in a saved
+  explicit flow, so no user step is needed. A new built-in VM always starts its
+  desktop with the sandbox, including when duplicated settings requested manual
+  startup. `builtIn` is Silo's to decide: a value in a saved
   configuration is ignored (an existing VM keeps what it had, a VM on an older
   image is never built in). Existing VMs and VMs on older images keep the
   explicit "Add Linux desktop" flow.

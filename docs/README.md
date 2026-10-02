@@ -30,8 +30,11 @@ has been exercised.
 | Sandbox tools | [Working account](SiloUI-WORKING-ACCOUNT.md), [VM migration](SiloUI-WORKING-ACCOUNT-MIGRATION.md), [Linux desktop](SiloUI-DESKTOP.md), [computer-use plan](SiloUI-COMPUTER-USE-PLAN.md), [Files](SiloUI-FILES.md), [network](SiloUI-NETWORK-PLAN.md), [terminal handoff](SiloUI-TERMINAL-HANDOFF.md), [editor and browser handoff](SiloUI-EDITOR-HANDOFF.md) |
 | Logs | [Retained history, search and export](SiloUI-LOGS.md), [sandbox failure reporting](SiloUI-FAILURE-REPORTING.md) |
 | Storage | [Workspace reclamation policy and verification](SiloUI-STORAGE-RECLAMATION.md), [disk discard regression](SiloUI-STORAGE-DISCARD-RESEARCH.md) |
-| Desktop | [Built-in desktop and computer use plan](SiloUI-COMPUTER-USE-PLAN.md): approved 2026-10-01, replaces optional desktops and Luda for new VMs. [Pinned ChatGPT app manager](SiloUI-CHATGPT-APP.md): host download, verification and extraction. [Detached desktop implementation plan](SiloUI-DETACHED-DESKTOP-IMPLEMENTATION-PLAN.md): current Selkies-backed rollout. Existing Kasm guests remain supported until explicit update. [Viewer direction](SiloUI-DESKTOP-VIEWER-DIRECTION.md) and [experience research](SiloUI-DESKTOP-EXPERIENCE-RESEARCH.md) record rationale and limits. |
+| Desktop | [Built-in desktop and computer use plan](SiloUI-COMPUTER-USE-PLAN.md): approved 2026-10-01, replaces optional desktops and Luda for new VMs. [Pinned ChatGPT app manager](SiloUI-CHATGPT-APP.md): host download, verification and extraction. [Detached desktop implementation record](SiloUI-DETACHED-DESKTOP-IMPLEMENTATION-PLAN.md): September Selkies rollout and its original design evidence. Existing Kasm guests remain supported until explicit update. [Viewer direction](SiloUI-DESKTOP-VIEWER-DIRECTION.md) and [experience research](SiloUI-DESKTOP-EXPERIENCE-RESEARCH.md) record rationale and limits. |
 | Desktop behavior | [Settings](SiloUI-SETTINGS.md), [native menus](SiloUI-NATIVE-MENUS.md), [status panel](SiloUI-STATUS-PANEL.md), [notifications](SiloUI-NOTIFICATIONS.md), [macOS title-bar alignment](SiloUI-TITLEBAR-ALIGNMENT.md), [glass material](SiloUI-GLASS-STUDY.md) |
+
+[Bundled application help](../app/SiloUI/docs/silo-help.html) describes the user-facing
+controls and workflows.
 
 ## Current research and design evidence
 
@@ -44,6 +47,7 @@ above for current behavior and build commands.
 - [Review remediation plan](SiloUI-REVIEW-REMEDIATION-PLAN.md): ledger of the 2026-09-29 review findings with landed-fix statuses and verification, plus the original work packages, phases, merge-queue orchestration and live verification sessions.
 - [Review remediation design notes](SiloUI-REVIEW-DESIGN-NOTES.md): Phase 0 decision records (options checked against upstream tools, recommended decision, implementation outline, owner questions) for the review items marked design.
 - [Codebase review, 2026-09-29](research/codebase-review-2026-09-29.md): ranked findings from a read-only review of the whole app — owner decisions, release blockers, security, data loss, stuck states, performance, UX, CI, tests and code health.
+- Follow-up review records, 2026-10-02: [release tooling](SiloUI-CODE-REVIEW-PASS-3-RELEASE-2026-10-02.md), [security](SiloUI-CODE-REVIEW-PASS-3-SECURITY-2026-10-02.md), [guest bridge](SiloUI-CODE-REVIEW-PASS-3-GUEST-BRIDGE-2026-10-02.md), and [computer use](SiloUI-CODE-REVIEW-PASS-3-COMPUTER-USE-2026-10-02.md). Findings and verification describe the recorded commits; compare HEAD before reopening an item.
 
 ### Runtime, checkpoints and network
 
