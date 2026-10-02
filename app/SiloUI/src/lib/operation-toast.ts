@@ -1,4 +1,4 @@
-import { createElement, useEffect, useRef, type ReactNode } from "react"
+import { createElement, useEffect, useRef, type ReactNode, type MouseEvent } from "react"
 import { toast } from "sonner"
 
 import { deliverNotice, type Notice, type NoticeSandbox } from "@/desktop/notices"
@@ -54,7 +54,7 @@ export function errorMessage(error: unknown): string {
  * A result-toast action. Always a label + handler so every notification renders the same
  * Sonner action button (never a hand-made `<Button>`, which would look different).
  */
-export type OperationAction = { label: string; onClick: () => void }
+export type OperationAction = { label: string; onClick: (event: MouseEvent<HTMLButtonElement>) => void }
 
 /**
  * Notifications about a specific sandbox, so they can be dismissed when it is deleted (their
@@ -77,7 +77,10 @@ function resultCallbacks(id: string, sandbox: string | string[] | undefined, onD
   return {
     onDismiss: close,
     onAutoClose: close,
-    action: action ? { ...action, onClick: () => { untag(); action.onClick() } } : undefined,
+    action: action ? { ...action, onClick: (event: MouseEvent<HTMLButtonElement>) => {
+      action.onClick(event)
+      if (!event.defaultPrevented) untag()
+    } } : undefined,
   }
 }
 
@@ -137,7 +140,11 @@ export function showOperationSuccess(id: string, title: string, options: Operati
 }
 
 export function showOperationFailure(id: string, title: string, options: OperationResultOptions & { retry?: () => void; tone?: "error" | "warning" } = {}) {
-  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss, options.action ?? (options.retry ? { label: "Retry", onClick: options.retry } : undefined))
+  const action = options.action ?? (options.retry ? {
+    label: "Retry",
+    onClick: (event: MouseEvent<HTMLButtonElement>) => { event.preventDefault(); options.retry?.() },
+  } : undefined)
+  const callbacks = resultCallbacks(id, options.sandbox, options.onDismiss, action)
   progressStarts.delete(id)
   const notify = options.tone === "warning" ? toast.warning : toast.error
   notify(title, {
