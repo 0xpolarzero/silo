@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest"
 
 import { ConnectComputerForm, RemoteComputersSettings } from "./remote-computers-settings"
@@ -170,4 +170,33 @@ describe("ChatGPT for Linux on each computer", () => {
     expect(within(row("Office Mac")).getByText("Unknown")).toBeVisible()
     expect(within(row("Office Mac")).queryByText(/Last known/)).not.toBeInTheDocument()
   })
+})
+
+
+it("stops subscription recovery timers when computer settings become inactive", async () => {
+  vi.useFakeTimers()
+  const listen = vi.fn().mockRejectedValue(new Error("Event bridge unavailable"))
+  const read = vi.fn().mockResolvedValue({ state: "downloading", receivedBytes: 1, totalBytes: 10 })
+  const backend: ComputerUseBackend = {
+    readDesktopState: vi.fn(), setApproval: vi.fn(), setup: vi.fn(), retry: vi.fn(),
+    chatGptStatus: read, listenStatus: listen,
+  }
+  const bridge = createComputerUseBridge(backend)
+  const settings = (active: boolean) => <ComputerUseProvider bridge={bridge}>
+    <RemoteComputersSettings source={source(undefined)} actions={actions()} active={active} />
+  </ComputerUseProvider>
+  const view = render(settings(true))
+  try {
+    await act(async () => vi.advanceTimersByTimeAsync(0))
+    expect(screen.getByRole("alert")).toHaveTextContent("Event bridge unavailable")
+    expect(screen.getByRole("button", { name: "Refresh ChatGPT for Linux status on This computer" })).toBeEnabled()
+    view.rerender(settings(false))
+    expect(vi.getTimerCount()).toBe(0)
+    await act(async () => vi.advanceTimersByTimeAsync(60_000))
+    expect(listen).toHaveBeenCalledOnce()
+    expect(read).toHaveBeenCalledOnce()
+    view.rerender(settings(true))
+    await act(async () => vi.advanceTimersByTimeAsync(0))
+    expect(listen).toHaveBeenCalledTimes(2)
+  } finally { view.unmount(); vi.useRealTimers() }
 })

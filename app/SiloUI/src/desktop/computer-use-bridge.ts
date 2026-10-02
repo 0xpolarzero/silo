@@ -36,6 +36,8 @@ export interface ChatGptAppSnapshot {
   error: string | null
   /** The status could not be read. Cleared by the next successful read or event. */
   loadError: string | null
+  /** Local status events are unavailable. Cleared when listener registration succeeds. */
+  subscriptionError: string | null
 }
 
 export interface ChatGptAppStore {
@@ -69,10 +71,11 @@ export function computerOfWorkspace(workspace: string | undefined): string | und
 }
 
 function createChatGptAppStore(backend: ComputerUseBackend, computer: string | undefined, pollMs = { busy: REMOTE_BUSY_POLL_MS, idle: REMOTE_IDLE_POLL_MS }): ChatGptAppStore {
-  let snapshot: ChatGptAppSnapshot = { status: null, busy: false, error: null, loadError: null }
+  let snapshot: ChatGptAppSnapshot = { status: null, busy: false, error: null, loadError: null, subscriptionError: null }
   const listeners = new Set<() => void>()
   let stopListening: (() => void) | null = null
   let timer: number | undefined
+  let onVisibilityChange: (() => void) | undefined
   // Every event bumps `events`; a read that began before one is older than it and is dropped.
   let events = 0
   let reads = 0
@@ -111,13 +114,40 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
   const start = () => {
     const mine = ++generation
     const begin = () => { void refresh().finally(() => { if (mine === generation) schedule(mine) }) }
-    backend.listenStatus(payload => { if (mine === generation && computer === undefined) receive(payload) })
-      .then(stop => {
-        if (mine !== generation) { stop(); return }
-        stopListening = stop
-        // Read only once events are being heard, so none can fall between the two.
-        begin()
-      }, () => { if (mine === generation) begin() })
+    let retryDelay = 1000
+    let registering = false
+    const register = () => {
+      if (mine !== generation || registering) return
+      registering = true
+      backend.listenStatus(payload => { if (mine === generation && computer === undefined) receive(payload) })
+        .then(stop => {
+          if (mine !== generation) { stop(); return }
+          registering = false
+          stopListening = stop
+          set({ subscriptionError: null })
+          // Read only once events are being heard, so none can fall between the two.
+          begin()
+        }, cause => {
+          if (mine !== generation) return
+          registering = false
+          if (computer === undefined) {
+            set({ subscriptionError: `Silo could not subscribe to ChatGPT for Linux updates: ${message(cause)}` })
+            if (document.visibilityState !== "hidden") {
+              timer = window.setTimeout(register, retryDelay)
+              retryDelay = Math.min(retryDelay * 2, 30_000)
+            }
+          }
+          begin()
+        })
+    }
+    if (computer === undefined) {
+      onVisibilityChange = () => {
+        window.clearTimeout(timer)
+        if (document.visibilityState !== "hidden" && snapshot.subscriptionError) register()
+      }
+      document.addEventListener("visibilitychange", onVisibilityChange)
+    }
+    register()
   }
   return {
     subscribe(listener) {
@@ -125,7 +155,15 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
       if (listeners.size === 1) start()
       return () => {
         listeners.delete(listener)
-        if (listeners.size === 0) { generation += 1; stopListening?.(); stopListening = null; window.clearTimeout(timer) }
+        if (listeners.size === 0) {
+          generation += 1
+          reads += 1
+          stopListening?.()
+          stopListening = null
+          window.clearTimeout(timer)
+          if (onVisibilityChange) document.removeEventListener("visibilitychange", onVisibilityChange)
+          onVisibilityChange = undefined
+        }
       }
     },
     getSnapshot: () => snapshot,
@@ -157,9 +195,9 @@ export const ComputerUseContext = createContext<ComputerUseBridge | null>(null)
 
 export function useComputerUseBridge() { return useContext(ComputerUseContext) }
 
-const emptySnapshot: ChatGptAppSnapshot = { status: null, busy: false, error: null, loadError: null }
+const emptySnapshot: ChatGptAppSnapshot = { status: null, busy: false, error: null, loadError: null, subscriptionError: null }
 const noopSubscribe = () => () => {}
 const emptyStore = () => emptySnapshot
-export function useChatGptApp(store: ChatGptAppStore | undefined): ChatGptAppSnapshot {
-  return useSyncExternalStore(store ? store.subscribe : noopSubscribe, store ? store.getSnapshot : emptyStore)
+export function useChatGptApp(store: ChatGptAppStore | undefined, active = true): ChatGptAppSnapshot {
+  return useSyncExternalStore(store && active ? store.subscribe : noopSubscribe, store ? store.getSnapshot : emptyStore)
 }

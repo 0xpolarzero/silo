@@ -56,10 +56,10 @@ function ManagementAddresses({ management }: { management: RemoteManagement }) {
 }
 
 /** One computer's ChatGPT for Linux status. Every computer downloads it by itself; a failure can be retried here. */
-function ChatGptAppRow({ name, computer, connected = true }: { name: string; computer?: string; connected?: boolean }) {
+function ChatGptAppRow({ name, computer, connected = true, active }: { name: string; computer?: string; connected?: boolean; active: boolean }) {
   const bridge = useComputerUseBridge()
   const store = connected ? bridge?.chatGptFor(computer) : undefined
-  const { status, busy, error, loadError } = useChatGptApp(store)
+  const { status, busy, error, loadError, subscriptionError } = useChatGptApp(store, active)
   const stale = Boolean(status) && Boolean(loadError)
   // An offline computer, or one whose Silo is older, simply has no status to show: unknown, never an error.
   const known = connected && status !== null && status.state !== "unknown"
@@ -74,33 +74,34 @@ function ChatGptAppRow({ name, computer, connected = true }: { name: string; com
       <p role={working ? "status" : undefined} className="text-xs text-muted-foreground">{lastKnown ? `Last known: ${text}` : text}{!connected && " · offline"}</p>
       {failed && <p role="alert" className="break-words text-xs text-destructive">{status.reason}{status.retryable ? " Silo tries again automatically." : ""}</p>}
       {error && <p role="alert" className="break-words text-xs text-destructive">{error}</p>}
+      {connected && subscriptionError && <p role="alert" className="break-words text-xs text-destructive">{subscriptionError}</p>}
       {connected && loadError && <p role="alert" className="break-words text-xs text-destructive">{stale ? `Could not refresh: ${loadError}` : loadError}</p>}
     </div>
     <div className="flex shrink-0 gap-1.5">
-    {connected && loadError && <Button size="xs" variant="outline" aria-label={`Refresh ChatGPT for Linux status on ${name}`} onClick={() => { void store?.refresh() }}>Refresh</Button>}
+    {connected && (loadError || subscriptionError) && <Button size="xs" variant="outline" aria-label={`Refresh ChatGPT for Linux status on ${name}`} onClick={() => { void store?.refresh() }}>Refresh</Button>}
     {failed && <Button size="xs" variant="outline" disabled={busy} aria-label={`Retry ChatGPT for Linux on ${name}`} onClick={() => { void store?.retry() }}>Retry</Button>}
     </div>
   </li>
 }
 
-function ChatGptAppSettings({ source }: { source: ApplicationSource }) {
+function ChatGptAppSettings({ source, active }: { source: ApplicationSource; active: boolean }) {
   if (!useComputerUseBridge()) return null
   return <section aria-label="ChatGPT for Linux" className="grid gap-3">
     <h2 className="text-xs font-medium">ChatGPT for Linux</h2>
     <div className="grid gap-3 rounded-lg border p-3">
       <p className="text-xs text-muted-foreground">{CHATGPT_DOWNLOAD_NOTE}</p>
       <ul aria-label="ChatGPT for Linux on each computer" className="grid gap-3">
-        <ChatGptAppRow name="This computer" />
-        {source.remoteComputers?.map(computer => <ChatGptAppRow key={computer.id} name={computer.name} computer={computer.id} connected={computer.connected} />)}
+        <ChatGptAppRow name="This computer" active={active} />
+        {source.remoteComputers?.map(computer => <ChatGptAppRow key={computer.id} name={computer.name} computer={computer.id} connected={computer.connected} active={active} />)}
       </ul>
     </div>
   </section>
 }
 
-export function RemoteComputersSettings({ source, actions }: { source: ApplicationSource; actions: ApplicationActions }) {
+export function RemoteComputersSettings({ source, actions, active = true }: { source: ApplicationSource; actions: ApplicationActions; active?: boolean }) {
   return <div className="grid gap-6">
     {actions.connectComputer && <ComputersSection source={source} actions={actions} />}
-    <ChatGptAppSettings source={source} />
+    <ChatGptAppSettings source={source} active={active} />
   </div>
 }
 
