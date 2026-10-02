@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Preserve log age tracking and cleanup when Linux runtime storage contains non-UTF-8 directory names.
+Keep log age tracking and cleanup working when Linux storage folders have unusual names.
