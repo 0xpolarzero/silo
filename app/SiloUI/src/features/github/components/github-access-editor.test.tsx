@@ -8,6 +8,22 @@ import type { ApplicationActions } from "@/features/application/model/applicatio
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 
 describe("GitHubAccessEditor", () => {
+  it.each([{ repositoryOptions: [] }, { repositoryOptions: ["acme/silo"] }])("excludes repository suggestions and GitHub authorization from the page Tab order (%j)", async ({ repositoryOptions }) => {
+    const user = userEvent.setup()
+    render(<GitHubAccessEditor
+      workspaces={[{ name: "dev" }]} connectionState="connected"
+      repositoryOptions={repositoryOptions} workspaceSelections={{}} workspaceIdentities={{}}
+      currentHostGitIdentity={null} onConnect={vi.fn()}
+      onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
+      onManageRepositories={vi.fn()}
+    />)
+    await user.click(screen.getByRole("combobox", { name: "Add repository to dev" }))
+    expect(screen.getAllByRole("option")).toHaveLength(repositoryOptions.length + 1)
+    await user.tab()
+    expect(document.activeElement).toBe(document.body)
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+  })
+
   it("reveals arrow-key repository selections and the authorization action while keeping input focus", async () => {
     const user = userEvent.setup()
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
