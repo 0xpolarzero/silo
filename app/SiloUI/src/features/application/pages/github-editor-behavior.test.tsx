@@ -397,3 +397,70 @@ it("keeps failed sign-in retry on Connect GitHub instead of repository refresh",
   expect(github.getByRole("button", { name: "Connect GitHub" })).toBeEnabled()
   expect(github.queryByRole("button", { name: "Retry repositories" })).not.toBeInTheDocument()
 })
+
+
+it.each(["selected", "all"] as const)("retries rejected repository intent after refresh from %s mode", async (repositoryMode) => {
+  const source = applicationSourceForScenario("running", "connected")
+  source.github.policyRevision = 10
+  source.github.workspaces = source.github.workspaces!.map((policy) => ({ ...policy, repositoryMode }))
+  const application = renderGitHub("running", source)
+  let resolveFirst!: () => void
+  let rejectSecond!: (cause: Error) => void
+  vi.mocked(application.actions.saveGitHubConfiguration!)
+    .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveFirst = resolve }))
+    .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectSecond = reject }))
+
+  const toggle = screen.getByRole("checkbox", { name: "All repositories for dev" })
+  await application.user.click(toggle)
+  await application.user.click(toggle)
+  const first = vi.mocked(application.actions.saveGitHubConfiguration!).mock.calls[0][0]
+  await act(async () => {
+    resolveFirst()
+    rejectSecond(new Error("GitHub settings changed. Try again."))
+  })
+  expect(await screen.findByRole("button", { name: "Retry" })).toBeVisible()
+
+  const refreshed = structuredClone(source)
+  refreshed.github.policyRevision = 11
+  refreshed.github.workspaces = source.github.workspaces!.map((policy) => first.workspaces.find((saved) => saved.workspace === policy.workspace) ?? policy)
+  application.rerender(<GitHubPanel source={refreshed} actions={application.actions} />)
+  await application.user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(application.actions.saveGitHubConfiguration).toHaveBeenLastCalledWith(expect.objectContaining({
+    baseRevision: 11,
+    workspaces: [expect.objectContaining({ workspace: "dev", repositoryMode })],
+  }))
+})
+
+it("retries interleaved repository and identity intents after an authoritative refresh without submitting unfinished text", async () => {
+  const source = applicationSourceForScenario("running", "connected")
+  source.github.policyRevision = 10
+  const application = renderGitHub("running", source)
+  vi.mocked(application.actions.saveGitHubConfiguration!)
+    .mockImplementationOnce(() => new Promise<void>(() => {}))
+    .mockRejectedValueOnce(new Error("GitHub settings changed. Try again."))
+  await application.user.click(screen.getByRole("button", { name: "Remove acme/silo from dev" }))
+  const name = screen.getByLabelText("Git name for playgrounds")
+  await application.user.clear(name)
+  await application.user.type(name, "Submitted Author")
+  await application.user.tab()
+  expect(await screen.findAllByRole("button", { name: "Retry" })).toHaveLength(2)
+  const submitted = vi.mocked(application.actions.saveGitHubConfiguration!).mock.calls[1][0]
+  await application.user.clear(name)
+  await application.user.type(name, "Unfinished Author")
+
+  const refreshed = structuredClone(source)
+  refreshed.github.policyRevision = 11
+  refreshed.github.workspaces = refreshed.github.workspaces!.map((policy) => ({
+    ...policy,
+    identity: { ...policy.identity, name: "Saved Author" },
+  }))
+  application.rerender(<GitHubPanel source={refreshed} actions={application.actions} />)
+  expect(screen.getByLabelText("Git name for playgrounds")).toHaveValue("Unfinished Author")
+  // Keep the unfinished input focused so retry does not submit it through blur.
+  fireEvent.click(screen.getAllByRole("button", { name: "Retry" })[0])
+  await waitFor(() => expect(application.actions.saveGitHubConfiguration).toHaveBeenCalledTimes(3))
+  expect(application.actions.saveGitHubConfiguration).toHaveBeenLastCalledWith({
+    ...submitted,
+    baseRevision: 11,
+  })
+})
