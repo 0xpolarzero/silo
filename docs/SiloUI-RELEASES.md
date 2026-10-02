@@ -276,6 +276,11 @@ npm --prefix app/SiloUI run test:release
 python3 -m unittest discover -s app/SiloUI/scripts -p 'test_*.py'
 ```
 
+`test:release` uses [Node's quoted recursive test glob](https://nodejs.org/docs/latest-v24.x/api/test.html#running-tests-from-the-command-line)
+`"scripts/**/*.test.mjs"`, so new script suites run without updating a filename
+list. `scripts/test_ci_coverage.py` verifies discovery and failure propagation
+with disposable new root and nested suites.
+
 Continuous integration runs the same checks. `.github/workflows/ci.yml` runs on
 every push to `main` and every pull request: frontend, script, website and demo
 checks; a blocking [Rust formatting check](https://github.com/rust-lang/rustfmt#verifying-code-is-formatted)
