@@ -115,3 +115,20 @@ it("permits removing the last local VM without affecting connected computers", a
   await waitFor(() => expect(onMachinesChange).toHaveBeenCalledWith([], [machine]))
   expect(actions.deleteRemoteMachine).not.toHaveBeenCalled()
 })
+
+it("keeps a local edit scoped to local machines when a connected computer is removed", async () => {
+  const { source, actions, onMachinesChange, user, view } = setup()
+  source.workspaces.forEach(workspace => { workspace.state = "stopped" })
+  view.rerender(<OverviewPage source={{ ...source }} actions={actions} onMachinesChange={onMachinesChange} />)
+  const local = source.workspaces.filter(workspace => !workspace.computer).map(workspace => workspace.machine)
+  const machine = local[0]!
+  const row = within(document.querySelector<HTMLElement>(`li[data-machine-id="${machine.id}"]`)!)
+  await user.click(row.getByRole("button", { name: `More actions for ${machine.name}` }))
+  await user.click(screen.getByRole("menuitem", { name: `Edit ${machine.name}` }))
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
+  view.rerender(<OverviewPage source={{ ...source, workspaces: source.workspaces.filter(workspace => !workspace.computer), remoteComputers: [] }}
+    actions={actions} onMachinesChange={onMachinesChange} />)
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(onMachinesChange).toHaveBeenCalledExactlyOnceWith(local.map(item => item.id === machine.id ? { ...item, cpus: 4 } : item), local)
+  expect(actions.saveRemoteMachine).not.toHaveBeenCalled()
+})
