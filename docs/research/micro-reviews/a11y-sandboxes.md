@@ -26,3 +26,12 @@ Scope: `app/SiloUI/src/features/sandboxes/`. Verification uses deterministic fro
 - Cause: the editor focused its first field synchronously, before Radix FocusScope's deferred unmount restoration (`@radix-ui/react-focus-scope/dist/index.mjs`, installed dependency).
 - Fix: schedule the initial editor focus for the next animation frame, with cancellation on unmount, matching the existing form-popover pattern.
 - Coverage: both row-menu Edit and Duplicate end with focus on Sandbox name.
+
+## Saving progress has no live announcement
+
+- Trigger: Save settings while the native commit remains pending.
+- Evidence: the waiting-state regression failed because there was no status region. Only the disabled Save button changed its text to Saving….
+- Consequence: screen readers have no live status message for the pending save while editing controls are unavailable.
+- Fix: keep an initially empty polite status region mounted and update it with the sandbox name while saving.
+- Coverage: the real MachineList commit path with an unresolved synthetic promise exposes Saving and locks its fields.
+- Primary source: [W3C status messages guidance](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html), including waiting states and non-displayed contextual text.
