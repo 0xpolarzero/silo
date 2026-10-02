@@ -285,6 +285,9 @@ export function useMachineEditing({
   // in its own dialog, so it captures a fresh baseline and awaits the deletion here, letting
   // failures propagate to the dialog instead of the inline notice.
   async function deleteMachineNow(machine: SetupMachineConfiguration) {
+    if (disabled) throw new Error(interactionDisabledReason)
+    const blocked = validateOperation?.(machine, false, getComputerId?.(machine) ?? "")
+    if (blocked) throw new Error(blocked)
     captureBaseline()
     const baseline = baselineRef.current ?? undefined
     if (onDeleteMachine) { await onDeleteMachine(machine, baseline); return }
