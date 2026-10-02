@@ -94,6 +94,11 @@ impl RuntimeRunner for FailedCaptureRunner {
                 stderr: String::new(),
             });
         }
+        if args[0] == "stop" && self.failure == "stop-running" {
+            self.runtime.calls.lock().unwrap().push(args.to_vec());
+            *self.runtime.state.lock().unwrap() = "Running";
+            return Err(error("Stop failed after the source resumed."));
+        }
         self.runtime.run(paths, args, timeout)
     }
 }
@@ -219,7 +224,9 @@ fn failed_source_inspection_preserves_recovery_for_relaunch() {
     assert!(load(&paths, ID).unwrap().inflight_checkpoint.is_some());
     let retry = FailedCaptureRunner::new("error", "resume");
     *retry.runtime.state.lock().unwrap() = "Paused";
-    recover_interrupted(&retry, &paths).unwrap();
+    let recovery = recover_interrupted(&retry, &paths).unwrap();
+    assert!(recovery.unresolved.is_empty());
+    assert!(recovery.cleanup_error.is_none());
     assert_eq!(*retry.runtime.state.lock().unwrap(), "Stopped");
     let record = load(&paths, ID).unwrap();
     assert!(record.inflight_checkpoint.is_none());
@@ -283,4 +290,37 @@ fn failed_full_capture_never_recovers_a_replacement_vm() {
         .unwrap()
         .iter()
         .all(|args| { !matches!(args[0].as_str(), "resume" | "stop" | "remove") }));
+}
+
+#[test]
+fn failed_paused_source_recovery_is_reported_for_its_owner_and_keeps_its_journal() {
+    let _test_state = crate::test_support::global_state();
+    let directory = tempfile::tempdir().unwrap();
+    let paths = restore_fixture(&directory, None);
+    let runner = FailedCaptureRunner::new("error", "resume|stop");
+    capture_with(&runner, &paths, ID, "Failed", "manual").unwrap_err();
+    let recovery = recover_interrupted(&runner, &paths).unwrap();
+    assert_eq!(recovery.unresolved.len(), 1);
+    let reported = recovery.unresolved[ID].to_string();
+    assert!(
+        reported.contains("resume failed") && reported.contains("stop failed"),
+        "{reported}"
+    );
+    assert!(load(&paths, ID).unwrap().inflight_checkpoint.is_some());
+    assert_eq!(*runner.runtime.state.lock().unwrap(), "Paused");
+}
+
+#[test]
+fn recovery_reports_the_verified_state_when_a_failed_stop_finds_a_running_source() {
+    let _test_state = crate::test_support::global_state();
+    let directory = tempfile::tempdir().unwrap();
+    let paths = restore_fixture(&directory, None);
+    let runner = FailedCaptureRunner::new("stop-running", "resume");
+    let reported = capture_with(&runner, &paths, ID, "Failed", "manual")
+        .unwrap_err()
+        .to_string();
+    assert_eq!(*runner.runtime.state.lock().unwrap(), "Running");
+    assert!(reported.contains("now Running"), "{reported}");
+    assert!(!reported.contains("Start it to continue"), "{reported}");
+    assert!(load(&paths, ID).unwrap().inflight_checkpoint.is_none());
 }

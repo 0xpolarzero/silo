@@ -1,3 +1,5 @@
+import { useLifecycleToasts } from "./model/use-lifecycle-toasts"
+import { useRepositoryPushToasts } from "./components/use-repository-push-toasts"
 import { workspaceTarget } from "./model/remote-computers"
 import { useBackendNotices } from "@/features/application/model/use-backend-notices"
 import { useUpdates } from "@/features/updates/update-store"
@@ -141,12 +143,13 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     ...(settings.browserPath && { browserPath: settings.browserPath }),
   }
   const activeRuntimeRepair = source.runtimeRepair
-  const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute)
+  const initialWorkspaceId = initialRoute?.workspace ? resolveSandboxId(initialRoute.workspace) : undefined
+  const navigation = useApplicationNavigation(Boolean(activeRuntimeRepair), initialRoute && { ...initialRoute, workspace: initialWorkspaceId })
   const { tab: activeTab, workspaceSection, settingsSection } = navigation
   const workspaces = source.workspaces
   const [selectedWorkspaceIds, setSelectedWorkspaceIds] = useState<Set<string>>(() => new Set(
     source.workspaces
-      .filter(({ machine }) => machine.name === initialRoute?.workspace || machine.id === initialRoute?.workspace)
+      .filter(({ machine }) => machine.id === initialWorkspaceId)
       .map(({ machine }) => machine.id),
   ))
   const [logQuery, setLogQuery] = useState("")
@@ -234,8 +237,21 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     setRepositoryPushOperations((current) => current.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath))
   }, [actions])
 
+  useLifecycleToasts(applicationSource, actions)
+  useRepositoryPushToasts(repositoryPushOperations, {
+    onPush: pushRepository,
+    onDismiss: dismissRepositoryPush,
+    queue: source.operationQueue,
+    onCancel: actions.cancelOperation,
+    resolveSandbox: target => {
+      const machine = workspaces.find(workspace => workspaceTarget(workspace) === target)?.machine
+      return machine ? { id: machine.id, name: machine.name } : undefined
+    },
+  })
+
   function resolveSandboxId(value: string) {
-    return source.workspaces.find((workspace) => workspace.machine.id === value || workspace.machine.name === value || workspaceTarget(workspace) === value)?.machine.id ?? value
+    return (source.workspaces.find((workspace) => workspace.machine.id === value)
+      ?? source.workspaces.find((workspace) => workspaceTarget(workspace) === value))?.machine.id ?? value
   }
 
   // History never keeps a page for a sandbox that no longer exists (deleted, or gone after a
@@ -243,8 +259,8 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
   const { forgetSandboxes } = navigation
   useEffect(() => {
     const known = new Set<string>()
-    for (const workspace of source.workspaces) known.add(workspace.machine.id).add(workspace.machine.name).add(workspaceTarget(workspace))
-    for (const machine of sandboxConfigurationOperation?.candidate.machines ?? []) known.add(machine.id).add(machine.name)
+    for (const workspace of source.workspaces) known.add(workspace.machine.id)
+    for (const machine of sandboxConfigurationOperation?.candidate.machines ?? []) known.add(machine.id)
     forgetSandboxes((workspace) => known.has(workspace))
   }, [source.workspaces, sandboxConfigurationOperation, forgetSandboxes])
 
@@ -254,7 +270,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     if (route.workspace && !wantsSection) { navigation.openSandbox(resolveSandboxId(route.workspace), route.sandboxTab); return }
     if (route.workspace || wantsSection) {
       setSelectedWorkspaceIds(new Set(source.workspaces
-        .filter(({ machine }) => machine.id === route.workspace || machine.name === route.workspace)
+        .filter(({ machine }) => route.workspace !== undefined && machine.id === resolveSandboxId(route.workspace))
         .map(({ machine }) => machine.id)))
     }
     if (route.workspaceSection || route.workspace) navigation.selectWorkspaceSection(route.workspaceSection ?? "overview")
@@ -350,7 +366,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       <QuitRequestConfirmation connect={connectQuitConfirmation} />
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)}
+          <OverviewPage notifyOperations={false} active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)}
             sandboxRequest={sandboxRequest} onSandboxRequestHandled={(token) => setSandboxRequest(current => current?.token === token ? undefined : current)} onExportSandbox={transfer.exportSandbox} onImportSandbox={openImport} importPopover={transfer.importPopover} backup={backup} source={applicationSource}
             selectedSandboxId={navigation.workspace ? resolveSandboxId(navigation.workspace) : null}
             sandboxTab={navigation.sandboxTab}
@@ -365,6 +381,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
           } }} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
+            notifyOperations={false}
             source={applicationSource}
             onSectionChange={navigation.selectWorkspaceSection}
             network={source.network}
@@ -403,7 +420,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
         <div hidden={settingsSection !== "general"}>
           <GeneralPage source={source} applicationPreferences={applicationPreferences} onApplicationPreferencesChange={changeApplicationPreferences} reduceMotion={reduceMotion} onReduceMotionChange={(enabled) => { void updateSettings({ reduceMotion: enabled }) }} />
         </div>
-        <div hidden={settingsSection !== "computers"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><RemoteComputersSettings source={source} actions={actions} /></div>
+        <div hidden={settingsSection !== "computers"} className="mx-auto w-full max-w-4xl px-4 py-5 sm:px-6 sm:py-6"><RemoteComputersSettings source={source} actions={actions} active={visibleTab === "settings" && settingsSection === "computers"} /></div>
         <div hidden={settingsSection !== "notifications"}><NotificationsPage /></div>
       </section>
     </ApplicationShell>

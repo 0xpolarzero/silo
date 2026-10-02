@@ -3,7 +3,7 @@ import { ConnectionIcon } from "@/components/connection-icon"
 import { ActionsMenu } from "@/components/actions-menu"
 import { ConfirmPopover } from "@/components/confirm-popover"
 import { useSshAccessRefresh } from "./use-ssh-access-refresh"
-import { useEffect, useId, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { Check, ChevronDown, Download, Pencil, Terminal, TriangleAlert } from "lucide-react"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Button } from "@/components/ui/button"
@@ -36,6 +36,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
   stale = stale || Boolean(access?.unavailable)
   const id = useId()
   const [busy, setBusy] = useState(false)
+  const pending = useRef(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
   useEffect(() => {
@@ -49,22 +50,24 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
   const external = access?.bindAddress !== "127.0.0.1"
   const blocked = readOnly || busy || !save || stale
   async function change(patch: Partial<SshAccessRequest>) {
-    if (!access || !save || blocked) return false
+    if (!access || !save || blocked || pending.current) return false
+    pending.current = true
     setBusy(true); setError(null); setCopied(null)
     try {
       await save({ workspace: access.workspace, enabled: access.enabled, port: access.port, bindAddress: access.bindAddress, keys: access.keys, ...patch })
       return true
     } catch (cause) { showActionFailure("SSH settings not saved", cause, () => { void change(patch) }, { native: false }); return false }
-    finally { setBusy(false) }
+    finally { pending.current = false; setBusy(false) }
   }
   async function connect(download: boolean, network: boolean) {
-    if (!access || !connection || blocked) return
+    if (!access || !connection || blocked || pending.current) return
+    pending.current = true
     setBusy(true); setError(null); setCopied(null)
     try {
       const command = await connection(access.workspace, download, network)
       if (!download && command) { await navigator.clipboard.writeText(command); setCopied(network ? "network" : "local") }
     } catch (cause) { showActionFailure(download ? "SSH key file not saved" : "SSH command not copied", cause, () => { void connect(download, network) }, { native: false }) }
-    finally { setBusy(false) }
+    finally { pending.current = false; setBusy(false) }
   }
   const networkAddresses = access?.addresses.filter(value => value !== "127.0.0.1") ?? []
   const badge = stale ? "SSH status unavailable" : access ? statuses[access.state] : "SSH unavailable"

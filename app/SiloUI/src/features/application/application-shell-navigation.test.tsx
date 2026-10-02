@@ -545,3 +545,75 @@ it("keeps an unsaved sandbox edit while visiting another section (I-37)", async 
   await user.click(sandboxSections.getByRole("button", { name: "All sandboxes" }))
   expect(within(appPanel("Sandboxes")).getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
 })
+
+
+it.each(["local", "office", "lab"])("notification routes keep the next action on %s despite duplicate names and a rename", async (owner) => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const local = source.workspaces[0]
+  const vmId = local.machine.id
+  source.remoteComputers = ["office", "lab"].map(id => ({ id, name: id, address: `user@${id}`, connected: true }))
+  for (const computer of source.remoteComputers) {
+    source.workspaces.push({
+      ...structuredClone(local),
+      computer: { ...computer, vmId },
+      machine: { ...local.machine, id: `silo-remote:${computer.id}:${vmId}` },
+    })
+  }
+  const target = owner === "local" ? vmId : `silo-remote:${owner}:${vmId}`
+  const openTerminal = vi.fn()
+  const user = userEvent.setup()
+  const { rerender } = render(<ApplicationPreview source={source} actions={{ openTerminal }} initialRoute={{ workspace: target }} />)
+  await user.click(screen.getByRole("button", { name: /^Open .* in Terminal$/ }))
+  expect(openTerminal).toHaveBeenLastCalledWith(owner === "local" ? local.machine.name : target)
+  const renamed = structuredClone(source)
+  renamed.workspaces.find(workspace => workspace.machine.id === target)!.machine.name = "renamed"
+  rerender(<ApplicationPreview source={renamed} actions={{ openTerminal }} initialRoute={{ workspace: target }} />)
+  await user.click(screen.getByRole("button", { name: /^Open .* in Terminal$/ }))
+  expect(openTerminal).toHaveBeenLastCalledWith(owner === "local" ? "renamed" : target)
+})
+
+
+it("legacy local-name routes select only the local sandbox's logs", async () => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const local = source.workspaces[0]
+  source.workspaces = [{
+    ...structuredClone(local),
+    machine: { ...local.machine, id: `silo-remote:office:${local.machine.id}` },
+    computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
+  }, local]
+  const queryLogs = vi.fn(async (query: LogQuery) => fixtureLogPage(query.computerId ? source.workspaces[0] : local, query))
+  render(<ApplicationPreview source={source} actions={{ queryLogs }} initialRoute={{ workspace: local.machine.name, workspaceSection: "logs" }} />)
+  await screen.findByText(/Showing .* matching records/)
+  expect(queryLogs).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ sandboxId: local.machine.id }))
+  expect(queryLogs.mock.calls[0][0].computerId).toBeUndefined()
+})
+
+it("legacy local-name overview routes keep actions on the local computer", async () => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const local = source.workspaces[0]
+  source.workspaces = [{
+    ...structuredClone(local),
+    machine: { ...local.machine, id: `silo-remote:office:${local.machine.id}` },
+    computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true },
+  }, local]
+  const openTerminal = vi.fn()
+  const user = userEvent.setup()
+  render(<ApplicationPreview source={source} actions={{ openTerminal }} initialRoute={{ workspace: local.machine.name }} />)
+  await user.click(screen.getByRole("button", { name: /^Open .* in Terminal$/ }))
+  expect(openTerminal).toHaveBeenCalledExactlyOnceWith(local.machine.name)
+})
+
+
+it("a recreated sandbox cannot inherit a legacy route in navigation history", async () => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const local = source.workspaces[0]
+  source.workspaces = [local]
+  const user = userEvent.setup()
+  const { rerender } = render(<ApplicationPreview source={source} initialRoute={{ workspace: local.machine.name }} />)
+  const sections = within(within(appNavigation()).getByRole("group", { name: "Sandbox sections" }))
+  await user.click(sections.getByRole("button", { name: "Files" }))
+  rerender(<ApplicationPreview source={{ ...source, workspaces: [{ ...local, machine: { ...local.machine, id: "replacement-vm" } }] }} />)
+  await user.click(screen.getByRole("button", { name: "Go back" }))
+  expect(within(appPanel("Sandboxes")).getByRole("list", { name: "Configured sandboxes" })).toBeVisible()
+  expect(screen.getByRole("button", { name: "Go back" })).toBeDisabled()
+})

@@ -63,6 +63,8 @@ function ProductionContent({ source, dependencyStore, statusPanel = false }: Pro
     setPreparingUpdate(true)
     try {
       await settingsStore.flush()
+      const { saveError, writeProtected } = settingsStore.getSnapshot()
+      if (saveError || writeProtected) throw new Error(saveError ?? "Settings are protected from writes")
       return await desktopUpdateBackend.install(stopSandboxes)
     } finally {
       setPreparingUpdate(false)

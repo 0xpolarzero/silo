@@ -56,6 +56,72 @@ it("keeps a transport failure visible when subsequent guest health checks succee
   expect(screen.getByRole("alert")).toHaveTextContent("Desktop connection unavailable")
 })
 
+it("backs off failed desktop health reads, resets after recovery, and stops on close", async () => {
+  vi.useFakeTimers()
+  let reachable = false
+  invoke.mockImplementation(async command => {
+    if (command === "read_desktop_state") {
+      if (!reachable) throw new Error("Computer disconnected")
+      return { installed: true, autoStart: true, state: "vm-stopped" }
+    }
+  })
+  const reads = () => invoke.mock.calls.filter(([command]) => command === "read_desktop_state").length
+  const advance = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms) }) }
+  const view = render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
+  try {
+    await advance(0)
+    expect(reads()).toBe(1)
+    for (const delay of [10000, 20000, 30000, 30000]) {
+      const calls = reads()
+      await advance(delay - 1)
+      expect(reads()).toBe(calls)
+      await advance(1)
+      expect(reads()).toBe(calls + 1)
+    }
+    reachable = true
+    await advance(30000)
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    const calls = reads()
+    await advance(4999)
+    expect(reads()).toBe(calls)
+    await advance(1)
+    expect(reads()).toBe(calls + 1)
+    view.unmount()
+    await advance(60000)
+    expect(reads()).toBe(calls + 1)
+  } finally { view.unmount(); vi.useRealTimers() }
+})
+
+it("reattaches a retired transport when the computer recovers with unchanged guest state", async () => {
+  vi.useFakeTimers()
+  let reachable = true
+  let connected = false
+  invoke.mockImplementation(async command => {
+    if (command === "read_desktop_state") {
+      if (!reachable) throw new Error("Computer disconnected")
+      return { installed: true, autoStart: true, state: "running", sessionState: "running", streamState: "running" }
+    }
+    if (command === "desktop_viewer_attach") connected = true
+    if (command === "desktop_viewer_detach") connected = false
+  })
+  const view = render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(connected).toBe(true)
+    // The owner poll closes the backend transport without changing guest state.
+    reachable = false
+    connected = false
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.getByRole("alert")).toHaveTextContent("Computer disconnected")
+    expect(connected).toBe(false)
+    reachable = true
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(connected).toBe(true)
+    expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
+  } finally { view.unmount(); vi.useRealTimers() }
+})
+
 
 it("finishes an in-flight attachment before detaching on close", async () => {
   let completeAttachment: (() => void) | undefined
@@ -277,4 +343,27 @@ it("runs explicit LCU setup in a live session even when its display stream faile
   expect(invoke.mock.calls.filter(([command]) => command === "desktop_viewer_attach")).toHaveLength(attachmentCount)
   expect(invoke.mock.calls.some(([command, action]) => command === "desktop_action" &&
     ["restart", "restart-streamer", "start"].includes(action?.action))).toBe(false)
+})
+
+it("pauses viewer health polling when hidden and refreshes once on return", async () => {
+  vi.useFakeTimers()
+  const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
+  invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: true, state: "vm-stopped" } : undefined)
+  const view = render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  const reads = () => invoke.mock.calls.filter(([command]) => command === "read_desktop_state")
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(reads()).toHaveLength(0)
+    visible.mockReturnValue("visible")
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); await vi.advanceTimersByTimeAsync(0) })
+    expect(reads()).toHaveLength(1)
+    visible.mockReturnValue("hidden")
+    act(() => { document.dispatchEvent(new Event("visibilitychange")) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(reads()).toHaveLength(1)
+    view.unmount()
+    visible.mockReturnValue("visible")
+    act(() => { document.dispatchEvent(new Event("visibilitychange")) })
+    expect(reads()).toHaveLength(1)
+  } finally { view.unmount(); vi.useRealTimers() }
 })

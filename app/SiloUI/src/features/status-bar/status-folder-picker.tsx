@@ -26,6 +26,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
   const [store] = useState(() => createDirectoryStore(listDirectory))
   useLayoutEffect(() => { store.setLoader(listDirectory) }, [store, listDirectory])
   const target = workspaceTarget(workspace)
+  useEffect(() => () => store.invalidateWorkspace(target), [store, target])
   const path = ["/workspace", ...segments].join("/")
   const key = directoryKey(target, path)
   const subscribe = useCallback((listener: () => void) => store.subscribe(key, listener), [store, key])
@@ -66,7 +67,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
       <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5">
         <Button ref={back} variant="ghost" size="icon-xs" aria-label="Back to sandboxes" onClick={onBack}><ArrowLeft /></Button>
         <div className="min-w-0">
-          <h2 className="truncate text-[13px] font-medium">{workspace.machine.name} folders</h2>
+          <h2 className="truncate text-[13px] font-medium" title={`${workspace.machine.name} folders`}>{workspace.machine.name} folders</h2>
           <p className="text-[11px] text-muted-foreground">Choose a folder to open in {editor}</p>
         </div>
       </header>
@@ -83,7 +84,7 @@ export function StatusFolderPicker({ workspace, editor, onBack, onOpen, listDire
               <li key={entry.name}>
                 <button type="button" className="flex min-h-9 w-full items-center gap-2 px-2.5 text-left text-xs hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" onClick={() => navigate([...segments, entry.name])}>
                   <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate">{visibleText(entry.name)}</span>
+                  <span className="min-w-0 flex-1 truncate" title={visibleText(entry.name)}>{visibleText(entry.name)}</span>
                   <ChevronRight className="size-3 shrink-0 text-muted-foreground" aria-hidden="true" />
                 </button>
               </li>

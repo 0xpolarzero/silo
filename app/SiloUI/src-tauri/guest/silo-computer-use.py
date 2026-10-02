@@ -93,9 +93,14 @@ def write_json(path, value):
         with os.fdopen(fd, 'w') as output:
             output.write(json.dumps(value, sort_keys=True) + '\n')
             output.flush()
+            os.fchmod(output.fileno(), 0o644)
             os.fsync(output.fileno())
-        os.chmod(temporary, 0o644)
         os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         try:
             os.unlink(temporary)
@@ -532,19 +537,24 @@ def installed_for(report, pinned):
 def update(pinned, mode, force, boot):
     """One run for `mode`; returns its approval report (`report`)."""
     existing = read_json(RECEIPT)
-    if (not force and existing and existing.get('state') == 'ready'
-            and matches(existing, pinned, mode) and Path(lcu_command('lcu')).exists()):
+    configured = (not force and existing and existing.get('state') == 'ready'
+                  and matches(existing, pinned, mode) and Path(lcu_command('lcu')).exists())
+    if configured and not boot:
         # The receipt shows `lcu setup` applied this mode completely.
         return report(mode, 'applied')
     write_receipt(pinned, mode, 'installing')
-    # Set once `lcu setup` ran: later failures (the readiness check) do not change it.
+    # Set once approval is confirmed: later failures (the readiness check) do not change it.
     result = None
     try:
         STAGE.mkdir(mode=0o700, parents=True, exist_ok=True)
         installed = lcu_status() if Path(lcu_command('lcu')).exists() else None
         if not installed_for(installed, pinned):
             install(pinned, STAGE)
-        outcome, agents, reason = setup(mode)
+            configured = False
+        if configured:
+            outcome, agents, reason = 'applied', existing.get('agents', []), None
+        else:
+            outcome, agents, reason = setup(mode)
         if outcome == 'failed':
             raise Failure(reason)
         result = report(mode, outcome, reason)
@@ -552,7 +562,7 @@ def update(pinned, mode, force, boot):
         if not doctor(SESSION_WAIT_BOOT if boot else SESSION_WAIT, repair=boot):
             raise Failure('doctor-failed')
         write_receipt(pinned, mode, 'ready', readiness='ready', agents=agents,
-                      approvalOutcome=outcome, **digested)
+                      approvalOutcome=outcome, verifiedAt=now(), **digested)
     except Failure as failure:
         log(f'computer use setup failed: {failure.reason}: {failure}')
         result = result or report(mode, 'failed', failure.reason)

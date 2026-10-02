@@ -4699,6 +4699,25 @@ pub(crate) fn ensure_managed(inspected: &InspectedSandbox) -> Result<(), Runtime
     Ok(())
 }
 
+fn ensure_machine_identity(
+    machine: &MachineConfiguration,
+    inspected: &InspectedSandbox,
+) -> Result<(), RuntimeError> {
+    ensure_managed(inspected)?;
+    if inspected.name != machine.name()
+        || inspected
+            .config
+            .pointer("/labels/silo.machine-id")
+            .and_then(Value::as_str)
+            != Some(machine.id())
+    {
+        return Err(RuntimeError::Invalid(
+            "The sandbox identity changed. No settings were changed on the replacement.".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn vm_workspace(
     paths: &RuntimePaths,
     machine: MachineConfiguration,
@@ -5115,7 +5134,10 @@ fn apply_whole_configuration_with_progress(
             if *old != machine {
                 validate_machine_update(old, machine)?;
                 if machine.is_vm() {
-                    ensure_managed(&inspect_workspace(runner, paths, machine.name())?)?;
+                    ensure_machine_identity(
+                        machine,
+                        &inspect_workspace(runner, paths, machine.name())?,
+                    )?;
                 }
             }
         }
@@ -5644,6 +5666,7 @@ fn update_machine(
     // Renames, storage resizes, VM/SSH switches and desktop removal are rejected here.
     validate_machine_update(previous, machine)?;
     if crate::desktop::only_desktop_changed(previous, machine) {
+        ensure_machine_identity(previous, &inspect_workspace(runner, paths, machine.name())?)?;
         return crate::desktop::configure_with(
             runner,
             paths,
@@ -5668,7 +5691,7 @@ fn update_machine(
             },
         ) => {
             let inspected = inspect_workspace(runner, paths, name)?;
-            ensure_managed(&inspected)?;
+            ensure_machine_identity(previous, &inspected)?;
             if inspected.status == "Running" {
                 runner.run(
                     paths,
@@ -5676,7 +5699,7 @@ fn update_machine(
                     STOP_TIMEOUT,
                 )?;
                 let stopped = inspect_workspace(runner, paths, name)?;
-                ensure_managed(&stopped)?;
+                ensure_machine_identity(previous, &stopped)?;
                 if stopped.status != "Stopped" {
                     return Err(RuntimeError::Invalid(format!(
                         "{name} did not stop. Its settings were not changed. Retry after checking its state."
@@ -6834,14 +6857,15 @@ esac
         }
         let runner = StubRunner::successful_json(vec![
             inspect(&paths(&dir), "Running"),
+            inspect(&paths(&dir), "Running"),
             json!(1),
             json!({}),
         ]);
         update_machine(&runner, &paths(&dir), &previous, &desired).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls.len(), 3);
-        assert_eq!(calls[2][0], "exec");
-        assert!(calls[2]
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[3][0], "exec");
+        assert!(calls[3]
             .last()
             .unwrap()
             .contains("silo-desktop autostart true"));
@@ -10137,6 +10161,107 @@ exit 9
 
         assert!(error.to_string().contains("cannot be resized in place"));
         assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn edit_rejects_a_replacement_before_any_configuration_side_effect() {
+        let _test_state = crate::test_support::global_state();
+        for status in ["Running", "Stopped"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let previous = request(vec![vm()]);
+            write_metadata(&paths.metadata, &previous).unwrap();
+            let mut changed = vm();
+            if let MachineConfiguration::Vm { cpus, .. } = &mut changed {
+                *cpus = 2;
+            }
+            let mut replacement = inspect(&paths, status);
+            replacement["config"]["labels"]["silo.machine-id"] =
+                json!("22222222-2222-4222-8222-222222222222");
+            let mut modified = inspect(&paths, "Stopped");
+            modified["config"]["resources"]["cpus"] = json!(2);
+            let mut outputs = vec![replacement.clone(), replacement];
+            if status == "Running" {
+                outputs.push(json!(null));
+                outputs.push(inspect(&paths, "Stopped"));
+            }
+            outputs.extend([json!(null), modified]);
+            let runner = StubRunner::successful_json(outputs);
+
+            let error = apply_whole_configuration(
+                &runner,
+                &paths,
+                &generous_host(),
+                request(vec![changed]),
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("identity"), "{error}");
+            assert_eq!(read_metadata(&paths.metadata).unwrap(), previous);
+            assert!(configuration_recovery::load(&paths).unwrap().is_none());
+            assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn edit_rejects_replacements_for_resource_and_desktop_changes() {
+        let _test_state = crate::test_support::global_state();
+        for desktop_only in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let previous = vm();
+            let mut changed = previous.clone();
+            if let MachineConfiguration::Vm { cpus, desktop, .. } = &mut changed {
+                if desktop_only {
+                    *desktop = Some(crate::desktop::DesktopConfiguration {
+                        start_with_sandbox: true,
+                        built_in: false,
+                    });
+                } else {
+                    *cpus = 2;
+                }
+            }
+            let mut replacement = inspect(&paths, "Stopped");
+            replacement["config"]["labels"]["silo.machine-id"] =
+                json!("22222222-2222-4222-8222-222222222222");
+            let runner = StubRunner::successful_json(vec![replacement, json!(1), json!(null)]);
+
+            let error = update_machine(&runner, &paths, &previous, &changed).unwrap_err();
+
+            assert!(error.to_string().contains("identity"), "{error}");
+            assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn edit_rechecks_identity_after_stopping() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = vm();
+        let mut changed = previous.clone();
+        if let MachineConfiguration::Vm { cpus, .. } = &mut changed {
+            *cpus = 2;
+        }
+        let mut replacement = inspect(&paths, "Stopped");
+        replacement["config"]["labels"]["silo.machine-id"] =
+            json!("22222222-2222-4222-8222-222222222222");
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths, "Running"),
+            json!(null),
+            replacement,
+            json!(null),
+        ]);
+
+        let error = update_machine(&runner, &paths, &previous, &changed).unwrap_err();
+
+        assert!(error.to_string().contains("identity"), "{error}");
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| args[0] == "modify"));
     }
 
     #[test]

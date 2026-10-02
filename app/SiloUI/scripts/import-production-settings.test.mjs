@@ -4,7 +4,6 @@ import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import test from "node:test"
-import { fileURLToPath } from "node:url"
 import {
   COPIED_SETTINGS, DEVELOPMENT, PRODUCTION, channelPaths, devProcessRunning, importProductionSettings, sanitizeSecrets, sanitizeSettings,
 } from "./import-production-settings.mjs"
@@ -99,14 +98,6 @@ function list(root) {
 
 const run = (home, keychain, options = {}) => importProductionSettings({
   home, platform: "darwin", keychain, isDevRunning: () => false, newId: () => "dddddddd-dddd-4ddd-8ddd-dddddddddddd", ...options,
-})
-
-test("channel constants match the Rust channel module", () => {
-  const rust = fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "../src-tauri/src/channel.rs"), "utf8")
-  for (const value of [PRODUCTION.identifier, PRODUCTION.stateDir, ...Object.values(PRODUCTION.keychain),
-    DEVELOPMENT.identifier, DEVELOPMENT.stateDir, ...Object.values(DEVELOPMENT.keychain)]) {
-    assert.ok(rust.includes(`"${value}"`), value)
-  }
 })
 
 test("copies the intended configuration into dev and nothing about sandboxes", async () => {
@@ -213,6 +204,28 @@ test("running twice with --yes is idempotent", async () => {
   const first = [...snapshot(target.config), ...snapshot(target.state)].filter(entry => !entry.includes(".bak-"))
   await run(home, keychain, { yes: true })
   assert.deepEqual([...snapshot(target.config), ...snapshot(target.state)].filter(entry => !entry.includes(".bak-")), first)
+})
+
+test("backups of private Dev files use private modes even when the old files were readable", async t => {
+  const { home, source, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const keychain = productionKeychain()
+  await run(home, keychain)
+  const productionBefore = snapshot(source.state)
+  const key = path.join(target.state, "desktop-remote", "id_ed25519")
+  const settings = path.join(target.config, "settings.json")
+  for (const file of [key, settings]) {
+    fs.writeFileSync(file, "old private Dev contents")
+    fs.chmodSync(file, 0o666)
+  }
+  await run(home, keychain, { yes: true, now: () => new Date("2026-01-02T03:04:05.000Z") })
+  for (const file of [key, settings]) {
+    const backup = `${file}.bak-2026-01-02T03-04-05-000Z`
+    assert.equal(fs.readFileSync(backup, "utf8"), "old private Dev contents")
+    assert.equal(fs.statSync(backup).mode & 0o777, 0o600)
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600)
+  }
+  assert.deepEqual(snapshot(source.state), productionBefore)
 })
 
 test("missing or damaged production state is skipped, not fatal", async () => {

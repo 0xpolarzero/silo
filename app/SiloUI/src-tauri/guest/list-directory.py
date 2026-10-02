@@ -6,6 +6,7 @@ backslash escapes and has kind "u", so the host lists it but never opens it.
 Physical cwd rejects symlink ancestors; entries are never followed.
 """
 import os
+import stat
 import sys
 
 # Keep in step with MAX_ENTRIES in files.rs and below the host's 1 MiB cap on
@@ -26,9 +27,15 @@ def kind(entry):
 
 
 def listing(path):
-    if not os.path.exists(path):
+    try:
+        info = os.stat(path)
+    except FileNotFoundError:
         return b'missing\0'
-    if not os.path.isdir(path):
+    except PermissionError:
+        return b'denied\0'
+    except NotADirectoryError:
+        return b'invalid\0'
+    if not stat.S_ISDIR(info.st_mode):
         return b'invalid\0'
     if not os.access(path, os.R_OK | os.X_OK):
         return b'denied\0'

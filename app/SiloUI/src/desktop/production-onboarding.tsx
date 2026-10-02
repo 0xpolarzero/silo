@@ -214,6 +214,7 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
     operationError={setup.error}
     repositoryOptions={application?.github.repositoryCatalog}
     repositoryPolicies={application?.github.workspaces}
+    tokenConnected={application?.github.personalToken?.state === "connected"}
     onRetryDependencies={dependencies.retry}
     actions={{
       submitStep: (step, request, options) => {

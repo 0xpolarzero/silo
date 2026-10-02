@@ -6,9 +6,13 @@ import subprocess
 import time
 
 from selenium.webdriver.common.by import By
+from channel_names import channel_for_identifier, channel_names
 
 
 def verify(browser, wait, environment, evidence):
+    names = channel_names()
+    identifier = environment.get("SILO_LINUX_APPLICATION_ID", names["production"]["identifier"])
+    product_name = channel_for_identifier(identifier)["productName"]
     import gi
     gi.require_version("Gio", "2.0")
     from gi.repository import Gio, GLib
@@ -59,7 +63,7 @@ def verify(browser, wait, environment, evidence):
     for name in item_names:
         destination, slash, suffix = name.partition("/")
         path = "/" + suffix if slash else "/StatusNotifierItem"
-        if prop(destination, path, "org.kde.StatusNotifierItem", "Title") == "Silo":
+        if prop(destination, path, "org.kde.StatusNotifierItem", "Title") == product_name:
             items.append((destination, path))
     assert len(items) == 1, items
     destination, path = items[0]
@@ -69,10 +73,10 @@ def verify(browser, wait, environment, evidence):
         yield node
         for child in node[2]:
             yield from menu_nodes(child)
-    open_item = next(node for node in menu_nodes(layout) if node[1].get("label") == "Open Silo…")
-    assert any(node[1].get("label") == "Quit Silo" for node in menu_nodes(layout))
+    open_item = next(node for node in menu_nodes(layout) if node[1].get("label") == f"Open {product_name}")
+    assert any(node[1].get("label") == f"Quit {product_name}" for node in menu_nodes(layout))
     def main_visible():
-        return find_native(lambda node: node.getRoleName() == "frame" and node.name == "Silo" and node.getState().contains(pyatspi.STATE_SHOWING))
+        return find_native(lambda node: node.getRoleName() == "frame" and node.name == product_name and node.getState().contains(pyatspi.STATE_SHOWING))
     wait.until(lambda _: main_visible())
     browser.find_element(By.CSS_SELECTOR, "button[aria-label='Close window']").click()
     wait.until(lambda _: not main_visible())
@@ -96,7 +100,7 @@ def verify(browser, wait, environment, evidence):
     # A corrupt file only in the harness-owned XDG directory exercises the actual
     # background health transition and native notification adapter. No fake bus,
     # notification API, production hook, credentials or existing sandbox is used.
-    metadata = Path(environment["XDG_DATA_HOME"]) / "org.silo.preview/runtime/machines.json"
+    metadata = Path(environment["XDG_DATA_HOME"]) / identifier / "runtime/machines.json"
     original = metadata.read_bytes() if metadata.exists() else None
     output_path = evidence / "gnome-notification-bus.log"
     with output_path.open("w") as output:
@@ -129,7 +133,7 @@ def verify(browser, wait, environment, evidence):
                 metadata.write_bytes(original)
             monitor.terminate()
             monitor.wait(timeout=5)
-    quit_item = next(node for node in menu_nodes(layout) if node[1].get("label") == "Quit Silo")
+    quit_item = next(node for node in menu_nodes(layout) if node[1].get("label") == f"Quit {product_name}")
     call(destination, menu, "com.canonical.dbusmenu", "Event", "(isvu)",
          (quit_item[0], "clicked", GLib.Variant("i", 0), 0))
     wait.until(lambda _: not main_visible())

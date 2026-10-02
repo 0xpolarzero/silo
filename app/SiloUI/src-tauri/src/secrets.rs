@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 static PATH: OnceLock<PathBuf> = OnceLock::new();
 static OPERATION: Mutex<()> = Mutex::new(());
 static DOCUMENT: Mutex<()> = Mutex::new(());
+static REMOVALS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 type Vault = BTreeMap<String, String>;
 /// The credential-store result and when it was obtained. A failure is cached only
 /// briefly so a locked or denied store does not fail every later VM start until
@@ -25,6 +26,7 @@ type Vault = BTreeMap<String, String>;
 type Cached = Option<(Result<Vault, String>, Instant)>;
 static VAULT: Mutex<Cached> = Mutex::new(None);
 const STORE_RETRY_AFTER: Duration = Duration::from_secs(10);
+const MAX_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
 fn expire_failure(cached: &mut Cached, now: Instant) {
     if matches!(cached, Some((Err(_), at)) if now.saturating_duration_since(*at) >= STORE_RETRY_AFTER)
     {
@@ -186,11 +188,14 @@ fn store_path() -> Option<PathBuf> {
     PATH.get().cloned()
 }
 fn load() -> Result<Document, String> {
-    let Some(path) = store_path() else {
+    load_from(store_path())
+}
+fn load_from(path: Option<PathBuf>) -> Result<Document, String> {
+    let Some(path) = path else {
         return Ok(Document::default());
     };
     match File::open(&path) {
-        Ok(file) => serde_json::from_reader(file.take(2 * 1024 * 1024))
+        Ok(file) => serde_json::from_reader(file.take(MAX_DOCUMENT_BYTES))
             .map_err(|_| "Secret settings could not be read. No settings were overwritten.".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Document::default()),
         Err(_) => Err("Secret settings could not be read.".into()),
@@ -204,6 +209,15 @@ fn save(document: &Document) -> Result<(), String> {
         .map_err(|_| "Secret settings could not be saved.")?;
     serde_json::to_writer(&mut file, document)
         .map_err(|_| "Secret settings could not be saved.")?;
+    if file
+        .as_file()
+        .metadata()
+        .map_err(|_| "Secret settings could not be saved.")?
+        .len()
+        > MAX_DOCUMENT_BYTES
+    {
+        return Err("Secret settings are too large. Reduce assignments or allowed domains and retry. No settings were overwritten.".into());
+    }
     file.as_file()
         .sync_all()
         .map_err(|_| "Secret settings could not be saved.")?;
@@ -237,7 +251,10 @@ fn public(secret: &Secret) -> Value {
         "error": if errors.is_empty() {Value::Null} else {json!(errors.join(" "))}})
 }
 pub(crate) fn snapshot() -> Result<Vec<Value>, String> {
-    Ok(load()?.secrets.iter().map(public).collect())
+    snapshot_from(store_path())
+}
+fn snapshot_from(path: Option<PathBuf>) -> Result<Vec<Value>, String> {
+    Ok(load_from(path)?.secrets.iter().map(public).collect())
 }
 pub(crate) fn activities() -> Result<Vec<Value>, String> {
     Ok(load()?.activities)
@@ -363,6 +380,11 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
         return Ok(());
     }
     update(|document| {
+        // Invalidate saves that validated the old sandbox, including after name reuse.
+        let mut removals = REMOVALS.lock().unwrap_or_else(PoisonError::into_inner);
+        let revision = removals.entry(workspace.into()).or_default();
+        *revision = revision.wrapping_add(1);
+        drop(removals);
         document
             .pending_revocations
             .retain(|record| record.workspace != workspace);
@@ -374,6 +396,20 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
         }
         Ok(())
     })
+}
+fn assignment_revision(workspaces: &[String]) -> Vec<u64> {
+    let removals = REMOVALS.lock().unwrap_or_else(PoisonError::into_inner);
+    workspaces
+        .iter()
+        .map(|workspace| removals.get(workspace).copied().unwrap_or_default())
+        .collect()
+}
+/// Called inside the document transaction so deletion cannot overtake the commit.
+fn ensure_assignment_revision(workspaces: &[String], expected: &[u64]) -> Result<(), String> {
+    if assignment_revision(workspaces) != expected {
+        return Err("A selected sandbox was removed while saving this secret. Select sandboxes again and retry.".into());
+    }
+    Ok(())
 }
 #[derive(Deserialize)]
 struct ReservedSecretNames {
@@ -733,7 +769,10 @@ fn require_main(window: &WebviewWindow) -> Result<(), String> {
 }
 #[tauri::command]
 pub async fn read_secrets_state() -> Result<Vec<Value>, String> {
-    snapshot()
+    let path = store_path();
+    tauri::async_runtime::spawn_blocking(move || snapshot_from(path))
+        .await
+        .map_err(|_| "Secret settings could not be read.".to_string())?
 }
 #[tauri::command]
 pub async fn save_secret(
@@ -746,6 +785,7 @@ pub async fn save_secret(
         let _update = crate::updates::operation_guard()?;
         let mut operation = Some(lock_unit(&OPERATION));
         retry_store();
+        let validated_assignments = assignment_revision(&request.workspaces);
         let document = load()?;
         validate(&request, &document)?;
         crate::runtime::validate_secret_workspaces(&app, &request.workspaces)?;
@@ -764,6 +804,7 @@ pub async fn save_secret(
             original.ok_or("Enter a secret value.")?.value_id.clone()
         };
         update(|d| {
+            ensure_assignment_revision(&request.workspaces, &validated_assignments)?;
             let affected = original
                 .into_iter()
                 .flat_map(|s| s.affected.iter().chain(s.workspaces.iter()))
@@ -896,6 +937,80 @@ mod tests {
             errors: BTreeMap::new(),
             removing: false,
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn slow_secret_read_keeps_the_async_executor_responsive() {
+        use std::io::Write;
+
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        use_test_store(Some(path.clone()));
+        let (heartbeat, observed) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let responsive = observed.recv_timeout(Duration::from_secs(2)).is_ok();
+            File::create(path).unwrap().write_all(b"{}").unwrap();
+            responsive
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (result, ()) = runtime.block_on(async {
+            tokio::join!(biased; read_secrets_state(), async {
+                let _ = heartbeat.send(());
+            })
+        });
+        use_test_store(None);
+        assert_eq!(result.unwrap(), Vec::<Value>::new());
+        assert!(
+            writer.join().unwrap(),
+            "the secret read blocked the executor heartbeat"
+        );
+    }
+    #[test]
+    fn oversized_save_preserves_readable_settings() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        use_test_store(Some(path.clone()));
+        let domain = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        let mut document = Document::default();
+        for index in 0..90 {
+            let mut request = request();
+            request.name = format!("TOKEN_{index}");
+            request.allowed_domains = vec![domain.clone(); 100];
+            validate(&request, &document).unwrap();
+            let mut entry = secret();
+            entry.id = format!("secret-{index}");
+            entry.name = request.name;
+            entry.allowed_domains = request.allowed_domains;
+            document.secrets.push(entry);
+            if index == 74 {
+                save(&document).unwrap();
+            }
+        }
+        let previous = fs::read(&path).unwrap();
+        assert!(previous.len() < 2 * 1024 * 1024);
+        assert!(serde_json::to_vec(&document).unwrap().len() > 2 * 1024 * 1024);
+        assert!(save(&document).is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(load().unwrap().secrets.len(), 75);
+        update(|document| {
+            document.secrets.pop();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(load().unwrap().secrets.len(), 74);
+        use_test_store(None);
     }
     #[test]
     fn fork_copies_current_assignment_reference_without_copying_value() {
@@ -1148,6 +1263,74 @@ mod tests {
             workspace_revision("dev").unwrap(),
             revision(&Document::default(), "dev")
         );
+        use_test_store(None);
+    }
+    #[test]
+    fn deletion_does_not_wait_for_an_update_secret_guard() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        use_test_store(Some(path.clone()));
+        save(&Document::default()).unwrap();
+        let operation = update_guard().unwrap();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let deletion = std::thread::spawn(move || {
+            use_test_store(Some(path));
+            let result = workspace_removed("dev");
+            finished_tx.send(()).unwrap();
+            use_test_store(None);
+            result
+        });
+        let completed = finished_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        drop(operation);
+        deletion.join().unwrap().unwrap();
+        assert!(
+            completed,
+            "inventory cleanup cannot wait behind an updater's secret lock"
+        );
+        use_test_store(None);
+    }
+    #[test]
+    fn deletion_rejects_an_already_validated_save_even_after_name_reuse() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        use_test_store(Some(path.clone()));
+        save(&Document {
+            secrets: vec![secret()],
+            ..Default::default()
+        })
+        .unwrap();
+        let save_operation = lock_unit(&OPERATION);
+        let original = load().unwrap().secrets.remove(0);
+        let validated_assignments = assignment_revision(&original.workspaces);
+        workspace_removed("other").unwrap();
+        ensure_assignment_revision(&original.workspaces, &validated_assignments).unwrap();
+        // The save is waiting on its credential store while the old sandbox is deleted.
+        workspace_removed("dev").unwrap();
+        let committed = update(|document| {
+            ensure_assignment_revision(&original.workspaces, &validated_assignments)?;
+            document.secrets.clear();
+            document.secrets.push(original.clone());
+            Ok(())
+        });
+        drop(save_operation);
+        assert!(committed.unwrap_err().contains("was removed"));
+        let document = load().unwrap();
+        assert!(document.secrets[0].workspaces.is_empty());
+        assert!(document.secrets[0].affected.is_empty());
+        // A replacement sandbox with this name selects no material or credential values.
+        assert!(runtime_material("dev").unwrap().is_empty());
+        // Only a fresh save validated after name reuse can assign to the replacement.
+        let replacement_assignments = assignment_revision(&original.workspaces);
+        update(|document| {
+            ensure_assignment_revision(&original.workspaces, &replacement_assignments)?;
+            document.secrets.clear();
+            document.secrets.push(original);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(load().unwrap().secrets[0].workspaces, ["dev"]);
         use_test_store(None);
     }
     #[test]

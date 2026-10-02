@@ -1,11 +1,13 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { CopyButton } from "@/components/copy-button"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { showActionFailure } from "@/lib/operation-toast"
+import { restoreFocus } from "@/lib/focus"
 import { useChatGptApp, useComputerUseBridge } from "@/desktop/computer-use-bridge"
-import { CHATGPT_DOWNLOAD_NOTE, chatGptStatusText } from "@/desktop/computer-use-panel"
+import { CHATGPT_DOWNLOAD_NOTE } from "@/desktop/computer-use-panel"
+import { chatGptStatusText } from "@/desktop/computer-use-labels"
 import type { ApplicationActions, ApplicationSource } from "../model/application-source"
 import type { RemoteManagement } from "../model/remote-computers"
 
@@ -55,10 +57,10 @@ function ManagementAddresses({ management }: { management: RemoteManagement }) {
 }
 
 /** One computer's ChatGPT for Linux status. Every computer downloads it by itself; a failure can be retried here. */
-function ChatGptAppRow({ name, computer, connected = true }: { name: string; computer?: string; connected?: boolean }) {
+function ChatGptAppRow({ name, computer, connected = true, active }: { name: string; computer?: string; connected?: boolean; active: boolean }) {
   const bridge = useComputerUseBridge()
   const store = connected ? bridge?.chatGptFor(computer) : undefined
-  const { status, busy, error, loadError } = useChatGptApp(store)
+  const { status, busy, error, loadError, subscriptionError } = useChatGptApp(store, active)
   const stale = Boolean(status) && Boolean(loadError)
   // An offline computer, or one whose Silo is older, simply has no status to show: unknown, never an error.
   const known = connected && status !== null && status.state !== "unknown"
@@ -73,43 +75,59 @@ function ChatGptAppRow({ name, computer, connected = true }: { name: string; com
       <p role={working ? "status" : undefined} className="text-xs text-muted-foreground">{lastKnown ? `Last known: ${text}` : text}{!connected && " · offline"}</p>
       {failed && <p role="alert" className="break-words text-xs text-destructive">{status.reason}{status.retryable ? " Silo tries again automatically." : ""}</p>}
       {error && <p role="alert" className="break-words text-xs text-destructive">{error}</p>}
+      {connected && subscriptionError && <p role="alert" className="break-words text-xs text-destructive">{subscriptionError}</p>}
       {connected && loadError && <p role="alert" className="break-words text-xs text-destructive">{stale ? `Could not refresh: ${loadError}` : loadError}</p>}
     </div>
     <div className="flex shrink-0 gap-1.5">
-    {connected && loadError && <Button size="xs" variant="outline" aria-label={`Refresh ChatGPT for Linux status on ${name}`} onClick={() => { void store?.refresh() }}>Refresh</Button>}
+    {connected && (loadError || subscriptionError) && <Button size="xs" variant="outline" aria-label={`Refresh ChatGPT for Linux status on ${name}`} onClick={() => { void store?.refresh() }}>Refresh</Button>}
     {failed && <Button size="xs" variant="outline" disabled={busy} aria-label={`Retry ChatGPT for Linux on ${name}`} onClick={() => { void store?.retry() }}>Retry</Button>}
     </div>
   </li>
 }
 
-function ChatGptAppSettings({ source }: { source: ApplicationSource }) {
+function ChatGptAppSettings({ source, active }: { source: ApplicationSource; active: boolean }) {
   if (!useComputerUseBridge()) return null
   return <section aria-label="ChatGPT for Linux" className="grid gap-3">
     <h2 className="text-xs font-medium">ChatGPT for Linux</h2>
     <div className="grid gap-3 rounded-lg border p-3">
       <p className="text-xs text-muted-foreground">{CHATGPT_DOWNLOAD_NOTE}</p>
       <ul aria-label="ChatGPT for Linux on each computer" className="grid gap-3">
-        <ChatGptAppRow name="This computer" />
-        {source.remoteComputers?.map(computer => <ChatGptAppRow key={computer.id} name={computer.name} computer={computer.id} connected={computer.connected} />)}
+        <ChatGptAppRow name="This computer" active={active} />
+        {source.remoteComputers?.map(computer => <ChatGptAppRow key={computer.id} name={computer.name} computer={computer.id} connected={computer.connected} active={active} />)}
       </ul>
     </div>
   </section>
 }
 
-export function RemoteComputersSettings({ source, actions }: { source: ApplicationSource; actions: ApplicationActions }) {
+export function RemoteComputersSettings({ source, actions, active = true }: { source: ApplicationSource; actions: ApplicationActions; active?: boolean }) {
   return <div className="grid gap-6">
     {actions.connectComputer && <ComputersSection source={source} actions={actions} />}
-    <ChatGptAppSettings source={source} />
+    <ChatGptAppSettings source={source} active={active} />
   </div>
 }
 
 function ComputersSection({ source, actions }: { source: ApplicationSource; actions: ApplicationActions }) {
   const [connecting, setConnecting] = useState(false)
   const [busy, setBusy] = useState(false)
+  const connectButton = useRef<HTMLButtonElement>(null)
+  const shouldRestoreFocus = useRef(false)
+  useEffect(() => {
+    if (!connecting && shouldRestoreFocus.current) {
+      shouldRestoreFocus.current = false
+      restoreFocus(connectButton.current)
+    }
+  }, [connecting])
+  function closeConnectionForm() {
+    shouldRestoreFocus.current = true
+    setConnecting(false)
+  }
+  const pending = useRef(false)
   async function perform(operation: () => Promise<void>) {
+    if (pending.current) return
+    pending.current = true
     setBusy(true)
     try { await operation() } catch (cause) { showActionFailure("Computer setting not changed", cause, () => { void perform(operation) }, { native: false }) }
-    finally { setBusy(false) }
+    finally { pending.current = false; setBusy(false) }
   }
   if (!actions.connectComputer) return null
   return <section aria-label="Computers" className="grid gap-3">
@@ -120,8 +138,8 @@ function ComputersSection({ source, actions }: { source: ApplicationSource; acti
       {source.remoteManagement?.enabled && <p className="text-xs text-muted-foreground">Enable Remote Login on macOS or the SSH server on Linux so other computers can connect.</p>}
       {source.remoteManagement?.enabled && <ManagementAddresses management={source.remoteManagement} />}
       {source.remoteComputers?.map(computer => <div key={computer.id} className="flex items-center justify-between gap-3 border-t pt-3"><div className="min-w-0"><p className="truncate text-xs font-medium">{computer.name}</p><p className="text-xs text-muted-foreground">{computer.busy ? "Updating…" : computer.connected ? "Connected" : "Offline · last known status"} · {computer.address}</p>{computer.error && <p className="text-xs text-destructive">{computer.error}</p>}<p className="text-xs text-muted-foreground">Removing the connection leaves sandboxes on {computer.name} unchanged.</p></div><Button size="xs" variant="ghost" disabled={busy} aria-label={`Remove connection to ${computer.name}`} onClick={() => { void perform(() => actions.removeComputer!(computer.id)) }}>Remove connection</Button></div>)}
-      {!connecting && <Button size="sm" variant="outline" className="justify-self-start" onClick={() => setConnecting(true)}>Connect computer…</Button>}
-      {connecting && <ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} />}
+      {!connecting && <Button ref={connectButton} size="sm" variant="outline" className="justify-self-start" onClick={() => setConnecting(true)}>Connect computer…</Button>}
+      {connecting && <ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={closeConnectionForm} />}
       {source.remoteComputersError && <p role="alert" className="text-xs text-destructive">{source.remoteComputersError}</p>}
       {source.remoteManagementError && <p role="alert" className="text-xs text-destructive">{source.remoteManagementError}</p>}
     </div>

@@ -1,10 +1,12 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { Check, KeyRound, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
-import { showActionFailure } from "@/lib/operation-toast"
+import { dismissOperationToast, showActionFailure } from "@/lib/operation-toast"
 import type { ApplicationSource } from "@/features/application/model/application-source"
+
+const removalFailureToastId = "action-failure:Could not remove token"
 
 export function PersonalTokenConnection({ status, onSave, onRemove }: {
   status?: ApplicationSource["github"]["personalToken"]
@@ -14,22 +16,48 @@ export function PersonalTokenConnection({ status, onSave, onRemove }: {
   const [editing, setEditing] = useState(false)
   const [token, setToken] = useState("")
   const [busy, setBusy] = useState(false)
+  const operation = useRef({ pending: false, generation: 0, mounted: false, removalFailureShown: false })
+  useEffect(() => {
+    const state = operation.current
+    state.mounted = true
+    return () => {
+      state.mounted = false
+      state.generation++
+      if (state.removalFailureShown) dismissOperationToast(removalFailureToastId)
+    }
+  }, [])
+  function dismissRemovalFailure() {
+    if (!operation.current.removalFailureShown) return
+    operation.current.removalFailureShown = false
+    dismissOperationToast(removalFailureToastId)
+  }
   const connected = status?.state === "connected"
   async function save() {
-    if (!onSave || !token.trim()) return
+    if (!onSave || !token.trim() || operation.current.pending || !operation.current.mounted) return
+    operation.current.pending = true
+    operation.current.generation++
+    dismissRemovalFailure()
     const value = token.trim()
     setToken("")
     setBusy(true)
-    try { await onSave(value); setEditing(false) }
-    catch { showActionFailure("Could not connect token", "Check its validity, your connection, and credential-store access.", undefined, { native: false }) }
-    finally { setBusy(false) }
+    try { await onSave(value); if (operation.current.mounted) setEditing(false) }
+    catch { if (operation.current.mounted) showActionFailure("Could not connect token", "Check its validity, your connection, and credential-store access.", undefined, { native: false }) }
+    finally { operation.current.pending = false; if (operation.current.mounted) setBusy(false) }
   }
-  async function remove() {
-    if (!onRemove) return
+  async function remove(generation = operation.current.generation) {
+    if (!onRemove || operation.current.pending || !operation.current.mounted || generation !== operation.current.generation) return
+    operation.current.pending = true
+    const removalGeneration = ++operation.current.generation
+    dismissRemovalFailure()
     setBusy(true)
-    try { await onRemove(); setEditing(false); setToken("") }
-    catch { showActionFailure("Could not remove token", "Check credential-store access and try again.", () => void remove(), { native: false }) }
-    finally { setBusy(false) }
+    try { await onRemove(); if (operation.current.mounted) { setEditing(false); setToken("") } }
+    catch {
+      if (operation.current.mounted) {
+        operation.current.removalFailureShown = true
+        showActionFailure("Could not remove token", "Check credential-store access and try again.", () => void remove(removalGeneration), { native: false })
+      }
+    }
+    finally { operation.current.pending = false; if (operation.current.mounted) setBusy(false) }
   }
   return <ListCard className="shrink-0">
     <ListRow icon={<ListRowIcon>{busy ? <Loader2 className="size-3.5 animate-spin" /> : connected ? <Check className="size-3.5 text-emerald-600" /> : <KeyRound className="size-3.5" />}</ListRowIcon>}

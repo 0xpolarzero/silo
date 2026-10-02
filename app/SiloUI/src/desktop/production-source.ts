@@ -1,5 +1,5 @@
 import { bridgeErrorMessage, hasBridgeErrorCode } from "@/contracts/bridge-error"
-import { defaultSettings } from "@/features/preferences/model/settings"
+import { defaultSettings, settingSchemas } from "@/features/preferences/model/settings"
 import { workspaceStorageStateSchema } from "@/features/application/model/workspace-storage"
 import { isUnsupportedRemote, logPageSchema } from "@/features/application/model/logs"
 import { invoke } from "@tauri-apps/api/core"
@@ -128,7 +128,7 @@ const machineShape = z.discriminatedUnion("kind", [
     desktop: z.object({ startWithSandbox: z.boolean(), builtIn: z.boolean().optional() }).optional(),
   }).passthrough(),
   z.object({ kind: z.literal("ssh"), id: z.string().min(1), name: z.string().min(1), host: z.string().min(1), user: z.string().min(1), port: z.number().int().min(1).max(65535) }).passthrough(),
-]).transform(machine => machine as SetupMachineConfiguration)
+])
 
 const workspaceShape = z.object({
   machine: machineShape,
@@ -187,18 +187,27 @@ const runtimeRepairShape = z.object({
   status: tolerantEnum(["needed", "unavailable"], "unavailable"), reason: z.string(), recovery: z.string().optional(), checking: z.boolean().optional(),
 })
 
-const sandboxConfigurationOperationShape = z.object({
+const sandboxConfigurationOperationFields = {
   id: z.string().min(1),
-  status: z.enum(["applying", "awaiting-approval", "failed"]),
   candidate: setupMachineConfigurationRequestSchema,
   progressEvents: z.array(siloProgressEventSchema),
-  result: siloBootstrapResultSchema.nullable(),
-  error: siloProtocolErrorSchema.nullable(),
-})
+}
+const sandboxConfigurationOperationShape = z.discriminatedUnion("status", [
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("applying"), result: z.null(), error: z.null() }),
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("awaiting-approval"), result: siloBootstrapResultSchema, error: z.null() }),
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("failed"), result: z.null(), error: siloProtocolErrorSchema }),
+])
 
 const preferencesShape = z.object({
   terminal: z.string(), editor: z.string(), browser: z.string(), launchAtLogin: z.boolean(),
   startWorkspacesAtLaunch: z.boolean(), reduceMotion: z.boolean(),
+  startupWorkspaceIds: settingSchemas.startupWorkspaceIds.optional().catch(undefined),
+  terminalPath: settingSchemas.terminalPath.optional().catch(undefined),
+  editorPath: settingSchemas.editorPath.optional().catch(undefined),
+  browserPath: settingSchemas.browserPath.optional().catch(undefined),
+  terminalUseSystemDefault: settingSchemas.terminalUseSystemDefault.optional().catch(undefined),
+  editorUseSystemDefault: settingSchemas.editorUseSystemDefault.optional().catch(undefined),
+  browserUseSystemDefault: settingSchemas.browserUseSystemDefault.optional().catch(undefined),
 }).passthrough()
 const backupSummaryShape = z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() })
 
@@ -268,12 +277,12 @@ export function parseNetworkState(input: unknown): NetworkState {
 }
 
 export function parseApplicationSource(input: unknown): ApplicationSource {
-  return applicationSourceShape.parse(input) as ApplicationSource
+  return applicationSourceShape.parse(input)
 }
 
 /** Another computer's snapshot, which may come from an older or newer Silo. */
 export function parseRemoteApplicationSource(input: unknown): ApplicationSource {
-  return remoteApplicationSourceShape.parse(input) as ApplicationSource
+  return remoteApplicationSourceShape.parse(input)
 }
 
 export function parseBackupState(input: unknown): BackupState {
@@ -352,6 +361,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     error: null,
   }
   let view = snapshot
+  let viewKey = JSON.stringify(view)
   type SetupItem = NonNullable<OnboardingSource["setupQueue"]>[number]
   type SetupJob = { items: SetupItem[]; activityId: string }
   let setupJobs: SetupJob[] = []
@@ -382,14 +392,13 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let remoteTimer: ReturnType<typeof setInterval> | undefined
   let sshAccess: SshAccessState | undefined
   let sshAccessError: string | null = null
-  let sshRequest: Promise<void> | undefined
-  let sshRevision = 0
+  const sshReads = new Map<string, { dirty: boolean; promise: Promise<void> }>()
   const sshSaveRevisions = new Map<string, number>()
   let network: NetworkState | undefined
   let networkError: string | null = null
-  let networkRequest: Promise<void> | undefined
-  let networkDirty = false
-  let networkRevision = 0
+  const networkReads = new Map<string, { dirty: boolean; promise: Promise<void> }>()
+  const networkReadRevisions = new Map<string, number>()
+  const networkSaveRevisions = new Map<string, number>()
   let operationQueue: OperationQueue | undefined
   let operationQueueRequest: Promise<void> | undefined
   let operationQueueDirty = false
@@ -425,9 +434,9 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   /** Identity of one repository's push across native results, pending pushes and dismissals. */
   function pushKey(workspace: string, repositoryPath: string) { return `${workspace}\u0000${repositoryPath}` }
-  function sshOwner(target: string) { return parseRemoteWorkspaceTarget(target)?.hostId ?? "" }
+  function workspaceOwner(target: string) { return parseRemoteWorkspaceTarget(target)?.hostId ?? "" }
   function unavailableSshRows(hostId: string, computerName: string, message: string): SshAccessWorkspace[] {
-    const cached = sshAccess?.workspaces.filter(row => sshOwner(row.workspace) === hostId) ?? []
+    const cached = sshAccess?.workspaces.filter(row => workspaceOwner(row.workspace) === hostId) ?? []
     const workspaces = hostId ? remoteSnapshots.get(hostId)?.workspaces ?? [] : snapshot.source?.workspaces.filter(w => !w.computer) ?? []
     const rows = new Map(cached.map(row => [row.workspace, row]))
     for (const workspace of workspaces.filter(w => w.machine.kind === "vm")) {
@@ -436,71 +445,98 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
     return [...rows.values()].map(row => ({ ...row, unavailable: message }))
   }
-  function refreshSshAccess(): Promise<void> {
-    if (sshRequest) return sshRequest
-    const revision = sshRevision
-    const computers = [...remoteComputers]
-    sshRequest = (async () => {
-      const results = await Promise.allSettled([
-        native.invoke("read_ssh_access_state").then(value => {
-          const state = parseSshAccessState(value)
-          if (state.workspaces.some(row => sshOwner(row.workspace) !== "")) throw new Error("SSH response belongs to another computer.")
-          return state
-        }),
-        ...computers.map(async computer => {
-          if (!computer.connected) throw new Error("Computer is offline.")
-          const state = parseSshAccessState(await native.invoke("remote_ssh_access_state", { hostId: computer.id }))
-          if (state.workspaces.some(row => sshOwner(row.workspace) !== computer.id)) throw new Error("SSH response belongs to another computer.")
-          return state
-        }),
-      ])
-      if (disposed || revision !== sshRevision) return
-      sshAccessError = results[0].status === "rejected" ? "Could not check SSH access." : null
-      sshAccess = { workspaces: results.flatMap((result, index) => {
-        if (index === 0) return result.status === "fulfilled" ? result.value.workspaces : unavailableSshRows("", remoteManagement?.name ?? "This computer", "Could not check SSH access.")
-        const computer = computers[index - 1]
-        const current = remoteComputers.find(item => item.id === computer.id)
-        if (!current) return []
-        if (result.status === "fulfilled" && current.connected) return result.value.workspaces
-        const unsupported = current.connected && result.status === "rejected" && isUnsupportedRemote(result.reason)
-        const message = unsupported
-          ? `Update Silo on ${computer.name} to manage SSH access. That version does not support remote SSH management.`
-          : `SSH status on ${computer.name} is unavailable. Reconnect and refresh before changing access.`
-        return unavailableSshRows(computer.id, computer.name, message)
-      }) }
-      publish({ ...snapshot })
-    })().finally(() => { sshRequest = undefined })
-    return sshRequest
+  /** Each service read gets the same bounded wait as a computer-state read. */
+  function waitForService<T>(read: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Computer is not responding.")), REMOTE_READ_WAIT_MS)
+    })
+    return Promise.race([read, timeout]).finally(() => clearTimeout(timer))
   }
 
-  // An event that arrives during a read marks it dirty so one re-read follows
-  // instead of the change being lost behind the in-flight result.
-  function refreshNetwork(): Promise<void> {
-    if (networkRequest) { networkDirty = true; return networkRequest }
-    networkRequest = (async () => { do {
-      networkDirty = false
-      const revision = networkRevision
+  function readSshOwner(owner: string): Promise<void> {
+    const pending = sshReads.get(owner)
+    if (pending) { pending.dirty = true; return pending.promise }
+    const entry = { dirty: false, promise: Promise.resolve() }
+    entry.promise = (async () => { do {
+      entry.dirty = false
+      const revision = sshSaveRevisions.get(owner)
+      const computer = remoteComputers.find(item => item.id === owner)
+      let rows: SshAccessWorkspace[]
+      let unavailable: string | null = null
       try {
-        const local = parseNetworkState(await native.invoke("read_network_state"))
-        const remotes = await Promise.all(remoteComputers.map(async computer => {
-          const unavailable = (error: string) => (remoteSnapshots.get(computer.id)?.workspaces ?? []).map(w => ({ workspace: remoteWorkspaceTarget(computer.id, w.machine.id), ports: [], error }))
-          // An offline computer would only cost a connection timeout on every poll.
-          if (!computer.connected) return unavailable(`${computer.name} is offline. Reconnect to see network services.`)
-          try { return parseNetworkState(await native.invoke("remote_network_state", { hostId: computer.id })).workspaces }
-          catch (cause) {
-            return unavailable(isUnsupportedRemote(cause) ? `Update Silo on ${computer.name} to see network services.` : errorMessage(cause))
-          }
-        }))
-        const result = { workspaces: [...local.workspaces, ...remotes.flat()] }
-        if (revision !== networkRevision || disposed) continue
-        network = result; networkError = null
-      } catch {
-        if (revision !== networkRevision || disposed) continue
-        networkError = "Could not check network services."
+        if (owner && !computer?.connected) throw new Error("Computer is offline.")
+        const result = parseSshAccessState(await waitForService(native.invoke(owner ? "remote_ssh_access_state" : "read_ssh_access_state", owner ? { hostId: owner } : undefined)))
+        if (result.workspaces.some(row => workspaceOwner(row.workspace) !== owner)) throw new Error("SSH response belongs to another computer.")
+        rows = result.workspaces
+      } catch (cause) {
+        unavailable = !owner ? "Could not check SSH access."
+          : isUnsupportedRemote(cause) ? `Update Silo on ${computer?.name} to manage SSH access. That version does not support remote SSH management.`
+          : `SSH status on ${computer?.name} is unavailable. Reconnect and refresh before changing access.`
+        rows = unavailableSshRows(owner, computer?.name ?? remoteManagement?.name ?? "This computer", unavailable)
       }
+      if (disposed) return
+      if (revision !== sshSaveRevisions.get(owner)) continue
+      const current = remoteComputers.find(item => item.id === owner)
+      if (owner && !current) return
+      if (owner && !current?.connected) rows = unavailableSshRows(owner, current!.name, `SSH status on ${current!.name} is unavailable. Reconnect and refresh before changing access.`)
+      sshAccess = { workspaces: [...(sshAccess?.workspaces.filter(row => workspaceOwner(row.workspace) !== owner) ?? []), ...rows] }
+      if (!owner) sshAccessError = unavailable
       publish({ ...snapshot })
-    } while (networkDirty && !disposed) })().finally(() => { networkRequest = undefined })
-    return networkRequest
+    } while (entry.dirty && !disposed) })().finally(() => { if (sshReads.get(owner) === entry) sshReads.delete(owner) })
+    sshReads.set(owner, entry)
+    return entry.promise
+  }
+
+  function refreshSshAccess(): Promise<void> {
+    return Promise.all([readSshOwner(""), ...remoteComputers.map(computer => readSshOwner(computer.id))]).then(() => {})
+  }
+
+  function unavailableNetworkRows(owner: string, error: string): NetworkState["workspaces"] {
+    const rows = new Map((network?.workspaces.filter(row => workspaceOwner(row.workspace) === owner) ?? []).map(row => [row.workspace, row]))
+    const workspaces = owner ? remoteSnapshots.get(owner)?.workspaces ?? [] : snapshot.source?.workspaces ?? []
+    for (const workspace of workspaces.filter(w => w.machine.kind === "vm")) {
+      const target = owner ? remoteWorkspaceTarget(owner, workspace.machine.id) : workspace.machine.name
+      if (!rows.has(target)) rows.set(target, { workspace: target, ports: [], error })
+    }
+    return [...rows.values()].map(row => ({ ...row, error }))
+  }
+
+  // Events received during an owner's read request one follow-up for that owner.
+  function readNetworkOwner(owner: string): Promise<void> {
+    const pending = networkReads.get(owner)
+    if (pending) { pending.dirty = true; return pending.promise }
+    const entry = { dirty: false, promise: Promise.resolve() }
+    entry.promise = (async () => { do {
+      entry.dirty = false
+      const revision = networkReadRevisions.get(owner)
+      const computer = remoteComputers.find(item => item.id === owner)
+      let rows: NetworkState["workspaces"]
+      let unavailable: string | null = null
+      try {
+        if (owner && !computer?.connected) throw new Error(`${computer?.name} is offline. Reconnect to see network services.`)
+        const result = parseNetworkState(await waitForService(native.invoke(owner ? "remote_network_state" : "read_network_state", owner ? { hostId: owner } : undefined)))
+        if (result.workspaces.some(row => workspaceOwner(row.workspace) !== owner)) throw new Error("Network response belongs to another computer.")
+        rows = result.workspaces
+      } catch (cause) {
+        unavailable = !owner ? "Could not check network services." : isUnsupportedRemote(cause) ? `Update Silo on ${computer?.name} to see network services.` : errorMessage(cause)
+        rows = unavailableNetworkRows(owner, unavailable)
+      }
+      if (disposed) return
+      if (revision !== networkReadRevisions.get(owner)) continue
+      const current = remoteComputers.find(item => item.id === owner)
+      if (owner && !current) return
+      if (owner && !current?.connected) rows = unavailableNetworkRows(owner, `${current!.name} is offline. Reconnect to see network services.`)
+      network = { workspaces: [...(network?.workspaces.filter(row => workspaceOwner(row.workspace) !== owner) ?? []), ...rows] }
+      if (!owner) networkError = unavailable
+      publish({ ...snapshot })
+    } while (entry.dirty && !disposed) })().finally(() => { if (networkReads.get(owner) === entry) networkReads.delete(owner) })
+    networkReads.set(owner, entry)
+    return entry.promise
+  }
+
+  function refreshNetwork(): Promise<void> {
+    return Promise.all([readNetworkOwner(""), ...remoteComputers.map(computer => readNetworkOwner(computer.id))]).then(() => {})
   }
   function refreshOperationQueue(): Promise<void> {
     if (operationQueueRequest) { operationQueueDirty = true; return operationQueueRequest }
@@ -519,13 +555,32 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function changeNetwork(command: string, arguments_: Record<string, unknown>) {
-    const revision = ++networkRevision
-    const remote = typeof arguments_.workspace === "string" ? parseRemoteWorkspaceTarget(arguments_.workspace) : undefined
+    const target = arguments_.workspace as string
+    const remote = parseRemoteWorkspaceTarget(target)
+    const owner = remote?.hostId ?? ""
+    const revision = (networkSaveRevisions.get(target) ?? 0) + 1
+    networkSaveRevisions.set(target, revision)
+    networkReadRevisions.set(owner, (networkReadRevisions.get(owner) ?? 0) + 1)
     const { workspace: _workspace, ...rest } = arguments_
-    const result = parseNetworkState(await native.invoke(remote ? `remote_${command}` : command, remote ? { ...rest, ...remote } : arguments_))
-    if (revision !== networkRevision || disposed) return
-    const retained = network?.workspaces.filter(row => remote ? !row.workspace.startsWith(`silo-remote:${remote.hostId}:`) : row.workspace.startsWith("silo-remote:")) ?? []
-    network = { workspaces: [...retained, ...result.workspaces] }; networkError = null
+    let result: NetworkState
+    try {
+      result = parseNetworkState(await native.invoke(remote ? `remote_${command}` : command, remote ? { ...rest, ...remote } : arguments_))
+      if (result.workspaces.some(row => workspaceOwner(row.workspace) !== owner)) throw new Error("Network response belongs to another computer.")
+    } catch (cause) {
+      networkReadRevisions.set(owner, (networkReadRevisions.get(owner) ?? 0) + 1)
+      if (!disposed) void readNetworkOwner(owner)
+      throw cause
+    }
+    if (disposed) return
+    networkReadRevisions.set(owner, (networkReadRevisions.get(owner) ?? 0) + 1)
+    if (revision !== networkSaveRevisions.get(target)) {
+      void readNetworkOwner(owner)
+      return
+    }
+    // A computer-wide reply can carry older rows for unrelated sandbox saves.
+    const retained = network?.workspaces.filter(row => row.workspace !== target) ?? []
+    network = { workspaces: [...retained, ...result.workspaces.filter(row => row.workspace === target)] }
+    if (!owner) networkError = null
     publish({ ...snapshot })
   }
 
@@ -544,7 +599,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function publish(next: ProductionSnapshot) {
     if (disposed) return
     snapshot = next
-    view = derive(next)
+    const nextView = derive(next)
+    // Native reads return fresh objects even when the serialized state is unchanged.
+    const nextKey = JSON.stringify(nextView)
+    if (nextKey === viewKey) return
+    view = nextView
+    viewKey = nextKey
     listeners.forEach((listener) => listener())
   }
 
@@ -579,7 +639,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   function derivePorts(row: NetworkState["workspaces"][number] | undefined, reachable: boolean): ApplicationPort[] {
-    return (row?.ports ?? []).map(port => ({ port: port.port, listening: reachable && !networkError && !row?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured, host: row?.host }))
+    return (row?.ports ?? []).map(port => ({ port: port.port, listening: reachable && !row?.error && port.state === "reachable", hostPort: port.hostPort, scheme: port.scheme, configured: port.configured, host: row?.host }))
   }
 
   function withPendingCheckpoint(workspace: ApplicationWorkspace, target: string): ApplicationWorkspace {
@@ -975,27 +1035,35 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   async function startLiveUpdates() {
     if (disposed) return
     try {
-      unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
-      unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
-      unlisten.push(await native.listen("silo://application-state-changed", refreshFromEvent))
-      unlisten.push(await native.listen("desktop:status-opened", refreshFromEvent))
-      // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
-      // so setup and sandbox configuration must be accepted again.
-      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => {
-        if (event?.payload !== false) return
-        acceptingSetup = true
-        if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
-      }))
-      unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
-        const parsed = siloProgressEventSchema.safeParse(event?.payload)
-        if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
-        const progressEvents = [...activeConfiguration.progressEvents, parsed.data]
-        activeConfiguration = { ...activeConfiguration, progressEvents }
-        publish({ ...snapshot, setupEvents: progressEvents, setupActivity: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
-        if (parsed.data.step === "workspace-verification" && activeMachineJob) setJobStatus(activeMachineJob, ["workspaceVerify"], "running")
-      }))
+      const subscriptions: Array<[string, EventHandler]> = [
+        ["silo://network-state-changed", () => { void refreshNetwork() }],
+        ["silo://operation-queue-changed", () => { void refreshOperationQueue() }],
+        ["silo://application-state-changed", refreshFromEvent],
+        ["desktop:status-opened", refreshFromEvent],
+        // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
+        // so setup and sandbox configuration must be accepted again.
+        ["silo://shutdown-state-changed", (event) => {
+          if (event?.payload !== false) return
+          acceptingSetup = true
+          if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
+        }],
+        ["silo://machine-configuration-progress", (event) => {
+          const parsed = siloProgressEventSchema.safeParse(event?.payload)
+          if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
+          const progressEvents = [...activeConfiguration.progressEvents, parsed.data]
+          activeConfiguration = { ...activeConfiguration, progressEvents }
+          publish({ ...snapshot, setupEvents: progressEvents, setupActivity: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
+          if (parsed.data.step === "workspace-verification" && activeMachineJob) setJobStatus(activeMachineJob, ["workspaceVerify"], "running")
+        }],
+      ]
+      for (const [event, handler] of subscriptions) {
+        const stop = await native.listen(event, payload => { if (!disposed) handler(payload) })
+        if (disposed) { stop(); return }
+        unlisten.push(stop)
+      }
     } catch (cause) {
       unlisten.splice(0).forEach((stop) => stop())
+      if (disposed) return
       const error = `Silo could not subscribe to application updates: ${errorMessage(cause)}`
       publish({ ...snapshot, loading: false, error })
       throw new Error(error)
@@ -1093,7 +1161,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       // not be ignored while a slow remote snapshot settles.
       .then((result) => {
         if (remote && !lifecycle) { void refreshComputers(); return }
-        const source = remote ? parseMutationSource(result, remoteSnapshots.get(remote.hostId) ?? null, parseRemoteApplicationSource) : parseMutationSource(result)
+        const previous = remote ? remoteSnapshots.get(remote.hostId) ?? null : snapshot.source
+        let source = remote ? parseMutationSource(result, previous, parseRemoteApplicationSource) : parseMutationSource(result)
+        if (lifecycle && previous) {
+          // A lifecycle response confirms only its sandbox. Other rows were captured
+          // before this response arrived; the follow-up read refreshes them independently.
+          const target = source.workspaces.find(row => remote ? row.machine.id === remote.vmId : workspaceTarget(row) === name)
+          source = { ...source, workspaces: previous.workspaces.map(row =>
+            (remote ? row.machine.id === remote.vmId : workspaceTarget(row) === name) ? target ?? row : row) }
+        }
         if (lifecycle || workspaceFailures.get(name)?.action === action) workspaceFailures.delete(name)
         if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
         if (remote) {
@@ -1480,7 +1556,17 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     try {
       const result = await native.invoke<unknown>(command, { workspaceId: localWorkspace!.machine.id, ...arguments_ })
       ++refreshSequence
-      publish({ ...snapshot, source: parseMutationSource(result), error: null })
+      let source = parseMutationSource(result)
+      if (snapshot.source) {
+        const incoming = new Map(source.workspaces.map(workspace => [workspace.machine.id, workspace]))
+        const workspaces = snapshot.source.workspaces.map(workspace => workspace.machine.id === localWorkspace!.machine.id ? incoming.get(workspace.machine.id) ?? workspace : workspace)
+        if (kind === "fork" && typeof arguments_.newName === "string") {
+          const fork = source.workspaces.find(workspace => workspace.machine.name === arguments_.newName && !workspaces.some(current => current.machine.id === workspace.machine.id))
+          if (fork) workspaces.push(fork)
+        }
+        source = { ...source, workspaces }
+      }
+      publish({ ...snapshot, source, error: null })
       void refresh()
     } catch (cause) {
       void refresh()
@@ -1561,15 +1647,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       const remote = parseRemoteWorkspaceTarget(request.workspace)
       const owner = remote?.hostId ?? ""
       if (sshAccess?.workspaces.find(row => row.workspace === request.workspace)?.unavailable || (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected)) throw new Error("Refresh SSH status before changing access.")
-      const revision = ++sshRevision
+      const revision = (sshSaveRevisions.get(owner) ?? 0) + 1
       sshSaveRevisions.set(owner, revision)
       const { workspace: _workspace, ...settings } = request
       const result = parseSshAccessState(await native.invoke(remote ? "remote_save_ssh_access" : "save_ssh_access", remote ? { ...remote, ...settings } : { ...request }))
-      if (result.workspaces.some(row => sshOwner(row.workspace) !== owner)) throw new Error("SSH response belongs to another computer.")
+      if (result.workspaces.some(row => workspaceOwner(row.workspace) !== owner)) throw new Error("SSH response belongs to another computer.")
       if (disposed || sshSaveRevisions.get(owner) !== revision) return
       if (remote && !remoteComputers.find(computer => computer.id === remote.hostId)?.connected) return
-      ++sshRevision
-      const retained = sshAccess?.workspaces.filter(row => sshOwner(row.workspace) !== owner) ?? []
+      sshSaveRevisions.set(owner, revision + 1)
+      const retained = sshAccess?.workspaces.filter(row => workspaceOwner(row.workspace) !== owner) ?? []
       sshAccess = { workspaces: [...retained, ...result.workspaces] }
       if (!remote) sshAccessError = null
       publish({ ...snapshot })
@@ -1740,6 +1826,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   /** Checks an export file under a request id so aborting `signal` stops the check (E-27).
    * The check changes no state, so no refresh follows it. */
   async function inspectBackupArchive(archivePath: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
     const requestId = crypto.randomUUID()
     const cancel = () => { void native.invoke("cancel_backup_inspection", { requestId }).catch(() => undefined) }
     signal?.addEventListener("abort", cancel, { once: true })
@@ -1767,7 +1854,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           ? "Silo no longer reports this export's result. Check the export folder before relying on it."
           : "Silo stopped tracking this export before it finished.", operationId))
       }
-      exportWaiters.add(waiter)
+      if (disposed) waiter(null, readSequence)
+      else exportWaiters.add(waiter)
     })
   }
 
@@ -1911,7 +1999,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
+    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.splice(0).forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
   }
 }
 

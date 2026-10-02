@@ -92,11 +92,16 @@ export function StatusBarContent({ source, actions, focusContent, workspaceMenu:
     if (stoppedByQuit.length) setQuitPending(true)
     else actions.quit()
   }
+  const [seenQuitRequest, setSeenQuitRequest] = useState(quitRequest)
+  if (quitRequest !== seenQuitRequest) {
+    setSeenQuitRequest(quitRequest)
+    if (quitRequest !== undefined && stoppedByQuit.length) setQuitPending(true)
+  }
   const lastQuitRequest = useRef(quitRequest)
   useEffect(() => {
     if (quitRequest === lastQuitRequest.current) return
     lastQuitRequest.current = quitRequest
-    if (quitRequest !== undefined) requestQuit()
+    if (quitRequest !== undefined && !stoppedByQuit.length) actions.quit()
   })
   const [hasNavigated, setHasNavigated] = useState(false)
   const [folderWorkspace, setFolderWorkspace] = useState<string | null>(null)

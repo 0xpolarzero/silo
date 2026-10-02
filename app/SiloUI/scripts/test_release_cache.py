@@ -15,6 +15,26 @@ PLATFORM = (ROOT / '.github/workflows/release-platform.yml').read_text()
 
 
 class ReleaseCacheTests(unittest.TestCase):
+    def test_runtime_cache_key_uses_selected_go_version_before_lookup(self):
+        self.assertLess(ACTION.index('actions/setup-go@'), ACTION.index('actions/cache/restore@'))
+        block = ACTION.split('      id: go-compiler\n', 1)[1].split('    - name:', 1)[0]
+        self.assertIn('GOTOOLCHAIN: local', block)
+        command = block.split('      run: |\n', 1)[1]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            go = root / 'go'
+            go.write_text('#!/bin/sh\ntest "$*" = "env GOVERSION" || exit 1\nprintf "%s\\n" "$TEST_GO_VERSION"\n')
+            go.chmod(0o755)
+            output = root / 'output'
+            for version in ('go1.25.1', 'go1.25.2'):
+                output.unlink(missing_ok=True)
+                subprocess.run(['/bin/bash', '-eu', '-c', command], check=True, env={
+                    **os.environ, 'PATH': str(root), 'GITHUB_OUTPUT': str(output), 'TEST_GO_VERSION': version,
+                })
+                self.assertEqual(output.read_text(), f"version={version.removeprefix('go')}\n")
+        self.assertIn('-go${{ steps.go-compiler.outputs.version }}-', ACTION)
+        self.assertIn("'.github/actions/prepare-release-runtime/action.yml'", ACTION)
+
     def test_ci_installs_the_manifest_toolchain(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

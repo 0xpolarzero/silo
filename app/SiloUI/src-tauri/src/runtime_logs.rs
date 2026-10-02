@@ -67,6 +67,7 @@ struct Segment {
 struct Location {
     file: u64,
     offset: u64,
+    in_pem: bool,
     time: String,
     id: String,
 }
@@ -83,6 +84,7 @@ struct Cached {
     binding: String,
     files: Vec<Indexed>,
     records: Vec<Location>,
+    redaction: Redaction,
     summary: Summary,
 }
 static CACHE: std::sync::OnceLock<
@@ -90,6 +92,25 @@ static CACHE: std::sync::OnceLock<
 > = std::sync::OnceLock::new();
 fn cache() -> &'static std::sync::Mutex<HashMap<String, (Instant, std::sync::Arc<Cached>)>> {
     CACHE.get_or_init(Default::default)
+}
+
+/// PEM state belongs to a stream and execution session, independent of search filters.
+#[derive(Clone, Default)]
+struct Redaction {
+    sessions: HashSet<(String, Option<String>)>,
+}
+impl Redaction {
+    fn apply(&mut self, stream: &str, decoded: &mut Decoded) {
+        let key = (stream.to_owned(), decoded.session.clone());
+        decoded.in_pem = self.sessions.contains(&key);
+        let mut in_pem = decoded.in_pem;
+        decoded.body = runtime_activity::log_text_with_pem(&decoded.body, &mut in_pem);
+        if in_pem {
+            self.sessions.insert(key);
+        } else {
+            self.sessions.remove(&key);
+        }
+    }
 }
 
 // The runtime writes this as one atomic, pretty-printed JSON document, not JSONL.
@@ -168,6 +189,7 @@ fn truncate_text(text: &mut String) {
 
 /// One retained record, as displayed and searched.
 struct Decoded {
+    in_pem: bool,
     occurred_at: String,
     source: String,
     body: String,
@@ -185,6 +207,7 @@ struct Decoded {
 fn decode(segment: &Segment, raw: &[u8], oversized: bool) -> Decoded {
     let text = String::from_utf8_lossy(raw);
     let placeholder = |source: &str, body: &str| Decoded {
+        in_pem: false,
         occurred_at: segment.modified.clone(),
         source: source.into(),
         body: body.into(),
@@ -201,6 +224,7 @@ fn decode(segment: &Segment, raw: &[u8], oversized: bool) -> Decoded {
             };
             let time = value["t"].as_str().and_then(|time| stamp(time).ok());
             Decoded {
+                in_pem: false,
                 estimated: time.is_none(),
                 occurred_at: time.unwrap_or_else(|| segment.modified.clone()),
                 source: value["s"].as_str().unwrap_or("system").to_string(),
@@ -216,6 +240,7 @@ fn decode(segment: &Segment, raw: &[u8], oversized: bool) -> Decoded {
         }
         "boot-error" => match (!oversized).then(|| boot_record(&text)) {
             Some(Ok((occurred_at, body))) => Decoded {
+                in_pem: false,
                 occurred_at,
                 source: "runtime".into(),
                 body,
@@ -239,6 +264,7 @@ fn decode(segment: &Segment, raw: &[u8], oversized: bool) -> Decoded {
                 truncate_text(&mut body);
             }
             Decoded {
+                in_pem: false,
                 estimated: parsed.is_none(),
                 // Console output is written by the guest, including any time it prints.
                 guest_time: parsed.is_some() && stream == "kernel",
@@ -258,6 +284,7 @@ fn scan(
     path: &Path,
     segment: &Segment,
     start: u64,
+    redaction: &mut Redaction,
     mut visit: impl FnMut(u64, String, Decoded, bool) -> Result<(), String>,
 ) -> Result<u64, String> {
     let mut file = File::open(path).map_err(|_| "Retained logs could not be opened.")?;
@@ -290,7 +317,7 @@ fn scan(
         let (length, terminated) = if segment.stream == "boot-error" {
             // One atomically written document fills the file.
             (segment.bytes - offset, true)
-        } else if oversized {
+        } else if oversized && bytes.last() != Some(&b'\n') {
             let (rest, terminated) = skip_line(&mut reader, segment.bytes - offset - count)
                 .map_err(|_| "Retained logs could not be read.")?;
             (count + rest, terminated)
@@ -303,7 +330,9 @@ fn scan(
             break;
         }
         let id = record_id(segment.inode, offset, &bytes);
-        visit(offset, id, decode(segment, &bytes, oversized), terminated)?;
+        let mut decoded = decode(segment, &bytes, oversized);
+        redaction.apply(&segment.stream, &mut decoded);
+        visit(offset, id, decoded, terminated)?;
         offset += length;
         if terminated {
             consumed = offset;
@@ -379,9 +408,10 @@ fn cached_page(
             return Err("Retained log data changed or expired. Refresh the search.".into());
         }
         let decoded = decode(segment, &raw_bytes, raw_bytes.len() as u64 > RECORD_LIMIT);
+        let mut in_pem = location.in_pem;
         let mut entry = Entry {
             id: location.id.clone(),
-            line: runtime_activity::log_text(&decoded.body),
+            line: runtime_activity::log_text_with_pem(&decoded.body, &mut in_pem),
             occurred_at: location.time.clone(),
             sandbox_id: request.sandbox_id.clone(),
             sandbox_name: sandbox_name.into(),
@@ -482,6 +512,17 @@ fn files(directory: &Path) -> Result<Vec<(PathBuf, Segment)>, String> {
             },
         ));
     }
+    result.sort_by(|(left, a), (right, b)| {
+        let rotation = |path: &Path| {
+            path.extension()
+                .and_then(|suffix| suffix.to_str())
+                .and_then(|suffix| suffix.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        a.stream
+            .cmp(&b.stream)
+            .then_with(|| rotation(right).cmp(&rotation(left)))
+    });
     Ok(result)
 }
 fn record_id(inode: u64, offset: u64, raw: &[u8]) -> String {
@@ -696,15 +737,22 @@ fn read(
             let mut summary = Summary::default();
             let mut index = Index::default();
             let mut files = Vec::with_capacity(available.len());
+            let mut redaction = Redaction::default();
             for (path, segment) in &available {
                 let mut complete = Summary::default();
-                let consumed = scan(path, segment, 0, |offset, id, decoded, terminated| {
-                    summary.add(&decoded);
-                    if terminated {
-                        complete.add(&decoded);
-                    }
-                    index.add(segment.inode, offset, id, decoded, &filter)
-                })?;
+                let consumed = scan(
+                    path,
+                    segment,
+                    0,
+                    &mut redaction,
+                    |offset, id, decoded, terminated| {
+                        summary.add(&decoded);
+                        if terminated {
+                            complete.add(&decoded);
+                        }
+                        index.add(segment.inode, offset, id, decoded, &filter)
+                    },
+                )?;
                 files.push(Indexed {
                     segment: segment.clone(),
                     consumed,
@@ -715,6 +763,7 @@ fn read(
                 binding: binding.clone(),
                 files,
                 records: index.sorted(),
+                redaction,
                 summary,
             }
         }
@@ -800,11 +849,7 @@ impl Index {
         decoded: Decoded,
         filter: &Filter,
     ) -> Result<(), String> {
-        if !filter.matches(
-            &decoded.occurred_at,
-            &decoded.source,
-            &runtime_activity::log_text(&decoded.body),
-        ) {
+        if !filter.matches(&decoded.occurred_at, &decoded.source, &decoded.body) {
             return Ok(());
         }
         self.bytes += location_cost(&decoded.occurred_at, &id);
@@ -814,6 +859,7 @@ impl Index {
         self.records.push(Location {
             file,
             offset,
+            in_pem: decoded.in_pem,
             time: decoded.occurred_at,
             id,
         });
@@ -884,6 +930,18 @@ fn follow_index(
     available: &[(PathBuf, Segment)],
     filter: &Filter,
 ) -> Result<Option<Cached>, String> {
+    // Rebuild when rotation or an unfinished record changes the scanning boundary.
+    if previous.files.len() != available.len()
+        || previous.files.iter().any(|old| {
+            old.consumed != old.segment.bytes
+                || !available.iter().any(|(_, segment)| {
+                    segment.inode == old.segment.inode && segment.stream == old.segment.stream
+                })
+        })
+    {
+        return Ok(None);
+    }
+    let mut redaction = previous.redaction.clone();
     let mut summary = Summary::default();
     let mut index = Index::default();
     let mut files = Vec::with_capacity(available.len());
@@ -907,13 +965,19 @@ fn follow_index(
             None => (0, Summary::default()),
         };
         summary.merge(&complete);
-        let consumed = scan(path, segment, start, |offset, id, decoded, terminated| {
-            summary.add(&decoded);
-            if terminated {
-                complete.add(&decoded);
-            }
-            index.add(segment.inode, offset, id, decoded, filter)
-        })?;
+        let consumed = scan(
+            path,
+            segment,
+            start,
+            &mut redaction,
+            |offset, id, decoded, terminated| {
+                summary.add(&decoded);
+                if terminated {
+                    complete.add(&decoded);
+                }
+                index.add(segment.inode, offset, id, decoded, filter)
+            },
+        )?;
         files.push(Indexed {
             segment: segment.clone(),
             consumed,
@@ -945,6 +1009,7 @@ fn follow_index(
             records.push(Location {
                 file: old.file,
                 offset: old.offset,
+                in_pem: old.in_pem,
                 time: old.time.clone(),
                 id: old.id.clone(),
             });
@@ -956,6 +1021,7 @@ fn follow_index(
         binding: previous.binding.clone(),
         files,
         records,
+        redaction,
         summary,
     };
     if cached_cost(&cached) > INDEX_BUDGET {
@@ -973,8 +1039,9 @@ fn context(
     computer_name: &str,
 ) -> Result<Page, String> {
     let mut anchor = None;
+    let mut redaction = Redaction::default();
     for (path, segment) in available {
-        scan(path, segment, 0, |_, id, decoded, _| {
+        scan(path, segment, 0, &mut redaction, |_, id, decoded, _| {
             if anchor.is_none() && id == around {
                 anchor = Some((decoded.occurred_at, id));
             }
@@ -984,15 +1051,16 @@ fn context(
     let anchor = anchor.ok_or("The selected log record expired. Refresh the log search.")?;
     let mut summary = Summary::default();
     let mut total = 0;
+    let mut redaction = Redaction::default();
     let mut older = Vec::new();
     let mut newer = Vec::new();
     for (path, segment) in available {
-        scan(path, segment, 0, |_, id, decoded, _| {
+        scan(path, segment, 0, &mut redaction, |_, id, decoded, _| {
             summary.add(&decoded);
             total += 1;
             let entry = Entry {
                 id,
-                line: runtime_activity::log_text(&decoded.body),
+                line: decoded.body,
                 occurred_at: decoded.occurred_at,
                 sandbox_id: request.sandbox_id.clone(),
                 sandbox_name: sandbox_name.into(),
@@ -1201,6 +1269,212 @@ mod tests {
     fn line(index: usize, body: &str) -> String {
         format!("{{\"t\":\"2026-09-18T12:00:00.{index:09}Z\",\"s\":\"stderr\",\"d\":\"{body}\",\"id\":42}}\n")
     }
+    #[test]
+    fn credential_urls_are_hidden_in_pages_context_and_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut records = line(0, "ordinary connection failure");
+        for (index, body) in [
+            "fetch failed: https://alice:synthetic-url-password@example.test/repo",
+            "git clone 'https://synthetic-url-token@example.test/repo'",
+            "connect(postgresql://alice:synthetic-db-password@localhost/db)",
+            "remote=https://alice:synthetic%2Dencoded%2Dpassword@example.test/repo",
+            "curl --user alice:synthetic-password https://example.test",
+            "curl -u alice:synthetic-password https://example.test",
+            "login --password synthetic-password",
+            "client --api-key synthetic-key",
+            "client --client-secret synthetic-secret",
+            "client --access_token synthetic-token",
+        ]
+        .iter()
+        .enumerate()
+        {
+            records.push_str(&line(index + 1, body));
+        }
+        fs::write(directory.path().join("exec.log"), records).unwrap();
+        let mut query = request();
+        query.limit = Some(1);
+        let first = read(directory.path(), query.clone(), "dev", "pc", "Desktop").unwrap();
+        query.cursor = first.next_cursor.clone();
+        let page = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
+        let mut context = request();
+        context.around_id = Some(page.entries[0].id.clone());
+        let context = read(directory.path(), context, "dev", "pc", "Desktop").unwrap();
+        let mut exported = Vec::new();
+        crate::log_export::write_requests(
+            &mut exported,
+            vec![request()],
+            |query| read(directory.path(), query, "dev", "pc", "Desktop"),
+            || false,
+        )
+        .unwrap();
+        for text in [
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&page).unwrap(),
+            serde_json::to_string(&context).unwrap(),
+            String::from_utf8(exported).unwrap(),
+        ] {
+            assert!(!text.contains("synthetic"), "Credentials escaped: {text}");
+        }
+        assert!(context
+            .entries
+            .iter()
+            .any(|entry| entry.line == "ordinary connection failure"));
+    }
+    fn disposable_pem() -> Vec<String> {
+        let output = Command::new("openssl")
+            .args([
+                "genpkey",
+                "-algorithm",
+                "RSA",
+                "-pkeyopt",
+                "rsa_keygen_bits:1024",
+            ])
+            .output()
+            .expect("generate a disposable test key");
+        assert!(output.status.success());
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn assert_no_key(text: &str, pem: &[String]) {
+        assert!(
+            pem[1..pem.len() - 1]
+                .iter()
+                .all(|body| !text.contains(body)),
+            "disposable private-key body survived redaction"
+        );
+    }
+
+    #[test]
+    fn pem_records_are_hidden_in_search_pages_context_follow_and_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let pem = disposable_pem();
+        let records = |lines: &[String], start: usize| {
+            lines
+                .iter()
+                .enumerate()
+                .map(|(i, body)| line(start + i, body))
+                .collect::<String>()
+        };
+        fs::write(directory.path().join("exec.log"), records(&pem[..2], 0)).unwrap();
+        let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+        assert_no_key(&serde_json::to_string(&first).unwrap(), &pem);
+        // A different command remains readable while this session's PEM is open.
+        let mut appended = line(2, "ordinary\\nmultiline output").replace("\"id\":42", "\"id\":99");
+        appended.push_str(&records(&pem[2..], 3));
+        appended.push_str(&line(99, "after key"));
+        fs::OpenOptions::new()
+            .append(true)
+            .open(directory.path().join("exec.log"))
+            .unwrap()
+            .write_all(appended.as_bytes())
+            .unwrap();
+        let mut follow = request();
+        follow.follow = first.snapshot;
+        let followed = read(directory.path(), follow, "dev", "pc", "Desktop").unwrap();
+        assert_no_key(&serde_json::to_string(&followed).unwrap(), &pem);
+        assert!(followed
+            .entries
+            .iter()
+            .any(|e| e.line == "ordinary\nmultiline output"));
+        assert!(followed.entries.iter().any(|e| e.line == "after key"));
+
+        for source in ["exec", "kernel"] {
+            if source == "kernel" {
+                fs::write(directory.path().join("kernel.log"), pem.join("\n") + "\n").unwrap();
+            }
+            let mut query = request();
+            query.limit = Some(1);
+            let mut pages = Vec::new();
+            loop {
+                let page = read(directory.path(), query.clone(), "dev", "pc", "Desktop").unwrap();
+                assert_no_key(&serde_json::to_string(&page).unwrap(), &pem);
+                pages.extend(page.entries);
+                query.cursor = page.next_cursor;
+                if query.cursor.is_none() {
+                    break;
+                }
+            }
+            let mut context = request();
+            context.around_id = Some(pages[pages.len() / 2].id.clone());
+            let context = read(directory.path(), context, "dev", "pc", "Desktop").unwrap();
+            assert_no_key(&serde_json::to_string(&context).unwrap(), &pem);
+            let mut search = request();
+            search.query = Some(pem[1].clone());
+            assert_eq!(
+                read(directory.path(), search, "dev", "pc", "Desktop")
+                    .unwrap()
+                    .total_matches,
+                0
+            );
+            let mut export = Vec::new();
+            let mut query = request();
+            query.limit = Some(1);
+            crate::log_export::write_requests(
+                &mut export,
+                vec![query],
+                |query| read(directory.path(), query, "dev", "pc", "Desktop"),
+                || false,
+            )
+            .unwrap();
+            assert_no_key(&String::from_utf8(export).unwrap(), &pem);
+        }
+    }
+
+    #[test]
+    fn pem_redaction_spans_rotation_and_unterminated_blocks() {
+        let directory = tempfile::tempdir().unwrap();
+        let pem = disposable_pem();
+        for stream in ["kernel", "exec"] {
+            let records = |lines: &[String], start| {
+                if stream == "kernel" {
+                    lines.join("\n") + "\n"
+                } else {
+                    lines
+                        .iter()
+                        .enumerate()
+                        .map(|(i, body)| line(start + i, body))
+                        .collect::<String>()
+                }
+            };
+            fs::write(
+                directory.path().join(format!("{stream}.log.12")),
+                records(&pem[..2], 0),
+            )
+            .unwrap();
+            fs::write(
+                directory.path().join(format!("{stream}.log.2")),
+                records(&pem[2..4], 2),
+            )
+            .unwrap();
+            fs::write(
+                directory.path().join(format!("{stream}.log")),
+                records(&pem[4..pem.len() - 1], 4),
+            )
+            .unwrap();
+        }
+        let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+        assert_no_key(&serde_json::to_string(&first).unwrap(), &pem);
+        fs::rename(
+            directory.path().join("exec.log"),
+            directory.path().join("exec.log.1"),
+        )
+        .unwrap();
+        fs::write(
+            directory.path().join("exec.log"),
+            line(100, &pem[1]) + &line(101, pem.last().unwrap()) + &line(102, "after rotation"),
+        )
+        .unwrap();
+        let mut follow = request();
+        follow.follow = first.snapshot;
+        let page = read(directory.path(), follow, "dev", "pc", "Desktop").unwrap();
+        assert_no_key(&serde_json::to_string(&page).unwrap(), &pem);
+        assert!(page.entries.iter().any(|e| e.line == "after rotation"));
+    }
+
     #[test]
     fn search_finds_old_error_across_more_than_100000_rotated_records() {
         let directory = tempfile::tempdir().unwrap();
@@ -1597,6 +1871,52 @@ mod tests {
             "[Unreadable boot failure record]",
         ] {
             assert!(lines.contains(&expected), "{expected}: {lines:?}");
+        }
+    }
+    #[test]
+    fn oversized_record_ending_at_the_read_boundary_preserves_the_next_record() {
+        for stream in ["kernel", "exec"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join(format!("{stream}.log"));
+            fs::write(&path, "").unwrap();
+            let initial = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+            let oversized = if stream == "exec" {
+                line(
+                    0,
+                    &"x".repeat(RECORD_LIMIT as usize + 1 - line(0, "").len()),
+                )
+            } else {
+                format!("{}\n", "x".repeat(RECORD_LIMIT as usize))
+            };
+            assert_eq!(oversized.len(), RECORD_LIMIT as usize + 1);
+            append(&path, &oversized);
+            for (index, body) in [(1, "first sentinel"), (2, "second sentinel")] {
+                append(
+                    &path,
+                    &if stream == "exec" {
+                        line(index, body)
+                    } else {
+                        format!("2026-09-18T12:00:00.{index:09}Z {body}\n")
+                    },
+                );
+            }
+            let mut follow = request();
+            follow.follow = initial.snapshot;
+            follow.limit = Some(1);
+            let (entries, first) = all_pages(directory.path(), follow);
+            assert_eq!(first.total_matches, 3, "{stream}");
+            for sentinel in ["first sentinel", "second sentinel"] {
+                assert!(entries.iter().any(|entry| entry.line.ends_with(sentinel)));
+            }
+            assert!(first.unreadable_records);
+            let mut search = request();
+            search.query = Some("first sentinel".into());
+            let found = read(directory.path(), search, "dev", "pc", "Desktop").unwrap();
+            assert_eq!(found.total_matches, 1, "{stream}");
+            let mut context = request();
+            context.around_id = Some(found.entries[0].id.clone());
+            let around = read(directory.path(), context, "dev", "pc", "Desktop").unwrap();
+            assert_eq!(around.entries.len(), 3, "{stream}");
         }
     }
     #[test]
