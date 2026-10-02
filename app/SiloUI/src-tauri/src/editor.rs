@@ -1337,6 +1337,43 @@ mod tests {
     }
 
     #[test]
+    fn ssh_includes_keep_wildcard_characters_in_directory_names_literal() {
+        let home = tempfile::tempdir().unwrap();
+        for (index, name) in ["home[1]", "home?", "home*", "home\\folder"]
+            .into_iter()
+            .enumerate()
+        {
+            let root = home.path().join(name).join("ssh");
+            fs::create_dir_all(&root).unwrap();
+            let hostname = format!("selected-vm-{index}");
+            fs::write(
+                root.join("dev.conf"),
+                format!("Host silo-test-dev\n  HostName {hostname}\n"),
+            )
+            .unwrap();
+            let config = home.path().join("config");
+            fs::write(&config, format!("{}\n", include_line(&root).unwrap())).unwrap();
+            let output = Command::new("/usr/bin/ssh")
+                .args(["-G", "-F"])
+                .arg(&config)
+                .arg("silo-test-dev")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains(&format!("hostname {hostname}\n")),
+                "{name}: the Include must read the exact directory"
+            );
+        }
+    }
+
+    #[test]
     fn shell_and_ssh_paths_are_escaped() {
         assert_eq!(quote("a'b $()"), "'a'\\''b $()'");
         assert_eq!(ssh_quote(Path::new("/a%b\"c")).unwrap(), "\"/a%%b\\\"c\"");
