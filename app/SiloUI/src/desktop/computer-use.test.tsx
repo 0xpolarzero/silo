@@ -641,6 +641,21 @@ describe("ChatGPT status ordering", () => {
 })
 
 describe("ChatGPT app errors", () => {
+  it("reports a malformed status after a successful read and recovers on Refresh", async () => {
+    const read = vi.fn().mockResolvedValueOnce({ state: "ready", version: "1" })
+      .mockResolvedValueOnce(null).mockResolvedValue({ state: "idle" })
+    const store = createComputerUseBridge(backend({ chatGptStatus: read })).chatGptFor(HOST)
+    await store.refresh()
+    const view = render(<ChatGptAppStatusView store={store} />)
+    try {
+      await waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+      expect(store.getSnapshot().status).toMatchObject({ state: "ready", version: "1" })
+      expect(screen.getByRole("alert")).toHaveTextContent("Silo could not read the ChatGPT for Linux status.")
+      await act(async () => fireEvent.click(screen.getByRole("button", { name: "Refresh status" })))
+      expect(screen.getByRole("status")).toHaveTextContent("ChatGPT for Linux will download shortly.")
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    } finally { view.unmount() }
+  })
   it("shows a rejected Retry and keeps it until dismissed", async () => {
     const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "failed", reason: "Offline.", retryable: true }), retry: async () => { throw new Error("Silo could not reach the other computer.") } }))
     const store = bridge.chatGptFor(HOST)
