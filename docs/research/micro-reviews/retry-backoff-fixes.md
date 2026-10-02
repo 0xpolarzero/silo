@@ -57,3 +57,11 @@ The standalone Rust verification extracts the production retry helper, failure c
 - Consequence: updater checks continue at the fastest interval throughout an outage.
 - Fix: schedule each poll after its read, double failed-read delays up to 30 seconds, and reset on a successful read or event. Focus still requests a read immediately.
 - Verification: the regression checks growing and capped delays, recovery, and provider disposal; existing update tests cover subscription repair, installation ordering, and equal-snapshot rendering.
+
+## Workspace file-tree refreshes
+
+- Trigger: one visible folder keeps failing while other expanded folders remain readable.
+- Evidence: the root's ten-second interval refreshed every visible path without considering its preceding error. The fixture regression observed a second failed folder read before the first twenty-second backoff deadline.
+- Consequence: inaccessible folders keep invoking guest directory reads at the normal interval.
+- Fix: retain a capped retry deadline per failing visible path. Healthy paths retain the ten-second interval, success clears that path's delay, and focus/visibility returns bypass the wait. Cleanup prevents completed reads from retaining an inactive schedule.
+- Verification: the regression checks independent healthy-folder reads, growing and repeated sixty-second caps, recovery, and closure. Existing tests preserve immediate focus recovery and one root polling schedule.
