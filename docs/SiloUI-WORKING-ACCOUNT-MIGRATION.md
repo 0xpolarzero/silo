@@ -85,6 +85,12 @@ them atomically, leaving any other hardlinks to the previous file unchanged.
 Shell links and directories cause a conflict instead of being removed.
 Unchanged distribution defaults remain skipped.
 
+Shell and launcher relocation includes whole home values such as `HOME="/root"`
+and keeps external paths such as `/opt/root/tools` unchanged. The shared
+[Python byte-pattern substitution](https://docs.python.org/3.12/library/re.html)
+preserves existing encodings and line endings. Only legacy home tokens and
+their descendants are relocated; matching text inside another path is retained.
+
 Python 3.12's [copytree contract](https://docs.python.org/3.12/library/shutil.html#shutil.copytree)
 preserves source links with `symlinks=True`, but `dirs_exist_ok=True` permits
 destination overwrites. It provides no destination-link preservation policy.
