@@ -1073,6 +1073,13 @@ fn github(token: &str, path: &str) -> Result<Value, String> {
 fn catalog(c: &Credential) -> Result<Vec<Value>, String> {
     Ok(catalog_installations(c)?.0)
 }
+fn catalog_with_retry(
+    c: &Credential,
+    fetch: impl FnOnce(&Credential) -> Result<Vec<Value>, String>,
+) -> Result<Vec<Value>, String> {
+    crate::github_http::reset_catalog_retries(&c.access_token);
+    fetch(c)
+}
 fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
     let slug = APP_SLUG.ok_or("GitHub App is not configured in this build.")?;
     let mut repos = Vec::new();
@@ -3011,11 +3018,7 @@ pub async fn refresh_github_repositories(
     require_main(window.label())?;
     retry_credential_access();
     run(app, |app| {
-        if let Ok(Some(credential)) = credential() {
-            crate::github_http::reset_catalog_retries(&credential.access_token);
-        }
-
-        let result = active_credential().and_then(|c| catalog(&c));
+        let result = active_credential().and_then(|c| catalog_with_retry(&c, catalog));
         let _state = serialize(&STATE);
         let mut d = load(app)?;
         match result {
@@ -3334,6 +3337,18 @@ pub async fn retry_github_configuration(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repository_refresh_keeps_unrelated_token_operations_stopped() {
+        crate::github_http::assert_bearer_retry_isolated(|token| {
+            let credential = fixture_credential(token, super::now() + 3600);
+            let result = super::catalog_with_retry(&credential, |credential| {
+                assert_eq!(credential.access_token, token);
+                Ok(vec![serde_json::json!({"fixture": true})])
+            })
+            .unwrap();
+            assert_eq!(result, vec![serde_json::json!({"fixture": true})]);
+        });
+    }
     #[test]
     fn a_panic_under_the_github_locks_does_not_block_updates_or_settings() {
         let _test_state = crate::test_support::global_state();
