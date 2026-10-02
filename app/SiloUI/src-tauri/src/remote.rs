@@ -1000,6 +1000,18 @@ impl Failure {
         self.error().message
     }
 }
+/// A bridge reply carries either an explicit result or a reported error.
+fn decode_reply(response: &Value) -> Result<Value, Failure> {
+    let invalid = || Failure::Failed("Invalid remote Silo response.".into());
+    match (response.get("result"), response.get("error")) {
+        (Some(result), None) => Ok(result.clone()),
+        (None, Some(_)) => Err(BridgeError::from_remote_reply(response)
+            .map(Failure::Reported)
+            .unwrap_or_else(invalid)),
+        _ => Err(invalid()),
+    }
+}
+
 /// An ssh failure that sending the request again may overcome: the connection dropped or
 /// could not be made, not a host key, authentication, name or refused-connection problem.
 fn lost_connection(code: Option<i32>, stderr: &str) -> bool {
@@ -1114,10 +1126,7 @@ fn run_exchange(
     let mut stdout = stdout;
     stdout.seek(SeekFrom::Start(0)).map_err(failed)?;
     let response = read_reply(std::io::BufReader::new(stdout)).map_err(Failure::Failed)?;
-    if let Some(error) = BridgeError::from_remote_reply(&response) {
-        return Err(Failure::Reported(error));
-    }
-    Ok(response["result"].clone())
+    decode_reply(&response)
 }
 /// Legacy adapter for callers whose command error contract has not migrated yet.
 pub(crate) fn call_remote(
@@ -1676,9 +1685,7 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
             &json!({"version":VERSION,"hostId":host.id,"method":method,"params":params}),
         )?;
         let reply = read_reply(&mut output)?;
-        if let Some(error) = reply["error"].as_str() {
-            return Err(error.to_owned());
-        }
+        decode_reply(&reply).map_err(Failure::message)?;
         thread::spawn(move || {
             let _ = std::io::copy(&mut std::io::stdin().lock(), &mut input);
         });
@@ -3367,6 +3374,51 @@ mod reply_tests {
         assert!(read_reply(flood.as_slice())
             .unwrap_err()
             .contains("shell startup files"));
+    }
+
+    fn exchange_fixture_reply(response: &Value) -> Result<Value, Failure> {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("reply");
+        fs::write(&path, reply(response)).unwrap();
+        let mut command = Command::new("/bin/cat");
+        command.arg(path);
+        run_exchange(
+            command,
+            &json!({"method":"handshake"}),
+            Instant::now() + Duration::from_secs(2),
+        )
+    }
+
+    #[test]
+    fn exchange_rejects_malformed_reply_envelopes() {
+        for response in [
+            json!({}),
+            json!([]),
+            json!({"error":{"message":"failed"}}),
+            json!({"result":null,"error":"failed"}),
+        ] {
+            assert!(
+                matches!(exchange_fixture_reply(&response), Err(Failure::Failed(message)) if message.contains("Invalid remote Silo response")),
+                "malformed reply was accepted: {response}"
+            );
+        }
+    }
+
+    #[test]
+    fn exchange_preserves_null_results_and_reported_errors() {
+        assert_eq!(
+            exchange_fixture_reply(&json!({"result":null})),
+            Ok(Value::Null)
+        );
+        let error = BridgeError::new(ErrorCode::Cancelled, "Cancelled by owner.");
+        assert_eq!(
+            exchange_fixture_reply(&error_reply(&error)),
+            Err(Failure::Reported(error))
+        );
+        assert!(matches!(
+            exchange_fixture_reply(&json!({"error":"Legacy owner error."})),
+            Err(Failure::Reported(error)) if error.message == "Legacy owner error."
+        ));
     }
 
     #[test]
