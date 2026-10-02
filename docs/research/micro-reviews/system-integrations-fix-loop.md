@@ -107,3 +107,15 @@ The rejection path now reads a fallback snapshot unless disposed. Successful
 registration still precedes the initial read, preserving the subscription-gap
 fix. All 41 focused notice, settings, and shutdown tests pass; typecheck, targeted
 lint, and diff checks pass. Only native-bridge fixtures were used.
+
+
+## Follow-up: failed shutdown snapshot never recovers
+
+A successful shutdown-state subscription followed by a rejected initial read
+left `ShutdownBoundary` unable to see a shutdown already in progress. Its focus
+retry stopped at the existing subscription, so no fresh read occurred without
+another native event. The regression rejects the first read, focuses the window,
+and verifies the Quit overlay and exactly one shutdown subscription. It failed
+before the fix. Focus now retries the unread snapshot using that subscription;
+a received event still takes precedence over an older read. All 42 focused tests,
+typecheck, targeted lint, and diff checks pass using native-bridge fixtures.
