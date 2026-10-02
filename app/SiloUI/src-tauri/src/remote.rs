@@ -1531,7 +1531,7 @@ pub(crate) fn run_bridge() -> Result<(), String> {
         .set_read_timeout(Some(request_timeout(&request)))
         .map_err(|e| e.to_string())?;
     let streaming = request["method"] == "guest.ssh";
-    write_frame(&mut socket, &request)?;
+    write_bridge_request(&mut socket, &request, Duration::from_secs(30))?;
     if !streaming {
         watch_controller(
             std::io::stdin(),
@@ -1542,6 +1542,7 @@ pub(crate) fn run_bridge() -> Result<(), String> {
     write_reply(std::io::stdout().lock(), &response)?;
     if streaming && response.get("error").is_none() {
         socket.set_read_timeout(None).map_err(|e| e.to_string())?;
+        socket.set_write_timeout(None).map_err(|e| e.to_string())?;
         let mut input = socket.try_clone().map_err(|e| e.to_string())?;
         thread::spawn(move || {
             let _ = std::io::copy(&mut std::io::stdin().lock(), &mut input);
@@ -1551,6 +1552,17 @@ pub(crate) fn run_bridge() -> Result<(), String> {
     }
     Ok(())
 }
+fn write_bridge_request(
+    socket: &mut UnixStream,
+    request: &Value,
+    timeout: Duration,
+) -> Result<(), String> {
+    socket
+        .set_write_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    write_frame(socket, request)
+}
+
 /// The controller keeps the bridge's input open until it has its reply, so the end of
 /// that input means the controller left. Closing the owner connection's write side then
 /// tells the owner to drop work that has not started; a reply can still arrive.
@@ -2028,6 +2040,40 @@ mod tests {
             assert!(validate_address(address).is_ok());
         }
     }
+    #[test]
+    fn bridge_request_write_times_out_when_owner_stops_reading() {
+        use std::os::fd::AsRawFd;
+        let (mut sender, receiver) = UnixStream::pair().unwrap();
+        let size: libc::c_int = 4096;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    sender.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    &size as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&size) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        let request = json!({"method":"test", "params":"x".repeat(1024 * 1024)});
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = write_bridge_request(&mut sender, &request, Duration::from_millis(50));
+            done_tx.send(result).unwrap();
+        });
+        let completed = done_rx.recv_timeout(Duration::from_secs(1));
+        // Release the blocked writer even if the timeout regression fails.
+        drop(receiver);
+        assert!(
+            completed.is_ok(),
+            "bridge write retained a stalled connection"
+        );
+        worker.join().unwrap();
+        assert!(completed.unwrap().is_err());
+    }
+
     #[test]
     fn frames_are_bounded_and_round_trip() {
         let _test_state = crate::test_support::global_state();
