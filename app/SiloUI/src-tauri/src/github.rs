@@ -2113,7 +2113,10 @@ pub(crate) fn host_push_credential(
     repository: &str,
 ) -> Result<HostPushCredential, String> {
     let _guard = crate::sync::lock_or_recover(&OPERATION, "GitHub operation");
-    let d = load(app)?;
+    let d = {
+        let _state = serialize(&STATE);
+        load(app)?
+    };
     let policy = d
         .workspaces
         .iter()
@@ -2125,51 +2128,75 @@ pub(crate) fn host_push_credential(
         return Err("Enable GitHub access before pushing.".into());
     }
     push_authorized(policy, repository)?;
-    if personal_token::selected(policy) {
-        return Ok(HostPushCredential {
-            token: personal_token::value()?,
-            repository: repository.into(),
-            expires_at: None,
-            retire: None,
-        });
-    }
-    let c = host_push_account_credential()?;
-    let catalog = catalog(&c)?;
-    let repo = catalog
-        .iter()
-        .find(|r| {
-            r["name"]
-                .as_str()
-                .is_some_and(|name| name.eq_ignore_ascii_case(repository))
-        })
-        .ok_or("GitHub no longer authorizes this repository.")?;
-    let name = repo["name"]
-        .as_str()
-        .ok_or("Invalid repository name.")?
-        .to_owned();
-    let owner = repo["ownerId"]
-        .as_u64()
-        .ok_or("Invalid repository owner.")?;
-    let id = repo["id"]
-        .as_u64()
-        .ok_or("Invalid repository identifier.")?;
-    let response = token_operation(
-        Operation::Scope,
-        host_push_scope(&c.access_token, owner, id),
-    )?;
-    let token = response["accessToken"]
-        .as_str()
-        .filter(|s| !s.is_empty())
-        .ok_or("GitHub returned no restricted push credential.")?
-        .to_owned();
-    // From here on, dropping the credential revokes the token.
-    let mut credential = HostPushCredential {
-        token,
-        repository: name,
-        expires_at: None,
-        retire: Some((app.clone(), workspace.into())),
+    let current = || {
+        let _state = serialize(&STATE);
+        if load(app)?.revision != d.revision {
+            return Err("GitHub access changed. Retry the push with your latest choices.".into());
+        }
+        Ok(())
     };
-    credential.expires_at = Some(token_expiry(&response)?);
+    issue_host_push(
+        || {
+            if personal_token::selected(policy) {
+                return Ok(HostPushCredential {
+                    token: personal_token::value()?,
+                    repository: repository.into(),
+                    expires_at: None,
+                    retire: None,
+                });
+            }
+            let c = host_push_account_credential()?;
+            let catalog = catalog(&c)?;
+            let repo = catalog
+                .iter()
+                .find(|r| {
+                    r["name"]
+                        .as_str()
+                        .is_some_and(|name| name.eq_ignore_ascii_case(repository))
+                })
+                .ok_or("GitHub no longer authorizes this repository.")?;
+            let name = repo["name"]
+                .as_str()
+                .ok_or("Invalid repository name.")?
+                .to_owned();
+            let owner = repo["ownerId"]
+                .as_u64()
+                .ok_or("Invalid repository owner.")?;
+            let id = repo["id"]
+                .as_u64()
+                .ok_or("Invalid repository identifier.")?;
+            current()?;
+            let response = token_operation(
+                Operation::Scope,
+                host_push_scope(&c.access_token, owner, id),
+            )?;
+            let token = response["accessToken"]
+                .as_str()
+                .filter(|s| !s.is_empty())
+                .ok_or("GitHub returned no restricted push credential.")?
+                .to_owned();
+            // From here on, dropping the credential revokes the token.
+            let mut credential = HostPushCredential {
+                token,
+                repository: name,
+                expires_at: None,
+                retire: Some((app.clone(), workspace.into())),
+            };
+            credential.expires_at = Some(token_expiry(&response)?);
+            Ok(credential)
+        },
+        &current,
+    )
+}
+
+fn issue_host_push<T>(
+    issue: impl FnOnce() -> Result<T, String>,
+    current: impl Fn() -> Result<(), String>,
+) -> Result<T, String> {
+    current()?;
+    let credential = issue()?;
+    // An obsolete scoped credential is dropped and retired before it reaches the push.
+    current()?;
     Ok(credential)
 }
 
@@ -2233,6 +2260,62 @@ mod host_push_authorization_tests {
             },
         );
         assert_eq!(*remembered.borrow(), ["offline"]);
+    }
+
+    #[test]
+    fn host_push_drops_issued_credentials_when_policy_changes_before_handoff() {
+        use std::cell::Cell;
+        struct ScopedToken<'a>(&'a Cell<usize>);
+        impl Drop for ScopedToken<'_> {
+            fn drop(&mut self) {
+                self.0.set(self.0.get() + 1);
+            }
+        }
+        let revision = Cell::new(7);
+        let revoked = Cell::new(0);
+        let handed_off = Cell::new(false);
+        let result = super::issue_host_push(
+            || {
+                // A completed Disable access or policy save increments the revision
+                // while the network request is issuing the credential.
+                revision.set(8);
+                Ok(ScopedToken(&revoked))
+            },
+            || {
+                if revision.get() != 7 {
+                    Err("GitHub access changed.".into())
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        if result.is_ok() {
+            handed_off.set(true);
+        }
+        assert!(!handed_off.get());
+        assert_eq!(revoked.get(), 1);
+    }
+
+    #[test]
+    fn host_push_does_not_issue_after_authorization_already_changed() {
+        let mut issued = false;
+        let result = super::issue_host_push(
+            || {
+                issued = true;
+                Ok("credential")
+            },
+            || Err("GitHub access changed.".into()),
+        );
+        assert!(result.is_err());
+        assert!(!issued);
+    }
+
+    #[test]
+    fn host_push_hands_off_credentials_when_authorization_stays_current() {
+        assert_eq!(
+            super::issue_host_push(|| Ok("credential"), || Ok(())),
+            Ok("credential")
+        );
     }
 
     #[test]
