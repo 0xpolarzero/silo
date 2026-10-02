@@ -834,7 +834,7 @@ impl TarStream {
                 .find(|name| name.starts_with("data.tar"))
                 .map(str::to_owned)
                 .ok_or_else(|| Error::fatal("The ChatGPT package has no data archive."))?;
-            let mut first = Command::new(tar)
+            let first = Command::new(tar)
                 .arg("-xOf")
                 .arg(deb)
                 .arg(&member)
@@ -842,19 +842,7 @@ impl TarStream {
                 .stderr(Stdio::null())
                 .spawn()
                 .map_err(|_| missing())?;
-            let input = first.stdout.take().expect("piped");
-            let mut second = Command::new(tar)
-                .args(["-cf", "-", "@-"])
-                .stdin(Stdio::from(input))
-                .stdout(Stdio::piped())
-                .stderr(Stdio::null())
-                .spawn()
-                .map_err(|_| missing())?;
-            let stdout = second.stdout.take().expect("piped");
-            Ok(Self {
-                children: vec![first, second],
-                stdout,
-            })
+            Self::pipe(first, Command::new(tar).args(["-cf", "-", "@-"])).map_err(|_| missing())
         } else {
             let tool = ["/usr/bin/dpkg-deb", "dpkg-deb"]
                 .into_iter()
@@ -880,6 +868,24 @@ impl TarStream {
                 stdout,
             })
         }
+    }
+
+    fn pipe(mut first: Child, second: &mut Command) -> std::io::Result<Self> {
+        let input = first.stdout.take().expect("piped");
+        let mut second = second
+            .stdin(Stdio::from(input))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .inspect_err(|_| {
+                let _ = first.kill();
+                let _ = first.wait();
+            })?;
+        let stdout = second.stdout.take().expect("piped");
+        Ok(Self {
+            children: vec![first, second],
+            stdout,
+        })
     }
 
     /// Reads the rest of the stream, then requires every tool to have succeeded.
