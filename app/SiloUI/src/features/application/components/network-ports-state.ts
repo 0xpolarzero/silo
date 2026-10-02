@@ -20,9 +20,10 @@ export function networkLoopbackAddress(port: NetworkPort) {
 
 /** The human-readable state of a port, accounting for VM lifecycle and stale/failed discovery. */
 export function networkPortState(workspace: ApplicationWorkspace, port: NetworkPort, error?: string | null) {
+  if (workspace.freshness === "stale") return "Unknown"
   if (workspace.state === "starting") return workspace.stateDetail === "Stopping" ? "Sandbox stopping" : "Sandbox starting"
   if (workspace.state !== "running") return workspace.state === "failed" ? "Sandbox failed" : "Sandbox stopped"
-  if (workspace.freshness === "stale" || error) return "Unknown"
+  if (error) return "Unknown"
   return ({ reachable: "Reachable", waiting: "Waiting for service", unpublished: "Not forwarded", unknown: "Unknown" })[port.state]
 }
 
