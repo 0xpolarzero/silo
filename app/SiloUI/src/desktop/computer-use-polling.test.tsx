@@ -29,6 +29,24 @@ function section(b: ComputerUseBackend, active = true) {
 beforeEach(() => { vi.useFakeTimers(); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible") })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
+it("reads remote download status without waiting for local event registration", async () => {
+  const listen = vi.fn(() => new Promise<() => void>(() => {}))
+  const read = vi.fn(async () => ({ state: "downloading", receivedBytes: 1, totalBytes: 10 }))
+  const store = createComputerUseBridge(backend({ chatGptStatus: read, listenStatus: listen }), { busy: 1000, idle: 1000 }).chatGptFor("office")
+  const stop = store.subscribe(() => {})
+  try {
+    await advance(0)
+    expect(read).toHaveBeenCalledWith("office")
+    expect(store.getSnapshot().status).toMatchObject({ state: "downloading" })
+    await advance(1000)
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(listen).not.toHaveBeenCalled()
+    stop()
+    await advance(1000)
+    expect(read).toHaveBeenCalledTimes(2)
+  } finally { stop() }
+})
+
 it("keeps remote download consumers stable until progress or a read error changes", async () => {
   let receivedBytes = 1
   let unavailable = false
