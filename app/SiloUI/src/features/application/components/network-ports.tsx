@@ -37,7 +37,7 @@ export function NetworkPortForm({ controller, fieldID, hideSandbox = false, clas
       const verb = draft.editing ? "edit" : "add"
       void run(`network-port:${draft.workspace}:${request.port}:${verb}`, identity, draft.editing
         ? { loading: `Saving port ${request.port}`, step: `Saving port ${request.port}`, success: `Port ${request.port} saved`, failure: `Could not save port ${request.port}` }
-        : { loading: `Adding port ${request.port}`, step: `Publishing port ${request.port}`, success: `Port ${request.port} added`, failure: `Could not add port ${request.port}` }, () => actions.saveNetworkPort!(request), () => setDraft(null))
+        : { loading: `Adding port ${request.port}`, step: `Publishing port ${request.port}`, success: `Port ${request.port} added`, failure: `Could not add port ${request.port}` }, () => actions.saveNetworkPort!(request), () => setDraft(current => current === draft ? null : current))
     }
   }}>
     <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Port<Input technical aria-label="Port" aria-invalid={Boolean(fieldErrors.port)} aria-describedby={fieldErrors.port ? `${fieldID}-port-error` : undefined} className="h-8 w-full" type="number" min={1} max={65535} required autoFocus={!draft.editing} disabled={busy || draft.editing} value={draft.port} onChange={e => { setDraft({ ...draft, port: e.target.value }); setFieldErrors(current => ({ ...current, port: undefined })) }} />{fieldErrors.port && <span id={`${fieldID}-port-error`} className="text-destructive">{fieldErrors.port}</span>}</label></div>

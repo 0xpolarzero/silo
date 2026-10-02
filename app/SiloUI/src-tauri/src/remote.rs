@@ -21,20 +21,19 @@ mod operations;
 /// account's login shell, so the POSIX script is handed to `sh` in single quotes, which
 /// fish, csh and nushell also pass through unchanged; the script itself has no single quote.
 const INSTALL_PUBLIC_KEY: &str = r#"sh -c 'umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && key=$(cat) && { grep -qxF -- "$key" ~/.ssh/authorized_keys || printf "\n%s\n" "$key" >> ~/.ssh/authorized_keys; }'"#;
-/// Silo's key may only run the bridge and open `-N` tunnels to loopback ports on the owner.
+/// Silo's owner key may only run the bridge; forwarding uses the pinned guest transport.
 fn authorized_key_options() -> String {
     format!(
-        r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="{}""#,
+        r#"restrict,command="{}""#,
         crate::channel::current().remote_bridge_command()
     )
 }
 fn silo_key_comment() -> &'static str {
     crate::channel::current().remote_key_comment()
 }
-/// Bridge protocol version; both computers must match. 2 adds the method table, capabilities,
-/// changes named by a stable `operationId` that must start within `startWithinMs`, and a
-/// preamble before each bridge reply.
-const VERSION: u32 = 2;
+/// Bridge protocol version; both computers must match. 3 moves published-port tunnels
+/// into guest SSH so owner management keys no longer permit forwarding.
+const VERSION: u32 = 3;
 const LIMIT: usize = 4 * 1024 * 1024;
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 const CONFIG_TOO_LARGE: &str = "Remote management settings exceed the 1 MiB safety limit.";
@@ -59,6 +58,8 @@ struct Config {
     host_id: String,
     enabled: bool,
     hosts: Vec<RemoteHost>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -135,8 +136,20 @@ fn read_config() -> Result<Config, String> {
     read_config_in(&directory()?)
 }
 fn read_config_in(dir: &Path) -> Result<Config, String> {
-    match fs::File::open(dir.join("config.json")) {
+    use std::os::unix::fs::OpenOptionsExt;
+    match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(dir.join("config.json"))
+    {
         Ok(file) => {
+            if !file
+                .metadata()
+                .map_err(|error| error.to_string())?
+                .is_file()
+            {
+                return Err("Remote management settings must be a regular file.".into());
+            }
             let mut bytes = Vec::new();
             file.take(MAX_CONFIG_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)
@@ -152,6 +165,7 @@ fn read_config_in(dir: &Path) -> Result<Config, String> {
                 host_id: uuid::Uuid::new_v4().to_string(),
                 enabled: false,
                 hosts: vec![],
+                extra: serde_json::Map::new(),
             };
             save_config_in(dir, &config)?;
             Ok(config)
@@ -687,25 +701,25 @@ fn with_identity_fallback(
     }
     retried
 }
-pub(crate) fn ssh_tunnel_commands(
-    host_id: &str,
+pub(crate) fn guest_tunnel_commands(
+    config: &Path,
+    alias: &str,
     local_port: u16,
-    remote_port: u16,
+    guest_address: std::net::IpAddr,
+    guest_port: u16,
     socket: &Path,
 ) -> Result<(Command, Command), String> {
-    if local_port == 0 || remote_port == 0 {
+    if local_port == 0 || guest_port == 0 {
         return Err("Invalid forwarded port.".into());
     }
-    let host = read_config()?
-        .hosts
-        .into_iter()
-        .find(|h| h.id == host_id)
-        .ok_or("Saved computer not found.")?;
+    let mut command = Command::new("/usr/bin/ssh");
+    command.arg("-F").arg(config);
     Ok(tunnel_commands(
-        ssh_for_address(&host.address)?,
-        &host.address,
+        command,
+        alias,
         local_port,
-        remote_port,
+        guest_address,
+        guest_port,
         socket,
     ))
 }
@@ -714,6 +728,7 @@ fn tunnel_commands(
     mut command: Command,
     address: &str,
     local_port: u16,
+    guest_address: std::net::IpAddr,
     remote_port: u16,
     socket: &Path,
 ) -> (Command, Command) {
@@ -731,9 +746,13 @@ fn tunnel_commands(
         "ClearAllForwardings=no",
         "-S",
     ]);
+    let target = match guest_address {
+        std::net::IpAddr::V4(address) => address.to_string(),
+        std::net::IpAddr::V6(address) => format!("[{address}]"),
+    };
     command.arg(socket).args([
         "-L",
-        &format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"),
+        &format!("127.0.0.1:{local_port}:{target}:{remote_port}"),
         "--",
         address,
     ]);
@@ -838,14 +857,18 @@ fn authorized_key_line(public: &str) -> Result<String, String> {
         silo_key_comment()
     ))
 }
-/// Rewrites the unrestricted line earlier Silo versions installed; other lines are untouched.
+/// Rewrites Silo's earlier unrestricted and forwarding-enabled lines; other lines are untouched.
 fn restrict_authorized_keys(contents: &str, blob: &str) -> Option<String> {
     let unrestricted = format!("ssh-ed25519 {blob} {}", silo_key_comment());
+    let legacy = format!(
+        r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="{}" {unrestricted}"#,
+        crate::channel::current().remote_bridge_command()
+    );
     let mut changed = false;
     let rewritten = contents
         .split_inclusive('\n')
         .map(|line| {
-            if line.trim() == unrestricted {
+            if line.trim() == unrestricted || line.trim() == legacy {
                 changed = true;
                 let ending = if line.ends_with('\n') { "\n" } else { "" };
                 format!("{} {unrestricted}{ending}", authorized_key_options())
@@ -867,7 +890,7 @@ fn restrict_authorized_keys_file(path: &std::path::Path, public: &str) -> Result
             Err(error) => return Err(error.to_string()),
         };
         if restrict_authorized_keys(&contents, blob).is_some() {
-            return Err("The SSH key file is externally managed and still contains an unrestricted Silo key.".into());
+            return Err("The SSH key file is externally managed and still contains an older Silo key with excess permissions.".into());
         }
     }
     Ok(changed)
@@ -921,6 +944,15 @@ fn silo_public_key() -> Option<String> {
     Some(public.trim().to_owned())
 }
 fn request_timeout(request: &Value) -> Duration {
+    if matches!(
+        request["method"].as_str(),
+        Some("checkpoint.create" | "checkpoint.fork" | "checkpoint.restore")
+    ) {
+        // Admission uses half the request window. Reserve the other half for every
+        // owner stage within the restore window plus framing and transport.
+        return 2
+            * (crate::runtime::checkpoints::RESTORE_EXPECTED_DURATION + Duration::from_secs(60));
+    }
     // A new VM may get a desktop from the owner (it defaults one on v4 images), so
     // creation needs the desktop-capable time even when the request names none.
     if (request["method"] == "runtime.upsert"
@@ -1208,7 +1240,17 @@ fn send_change(
     request: &mut Value,
     deadline: Instant,
     delays: &[Duration],
+    send: impl FnMut(&Value) -> Result<Value, Failure>,
+) -> Result<Value, BridgeError> {
+    send_change_with_clock(request, deadline, delays, send, Instant::now)
+}
+
+fn send_change_with_clock(
+    request: &mut Value,
+    deadline: Instant,
+    delays: &[Duration],
     mut send: impl FnMut(&Value) -> Result<Value, Failure>,
+    mut now: impl FnMut() -> Instant,
 ) -> Result<Value, BridgeError> {
     let mut delays = delays.iter();
     let quit = crate::runtime::shutdown::generation();
@@ -1220,12 +1262,15 @@ fn send_change(
             ));
         }
         crate::runtime::shutdown::ensure_accepting_operations()?;
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return Err("Remote operation timed out. Its outcome is unknown; reconnect and inspect before issuing another change.".into());
+        }
         // Queued work must start early enough to finish while this computer still waits.
         request["startWithinMs"] = json!((remaining / 2).as_millis() as u64);
         match send(request) {
             Err(Failure::Lost(message)) => match delays.next() {
-                Some(delay) if remaining > *delay => {
+                Some(delay) if deadline.saturating_duration_since(now()) > *delay => {
                     thread::sleep(*delay);
                     crate::runtime::shutdown::ensure_accepting_operations()?;
                 }
@@ -2056,6 +2101,95 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_requests_cover_queueing_and_complete_owner_work() {
+        for method in ["checkpoint.create", "checkpoint.fork", "checkpoint.restore"] {
+            let budget = request_timeout(&json!({"method":method}));
+            let queue = budget / 2;
+            assert!(
+                budget - queue >= Duration::from_secs(3600 + 60),
+                "{method} leaves only {:?} after admission for owner work and transport",
+                budget - queue,
+            );
+        }
+        assert_eq!(
+            request_timeout(&json!({"method":"runtime.snapshot"})),
+            Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn checkpoint_requests_keep_long_results_observable_and_reconnect_without_replay() {
+        use std::cell::Cell;
+        for (method, work, queued) in [
+            ("checkpoint.create", 601, false),
+            ("checkpoint.fork", 900, true),
+            ("checkpoint.restore", 3600, true),
+        ] {
+            let _test_state = crate::test_support::global_state();
+            let journal = tempfile::tempdir().unwrap();
+            let registry: &'static operations::Registry =
+                Box::leak(Box::new(operations::Registry::new()));
+            let mut request = json!({"method":method,"operationId":uuid::Uuid::new_v4().to_string(),"params":{"vmId":uuid::Uuid::new_v4().to_string()}});
+            let budget = request_timeout(&request);
+            let start = Instant::now();
+            let deadline = start + budget;
+            let clock = Cell::new(start);
+            let runs = Cell::new(0);
+            let attempts = Cell::new(0);
+            let result = send_change_with_clock(
+                &mut request,
+                deadline,
+                &[Duration::ZERO],
+                |request| {
+                    attempts.set(attempts.get() + 1);
+                    let start_within =
+                        Duration::from_millis(request["startWithinMs"].as_u64().unwrap());
+                    let result = registry
+                        .submit(
+                            operations::Submission {
+                                journal: journal.path(),
+                                id: request["operationId"].as_str().unwrap(),
+                                method,
+                                params: &request["params"],
+                                start_within,
+                                connection: std::sync::Arc::new(|| true),
+                                allowed: std::sync::Arc::new(|| true),
+                                wait: budget,
+                                reconnect_grace: operations::RECONNECT_GRACE,
+                            },
+                            || {
+                                runs.set(runs.get() + 1);
+                                let queue = if queued {
+                                    start_within - Duration::from_millis(1)
+                                } else {
+                                    Duration::ZERO
+                                };
+                                clock.set(start + queue + Duration::from_secs(work));
+                                Ok(json!({"checkpoint":"complete"}))
+                            },
+                        )
+                        .map_err(Failure::Reported)?;
+                    clock.set(clock.get() + Duration::from_secs(15));
+                    if clock.get() >= deadline {
+                        return Err(Failure::Failed("Remote operation timed out.".into()));
+                    }
+                    // Lose the first reply, then attach to the owner's retained result.
+                    if attempts.get() == 1 {
+                        Err(Failure::Lost("connection lost".into()))
+                    } else {
+                        Ok(result)
+                    }
+                },
+                || clock.get(),
+            );
+            assert_eq!(result, Ok(json!({"checkpoint":"complete"})), "{method}");
+            assert_eq!(runs.get(), 1);
+            assert_eq!(attempts.get(), 2);
+            assert!(clock.get() < deadline);
+        }
+    }
+
+    #[test]
     fn creating_a_remote_vm_has_time_for_an_owner_defaulted_desktop() {
         let _test_state = crate::test_support::global_state();
         let vm = json!({"kind":"vm","name":"dev"});
@@ -2816,14 +2950,14 @@ mod authorized_key_tests {
     }
 
     #[test]
-    fn installed_line_only_allows_the_bridge_and_loopback_tunnels() {
+    fn installed_line_only_allows_the_bridge() {
         let _test_state = crate::test_support::global_state();
         let line =
             authorized_key_line(&format!("ssh-ed25519 {BLOB} Silo remote management\n")).unwrap();
         assert_eq!(
             line,
             format!(
-                r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge" ssh-ed25519 {BLOB} Silo remote management"#
+                r#"restrict,command="exec ~/.local/bin/silo-remote --remote-bridge" ssh-ed25519 {BLOB} Silo remote management"#
             )
         );
         for invalid in [
@@ -2836,6 +2970,30 @@ mod authorized_key_tests {
         ] {
             assert!(authorized_key_line(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn handshake_removes_legacy_forwarding_without_changing_personal_keys() {
+        let _test_state = crate::test_support::global_state();
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("authorized_keys");
+        let public = format!("ssh-ed25519 {BLOB} {}", silo_key_comment());
+        let legacy = format!(
+            r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="{}" {public}"#,
+            crate::channel::current().remote_bridge_command()
+        );
+        let personal = format!("ssh-ed25519 {BLOB} personal");
+        let custom = format!(r#"from="192.0.2.1" {public}"#);
+        fs::write(&path, format!("{legacy}\n{personal}\n{custom}\n{public}")).unwrap();
+        handshake_key_in(&path, Some(&public)).unwrap();
+        let restricted = format!(
+            r#"restrict,command="{}" {public}"#,
+            crate::channel::current().remote_bridge_command()
+        );
+        let expected = format!("{restricted}\n{personal}\n{custom}\n{restricted}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+        handshake_key_in(&path, Some(&public)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
     }
 
     #[test]
@@ -3231,6 +3389,7 @@ mod bridge_link_tests {
             host_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         record_start_error(Some("Another Silo instance owns remote management.".into()));
         assert_eq!(
@@ -3254,14 +3413,28 @@ mod identity_tests {
 
     #[test]
     fn published_port_readiness_uses_an_owned_foreground_master() {
-        let (forward, check) = tunnel_commands(
-            ssh_with_identity("office", None, Identity::SiloOnly).unwrap(),
-            "office",
+        let config = Path::new("/private/guest.conf");
+        let (forward, check) = guest_tunnel_commands(
+            config,
+            "guest-alias",
             43000,
-            32000,
+            "172.16.0.6".parse().unwrap(),
+            3000,
             Path::new("/tmp/ssh.sock"),
-        );
+        )
+        .unwrap();
         let args = arguments(&forward);
+        assert_eq!(&args[..2], ["-F", "/private/guest.conf"]);
+        assert!(!args.iter().any(|arg| arg == "-i"));
+        assert!(guest_tunnel_commands(
+            config,
+            "guest-alias",
+            0,
+            "172.16.0.6".parse().unwrap(),
+            3000,
+            Path::new("/tmp/ssh.sock")
+        )
+        .is_err());
         for option in [
             "ExitOnForwardFailure=yes",
             "ControlMaster=yes",
@@ -3274,7 +3447,7 @@ mod identity_tests {
         assert!(args.contains(&"-N".into()));
         assert!(args
             .windows(2)
-            .any(|pair| pair == ["-L", "127.0.0.1:43000:127.0.0.1:32000"]));
+            .any(|pair| pair == ["-L", "127.0.0.1:43000:172.16.0.6:3000"]));
         assert_eq!(
             arguments(&check),
             [
@@ -3285,9 +3458,51 @@ mod identity_tests {
                 "-O",
                 "check",
                 "--",
-                "office"
+                "guest-alias"
             ]
         );
+    }
+
+    #[test]
+    fn guest_port_tunnel_uses_pinned_config_in_openssh() {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("guest config");
+        fs::write(&config, "Host guest-alias\n  HostName guest-alias\n  User silo\n  IdentityFile /fixture/guest.key\n  IdentitiesOnly yes\n  IdentityAgent none\n  StrictHostKeyChecking yes\n  UserKnownHostsFile /fixture/known_hosts\n  ProxyCommand /fixture/silo --remote-guest owner vm\n").unwrap();
+        let (forward, _) = guest_tunnel_commands(
+            &config,
+            "guest-alias",
+            43000,
+            "172.16.0.6".parse().unwrap(),
+            3000,
+            &home.path().join("control"),
+        )
+        .unwrap();
+        let output = Command::new("/usr/bin/ssh")
+            .arg("-G")
+            .args(forward.get_args())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let resolved = String::from_utf8(output.stdout).unwrap();
+        for line in [
+            "user silo",
+            "identityfile /fixture/guest.key",
+            "identitiesonly yes",
+            "identityagent none",
+            "stricthostkeychecking true",
+            "userknownhostsfile /fixture/known_hosts",
+            "proxycommand /fixture/silo --remote-guest owner vm",
+            "localforward [127.0.0.1]:43000 [172.16.0.6]:3000",
+        ] {
+            assert!(
+                resolved.lines().any(|actual| actual == line),
+                "Missing {line}: {resolved}"
+            );
+        }
     }
 
     #[test]
@@ -3947,6 +4162,34 @@ mod dispatch_tests {
     }
 
     #[test]
+    fn an_expired_change_never_opens_a_connection() {
+        let _test_state = crate::test_support::global_state();
+        let mut request = json!({"method":"runtime.action","operationId":"fixed"});
+        let mut attempts = 0;
+        let result = send_change(&mut request, Instant::now(), &[Duration::ZERO], |_| {
+            attempts += 1;
+            Ok(Value::Null)
+        });
+        assert_eq!(attempts, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_lost_change_that_exhausted_its_deadline_is_not_sent_again() {
+        let _test_state = crate::test_support::global_state();
+        let mut request = json!({"method":"runtime.action","operationId":"fixed"});
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let mut attempts = 0;
+        let result = send_change(&mut request, deadline, &[Duration::ZERO], |_| {
+            attempts += 1;
+            thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            Err(Failure::Lost("dropped after deadline".into()))
+        });
+        assert_eq!(attempts, 1, "an expired change opened another connection");
+        assert_eq!(result, Err("dropped after deadline".into()));
+    }
+
+    #[test]
     fn a_lost_change_is_sent_again_with_the_same_identity() {
         let _test_state = crate::test_support::global_state();
         let mut request = json!({"method":"runtime.action","operationId":"fixed"});
@@ -4049,6 +4292,7 @@ mod ssh_authorization_tests {
             host_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         for method in [
             "ssh.access.state",
@@ -4090,6 +4334,7 @@ mod ssh_connection_admission_tests {
             host_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
             hosts: Vec::new(),
+            extra: serde_json::Map::new(),
         };
         save_config_in(directory.path(), &config).unwrap();
         let request = json!({
@@ -4186,6 +4431,97 @@ mod config_io_limit_tests {
     const LIMIT_BYTES: usize = 1024 * 1024;
 
     #[test]
+    fn remote_config_fifo_is_rejected_without_waiting_for_a_writer() {
+        const CHILD_DIRECTORY: &str = "SILO_TEST_REMOTE_CONFIG_FIFO";
+        if let Some(directory) = std::env::var_os(CHILD_DIRECTORY) {
+            let _guard = config_lock();
+            assert_eq!(
+                read_config_in(Path::new(&directory)).err().as_deref(),
+                Some("Remote management settings must be a regular file.")
+            );
+            return;
+        }
+        use std::os::unix::ffi::OsStrExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("{module}::remote_config_fifo_is_rejected_without_waiting_for_a_writer"),
+            ])
+            .env(CHILD_DIRECTORY, directory.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                assert_eq!(
+                    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
+                    0
+                );
+                child.wait().unwrap();
+                break None;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            status.is_some_and(|status| status.success()),
+            "settings inspection blocked on a FIFO"
+        );
+        use std::os::unix::fs::FileTypeExt;
+        assert!(fs::symlink_metadata(path).unwrap().file_type().is_fifo());
+    }
+
+    #[test]
+    fn remote_config_preserves_additive_preferences_when_management_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let saved = serde_json::json!({
+            "hostId": "fixture-owner",
+            "enabled": false,
+            "hosts": [{"id": "peer", "name": "Peer", "address": "fixture.test"}],
+            "futurePreference": {"mode": "newer", "ids": [1, 2]}
+        });
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut config = read_config_in(directory.path()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        config.enabled = true;
+        save_config_in(directory.path(), &config).unwrap();
+        let reloaded: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
+        assert_eq!(reloaded["hostId"], saved["hostId"]);
+        assert_eq!(reloaded["hosts"], saved["hosts"]);
+        assert!(read_config_in(directory.path()).unwrap().enabled);
+    }
+
+    #[test]
+    fn remote_config_additive_preferences_do_not_replace_required_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        for saved in [
+            serde_json::json!({"enabled": false, "hosts": [], "future": true}),
+            serde_json::json!({"hostId": "fixture-owner", "enabled": "false", "hosts": [], "future": true}),
+            serde_json::json!({"hostId": "fixture-owner", "enabled": false, "hosts": {}, "future": true}),
+        ] {
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(read_config_in(directory.path()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
     fn remote_config_save_reports_an_unreadable_parent_after_publication() {
         use std::os::unix::fs::MetadataExt;
         let directory = tempfile::tempdir().unwrap();
@@ -4196,6 +4532,7 @@ mod config_io_limit_tests {
             host_id: "fixture-owner".into(),
             enabled: false,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
         let result = save_config_in(directory.path(), &config);
@@ -4239,6 +4576,7 @@ mod config_io_limit_tests {
             host_id: "fixture-owner".into(),
             enabled: true,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         save_config_in(directory.path(), &config).unwrap();
         let previous = fs::read(&path).unwrap();

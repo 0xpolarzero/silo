@@ -180,6 +180,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   // The confirmation disappears by itself if the sandbox stops elsewhere, a save starts, or
   // Save becomes blocked while it is shown.
   const stopPending = confirmingStop && requiresStop && !saving && !blockedReason && !deletedElsewhere
+  if (confirmingStop && !stopPending) setConfirmingStop(false)
   const stopTarget = `${draft.name}${computerName ? ` on ${computerName}` : ""}`
   const cancelStop = useRef<HTMLButtonElement>(null)
   const saveButton = useRef<HTMLButtonElement>(null)

@@ -90,13 +90,13 @@ export function useMachineEditing({
   const baselineRef = useRef<SetupMachineConfiguration[] | null>(stored?.baseline ?? null)
   // The edited VM's baseline, plus editor conflict state, drive the in-editor notices.
   const [editorBaseline, setEditorBaseline] = useState<SetupMachineConfiguration | null>(stored?.editorBaseline ?? null)
+  const [editorConflict, setEditorConflict] = useState(stored?.editorConflict ?? false)
+  const [editorReview, setEditorReview] = useState<MachineReview | null>(stored?.editorReview ?? null)
   useEffect(() => {
     if (!draftKey || !drafts) return
-    if (editor) drafts.set(draftKey, { editor, editorBaseline, baseline: baselineRef.current, computerId, pendingSave: drafts.get(draftKey)?.pendingSave })
+    if (editor) drafts.set(draftKey, { editor, editorBaseline, editorConflict, editorReview, baseline: baselineRef.current, computerId, pendingSave: drafts.get(draftKey)?.pendingSave })
     else drafts.delete(draftKey)
-  }, [drafts, draftKey, editor, editorBaseline, computerId])
-  const [editorConflict, setEditorConflict] = useState(false)
-  const [editorReview, setEditorReview] = useState<MachineReview | null>(null)
+  }, [drafts, draftKey, editor, editorBaseline, editorConflict, editorReview, computerId])
   const [editorResetToken, setEditorResetToken] = useState(0)
 
   const completeRestoredSave = useEffectEvent(() => { setEditor(null); setCommitting(false) })
@@ -134,6 +134,10 @@ export function useMachineEditing({
    * the rejection arrived), report it as a failure instead of dropping it.
    */
   function reportSaveFailure(cause: unknown, machine?: Pick<SetupMachineConfiguration, "id" | "name">) {
+    if (machine && isStaleConfigurationError(cause) && draftKey && drafts) {
+      const cached = drafts.get(draftKey)
+      if (cached?.editor.originalID === machine.id) drafts.set(draftKey, { ...cached, editorConflict: true })
+    }
     if (mounted.current && machine && isStaleConfigurationError(cause) && editorRef.current?.originalID === machine.id) setEditorConflict(true)
     else showActionFailure(machine ? `Could not save ${machine.name}` : "Could not save changes", cause, undefined, { native: false })
   }

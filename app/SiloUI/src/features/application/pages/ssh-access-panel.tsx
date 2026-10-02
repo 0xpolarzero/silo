@@ -59,7 +59,7 @@ export function SshAccessRow({ workspace, access, save, connection, stale, embed
     pending.current = true
     setBusy(true); setError(null); setCopied(null)
     try {
-      await save({ workspace: access.workspace, enabled: access.enabled, port: access.port, bindAddress: access.bindAddress, keys: access.keys, ...patch })
+      await save({ workspace: access.workspace, enabled: access.enabled, port: access.port, bindAddress: access.bindAddress, ...patch })
       return request === sequence.current
     } catch (cause) {
       if (request === sequence.current) showActionFailure("SSH settings not saved", cause, () => { if (request === sequence.current) void handlers.current?.change(patch) }, { native: false })

@@ -27,20 +27,26 @@ export function ShutdownBoundary({ children, compact = false, pendingWork }: { c
   useEffect(() => {
     let disposed = false
     let receivedEvent = false
+    let receivedSnapshot = false
     let unsubscribe: (() => void) | undefined
     let connecting = false
+    const read = async () => {
+      const active = await invoke<boolean>("read_shutdown_state")
+      receivedSnapshot = typeof active === "boolean"
+      if (!disposed && !receivedEvent && receivedSnapshot) setQuitting(active)
+    }
     const connect = () => {
-      if (disposed || unsubscribe || connecting) return
+      if (disposed || connecting || (unsubscribe && (receivedSnapshot || receivedEvent))) return
       connecting = true
-      void listen<boolean>("silo://shutdown-state-changed", ({ payload }) => {
+      const connection = unsubscribe ? read() : listen<boolean>("silo://shutdown-state-changed", ({ payload }) => {
         receivedEvent = true
         if (!disposed && typeof payload === "boolean") setQuitting(payload)
       }).then(async stop => {
         if (disposed) { stop(); return }
         unsubscribe = stop
-        const active = await invoke<boolean>("read_shutdown_state")
-        if (!disposed && !receivedEvent && typeof active === "boolean") setQuitting(active)
-      }).catch(error => console.error("Silo shutdown status:", error))
+        await read()
+      })
+      void connection.catch(error => console.error("Silo shutdown status:", error))
         .finally(() => { connecting = false })
     }
     window.addEventListener("focus", connect)
@@ -66,7 +72,10 @@ export function ShutdownBoundary({ children, compact = false, pendingWork }: { c
       if (disposed) { stop(); return }
       unsubscribe = stop
       void read()
-    }).catch(error => console.error("Silo shutdown queue:", error))
+    }).catch(error => {
+      console.error("Silo shutdown queue:", error)
+      if (!disposed) void read()
+    })
     return () => { disposed = true; unsubscribe?.(); setQueue(emptyOperationQueue) }
   }, [quitting])
   const waitingLabel = shutdownWaitingLabel(queue)

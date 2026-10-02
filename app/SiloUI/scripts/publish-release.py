@@ -90,8 +90,8 @@ def main():
     if args.publish:
         if not existing or not existing["draft"]:
             raise RuntimeError("A verified draft is required; existing public releases are never changed.")
-        assets = {a["name"] for a in existing["assets"] if a["size"] > 0}
-        if assets != EXPECTED | {"latest.json", "SHA256SUMS"}:
+        assets = {a["name"] for a in existing["assets"]}
+        if assets != EXPECTED | {"latest.json", "SHA256SUMS"} or any(a["size"] <= 0 for a in existing["assets"]):
             raise RuntimeError("Draft is incomplete; refusing to publish.")
         # Download and verify every byte again after draft storage and before public cutover.
         import tempfile
@@ -111,6 +111,17 @@ def main():
             feed = json.loads((root / "latest.json").read_text())
             if feed["version"] != version or set(feed["platforms"]) != set(PLATFORMS):
                 raise RuntimeError("Draft update feed does not match this version.")
+            if feed.get('notes') is not None and not isinstance(feed['notes'], str):
+                raise RuntimeError("Draft update feed has invalid notes.")
+            date = feed.get('pub_date')
+            if date is not None:
+                if not isinstance(date, str) or not re.fullmatch(
+                        r'[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-5][0-9])', date):
+                    raise RuntimeError("Draft update feed has an invalid publication date.")
+                try:
+                    datetime.fromisoformat(date.removesuffix('Z').removesuffix('z') + ('+00:00' if date[-1] in 'Zz' else ''))
+                except ValueError:
+                    raise RuntimeError("Draft update feed has an invalid publication date.") from None
             for target, name in PLATFORMS.items():
                 expected_url = f"https://github.com/{repository}/releases/download/{tag}/{name}"
                 if feed['platforms'][target] != {'url': expected_url, 'signature': (root / (name + '.sig')).read_text().strip()}:

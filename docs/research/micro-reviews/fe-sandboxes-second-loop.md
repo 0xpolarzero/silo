@@ -29,3 +29,48 @@ Scope: `app/SiloUI/src/features/sandboxes/` and adjacent sandbox configuration a
 - **Evidence:** Both rendered regressions failed on an enabled Save button after publishing a running checkpoint operation.
 - **Fix:** Include running checkpoints in the shared sandbox editing busy reason, which also rechecks menu saves and deletions.
 - **Regression:** `overview-availability.test.tsx` covers both editor surfaces, accessible blocking text, and restored Save with the draft intact after completion.
+
+## FE-SANDBOXES-11: Navigation drops conflict and review notices
+
+- **Priority:** P2.
+- **Trigger:** Receive a stale save rejection or review concurrent changes, then leave the editor's surface and return.
+- **Consequence:** The draft and rebased baseline survive, but the conflict actions or explicit description of overwritten concurrent values disappear.
+- **Evidence:** Both rendered regressions failed because the restored editor had no conflict alert or review status.
+- **Fix:** Store and restore conflict and review state with the existing in-memory editor draft.
+- **Regression:** `machine-editor-drafts.test.tsx` covers navigation before and after Review changes, including retained draft values and both sides of the CPU conflict.
+
+## FE-SANDBOXES-12: Stale status permits an unconfirmed resource edit
+
+- **Priority:** P2.
+- **Trigger:** The sandbox's last known state is stopped, but its status becomes stale while settings are open. A remote runtime version with an unrecognized status is also mapped to stopped/stale in `desktop/production-source.ts`.
+- **Consequence:** Save remains enabled and skips the stop confirmation. Native `update_machine` inspects actual state and automatically stops a running VM before applying resource settings (`src-tauri/src/runtime.rs`), so an unverified stopped state can authorize interruption without the expected question.
+- **Evidence:** Both rendered editor regressions failed because Save stayed enabled after freshness changed to stale. Lifecycle controls already reject this same status.
+- **Fix:** Reject VM settings mutations on stale status through the shared editing busy reason, preserving the draft until freshness recovers.
+- **Regression:** `overview-availability.test.tsx` covers list/detail editors, accessible blocking text, no save, and intact drafts after recovery.
+
+## FE-SANDBOXES-13: Invalidated stop confirmations reappear
+
+- **Priority:** P2.
+- **Trigger:** Open Stop and save, then observe the sandbox stop or a configuration lock appear; later it runs again or the lock clears.
+- **Consequence:** The hidden confirmation reappears automatically because only its derived visibility was cleared. The user returns to a question attached to the pre-interruption state instead of explicitly requesting a new save.
+- **Evidence:** Both rendered regressions failed because the stop confirmation returned when eligibility recovered.
+- **Fix:** Clear the pending confirmation state as soon as its eligibility disappears.
+- **Regression:** `machine-stop-confirmation.test.tsx` covers stopped/running and locked/unlocked transitions, preserving the unsaved resource edit without saving.
+
+## FE-SANDBOXES-14: New drafts submit to removed computers
+
+- **Priority:** P2.
+- **Trigger:** Select another computer for a new sandbox, remove that computer through another surface, then save the still-open draft.
+- **Consequence:** Eligibility validation falls through to local checks and submits a remote upsert to an owner that is no longer registered. The user receives a native failure instead of a concrete choice to select another computer.
+- **Evidence:** The rendered regression failed because `saveRemoteMachine` received the removed host ID `office`.
+- **Fix:** Reject a nonlocal selection whose computer no longer exists before invoking either save callback.
+- **Regression:** `remote-computers.test.tsx` checks the explanatory notice, retained CPU edit, no stale remote call, and successful recovery by selecting this computer.
+
+## FE-SANDBOXES-15: Offscreen stale saves lose the review affordance
+
+- **Priority:** P2.
+- **Trigger:** Start saving an edit, leave its surface, then receive a stale-baseline rejection before returning.
+- **Consequence:** The error toast reports the failure, but the restored editor cannot offer Review changes until another stale save fails.
+- **Evidence:** The strengthened offscreen rejection regression failed because no conflict alert or Review changes button existed on return.
+- **Fix:** Record stale rejection in the matching cached editor independently of whether its component remains mounted; continue reporting the offscreen failure.
+- **Regression:** `machine-editor-drafts.test.tsx` checks both the offscreen failure notice and immediate restored review controls with the unsaved CPU edit intact.

@@ -111,3 +111,31 @@ Reject that no-op while the source is unavailable and tell the user to refresh
 and retry. A loaded empty configuration still resolves without native changes.
 The two regressions reproduced successful `null` results both before loading and
 after the initial state read failed. The loaded-empty control remains covered.
+
+## Optional connection removal
+
+Fixed: the Computers settings section renders for an adapter with
+`connectComputer`, but its Remove connection button assumed the independently
+optional `removeComputer` callback existed. Its non-null assertion hid the
+missing capability and an enabled button called `undefined`. The browser
+preview explicitly supports partial action adapters.
+
+Capture the removal callback, disable its button when absent, and guard the
+event callback without an assertion. A missing-capability regression failed
+before the fix. Existing tests exercise successful removal and failure/retry
+with the callback present.
+
+## SSH fixture dictionaries
+
+Fixed: the browser preview annotated its SSH settings object as
+`Record<string, SshAccessRequest>`, although an absent key could read an inherited
+function. `constructor` is a valid sandbox name. Its first render read
+`Object.prototype.constructor`, bypassed both the seeded settings and the default,
+and published an SSH row without a workspace key. The sandbox's SSH tab then
+showed no usable connection.
+
+Store fixture settings in a typed map with explicit missing-key semantics, as
+in the storage label fix above. Actual application preview regressions failed
+for both seeded and default SSH settings before the fix and exercise changing
+the displayed SSH switch afterward. This affects deterministic fixtures only;
+no native state or production data is involved.

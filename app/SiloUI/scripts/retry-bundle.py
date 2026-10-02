@@ -15,6 +15,8 @@ import subprocess
 import sys
 import time
 
+MAX_RETRY_DIAGNOSTIC_BYTES = 4 * 1024 * 1024
+
 
 DOWNLOAD = re.compile(r"\[appimage/stderr\] Failed to download runtime: server returned status code (500|502|503|504)")
 PLUGIN = "ERROR: Failed to run plugin: appimage (exit code: 1)"
@@ -98,7 +100,13 @@ def run_attempt(command, log, stdout, stderr):
                         key.data.flush()
                         log.write(chunk)
                         log.flush()
-                        output.extend(chunk)
+                        if output is not None:
+                            if len(output) + len(chunk) > MAX_RETRY_DIAGNOSTIC_BYTES:
+                                # Retry requires the complete diagnostic, including
+                                # earlier unrelated failures. Keep the full disk log.
+                                output = None
+                            else:
+                                output.extend(chunk)
             code = process.wait()
         except BaseException:
             # The unreaped session leader reserves this group ID. Stop its
@@ -109,7 +117,7 @@ def run_attempt(command, log, stdout, stderr):
                 except ProcessLookupError:
                     pass
             raise
-    return code if code >= 0 else 128 - code, bytes(output)
+    return code if code >= 0 else 128 - code, bytes(output) if output is not None else b''
 
 
 def retry_bundle(command, log_path, stdout=None, stderr=None, sleep=time.sleep):

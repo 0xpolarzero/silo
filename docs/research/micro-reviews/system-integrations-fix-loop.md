@@ -83,3 +83,39 @@ fixture, and focuses the window. It failed to find the overlay before the fix.
 Focus now retries a failed connection, while a guard prevents duplicate in-flight
 registration and cleanup removes the focus listener. This follows the existing
 settings lifecycle's focus-recovery policy; no app or real VM is used.
+
+## Follow-up: native notice registration never recovers
+
+`src/desktop/notices.ts` caught listener registration failure only to log it.
+Its subscription remained permanently disconnected for that mount, so subsequent
+native-originated in-app notices could not reach the handler, including while
+the focused main window suppresses system notifications. The regression rejects
+registration once, focuses the window after the bridge recovers, and emits a valid
+notice. Before the fix the handler received zero calls; after the fix it receives
+the notice. Focus retries failed registration without duplicating an active or
+in-flight subscription; disposal removes focus recovery and remains safe while
+registration is pending. This is a native-bridge fixture, without an app or VM.
+
+
+## Follow-up: failed queue registration hid the shutdown snapshot
+
+The subscribe-before-read correction left its rejection path without a queue
+read. When only queue event registration failed, a running cancellable backup
+was hidden behind the generic shutdown label. The regression rejects the queue
+subscription while native reads still work; it failed to find the backup label.
+The rejection path now reads a fallback snapshot unless disposed. Successful
+registration still precedes the initial read, preserving the subscription-gap
+fix. All 41 focused notice, settings, and shutdown tests pass; typecheck, targeted
+lint, and diff checks pass. Only native-bridge fixtures were used.
+
+
+## Follow-up: failed shutdown snapshot never recovers
+
+A successful shutdown-state subscription followed by a rejected initial read
+left `ShutdownBoundary` unable to see a shutdown already in progress. Its focus
+retry stopped at the existing subscription, so no fresh read occurred without
+another native event. The regression rejects the first read, focuses the window,
+and verifies the Quit overlay and exactly one shutdown subscription. It failed
+before the fix. Focus now retries the unread snapshot using that subscription;
+a received event still takes precedence over an older read. All 42 focused tests,
+typecheck, targeted lint, and diff checks pass using native-bridge fixtures.

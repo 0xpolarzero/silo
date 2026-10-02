@@ -20,6 +20,12 @@ function actions(overrides: Partial<ApplicationActions> = {}): ApplicationAction
 afterEach(() => { toast.dismiss() })
 
 describe("RemoteComputersSettings", () => {
+  it("disables connection removal when the adapter does not provide it", () => {
+    const remote = { id: "office", name: "Office", address: "office.example", connected: false }
+    render(<RemoteComputersSettings source={{ ...source(undefined), remoteComputers: [remote] }} actions={actions()} />)
+    expect(screen.getByRole("button", { name: "Remove connection to Office" })).toBeDisabled()
+  })
+
   it("reveals the complete name of a computer with a long SSH address", () => {
     const name = "Office workstation ".repeat(20).trim()
     const remote = { id: "office-id", name, address: `${"account".repeat(30)}@office.example`, connected: false }
@@ -313,4 +319,34 @@ it("blocks removal Retry while a remote management change is pending", async () 
   expect(toggle).toBeDisabled()
   await act(async () => finish())
   expect(toggle).toBeEnabled()
+})
+
+
+it("ignores an obsolete management Retry after a newer choice succeeds", async () => {
+  const user = userEvent.setup()
+  const management = { enabled: false, hostId: "local", name: "Laptop", address: "owner@laptop" }
+  const setRemoteManagement = vi.fn().mockRejectedValueOnce(new Error("Reply unavailable")).mockResolvedValue(undefined)
+  const api = actions({ setRemoteManagement })
+  const view = (enabled: boolean) => <><Toaster /><RemoteComputersSettings source={source({ ...management, enabled })} actions={api} /></>
+  const { rerender } = render(view(false))
+  await user.click(screen.getByRole("switch", { name: "Allow remote management" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  rerender(view(true))
+  await user.click(screen.getByRole("switch", { name: "Allow remote management" }))
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Allow remote management" })).toBeEnabled())
+  await user.click(retry)
+  expect(setRemoteManagement).toHaveBeenCalledTimes(2)
+  expect(setRemoteManagement).toHaveBeenLastCalledWith(false)
+})
+
+it("ignores a computer setting Retry after the settings controls unmount", async () => {
+  const user = userEvent.setup()
+  const management = { enabled: false, hostId: "local", name: "Laptop", address: "owner@laptop" }
+  const setRemoteManagement = vi.fn().mockRejectedValue(new Error("Reply unavailable"))
+  const { rerender } = render(<><Toaster /><RemoteComputersSettings source={source(management)} actions={actions({ setRemoteManagement })} /></>)
+  await user.click(screen.getByRole("switch", { name: "Allow remote management" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  rerender(<Toaster />)
+  await user.click(retry)
+  expect(setRemoteManagement).toHaveBeenCalledOnce()
 })

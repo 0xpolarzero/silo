@@ -117,16 +117,24 @@ pub(crate) struct ArchiveInspectionResult {
 /// UI showed them, so only the chosen export folder is kept (E-45). The file is
 /// advisory: a missing, unreadable or newer file only forgets the folder.
 #[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct BackupHistory {
     schema_version: u32,
     destination: Option<PathBuf>,
     /// Always written empty; read only so older files still parse.
     #[serde(default)]
     archives: Vec<Value>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 
 fn load_destination(path: &Path) -> Option<PathBuf> {
+    load_history(path)?
+        .destination
+        .filter(|path| path.is_absolute())
+}
+
+fn load_history(path: &Path) -> Option<BackupHistory> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
@@ -145,9 +153,7 @@ fn load_destination(path: &Path) -> Option<PathBuf> {
         return None;
     }
     match serde_json::from_slice::<BackupHistory>(&bytes) {
-        Ok(history) if history.schema_version == 1 => {
-            history.destination.filter(|path| path.is_absolute())
-        }
+        Ok(history) if history.schema_version == 1 => Some(history),
         Ok(_) => None,
         Err(error) => {
             eprintln!("Silo ignored its unreadable export folder setting: {error}");
@@ -180,6 +186,9 @@ fn remember_destination(controller: &Controller, destination: PathBuf) {
             schema_version: 1,
             destination: Some(destination.clone()),
             archives: Vec::new(),
+            extra: load_history(&controller.history_path)
+                .map(|history| history.extra)
+                .unwrap_or_default(),
         },
     );
     if let Err(error) = saved {
@@ -2803,6 +2812,44 @@ mod tests {
         assert!(saved.journal_error.is_none());
         let bytes = fs::read_to_string(path).unwrap();
         assert!(!bytes.contains("silo-backup"), "{bytes}");
+    }
+
+    #[test]
+    fn additive_export_preferences_keep_the_folder_and_survive_an_explicit_change() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let saved = serde_json::json!({
+            "schemaVersion": 1,
+            "destination": directory.path(),
+            "archives": [],
+            "futurePreference": {"enabled": true, "label": "exports"}
+        });
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(load_destination(&path).as_deref(), Some(directory.path()));
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+
+        let chosen = directory.path().join("chosen");
+        remember_destination(&history_controller(path.clone()), chosen.clone());
+        let reloaded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
+        assert_eq!(load_destination(&path), Some(chosen));
+    }
+
+    #[test]
+    fn additive_export_preferences_do_not_relax_known_fields_or_versions() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        for saved in [
+            serde_json::json!({"schemaVersion": 2, "destination": "/exports", "future": true}),
+            serde_json::json!({"schemaVersion": 1, "destination": 42, "future": true}),
+            serde_json::json!({"schemaVersion": 1, "destination": "/exports", "archives": {}, "future": true}),
+        ] {
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(load_destination(&path), None);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
     }
 
     #[test]

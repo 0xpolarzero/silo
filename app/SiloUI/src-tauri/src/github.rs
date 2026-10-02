@@ -469,6 +469,16 @@ fn observed_credential() -> CredentialObservation {
         .map(|state| state.clone())
         .unwrap_or_else(|_| Some(Err("GitHub credential state is unavailable.".into())))
 }
+// Policy revisions cross IPC as JavaScript numbers and must remain distinguishable.
+const MAX_POLICY_REVISION: u64 = 9_007_199_254_740_991;
+
+fn next_policy_revision(revision: u64) -> Result<u64, String> {
+    revision
+        .checked_add(1)
+        .filter(|next| *next <= MAX_POLICY_REVISION)
+        .ok_or_else(|| "GitHub settings revision exceeds the supported range.".into())
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Document {
@@ -510,6 +520,8 @@ struct Document {
     /// view. Kept after a policy is removed so a stale save cannot bring it back.
     #[serde(default)]
     policy_stamps: std::collections::BTreeMap<String, PolicyStamp>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -578,7 +590,7 @@ pub(crate) fn fork_assignment(
             .workspaces
             .retain(|value| value["workspace"].as_str() != Some(target));
         document.workspaces.push(assignment);
-        document.revision = document.revision.saturating_add(1);
+        document.revision = next_policy_revision(document.revision)?;
         stamp(&mut document, target, None);
         if !document.access_pending.iter().any(|name| name == target) {
             document.access_pending.push(target.into());
@@ -595,7 +607,7 @@ pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Re
     let _state = serialize(&STATE);
     let mut document = load(app)?;
     forget_workspace(&mut document, target);
-    document.revision = document.revision.saturating_add(1);
+    document.revision = next_policy_revision(document.revision)?;
     stamp(&mut document, target, None);
     save(app, &document)
 }
@@ -632,7 +644,7 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
         let _state = serialize(&STATE);
         let mut d = load_at(&document)?;
         if forget_workspace(&mut d, workspace) {
-            d.revision = d.revision.saturating_add(1);
+            d.revision = next_policy_revision(d.revision)?;
             stamp(&mut d, workspace, None);
             save_at(&document, &d)?;
         }
@@ -796,7 +808,12 @@ fn read_configuration(reader: impl Read) -> Result<Document, String> {
     if bytes.len() > MAX_CONFIGURATION_BYTES {
         return Err("GitHub configuration exceeds the supported size.".into());
     }
-    serde_json::from_slice(&bytes).map_err(|_| "GitHub configuration is invalid.".into())
+    let document: Document =
+        serde_json::from_slice(&bytes).map_err(|_| "GitHub configuration is invalid.")?;
+    if document.revision > MAX_POLICY_REVISION {
+        return Err("GitHub settings revision exceeds the supported range.".into());
+    }
+    Ok(document)
 }
 fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
     save_at(&path(app)?, d)?;
@@ -1057,6 +1074,13 @@ fn github(token: &str, path: &str) -> Result<Value, String> {
 }
 fn catalog(c: &Credential) -> Result<Vec<Value>, String> {
     Ok(catalog_installations(c)?.0)
+}
+fn catalog_with_retry(
+    c: &Credential,
+    fetch: impl FnOnce(&Credential) -> Result<Vec<Value>, String>,
+) -> Result<Vec<Value>, String> {
+    crate::github_http::reset_catalog_retries(&c.access_token);
+    fetch(c)
 }
 fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
     let slug = APP_SLUG.ok_or("GitHub App is not configured in this build.")?;
@@ -2630,6 +2654,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             return Err("GitHub connection cancelled.".into());
         }
         let mut d = load(app)?;
+        let revision = next_policy_revision(d.revision)?;
         // A failed explicit replacement must leave the previous account and its access intact.
         replace_connection_credential(
             &ACCOUNT_SECRET,
@@ -2656,7 +2681,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
                 detach_result(
                     app,
                     name,
-                    crate::runtime::apply_github_policy(app, name, d.revision + 1, &profile(&[])),
+                    crate::runtime::apply_github_policy(app, name, revision, &profile(&[])),
                 )
             },
         );
@@ -2671,7 +2696,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
         let same = account
             .as_deref()
             .is_some_and(|login| same_account(d.account.as_deref(), login));
-        record_connection(&mut d, account, repos);
+        record_connection(&mut d, account, repos)?;
         for (name, error) in detach_errors.workspaces {
             d.access_errors.insert(name, error);
         }
@@ -2694,15 +2719,21 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     snapshot(app)
 }
 
-fn record_connection(d: &mut Document, account: Option<String>, repositories: Vec<Value>) {
+fn record_connection(
+    d: &mut Document,
+    account: Option<String>,
+    repositories: Vec<Value>,
+) -> Result<(), String> {
+    let revision = next_policy_revision(d.revision)?;
     d.access_enabled = true;
     d.disconnect_pending = false;
     d.account = account;
     d.repositories = repositories;
     d.catalog_error = None;
     d.catalog_refresh_at = now() + 300;
-    d.revision += 1;
+    d.revision = revision;
     mark_pending(d);
+    Ok(())
 }
 
 fn catalog_refresh_due(d: &Document, now: u64) -> bool {
@@ -2988,9 +3019,8 @@ pub async fn refresh_github_repositories(
 ) -> Result<Value, String> {
     require_main(window.label())?;
     retry_credential_access();
-    crate::github_http::reset_retries();
     run(app, |app| {
-        let result = active_credential().and_then(|c| catalog(&c));
+        let result = active_credential().and_then(|c| catalog_with_retry(&c, catalog));
         let _state = serialize(&STATE);
         let mut d = load(app)?;
         match result {
@@ -3029,9 +3059,9 @@ pub async fn disconnect_github(
         let _update = crate::updates::operation_guard()?;
         let _state = serialize(&STATE);
         let mut d = load(&app)?;
+        d.revision = next_policy_revision(d.revision)?;
         d.access_enabled = false;
         d.disconnect_pending = true;
-        d.revision += 1;
         mark_pending(&mut d);
         save(&app, &d)?;
         let result = narrow_now(&app, &mut d);
@@ -3061,8 +3091,8 @@ pub async fn set_github_access_enabled(
         if d.access_enabled == enabled {
             return snapshot(&app);
         }
+        d.revision = next_policy_revision(d.revision)?;
         d.access_enabled = enabled;
-        d.revision += 1;
         mark_pending(&mut d);
         save(&app, &d)?;
         let result = narrow_now(&app, &mut d);
@@ -3177,8 +3207,9 @@ fn apply_patches(
         }
     }
     validate(&workspaces)?;
+    let revision = next_policy_revision(d.revision)?;
     d.workspaces = workspaces;
-    d.revision += 1;
+    d.revision = revision;
     for w in &changed_policies {
         if let Some(name) = w["workspace"].as_str() {
             stamp(d, name, base);
@@ -3308,6 +3339,18 @@ pub async fn retry_github_configuration(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repository_refresh_keeps_unrelated_token_operations_stopped() {
+        crate::github_http::assert_bearer_retry_isolated(|token| {
+            let credential = fixture_credential(token, super::now() + 3600);
+            let result = super::catalog_with_retry(&credential, |credential| {
+                assert_eq!(credential.access_token, token);
+                Ok(vec![serde_json::json!({"fixture": true})])
+            })
+            .unwrap();
+            assert_eq!(result, vec![serde_json::json!({"fixture": true})]);
+        });
+    }
     #[test]
     fn a_panic_under_the_github_locks_does_not_block_updates_or_settings() {
         let _test_state = crate::test_support::global_state();
@@ -3568,6 +3611,107 @@ mod tests {
     fn saved_policy(name: &str, all: bool) -> Value {
         json!({"workspace":name,"repositoryMode":if all {"all"} else {"selected"},"allRepositoriesAllowChanges":all,
             "repositories":[],"identity":{"name":"","email":"","apply":false}})
+    }
+    #[test]
+    fn additive_github_preferences_survive_a_known_setting_change() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let saved = json!({
+            "revision": 4,
+            "accessEnabled": false,
+            "account": "fixture-account",
+            "workspaces": [saved_policy("dev", false)],
+            "futurePreference": {"mode": "newer", "enabled": true}
+        });
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut document = load_at(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        document.access_enabled = true;
+        save_at(&path, &document).unwrap();
+        let reloaded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
+        assert_eq!(reloaded["workspaces"], saved["workspaces"]);
+        assert_eq!(reloaded["account"], saved["account"]);
+        assert!(load_at(&path).unwrap().access_enabled);
+    }
+
+    #[test]
+    fn legacy_github_preferences_keep_safe_defaults_after_save_and_reload() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        fs::write(&path, br#"{"revision":0,"accessEnabled":false}"#).unwrap();
+        let document = load_at(&path).unwrap();
+        assert!(!document.access_enabled);
+        assert!(document.account.is_none());
+        assert!(document.workspaces.is_empty());
+        assert!(document.policy_stamps.is_empty());
+        assert!(!document.grants_issued);
+        save_at(&path, &document).unwrap();
+        let reloaded = load_at(&path).unwrap();
+        assert!(!reloaded.access_enabled);
+        assert!(reloaded.account.is_none());
+        assert!(reloaded.workspaces.is_empty());
+        assert!(reloaded.policy_stamps.is_empty());
+        assert!(!reloaded.grants_issued);
+    }
+
+    #[test]
+    fn unsafe_saved_policy_revisions_are_refused_without_rewriting_the_document() {
+        for revision in [9_007_199_254_740_992, u64::MAX] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("github.json");
+            let bytes = serde_json::to_vec(&Document {
+                revision,
+                ..Default::default()
+            })
+            .unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(load_at(&path).is_err(), "revision {revision} was accepted");
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+    #[test]
+    fn policy_revision_exhaustion_refuses_edits_without_changing_saved_choices() {
+        let _test_state = crate::test_support::global_state();
+        for revision in [9_007_199_254_740_991, u64::MAX] {
+            let mut d = Document {
+                revision,
+                workspaces: vec![saved_policy("dev", false)],
+                ..Default::default()
+            };
+            let before = serde_json::to_value(&d).unwrap();
+            assert!(
+                apply_patches(&mut d, &[saved_policy("dev", true)], None, true, false).is_err()
+            );
+            assert_eq!(serde_json::to_value(&d).unwrap(), before);
+        }
+    }
+    #[test]
+    fn the_last_safe_policy_revision_is_saved_and_noop_edits_still_succeed() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let mut d = Document {
+            revision: 9_007_199_254_740_990,
+            workspaces: vec![saved_policy("dev", false)],
+            ..Default::default()
+        };
+        assert!(
+            apply_patches(&mut d, &[saved_policy("dev", true)], None, true, false)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(d.revision, 9_007_199_254_740_991);
+        assert_eq!(d.policy_stamps["dev"].revision, 9_007_199_254_740_991);
+        save_at(&path, &d).unwrap();
+        assert_eq!(load_at(&path).unwrap().revision, 9_007_199_254_740_991);
+        assert_eq!(
+            apply_patches(&mut d, &[saved_policy("dev", true)], None, true, false).unwrap(),
+            None
+        );
     }
     #[test]
     fn a_save_patches_only_its_sandboxes_and_never_changes_access() {
@@ -4470,7 +4614,7 @@ mod tests {
     fn connection_enables_access_without_selecting_repositories() {
         let _test_state = crate::test_support::global_state();
         let mut document = Document::default();
-        record_connection(&mut document, Some("account".into()), vec![]);
+        record_connection(&mut document, Some("account".into()), vec![]).unwrap();
         assert!(document.access_enabled);
         assert!(document.workspaces.is_empty());
         assert!(document.access_pending.is_empty());
@@ -4478,7 +4622,7 @@ mod tests {
         document.access_enabled = false;
         document.disconnect_pending = true;
         document.workspaces = vec![json!({"workspace":"dev"})];
-        record_connection(&mut document, Some("account".into()), vec![]);
+        record_connection(&mut document, Some("account".into()), vec![]).unwrap();
         assert!(document.access_enabled);
         assert!(!document.disconnect_pending);
         assert_eq!(document.access_pending, vec!["dev"]);

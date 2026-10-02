@@ -21,3 +21,33 @@ Scope: the native ChatGPT app implementation and adjacent computer-use state int
 - **Regression:** `a_fifo_computer_use_record_is_refused_without_waiting_for_a_writer` timed out before the fix. The fixture releases and joins its reader before failing. The actual reader and regression were compiled together in a disposable harness, using only temporary files.
 - **Fix:** Open nonblocking, require a regular file through descriptor metadata, then retain the existing 1 MiB read limit. Existing callers treat the error as unreadable policy or absent observation.
 - **Verification:** Red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/policy-fifo-red.log`. The actual reader/regression harness and its Clippy check passed after the fix; formatting, Node 24 typecheck, and lint passed. The broader native tests are queued against the shared Cargo target with synthetic GitHub configuration; no app or VM is launched.
+
+## CHATGPT-APP-6: Status rendering hides failed Retry requests
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src/desktop/computer-use-panel.tsx`, `ChatGptAppStatusView`.
+- **Trigger:** Retry rejects, then its follow-up status read returns Ready or Unknown. A Retry attempted before the first readable status also loses its error when the status read fails.
+- **Consequence:** The view hides the explicit request failure while the store still retains it. In particular, an owning computer's instruction to update Silo disappears, leaving the user without the required corrective action.
+- **Regression:** Three rendered tests failed before the fix: errors were absent for Ready, Unknown, and an unreadable first status. They verify visibility and dismissal independently of download status or status-read errors.
+- **Fix:** Render the retained Retry error in every status branch; dismissing it leaves independent status-read errors intact.
+- **Verification:** Frontend fixtures only. Red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/retry-error-red.log`; both focused frontend files passed, 129 tests total; Node 24 typecheck and lint passed.
+
+## CHATGPT-APP-7: Malformed remote status bypasses read-failure backoff
+
+- **Priority:** P3
+- **Location:** `app/SiloUI/src/desktop/computer-use-bridge.ts`, `createChatGptAppStore.refresh`.
+- **Trigger:** A remote owner returns an untagged or empty status payload. Parsing sets a read error but, unlike a rejected request, never increases the polling delay.
+- **Consequence:** Silo continues issuing requests at the normal interval while the owner cannot provide readable status, including every three seconds if the last status was a download in progress.
+- **Regression:** `backs off malformed remote download status and restores polling after recovery` failed because a second request arrived before the first backoff interval. It verifies every delay through the 30-second cap, then recovery and normal polling.
+- **Fix:** Apply the existing failed-read backoff to unreadable response payloads.
+- **Verification:** The red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/malformed-status-red.log`; both focused frontend files passed, 130 tests total, and Node 24 typecheck and lint passed. Verification uses deterministic frontend fixtures only.
+
+## CHATGPT-APP-8: Busy storage skips validation of the shared mount folder
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/chatgpt_app.rs`, `ensure_published_dir_nowait`.
+- **Trigger:** The storage lock is held and `published` is a symlink. The nonblocking path skips `open_storage` and canonicalizes the symlink without the directory validation performed by the normal path.
+- **Consequence:** VM mount preparation accepts an outside folder instead of rejecting the invalid shared ChatGPT directory. Lock contention changes the folder validation policy.
+- **Regression:** `a_busy_storage_lock_does_not_allow_a_symlinked_mount_folder` failed before the fix. It holds the real storage lock, confirms that an ordinary mount resolves without waiting, replaces the folder with a symlink, and checks rejection without touching the target.
+- **Fix:** Open the published subdirectory without following symlinks and validate ownership even when preparation is skipped for lock contention.
+- **Verification:** Red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/busy-mount-red.log`; the actual download/storage source and hardening/HTTP regressions passed together in the disposable harness, 33 tests total. Rust formatting, Node 24 typecheck, and lint passed. Temporary directories only, with no app or VM launch.

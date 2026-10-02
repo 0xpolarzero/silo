@@ -80,3 +80,26 @@ it.each(["list", "detail"])("pauses an open %s editor while a checkpoint runs an
   expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
   expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
 })
+
+
+it.each(["list", "detail"])("pauses an open %s editor when the sandbox status becomes stale", async surface => {
+  const user = userEvent.setup()
+  const source = sourceWith(workspace => { workspace.state = "stopped" })
+  const onMachinesChange = vi.fn()
+  const view = (current: ApplicationSource) => <OverviewPage source={current} actions={{} as ApplicationActions} onMachinesChange={onMachinesChange} />
+  const result = render(view(source))
+  if (surface === "detail") await user.click(screen.getByRole("button", { name: "Open dev" }))
+  await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+  await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
+  const stale = structuredClone(source)
+  stale.workspaces.find(({ machine }) => machine.name === "dev")!.freshness = "stale"
+  result.rerender(view(stale))
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Save" })).toHaveAccessibleDescription("Silo could not refresh this sandbox’s status.")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(onMachinesChange).not.toHaveBeenCalled()
+  result.rerender(view(source))
+  expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+})

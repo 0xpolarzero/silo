@@ -162,6 +162,22 @@ mod tests {
     }
 
     #[test]
+    fn corrupt_activity_history_does_not_fail_a_saved_crash_acknowledgement() {
+        let dir = tempfile::tempdir().unwrap();
+        let (paths, machine) = configured(&dir, ID);
+        let history = paths.metadata.with_file_name("sandbox-activity.json");
+        let original = b"{unfinished activity history";
+        fs::write(&history, original).unwrap();
+
+        dismiss(&Inspect(report("Crashed", ID, AT)), &paths, "dev").unwrap();
+        assert!(is_acknowledged(&paths, &machine, &crash(ID, AT)));
+        assert_eq!(fs::read(&history).unwrap(), original);
+        assert!(runtime_activity::read(&paths).unwrap().iter().any(|entry| {
+            entry["id"] == "sandbox-history-unavailable" && entry["tone"] == "warning"
+        }));
+    }
+
+    #[test]
     fn a_recreated_sandbox_with_the_same_name_does_not_inherit_an_acknowledgement() {
         let dir = tempfile::tempdir().unwrap();
         let (paths, _) = configured(&dir, ID);

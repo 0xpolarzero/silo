@@ -88,3 +88,9 @@ The pinned versions are Tauri 2.11.5 and muda 0.19.3. GTK popup completion is no
 - **Fix:** Close owned menus on disposal, close late-created menus without opening them, and guard item callbacks and feedback against disposal. Release ownership before closing so tracking completion cannot close a menu twice.
 - **Regression:** A late menu never opens or starts a sandbox; an open menu closes once on disposal and ignores subsequent actions. Existing remote targeting and website-copy behavior remain covered.
 - **Integration:** Concurrent fixes `5551ccad` and `c8b822a9` reached integration before folding. Retained their generation and target-change guards, added both action-disposal regressions, and removed this loop’s duplicate changeset.
+
+## Continued-loop verification
+
+Commits `7676c476`, `7aeb46fd`, and `f4fdbc73` were fixed and folded individually. Menu commit `3e4021ae` was reconciled with concurrent integration fixes in `52d01a50`. Focused frontend regressions failed before each implementation. The final combined run passed 76 tests across nine affected suites; typecheck, touched-file lint, and Rust formatting passed. Native menu and recovery tests use deterministic backend mocks; no application, real VM, production data, or native packaged behavior was exercised.
+
+The subsequent Quit queue registration check is already fixed by integration commit `41909dd9`, with its own regression. No duplicate implementation or test was retained. Concurrent native menu regressions remain alongside this loop’s tests.

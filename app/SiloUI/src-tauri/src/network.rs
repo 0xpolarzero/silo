@@ -174,15 +174,18 @@ fn write_config(paths: &RuntimePaths, config: &Configuration) -> Result<(), Stri
     if bytes.len() > 128 * 1024 || config.mappings.len() > 4096 {
         return Err("Too many saved ports. Remove an unused port first.".into());
     }
-    let mut file = tempfile::NamedTempFile::new_in(path.parent().ok_or("Could not save ports.")?)
-        .map_err(|_| "Could not save ports.")?;
+    let parent = path.parent().ok_or("Could not save ports.")?;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|_| "Could not save ports.")?;
     file.as_file_mut()
         .write_all(&bytes)
         .map_err(|_| "Could not save ports.")?;
     file.as_file()
         .sync_all()
         .map_err(|_| "Could not save ports.")?;
-    file.persist(path).map_err(|_| "Could not save ports.")?;
+    file.persist(&path).map_err(|_| "Could not save ports.")?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "Could not save ports.")?;
     Ok(())
 }
 
@@ -993,6 +996,36 @@ pub(crate) fn reconcile_started(paths: &RuntimePaths, workspace: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn saved_ports_report_an_unreadable_parent_after_publication() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory = tempfile::tempdir().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let paths = crate::test_support::paths(directory.path());
+        let config = Configuration {
+            mappings: vec![Mapping {
+                workspace: "fixture-workspace".into(),
+                port: 3000,
+                host_port: None,
+                scheme: Some("http".into()),
+                enabled: false,
+            }],
+        };
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = write_config(&paths, &config);
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(read_config(&paths).unwrap().mappings, config.mappings);
+        assert!(
+            result.is_err(),
+            "an unsynchronized rename must not report success"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        write_config(&paths, &config).unwrap();
+    }
 
     #[test]
     fn saved_ports_accept_the_size_limit_and_reject_one_extra_byte() {

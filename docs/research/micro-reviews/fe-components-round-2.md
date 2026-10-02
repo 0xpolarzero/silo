@@ -31,3 +31,37 @@ Scope: `app/SiloUI/src/components/` and adjacent frontend modules. Findings use 
 - **Fix:** Target Radix's `data-state="checked"` in the shared Tailwind state utilities, including dark and grouped focus variants.
 - **Tests:** Compile the real control's classes with the installed Tailwind compiler; check computed background and foreground after toggling, then verify the selected background clears when unchecked.
 - **Primary evidence:** Installed Radix checkbox root emits `data-state` through `getState(checked)` at `node_modules/@radix-ui/react-checkbox/dist/index.js:155`; it emits no `data-checked` attribute.
+
+## FE-COMPONENTS-12 — P2 — Scrollbar orientation styles never match
+
+- **File:line at discovery:** `app/SiloUI/src/components/ui/scroll-area.tsx:42`.
+- **Trigger:** Overflow a sandbox list, file panel, or GitHub access editor; display its shared scrollbar.
+- **Evidence:** `data-horizontal:*` and `data-vertical:*` utilities require boolean attributes absent from Radix's `data-orientation` controls. Both compiled-stylesheet fixtures fail with `auto` thickness instead of 0.625rem.
+- **Consequence:** The custom scrollbar lacks its intended thickness and horizontal thumb layout while Radix hides the native scrollbar.
+- **Fix:** Target `data-orientation="horizontal"` and `data-orientation="vertical"` with Tailwind arbitrary data variants.
+- **Tests:** Real Radix scrollbars in both orientations, with compiled wrapper classes, require the specified thickness and horizontal column layout.
+- **Primary evidence:** Installed Radix `ScrollAreaScrollbarX` and `ScrollAreaScrollbarY` emit `data-orientation` at `node_modules/@radix-ui/react-scroll-area/dist/index.js:404,454`; the viewport stylesheet hides native scrollbars at line 181.
+
+## FE-COMPONENTS-13 — P2 — Composing Escape dismisses an inline confirmation
+
+- **File:line at discovery:** `app/SiloUI/src/components/inline-confirmation.tsx:41`.
+- **Trigger:** Press Escape during IME composition while an inline confirmation is active. Machine editor fields remain enabled while its Stop and save confirmation is shown.
+- **Evidence:** The composing-Escape fixture removes the confirmation immediately instead of retaining it.
+- **Consequence:** Cancelling a text candidate also cancels the pending confirmation and can restore focus away from the field being edited.
+- **Fix:** Ignore composing Escape while retaining the integrated capture-phase/default-prevention behavior for ordinary Escape.
+- **Tests:** Composing Escape retains the confirmation; ordinary Escape and outside presses still dismiss it. Status-panel tests preserve the two-Escape quit/panel sequence.
+- **Primary evidence:** Composition follows the [UI Events keyboard contract](https://w3c.github.io/uievents/#dom-keyboardevent-iscomposing).
+
+## Deferred — Popup and inline-confirmation Escape ordering
+
+The integrated `d7f7da17` moved inline Escape handling to document capture so cancelling the status panel's quit confirmation does not also hide the panel. A fixture that keyboard-opens a separate Radix popup while an inline confirmation remains active now reproduces the reverse ordering problem: inline capture prevents Escape before Radix can close the popup. The red evidence is `/tmp/silo-fe-components-13-red.log`. Simply moving back to document bubble reintroduces the integrated status-panel defect; resolving ownership needs a coordinated dismissal boundary, outside this minimal fix. No skipped test was committed.
+
+## FE-COMPONENTS-14 — P2 — IME keys change GitHub permissions or commit identity fields
+
+- **File:line at discovery:** `app/SiloUI/src/features/github/components/github-access-editor.tsx:140–154,357–358,372–373`.
+- **Trigger:** Confirm an IME candidate with Enter in repository search or Git name/email, or navigate/cancel a candidate with Arrow/Escape in repository search.
+- **Evidence:** Six red fixtures show composing keys executing repository commands or blurring and committing identity fields. Repository Enter calls the permission selection callback; identity Enter calls the commit callback before composition finishes.
+- **Consequence:** Text entry can add a repository permission, clear or dismiss search, or persist an unfinished identity and move focus away from the field.
+- **Fix:** Ignore composing repository commands and identity Enter; prevent Radix's default Escape dismissal during composition.
+- **Tests:** Four repository keys retain selection and list visibility, then ordinary ArrowDown/Enter adds the intended repository. Two identity fields retain focus and avoid commits for composing Enter, then ordinary Enter commits once.
+- **Primary evidence:** [UI Events composition keyboard contract](https://w3c.github.io/uievents/#dom-keyboardevent-iscomposing); the same supported Radix Escape callback is used by the shared filter fix above.

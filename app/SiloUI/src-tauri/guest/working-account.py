@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import stat
 import subprocess
@@ -79,6 +80,10 @@ def relocate(value):
     return value
 
 
+def relocate_contents(data):
+    return re.sub(rb"(?<![\w./-])(?:/home/silo-desktop|/root)(?=/|[\s'\";:]|$)", b'/home/silo', data)
+
+
 def launcher_contents(path, relative):
     if not (relative.parent == Path('.') and path.name in SHELL_SETUP or 'bin' in relative.parts):
         return None
@@ -93,7 +98,7 @@ def launcher_contents(path, relative):
             data.decode('utf-8')
         except UnicodeError:
             return None
-    updated = data.replace(b'/home/silo-desktop/', b'/home/silo/').replace(b'/root/', b'/home/silo/')
+    updated = relocate_contents(data)
     return updated if updated != data else None
 
 
@@ -182,7 +187,7 @@ def copy_shell_setup(source, destination):
                 conflict(target)
             originals.append((original, target))
     for original, target in originals:
-        contents = original.read_bytes().replace(b'/home/silo-desktop/', b'/home/silo/').replace(b'/root/', b'/home/silo/')
+        contents = relocate_contents(original.read_bytes())
         # Root's profile does not put the user's own tools on PATH.
         if original.name == '.profile' and PATH_SETUP.encode('utf-8') not in contents:
             contents += PATH_SETUP.encode('utf-8')

@@ -61,12 +61,13 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
 
   useEffect(() => {
     if (!active || !refreshNetwork) return
-    const refresh = () => { if (document.visibilityState !== "hidden") void refreshNetwork() }
+    const refresh = (background = false) => { if (document.visibilityState !== "hidden") void refreshNetwork({ background }) }
+    const onReturn = () => refresh()
     refresh()
-    const timer = window.setInterval(refresh, 5000)
-    window.addEventListener("focus", refresh)
-    document.addEventListener("visibilitychange", refresh)
-    return () => { clearInterval(timer); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh) }
+    const timer = window.setInterval(() => refresh(true), 5000)
+    window.addEventListener("focus", onReturn)
+    document.addEventListener("visibilitychange", onReturn)
+    return () => { clearInterval(timer); window.removeEventListener("focus", onReturn); document.removeEventListener("visibilitychange", onReturn) }
   }, [active, refreshNetwork])
 
   /** Runs a port operation with the shared loading → success/failure notifications. Failures offer Retry. */
