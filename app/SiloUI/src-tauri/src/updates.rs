@@ -630,7 +630,7 @@ fn preflight_destination(
     // one new copy beside it; the downloaded archive is held in memory.
     if free < needed {
         return Err(format!(
-            "Not enough space to install the update. Free at least {} MB and retry.",
+            "Not enough space to install the update. Free at least {} MiB and retry.",
             needed.saturating_sub(free).div_ceil(1024 * 1024)
         ));
     }
@@ -1320,8 +1320,17 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let destination = root.path().join("Silo.AppImage");
         fs::write(&destination, "old app").unwrap();
-        let error = preflight_destination(&destination, b"new app", false, |_| Ok(0)).unwrap_err();
-        assert!(error.contains("Not enough space"));
+        for (size, expected) in [(2 * 1024 * 1024, "2 MiB"), (2 * 1024 * 1024 + 1, "3 MiB")] {
+            let payload = vec![0; size];
+            let error =
+                preflight_destination(&destination, &payload, false, |_| Ok(0)).unwrap_err();
+            assert_eq!(
+                error,
+                format!(
+                    "Not enough space to install the update. Free at least {expected} and retry."
+                )
+            );
+        }
         assert!(
             preflight_destination(&destination, b"new app", false, |_| Err(
                 "Space unavailable".into()
