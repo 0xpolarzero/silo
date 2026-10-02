@@ -182,6 +182,11 @@ need.
 - GTK 3: `PasteText` use-after-free (standalone reproduction available).
 - MicroSandbox: late, unclear error for symlinked mount roots; `msb restore -v`
   cannot attach disk images from the CLI; our case on #1701/#1702.
+- MicroSandbox: the checkpoint integrity check (`crates/image/lib/checkpoint/resolver.rs`) admits 1 MiB for a
+  virtio-fs device state while the runtime's restore admits 8 MiB (patch `microsandbox-checkpoint-fs-state`); a
+  bind mount's stat-virtualization identity map is filled by the guest agent's report and so is never set in a
+  RAM-restored guest (host uid visible; Silo mounts with `uid=0,gid=0`); `inspect` has no runtime instance id.
+- LCU/OpenAI `node_repl`: the default network-disabled sandbox blocks the native X11 connection (see section 9).
 
 ### 8. Verification
 
@@ -191,6 +196,66 @@ Claude Code and Codex desktop tasks with independent file checks, approvals
 on and off; export/import keeps the mount; GTK, Qt, Firefox, Chrome and
 Electron expose trees; poller CPU cost; `df` on a cold cache; pinned-version
 change. Record final sizes and add a `minor` changeset.
+
+### 9. Live verification without a model (2026-10-02)
+
+macOS arm64 (Silo main plus the fixes below, MicroSandbox 0.7.6 built from `runtime-inputs.json`,
+bundled `msb` ad-hoc signed with `Entitlements.plist`, published v4 image
+`ubuntu-24.04-v4-arm64`, ChatGPT 26.928.31416 downloaded by Silo's own downloader, LCU 0.8.1).
+Real code paths through the opt-in live tests listed in
+[Rust test support](SiloUI-RUST-TEST-SUPPORT.md#live-tests-and-temporary-directories); fixture
+homes under `/tmp`, `e2e-*` sandboxes, live data, no packaged app. The Linux x86-64 computer was not used.
+
+- Fresh VM: built in, desktop session running at start, computer use `installing`, then `ready`
+  (about 25 s after Start); `lcu status --json` reports `tested`, `lcu doctor` passes (window list and
+  screenshot), the folder is mounted `ro` and writes fail with EROFS. Accessibility: system default
+  `toolkit-accessibility=true` and the poller run; no browser ships in the image, so Firefox,
+  Chromium and Electron trees were not exercised.
+- LCU's own MCP client (`adapters/client.mjs`), no model: GNOME Text Editor (GTK4) with `typeText` and
+  `paste` does not crash, Save As through its dialog writes the expected bytes (checked by a separate guest
+  command), per-key `pressKey` typing into Xfce Terminal writes its file. See the findings below.
+- Approval: `apply_approval_with` `auto` adds exactly `default_tools_approval_mode = "approve"` (Codex) and
+  `permissions.allow: ["mcp__lcu"]` (Claude Code, with Codex 0.160.0 and Claude Code 2.1.287 installed from npm);
+  `ask` removes exactly those and nothing else. With nothing installed LCU's installer still creates `~/.codex`,
+  so Codex is always registered and gets the approval line; Claude Code gets nothing until it is installed.
+- Lifecycle (every step ends with the session running, computer use ready, the folder read-only and `lcu doctor`
+  passing): restart, stop and start, checkpoint of the running VM, fork, in-place restore; export, import into a
+  second home with its own folder (the imported VM takes the destination's `ask`).
+- Boot loop (stale PulseAudio): 31 boots (one fresh VM, 10 restarts, 10 imports and 10 restarts of the imports, run twice) with 0 desktop failures: every one ended with the session running and computer use ready.
+- Pre-v4: a VM from the v3 image has no mount, no desktop session, no helper and no computer-use state, and its
+  restart, stop/start, checkpoint, fork and restore work.
+- Numbers (cold home, one VM): the v4 image is a 396 MB archive and 1.30 GB in MicroSandbox's cache; a created VM
+  takes about 33 MiB on the host at ready and 89 MiB after the desktop drive; the guest uses about 300 MiB of
+  3.9 GiB with the desktop running (about 520 MiB after driving apps); creating the VM (image import) took 50 to 61 s
+  and create to ready 61 to 76 s. The ChatGPT app download, verification and extraction took 120 s in the debug
+  test profile.
+
+Fixed by this verification (each with a test):
+
+- Computer use never installed on a real runtime. The post-boot sync requires a runtime instance id, which
+  MicroSandbox 0.7.6's `inspect` does not report (Silo's 0.7.6 patches dropped it), so the identity check always
+  failed. The runtime's last-update time identifies the instance instead.
+- Capturing a checkpoint of a running built-in VM failed with `checkpoint object exceeds 1048576 bytes`:
+  MicroSandbox's integrity check admits 1 MiB for any device state while its restore admits 8 MiB for virtio-fs, and
+  the folder's passthrough table was 1.18 MiB. `microsandbox-checkpoint-fs-state` applies the restore's limit.
+- After a RAM restore (checkpoint fork or restore) the guest saw the host uid on the folder, LCU refused to start
+  ("not in a location only root and this account can change") and Silo still reported `ready` from the previous
+  boot's receipt. The folder is now mounted with `uid=0,gid=0`.
+
+Findings left open:
+
+- LCU's `js` tool cannot reach the X server in its default configuration. The original `node_repl` runs code in a
+  `codex sandbox` with the network disabled, whose seccomp filter denies every `connect`, local sockets
+  included (`Could not connect to X11 ... Operation not permitted`); `lcu doctor` does not go through it. A harness
+  that supplies its own sandbox state (Codex) decides this itself; Claude Code supplies none. The drive test
+  starts LCU with `CODEX_CLI_PATH` empty (kernel started directly), and reports the default configuration without
+  asserting it. Needs an LCU decision (default sandbox state or the direct kernel) before real agent runs.
+- `pressKey` sends X events to the selected window (`SendEvent`), which GTK4 ignores: per-key typing and shortcuts
+  such as Ctrl+S do nothing in GNOME Text Editor, while `typeText`, `paste` and AX actions
+  (`performSecondaryAction`) work. In GTK4 `typeText` also reports `SetCaretOffset NotSupported`, an error
+  result although the text was inserted. GTK3 and VTE (Xfce Terminal) take `pressKey`.
+- Silo's `computerUse.state` after a restart comes from the receipt on disk; only `lcu doctor` proves it
+  (the lifecycle test checks both).
 
 ## Integration contract
 
