@@ -79,7 +79,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
     </div>
   )
   return readOnly ? (
-    <TooltipProvider><Tooltip><TooltipTrigger asChild><span tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`}>{field}</span></TooltipTrigger>
+    <TooltipProvider><Tooltip><TooltipTrigger asChild><div role="group" tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`} className="rounded-lg outline-none focus-visible:ring-3 focus-visible:ring-ring/50">{field}</div></TooltipTrigger>
       <TooltipContent>Disk size is read-only.</TooltipContent>
     </Tooltip></TooltipProvider>
   ) : field
@@ -198,10 +198,15 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   const memoryPresets = presetsWithin(supportedMemoryGiB, capacity ? maximums.memoryGiB : undefined)
 
   useEffect(() => {
-    // Let the opening menu finish its focus restoration before entering the editor.
-    const frame = requestAnimationFrame(() => {
+    function focusFirstField() {
       firstField.current?.focus()
       firstField.current?.scrollIntoView?.({ block: "nearest" })
+    }
+    focusFirstField()
+    // A closing menu can restore focus after the editor mounts.
+    const frame = requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active === document.body || active?.getAttribute("aria-haspopup") === "menu") focusFirstField()
     })
     return () => cancelAnimationFrame(frame)
   }, [focusRequest])

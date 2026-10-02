@@ -322,7 +322,8 @@ fn serve_with_header_progress(
     let peer_stop = stop.clone();
     let writer = thread::spawn(move || {
         if header.websocket {
-            relay(incoming, outgoing, peer_stop, peer_end, deadline);
+            relay(incoming, outgoing, peer_stop, peer_end.clone(), deadline);
+            peer_end.store(true, Ordering::Release);
         } else {
             forward_body(
                 incoming,
@@ -624,6 +625,63 @@ mod tests {
     #[test]
     fn stalled_http_response_closes_both_connections_at_deadline() {
         stalled_http_request("GET", "");
+    }
+
+    #[test]
+    fn a_closed_websocket_client_releases_its_handler_without_guest_eof() {
+        let (_directory, upstream, socket) = guest();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = serve(
+                accepted,
+                port,
+                &socket,
+                6901,
+                "session",
+                "secret",
+                "auth",
+                worker_stop,
+            );
+            done_tx.send(result).unwrap();
+        });
+        write!(client, "GET /websockify HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: session=secret\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
+        let (mut guest, _) = upstream.accept().unwrap();
+        guest
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0];
+        while !request.ends_with(b"\r\n\r\n") {
+            guest.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        guest.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n").unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut response = Vec::new();
+        while !response.ends_with(b"\r\n\r\n") {
+            client.read_exact(&mut byte).unwrap();
+            response.push(byte[0]);
+        }
+        assert!(response.starts_with(b"HTTP/1.1 101"));
+        // Leave the guest's response side open after the client disappears.
+        drop(client);
+        let completed = done_rx.recv_timeout(Duration::from_secs(1));
+        stop.store(true, Ordering::Release);
+        worker.join().unwrap();
+        assert!(
+            completed.is_ok(),
+            "closed WebSocket client retained its handler"
+        );
+        assert!(completed.unwrap().is_ok());
+        assert_eq!(guest.read(&mut byte).unwrap(), 0);
     }
 
     #[test]
@@ -1023,6 +1081,66 @@ mod tests {
         assert!(response[..count].starts_with(b"HTTP/1.1 200"));
         worker.join().unwrap();
     }
+    #[test]
+    fn websocket_client_disconnect_releases_silent_upstream() {
+        let (_directory, upstream, socket) = guest();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = serve_with_header_progress(
+                accepted,
+                port,
+                &socket,
+                6901,
+                "session",
+                "secret",
+                "real",
+                worker_stop,
+                Duration::from_millis(50),
+                |_, _| {},
+            );
+            done_tx.send(result).unwrap();
+        });
+        write!(client, "GET /websockify HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: session=secret\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n").unwrap();
+        let (mut guest, _) = upstream.accept().unwrap();
+        guest
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut header = Vec::new();
+        let mut byte = [0];
+        while !header.ends_with(b"\r\n\r\n") {
+            guest.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+        }
+        guest.write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n").unwrap();
+        header.clear();
+        while !header.ends_with(b"\r\n\r\n") {
+            client.read_exact(&mut byte).unwrap();
+            header.push(byte[0]);
+        }
+        // An idle WebSocket must survive beyond the ordinary HTTP deadline.
+        assert!(matches!(
+            done_rx.recv_timeout(Duration::from_millis(150)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(client);
+        let completed = done_rx.recv_timeout(Duration::from_secs(3));
+        stop.store(true, Ordering::Release);
+        worker.join().unwrap();
+        completed
+            .expect("disconnected WebSocket retained its handler")
+            .unwrap();
+        assert_eq!(guest.read(&mut byte).unwrap(), 0);
+    }
+
     #[test]
     fn websocket_streams_bidirectionally_and_closes_when_viewer_drops() {
         let (_directory, upstream, guest_socket) = guest();

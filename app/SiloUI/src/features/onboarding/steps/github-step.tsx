@@ -32,7 +32,7 @@ export function GitHubStep({ queueItems = [], activityEvents = [], ...props }: G
   const attemptEvents = events.filter(({ requestId }) => requestId === latestAttempt)
   const start = attemptEvents[0]?.timestamp
   const end = current ? now : attemptEvents.at(-1)?.timestamp
-  const seconds = start && end ? Math.max(0, Math.floor((end - start) / 1000)) : 0
+  const seconds = start !== undefined && end !== undefined ? Math.max(0, Math.floor((end - start) / 1000)) : 0
   const elapsed = `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`
   const detail = failure ? githubFailure(failure.failure ?? "").message
     : current ? `${current.label}…`

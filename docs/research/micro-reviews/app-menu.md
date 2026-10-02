@@ -2,7 +2,7 @@
 
 Scope: `app/SiloUI/src-tauri/src/app_menu.rs` and `app/SiloUI/src-tauri/src/notifications.rs`.
 
-Original read-only audit, before the fix loop: no builds, tests, native app launches, or live notification checks were run. Original finding line numbers refer to the audited version. Checked the two earlier review reports and `docs/SiloUI-CODE-REVIEW-PASS-3-*.md`; the previously reported remote notification identity defect is excluded. No additional concrete defect found in `app_menu.rs`.
+Read-only source review. No builds, tests, native app launches, or live notification checks were run. Checked the two earlier review reports and `docs/SiloUI-CODE-REVIEW-PASS-3-*.md`; the previously reported remote notification identity defect is excluded. No additional concrete defect found in `app_menu.rs`.
 
 ## APP-MENU-1 — P2 — Deletion misses in-flight system notifications
 

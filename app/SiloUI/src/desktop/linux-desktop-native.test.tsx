@@ -235,14 +235,17 @@ it("attaches once the stream becomes ready", async () => {
   invoke.mockImplementation(async command => command === "read_desktop_state" ? {
     installed: true, autoStart: true, state: "running", backend: "selkies", sessionState: "running", streamState,
   } : undefined)
-  vi.useFakeTimers({ shouldAdvanceTime: true })
+  vi.useFakeTimers()
   try {
     render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
-    expect(await screen.findByLabelText("Linux desktop display")).toBeVisible()
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByLabelText("Linux desktop display")).toBeVisible()
     expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
     streamState = "running"
-    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
-    await waitFor(() => expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" })))
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_999) })
+    expect(invoke.mock.calls.some(([command]) => command === "desktop_viewer_attach")).toBe(false)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(invoke).toHaveBeenCalledWith("desktop_viewer_attach", expect.objectContaining({ workspace: "dev" }))
   } finally { vi.useRealTimers() }
 })
 

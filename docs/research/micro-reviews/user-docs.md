@@ -31,6 +31,50 @@ Scope: `app/SiloUI/docs/silo-help.html`, checked against app code. The initial a
 - **Suggested fix:** Keep the instruction to expand diagnostics, but qualify copying with “when one is offered.”
 - **Test that would catch it:** A bundled-help content regression should require the copy-control availability qualification in the troubleshooting paragraph; the update error details remain expandable without a copy control.
 - **Validation:** The new help regression failed before the correction; it and the existing update-card suite passed afterward (29 tests total). The correction changes only the help instruction.
-- **Status:** Fixed in the accompanying `docs(help): qualify diagnostic copy instructions` commit.
+- **Status:** Fixed and folded, `d5830840`.
+
+## USER-DOCS-4 — P3 — Reclamation is described as shrinking the workspace disk
+
+- **File:line:** `app/SiloUI/docs/silo-help.html:23`.
+- **Trigger/consequence:** Read Storage help before reclaiming; “shrinks the workspace disk” implies changing disk size even though workspace capacity remains unchanged.
+- **Evidence:** `runtime/storage.rs:473–516` guards and restores disk length and measures host allocation; `runtime/storage/tests.rs:748–812` covers releasing allocated blocks without shortening the disk. `workspace-storage-panel.tsx:192` explicitly says files and capacity stay the same.
+- **Fix:** Describe releasing unused allocation on the computer while preserving workspace files and capacity, and retain the runtime/checkpoint exclusion.
+- **Test:** The bundled-help regression failed on the old description. Focused help and Storage UI tests, typecheck, focused lint and whitespace checks validate the correction.
+- **Status:** Fixed and folded, `6f5ca5ae`; 29 focused help/Storage tests passed, plus typecheck, focused lint and whitespace checks. The audit merge was resolved in `e2cb0c54`, preserving the original review below.
+
+## USER-DOCS-5 — P3 — Duplicating settings does not preserve manual desktop startup
+
+- **File:line:** `app/SiloUI/docs/silo-help.html:10`.
+- **Trigger:** Duplicate an older sandbox whose desktop has `startWithSandbox: false` on a computer with built-in computer use.
+- **Evidence:** `machine-editor.tsx:162–173,236` replaces that setting with automatic startup for new built-in sandboxes. `desktop/computer-use.test.tsx:367–373` already verifies the duplicated settings are saved with `startWithSandbox: true`.
+- **Consequence:** The help promises the same settings, but the new sandbox starts its desktop automatically when the source would not.
+- **Fix:** State the built-in desktop exception in the Duplicate settings instructions.
+- **Test:** The new bundled-help regression failed on the unqualified promise. The help regression and existing computer-use suite cover the corrected instruction and its creation behavior.
+- **Status:** Fixed and folded, `efc28d5f`; 118 focused help/computer-use tests passed, plus typecheck, focused lint and whitespace checks.
+
+## USER-DOCS-6 — P3 — System issue recovery still directs users to relaunch
+
+- **File:line:** `app/SiloUI/docs/silo-help.html:56`.
+- **Trigger:** Follow the bundled troubleshooting instructions after a dependency check fails.
+- **Evidence:** `system-issue-page.tsx:20–31` offers Retry checks and displays specific recovery instructions. `production-surface.tsx:86` reruns dependency checks and initializes live updates through that action; `production-surface.test.tsx:160–192` covers retry and recovery. `application-lifecycle.test.tsx:501–510` covers fixing KVM access then retrying. The help still prescribes relaunching to rerun checks.
+- **Consequence:** Users bypass the recovery action and the displayed host-specific fix; quitting to relaunch also stops local sandboxes.
+- **Fix:** Direct users to follow the displayed recovery instructions and choose Retry checks.
+- **Test:** The bundled-help regression failed on the old relaunch instruction; existing recovery tests cover the action it now names.
+- **Status:** Fixed in the accompanying `docs(help): use current system recovery instructions` commit.
 
 Final verification used Node.js 24.11.1: `npm --prefix app/SiloUI test -- src/test/bundled-help.test.ts src/features/application/components/checkpoint-panel.test.tsx src/features/application/pages/network-page.test.tsx src/features/updates/updates.test.tsx --maxWorkers=1` passed all 76 tests. `npm --prefix app/SiloUI run typecheck`, focused oxlint for `src/test/bundled-help.test.ts`, and `git diff --check` passed. No Rust files changed, so Rust formatting and native tests were not applicable. No packaged bundle or live data was inspected.
+
+## Original read-only audit
+
+### Bundled help review
+
+Scope: `app/SiloUI/docs/silo-help.html`, checked against current frontend and native implementation. Read-only source review; no app launch, builds, or tests. Checked both earlier review reports and `docs/SiloUI-CODE-REVIEW-PASS-3-*.md`; excluded the previously reported full-checkpoint import mismatch (R-28).
+
+#### USER-DOCS-1 — P3 — Checkpoint deletion instructions omit the owning-computer requirement
+
+- **File:line:** `app/SiloUI/docs/silo-help.html:18`.
+- **Trigger:** Connect another computer, open one of its sandboxes' Checkpoints tabs, and follow “Delete checkpoint data through Delete… in the checkpoint's actions menu, then confirm.” The help's checkpoint instructions cover connected sandboxes and qualify Export as local at line 17, but give no such restriction or alternative for Delete.
+- **Evidence:** `app/SiloUI/src/features/application/components/checkpoint-panel.tsx:58` defines local as `!workspace.computer`; lines 268–269 include the Delete item only for local sandboxes. `app/SiloUI/src/desktop/production-source.ts:1508` explicitly rejects remote deletion with “Delete checkpoints of this sandbox in Silo on its own computer.” This is an intentional product restriction, not an offline-state failure.
+- **Consequence:** Users following the bundled help cannot find the instructed action for connected sandboxes and receive no instruction to switch to the owning computer to remove checkpoint data.
+- **Suggested fix:** Qualify checkpoint deletion as local and tell users to open Silo on the sandbox's owning computer to delete its checkpoints.
+- **Test that would catch it:** Render the Checkpoints panel with a connected-computer fixture and assert that Delete is absent while Fork and Restore remain available; check that the bundled help explicitly directs remote checkpoint deletion to the owning computer. Include a local fixture with a deletable checkpoint as the positive control.

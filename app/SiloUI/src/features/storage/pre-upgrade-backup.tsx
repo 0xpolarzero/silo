@@ -61,7 +61,7 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
   const [subscriptionError, setSubscriptionError] = useState<string | null>(null)
   const [connection, setConnection] = useState(0)
   const [removing, setRemoving] = useState(false)
-  const removal = useRef(false)
+  const removal = useRef<Promise<void> | null>(null)
   const reads = useRef({ sequence: 0 })
   const refresh = useRef<() => Promise<void>>(async () => {})
 
@@ -71,6 +71,7 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
     const requests = reads.current
     let unsubscribe: (() => void) | undefined
     refresh.current = async () => {
+      if (!live) return
       const mine = ++requests.sequence
       try {
         const next = await backend.read()
@@ -82,7 +83,7 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
         if (live && mine === requests.sequence) { setLoadError(message(cause)); setLoaded(true) }
       }
     }
-    void backend.subscribe(() => { void refresh.current() }).then(stop => {
+    void backend.subscribe(() => { if (live) void refresh.current() }).then(stop => {
       if (live) { unsubscribe = stop; setSubscriptionError(null) }
       else stop()
     }).catch(() => {
@@ -105,23 +106,27 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
     return () => { live = false }
   }, [backend, measure, present, backup])
 
-  const remove = useCallback(async () => {
-    if (!backend || removal.current) return
-    removal.current = true
+  const remove = useCallback(() => {
+    if (!backend) return Promise.resolve()
+    if (removal.current) return removal.current
     ++reads.current.sequence
     setRemoving(true)
-    try {
-      await backend.remove()
-      ++reads.current.sequence
-      setBackup(null)
-    } catch (cause) {
-      // A failed deletion may have removed part of it: show what is left.
-      void refresh.current()
-      throw cause
-    } finally {
-      removal.current = false
-      setRemoving(false)
-    }
+    removal.current = Promise.resolve().then(async () => {
+      try {
+        await backend.remove()
+        ++reads.current.sequence
+        setBackup(null)
+        setLoadError(null)
+      } catch (cause) {
+        // A failed deletion may have removed part of it: show what is left.
+        void refresh.current()
+        throw cause
+      } finally {
+        removal.current = null
+        setRemoving(false)
+      }
+    })
+    return removal.current
   }, [backend])
 
   return {

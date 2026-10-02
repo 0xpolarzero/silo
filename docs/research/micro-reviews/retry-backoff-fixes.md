@@ -24,6 +24,8 @@
 - Fix: capture the shutdown generation and reject later attempts with the cancellation error code when it changes. Check admission before each send.
 - Verification: the native regression checks one send, typed cancellation, and reopened admission; existing tests check stable operation identities, retry caps, and terminal failures.
 
+The standalone Rust verification extracts the production retry helper, failure classification, bridge error types, shutdown generation/admission functions, and both remote retry tests. It supplies only a local test isolation mutex and a maintenance-budget constant. Both tests pass against shared Cargo dependency artifacts. This verifies the retry seam without establishing whole-application compilation or live remote behavior.
+
 ## Desktop viewer health checks
 
 - Trigger: the desktop viewer stays open while its computer is unreachable.
@@ -31,3 +33,27 @@
 - Consequence: repeated guest state reads or connection attempts continue at the normal health-check interval during an outage.
 - Fix: schedule reads after completion, double failure delays up to 30 seconds, and reset the delay after recovery. Visibility changes and effect cleanup cancel the pending schedule.
 - Verification: the regression checks growing and capped delays, successful recovery, and closure; the existing recovery test verifies that a retired transport reattaches when the guest state remains unchanged.
+
+## Guest accessibility bus failures
+
+- Trigger: the accessibility worker cannot enumerate the desktop because its bus is unavailable.
+- Evidence: every sweep exception set `changed` to true, resetting the polling delay. The deterministic worker regression observed six consecutive two-second delays.
+- Consequence: a bus outage keeps accessibility requests and error logging at the fastest polling interval.
+- Fix: treat a failed sweep as no observed content change so the existing idle backoff grows to its ten-second cap.
+- Verification: the actual worker runs with a synthetic bus and clock. The regression checks growing delays, repeated capped delays, and restored two-second polling when a new application appears. Existing fairness and hung-application controls remain covered.
+
+## Background VM health checks
+
+- Trigger: runtime inspection keeps failing after the health watcher observed a running VM.
+- Evidence: `HealthState::poll_interval` ignored the existing failure count. The regression against the extracted production health state returned ten seconds instead of the first twenty-second backoff.
+- Consequence: background runtime inspections continue every ten seconds through an outage, including while application windows are hidden.
+- Fix: double the active interval after each failed read, cap it at the existing five-minute idle fallback, and reset on a successful reading. Discarded reads leave the failure count unchanged.
+- Verification: all eleven production health-state tests pass in a standalone Rust harness, including delay growth, repeated caps, recovery, and preservation of the idle fallback. Only Tauri installation is omitted and notice data types are supplied locally; no app or VM is launched.
+
+## Update installation-gate reads
+
+- Trigger: a ready update retains its snapshot while repeated updater reads fail.
+- Evidence: `UpdatesProvider` used a three-second interval regardless of read errors. The fake-timer regression observed another call before the first six-second retry deadline.
+- Consequence: updater checks continue at the fastest interval throughout an outage.
+- Fix: schedule each poll after its read, double failed-read delays up to 30 seconds, and reset on a successful read or event. Focus still requests a read immediately.
+- Verification: the regression checks growing and capped delays, recovery, and provider disposal; existing update tests cover subscription repair, installation ordering, and equal-snapshot rendering.

@@ -201,6 +201,10 @@ pub(crate) fn reset_retries() {
     // An explicit Retry cannot bypass GitHub's requested waiting period.
     gates().requests.clear();
 }
+pub(crate) fn reset_bearer_retries(token: &str) {
+    let class = rate_class(&Authentication::Bearer(token.into()));
+    gates().requests.retain(|_, failure| failure.class != class);
+}
 fn preflight(key: &str, class: &str) -> Result<(), String> {
     gates().check(key, class, now())
 }
@@ -447,6 +451,38 @@ pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn personal_token_retry_preserves_unrelated_failures_and_server_floors() {
+        let _test_state = crate::test_support::global_state();
+        let token = uuid::Uuid::new_v4().to_string();
+        let personal = rate_class(&Authentication::Bearer(token.clone()));
+        let other = rate_class(&Authentication::Bearer(uuid::Uuid::new_v4().to_string()));
+        let app = format!("app:{}", uuid::Uuid::new_v4());
+        let validation_key = uuid::Uuid::new_v4().to_string();
+        let other_key = uuid::Uuid::new_v4().to_string();
+        let mint_key = uuid::Uuid::new_v4().to_string();
+        {
+            let mut g = gates();
+            for (key, class) in [
+                (&validation_key, &personal),
+                (&other_key, &other),
+                (&mint_key, &app),
+            ] {
+                g.fail(key.clone(), class, 100, false, 0, false, 0, "failed", false);
+                assert!(g.check(key, class, u64::MAX).is_err());
+            }
+            g.restore_floor(&personal, 5000);
+        }
+        reset_bearer_retries(&token);
+        let mut g = gates();
+        assert!(g.check(&validation_key, &personal, 5000).is_ok());
+        assert!(g.check(&validation_key, &personal, 4999).is_err());
+        assert!(g.check(&other_key, &other, u64::MAX).is_err());
+        assert!(g.check(&mint_key, &app, u64::MAX).is_err());
+        g.requests.remove(&other_key);
+        g.requests.remove(&mint_key);
+        g.rate_until.remove(&personal);
+    }
     #[test]
     fn retry_gate_pluralizes_the_remaining_seconds() {
         let mut gates = Gates::default();

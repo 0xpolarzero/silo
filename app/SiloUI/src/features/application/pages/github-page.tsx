@@ -147,6 +147,7 @@ export function GitHubPage({
   const sourceDraftKey = useRef(JSON.stringify(sourceDraft))
   const sourceOperationsKey = useRef(JSON.stringify([source.github.policyRevision, source.github.workspaceOperations]))
   const catalogAvailable = source.github.repositoryCatalogStatus?.status !== "unavailable"
+  const tokenConnected = source.github.personalToken?.state === "connected"
   const applying = Object.values(workspaceOperations).some((operation) => operation.status === "applying")
   const busy = connectionState === "connecting" || applying
 
@@ -293,7 +294,7 @@ export function GitHubPage({
   }
 
   function commitIdentity(workspace: string, identity: GitHubIdentity, currentDraft = draft) {
-    if (!identity.name.trim() || !identity.email.trim() || sameIdentity(identityIntent.current[workspace], identity)) return
+    if ((identity.apply && (!identity.name.trim() || !identity.email.trim())) || sameIdentity(identityIntent.current[workspace], identity)) return
     identityIntent.current = { ...identityIntent.current, [workspace]: { ...identity } }
     applyWorkspaceDraft(workspace, {
       ...currentDraft,
@@ -344,6 +345,7 @@ export function GitHubPage({
     </div>
   ) : undefined
 
+  const accessToggle = <Button type="button" variant="outline" size="xs" disabled={applying} onClick={toggleAccess}>{accessEnabled ? "Disable access" : "Enable access"}</Button>
   const connectedActions = (
     <InlineConfirmation active={confirmingDisconnect} onDismiss={() => setConfirmingDisconnect(false)}>
       {confirmingDisconnect ? (
@@ -353,7 +355,7 @@ export function GitHubPage({
         </>
       ) : (
         <>
-          <Button type="button" variant="outline" size="xs" disabled={applying} onClick={toggleAccess}>{accessEnabled ? "Disable access" : "Enable access"}</Button>
+          {accessToggle}
           <Button type="button" variant="ghost" size="xs" disabled={applying} onClick={() => setConfirmingDisconnect(true)}>Disconnect</Button>
         </>
       )}
@@ -362,12 +364,15 @@ export function GitHubPage({
 
   return (
     <div className="mx-auto flex h-full min-h-0 w-full max-w-4xl flex-col px-4 py-5 sm:px-6 sm:py-6">
-      <p className="mb-2 text-[11px] text-muted-foreground">GitHub access for sandboxes on this computer.</p>
+      <div className="mb-2 flex shrink-0 items-center justify-between gap-3">
+        <p className="text-[11px] text-muted-foreground">GitHub access for sandboxes on this computer.</p>
+        {connectionState !== "connected" && tokenConnected && accessToggle}
+      </div>
       <GitHubAccessEditor
         compactConnection
         workspaces={source.workspaces.filter(w => !w.computer).map(({ machine }) => ({ name: machine.name }))}
         connectionState={connectionState}
-        tokenConnected={source.github.personalToken?.state === "connected"}
+        tokenConnected={tokenConnected}
         tokenConnection={<PersonalTokenConnection status={source.github.personalToken}
           onSave={actions.saveGitHubPersonalToken} onRemove={actions.removeGitHubPersonalToken} />}
         repositoryOptions={source.github.repositoryCatalog ?? []}

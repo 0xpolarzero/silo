@@ -30,3 +30,27 @@ The runtime staging follow-up checks passed after integration. One existing Vite
 Guest export checks: 10 ordinary tests passed, 11 Docker opt-in tests skipped; 18 publication/workflow Python tests passed. Touched JavaScript lint, typecheck, Rust formatting, and whitespace checks passed. The changes are internal tooling and need no application changeset.
 
 Merge verification retains streamed download inputs, deferred executable publication, and the CLI-level guest export tests. Guest cleanup waits for both the export process and gzip pipeline. The concurrency fixture uses generous bounded deadlines for the shared host.
+
+
+## Compiled-cache execution recovery
+
+A checksum-valid cached MicroSandbox executable with missing execute permissions
+aborted runtime preparation at its version probe with `EACCES`. An unsuccessful
+capability command likewise aborted instead of rebuilding the disposable cache.
+The real child-process regression reproduced the permission failure before the
+fix. Cache probe failures now fall through to the existing pinned-source build;
+fresh-build failures still propagate. Regressions cover lost permissions and a
+cached probe exiting 17, then require a runnable replacement and matching digest.
+Tests use temporary sources and synthetic compiler executables, with no runtime
+preparation, app launch, VM or network operation.
+
+
+## Guest lock architecture validation
+
+Guest staging accepted an x86_64 manifest from an `arm64` lock entry and an
+aarch64 manifest from `amd64`, because it checked schema, size and checksum but
+not the manifest architecture. Three rejecting target regressions failed before
+the correction. Staging now rejects this mismatch before fetching or replacing
+any artifact; approved ARM64 and x86_64 downloads and warm-cache reuse still
+pass. These synthetic archives establish the preparation policy, not the
+architecture of bytes supplied by an incorrectly authored trusted lock.

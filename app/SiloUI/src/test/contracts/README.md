@@ -45,3 +45,12 @@ setup activity fixtures retain their dedicated Rust verification tests. To regen
 export/import operation wording, use the same synthetic configuration and update
 flag with the `backup_operation_serialization_matches_frontend_contract` filter,
 repeat without the update flag, then run `src/desktop/production-source.test.ts`.
+
+`github-authentication.json` exercises native policies with a null, OAuth, or token
+method. [Native policy validation](../../../src-tauri/src/github.rs) accepts null
+as the default OAuth method and returns the saved value; the
+[frontend parser](../../desktop/production-source.ts) normalizes it to its optional
+authentication field. Regenerate it with
+the same synthetic configuration and update flag using the
+`nullable_github_authentication_matches_wire_contract` filter, then run
+`src/desktop/native-contracts.test.ts` without rewriting the fixture.

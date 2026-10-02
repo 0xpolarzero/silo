@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Avoid redrawing the application for unchanged update status polls and duplicate update events.
+Avoid redrawing update status when background checks or repeated notifications report no changes.

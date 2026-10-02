@@ -33,6 +33,27 @@ no application changeset is required.
 - **Regression:** The workflow policy test fails before the setting is added and passes afterward. No hosted queue was exercised.
 - **Validation limitation:** Actionlint 1.7.12 rejects the supported `queue` key, tracked in [upstream issue 680](https://github.com/rhysd/actionlint/issues/680). Suppressing only `unexpected key "queue" for "concurrency" section` permits all remaining workflow checks to run; the policy test independently requires the supported value and cancellation combination.
 
+## WORKFLOWS-4: P3 — Pending final publication is replaced
+
+**P3**, `.github/workflows/publish-release.yml:13` before this fix. Three final
+publication requests in the shared group canceled the pending second request,
+even with cancellation of the running request disabled. Its draft remained
+unpublished until the owner retried. The supported `queue: max` setting now
+retains pending requests while preserving one publication at a time. The new
+publication policy regression failed before the change; the release workflow
+and publication fixture suites pass afterward. This uses the same supported
+GitHub queue contract and documented Actionlint exception as WORKFLOWS-3.
+
+## WORKFLOWS-5: P2 — Existing multi-architecture image tag can be overwritten
+
+The preflight checked `-arm64` and `-amd64` tags but omitted the unsuffixed
+multi-architecture tag that the workflow also publishes. If that tag exists
+while the architecture tags and GitHub release are absent, publication would
+replace its manifest. A transport fixture reproduced the missing rejection
+before the fix. The guard now requires confirmed absence of all three tags;
+fixtures cover the existing index and failed index lookups as well as successful
+first publication. This retains WORKFLOWS-2's external-writer race limitation.
+
 ## Verification
 
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow`: 22 tests pass after the queue fix.
