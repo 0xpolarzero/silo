@@ -134,6 +134,10 @@ export function useMachineEditing({
    * the rejection arrived), report it as a failure instead of dropping it.
    */
   function reportSaveFailure(cause: unknown, machine?: Pick<SetupMachineConfiguration, "id" | "name">) {
+    if (machine && isStaleConfigurationError(cause) && draftKey && drafts) {
+      const cached = drafts.get(draftKey)
+      if (cached?.editor.originalID === machine.id) drafts.set(draftKey, { ...cached, editorConflict: true })
+    }
     if (mounted.current && machine && isStaleConfigurationError(cause) && editorRef.current?.originalID === machine.id) setEditorConflict(true)
     else showActionFailure(machine ? `Could not save ${machine.name}` : "Could not save changes", cause, undefined, { native: false })
   }
