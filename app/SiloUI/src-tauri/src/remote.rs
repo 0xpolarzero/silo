@@ -614,11 +614,12 @@ fn with_identity_fallback(
     }
     retried
 }
-pub(crate) fn ssh_tunnel_command(
+pub(crate) fn ssh_tunnel_commands(
     host_id: &str,
     local_port: u16,
     remote_port: u16,
-) -> Result<Command, String> {
+    socket: &Path,
+) -> Result<(Command, Command), String> {
     if local_port == 0 || remote_port == 0 {
         return Err("Invalid forwarded port.".into());
     }
@@ -627,17 +628,47 @@ pub(crate) fn ssh_tunnel_command(
         .into_iter()
         .find(|h| h.id == host_id)
         .ok_or("Saved computer not found.")?;
-    let mut command = ssh_for_address(&host.address)?;
+    Ok(tunnel_commands(
+        ssh_for_address(&host.address)?,
+        &host.address,
+        local_port,
+        remote_port,
+        socket,
+    ))
+}
+
+fn tunnel_commands(
+    mut command: Command,
+    address: &str,
+    local_port: u16,
+    remote_port: u16,
+    socket: &Path,
+) -> (Command, Command) {
     command.args([
         "-N",
         "-o",
         "ExitOnForwardFailure=yes",
+        "-o",
+        "ControlMaster=yes",
+        "-o",
+        "ControlPersist=no",
+        "-o",
+        "ForkAfterAuthentication=no",
+        "-o",
+        "ClearAllForwardings=no",
+        "-S",
+    ]);
+    command.arg(socket).args([
         "-L",
         &format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"),
         "--",
-        &host.address,
+        address,
     ]);
-    Ok(command)
+    // A control-only client cannot fall back to a new SSH connection or ProxyCommand.
+    let mut check = Command::new("/usr/bin/ssh");
+    check.args(["-F", "none", "-S"]).arg(socket);
+    check.args(["-O", "check", "--", address]);
+    (command, check)
 }
 
 #[tauri::command]
@@ -2794,6 +2825,44 @@ mod identity_tests {
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
+    }
+
+    #[test]
+    fn published_port_readiness_uses_an_owned_foreground_master() {
+        let (forward, check) = tunnel_commands(
+            ssh_with_identity("office", None, Identity::SiloOnly).unwrap(),
+            "office",
+            43000,
+            32000,
+            Path::new("/tmp/ssh.sock"),
+        );
+        let args = arguments(&forward);
+        for option in [
+            "ExitOnForwardFailure=yes",
+            "ControlMaster=yes",
+            "ControlPersist=no",
+            "ForkAfterAuthentication=no",
+            "ClearAllForwardings=no",
+        ] {
+            assert!(args.windows(2).any(|pair| pair == ["-o", option]));
+        }
+        assert!(args.contains(&"-N".into()));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-L", "127.0.0.1:43000:127.0.0.1:32000"]));
+        assert_eq!(
+            arguments(&check),
+            [
+                "-F",
+                "none",
+                "-S",
+                "/tmp/ssh.sock",
+                "-O",
+                "check",
+                "--",
+                "office"
+            ]
+        );
     }
 
     #[test]
