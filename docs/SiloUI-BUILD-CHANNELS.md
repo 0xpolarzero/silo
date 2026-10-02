@@ -41,6 +41,7 @@ value and require every development name to differ.
 | SSH aliases for other computers' sandboxes | `silo-remote-<host>-<vm>` | `silo-dev-remote-<host>-<vm>` |
 | SSH config/known_hosts/keys | under the private homes above | under `~/.silo-dev` |
 | `~/.ssh/config` | one `Include` line per private home, so each channel adds its own line | |
+| Native app menus, dialogs, tray labels and shutdown inhibitor | `Silo` | `Silo Dev` |
 | VS Code profile | `Silo` | `Silo Dev` |
 | Linux autostart entry and desktop id | `org.silo.preview.desktop` ("Silo Preview") | `org.silo.dev.desktop` ("Silo Dev") |
 | Linux tray id, notification desktop entry | `org.silo.preview`, `Silo` | `org.silo.dev`, `Silo Dev` |

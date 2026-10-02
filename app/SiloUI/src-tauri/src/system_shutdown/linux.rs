@@ -43,7 +43,12 @@ fn watch(app: &AppHandle) -> zbus::Result<()> {
         .map(Duration::from_micros);
     let lock: OwnedFd = manager.call(
         "Inhibit",
-        &("shutdown", "Silo", "Stopping local sandboxes", "delay"),
+        &(
+            "shutdown",
+            crate::channel::current().product_name(),
+            "Stopping local sandboxes",
+            "delay",
+        ),
     )?;
     *INHIBITOR.lock().unwrap_or_else(|error| error.into_inner()) = Some(lock);
     for signal in signals {

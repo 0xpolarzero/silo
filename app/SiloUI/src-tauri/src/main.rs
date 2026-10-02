@@ -338,7 +338,8 @@ fn main() {
 /// would stop VMs that this process never managed.
 fn startup_failed(app: &tauri::AppHandle, error: &str) {
     use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-    eprintln!("Silo could not start: {error}");
+    let name = channel::current().product_name();
+    eprintln!("{name} could not start: {error}");
     settings::exit_without_shutdown(app);
     if let Ok(blank) = "about:blank".parse::<tauri::Url>() {
         for window in app.webview_windows().values() {
@@ -346,8 +347,8 @@ fn startup_failed(app: &tauri::AppHandle, error: &str) {
         }
     }
     app.dialog()
-        .message(format!("Silo could not start.\n\n{error}"))
-        .title("Silo")
+        .message(format!("{name} could not start.\n\n{error}"))
+        .title(name)
         .kind(MessageDialogKind::Error)
         .show(|_| std::process::exit(1));
 }
