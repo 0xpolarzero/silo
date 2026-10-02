@@ -206,7 +206,7 @@ fn editor_launch(
     Ok(launch)
 }
 
-/// Writes `~/.silo/editor/<alias>/<path hash>/<folder>.code-workspace`, keeping
+/// Writes `<channel home>/editor/<alias>/<path hash>/<folder>.code-workspace`, keeping
 /// any other workspace settings the user added and restoring Silo's own.
 fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
@@ -342,7 +342,16 @@ pub(crate) fn key(path: &Path) -> Result<(), String> {
     }
     let mut command = Command::new("/usr/bin/ssh-keygen");
     command
-        .args(["-q", "-t", "ed25519", "-N", "", "-C", "Silo", "-f"])
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            crate::channel::current().product_name(),
+            "-f",
+        ])
         .arg(path);
     run(&mut command, Duration::from_secs(5))
 }
@@ -1153,6 +1162,23 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn generated_key_comment_names_the_channel_and_existing_keys_are_preserved() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("id_ed25519");
+        key(&path).unwrap();
+        let public = fs::read_to_string(dir.path().join("id_ed25519.pub")).unwrap();
+        assert!(public.ends_with(&format!(" {}\n", crate::channel::current().product_name())));
+        let private = fs::read(&path).unwrap();
+        key(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), private);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("id_ed25519.pub")).unwrap(),
+            public
+        );
     }
 
     #[test]
