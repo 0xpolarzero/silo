@@ -12,8 +12,8 @@ there is no version picker or arbitrary-image compatibility promise in this chan
 ## Publication and app builds
 
 The public standard container package is
-`ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v3`, with `-arm64` and `-amd64` tags.
-The matching [versioned release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v3)
+`ghcr.io/0xpolarzero/silo-guest:ubuntu-24.04-v4`, with `-arm64` and `-amd64` tags (v3 remains published).
+The matching [versioned release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v4)
 contains compressed Docker-save archives, package inventories in JSON manifests,
 SHA256SUMS, the recipe, setup script and source commit. The image itself retains
 Ubuntu's package copyright files under `/usr/share/doc`.
@@ -90,13 +90,18 @@ signed packaged runtime, with its public archive hash verified. Evidence:
 `target/verification/working-account/offline-v3-published/live.log`.
 The GUI was not launched, and Linux/KVM execution remains untested.
 
-## Guest image v4 recipe (unpublished)
+## Guest image v4 recipe (published)
 
-`GUEST_IMAGE_VERSION` is `ubuntu-24.04-v4`. `guest-image/image-lock.json` still
-pins the published v3 images; v4 is not published and no app uses it. Publication
-needs the owner's reviewer approval in the `guest-image-publish` environment and
-is not triggered by the recipe change. When v4 is published, copy both manifests
-into the lock and add a changeset in the same change that first uses it.
+`GUEST_IMAGE_VERSION` is `ubuntu-24.04-v4`. v4 is published as the
+[`guest-ubuntu-24.04-v4` release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v4),
+built from source commit `aae2ed939339cb559d81915b4e8df8a150cb8a90` (its
+`source-commit.txt`), and `guest-image/image-lock.json` pins it: both manifests are
+copied into the lock, and new sandboxes use the image with the built-in desktop.
+Compressed archives are 414,843,188 bytes (ARM64) and 423,476,714 bytes (x86-64).
+That release predates attaching `src-tauri/guest/lcu-lock.json`, which the image
+build consumes; the publication workflow now attaches it, so later releases include
+it. The published v4 release itself is unchanged. Publication needs the owner's
+reviewer approval in the `guest-image-publish` environment.
 
 v4 builds on the unchanged v3 layer (`setup-github.sh`, sudo, Python 3, OpenSSH
 SFTP server) and adds, in one further layer:
