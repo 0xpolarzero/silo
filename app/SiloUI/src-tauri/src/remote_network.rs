@@ -168,22 +168,42 @@ fn cached(
     *cache = Some((Instant::now(), value.clone()));
     Ok(value)
 }
+fn read_host_vm_ids(metadata: &Path) -> Result<HashMap<String, String>, String> {
+    let config = runtime::read_metadata(metadata).map_err(|e| e.to_string())?;
+    Ok(config
+        .machines
+        .into_iter()
+        .filter(|m| m.is_vm())
+        .map(|m| (m.name().to_owned(), m.id().to_owned()))
+        .collect())
+}
+
 fn read_host_state(app: &AppHandle) -> Result<Value, String> {
-    let state = tauri::async_runtime::block_on(crate::network::read_network_state(app.clone()))?;
-    let mut value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let paths = runtime::runtime_paths(app)?;
-    let config = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
+    let before = read_host_vm_ids(&paths.metadata)?;
+    let state = tauri::async_runtime::block_on(crate::network::read_network_state(app.clone()))?;
+    let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
+    let after = read_host_vm_ids(&paths.metadata)?;
+    project_host_ports(value, &before, &after)
+}
+
+fn project_host_ports(
+    mut value: Value,
+    before: &HashMap<String, String>,
+    after: &HashMap<String, String>,
+) -> Result<Value, String> {
     for row in value["workspaces"]
         .as_array_mut()
         .ok_or("Invalid network state.")?
     {
         let name = row["workspace"].as_str().unwrap_or("");
-        let machine = config
-            .machines
-            .iter()
-            .find(|m| m.is_vm() && m.name() == name)
+        let id = after
+            .get(name)
             .ok_or("VM configuration changed. Refresh network services.")?;
-        row["vmId"] = json!(machine.id());
+        if before.get(name) != Some(id) {
+            return Err("VM configuration changed. Refresh network services.".into());
+        }
+        row["vmId"] = json!(id);
     }
     Ok(value)
 }
@@ -910,6 +930,41 @@ mod tests {
         assert!(
             tunnels.live.contains_key(&key("other")) && tunnels.intents.contains_key(&key("other"))
         );
+    }
+
+    #[test]
+    fn a_recreated_vm_cannot_relabel_an_older_network_snapshot() {
+        let before = HashMap::from([("dev".into(), "original-vm".into())]);
+        let after = HashMap::from([("dev".into(), "replacement-vm".into())]);
+        let snapshot =
+            json!({"workspaces":[{"workspace":"dev","ports":[{"port":3000,"hostPort":32000}]}]});
+        assert!(
+            project_host_ports(snapshot, &before, &after).is_err(),
+            "the old endpoint was assigned the replacement VM's identity"
+        );
+    }
+
+    #[test]
+    fn a_vm_created_during_observation_requires_a_fresh_identity_snapshot() {
+        let before = HashMap::new();
+        let after = HashMap::from([("dev".into(), "new-vm".into())]);
+        let snapshot = json!({"workspaces":[{"workspace":"dev","ports":[]}]});
+        assert!(project_host_ports(snapshot, &before, &after).is_err());
+    }
+
+    #[test]
+    fn stable_vm_identity_survives_unrelated_metadata_changes() {
+        let before = HashMap::from([
+            ("dev".into(), "stable-vm".into()),
+            ("other".into(), "old-other".into()),
+        ]);
+        let after = HashMap::from([
+            ("dev".into(), "stable-vm".into()),
+            ("other".into(), "new-other".into()),
+        ]);
+        let snapshot = json!({"workspaces":[{"workspace":"dev","ports":[]}]});
+        let projected = project_host_ports(snapshot, &before, &after).unwrap();
+        assert_eq!(projected["workspaces"][0]["vmId"], "stable-vm");
     }
 
     #[test]
