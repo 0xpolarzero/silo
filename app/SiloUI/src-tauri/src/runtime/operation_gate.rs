@@ -183,6 +183,8 @@ struct State {
     computer_generation: u64,
     /// Same, for entries scoped to one VM. Absent means never touched.
     vm_generations: BTreeMap<String, u64>,
+    /// The last lifecycle request on each VM, including requests between retries.
+    lifecycle_requests: BTreeMap<String, u64>,
 }
 
 impl State {
@@ -236,6 +238,11 @@ impl State {
         key: Option<String>,
     ) -> Entry {
         self.next_id += 1;
+        if kind == OperationKind::Lifecycle {
+            if let Scope::Vm { id } = &scope {
+                self.lifecycle_requests.insert(id.clone(), self.next_id);
+            }
+        }
         Entry {
             id: self.next_id,
             scope,
@@ -282,9 +289,16 @@ impl Generations {
 pub(crate) struct Kinded<'a> {
     gate: &'a OperationGate,
     kind: OperationKind,
+    retry_after: Option<u64>,
 }
 
 impl<'a> Kinded<'a> {
+    /// Retry only while this remains the latest lifecycle request on its VM.
+    pub(crate) fn retry_after(mut self, request: Option<u64>) -> Self {
+        self.retry_after = request;
+        self
+    }
+
     pub(crate) fn computer(&self, label: &str) -> Result<OperationGuard<'a>, GateError> {
         self.acquire(Scope::Computer, None, label, None)
     }
@@ -310,8 +324,15 @@ impl<'a> Kinded<'a> {
         label: &str,
         key: Option<String>,
     ) -> Result<OperationGuard<'a>, GateError> {
-        self.gate
-            .acquire_inner(scope, vm_name, self.kind, label, key, None)
+        self.gate.acquire_inner(
+            scope,
+            vm_name,
+            self.kind,
+            label,
+            key,
+            None,
+            self.retry_after,
+        )
     }
 
     pub(crate) fn acquire_while(
@@ -321,8 +342,15 @@ impl<'a> Kinded<'a> {
         label: &str,
         keep_waiting: &dyn Fn() -> bool,
     ) -> Result<OperationGuard<'a>, GateError> {
-        self.gate
-            .acquire_inner(scope, vm_name, self.kind, label, None, Some(keep_waiting))
+        self.gate.acquire_inner(
+            scope,
+            vm_name,
+            self.kind,
+            label,
+            None,
+            Some(keep_waiting),
+            self.retry_after,
+        )
     }
 }
 
@@ -474,6 +502,7 @@ impl OperationGate {
                 waiting: VecDeque::new(),
                 computer_generation: 0,
                 vm_generations: BTreeMap::new(),
+                lifecycle_requests: BTreeMap::new(),
             }),
             changed: Condvar::new(),
             listener: OnceLock::new(),
@@ -484,7 +513,11 @@ impl OperationGate {
 
     /// Fix the operation kind for the entries this request creates.
     pub(crate) fn kind(&self, kind: OperationKind) -> Kinded<'_> {
-        Kinded { gate: self, kind }
+        Kinded {
+            gate: self,
+            kind,
+            retry_after: None,
+        }
     }
 
     /// A counter that changes whenever an operation touching this VM (or computer-wide
@@ -624,7 +657,7 @@ impl OperationGate {
         label: &str,
         key: Option<String>,
     ) -> Result<OperationGuard<'_>, GateError> {
-        self.acquire_inner(scope, vm_name, OperationKind::Other, label, key, None)
+        self.acquire_inner(scope, vm_name, OperationKind::Other, label, key, None, None)
     }
 
     /// Wait for a turn while `keep_waiting` returns true; otherwise leave the queue
@@ -643,6 +676,7 @@ impl OperationGate {
             label,
             None,
             Some(keep_waiting),
+            None,
         )
     }
 
@@ -654,11 +688,19 @@ impl OperationGate {
         label: &str,
         key: Option<String>,
         keep_waiting: Option<&dyn Fn() -> bool>,
+        retry_after: Option<u64>,
     ) -> Result<OperationGuard<'_>, GateError> {
         if HELD.with(Cell::get) > 0 {
             return Err(GateError::Nested);
         }
         let mut state = self.lock();
+        if kind == OperationKind::Lifecycle {
+            if let (Scope::Vm { id }, Some(request)) = (&scope, retry_after) {
+                if state.lifecycle_requests.get(id) != Some(&request) {
+                    return Err(GateError::Cancelled);
+                }
+            }
+        }
         if key.is_some() && state.waiting.iter().any(|entry| entry.key == key) {
             return Err(GateError::AlreadyQueued);
         }
@@ -1159,6 +1201,10 @@ pub(crate) struct OperationGuard<'a> {
 }
 
 impl OperationGuard<'_> {
+    pub(crate) fn request_id(&self) -> u64 {
+        self.id
+    }
+
     /// Allow the user to cancel this operation while it runs. The work must observe
     /// cancellation via `operation_gate::check_cancelled`/`cancel_requested` (same
     /// thread) or the token from `cancel_token` (other threads); nothing is force-killed
@@ -1247,6 +1293,31 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    #[test]
+    fn rejected_old_lifecycle_retry_does_not_supersede_the_newer_request() {
+        let gate = OperationGate::new();
+        let lifecycle = gate.kind(OperationKind::Lifecycle);
+        let old = lifecycle.vm("id-a", "a", "Starting a").unwrap();
+        let old_id = old.request_id();
+        drop(old);
+        let new = lifecycle.vm("id-a", "a", "Stopping a").unwrap();
+        let new_id = new.request_id();
+        drop(new);
+        assert!(matches!(
+            gate.kind(OperationKind::Lifecycle)
+                .retry_after(Some(old_id))
+                .vm("id-a", "a", "Retrying start"),
+            Err(GateError::Cancelled)
+        ));
+        let retry = gate
+            .kind(OperationKind::Lifecycle)
+            .retry_after(Some(new_id))
+            .vm("id-a", "a", "Retrying stop")
+            .unwrap();
+        drop(retry);
+        assert!(gate.is_idle());
     }
 
     #[test]
