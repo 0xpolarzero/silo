@@ -142,7 +142,7 @@ pub(crate) fn require_openssh(purpose: &str) -> Result<(), String> {
     )
 }
 fn require_openssh_at(ssh: &Path, keygen: &Path, purpose: &str) -> Result<(), String> {
-    if ssh.is_file() && keygen.is_file() {
+    if applications::launch::executable_file(ssh) && applications::launch::executable_file(keygen) {
         Ok(())
     } else {
         Err(format!(
@@ -718,6 +718,27 @@ pub(crate) fn prepare_remote_private(
     vm: &str,
     path: &str,
 ) -> Result<(String, PathBuf), String> {
+    prepare_remote_transport(app, host, vm, path, false).map(|(alias, config, _)| (alias, config))
+}
+pub(crate) fn prepare_remote_network_private(
+    app: &AppHandle,
+    host: &str,
+    vm: &str,
+) -> Result<(String, PathBuf, std::net::IpAddr), String> {
+    let (alias, config, address) = prepare_remote_transport(app, host, vm, "/workspace", true)?;
+    Ok((
+        alias,
+        config,
+        address.ok_or("Guest network address is unavailable.")?,
+    ))
+}
+fn prepare_remote_transport(
+    app: &AppHandle,
+    host: &str,
+    vm: &str,
+    path: &str,
+    forwarding: bool,
+) -> Result<(String, PathBuf, Option<std::net::IpAddr>), String> {
     validate_path(path)?;
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
     uuid::Uuid::parse_str(vm).map_err(|_| "Invalid VM identity.")?;
@@ -733,7 +754,8 @@ pub(crate) fn prepare_remote_private(
         public_key(&client)?
     };
     // The remote call can take minutes; keep the file lock free meanwhile.
-    let (host_public, user) = crate::remote_access::prepare(app, host, vm, &client_public, path)?;
+    let (host_public, user, address) =
+        crate::remote_access::prepare(app, host, vm, &client_public, path, forwarding)?;
     let _guard = files_lock();
     let alias = format!(
         "{}-{host}-{vm}",
@@ -745,7 +767,7 @@ pub(crate) fn prepare_remote_private(
     let config = root.join(format!("{host}-{vm}.conf"));
     let contents = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, contents.as_bytes())?;
-    Ok((alias, config))
+    Ok((alias, config, address))
 }
 
 fn proxy_command<S: AsRef<str>>(parts: &[S]) -> String {
@@ -1235,6 +1257,10 @@ mod tests {
         fs::write(&ssh, b"").unwrap();
         assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
         fs::write(&keygen, b"").unwrap();
+        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        fs::set_permissions(&keygen, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_ok());
     }
 
@@ -1333,6 +1359,43 @@ mod tests {
                     format!("{prefix}{encoded}")
                 );
             }
+        }
+    }
+
+    #[test]
+    fn ssh_includes_keep_wildcard_characters_in_directory_names_literal() {
+        let home = tempfile::tempdir().unwrap();
+        for (index, name) in ["home[1]", "home?", "home*", "home\\folder"]
+            .into_iter()
+            .enumerate()
+        {
+            let root = home.path().join(name).join("ssh");
+            fs::create_dir_all(&root).unwrap();
+            let hostname = format!("selected-vm-{index}");
+            fs::write(
+                root.join("dev.conf"),
+                format!("Host silo-test-dev\n  HostName {hostname}\n"),
+            )
+            .unwrap();
+            let config = home.path().join("config");
+            fs::write(&config, format!("{}\n", include_line(&root).unwrap())).unwrap();
+            let output = Command::new("/usr/bin/ssh")
+                .args(["-G", "-F"])
+                .arg(&config)
+                .arg("silo-test-dev")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains(&format!("hostname {hostname}\n")),
+                "{name}: the Include must read the exact directory"
+            );
         }
     }
 

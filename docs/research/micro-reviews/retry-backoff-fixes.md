@@ -71,3 +71,33 @@ The standalone Rust verification extracts the production retry helper, failure c
 - Evidence: the picker retried failed reads on every ten-second interval. The regression observed an extra read before the first twenty-second failure deadline.
 - Change: grow the failed-read delay from twenty to forty seconds, capped at sixty seconds. Successful reads reset the delay; focus, visibility, and explicit Retry remain immediate.
 - Verification: the fixture regression covers repeated caps, focus recovery, the restored ten-second cadence, and disposal. Existing focus, stale-workspace, StrictMode, pagination, and queued-read cancellation tests remain in place.
+
+## Offline-computer snapshot polling
+
+- Evidence: the production source's ten-second refresh retried every computer, regardless of its preceding snapshot failure. The fixture regression observed a second failed request before the first twenty-second deadline.
+- Change: track independent failure deadlines, doubling to a sixty-second cap, and honor them only for background polling. Healthy computers retain their cadence; explicit refresh, focus, mutation refreshes, and computer address changes bypass the wait. A valid snapshot or busy response resets the delay.
+- Verification: the fixture regression covers independent healthy reads, growing and repeated caps, immediate focus recovery, the restored cadence, and disposal.
+
+## Network and SSH service polling
+
+- Evidence: five-second UI polling and ten-second application polling repeated failed native service reads. Both production service actions consume failures and publish unavailable rows, so a rejection-based UI timer would never observe the defect. Regressions against both production actions observed an extra request before the ten-second first failure deadline.
+- Change: distinguish background polling from explicit refresh and enforce separate per-computer deadlines for network and SSH read failures. Delays double to a sixty-second cap and reset after valid replies or host address changes. Focus, opening a panel, native events, mutation reconciliation, and Retry bypass the wait.
+- Verification: deterministic production-source tests cover healthy-owner independence, growing and repeated caps, explicit recovery, and the restored five-second caller cadence. Polling-hook fixtures verify background requests and focus overrides.
+
+## Saved computer-list polling
+
+- Evidence: failures reading `remote_host_list` were consumed and displayed, but the ten-second application timer repeated the read. The regression observed another read before the first twenty-second deadline.
+- Change: grow the background list-read delay to a sixty-second cap while retaining known rows and the existing list-error behavior. Explicit refresh, focus, and connect/remove reconciliation bypass the deadline. A valid list resets the delay.
+- Verification: a production-source fixture checks repeated caps, continuing local reads, immediate focus recovery, and the restored ten-second cadence.
+
+## Guest desktop-repair deadline
+
+- Evidence: `wait_for_session` checked its wait deadline only after the repair branch. A deterministic three-second budget still started repairs at simulated seconds 2, 10, and 22; a one-second budget slept through all 2/4/8-second delays and started three repairs.
+- Change: check the remaining budget before admitting a repair and after its bounded backoff. This stops additional starts after expiration; an already-started desktop command retains its existing subprocess timeout and ownership.
+- Verification: both clock regressions failed before the fix and pass afterward. Existing tests cover three attempts within budget, boot recovery, manual desktops, and starting sessions.
+
+## Background ticks during pending service reads
+
+- Evidence: joining a pending network or SSH read marked it dirty even for a background tick. On failure the dirty loop immediately repeated the read, bypassing the newly established deadline. Both deferred production-source regressions observed two requests from one failed read plus its overlapping background tick.
+- Change: background ticks attach to the pending result without requesting a follow-up. Explicit refresh, native events, and mutation reconciliation still mark the owner dirty so newer intent is observed.
+- Verification: deferred-read regressions cover both adapters and the first backoff floor. Existing service concurrency tests preserve immediate trailing reads for explicit refreshes and safe publication around saves.

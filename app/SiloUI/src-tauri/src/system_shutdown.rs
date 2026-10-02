@@ -64,10 +64,9 @@ pub(crate) fn quit_reason(code: Option<u32>) -> ShutdownReason {
 /// Stop within logind's delay, leaving a margin to save settings and exit.
 #[cfg_attr(not(any(test, target_os = "linux")), allow(dead_code))]
 fn logind_budget(max_delay: Option<Duration>) -> Duration {
-    max_delay
-        .unwrap_or(LOGIND_DEFAULT_DELAY)
-        .saturating_sub(LOGIND_MARGIN)
-        .clamp(Duration::from_secs(1), SESSION_END_BUDGET)
+    let max_delay = max_delay.unwrap_or(LOGIND_DEFAULT_DELAY);
+    let margin = LOGIND_MARGIN.min(max_delay / 2);
+    max_delay.saturating_sub(margin).min(SESSION_END_BUDGET)
 }
 
 /// Install the operating-system quit hooks that need the running app.
@@ -152,11 +151,32 @@ mod tests {
         );
         assert_eq!(
             logind_budget(Some(Duration::from_millis(500))),
-            Duration::from_secs(1)
+            Duration::from_millis(250)
         );
         assert_eq!(
             logind_budget(Some(Duration::from_secs(10))),
             Duration::from_millis(9250)
         );
+    }
+
+    #[test]
+    fn short_logind_limits_are_not_extended_by_a_minimum_vm_budget() {
+        for limit in [
+            Duration::from_micros(1),
+            Duration::from_millis(500),
+            Duration::from_secs(1),
+            Duration::from_millis(1200),
+        ] {
+            let budget = logind_budget(Some(limit));
+            assert!(
+                budget < limit,
+                "shutdown must leave time to release the inhibitor"
+            );
+            assert!(
+                !budget.is_zero(),
+                "positive delay must leave time to try stopping VMs"
+            );
+        }
+        assert_eq!(logind_budget(Some(Duration::ZERO)), Duration::ZERO);
     }
 }

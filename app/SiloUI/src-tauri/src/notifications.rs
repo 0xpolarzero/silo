@@ -222,6 +222,7 @@ impl PendingDelivery {
 
     fn deliver(
         self,
+        allowed: impl FnOnce(&Notice) -> bool,
         send: impl FnOnce(&Notice) -> Result<NotificationDelivery, String>,
         clear: impl FnOnce(&[String]),
     ) {
@@ -232,6 +233,13 @@ impl PendingDelivery {
             .unwrap_or_else(|error| error.into_inner());
         // Task polling and mutex acquisition need not follow issuance order.
         if self.cancelled() || self.revision != self.gate.revision.load(Ordering::SeqCst) {
+            return;
+        }
+        // Focus and preferences may change while an earlier OS request owns the gate.
+        if !allowed(&self.notice)
+            || self.cancelled()
+            || self.revision != self.gate.revision.load(Ordering::SeqCst)
+        {
             return;
         }
         let result = send(&self.notice);
@@ -288,18 +296,17 @@ fn main_window_focused(app: &AppHandle) -> bool {
 }
 
 fn deliver(app: &AppHandle, pending: PendingDelivery) {
-    let notice = &pending.notice;
-    if main_window_focused(app) {
-        return;
-    }
-    let Ok(settings) = crate::settings::current_settings(app) else {
-        return;
-    };
-    if !enabled(&settings, notice.category) {
-        return;
-    }
     // A delivery failure must not change the result of the sandbox/backup operation.
     pending.deliver(
+        |notice| {
+            if main_window_focused(app) {
+                return false;
+            }
+            let Ok(settings) = crate::settings::current_settings(app) else {
+                return false;
+            };
+            enabled(&settings, notice.category)
+        },
         crate::system_integrations::deliver_notification,
         crate::system_integrations::clear_notifications,
     );
@@ -687,6 +694,7 @@ mod tests {
         notice.body = format!("first\nsecond\t{}", "x".repeat(500));
         let pending = DeliveredIndex::default().prepare(notice);
         pending.deliver(
+            |_| true,
             |notice| {
                 assert!(notice.body.starts_with("first second "));
                 assert_eq!(notice.body.chars().count(), BODY_LIMIT);
@@ -712,6 +720,7 @@ mod tests {
         let clearing_active = active.clone();
         let worker = std::thread::spawn(move || {
             pending.deliver(
+                |_| true,
                 |notice| {
                     entered.send(()).unwrap();
                     waiting.recv_timeout(Duration::from_secs(5)).unwrap();
@@ -753,6 +762,7 @@ mod tests {
         index.lock().unwrap().withdraw("1").clear(|_| {});
         let submitted = std::cell::Cell::new(false);
         pending.deliver(
+            |_| true,
             |_| {
                 submitted.set(true);
                 Ok(NotificationDelivery::Delivered)
@@ -769,6 +779,7 @@ mod tests {
         let newer = index.prepare(failure("vm:1:lifecycle", "newer", "b", sandbox()));
         let visible = std::cell::RefCell::new(String::new());
         newer.deliver(
+            |_| true,
             |notice| {
                 *visible.borrow_mut() = notice.title.clone();
                 Ok(NotificationDelivery::Delivered)
@@ -776,6 +787,7 @@ mod tests {
             |_| {},
         );
         older.deliver(
+            |_| true,
             |notice| {
                 *visible.borrow_mut() = notice.title.clone();
                 Ok(NotificationDelivery::Delivered)
@@ -800,8 +812,10 @@ mod tests {
         ));
         let submissions = std::cell::Cell::new(0);
         first.deliver(
+            |_| true,
             |_| {
                 second.deliver(
+                    |_| true,
                     |_| {
                         submissions.set(submissions.get() + 1);
                         Ok(NotificationDelivery::Delivered)
@@ -817,11 +831,98 @@ mod tests {
     }
 
     #[test]
+    fn queued_delivery_rechecks_preferences_after_an_in_flight_notice() {
+        use std::sync::mpsc;
+        let mut index = DeliveredIndex::default();
+        let older = index.prepare(failure("vm:1:lifecycle", "older", "b", sandbox()));
+        let submissions = Arc::new(Mutex::new(Vec::new()));
+        let worker_submissions = submissions.clone();
+        let (entered, wait_entered) = mpsc::channel();
+        let (release, wait_release) = mpsc::channel();
+        let first = std::thread::spawn(move || {
+            older.deliver(
+                |_| true,
+                |notice| {
+                    entered.send(()).unwrap();
+                    wait_release.recv_timeout(Duration::from_secs(5)).unwrap();
+                    worker_submissions
+                        .lock()
+                        .unwrap()
+                        .push(notice.title.clone());
+                    Ok(NotificationDelivery::Delivered)
+                },
+                |_| {},
+            );
+        });
+        wait_entered.recv_timeout(Duration::from_secs(5)).unwrap();
+        let newer = index.prepare(failure("vm:1:lifecycle", "newer", "b", sandbox()));
+        let preferences_enabled = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let worker_preferences = preferences_enabled.clone();
+        let worker_submissions = submissions.clone();
+        let (started, wait_started) = mpsc::channel();
+        let (policy_read, wait_policy_read) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            newer.deliver(
+                |_| {
+                    let enabled = worker_preferences.load(Ordering::SeqCst);
+                    policy_read.send(()).unwrap();
+                    enabled
+                },
+                |notice| {
+                    worker_submissions
+                        .lock()
+                        .unwrap()
+                        .push(notice.title.clone());
+                    Ok(NotificationDelivery::Delivered)
+                },
+                |_| {},
+            );
+        });
+        wait_started.recv_timeout(Duration::from_secs(5)).unwrap();
+        // The old path reads preferences before waiting; the fixed path waits first.
+        let _ = wait_policy_read.recv_timeout(Duration::from_millis(100));
+        preferences_enabled.store(false, Ordering::SeqCst);
+        release.send(()).unwrap();
+        first.join().unwrap();
+        second.join().unwrap();
+        assert_eq!(
+            *submissions.lock().unwrap(),
+            ["older"],
+            "queued notice ignored the disabled preference"
+        );
+    }
+
+    #[test]
+    fn deletion_during_policy_evaluation_prevents_os_submission() {
+        let mut index = DeliveredIndex::default();
+        let pending = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let submitted = std::cell::Cell::new(false);
+        pending.deliver(
+            |_| {
+                // Deletion can finish while the background task queries window/settings state.
+                let _ = index.withdraw("1");
+                true
+            },
+            |_| {
+                submitted.set(true);
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| {},
+        );
+        assert!(
+            !submitted.get(),
+            "request submitted after policy evaluation observed deletion"
+        );
+    }
+
+    #[test]
     fn skipped_replacement_does_not_prevent_withdrawing_an_older_notice() {
         let mut index = DeliveredIndex::default();
         let active = std::cell::Cell::new(false);
         let older = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
         older.deliver(
+            |_| true,
             |_| {
                 active.set(true);
                 Ok(NotificationDelivery::Delivered)
@@ -831,7 +932,11 @@ mod tests {
         let withdrawal = index.withdraw("1");
         let newer = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
         // macOS permission denial and an absent Linux service both skip submission.
-        newer.deliver(|_| Ok(NotificationDelivery::Skipped), |_| active.set(false));
+        newer.deliver(
+            |_| true,
+            |_| Ok(NotificationDelivery::Skipped),
+            |_| active.set(false),
+        );
         withdrawal.clear(|_| active.set(false));
         assert!(
             !active.get(),
@@ -845,6 +950,7 @@ mod tests {
         let active = std::cell::Cell::new(false);
         let older = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
         older.deliver(
+            |_| true,
             |_| {
                 active.set(true);
                 Ok(NotificationDelivery::Delivered)
@@ -854,6 +960,7 @@ mod tests {
         let withdrawal = index.withdraw("1");
         let newer = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
         newer.deliver(
+            |_| true,
             |_| {
                 active.set(true);
                 Ok(NotificationDelivery::Delivered)

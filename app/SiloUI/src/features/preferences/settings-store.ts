@@ -195,7 +195,14 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
           await drain()
           if (pending.length && transportError) return
           await backend.flush()
-          const snapshot = await backend.read()
+          const before = confirmed.revision
+          let snapshot: SettingsSnapshot
+          try { snapshot = await backend.read() }
+          catch (error) {
+            if (disposed) return
+            if (confirmed.revision === before) throw error
+            snapshot = confirmed
+          }
           if (!pending.length) transportError = null
           receive(snapshot)
         } while (pending.length || draining)

@@ -149,7 +149,17 @@ fn request_header(
     if websocket && body_length.is_some_and(|n| n != 0) {
         return Err(());
     }
-    Ok(Request { body_length: body_length.unwrap_or(0), websocket, header: format!("{first}\r\nHost: 127.0.0.1:{guest_port}\r\nOrigin: http://127.0.0.1:{guest_port}\r\nAuthorization: Basic {authorization}\r\nConnection: {}\r\n{}\r\n\r\n", if websocket { "Upgrade" } else { "close" }, kept.join("\r\n")) })
+    let mut forwarded = format!("{first}\r\nHost: 127.0.0.1:{guest_port}\r\nOrigin: http://127.0.0.1:{guest_port}\r\nAuthorization: Basic {authorization}\r\nConnection: {}\r\n", if websocket { "Upgrade" } else { "close" });
+    for line in kept {
+        forwarded.push_str(line);
+        forwarded.push_str("\r\n");
+    }
+    forwarded.push_str("\r\n");
+    Ok(Request {
+        body_length: body_length.unwrap_or(0),
+        websocket,
+        header: forwarded,
+    })
 }
 fn forward_body(
     mut from: impl Stream,
@@ -341,6 +351,10 @@ fn serve_with_header_progress(
     Ok(())
 }
 impl Proxy {
+    pub(crate) fn running(&self) -> bool {
+        !self.stopped.load(Ordering::Acquire)
+    }
+
     /// `upstream` is the tunnel's Unix socket; `guest_port` is the guest's own
     /// listener, named in the Host and Origin headers the guest receives.
     pub fn start(
@@ -348,6 +362,24 @@ impl Proxy {
         guest_port: u16,
         username: &str,
         password: &str,
+    ) -> Result<Self, String> {
+        Self::start_with_accept(
+            upstream,
+            guest_port,
+            username,
+            password,
+            TcpListener::accept,
+        )
+    }
+
+    pub(crate) fn start_with_accept(
+        upstream: PathBuf,
+        guest_port: u16,
+        username: &str,
+        password: &str,
+        mut accept: impl FnMut(&TcpListener) -> std::io::Result<(TcpStream, std::net::SocketAddr)>
+            + Send
+            + 'static,
     ) -> Result<Self, String> {
         if guest_port == 0
             || username.contains(':')
@@ -375,7 +407,7 @@ impl Proxy {
         let active = Arc::new(AtomicUsize::new(0));
         thread::spawn(move || {
             while !worker_stop.load(Ordering::Acquire) {
-                match listener.accept() {
+                match accept(&listener) {
                     Ok((socket, _)) => {
                         if active.load(Ordering::Acquire) >= 48 {
                             drop(socket);
@@ -400,9 +432,20 @@ impl Proxy {
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(30))
                     }
+                    Err(e)
+                        if matches!(
+                            e.kind(),
+                            std::io::ErrorKind::Interrupted
+                                | std::io::ErrorKind::ConnectionAborted
+                                | std::io::ErrorKind::ConnectionReset
+                        ) =>
+                    {
+                        continue
+                    }
                     Err(_) => break,
                 }
             }
+            worker_stop.store(true, Ordering::Release);
         });
         Ok(Self {
             port,
@@ -423,6 +466,39 @@ mod tests {
         let path = directory.path().join("desktop.sock");
         let listener = UnixListener::bind(&path).unwrap();
         (directory, listener, path)
+    }
+
+    #[test]
+    fn transient_accept_errors_do_not_retire_the_listener() {
+        for kind in [
+            std::io::ErrorKind::ConnectionAborted,
+            std::io::ErrorKind::ConnectionReset,
+            std::io::ErrorKind::Interrupted,
+        ] {
+            let (_directory, _upstream, socket) = guest();
+            let (retried_tx, retried_rx) = std::sync::mpsc::channel();
+            let mut failed = false;
+            let mut reported_retry = false;
+            let proxy =
+                Proxy::start_with_accept(socket, 6901, "silo", "password", move |listener| {
+                    if !failed {
+                        failed = true;
+                        return Err(kind.into());
+                    }
+                    if !reported_retry {
+                        reported_retry = true;
+                        retried_tx.send(()).unwrap();
+                    }
+                    listener.accept()
+                })
+                .unwrap();
+            let retried = retried_rx.recv_timeout(Duration::from_secs(3));
+            drop(proxy);
+            assert!(
+                retried.is_ok(),
+                "accept error retired the listener: {kind:?}"
+            );
+        }
     }
 
     struct InterruptedOnce {
@@ -914,7 +990,7 @@ mod tests {
         upstream.set_nonblocking(true).unwrap();
         let upstream_worker = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(5);
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut stream, _) = loop {
                     match upstream.accept() {
                         Ok(connection) => break connection,
@@ -972,18 +1048,26 @@ mod tests {
         });
 
         let proxy = Proxy::start(socket, 6901, "silo", "password").unwrap();
-        for (method, body) in [("GET", &b""[..]), ("POST", &b"body"[..])] {
+        for (method, body, content_length) in [
+            ("GET", &b""[..], false),
+            ("GET", &b""[..], true),
+            ("POST", &b"body"[..], true),
+        ] {
             let mut client = TcpStream::connect(("127.0.0.1", proxy.port)).unwrap();
             client
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
             write!(
                 client,
-                "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\nContent-Length: {}\r\n\r\n",
+                "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\n{}\r\n",
                 proxy.port,
                 proxy.cookie_name,
                 proxy.token,
-                body.len()
+                if content_length {
+                    format!("Content-Length: {}\r\n", body.len())
+                } else {
+                    String::new()
+                }
             )
             .unwrap();
             client.write_all(body).unwrap();

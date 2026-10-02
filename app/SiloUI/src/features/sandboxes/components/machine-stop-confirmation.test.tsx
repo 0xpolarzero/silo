@@ -9,11 +9,11 @@ const machine = productionMachineDefaults[0]!
 
 function renderRunningEditor(running = true) {
   const onMachinesChange = vi.fn()
-  const view = (isRunning: boolean) => <TooltipProvider><MachineList machines={[machine]} onMachinesChange={onMachinesChange}
-    isMachineCreated={() => true} isMachineRunning={() => isRunning}
+  const view = (isRunning: boolean, interactionDisabled = false) => <TooltipProvider><MachineList machines={[machine]} onMachinesChange={onMachinesChange}
+    isMachineCreated={() => true} isMachineRunning={() => isRunning} interactionDisabled={interactionDisabled}
     initialEditorDraft={{ draft: machine, originalID: machine.id, insertAt: 0 }} /></TooltipProvider>
   const result = render(view(running))
-  return { onMachinesChange, user: userEvent.setup(), rerender: (isRunning: boolean) => result.rerender(view(isRunning)) }
+  return { onMachinesChange, user: userEvent.setup(), rerender: (isRunning: boolean, interactionDisabled = false) => result.rerender(view(isRunning, interactionDisabled)) }
 }
 
 describe("saving changes that stop a running sandbox", () => {
@@ -70,4 +70,18 @@ it("revalidates newly reported host capacity before confirming Stop and save", a
   expect(screen.getByRole("spinbutton", { name: "Memory ceiling custom (GiB)" }))
     .toHaveAccessibleDescription("This computer has 16 GiB of memory. Choose 16 GiB or fewer.")
   expect(screen.queryByRole("group", { name: `Stop ${machine.name} and save?` })).not.toBeInTheDocument()
+})
+
+
+it.each(["stopped", "locked"])("does not revive an old stop confirmation after the sandbox was %s", async interruption => {
+  const { user, rerender, onMachinesChange } = renderRunningEditor()
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
+  await user.click(screen.getByRole("button", { name: "Stop and save…" }))
+  rerender(interruption !== "stopped", interruption === "locked")
+  expect(screen.queryByRole("group", { name: `Stop ${machine.name} and save?` })).not.toBeInTheDocument()
+  rerender(true)
+  expect(screen.queryByRole("group", { name: `Stop ${machine.name} and save?` })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Stop and save…" })).toBeEnabled()
+  expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
+  expect(onMachinesChange).not.toHaveBeenCalled()
 })

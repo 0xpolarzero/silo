@@ -1,12 +1,12 @@
 # Silo third review pass: guest and SSH bridge, 2026-10-02
 
-This pass found three new P2 defects in SSH key setup, key upgrades, and forwarding authority. This ledger records new findings only; R-01 through R-37 and historical R-38 in the two existing reports were read before review and are excluded from the new finding count.
+This pass found four new P2 defects in SSH key setup, key upgrades, and forwarding authority. This ledger records new findings only; R-01 through R-37 and historical R-38 in the two existing reports were read before review and are excluded from the new finding count.
 
-Final source confirmation: `071ca883d4298e160de92e369b916688a7b4feb7`. GB-02/GB-03 were rechecked after integration synchronization and remain present.
+Initial review source confirmation: `071ca883d4298e160de92e369b916688a7b4feb7`. Follow-up fixes and verification appear below.
 
 Initial revision: `f94219259d081ae3297887d0a5660faac22f2d3e`, branch `codex/review-guest-bridge`. Scope: guest image construction, provisioning and shell helpers, `silo-remote` installation/protocol/authentication/upgrade, and the vendored Rust updater patch. Focus: quoting and injection, host/guest trust, partial failures, idempotency, and older bridge versions.
 
-No installed app, live VM, production HOME, Keychain, or remote computer is used. Tests use temporary fixtures. Source evidence and executed regressions are distinguished below. Each finding includes priority, trigger, evidence, consequence, correction, and a rejecting test. GB-01 has a small permission-repair fix; GB-02 and GB-03 require broader upgrade/transport policy decisions and remain open.
+No installed app, live VM, production HOME, Keychain, or remote computer is used. Tests use temporary fixtures. Source evidence and executed regressions are distinguished below. Each finding includes priority, trigger, evidence, consequence, correction, and a rejecting test. All four findings now have fixes. GB-03 reuses the guest transport already used by desktops and requires both computers to update.
 
 ## Findings
 
@@ -26,7 +26,7 @@ No installed app, live VM, production HOME, Keychain, or remote computer is used
 
 ### GB-02 Failed older-key restriction is hidden by a successful handshake
 
-**Priority:** P2. **Status:** fixed in this commit; handshake errors now reach the controller.
+**Priority:** P2. **Status:** fixed and folded, commit `fc014339`; handshake errors now reach the controller.
 
 **Trigger:** Upgrade an owner with an older unrestricted Silo key, then handshake when rewriting `authorized_keys` fails, or when the file is symlink-managed.
 
@@ -40,7 +40,7 @@ No installed app, live VM, production HOME, Keychain, or remote computer is used
 
 ### GB-03 Management keys permit remote and Unix-socket forwarding outside bridge admission
 
-**Priority:** P2. **Status:** open; no small correct per-key fix identified.
+**Priority:** P2. **Status:** fixed and folded, commit `2426f415`, reconciled at `c4cf92c8`; integration’s reconnect-generation checks are preserved.
 
 **Trigger:** A holder of the dedicated Silo key requests `ssh -N -R` on an owner whose sshd permits remote forwarding. The holder need not invoke the bridge. With the default StreamLocal policy, the key can also request local forwarding to an owner Unix socket through `ssh -N -L local-port:/owner/socket`.
 
@@ -51,6 +51,20 @@ No installed app, live VM, production HOME, Keychain, or remote computer is used
 **Correction:** Decide and enforce the forwarding-direction policy using supported OpenSSH controls. Evaluate `AllowTcpForwarding local` plus `AllowStreamLocalForwarding no` in an owner-managed Match policy or an existing transport that avoids per-key TCP forwarding; document deployment requirements. Do not remove forwarding without preserving Silo's desktop/published-port behavior, or claim a reserved-port allowlist forbids all remote listeners.
 
 **Rejecting test:** In disposable sshd fixtures, the dedicated key must still complete a bridge request and authorized local loopback forwarding, while `-R`, remote dynamic forwarding, and local/remote Unix-socket forwarding fail with no listener or bytes delivered to a sentinel Unix socket. Repeat while remote management is disabled and with GatewayPorts settings that would otherwise allow broader exposure.
+
+### GB-04 Remote key reuse bypasses permission repair and trusts a stale public sidecar
+
+**Priority:** P2. **Status:** fixed in this commit, `fix(remote): reuse repaired management key identity`.
+
+**Trigger:** Reconnect or repeat remote-key setup after restoring a private management key with mode `0644`, or with its `.pub` file missing or belonging to an earlier identity.
+
+**Evidence:** `remote.rs`, `key_setup_command`, only runs ssh-keygen when the private path is absent and then reads `.pub` directly. `silo_public_key` also reads that sidecar for the handshake. The existing fixture covered only a fresh correctly permissioned key. Two new production-function fixtures failed: repeat setup retained `0644` instead of `0600`; handshake identity returned the injected stale public key. The fixture first verifies that actual system `ssh-keygen -y` refuses the mode-0644 private key. Existing shared `editor::key` repairs modes atomically, while `editor::public_key` derives the actual identity with bounded system ssh-keygen. This is a separate remote path from the already corrected editor-key fixture.
+
+**Consequence:** Repeating setup cannot recover the dedicated key's authentication. A stale sidecar installs a different key and supplies the wrong identity to the older-key migration; a missing sidecar suppresses the migration parameter despite an existing private key. The actual older key can remain unrestricted after an apparently successful handshake, extending GB-02's upgrade gap. This is a restored/damaged local key-state reproduction, not demonstrated key theft.
+
+**Correction:** Reuse the existing shared key and public-identity helpers for setup and handshake. Repair permissions without replacing key bytes, derive identity from the private key, and avoid generating a new identity when no management key exists. Public sidecars no longer determine authentication or migration identity.
+
+**Rejecting test:** Generate a real temporary key, save its private bytes, chmod it to 0644, and seed a stale public sidecar. Require a stable private key, mode 0600, and an installation command naming the actual derived identity. Remove the sidecar and require identical repeated setup and handshake identity. An absent private key must yield no handshake identity and must not create one.
 
 ## Verification
 
@@ -107,8 +121,23 @@ GB-01 extends `remote::setup_tests::public_key_install_preserves_existing_unterm
 - Bridge review covered address validation, shell argument construction, public-key input, installation and repointing, key restrictions and upgrade, framed replies/version rejection, local socket admission, and guest-stream routing. Public-key comments are not evaluated as shell source; the literal-input fixture remains covered. Protocol version mismatch fails closed; this is not a promise of interoperability with protocol 1.
 - Vendor review covered `SILO-PATCH.md`, installer delegation, same-filesystem staging, archive root/type checks, directory swap/rename, synchronization, and interruption/cleanup tests. New guest/vendor defects were not confirmed in this pass. Linux AppImage replacement and actual signed application launches remain unqualified.
 
-Next action: replace owner forwarding with the existing guest SSH transport for GB-03.
+Next action: central integration qualification after the inherited native compile errors are corrected. Review stopped after GB-04 under `/tmp/silo-resume.md`.
 
 ## Follow-up fix loop
 
 GB-02: the production migration helper now rejects an externally managed file only when it retains the calling controller's known unrestricted Silo line. Missing keys, unrelated personal keys, and already restricted lines remain valid. Failed replacement reaches the normal bridge error reply with a repair instruction; managed targets remain unchanged. The new `handshake_reports_failed_key_upgrade_and_preserves_managed_files` fixture failed before the fix (`Ok(Null)` instead of an error), then passed for symlink management, denied replacement, repair/retry, already restricted, absent, and no-key cases. The fixture harness extracts the production functions and maintained tests, uses shared cached Rust dependencies, and supplies only channel/lock/error wrappers; it is not a live sshd test. Restriction applies to subsequent authentications, not the already authenticated upgrade session.
+
+GB-03: `restrict,command=...` disables owner forwarding without relying on an invalid `permitlisten` option. Published ports reuse the existing guest SSH identity/configuration and admitted `guest.ssh` bridge stream; desktops already use it. Owner publication endpoints still drive restart invalidation, while the tunnel reaches the original guest port at the guest interface address. Protocol 3 fails older peers before migration; the matching handshake rewrites both exact legacy Silo line forms and remains idempotent. Personal/custom lines remain untouched. The new legacy migration regression and tightened installation contract both failed before the fix; six production key fixtures passed after it. Real system `ssh -G` resolves the private config, pinned identity/host-key settings, bridge ProxyCommand, and guest destination without opening a connection. The address fixtures cover IPv4, IPv6 fallback, unavailable routes, and rejection of shell text. The mocked route socket exposes no send method. The opt-in `test_remote_key_restrictions.py` fixture runs an unprivileged loopback sshd with disposable host/client keys, private config/known-hosts files, a temporary HOME, and `/bin/cat` replacing only the forced app command. It failed against the old production option template (allowed `-R` kept running), then passed against the fix: forced command bytes survive; remote TCP, remote dynamic, remote Unix-socket, and local TCP/Unix-socket forwarding are denied even with `GatewayPorts yes`, and fixture sentinels receive no connection. No real app or VM was launched. The test exercises OpenSSH authorization, not guest health or live two-computer upgrade. The transport choice and primary-source basis are recorded in [remote computers](SiloUI-REMOTE-COMPUTERS.md).
+
+Follow-up checks before this commit: six extracted production key tests, two extracted command tests (including actual `ssh -G`), two extracted guest-address tests, and one opt-in local sshd test passed. `fmt --check`, typecheck, lint, and `git diff --check` passed. The first full native attempt waited on the shared Cargo lock, then stopped at an inherited `desktop_proxy.rs` test call missing its new deadline argument. Integration already contains that correction; the next synchronization and focused rerun will verify it. No separate Cargo target was created. The opt-in sshd command is `SILO_TEST_LOCAL_SSHD=1 python3 -m unittest discover -s app/SiloUI/scripts -p test_remote_key_restrictions.py`.
+
+GB-04: `key_setup_repairs_reused_key_permissions_and_ignores_stale_sidecars` and `handshake_key_identity_comes_from_private_key_not_public_sidecar` both failed before the fix, then passed. Their extracted harness includes the production remote functions and shared editor file/key helpers; only bounded process/channel wrappers are substituted, and actual ssh-keygen operates on temporary fixtures. The fix deletes remote setup's duplicate key-generation logic and reuses the existing helper; no key bytes or production state are replaced.
+
+Resume verification for GB-04: both maintained regressions passed in the extracted production-function harness; fmt, typecheck, lint, and whitespace checks passed. The earlier focused native `cargo ... test --locked remote` attempt stopped before executing tests at inherited `host_push.rs:1137` (`vm_id` not found). No further native Cargo test was launched after the resume instruction. The working copy has no confirmed P3 finding or remaining open GB item; live guest forwarding and two-computer upgrade remain unqualified.
+
+Follow-up commit ledger:
+
+- `fc014339`: GB-02, propagate incomplete older-key migration to the controller; patch changeset and rejecting regression.
+- `2426f415`: GB-03, restrict owner keys and route published ports through pinned guest SSH; patch changeset, legacy-key regression, address/configuration fixtures, and opt-in sshd denial test.
+- `c4cf92c8`: reconcile GB-03 with integration while preserving reconnect-generation admission; key/configuration/sshd fixtures and format/typecheck/lint passed.
+- This commit, `fix(remote): reuse repaired management key identity`: GB-04, reuse shared private-key repair and derive setup/handshake identity from the private key; patch changeset and two rejecting regressions.

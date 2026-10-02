@@ -616,6 +616,80 @@ describe("remote management response ordering", () => {
   })
 })
 
+describe("remote machine mutation response ordering", () => {
+  it.each(["edit", "delete", "add"] as const)("preserves a sibling's newer lifecycle result after a late remote %s", async kind => {
+    const initial = structuredClone(source)
+    initial.workspaces = initial.workspaces.filter(row => row.machine.kind === "vm").slice(0, 2).map(row => ({ ...row, state: "running" }))
+    const [a, b] = initial.workspaces
+    const late = deferred<unknown>()
+    let reads = 0
+    const newer = { ...initial, workspaces: [a, { ...b, state: "stopped" }] }
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return [office]
+      if (command === "remote_host_snapshot") return ++reads === 1 ? initial : new Promise(() => {})
+      if (command === "remote_workspace_action") return newer
+      if (command === "remote_upsert_machine" || command === "remote_delete_machine") return late.promise
+    })
+    const store = createProductionSource(mock.native)
+    const target = (id: string) => `silo-remote:office:${id}`
+    const row = (id: string) => store.getSnapshot().source?.workspaces.find(item => item.machine.id === target(id))
+    try {
+      await store.initialize()
+      const machine = { ...a.machine, id: target(kind === "add" ? "new-remote" : a.machine.id), name: kind === "add" ? "new-remote" : a.machine.name }
+      const mutation = kind === "delete" ? store.applicationActions.deleteRemoteMachine!("office", machine)
+        : store.applicationActions.saveRemoteMachine!("office", machine, kind === "add" ? undefined : machine)
+      store.applicationActions.stopWorkspace(target(b.machine.id))
+      await vi.waitFor(() => {
+        expect(row(b.machine.id)?.state).toBe("stopped")
+        expect(row(b.machine.id)?.lifecycleAction).toBeUndefined()
+      })
+      const older = structuredClone(initial)
+      if (kind === "delete") older.workspaces = [b]
+      else if (kind === "edit") older.workspaces[0].purpose = "Edited"
+      else older.workspaces.push({ ...a, machine: { ...a.machine, id: "new-remote", name: "new-remote" }, state: "stopped" })
+      late.resolve(older)
+      await mutation
+      expect(row(b.machine.id)?.state).toBe("stopped")
+      if (kind === "delete") expect(row(a.machine.id)).toBeUndefined()
+      else if (kind === "edit") expect(row(a.machine.id)?.purpose).toBe("Edited")
+      else expect(row("new-remote")).toMatchObject({ state: "stopped", machine: { name: "new-remote" } })
+    } finally { store.dispose() }
+  })
+})
+
+describe("SSH save response ordering", () => {
+  it.each([false, true])("preserves independent sibling SSH saves when responses finish in reverse order (remote=%s)", async remote => {
+    const initial = structuredClone(source)
+    initial.workspaces = initial.workspaces.filter(row => row.machine.kind === "vm").slice(0, 2)
+    const target = (workspace: typeof initial.workspaces[number]) => remote ? `silo-remote:office:${workspace.machine.id}` : workspace.machine.name
+    const rows = initial.workspaces.map(workspace => ({ workspace: target(workspace), enabled: true, port: 2222, bindAddress: "127.0.0.1", keys: [], state: "listening", message: null, fingerprint: null, computerName: "Laptop", addresses: [] }))
+    const older = deferred<unknown>()
+    const newer = deferred<unknown>()
+    const mock = bridge((command, args) => {
+      if (command === "remote_host_list") return remote ? [office] : []
+      if (command === "remote_host_snapshot") return initial
+      if (command === "read_ssh_access_state") return { workspaces: remote ? [] : rows }
+      if (command === "remote_ssh_access_state") return { workspaces: rows }
+      if (command === "save_ssh_access" || command === "remote_save_ssh_access") return args?.port === 2223 ? older.promise : newer.promise
+    })
+    const store = createProductionSource(mock.native)
+    const row = (workspace: string) => store.getSnapshot().source?.sshAccess?.workspaces.find(item => item.workspace === workspace)
+    try {
+      await store.initialize()
+      await store.applicationActions.refreshSshAccess!()
+      const request = { enabled: true, bindAddress: "127.0.0.1", keys: [] }
+      const first = store.applicationActions.saveSshAccess!({ ...request, workspace: rows[0].workspace, port: 2223 })
+      const second = store.applicationActions.saveSshAccess!({ ...request, workspace: rows[1].workspace, port: 2224 })
+      newer.resolve({ workspaces: [rows[0], { ...rows[1], port: 2224 }] })
+      await second
+      older.resolve({ workspaces: [{ ...rows[0], port: 2223 }, rows[1]] })
+      await first
+      expect(row(rows[0].workspace)?.port).toBe(2223)
+      expect(row(rows[1].workspace)?.port).toBe(2224)
+    } finally { store.dispose() }
+  })
+})
+
 describe("checkpoint response ordering", () => {
   it.each(["capture", "fork"] as const)("preserves a newer sibling lifecycle result after a late %s response", async kind => {
     const initial = structuredClone(source)

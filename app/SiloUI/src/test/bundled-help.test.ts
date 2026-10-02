@@ -58,3 +58,25 @@ it("qualifies update instructions because Silo Dev has no release feed", () => {
   expect(instructions?.textContent).toMatch(/production Silo app/i)
   expect(instructions?.textContent).toMatch(/Silo Dev has no update feed/i)
 })
+
+it("explains the update prerequisite before starting an outdated legacy desktop", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.startsWith("Start desktop with sandbox"))
+  expect(instructions?.textContent).toMatch(/Update desktop.*then.*Start desktop/i)
+  expect(instructions?.textContent).toMatch(/sandbox running.*desktop stopped/i)
+  expect(instructions?.textContent).toMatch(/updating.*does not start.*automatically/i)
+})
+
+it("names the macOS Settings menu for both Silo build channels", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Search or Jump To"))
+  expect(instructions?.textContent).toMatch(/Silo → Settings/)
+  expect(instructions?.textContent).toMatch(/Silo Dev → Settings/)
+})
+
+it("requires a running desktop as well as a running sandbox for computer-use setup", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.startsWith("Set up computer use"))
+  expect(instructions?.textContent).toMatch(/sandbox and its Linux desktop are running/i)
+  expect(instructions?.textContent).toMatch(/Start.*desktop.*viewer/i)
+})

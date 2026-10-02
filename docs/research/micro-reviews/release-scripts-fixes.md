@@ -90,3 +90,41 @@ any package verification; it is not reported as a passing native-name check.
 - **Fix:** The final wrapper configuration includes the production identifier and product name from the native channel API. This keeps the generated bundle and finalization path aligned with the required production channel. Debug routing retains the existing development configuration.
 - **Primary evidence:** The installed Tauri CLI's `build --help` and [Tauri CLI documentation](https://v2.tauri.app/reference/cli/) confirm that later configurations override earlier conflicting keys. The test models that documented merge at the process boundary, writes the selected fixture bundle, and asserts signing receives this build's marker.
 - **Verification:** Desktop routing, native channel-name, release-workflow and CI-coverage regressions passed; typecheck, Rust formatting and whitespace checks passed. No real build or signing command ran. This is an internal build-tool correction.
+
+
+## Release command symlink execution
+
+The preflight, release and version-sync entry points compared the lexical argv
+path to Node's canonical module path. Through symlinks, all three exited zero
+without running their command or reporting invalid input. Three CLI regressions
+failed before the fix using a bad patch, unsupported release action and forbidden
+zero version in temporary fixtures. The entry-point guard now compares canonical
+paths, following the guest builder's existing correction. Imports stay passive.
+The rejecting fixtures use an empty executable PATH, so they cannot tag, push,
+version, sign or publish anything.
+
+## RELEASE-SCRIPTS-7 — P2: Failed benchmark output abandons compiler processes
+
+- **Trigger and evidence:** `dependency-cache-benchmark.py build` encounters an exception while forwarding stdout or recording Cargo JSON. Its plain `Popen` has no exception cleanup. Both regression cases observed an unreaped running child after the exception; evidence is preserved in ignored `target/verification/release-scripts/benchmark-process-before.log`.
+- **Fix:** Start the owned command in its own process session, use the process context manager, and stop its group before unwinding on a forwarding exception. Preserve the original exception. This follows the existing release compiler wrapper's cleanup pattern and never selects unrelated host processes.
+- **Verification:** Real synthetic sleeping child processes exercise stdout and metadata-write failures, then assert the child was reaped before returning control. Existing benchmark build output, signal status, source gates, dependency integration and CI-coverage tests passed; typecheck, Rust formatting and whitespace checks passed. No Cargo compilation or application launch ran.
+
+## RELEASE-SCRIPTS-8 — P2: A partial update confirmation bypasses its timeout
+
+- **Trigger and evidence:** The Debian update helper waits for initial readability with a timeout, then calls blocking `readline()` without a deadline. A pipe sends `install` immediately and its newline after the deadline; the original helper accepted it. Failing evidence is preserved in ignored `target/verification/release-scripts/confirm-deadline-before.log`.
+- **Fix:** Read bounded chunks under the same monotonic deadline until a complete command or EOF arrives. Reject incomplete, oversized, cancelled and expired input before installation. Existing complete-line and closed-pipe confirmations retain their behavior.
+- **Verification:** The pipe regression and existing privilege/sequence/cancellation tests passed, along with Debian package and CI-coverage tests (20 total). Typecheck, Rust formatting and whitespace checks passed. Tests use temporary pipes and package trees; no root helper, APT operation or live update ran. Includes a patch changeset because this changes the installed Linux helper.
+
+## RELEASE-SCRIPTS-9 — P2: AppImage update verification inherits the caller's HOME
+
+- **Trigger and evidence:** The opt-in AppImage update harness overrides XDG directories but passes the caller's `HOME` to its driver and application. Silo's channel-specific home state therefore remains outside the fixture boundary. Executing only the actual environment-construction statements reproduced the caller-home value; evidence is preserved in ignored `target/verification/release-scripts/update-home-before.log`.
+- **Fix:** Create a private home directory under the harness's existing temporary root and pass it to all launched processes, following the desktop smoke harness's existing policy.
+- **Verification:** The extracted setup regression checks all four home/XDG paths and preserves a caller-state sentinel. Linux verification/channel/service and CI-coverage tests passed (14 total); typecheck, Rust formatting and whitespace checks passed. No Selenium session, native app, update installation or production data was used. This internal verification fix needs no changeset.
+
+Continued-loop broad verification: `npm --prefix app/SiloUI run test:release` passed 126 tests with 12 opt-in cases skipped, using Node 24. The log is under ignored `target/verification/release-scripts/continued-release-suite.log`. These tests do not establish live application or VM readiness.
+
+## RELEASE-SCRIPTS-10 — P2: Bundle diagnostics retain an unbounded in-memory log
+
+- **Trigger and evidence:** `retry-bundle.py` streams every command chunk to the log and also appends it to a bytearray, then duplicates the complete buffer when the child exits. Large bundler logs therefore grow resident memory without a bound. A reduced-limit fixture retained all 8,192 output bytes despite a 1,024-byte budget. A second fixture retried a diagnostic exceeding that budget. Failing evidence is preserved in ignored `target/verification/release-scripts/retry-buffer-before.log`.
+- **Fix:** Limit in-memory retry diagnostics to 4 MiB and discard the buffer once exceeded. Preserve all streamed stdout/stderr and disk-log bytes. An incomplete diagnostic cannot establish the exact transient-download failure chain, so oversized output returns the original child failure without retrying. Successful commands retain their success status.
+- **Verification:** Synthetic real-child regressions require bounded returned diagnostics, complete log/output retention, no oversized-output retry and the original failure code. Existing transient/permanent retry, child/descendant cleanup, workflow and CI-coverage checks passed; typecheck, Rust formatting and whitespace checks passed. Internal tooling only; no changeset required.

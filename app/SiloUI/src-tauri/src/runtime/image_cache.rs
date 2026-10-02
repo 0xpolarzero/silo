@@ -297,7 +297,7 @@ mod tests {
         assert!(!repaired.contains(old));
         fs::write(
             &vmdk,
-            &descriptor(&format!("{old}/fsmeta/{FSMETA}"), &missing),
+            descriptor(&format!("{old}/fsmeta/{FSMETA}"), &missing),
         )
         .unwrap();
         for path in [

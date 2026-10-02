@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep frontend result notifications attached to their sandbox ID so recreated sandboxes cannot inherit old errors.
+Keep action result notifications tied to the original sandbox so replacements cannot inherit old errors.

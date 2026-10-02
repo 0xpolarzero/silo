@@ -45,3 +45,23 @@ Fixed and folded in `10fd55ff`. Snapshots retain their metadata VM UUID, and pag
 - **Consequence:** The second-instance dialog can incorrectly claim a different build is running and display a path that was not launched.
 - **Fix:** Require a regular file with execute bits for PATH candidates, matching Silo's existing executable-discovery checks. Update the old PATH fixture to use executable permissions.
 - **Validation:** Four extracted-source tests pass, including the process-boundary regression, absolute/relative/PATH resolution, build-byte comparison, and plugin ordering. The child process is a temporary fixture script; no Silo application is launched.
+
+## NATIVE-ENTRY-6: A Git symlink bypasses the macOS installer guard
+
+- **Priority:** P3.
+- **Location:** `app/SiloUI/src-tauri/src/host_identity.rs::installer_shim`.
+- **Trigger:** On macOS without developer Git, a PATH entry named `git` is a symbolic link to `/usr/bin/git`.
+- **Evidence:** Optional author-default lookup explicitly avoids Apple's developer-tools installer shim when developer Git is absent. It only compared the selected PATH entry's literal path with `/usr/bin/git`, allowing a link to that same shim. A temporary link and injected absent developer directories reproduced the guard returning false.
+- **Consequence:** Background author-default discovery can invoke the installer shim instead of silently falling back to Jujutsu or an absent identity.
+- **Fix:** Recognize canonical paths to the same system Git shim. Retain the existing developer-tool presence check and allow the shortcut once developer Git exists.
+- **Regression:** `git_shortcuts_do_not_bypass_the_installer_shim_check` checks the same shortcut with absent and present synthetic developer directories. Seven extracted-source host-identity tests pass. No installer or application is launched; the tests use temporary Git configuration and ordinary bounded subprocess fixtures.
+
+## NATIVE-ENTRY-7: A panicked export permanently claims to be busy
+
+- **Priority:** P3.
+- **Location:** `app/SiloUI/src-tauri/src/log_export.rs::export_with`.
+- **Trigger:** An export worker panics while holding its serialization lock. The native async adapter reports task failure, and the user retries.
+- **Evidence:** The writer mapped every `try_lock` error, including `Poisoned`, to "A log export is already in progress." A regression catches a simulated query panic inside the real export helper, verifies partial-output cleanup, then retries successfully; the retry returned the busy error before correction.
+- **Consequence:** Every later export fails until Silo restarts even though the original worker has finished and no export is running.
+- **Fix:** Use the existing `sync::try_lock_or_recover` helper for this stateless serialization lock, following the documented K-24 poison policy. An actually held lock still reports busy.
+- **Regression:** `a_panicked_export_does_not_block_the_next_export` checks preservation of the previous file, temporary cleanup, successful retry, and cleared poison. The extracted-source suite also exercises the shared recovery helper's existing busy/poison tests. Tests use temporary files and the shared process-state isolation guard.

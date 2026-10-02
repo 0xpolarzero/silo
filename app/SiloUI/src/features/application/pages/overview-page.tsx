@@ -388,6 +388,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
   }
   const validateMachineOperation = (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => {
     const computer = workspaces.get(machine.id)?.computer ?? source.remoteComputers?.find(computer => computer.id === computerId)
+    if (computerId && !computer) return "The selected computer was removed. Choose another computer before saving."
     if (computer) return computer.busy ? `${computer.name} is updating. Wait before changing ${machine.name}.` : computer.connected ? undefined : `${computer.name} is offline. Reconnect to it before changing ${machine.name}.`
     if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
     const notice = source.resourceNotice

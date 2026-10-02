@@ -131,6 +131,51 @@ class DependencyBenchmarkTests(unittest.TestCase):
         self.assertEqual(result.returncode, 128 + signal.SIGTERM, result.stderr)
         self.assertEqual(json.loads(report.read_text())['exitCode'], -signal.SIGTERM)
 
+    def test_output_failure_stops_and_reaps_the_owned_benchmark_command(self):
+        class FailedOutput(io.StringIO):
+            def write(self, _text):
+                raise OSError('fixture output failure')
+
+        metadata = self.root / 'metadata'
+        metadata.write_text(json.dumps({'resolve': {'root': 'app'}, 'packages': []}))
+        runner = self.root / 'node_modules/.bin/tauri'
+        runner.parent.mkdir(parents=True)
+        row = json.dumps({'reason': 'compiler-artifact'})
+        runner.write_text(f'#!{sys.executable}\nimport time\nprint({row!r}, flush=True)\ntime.sleep(30)\n')
+        runner.chmod(0o755)
+        args = argparse.Namespace(app_root=self.root, metadata=metadata, messages=self.root / 'messages',
+                                  report=self.root / 'report', role='producer', target='fixture')
+        popen, original_open = subprocess.Popen, Path.open
+        for failed in ('stdout', 'messages'):
+            children = []
+
+            def spawn(command, **kwargs):
+                process = popen(command, **kwargs)
+                children.append(process)
+                return process
+
+            def open_messages(path, *arguments, **kwargs):
+                return FailedOutput() if path == args.messages else original_open(path, *arguments, **kwargs)
+
+            destination = (patch.object(BENCHMARK.sys, 'stdout', FailedOutput()) if failed == 'stdout'
+                           else patch.object(Path, 'open', open_messages))
+            try:
+                with self.subTest(destination=failed), \
+                        patch.dict(os.environ, CARGO_TARGET_DIR=str(self.root / 'src-tauri/target/release-compile')), \
+                        patch.object(BENCHMARK.subprocess, 'Popen', side_effect=spawn), destination:
+                    with self.assertRaisesRegex(OSError, 'fixture output failure'):
+                        BENCHMARK.build(args)
+                    self.assertIsNotNone(children[0].returncode, 'benchmark command was abandoned')
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(children[0].pid, os.WNOHANG)
+            finally:
+                for child in children:
+                    if child.poll() is None:
+                        child.terminate()
+                        child.wait(timeout=3)
+                    if child.stdout:
+                        child.stdout.close()
+
 
 if __name__ == '__main__':
     unittest.main()

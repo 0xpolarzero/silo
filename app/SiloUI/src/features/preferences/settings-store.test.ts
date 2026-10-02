@@ -4,6 +4,31 @@ import { createMemorySettingsStore, createSettingsStore, type SettingsBackend, t
 const snapshot = (revision = 0, settings = {}): SettingsSnapshot => ({ revision, settings, onboardingDraft: null, saveError: null })
 
 describe("settings synchronization", () => {
+  it.each(["read", "flush"] as const)("handles a late %s failure after a newer settings event during flush", async phase => {
+    let receive!: (value: SettingsSnapshot) => void
+    let reject!: (error: Error) => void
+    const late = new Promise<SettingsSnapshot>((_, fail) => { reject = fail })
+    const read = vi.fn().mockResolvedValueOnce(snapshot()).mockImplementation(() => late)
+    const flush = vi.fn().mockImplementation(async () => {
+      if (phase === "flush") { receive(snapshot(2, { theme: "dark" })); throw new Error("Flush unavailable") }
+    })
+    const store = createSettingsStore({
+      subscribe: async listener => { receive = listener; return () => {} }, read, flush,
+      updateSettings: async () => snapshot(), updateOnboardingDraft: async () => snapshot(),
+    })
+    try {
+      await store.initialize()
+      const pending = store.flush()
+      if (phase === "read") {
+        await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+        receive(snapshot(2, { theme: "dark" }))
+        reject(new Error("Old read unavailable"))
+      }
+      await pending
+      expect(store.getSnapshot()).toMatchObject({ revision: 2, settings: { theme: "dark" }, saveError: phase === "read" ? null : "Flush unavailable" })
+    } finally { store.dispose() }
+  })
+
   it("delivers only the latest queued draft while preserving an in-flight write", async () => {
     const draft = { currentStep: "github" as const, machines: [], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} }
     let state = snapshot()

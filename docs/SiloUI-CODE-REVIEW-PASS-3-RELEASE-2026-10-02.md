@@ -1,6 +1,6 @@
 # Silo third code review pass: release and CI, 2026-10-02
 
-This pass reviews release tooling, workflow gates, updater artifacts, release documentation, and development/production channel separation. The ledger records thirteen new findings: twelve P2 and one P3. Twelve are fixed or corrected and folded; RL-06 remains open because its correction requires a qualified macOS 14 execution environment. These results do not establish release readiness.
+This pass reviews release tooling, workflow gates, updater artifacts, release documentation, and development/production channel separation. The ledger records fifteen new findings: thirteen P2 and two P3. Fourteen are fixed or corrected and folded; RL-06 remains open because its correction requires a qualified macOS 14 execution environment. These results do not establish release readiness.
 
 ## Revision and scope
 
@@ -30,7 +30,9 @@ No release was published or signed, and no repository or remote release tag was 
 | RL-10 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed and folded: `8102c670` |
 | RL-11 | P2 | Lifecycle guest probes use the production alias for Dev | Fixed and folded: `f7cec265`, `b64a60e5` |
 | RL-12 | P2 | Failed Linux tool staging destroys complete prior package inputs | Fixed and folded: `a173affb` |
-| RL-13 | P2 | macOS archive verification ignores conflicting archive roots | Fixed in accompanying commit |
+| RL-13 | P2 | macOS archive verification ignores conflicting archive roots | Fixed and folded: `296966fc` |
+| RL-14 | P2 | AppImage verification accepts missing or unsupported format magic | Fixed and folded: `8346345f` |
+| RL-15 | P3 | Linux packaging filters omit runtime implementations and locked inputs | Fixed in accompanying commit |
 
 ## Detailed findings
 
@@ -243,7 +245,39 @@ No release was published or signed, and no repository or remote release tag was 
 
 **Rejecting test.** Start with the ordinary valid production fixture, append each conflicting/unsafe entry, and require rejection before publication. Preserve successful identity verification for the single-root archive. Link-target safety and complete application execution remain separate qualification boundaries.
 
-**Status.** Fixed in the accompanying commit. The four subcases failed before correction; 31 metadata/publication tests complete: 30 pass and one Linux-only Debian test is skipped. Logs are `rl13-{before,after}.log`; no application changeset is needed for release validation tooling.
+**Status.** Fixed and folded in `296966fc`. The four subcases failed before correction; 31 metadata/publication tests complete: 30 pass and one Linux-only Debian test is skipped. Logs are `rl13-{before,after}.log`; no application changeset is needed for release validation tooling.
+
+### RL-14 AppImage verification accepts missing or unsupported format magic
+
+**P2.** Confirmed at `ff51e12b`. Location: [verify-release-metadata.py](../app/SiloUI/scripts/verify-release-metadata.py), `appimage_offset` and Linux verification.
+
+**Trigger.** Supply an ELF/SquashFS file with the expected CPU and release-info fixture but no type-2 AppImage marker, or a marker for another unsupported format type.
+
+**Evidence.** [The upstream type-2 AppImage specification](https://github.com/AppImage/AppImageSpec/blob/master/draft.md#type-2-image-format) requires bytes `AI\x02` at offset eight. The verifier previously checked only ELF class/endianness/CPU and the SquashFS boundary. Actual verifier execution accepted all six missing/type-1/type-3 marker subcases across x86-64 and ARM64; metadata extraction was supplied by a recording adapter. No generated image was executed, signed or installed.
+
+**Consequence.** The final verifier can label an unsupported ELF/container combination as a valid AppImage even though the file does not satisfy the format used by the supported updater path. The build job's executable extraction check remains useful, but the final publication boundary must validate the stored artifact's format independently.
+
+**Correction.** Require the type-2 magic before extracting release-info metadata. Preserve the existing architecture and filesystem-boundary checks.
+
+**Rejecting test.** For both supported CPUs, reject missing and unsupported markers before any metadata-extraction call. Accept type-2 fixtures and retain wrong-CPU/bad-SquashFS rejections. Header validation is not complete loader or launch qualification.
+
+**Status.** Fixed and folded in `8346345f`. The six rejecting subcases failed before correction; 32 focused tests complete with one Linux-only Debian case skipped. Logs are `rl14-{before,after}.log`; no application changeset is needed for release validation tooling.
+
+### RL-15 Linux packaging filters omit runtime implementations and locked inputs
+
+**P3.** Confirmed at `d36c4914`. Location: [linux-packaging.yml](../.github/workflows/linux-packaging.yml), push and pull-request path filters.
+
+**Trigger.** Change only a runtime staging implementation imported by `prepare-microsandbox-runtime.mjs`, the locked guest image, or package/version/dependency metadata.
+
+**Evidence.** [GitHub path filters](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#onpushpull_requestpull_request_targetpathspaths-ignore) select workflows only when changed paths match. Both filters include the preparation entry point and Linux tool-copy module but omit six imported runtime modules and three locked/metadata inputs. The regression walks the entry point's actual static local import graph and compares each file plus those three inputs with both positive filter lists. Eighteen event/path subcases failed. Ordinary unit/native CI still runs; no hosted job was invoked.
+
+**Consequence.** Relevant runtime/package changes can merge without selecting the disposable Debian install/AppImage layout job, despite the workflow's claim that packaging-input changes trigger it. Nightly scheduling and release builds provide later feedback, so this is P3 rather than a missing delivery gate.
+
+**Correction.** Add the six runtime implementations and three locked/metadata inputs to both filters, preserving the existing focused packaging selection and nightly/manual triggers.
+
+**Rejecting test.** Every local module in the preparation entry point's current static import closure, plus guest-image and npm metadata inputs, must match both event filters. New static imports must fail this test until included. The check models the positive patterns currently used; negative filter ordering would require extending the matcher. Hosted package installation remains separate qualification.
+
+**Status.** Fixed in the accompanying commit. The eighteen rejecting subcases failed before correction; the path-selection test and relevant workflow/fixture tests pass afterward. Logs are `rl15-{before,after}.log`; no application changeset is needed for CI selection.
 
 ## Other reviewed boundaries and limits
 

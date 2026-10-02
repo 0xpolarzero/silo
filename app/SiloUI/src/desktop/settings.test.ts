@@ -61,6 +61,29 @@ describe("native settings transport", () => {
     expect(settings.getSnapshot().saveError).toBeNull()
   })
 
+  it("reads the main window's authorized draft when a public settings event arrives", async () => {
+    const draft: OnboardingDraft = {
+      currentStep: "github",
+      machines: [...fixtureMachineDefaults],
+      unfinishedMachineEditor: null,
+      workspaceSelections: {},
+      workspaceIdentities: { dev: { name: "Saved author", email: "saved@example.com", apply: true } },
+    }
+    native.invoke.mockResolvedValue({ ...snapshot(), onboardingDraft: draft })
+    const settings = store()
+    await settings.initialize()
+    const refreshed = deferred<Omit<ReturnType<typeof snapshot>, "onboardingDraft"> & { onboardingDraft: OnboardingDraft }>()
+    native.invoke.mockReturnValueOnce(refreshed.promise)
+
+    native.handlers.get("settings:changed")?.({ payload: snapshot(1, { theme: "dark" }) })
+
+    expect(settings.getSnapshot().onboardingDraft).toEqual(draft)
+    expect(native.invoke).toHaveBeenCalledTimes(2)
+    refreshed.resolve({ ...snapshot(1, { theme: "dark" }), onboardingDraft: draft })
+    await vi.waitFor(() => expect(settings.getSnapshot().settings.theme).toBe("dark"))
+    expect(settings.getSnapshot().onboardingDraft).toEqual(draft)
+  })
+
   it("imports a saved legacy theme only when absent, keeping its original storage key", async () => {
     localStorage.setItem("silo-theme", "dark")
     native.invoke.mockImplementation(async (command: string) => command === "import_legacy_theme"
@@ -121,7 +144,7 @@ describe("native settings transport", () => {
       native.handlers.get("settings:changed")?.({ payload: snapshot(2, { theme: "dark" }) })
       return snapshot(1, { theme: "light" })
     })
-    const settings = store()
+    const settings = store(false)
     await settings.initialize()
     expect(calls).toEqual(["settings:changed", "read_settings"])
     expect(settings.getSnapshot().settings.theme).toBe("dark")
@@ -158,8 +181,9 @@ describe("native settings transport", () => {
     expect(settings.getSnapshot().saveError).toBe("Event bridge not ready")
     await settings.refresh()
     expect(native.handlers.has("settings:changed")).toBe(true)
+    native.invoke.mockResolvedValue(snapshot(2, { theme: "light" }))
     native.handlers.get("settings:changed")?.({ payload: snapshot(2, { theme: "light" }) })
-    expect(settings.getSnapshot().settings.theme).toBe("light")
+    await vi.waitFor(() => expect(settings.getSnapshot().settings.theme).toBe("light"))
     expect(settings.getSnapshot().saveError).toBeNull()
   })
 

@@ -180,6 +180,22 @@ else:
                 self.assertEqual(os.readlink(home / name), expected, name)
                 self.assertEqual(os.readlink(source / name), original, name)
 
+    def test_shell_and_launcher_paths_relocate_home_tokens_without_rewriting_external_paths(self):
+        source, home = self.root / 'source', self.root / 'home'
+        (source / '.local/bin').mkdir(parents=True)
+        contents = b'#!/bin/sh\nexport HOME="/root"\nexport OTHER_HOME=/home/silo-desktop\nexport PATH=/root/.local/bin:/opt/root/tools:/root-tools:$PATH\n'
+        expected = b'#!/bin/sh\nexport HOME="/home/silo"\nexport OTHER_HOME=/home/silo\nexport PATH=/home/silo/.local/bin:/opt/root/tools:/root-tools:$PATH\n'
+        (source / '.bashrc').write_bytes(contents)
+        (source / '.local/bin/tool').write_bytes(contents)
+        for _ in range(2):
+            guest.copy_home(source, home)
+            self.assertEqual((home / '.bashrc').read_bytes(), expected)
+            self.assertEqual((home / '.local/bin/tool').read_bytes(), expected)
+            guest.copy_shell_setup(source, home)
+            self.assertEqual((home / '.bashrc').read_bytes(), expected)
+        self.assertEqual((source / '.bashrc').read_bytes(), contents)
+        self.assertEqual((source / '.local/bin/tool').read_bytes(), contents)
+
     def test_non_utf8_script_launcher_relocates_paths_without_changing_other_bytes(self):
         source, home = self.root / 'source', self.root / 'home'
         (source / '.local/bin').mkdir(parents=True)

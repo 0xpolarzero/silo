@@ -87,6 +87,22 @@ describe("onboarding with sandboxes that already exist", () => {
     expect(screen.queryByRole("alert", { name: "Confirm sandbox deletion" })).not.toBeInTheDocument()
   })
 
+  it("adopts loaded sandboxes after cancelling an editor opened on a placeholder seed", async () => {
+    const user = userEvent.setup()
+    const store = createMemorySettingsStore()
+    const handlers = actions()
+    const view = render(onboarding(store, handlers, { machineConfigurations: [placeholder], machinesAuthoritative: false }))
+    await user.click(screen.getByRole("tab", { name: /Sandboxes/ }))
+    await user.click(screen.getByRole("button", { name: `Edit ${placeholder.name}` }))
+
+    await act(async () => { view.rerender(onboarding(store, handlers, { machineConfigurations: [real, other], machinesAuthoritative: true, existingMachines: [real, other] })) })
+    expect(store.getSnapshot().onboardingDraft?.machines).toEqual([placeholder])
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+
+    expect(store.getSnapshot().onboardingDraft?.machines).toEqual([real, other])
+    expect(handlers.saveMachineConfiguration).not.toHaveBeenCalled()
+  })
+
   it("deletes an existing sandbox only after the user confirms it", async () => {
     const user = userEvent.setup()
     const added = { ...other, id: "7f3c2a10-4b5d-4e6f-8a9b-0c1d2e3f4a5b", name: "fresh" }

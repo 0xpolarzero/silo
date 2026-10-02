@@ -30,3 +30,21 @@ Verification uses temporary journal fixtures and source-extracted Rust tests. No
 - **Consequence:** A missing file or directory becomes a fatal publishing-cache error in the unrelated push.
 - **Regression:** Hold the first repository lock, discard its directory after the scanner observes it, and assert the second repository's sweep and acquisition succeed while the first lock remains exclusive. The fixture failed before the fix.
 - **Fix:** Take the repository lock before inspection, tolerate a vanished directory, and treat active-cache sizing errors as advisory. Idle caches still undergo strict symlink and size validation.
+
+## HOST-PUSH-6: An older discovery restores stale state after a successful push
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/host_push.rs`, discovery worker completion and post-publication invalidation.
+- **Trigger:** A background repository read starts before publication, captures the old tracking state, and finishes after the push clears cached discovery.
+- **Consequence:** The worker restores pre-push rows as fresh data. The next state refresh can show already-published commits as pending for the discovery freshness interval.
+- **Regression:** Start a discovery, invalidate it at publication, then complete the earlier read. Assert its rows are discarded, a new read can start, and that new read can publish the current counts. The fixture failed before the fix.
+- **Fix:** Capture the entry's invalidation generation when starting each worker and accept its result only while that generation remains current.
+
+## HOST-PUSH-7: Publication overwrites tracking data changed by the guest
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/host_push.rs`, export snapshot and post-publication tracking update.
+- **Trigger:** During a push, the guest fetches a newer remote commit or repoints origin. The post-publication command unconditionally replaces `refs/remotes/origin/<branch>` with the older commit published by this job.
+- **Consequence:** Newer remote knowledge is lost, or the tracking ref for a different GitHub repository receives this job's commit.
+- **Regression:** A disposable Git repository supplies distinct pre-push, published, and concurrently fetched commits. Assert that the production tracking script preserves the fetched value and repointed origin, but updates unchanged and previously absent refs. The concurrent-fetch case failed before the fix.
+- **Fix:** Capture tracking and origin during export, verify origin still names the confirmed GitHub repository, and guard the metadata update with the captured URL and Git's expected-old-value check. [Git's update-ref reference](https://git-scm.com/docs/git-update-ref#_description) documents the atomic value comparison and empty old value for an absent ref.

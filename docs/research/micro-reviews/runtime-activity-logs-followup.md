@@ -34,7 +34,19 @@ The initial audit is in the shared worktree at `docs/research/micro-reviews/runt
 - **Fix:** Open the input and consume at most 1 MiB plus one byte through standard `Read::take`, then apply the existing size and identity checks. Missing-file handling and diagnostic strings remain consistent.
 - **Regressions:** Reject an oversized FIFO before EOF, accept a valid exact-limit intent, reject one extra byte, and preserve the oversized file. These run against extracted production `load` and storage functions with disposable paths.
 
+## runtime-activity-logs-5: PID reuse misidentifies an interrupted action as currently running
+
+- **Priority:** P3
+- **Location:** `app/SiloUI/src-tauri/src/runtime_activity.rs:312` before this fix.
+- **Trigger:** An unfinished journal entry survives an app exit, and a later Silo process receives the same PID recorded by that entry.
+- **Evidence:** The Activity reader identifies interrupted entries only by PID inequality. The regression retained the current PID but substituted a prior app-session identifier; the old reader reported the entry as running. A legacy entry without a session field has the same ambiguity.
+- **Consequence:** An abandoned action is shown as actively waiting for a runtime outcome even though its original worker no longer exists.
+- **Fix:** Record a per-launch UUID alongside the PID and refresh both fields when resuming an action. Legacy entries deserialize with an empty session and remain interrupted until explicitly resumed. Completed history retains its original outcome.
+- **Regression:** Read current-session activity as running, read foreign-session and legacy unfinished records with the same PID as interrupted warnings, then resume and finish those records successfully. The extracted production Activity reader failed before the fix and passed afterwards.
+
 ## Verification
+
+The second fix loop added failure-completion, bounded-intent, and process-session regressions. Three extracted lifecycle tests and two extracted Activity tests passed after the fixes; each new behavior failed before its correction. These harnesses execute the production intent storage, loader, preflight, and Activity functions with temporary files and stubs for unrelated runtime inspection and setup activity. Formatting, typecheck, lint, and extracted Clippy checks passed. The complete native test command remained queued on the shared Cargo artifact lock.
 
 Both new regressions failed against the corresponding pre-fix functions and passed after correction in disposable Rust harnesses under `/tmp/silo-codex-target/verification/runtime-activity-logs/`. The complete extracted retained-log query suite passed all 21 tests with the default parallel test runner, including production JSON Lines export, redaction, rotation, pagination, and follow functions. These tests used temporary files only.
 

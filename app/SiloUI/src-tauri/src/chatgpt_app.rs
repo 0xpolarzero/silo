@@ -1779,10 +1779,12 @@ pub(crate) fn ensure_published_dir(root: &Path) -> Result<PathBuf, Error> {
 /// published folder is only resolved.
 pub(crate) fn ensure_published_dir_nowait(root: &Path) -> Result<PathBuf, Error> {
     let failed = || Error::retry("Silo could not prepare its ChatGPT app folder.");
-    Dir::open_root(root, true).map_err(|_| failed())?;
+    let base = Dir::open_root(root, true).map_err(|_| failed())?;
     if let Some(_lock) = RootLock::try_take(root)? {
         open_storage(root, true).map_err(|_| failed())?;
     }
+    // Lock contention skips preparation, not validation of the folder to mount.
+    base.subdir("published", false).map_err(|_| failed())?;
     fs::canonicalize(published_path(root)).map_err(|_| failed())
 }
 
@@ -1807,7 +1809,7 @@ fn free_space_check(root: &Path, download_bytes: u64) -> Result<(), Error> {
     let required = download_bytes.saturating_mul(5);
     if available < required {
         return Err(Error::retry(format!(
-            "Free at least {} MB to download the ChatGPT app, then retry.",
+            "Free at least {} MiB to download the ChatGPT app, then retry.",
             required.div_ceil(1024 * 1024)
         )));
     }

@@ -143,6 +143,11 @@ fn advance(
     initial: InspectedSandbox,
 ) -> Result<(), RuntimeError> {
     let mut observed = stable(runner, paths, intent, initial)?;
+    if observed.status == "Paused"
+        && checkpoints::recover_paused_capture(runner, paths, &intent.machine_id, &intent.name)?
+    {
+        observed = stable(runner, paths, intent, inspect(runner, paths, intent)?)?;
+    }
     if stopped(&observed) {
         let _ = crate::secrets::workspace_stopped(&intent.name);
     }
@@ -520,6 +525,7 @@ mod tests {
         state: Mutex<String>,
         calls: Mutex<Vec<String>>,
         fail_start: bool,
+        launch_start_once: AtomicBool,
         cancel_start: bool,
         stop_times_out: bool,
         start_wins: bool,
@@ -532,6 +538,7 @@ mod tests {
                 state: Mutex::new(state.into()),
                 calls: Mutex::new(vec![]),
                 fail_start: false,
+                launch_start_once: AtomicBool::new(false),
                 cancel_start: false,
                 stop_times_out: false,
                 start_wins: false,
@@ -564,6 +571,9 @@ mod tests {
                     fs::Permissions::from_mode(0o555),
                 )
                 .unwrap();
+            }
+            if action == "start" && self.launch_start_once.swap(false, Ordering::SeqCst) {
+                return Err(RuntimeError::Launch("Synthetic launch failure.".into()));
             }
             if action == "start" && self.cancel_start {
                 return Err(RuntimeError::Cancelled {
@@ -646,6 +656,53 @@ mod tests {
         store(paths, &value).unwrap();
         value
     }
+    #[test]
+    fn lifecycle_retry_does_not_undo_a_newer_stop_on_the_same_vm() {
+        let _test_state = crate::test_support::global_state();
+        for same_vm in [true, false] {
+            let (_dir, paths, _) = setup();
+            let runner = Fake::new("Stopped");
+            runner.launch_start_once.store(true, Ordering::SeqCst);
+            let acquisitions = std::sync::atomic::AtomicUsize::new(0);
+            let last_request = std::cell::Cell::new(None);
+            let result = gated_auto_retry_with(
+                &[Duration::ZERO],
+                "Starting dev",
+                |label| {
+                    if acquisitions.fetch_add(1, Ordering::SeqCst) == 1 {
+                        let stop = OPERATIONS
+                            .kind(operation_gate::OperationKind::Lifecycle)
+                            .vm(if same_vm { ID } else { "other-vm" }, "dev", "Stopping dev")
+                            .unwrap();
+                        if same_vm {
+                            perform(&runner, &paths, &host(), "stop", "dev").unwrap();
+                        }
+                        drop(stop);
+                    }
+                    let guard = OPERATIONS
+                        .kind(operation_gate::OperationKind::Lifecycle)
+                        .retry_after(last_request.get())
+                        .vm(ID, "dev", label)
+                        .map_err(RuntimeError::from)?;
+                    last_request.set(Some(guard.request_id()));
+                    Ok(guard)
+                },
+                |_| {},
+                || perform(&runner, &paths, &host(), "start", "dev"),
+            );
+            if same_vm {
+                assert!(matches!(result, Err(RuntimeError::Cancelled { .. })));
+                assert_eq!(*runner.state.lock().unwrap(), "Stopped");
+                assert_eq!(runner.mutations(), vec!["start"]);
+            } else {
+                result.unwrap();
+                assert_eq!(*runner.state.lock().unwrap(), "Running");
+                assert_eq!(runner.mutations(), vec!["start", "start"]);
+            }
+            assert!(!has_intent(&paths, ID));
+        }
+    }
+
     #[test]
     fn malformed_history_does_not_block_lifecycle_actions() {
         let _test_state = crate::test_support::global_state();

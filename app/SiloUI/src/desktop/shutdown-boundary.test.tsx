@@ -151,3 +151,56 @@ it("observes work that starts while the queue listener is still registering", as
   expect(await screen.findByText("Waiting for Backing up sandboxes…")).toBeVisible()
   expect(screen.getByRole("button", { name: "Cancel and quit" })).toBeVisible()
 })
+
+it("recovers shutdown visibility on focus after initial event registration fails", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+  native.listen.mockRejectedValueOnce(new Error("Event bridge not ready"))
+  native.invoke.mockImplementation(async (command: string) => command === "read_shutdown_state" ? true : { running: [], waiting: [] })
+  render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+  await vi.waitFor(() => expect(logged).toHaveBeenCalledWith("Silo shutdown status:", expect.any(Error)))
+  expect(screen.getByRole("button", { name: "Create VM" }).closest("[inert]")).toBeNull()
+  await act(async () => { window.dispatchEvent(new Event("focus")) })
+  expect(await screen.findByRole("dialog", { name: "Quitting Silo" })).toBeVisible()
+  expect(screen.getByText("Create VM").closest("[inert]")).not.toBeNull()
+  act(() => native.receive({ payload: false }))
+  expect(screen.queryByRole("dialog", { name: "Quitting Silo" })).not.toBeInTheDocument()
+  logged.mockRestore()
+})
+
+
+it("keeps running work and cancellation visible when the queue subscription fails", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+  native.listen.mockImplementation(async (event: string, receive: typeof native.receive) => {
+    if (event === "silo://operation-queue-changed") throw new Error("Event bridge not ready")
+    native.receive = receive
+    return native.stop
+  })
+  const queue = { running: [{ id: 8, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  native.invoke.mockImplementation(async (command: string) => command === "read_operation_queue" ? queue : false)
+  try {
+    render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+    await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
+    await act(async () => { native.receive({ payload: true }) })
+    expect(await screen.findByText("Waiting for Backing up sandboxes…")).toBeVisible()
+    await userEvent.setup().click(screen.getByRole("button", { name: "Cancel and quit" }))
+    expect(native.invoke).toHaveBeenCalledWith("cancel_operation", { id: 8 })
+  } finally { logged.mockRestore() }
+})
+
+
+it("retries an unread shutdown snapshot on focus without duplicating its subscription", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+  let failed = false
+  native.invoke.mockImplementation(async (command: string) => {
+    if (command === "read_operation_queue") return { running: [], waiting: [] }
+    if (!failed) { failed = true; throw new Error("State bridge not ready") }
+    return true
+  })
+  try {
+    render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+    await vi.waitFor(() => expect(logged).toHaveBeenCalledWith("Silo shutdown status:", expect.any(Error)))
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    expect(await screen.findByRole("dialog", { name: "Quitting Silo" })).toBeVisible()
+    expect(native.listen.mock.calls.filter(([event]) => event === "silo://shutdown-state-changed")).toHaveLength(1)
+  } finally { logged.mockRestore() }
+})

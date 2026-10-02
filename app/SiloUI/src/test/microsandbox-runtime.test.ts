@@ -320,6 +320,23 @@ describe("bundled MicroSandbox release staging", () => {
         expect(compilations).toBe(12)
         await stage()
         expect(compilations).toBe(12)
+
+        vi.stubEnv("CARGO_PROFILE_RELEASE_DEBUG", "2")
+        await stage()
+        expect(compilations).toBe(13)
+        await stage()
+        expect(compilations).toBe(13)
+        vi.stubEnv("CARGO_PROFILE_RELEASE_OPT_LEVEL", "1")
+        await stage()
+        expect(compilations).toBe(14)
+        vi.stubEnv("CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL", "1")
+        await stage()
+        expect(compilations).toBe(15)
+        // Environment insertion order does not change an equivalent profile.
+        delete process.env.CARGO_PROFILE_RELEASE_DEBUG
+        vi.stubEnv("CARGO_PROFILE_RELEASE_DEBUG", "2")
+        await stage()
+        expect(compilations).toBe(15)
       })
     } finally {
       vi.unstubAllEnvs()

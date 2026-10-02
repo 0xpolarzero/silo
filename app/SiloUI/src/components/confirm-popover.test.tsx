@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { render, screen, waitFor } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -8,6 +8,22 @@ import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
 
 describe("ConfirmPopover", () => {
+  it("retains an unfinished form when Escape cancels an IME candidate", async () => {
+    const user = userEvent.setup()
+    render(<FormPopover title="Create checkpoint" confirmLabel="Create" onSubmit={vi.fn()} fields={<input aria-label="Description" defaultValue="Draft" />}><button type="button">New checkpoint</button></FormPopover>)
+    const trigger = screen.getByRole("button", { name: "New checkpoint" })
+    await user.click(trigger)
+    const input = screen.getByRole("textbox", { name: "Description" })
+    await waitFor(() => expect(input).toHaveFocus())
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true })
+    expect(screen.getByRole("dialog", { name: "Create checkpoint" })).toBeVisible()
+    expect(input).toHaveValue("Draft")
+    expect(input).toHaveFocus()
+    await user.keyboard("{Escape}")
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveFocus())
+  })
+
   function setup(onConfirm = vi.fn()) {
     render(<ConfirmPopover title="Delete it?" description="Cannot be undone" confirmLabel="Delete" tone="destructive" onConfirm={onConfirm}><button type="button">Trigger</button></ConfirmPopover>)
     return onConfirm

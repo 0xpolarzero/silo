@@ -101,7 +101,7 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
       if (target && target.ownerDocument.activeElement !== target) {
         restoreFocus(target.querySelector<HTMLElement>("button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1']):not(:disabled)"))
       }
-    }} onInteractOutside={() => { interactedOutside.current = true }}>
+    }} onInteractOutside={() => { interactedOutside.current = true }} onEscapeKeyDown={event => { if (event.isComposing) event.preventDefault() }}>
       {content}
     </PopoverContent>
   </Popover>

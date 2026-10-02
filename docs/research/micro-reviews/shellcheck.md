@@ -94,3 +94,37 @@ harness afterward. ShellCheck, Dash syntax, formatting, and whitespace checks
 passed. These regressions use a temporary fake npm executable and make no
 network request or real package installation. Evidence remains under
 `/tmp/silo-harness-install-{failing,passing}.log`.
+
+The offline working-account live proof compared Git command substitutions
+directly and used `test -z "$(find ...)"` for ownership. Failed reads could compare
+as equal, and a failed ownership scan produced the same empty output as a clean
+scan. Checked assignments now precede those comparisons. Three Python fixture
+tests execute the actual probe with fake Git/find tools: individual and combined
+Git failures, ownership-scan failure, matching/mismatching commits, and correct/
+incorrect ownership. Four failure cases falsely passed before the fix; all three
+tests pass afterward. ShellCheck, Dash syntax, Python compilation, and whitespace
+checks passed. The tests do not run the opt-in proof, a VM, or a real repository.
+
+Production repository discovery ignored `git status` failures and emitted an
+empty dirty field, presenting an unreadable working tree as clean. A real Git
+fixture with a committed file, an uncommitted edit, and a corrupt index reproduces
+the defect while branch and commit reads still work. The status assignment now
+explicitly exits on failure, so the existing guest-command error path rejects
+the discovery result. The corrupt-index regression failed before the fix and
+passed afterward, alongside the existing new-branch count and dependency-tree
+checks, in the source-extracted Rust harness. ShellCheck, Dash syntax, Rust
+formatting, and whitespace checks passed. The fixture uses temporary repositories
+and isolated Git configuration; it never reads a user's repository or launches
+Silo. Evidence is in `/tmp/silo-discovery-status-{failing,passing}.log`.
+
+The working-account live proof's guest wrapper invoked `sh -c`. Multi-command
+probes could therefore accept a failed record comparison or ownership assertion
+when their final command succeeded. The wrapper now invokes `sh -ec`. Its
+regression extracts the actual Python guest wrapper and substitutes only the
+runtime process boundary with a local shell and fake `cmp`; comparison mismatch
+and read failure both falsely passed before the fix, then retained their nonzero
+statuses afterward. The successful comparison still reaches the following
+command. All four working-account shell tests pass with `/bin/sh` and Dash;
+Python compilation, focused ShellCheck, Dash syntax, and whitespace checks pass.
+No live proof, VM, or native Cargo test was run for this item. The interrupted
+failure evidence remains in `/tmp/silo-guest-probe-failing.log`.

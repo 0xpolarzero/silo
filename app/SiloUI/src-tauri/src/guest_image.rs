@@ -56,17 +56,19 @@ pub(crate) fn test_version() -> Option<String> {
 /// Pins the image version for the current test thread until the guard drops.
 #[cfg(test)]
 pub(crate) fn pin_test_version(version: &str) -> TestVersionGuard {
-    TEST_VERSION.with(|slot| *slot.borrow_mut() = Some(version.into()));
-    TestVersionGuard
+    let previous = TEST_VERSION.with(|slot| slot.replace(Some(version.into())));
+    TestVersionGuard { previous }
 }
 
 #[cfg(test)]
-pub(crate) struct TestVersionGuard;
+pub(crate) struct TestVersionGuard {
+    previous: Option<String>,
+}
 
 #[cfg(test)]
 impl Drop for TestVersionGuard {
     fn drop(&mut self) {
-        TEST_VERSION.with(|slot| *slot.borrow_mut() = None);
+        TEST_VERSION.with(|slot| *slot.borrow_mut() = self.previous.take());
     }
 }
 
@@ -222,7 +224,7 @@ fn check_space(directory: &Path, required: u64) -> Result<(), String> {
     let available = (statistics.f_bavail as u64).saturating_mul(statistics.f_frsize as u64);
     if available < required {
         return Err(format!(
-            "Free at least {} MB to prepare Silo's bundled VM image, then retry.",
+            "Free at least {} MiB to prepare Silo's bundled VM image, then retry.",
             required.div_ceil(1024 * 1024)
         ));
     }
@@ -360,6 +362,20 @@ mod tests {
         let error = validate_bundle_until(dir.path(), std::time::Instant::now()).unwrap_err();
         assert!(error.contains("timed out"), "{error}");
         assert!(validate_bundle(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn nested_image_version_guards_restore_the_outer_fixture() {
+        let original = test_version();
+        {
+            let _outer = pin_test_version("ubuntu-24.04-v4");
+            {
+                let _inner = pin_test_version("ubuntu-24.04-v3");
+                assert_eq!(test_version().as_deref(), Some("ubuntu-24.04-v3"));
+            }
+            assert_eq!(test_version().as_deref(), Some("ubuntu-24.04-v4"));
+        }
+        assert_eq!(test_version(), original);
     }
 
     #[test]

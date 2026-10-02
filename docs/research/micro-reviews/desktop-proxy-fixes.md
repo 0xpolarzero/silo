@@ -49,3 +49,39 @@ Fixed and folded in `5d6c4346`. All 11 module tests, Rust formatting, module Cli
 - **Consequence:** Proxy framing validation accepts a different value from the one sent upstream. Similar trimming accepts malformed Upgrade, Host, Origin, and native cookie fields. No native-cookie bypass or request-smuggling exploit was established.
 - **Fix:** Trim only space and horizontal tab when interpreting field values and native-cookie parts.
 - **Regression:** `unicode_whitespace_cannot_disguise_typed_header_values` rejects nonbreaking/em/ideographic spaces around framing, upgrade, origin, host, and authentication values; valid space/tab-delimited Content-Length still forwards its declared body length.
+
+Fixed and folded in `a37abab9`. All 17 module tests, Rust formatting, module Clippy with warnings denied, frontend typecheck, and frontend lint passed.
+
+## DESKTOP-PROXY-6 · P3 · Header-only requests acquire undeclared trailing bytes
+
+- **Location:** `app/SiloUI/src-tauri/src/desktop_proxy.rs`, construction of the rewritten header in `request_header`.
+- **Trigger:** A valid authenticated GET contains only Host and the native cookie, with no retained client fields and no request body.
+- **Evidence:** The original format string emits the Connection line's CRLF, an empty retained-field string, and another two CRLFs. The upstream therefore receives an extra CRLF after the header terminator despite a body length of zero. Extending the existing real-socket regression to omit Content-Length failed with `unexpected bytes after the declared request body`. [RFC 9112 section 2.2](https://httpwg.org/specs/rfc9112.html#message.parsing) forbids following an HTTP/1.1 request with an extra CRLF.
+- **Consequence:** A bodyless client request gains bytes the client did not send. A strict upstream rejecting bytes after the declared request body closes without returning its response in the regression. No live guest failure was established.
+- **Fix:** Terminate each retained field once, then emit exactly one blank line whether or not retained fields exist.
+- **Regression:** `completed_http_requests_keep_write_side_open_for_response` now checks GET without Content-Length, GET with Content-Length zero, and POST with a body. The synthetic upstream rejects unexpected trailing bytes; all cases must still receive their response after client write-half-close.
+
+Fixed and folded in `7502c0cd`. All 17 module tests, Rust formatting, module Clippy with warnings denied, frontend typecheck, and frontend lint passed.
+
+## DESKTOP-PROXY-7 · P2 · Transient accept failures retire the entire listener
+
+- **Location:** `app/SiloUI/src-tauri/src/desktop_proxy.rs`, `Proxy::start` accept-loop error handling.
+- **Trigger:** An accept attempt returns Interrupted, ConnectionAborted, or ConnectionReset, affecting one pending connection rather than invalidating the listening socket.
+- **Evidence:** Every accept error except WouldBlock exits the loop and drops the listener. The regression injects a ConnectionAborted result before delegating subsequent accepts to the real loopback listener; before the fix, its retry channel disconnected because the accept worker exited. [The Linux accept manual](https://man7.org/linux/man-pages/man2/accept.2.html) lists connection-abort and interruption errors. [Tokio's listener documentation](https://docs.rs/tokio/latest/tokio/net/struct.TcpListener.html#errors) also warns that an aborted pending connection need not be a fatal accept-loop error.
+- **Consequence:** One transient failed connection closes the desktop's loopback port and prevents subsequent viewer requests. The existing backend health check retains a Proxy object and does not detect listener termination.
+- **Fix:** Retry the three transient connection/interruption error kinds; retain existing WouldBlock polling and cancellation behavior.
+- **Regression:** `transient_accept_errors_do_not_retire_the_listener` injects each error kind once and requires the production listener loop to attempt another accept. The seam uses the real TcpListener for subsequent calls and changes no signal handlers or file-descriptor limits.
+
+Fixed and folded in `378fa742`. All 18 module tests, Rust formatting, module Clippy with warnings denied, frontend typecheck, and frontend lint passed.
+
+## DESKTOP-PROXY-8 · P2 · Viewer health ignores an exited proxy listener
+
+- **Location:** `app/SiloUI/src-tauri/src/desktop_proxy.rs`, listener-worker exit; `app/SiloUI/src-tauri/src/desktop_viewer.rs`, `Viewer::healthy`.
+- **Trigger:** A terminal accept error ends the loopback listener worker while its owning Proxy and SSH tunnel remain in the viewer registry.
+- **Evidence:** Worker exit did not set the shared stopped flag, and `healthy` checked only that the Proxy existed and the tunnel was running. The regression waits for an injected terminal-error listener worker to exit, installs that Proxy with a live synthetic tunnel, and requests another attach. Before the fix, it failed because `begin_attach` returned Resize instead of a replacement connection.
+- **Consequence:** The normal visible-window health poll keeps resizing the child on a dead origin rather than reconnecting. Existing relays also lack a stop notification from the retired listener.
+- **Fix:** Mark the Proxy stopped when its accept loop exits, expose that state through `running`, and include it in the viewer's existing health predicate.
+- **Regression:** `a_failed_proxy_listener_reconnects_despite_a_live_tunnel` requires a Connect plan that returns both stale resources for cleanup. The fault callback's drop notification synchronizes listener exit; no process-wide limits or signals are changed.
+- **Verification seam:** The disposable harness includes the exact production proxy and owned-tunnel modules, extracts the viewer registry code and tests verbatim, and substitutes only the child-environment sanitizer with its identity behavior on this macOS fixture host. It tests synthetic sockets and an owned sleep process; it does not launch an app or establish live VM health.
+
+All 24 scoped proxy and viewer registry tests passed, as did touched-file Rust formatting, scoped Clippy with warnings denied, frontend typecheck, and frontend lint. The earlier focused native Cargo attempt stopped in the Tauri build script because the ignored `binaries/msb-aarch64-apple-darwin` runtime resource is absent; it did not run native tests.

@@ -440,12 +440,17 @@ def wait_for_session(wait, repair):
         state = desktop_session()
         if state == 'running':
             return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Failure('desktop-session-not-running')
         if repair and state in ('failed', 'stopped') and desktop_autostart():
             if repairs >= SESSION_REPAIR_ATTEMPTS:
                 raise Failure('desktop-session-not-running')
             repairs += 1
             log(f'desktop session is {state}; starting it again ({repairs} of {SESSION_REPAIR_ATTEMPTS})')
-            time.sleep(SESSION_REPAIR_BASE * 2 ** (repairs - 1))
+            time.sleep(min(SESSION_REPAIR_BASE * 2 ** (repairs - 1), remaining))
+            if time.monotonic() >= deadline:
+                raise Failure('desktop-session-not-running')
             start_desktop()
             continue
         if time.monotonic() >= deadline:

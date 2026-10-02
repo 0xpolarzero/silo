@@ -134,6 +134,31 @@ it("backs off failed remote download reads to a cap and restores polling after r
   } finally { stop() }
 })
 
+it("backs off malformed remote download status and restores polling after recovery", async () => {
+  const read = vi.fn(async (): Promise<unknown> => null)
+  const store = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 1000, idle: 1000 }).chatGptFor("office")
+  const stop = store.subscribe(() => {})
+  try {
+    await advance(0)
+    expect(store.getSnapshot().loadError).toBe("Silo could not read the ChatGPT for Linux status.")
+    for (const delay of [2000, 4000, 8000, 16000, 30000]) {
+      const calls = read.mock.calls.length
+      await advance(delay - 1)
+      expect(read).toHaveBeenCalledTimes(calls)
+      await advance(1)
+      expect(read).toHaveBeenCalledTimes(calls + 1)
+    }
+    read.mockResolvedValue({ state: "idle" })
+    await advance(30000)
+    expect(store.getSnapshot().loadError).toBeNull()
+    const calls = read.mock.calls.length
+    await advance(999)
+    expect(read).toHaveBeenCalledTimes(calls)
+    await advance(1)
+    expect(read).toHaveBeenCalledTimes(calls + 1)
+  } finally { stop() }
+})
+
 it("backs off failed computer-use state reads and stops a pending schedule when inactive", async () => {
   const read = vi.fn(async (): Promise<unknown> => { throw new Error("Sandbox unavailable") })
   const view = section(backend({ readDesktopState: read }))

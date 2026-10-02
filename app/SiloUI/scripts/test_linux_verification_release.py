@@ -30,6 +30,31 @@ def expression(name):
 
 
 class LinuxVerificationTests(unittest.TestCase):
+    def test_appimage_update_environment_isolates_home_as_well_as_xdg_state(self):
+        source = ast.parse(Path(__file__).with_name('test-linux-update.py').read_text())
+        fixture = next(node for node in source.body if isinstance(node, ast.With))
+        statements = []
+        for statement in fixture.body:
+            if isinstance(statement, ast.Assign) and any(
+                    isinstance(target, ast.Subscript) and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == 'APPIMAGE_EXTRACT_AND_RUN' for target in statement.targets):
+                break
+            statements.append(statement)
+        prelude = compile(ast.Module(body=statements, type_ignores=[]), 'update-environment', 'exec')
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as caller:
+            sentinel = Path(caller) / '.silo/keep'
+            sentinel.parent.mkdir()
+            sentinel.write_text('caller state')
+            namespace = {'temporary': temporary, 'Path': Path, 'os': os}
+            with patch.dict(os.environ, HOME=caller):
+                exec(prelude, namespace)
+            for key in ('HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME'):
+                with self.subTest(variable=key):
+                    directory = Path(namespace['environment'][key])
+                    self.assertTrue(directory.is_relative_to(temporary), directory)
+                    self.assertTrue(directory.is_dir(), directory)
+            self.assertEqual(sentinel.read_text(), 'caller state')
+
     def test_lifecycle_default_and_guest_probes_use_development_host_state(self):
         lifecycle = next(node for node in SMOKE.body if isinstance(node, ast.FunctionDef)
                          and node.name == 'run_lifecycle')

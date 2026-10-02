@@ -44,7 +44,8 @@ impl Viewer {
         (self.proxy.take(), self.tunnel.take())
     }
     fn healthy(&mut self) -> bool {
-        self.proxy.is_some() && self.tunnel.as_mut().is_some_and(Tunnel::running)
+        self.proxy.as_ref().is_some_and(Proxy::running)
+            && self.tunnel.as_mut().is_some_and(Tunnel::running)
     }
 }
 /// What `desktop_viewer_attach` must do once the registry lock is released.
@@ -154,11 +155,15 @@ pub(crate) fn require_workspace(window: &Window, workspace: &str) -> Result<(), 
         Err("This window cannot access that desktop.".into())
     }
 }
-pub(crate) fn local_connection(app: &AppHandle, workspace: &str) -> Result<Value, String> {
+pub(crate) fn local_connection(
+    app: &AppHandle,
+    workspace: &str,
+    expected_id: Option<&str>,
+) -> Result<Value, String> {
     // Reading desktop connection credentials only observes a running VM; it takes
     // no operation gate so viewing stays available during other operations.
     runtime::shutdown::ensure_accepting_operations()?;
-    crate::desktop::connection_local(app, workspace)
+    crate::desktop::connection_local(app, workspace, expected_id)
 }
 
 /// `sun_path` holds 104 bytes on macOS and 108 on Linux, including the NUL.
@@ -236,7 +241,7 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
     let connection = if let Some((host, vm)) = &remote_target {
         remote::call_remote(app, host, "desktop.connect", json!({"vmId":vm}))?
     } else {
-        local_connection(app, workspace)?
+        local_connection(app, workspace, None)?
     };
     let guest = connection["port"]
         .as_u64()
@@ -282,6 +287,10 @@ fn connect(app: &AppHandle, workspace: &str) -> Result<(Proxy, Option<Tunnel>), 
     let proxy = Proxy::start(socket, guest, username, password)?;
     Ok((proxy, Some(tunnel)))
 }
+fn viewer_title(name: &str, channel: crate::channel::Channel) -> String {
+    format!("{name} — {}", channel.product_name())
+}
+
 #[tauri::command]
 pub(crate) async fn open_desktop(
     app: AppHandle,
@@ -340,7 +349,7 @@ pub(crate) async fn open_desktop(
             ViewerClaim::New(label) => label,
         };
         let result = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App(route.into()))
-            .title(format!("{name} — Silo"))
+            .title(viewer_title(&name, crate::channel::current()))
             .inner_size(1200., 820.)
             .min_inner_size(640., 400.)
             .build();
@@ -628,6 +637,24 @@ mod geometry_tests {
 }
 
 #[cfg(test)]
+mod title_tests {
+    use super::*;
+    use crate::channel::Channel;
+
+    #[test]
+    fn desktop_window_titles_identify_the_build_channel() {
+        assert_eq!(
+            viewer_title("dev · Office", Channel::Production),
+            "dev · Office — Silo"
+        );
+        assert_eq!(
+            viewer_title("dev · Office", Channel::Development),
+            "dev · Office — Silo Dev"
+        );
+    }
+}
+
+#[cfg(test)]
 mod input_tests {
     use super::*;
 
@@ -911,6 +938,46 @@ mod registry_tests {
     }
     fn live_tunnel() -> Tunnel {
         Tunnel::spawn(Command::new("sleep").arg("30"), None).unwrap()
+    }
+
+    #[test]
+    fn a_failed_proxy_listener_reconnects_despite_a_live_tunnel() {
+        struct ListenerExit(std::sync::mpsc::Sender<()>);
+        impl Drop for ListenerExit {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let (ended_tx, ended_rx) = std::sync::mpsc::channel();
+        let notify = ListenerExit(ended_tx);
+        let proxy = Proxy::start_with_accept(
+            directory.path().join("unused.sock"),
+            6901,
+            "silo",
+            "password",
+            move |_| {
+                let _notify = &notify;
+                Err(std::io::ErrorKind::Other.into())
+            },
+        )
+        .unwrap();
+        // The callback's captures drop only when the listener worker has exited.
+        ended_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let mut entries = registry();
+        let entry = entries.get_mut("shell").unwrap();
+        entry.proxy = Some(proxy);
+        entry.tunnel = Some(live_tunnel());
+        assert!(
+            matches!(
+                begin_attach(&mut entries, "shell", "dev", true),
+                Ok(AttachPlan::Connect {
+                    stale: (Some(_), Some(_)),
+                    ..
+                })
+            ),
+            "an exited listener must reconnect instead of resizing a dead display"
+        );
     }
 
     #[test]

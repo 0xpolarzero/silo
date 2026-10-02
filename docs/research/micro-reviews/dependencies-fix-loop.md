@@ -45,3 +45,28 @@ The dependency-store Vitest file passed 11 tests. Node 24.11.1 typecheck, touche
 - **Fix:** Share the opened-descriptor regular-file guard across manifests, readable-file checks, and hashing. Its nonblocking open rejects FIFO inputs, and descriptor-based validation also removes the old readability check's metadata/open race.
 - **Regression:** Parent-bounded FIFO hashing and directory classification tests failed before implementation; the hasher must also accept an ordinary file and return the SHA-256 `abc` test vector. The pure file hasher is now compiled in unit tests on macOS as well as Linux production builds.
 - **Verification:** Exact-source Rust fixtures cover the file boundary locally. This is not a Linux package or host execution result.
+
+
+## DEPENDENCIES-5 · P2 · Output limits are checked only after the probe has written to disk
+
+- **File:line:** `app/SiloUI/src-tauri/src/dependencies.rs`, `run_bounded_with_timeout`: temporary-file capture and the post-exit `MAX_OUTPUT` check.
+- **Trigger:** A probe writes more than 8 KiB to stdout or stderr before exiting. The existing `take(MAX_OUTPUT + 1)` limits only the parent's later read, not the child's writes.
+- **Consequence:** A noisy probe can use arbitrary temporary-file space throughout its timeout window and affect other applications before its output is rejected.
+- **Fix:** Set the child's `RLIMIT_FSIZE` to the existing output bound plus one overflow byte before exec, retain stricter inherited limits, and disable core dumps. The overflow byte preserves the specific malformed-output result. This reuses the existing resource-limit policy in [host_push.rs](../../../app/SiloUI/src-tauri/src/host_push.rs), rather than adding a custom output transport.
+- **Regression:** A shell fixture writes 64 KiB, then writes a separate completion marker. Before the fix it completed the oversized write and marker despite the eventual malformed-output result; afterward both stdout and stderr cases stop before the marker and still report malformed output.
+
+
+## DEPENDENCIES-6 · P3 · Nested guest-image test guards discard the caller's pinned version
+
+- **File:line:** `app/SiloUI/src-tauri/src/guest_image.rs:58–69`, `pin_test_version` and `TestVersionGuard::drop`.
+- **Trigger:** Pin v4 in an outer test scope and temporarily pin another image version in a nested scope. Dropping the nested guard unconditionally resets the thread-local slot to `None`.
+- **Consequence:** The still-active outer fixture silently reads the default v3 cohort. The disposable desktop creation helper also installs a temporary pin, so nested fixture use can change what later lifecycle assertions exercise.
+- **Fix:** Store the previous thread-local value in each guard and restore it on drop. This changes test support only.
+- **Regression:** The nested v4/v3 fixture test failed with v3 after the inner guard dropped; it must preserve v4 and restore the original value after the outer guard drops.
+
+
+## Second fix-loop verification
+
+Each new regression failed before implementation. The final exact-source Rust harness passed 30 tests (all dependency-module tests plus four guest-image validation tests); the dependency-store Vitest file passed 13 tests. Node 24.11.1 typecheck and lint passed, and Cargo formatting checks passed after each source change. Tests used disposable files and owned subprocesses; no packaged app, VM, or production state was exercised.
+
+The ordinary focused Cargo command eventually reached compilation but failed in `settings.rs:1604–1608`: three references to `tauri::test` were gated out, followed by a closure type-inference error. These failures are outside the changed probe/validator code. Diagnostics remain in `/tmp/silo-dependencies-native-loop2.log`. A retry with the supported `tauri/test` feature uses the same shared target and synthetic GitHub configuration; its outcome is reported separately. Source-harness success does not qualify a complete native build or Linux execution.

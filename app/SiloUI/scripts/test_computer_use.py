@@ -544,6 +544,41 @@ class Apply(Guest):
         self.assertEqual([n for n in slept if n >= cu.SESSION_REPAIR_BASE][:3], [2, 4, 8])
         self.assertFalse(any(c[0][0].endswith('lcu-session') for c in self.commands), 'no doctor without a session')
 
+    def test_session_repair_does_not_restart_after_the_wait_budget_expires(self):
+        self.session = 'failed'
+        now = [0.0]
+        starts = []
+
+        def sleep(delay):
+            now[0] += delay
+
+        def start():
+            starts.append(now[0])
+            now[0] += 4
+
+        with mock.patch.object(cu.time, 'monotonic', lambda: now[0]), \
+             mock.patch.object(cu.time, 'sleep', sleep), \
+             mock.patch.object(cu, 'start_desktop', start):
+            with self.assertRaises(cu.Failure):
+                cu.wait_for_session(3, repair=True)
+        self.assertEqual(starts, [2])
+
+    def test_session_repair_backoff_respects_the_remaining_wait_budget(self):
+        self.session = 'failed'
+        now = [0.0]
+        slept = []
+
+        def sleep(delay):
+            slept.append(delay)
+            now[0] += delay
+
+        with mock.patch.object(cu.time, 'monotonic', lambda: now[0]), \
+             mock.patch.object(cu.time, 'sleep', sleep):
+            with self.assertRaises(cu.Failure):
+                cu.wait_for_session(1, repair=True)
+        self.assertEqual(slept, [1])
+        self.assertEqual(self.desktop_starts(), [])
+
     def test_a_stopped_session_is_not_restarted_when_the_desktop_is_manual(self):
         (Path(self.tmp.name) / 'desktop-config.json').write_text(json.dumps({'autoStart': False}))
         self.session = 'stopped'

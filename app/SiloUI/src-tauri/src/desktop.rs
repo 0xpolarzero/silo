@@ -875,20 +875,38 @@ pub async fn desktop_action(
 }
 
 /// Private backend-only connection material. Never register this as a UI command.
-pub(crate) fn connection_local(app: &AppHandle, workspace: &str) -> Result<Value, String> {
-    let (paths, machine) = machine(app, workspace, None)?;
-    if status_with(&runtime::ProcessRunner, &paths, &machine)?["state"] != "running" {
+pub(crate) fn connection_local(
+    app: &AppHandle,
+    workspace: &str,
+    expected_id: Option<&str>,
+) -> Result<Value, String> {
+    runtime::validate_name(workspace).map_err(|e| e.to_string())?;
+    let paths = runtime::runtime_paths(app)?;
+    connection_with(&runtime::ProcessRunner, &paths, workspace, expected_id)
+}
+
+fn connection_with(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace: &str,
+    expected_id: Option<&str>,
+) -> Result<Value, String> {
+    runtime::validate_name(workspace).map_err(|e| e.to_string())?;
+    let machine = machine_at(runner, paths, workspace, expected_id)?;
+    if status_with(runner, paths, &machine)?["state"] != "running" {
         return Err("The desktop is not running.".into());
     }
     let output = guest(
-        &runtime::ProcessRunner,
-        &paths,
+        runner,
+        paths,
         workspace,
         "/usr/local/bin/silo-desktop connection",
         Duration::from_secs(15),
         false,
     )
     .map_err(|_| "Could not read desktop connection credentials.")?;
+    // A read stays ungated; reject credentials if the VM changed while it ran.
+    machine_at(runner, paths, workspace, Some(machine.id()))?;
     let value: Value = serde_json::from_str(output.trim())
         .map_err(|_| "Invalid desktop connection credentials.")?;
     let username = value["username"].as_str().filter(|s| {
@@ -1513,6 +1531,161 @@ mod tests {
         assert_eq!(prerequisite["state"], "running");
         assert_eq!(prerequisite["lcuState"], "needs-runtime");
         assert_eq!(prerequisite["lcuReason"], "chatgpt-app-required");
+    }
+
+    struct ConnectionRunner {
+        machine: MachineConfiguration,
+        calls: std::sync::Mutex<Vec<Vec<String>>>,
+        on_connection: Option<Box<dyn Fn(&RuntimePaths) + Send + Sync>>,
+    }
+    impl RuntimeRunner for ConnectionRunner {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            _: Duration,
+        ) -> Result<runtime::CommandOutput, RuntimeError> {
+            self.calls.lock().unwrap().push(args.to_vec());
+            let stdout = match args.first().map(String::as_str) {
+                Some("inspect") => json!({
+                    "name":self.machine.name(),"status":"Running",
+                    "config":{"labels":{"silo.managed":"true","silo.machine-id":self.machine.id()}}
+                })
+                .to_string(),
+                Some("exec")
+                    if args.last().map(String::as_str)
+                        == Some("/usr/local/bin/silo-desktop connection") =>
+                {
+                    if let Some(change) = &self.on_connection {
+                        change(paths);
+                    }
+                    json!({"port":6901,"username":"silo","password":"b".repeat(64)}).to_string()
+                }
+                Some("exec")
+                    if args.last().is_some_and(|script| {
+                        script.contains("/usr/local/bin/silo-desktop status")
+                    }) =>
+                {
+                    format!(
+                        "{}\n{{}}\n",
+                        json!({"installed":true,"state":"running","autoStart":true,"backend":"selkies"})
+                    )
+                }
+                _ => panic!("Unexpected desktop connection command: {args:?}"),
+            };
+            Ok(runtime::CommandOutput {
+                stdout,
+                stderr: String::new(),
+            })
+        }
+    }
+
+    #[test]
+    fn desktop_connection_rejects_a_reused_name_for_an_explicit_vm_id() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let replacement = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![replacement.clone()],
+            },
+        )
+        .unwrap();
+        let runner = ConnectionRunner {
+            machine: replacement,
+            calls: Default::default(),
+            on_connection: None,
+        };
+        let removed_id = "00000000-0000-4000-8000-000000000002";
+        let result = connection_with(&runner, &paths, "dev", Some(removed_id));
+        assert!(
+            result.is_err(),
+            "returned replacement credentials for the removed VM"
+        );
+        assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn desktop_connection_discards_credentials_if_the_vm_changes_during_lookup() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let original = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![original.clone()],
+            },
+        )
+        .unwrap();
+        let mut replacement = original.clone();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "00000000-0000-4000-8000-000000000002".into();
+        }
+        let runner = ConnectionRunner {
+            machine: original.clone(),
+            calls: Default::default(),
+            on_connection: Some(Box::new(move |paths| {
+                let _change = runtime::OPERATIONS
+                    .computer("Replace fixture sandbox")
+                    .unwrap();
+                runtime::write_metadata(
+                    &paths.metadata,
+                    &runtime::MachineConfigurationRequest {
+                        schema_version: 1,
+                        machines: vec![replacement.clone()],
+                    },
+                )
+                .unwrap();
+            })),
+        };
+        let result = connection_with(&runner, &paths, "dev", Some(original.id()));
+        assert!(
+            result.is_err(),
+            "returned credentials after the selected VM was replaced"
+        );
+        assert_ne!(
+            runtime::resolve_vm_id(&paths, "dev").unwrap(),
+            original.id()
+        );
+    }
+
+    #[test]
+    fn desktop_connection_returns_credentials_for_the_matching_vm() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let machine = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine.clone()],
+            },
+        )
+        .unwrap();
+        for expected in [None, Some(machine.id())] {
+            let runner = ConnectionRunner {
+                machine: machine.clone(),
+                calls: Default::default(),
+                on_connection: None,
+            };
+            let result = connection_with(&runner, &paths, "dev", expected).unwrap();
+            assert_eq!(
+                result,
+                json!({"port":6901,"username":"silo","password":"b".repeat(64)})
+            );
+            let calls = runner.calls.lock().unwrap();
+            assert_eq!(calls.len(), 5);
+            assert!(calls
+                .iter()
+                .filter(|args| args[0] == "exec")
+                .all(|args| args.iter().any(|arg| arg == "--no-start")));
+        }
     }
 
     #[test]
