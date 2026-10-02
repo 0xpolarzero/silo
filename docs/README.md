@@ -43,6 +43,7 @@ above for current behavior and build commands.
 
 ### Review remediation
 
+- [Desktop contract fix-loop findings](research/micro-reviews/fe-desktop-contracts-fixes.md): status-event ordering, saved CPU bounds, notice disposal, and the pinned native menu checks.
 - [Release dry run, 2026-09-30](research/release-dry-run-2026-09-30.md): non-publishing all-target release verification for A-01, A-04, A-08 and A-09.
 - [Review remediation plan](SiloUI-REVIEW-REMEDIATION-PLAN.md): ledger of the 2026-09-29 review findings with landed-fix statuses and verification, plus the original work packages, phases, merge-queue orchestration and live verification sessions.
 - [Review remediation design notes](SiloUI-REVIEW-DESIGN-NOTES.md): Phase 0 decision records (options checked against upstream tools, recommended decision, implementation outline, owner questions) for the review items marked design.
@@ -90,6 +91,7 @@ recorded revisions; check current code before treating an item as open.
 - [Frontend startup bundle baseline, 2026-10-02](research/frontend-startup-bundle-2026-10-02.md): O-03 production artifact sizes, heavy modules, and the evidence required before splitting.
 - [Streaming build inputs, 2026-10-02](research/stream-build-inputs-2026-10-02.md): verified file staging, bounded downloads, synthetic memory measurements and regression coverage; full runtime preparation was not measured.
 - [Application launch selection, 2026-10-02](research/application-launch-selection-2026-10-02.md): preserving Flatpak desktop-entry selectors and targeting the selected Ghostty bundle, with resolver and escaping tests rather than live application launches.
+- [Editor folder identity, 2026-10-02](research/editor-folder-identity-2026-10-02.md): rejecting control characters that URI serialization would discard, with extracted-function regression evidence and no live editor qualification.
 - [Guest image size experiment](SiloUI-GUEST-IMAGE-SIZE.md): measured image-size tradeoffs.
 - [Codex skills and context audit](CODEX-CONTEXT-AUDIT-2026-09-14.md): agent instruction and skill-trigger recommendations for working on this repository.
 - [Jev for natural-language commands](SiloUI-JEV-RESEARCH.md): primary-source findings, command-palette fit, limitations and proposed evaluation.

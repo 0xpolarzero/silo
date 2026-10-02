@@ -317,7 +317,7 @@ fn scan(
         let (length, terminated) = if segment.stream == "boot-error" {
             // One atomically written document fills the file.
             (segment.bytes - offset, true)
-        } else if oversized {
+        } else if oversized && bytes.last() != Some(&b'\n') {
             let (rest, terminated) = skip_line(&mut reader, segment.bytes - offset - count)
                 .map_err(|_| "Retained logs could not be read.")?;
             (count + rest, terminated)
@@ -1269,6 +1269,54 @@ mod tests {
     fn line(index: usize, body: &str) -> String {
         format!("{{\"t\":\"2026-09-18T12:00:00.{index:09}Z\",\"s\":\"stderr\",\"d\":\"{body}\",\"id\":42}}\n")
     }
+    #[test]
+    fn credential_urls_are_hidden_in_pages_context_and_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut records = line(0, "ordinary connection failure");
+        for (index, body) in [
+            "fetch failed: https://alice:synthetic-url-password@example.test/repo",
+            "git clone 'https://synthetic-url-token@example.test/repo'",
+            "connect(postgresql://alice:synthetic-db-password@localhost/db)",
+            "remote=https://alice:synthetic%2Dencoded%2Dpassword@example.test/repo",
+        ]
+        .iter()
+        .enumerate()
+        {
+            records.push_str(&line(index + 1, body));
+        }
+        fs::write(directory.path().join("exec.log"), records).unwrap();
+        let mut query = request();
+        query.limit = Some(1);
+        let first = read(directory.path(), query.clone(), "dev", "pc", "Desktop").unwrap();
+        query.cursor = first.next_cursor.clone();
+        let page = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
+        let mut context = request();
+        context.around_id = Some(page.entries[0].id.clone());
+        let context = read(directory.path(), context, "dev", "pc", "Desktop").unwrap();
+        let mut exported = Vec::new();
+        crate::log_export::write_requests(
+            &mut exported,
+            vec![request()],
+            |query| read(directory.path(), query, "dev", "pc", "Desktop"),
+            || false,
+        )
+        .unwrap();
+        for text in [
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&page).unwrap(),
+            serde_json::to_string(&context).unwrap(),
+            String::from_utf8(exported).unwrap(),
+        ] {
+            assert!(
+                !text.contains("synthetic"),
+                "URL credentials escaped: {text}"
+            );
+        }
+        assert!(context
+            .entries
+            .iter()
+            .any(|entry| entry.line == "ordinary connection failure"));
+    }
     fn disposable_pem() -> Vec<String> {
         let output = Command::new("openssl")
             .args([
@@ -1820,6 +1868,52 @@ mod tests {
             "[Unreadable boot failure record]",
         ] {
             assert!(lines.contains(&expected), "{expected}: {lines:?}");
+        }
+    }
+    #[test]
+    fn oversized_record_ending_at_the_read_boundary_preserves_the_next_record() {
+        for stream in ["kernel", "exec"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join(format!("{stream}.log"));
+            fs::write(&path, "").unwrap();
+            let initial = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+            let oversized = if stream == "exec" {
+                line(
+                    0,
+                    &"x".repeat(RECORD_LIMIT as usize + 1 - line(0, "").len()),
+                )
+            } else {
+                format!("{}\n", "x".repeat(RECORD_LIMIT as usize))
+            };
+            assert_eq!(oversized.len(), RECORD_LIMIT as usize + 1);
+            append(&path, &oversized);
+            for (index, body) in [(1, "first sentinel"), (2, "second sentinel")] {
+                append(
+                    &path,
+                    &if stream == "exec" {
+                        line(index, body)
+                    } else {
+                        format!("2026-09-18T12:00:00.{index:09}Z {body}\n")
+                    },
+                );
+            }
+            let mut follow = request();
+            follow.follow = initial.snapshot;
+            follow.limit = Some(1);
+            let (entries, first) = all_pages(directory.path(), follow);
+            assert_eq!(first.total_matches, 3, "{stream}");
+            for sentinel in ["first sentinel", "second sentinel"] {
+                assert!(entries.iter().any(|entry| entry.line.ends_with(sentinel)));
+            }
+            assert!(first.unreadable_records);
+            let mut search = request();
+            search.query = Some("first sentinel".into());
+            let found = read(directory.path(), search, "dev", "pc", "Desktop").unwrap();
+            assert_eq!(found.total_matches, 1, "{stream}");
+            let mut context = request();
+            context.around_id = Some(found.entries[0].id.clone());
+            let around = read(directory.path(), context, "dev", "pc", "Desktop").unwrap();
+            assert_eq!(around.entries.len(), 3, "{stream}");
         }
     }
     #[test]

@@ -21,14 +21,19 @@ def expression(name):
 class DesktopServiceFixtureTests(unittest.TestCase):
     def test_open_and_quit_selectors_accept_the_native_tray_menu(self):
         labels = re.findall(r'label: ("[^"]+")\.into\(\)', TRAY)
-        layout = (0, {}, [(index + 1, {'label': json.loads(label)}, []) for index, label in enumerate(labels)])
+        named_labels = re.findall(r'label: format!\("([^"]+)", crate::channel::current\(\)\.product_name\(\)\)', TRAY)
         menu_nodes = next(node for node in VERIFY.body
                           if isinstance(node, ast.FunctionDef) and node.name == 'menu_nodes')
-        namespace = {'layout': layout}
-        exec(compile(ast.Module(body=[menu_nodes], type_ignores=[]), str(SOURCE), 'exec'), namespace)
-        namespace['open_item'] = eval(expression('open_item'), namespace)
-        self.assertEqual(namespace['open_item'][1]['label'], 'Open Silo')
-        self.assertEqual(eval(expression('quit_item'), namespace)[1]['label'], 'Quit Silo')
+        for name in ('Silo', 'Silo Dev'):
+            with self.subTest(product_name=name):
+                native_labels = [json.loads(label) for label in labels]
+                native_labels.extend(label.replace('{}', name) for label in named_labels)
+                layout = (0, {}, [(index + 1, {'label': label}, []) for index, label in enumerate(native_labels)])
+                namespace = {'layout': layout, 'product_name': name}
+                exec(compile(ast.Module(body=[menu_nodes], type_ignores=[]), str(SOURCE), 'exec'), namespace)
+                namespace['open_item'] = eval(expression('open_item'), namespace)
+                self.assertEqual(namespace['open_item'][1]['label'], f'Open {name}')
+                self.assertEqual(eval(expression('quit_item'), namespace)[1]['label'], f'Quit {name}')
 
     def test_tray_title_and_health_metadata_match_each_channel(self):
         title = next(node.test for node in ast.walk(VERIFY)

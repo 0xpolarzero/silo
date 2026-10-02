@@ -1,5 +1,7 @@
 import { z } from "zod"
 
+import type { ApplicationGitHubRepositoryPolicy, ApplicationGitHubWorkspacePolicy, ApplicationWorkspaceGitIdentity } from "@/features/application/model/application-source"
+
 import {
   githubWorkspacePolicySchema,
   siloBootstrapConfigurationSchema,
@@ -67,29 +69,16 @@ export type OnboardingSource = z.infer<typeof onboardingSourceSchema>
 
 export type GitHubConnectionState = "disconnected" | "connecting" | "connected"
 
-export interface WorkspaceRepositorySelection {
-  repository: string
-  allowPushes: boolean
-}
+export type WorkspaceRepositorySelection = ApplicationGitHubRepositoryPolicy
 
-export interface WorkspaceGitIdentity {
-  name: string
-  email: string
-  apply: boolean
-}
+export type WorkspaceGitIdentity = ApplicationWorkspaceGitIdentity
 
 export interface OnboardingCompletionRequest {
   machineConfiguration: SetupMachineConfigurationRequest
   applications: ApplicationPreferenceSelection
   github: {
     connectionState: GitHubConnectionState
-    workspaces: Array<{
-      workspace: string
-      repositoryMode?: "selected" | "all"
-      allRepositoriesAllowChanges?: boolean
-      repositories: WorkspaceRepositorySelection[]
-      identity: WorkspaceGitIdentity
-    }>
+    workspaces: ApplicationGitHubWorkspacePolicy[]
   }
 }
 

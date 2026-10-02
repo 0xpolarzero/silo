@@ -2414,3 +2414,48 @@ fn an_attempt_whose_marker_cannot_be_saved_does_not_run_the_helper() {
     assert_eq!(read_policy(&paths, &id).unfinished, Some(Approval::Auto));
     assert!(approval_reason_text("state-not-saved").contains("could not save"));
 }
+
+#[test]
+fn manual_setup_converges_on_a_choice_saved_while_its_helper_runs() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm(32);
+    write_machines_of(&paths, &id);
+    set_approval(&paths, &id, Approval::Auto).unwrap();
+    let guest = Guest::new(&id);
+    let gate = test_gate();
+    let (entered, receiver) = std::sync::mpsc::channel();
+    let release = Arc::new(std::sync::Barrier::new(2));
+    *guest.stall.lock().unwrap() = Some((entered, release.clone()));
+    let worker = {
+        let (guest, paths, id) = (guest.clone(), paths.clone(), id.clone());
+        std::thread::spawn(move || {
+            let turn = gate.vm(&id, "dev", "Updating dev desktop").unwrap();
+            turn.allow_cancel();
+            setup_with(
+                gate,
+                guest.as_ref(),
+                &paths,
+                &machine_of(&id, true),
+                true,
+                turn.cancel_token(),
+            )
+        })
+    };
+    receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+    // Saving the choice is independent of the follow-up worker's admission. That
+    // worker can expire while this manual turn runs, so the turn must converge itself.
+    set_approval(&paths, &id, Approval::Ask).unwrap();
+    release.wait();
+    let status = worker.join().unwrap().unwrap();
+    assert_eq!(guest.modes(), ["auto", "ask"]);
+    assert_eq!(guest.configured().as_deref(), Some("ask"));
+    assert_eq!(status["apply"]["approval"], "ask");
+    let stored = read_policy(&paths, &id);
+    assert_eq!(
+        (stored.approval, stored.applied),
+        (Approval::Ask, Some(Approval::Ask))
+    );
+    assert!(!stored.needs_apply());
+    assert!(!is_pending(&id));
+}

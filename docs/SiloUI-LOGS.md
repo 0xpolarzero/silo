@@ -119,6 +119,13 @@ lines even when the requested page starts inside a block. An unterminated block
 remains hidden through the retained end of that session. Other execution
 sessions keep their ordinary multiline output.
 
+Lines containing URL user information are hidden before search results, context,
+pagination, lifecycle diagnostics, and exports reach the UI. The existing
+`reqwest::Url` parser identifies [usernames](https://docs.rs/url/latest/url/struct.Url.html#method.username)
+and [passwords](https://docs.rs/url/latest/url/struct.Url.html#method.password),
+including token-only usernames and percent-encoded credentials. Public URLs and
+email addresses remain readable. This filtering runs after runtime persistence.
+
 The pinned runtime's [retention patch](../app/SiloUI/patches/microsandbox-log-retention-desktop-start-0.7.6.patch)
 renames older segments to increasing numeric suffixes. Silo uses numeric suffix
 order rather than directory enumeration or guest timestamps for classification.

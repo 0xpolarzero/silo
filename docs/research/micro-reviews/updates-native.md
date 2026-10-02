@@ -30,3 +30,29 @@ Read-only source review. No builds, tests, application launches, or live package
 - UPDATES-NATIVE-2: Skipped. Safe remediation requires a package-manager ownership/recovery design and Linux qualification. Returning a timeout through the existing error path would restore sandboxes while dpkg could still be installing. The fix-loop instructions explicitly exclude large refactors and fixes requiring live qualification.
 
 Preference-fix verification: the extracted production helper and scheduler passed 8 tests, including concurrency and failed-persistence regressions. `npm --prefix app/SiloUI run typecheck`, `npm --prefix app/SiloUI run lint`, `cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check`, and `git diff --check` passed. Extracted tests compile against cached dependencies and use temporary files; they do not prove full application compilation or live update behavior. Native Cargo runs were requested with the shared target and synthetic GitHub configuration.
+
+## UPDATES-NATIVE-3: A split UTF-8 character discards Debian update diagnostics
+
+- **Priority:** P3.
+- **Location:** `app/SiloUI/src-tauri/src/updates/debian.rs:155–161` before the fix.
+- **Trigger:** A failed helper writes a log longer than 16 KiB, and the retained tail begins within a UTF-8 character.
+- **Evidence:** The production subprocess fixture wrote a two-byte character followed by 16,383 ASCII bytes ending in a package-repair sentinel. Seeking to the last 16,384 bytes retained the second byte of the character. `read_to_string` failed; its ignored error left Details empty. The rejecting test failed because Silo returned the generic authentication/package-installation message without the sentinel.
+- **Consequence:** Valid diagnostic text after the split character disappears, preventing the user from identifying the package repair error.
+- **Suggested fix:** Read the bounded tail as bytes, propagate actual read failures, and decode with replacement for partial/invalid UTF-8.
+- **Test that catches it:** `truncated_utf8_log_tail_preserves_package_manager_details` runs the real subprocess seam with that boundary and requires the package-manager sentinel to survive.
+- **Status:** Fixed. The complete Debian module is compiled directly against cached `tempfile` and tested with local synthetic subprocesses. No administrator helper or package manager is launched.
+
+Diagnostic-fix verification: the rejecting test failed before the change and all 7 Debian module tests passed afterward. Rust formatting, typecheck, lint, and diff whitespace checks passed. The tail read remains capped at 16 KiB.
+
+## UPDATES-NATIVE-4: Closing progress output bypasses the preparation timeout
+
+- **Priority:** P2.
+- **Location:** `app/SiloUI/src-tauri/src/updates/debian.rs:94–109`, `139–140` before the fix.
+- **Trigger:** The authentication/helper process closes stdout before emitting `ready` but continues running past the preparation deadline.
+- **Evidence:** The subprocess fixture closes stdout and executes a two-second sleep with a 100 ms preparation deadline. Before the fix, channel disconnection breaks the timed receive loop and enters unbounded `child.wait()`. The rejecting test took 2.02 seconds and returned the wrong completion error instead of the timeout.
+- **Consequence:** The advertised preparation timeout is bypassed; the caller retains admission, backup, GitHub, and secret guards while the process remains alive. Sandboxes are not stopped in this case. This is separate from the deliberately unbounded post-go-ahead installation in UPDATES-NATIVE-2.
+- **Suggested fix:** Keep checking the original preparation deadline while waiting for a process whose progress pipe closed. On expiration, use the existing pre-install cancellation/reaping policy; retain post-go-ahead ownership semantics.
+- **Test that catches it:** `a_closed_progress_pipe_does_not_bypass_prepare_timeout` requires the timeout result within one second and asserts sandbox preparation is never called.
+- **Status:** Fixed and checked with the complete Debian module and synthetic subprocesses.
+
+Closed-progress fix verification: the rejecting fixture failed before the change, then all 8 Debian module tests passed. Formatting, typecheck, lint, and diff whitespace checks passed. Earlier queued Cargo requests were stopped after verifying their executable command, owner, and exact worktree; one consolidated `cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked updates::` request remains queued against `/tmp/silo-codex-target` with explicit synthetic GitHub values.

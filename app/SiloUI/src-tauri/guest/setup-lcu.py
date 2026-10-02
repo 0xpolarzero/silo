@@ -100,6 +100,8 @@ def receipt_status(receipt_path=RECEIPT, prefix=PREFIX, app=APP):
         return {'status': 'not-installed'}
     except (OSError, ValueError):
         return {'status': 'repair-required', 'reason': 'invalid-receipt'}
+    if not isinstance(receipt, dict):
+        return {'status': 'repair-required', 'reason': 'invalid-receipt'}
     if receipt.get('schemaVersion') != 1:
         return {'status': 'repair-required', 'reason': 'unsupported-receipt'}
     if receipt.get('status') == 'failed':

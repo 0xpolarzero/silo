@@ -27,7 +27,8 @@ No release was published or signed, and no repository or remote release tag was 
 | RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed: `abae62fe` |
 | RL-08 | P2 | Failed license staging replaces the MicroSandbox sidecar without its manifest | Fixed; regression passes |
 | RL-09 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Fixed and folded: `028ce994` |
-| RL-10 | P2 | Lifecycle guest probes use the production alias for Dev | Confirmed; fix pending |
+| RL-10 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed: `8102c670` |
+| RL-11 | P2 | Lifecycle guest probes use the production alias for Dev | Confirmed; fix pending |
 
 ## Detailed findings
 
@@ -171,7 +172,23 @@ publication across a process crash or final filesystem errors.
 
 **Rejecting test.** Feed the extracted real GNOME menu selector a layout populated from the native tray's actual action labels. It must select Open and Quit. Exercise the tray-title predicate and health metadata path for both standard channel identifiers, requiring Dev state to remain under the Dev fixture root. Then qualify the full optional GNOME run separately.
 
-### RL-10 Lifecycle guest probes use the production alias for Dev
+### RL-10 Package identity gate accepts another Debian package or macOS Dev bundle
+
+**P2.** The final metadata verifier checked Debian version/architecture but not
+`Package`, and macOS version/CPU but not `CFBundleIdentifier`. Correctly versioned
+artifacts belonging to another application or the Dev channel therefore passed.
+
+**Evidence.** Synthetic signed-package contents for both Debian architectures
+with `Package: unrelated`, plus ARM64 macOS archives with Dev/other identifiers,
+all passed before the correction. Four rejecting subcases failed. These fixtures
+exercise the metadata verifier, not cryptographic signing or publication.
+
+**Correction and status.** Fixed: Debian packages must identify `silo`; macOS
+archives must use the production identifier from the tracked Tauri configuration.
+Positive production fixtures still pass. The Linux fixture builds real `.deb`
+files with `dpkg-deb` and accepts `silo` while rejecting an unrelated package.
+
+### RL-11 Lifecycle guest probes use the production alias for Dev
 
 **P2.** Confirmed at `0aef0323`. Locations: [test-linux-desktop.py](../app/SiloUI/scripts/test-linux-desktop.py), `run_lifecycle` identifier and nested `guest_for`; [runtime.rs](../app/SiloUI/src-tauri/src/runtime.rs), `runtime_home_alias`; [channel.rs](../app/SiloUI/src-tauri/src/channel.rs), `from_identifier` and `state_dir_name`.
 
@@ -186,6 +203,9 @@ publication across a process crash or final filesystem errors.
 **Rejecting test.** Execute the actual guest probe with synthetic aliases for Dev, production, and the historical identifier. Only the matching alias exists; the recorded CLI environment must receive that alias as `MSB_HOME`. The default must select Dev. No app, VM, CLI executable, or real HOME is needed.
 
 **Status.** Regression fails before the correction in three subcases; fix pending.
+
+
+**Integration follow-up for RL-09.** A subsequent native channel-name change made Open and Quit labels use the product name. The merged regression caught the obsolete literal adapter and failed with `StopIteration`. The adapter and source-derived menu regression now cover `Open/ Quit Silo` and `Open/ Quit Silo Dev`; both channel cases pass.
 
 ## Verification and reproducibility
 

@@ -16,3 +16,33 @@ Verification: `filter-combobox.test.tsx` reproduces Tab entering the first optio
 before the fix and leaving the filter after it. Existing navigation and scrolling
 tests remain green. This uses deterministic DOM fixtures, not a native app or
 screen reader session.
+
+## Diagnostic output had no keyboard focus target
+
+Trigger: expand long technical details or setup activity, then Tab past Copy.
+The height-limited `pre` scroll container was skipped. Browsers that do not focus
+scroll containers automatically offered no keyboard target for scrolling it.
+
+[MDN's overflow accessibility guidance](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/overflow#accessibility)
+specifies a focusable scroll container with a role and accessible name. The fix
+adds `tabIndex={0}`, a named region (defaulting to the disclosure title), and an
+inset focus indicator. Native scrolling keys remain browser-managed.
+
+Verification: both named and default-label cases in `log-disclosure.test.tsx`
+failed because Tab skipped the output before the fix. They now reach the named
+region after Copy. DOM fixtures verify focus access, not native scroll distances.
+
+## Closing computer connection setup lost focus
+
+Trigger: open Connect computer in Settings, then Cancel or connect successfully.
+The focused form unmounted and its opening button remounted without receiving
+focus. Both paths left focus on `document.body`, losing the keyboard position.
+
+The fix restores focus to the remounted button after the form closes, using the
+existing `restoreFocus` helper and the same post-render approach as secret editing.
+This follows [WCAG's focus-order guidance](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html)
+to preserve a meaningful keyboard sequence as content changes.
+
+Verification: both user-event tests in `remote-computers-settings.test.tsx`
+failed before the fix, then returned focus to Connect computer afterwards.
+The connection backend is a deterministic resolved mock; no SSH session is opened.

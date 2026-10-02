@@ -183,8 +183,8 @@ function writeAtomic(file, bytes, mode) {
   fs.renameSync(temporary, file)
 }
 
-function backup(file, stamp) {
-  if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak-${stamp}`)
+function backup(file, stamp, mode) {
+  if (fs.existsSync(file)) writeAtomic(`${file}.bak-${stamp}`, fs.readFileSync(file), mode)
 }
 
 /**
@@ -238,7 +238,7 @@ export async function importProductionSettings({
       label,
       overwrites: fs.existsSync(destination),
       apply() {
-        backup(destination, stamp)
+        backup(destination, stamp, mode)
         writeAtomic(destination, bytes, mode)
       },
     })

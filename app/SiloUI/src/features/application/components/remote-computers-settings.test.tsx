@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { toast } from "sonner"
+import userEvent from "@testing-library/user-event"
 import { Toaster } from "@/components/ui/sonner"
 
 import { ConnectComputerForm, RemoteComputersSettings } from "./remote-computers-settings"
@@ -19,6 +20,22 @@ function actions(overrides: Partial<ApplicationActions> = {}): ApplicationAction
 afterEach(() => { toast.dismiss() })
 
 describe("RemoteComputersSettings", () => {
+  it.each(["cancel", "connect"])("returns focus to the opening button after %s", async (close) => {
+    const user = userEvent.setup()
+    const connectComputer = vi.fn().mockResolvedValue(undefined)
+    render(<RemoteComputersSettings source={source(undefined)} actions={actions({ connectComputer })} />)
+    await user.click(screen.getByRole("button", { name: "Connect computer…" }))
+    const address = screen.getByRole("textbox", { name: "Computer address" })
+    expect(address).toHaveFocus()
+    if (close === "cancel") await user.click(screen.getByRole("button", { name: "Cancel" }))
+    else {
+      await user.type(address, "owner@office")
+      await user.click(screen.getByRole("button", { name: "Connect" }))
+      expect(connectComputer).toHaveBeenCalledExactlyOnceWith("owner@office")
+    }
+    expect(await screen.findByRole("button", { name: "Connect computer…" })).toHaveFocus()
+  })
+
   it("trims the address and blocks resubmission and cancellation while connecting", async () => {
     let finish!: () => void
     const connect = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
@@ -85,6 +102,7 @@ describe("RemoteComputersSettings", () => {
   })
 
   it("offers every address another computer may reach this one at", async () => {
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)
     const status = remoteManagementSchema.parse({
       enabled: true, hostId: "office", name: "studio", address: "ana@studio.local",
       addresses: [
@@ -101,7 +119,7 @@ describe("RemoteComputersSettings", () => {
       expect.stringContaining("Local network"),
     ])
     fireEvent.click(within(list).getByRole("button", { name: "Copy ana@100.101.102.103" }))
-    await waitFor(() => expect(navigator.clipboard.writeText).toHaveBeenLastCalledWith("ana@100.101.102.103"))
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith("ana@100.101.102.103"))
   })
 
   it("falls back to the single address from an older status", () => {

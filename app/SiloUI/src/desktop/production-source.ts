@@ -128,7 +128,7 @@ const machineShape = z.discriminatedUnion("kind", [
     desktop: z.object({ startWithSandbox: z.boolean(), builtIn: z.boolean().optional() }).optional(),
   }).passthrough(),
   z.object({ kind: z.literal("ssh"), id: z.string().min(1), name: z.string().min(1), host: z.string().min(1), user: z.string().min(1), port: z.number().int().min(1).max(65535) }).passthrough(),
-]).transform(machine => machine as SetupMachineConfiguration)
+])
 
 const workspaceShape = z.object({
   machine: machineShape,
@@ -187,14 +187,16 @@ const runtimeRepairShape = z.object({
   status: tolerantEnum(["needed", "unavailable"], "unavailable"), reason: z.string(), recovery: z.string().optional(), checking: z.boolean().optional(),
 })
 
-const sandboxConfigurationOperationShape = z.object({
+const sandboxConfigurationOperationFields = {
   id: z.string().min(1),
-  status: z.enum(["applying", "awaiting-approval", "failed"]),
   candidate: setupMachineConfigurationRequestSchema,
   progressEvents: z.array(siloProgressEventSchema),
-  result: siloBootstrapResultSchema.nullable(),
-  error: siloProtocolErrorSchema.nullable(),
-})
+}
+const sandboxConfigurationOperationShape = z.discriminatedUnion("status", [
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("applying"), result: z.null(), error: z.null() }),
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("awaiting-approval"), result: siloBootstrapResultSchema, error: z.null() }),
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("failed"), result: z.null(), error: siloProtocolErrorSchema }),
+])
 
 const preferencesShape = z.object({
   terminal: z.string(), editor: z.string(), browser: z.string(), launchAtLogin: z.boolean(),
@@ -268,12 +270,12 @@ export function parseNetworkState(input: unknown): NetworkState {
 }
 
 export function parseApplicationSource(input: unknown): ApplicationSource {
-  return applicationSourceShape.parse(input) as ApplicationSource
+  return applicationSourceShape.parse(input)
 }
 
 /** Another computer's snapshot, which may come from an older or newer Silo. */
 export function parseRemoteApplicationSource(input: unknown): ApplicationSource {
-  return remoteApplicationSourceShape.parse(input) as ApplicationSource
+  return remoteApplicationSourceShape.parse(input)
 }
 
 export function parseBackupState(input: unknown): BackupState {
@@ -352,6 +354,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     error: null,
   }
   let view = snapshot
+  let viewKey = JSON.stringify(view)
   type SetupItem = NonNullable<OnboardingSource["setupQueue"]>[number]
   type SetupJob = { items: SetupItem[]; activityId: string }
   let setupJobs: SetupJob[] = []
@@ -589,7 +592,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function publish(next: ProductionSnapshot) {
     if (disposed) return
     snapshot = next
-    view = derive(next)
+    const nextView = derive(next)
+    // Native reads return fresh objects even when the serialized state is unchanged.
+    const nextKey = JSON.stringify(nextView)
+    if (nextKey === viewKey) return
+    view = nextView
+    viewKey = nextKey
     listeners.forEach((listener) => listener())
   }
 
@@ -1820,7 +1828,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           ? "Silo no longer reports this export's result. Check the export folder before relying on it."
           : "Silo stopped tracking this export before it finished.", operationId))
       }
-      exportWaiters.add(waiter)
+      if (disposed) waiter(null, readSequence)
+      else exportWaiters.add(waiter)
     })
   }
 

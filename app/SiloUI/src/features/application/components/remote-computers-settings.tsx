@@ -1,9 +1,10 @@
-import { useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { CopyButton } from "@/components/copy-button"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Switch } from "@/components/ui/switch"
 import { showActionFailure } from "@/lib/operation-toast"
+import { restoreFocus } from "@/lib/focus"
 import { useChatGptApp, useComputerUseBridge } from "@/desktop/computer-use-bridge"
 import { CHATGPT_DOWNLOAD_NOTE } from "@/desktop/computer-use-panel"
 import { chatGptStatusText } from "@/desktop/computer-use-labels"
@@ -108,6 +109,18 @@ export function RemoteComputersSettings({ source, actions, active = true }: { so
 function ComputersSection({ source, actions }: { source: ApplicationSource; actions: ApplicationActions }) {
   const [connecting, setConnecting] = useState(false)
   const [busy, setBusy] = useState(false)
+  const connectButton = useRef<HTMLButtonElement>(null)
+  const shouldRestoreFocus = useRef(false)
+  useEffect(() => {
+    if (!connecting && shouldRestoreFocus.current) {
+      shouldRestoreFocus.current = false
+      restoreFocus(connectButton.current)
+    }
+  }, [connecting])
+  function closeConnectionForm() {
+    shouldRestoreFocus.current = true
+    setConnecting(false)
+  }
   async function perform(operation: () => Promise<void>) {
     setBusy(true)
     try { await operation() } catch (cause) { showActionFailure("Computer setting not changed", cause, () => { void perform(operation) }, { native: false }) }
@@ -122,8 +135,8 @@ function ComputersSection({ source, actions }: { source: ApplicationSource; acti
       {source.remoteManagement?.enabled && <p className="text-xs text-muted-foreground">Enable Remote Login on macOS or the SSH server on Linux so other computers can connect.</p>}
       {source.remoteManagement?.enabled && <ManagementAddresses management={source.remoteManagement} />}
       {source.remoteComputers?.map(computer => <div key={computer.id} className="flex items-center justify-between gap-3 border-t pt-3"><div className="min-w-0"><p className="truncate text-xs font-medium">{computer.name}</p><p className="text-xs text-muted-foreground">{computer.busy ? "Updating…" : computer.connected ? "Connected" : "Offline · last known status"} · {computer.address}</p>{computer.error && <p className="text-xs text-destructive">{computer.error}</p>}<p className="text-xs text-muted-foreground">Removing the connection leaves sandboxes on {computer.name} unchanged.</p></div><Button size="xs" variant="ghost" disabled={busy} aria-label={`Remove connection to ${computer.name}`} onClick={() => { void perform(() => actions.removeComputer!(computer.id)) }}>Remove connection</Button></div>)}
-      {!connecting && <Button size="sm" variant="outline" className="justify-self-start" onClick={() => setConnecting(true)}>Connect computer…</Button>}
-      {connecting && <ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={() => setConnecting(false)} />}
+      {!connecting && <Button ref={connectButton} size="sm" variant="outline" className="justify-self-start" onClick={() => setConnecting(true)}>Connect computer…</Button>}
+      {connecting && <ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={closeConnectionForm} />}
       {source.remoteComputersError && <p role="alert" className="text-xs text-destructive">{source.remoteComputersError}</p>}
       {source.remoteManagementError && <p role="alert" className="text-xs text-destructive">{source.remoteManagementError}</p>}
     </div>

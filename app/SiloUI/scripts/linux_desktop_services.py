@@ -71,8 +71,8 @@ def verify(browser, wait, environment, evidence):
         yield node
         for child in node[2]:
             yield from menu_nodes(child)
-    open_item = next(node for node in menu_nodes(layout) if node[1].get("label") == "Open Silo")
-    assert any(node[1].get("label") == "Quit Silo" for node in menu_nodes(layout))
+    open_item = next(node for node in menu_nodes(layout) if node[1].get("label") == f"Open {product_name}")
+    assert any(node[1].get("label") == f"Quit {product_name}" for node in menu_nodes(layout))
     def main_visible():
         return find_native(lambda node: node.getRoleName() == "frame" and node.name == product_name and node.getState().contains(pyatspi.STATE_SHOWING))
     wait.until(lambda _: main_visible())
@@ -131,7 +131,7 @@ def verify(browser, wait, environment, evidence):
                 metadata.write_bytes(original)
             monitor.terminate()
             monitor.wait(timeout=5)
-    quit_item = next(node for node in menu_nodes(layout) if node[1].get("label") == "Quit Silo")
+    quit_item = next(node for node in menu_nodes(layout) if node[1].get("label") == f"Quit {product_name}")
     call(destination, menu, "com.canonical.dbusmenu", "Event", "(isvu)",
          (quit_item[0], "clicked", GLib.Variant("i", 0), 0))
     wait.until(lambda _: not main_visible())
