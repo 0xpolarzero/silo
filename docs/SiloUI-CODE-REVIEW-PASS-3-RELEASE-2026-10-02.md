@@ -27,6 +27,7 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed: `abae62fe` |
 | RL-08 | P2 | Failed license staging replaces the MicroSandbox sidecar without its manifest | Fixed; regression passes |
 | RL-09 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Confirmed; fix pending |
+| RL-10 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed: `8102c670` |
 
 ## Detailed findings
 
@@ -169,6 +170,22 @@ publication across a process crash or final filesystem errors.
 **Correction.** Match the actual Open action and derive tray/window names and health metadata from the selected channel. Keep the native menu's current shared action labels; changing product menus is outside this fixture correction.
 
 **Rejecting test.** Feed the extracted real GNOME menu selector a layout populated from the native tray's actual action labels. It must select Open and Quit. Exercise the tray-title predicate and health metadata path for both standard channel identifiers, requiring Dev state to remain under the Dev fixture root. Then qualify the full optional GNOME run separately.
+
+### RL-10 Package identity gate accepts another Debian package or macOS Dev bundle
+
+**P2.** The final metadata verifier checked Debian version/architecture but not
+`Package`, and macOS version/CPU but not `CFBundleIdentifier`. Correctly versioned
+artifacts belonging to another application or the Dev channel therefore passed.
+
+**Evidence.** Synthetic signed-package contents for both Debian architectures
+with `Package: unrelated`, plus ARM64 macOS archives with Dev/other identifiers,
+all passed before the correction. Four rejecting subcases failed. These fixtures
+exercise the metadata verifier, not cryptographic signing or publication.
+
+**Correction and status.** Fixed: Debian packages must identify `silo`; macOS
+archives must use the production identifier from the tracked Tauri configuration.
+Positive production fixtures still pass. The Linux fixture builds real `.deb`
+files with `dpkg-deb` and accepts `silo` while rejecting an unrelated package.
 
 ## Verification and reproducibility
 

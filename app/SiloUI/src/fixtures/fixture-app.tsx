@@ -21,7 +21,6 @@ import { surfaceFromSearch } from "@/fixtures/surfaces"
 import { StatusBarPreview } from "@/fixtures/status-bar-preview"
 import { statusBarFixtureModeFromSearch } from "@/fixtures/status-bar-scenarios"
 import type { StatusBarRoute } from "@/features/status-bar/status-bar-types"
-import { useDesktopFixtures } from "./use-desktop-fixtures"
 import { SettingsProvider, type SettingsStore } from "@/features/preferences/settings-store"
 import { settingsForFixture } from "./settings"
 import type { DependencyRuntime } from "@/desktop/dependencies"
@@ -77,16 +76,6 @@ function FixtureAppContent({ nativeOnboardingComplete, nativeDependencies, nativ
   const queuedSource = operationQueue ? { ...baseSource, operationQueue } : baseSource
   const sourceWithComputerUse = computerUseMode ? withComputerUseFixture(queuedSource, computerUseMode) : queuedSource
   const fixtureSource = computerUseBridge ? withRemoteComputersFixture(sourceWithComputerUse) : sourceWithComputerUse
-  useDesktopFixtures({ source: fixtureSource, mode: statusBarMode },
-    (source) => setStatusBarHandoff((current) => ({ source, route: current?.route })),
-    (route) => {
-      setStatusBarHandoff((current) => ({ source: current?.source ?? fixtureSource, route }))
-      const url = new URL(window.location.href)
-      url.searchParams.set("view", "app")
-      window.history.replaceState(null, "", url)
-      setSurface("app")
-    },
-  )
 
   useEffect(() => {
     const stepCount = activityFixtureStepCount(activityMode)

@@ -202,132 +202,139 @@ export async function stageRuntime({
     assertInside(tauriRoot, path)
   }
 
-  await rm(stagedRoot, { recursive: true, force: true })
-  await mkdir(dirname(libraryPath), { recursive: true })
-
-  await fetchVerifiedFile(
-    fetchStream,
-    `${RELEASE_BASE_URL}/${selected.executableAsset}`,
-    selected.executableSha256,
-    selected.executableAsset,
-    join(cacheRoot, selected.executableAsset),
-  )
-  const sourceArchive = await fetchVerifiedFile(
-    fetchStream,
-    sourceArtifact.url,
-    sourceArtifact.sha256,
-    "MicroSandbox pinned source",
-    join(cacheRoot, `microsandbox-${MICROSANDBOX_COMMIT}.tar.gz`),
-  )
-  const agentdPath = await fetchVerifiedFile(
-    fetchStream,
-    `${RELEASE_BASE_URL}/${selected.agentdAsset}`,
-    selected.agentdSha256,
-    selected.agentdAsset,
-    join(cacheRoot, selected.agentdAsset),
-  )
-  const patches = []
-  for (const [index, patchInput] of MICROSANDBOX_PATCHES.entries()) {
-    const patchPath = resolve(appRoot, patchInput.path)
-    assertInside(appRoot, patchPath)
-    const patch = await readFile(patchPath)
-    verifySha256(patch, patchInput.sha256, `Silo runtime patch ${index + 1}`)
-    patches.push(patch)
-  }
-  const executable = Buffer.from(await buildExecutable({
-    appRoot,
-    targetTriple,
-    hostTriple,
-    sourceArchive,
-    patches,
-    agentd: await readFile(agentdPath),
-    cacheRoot,
-  }))
-  const library = await fetchVerifiedFile(
-    fetchStream,
-    `${RELEASE_BASE_URL}/${selected.libraryAsset}`,
-    selected.librarySha256,
-    selected.libraryAsset,
-    join(cacheRoot, selected.libraryAsset),
-  )
-
-  await mkdir(binariesRoot, { recursive: true })
   const executableTemporary = `${executablePath}.tmp-${process.pid}`
-  await writeFile(executableTemporary, executable, { mode: 0o755 })
-  await chmod(executableTemporary, 0o755)
-  if (verifyExecutable) {
-    const isolatedHome = join(stagedRoot, "verify-home")
-    await mkdir(isolatedHome, { recursive: true })
-    const environment = {
-      ...process.env,
-      HOME: isolatedHome,
-      MSB_HOME: isolatedHome,
-      MSB_PATH: executableTemporary,
-      MSB_LIBKRUNFW_PATH: libraryPath,
-    }
-    const version = runBuildTool(executableTemporary, ["--version"], { env: environment }).trim()
-    const createHelp = runBuildTool(executableTemporary, ["create", "--help"], { env: environment })
-    const execHelp = runBuildTool(executableTemporary, ["exec", "--help"], { env: environment })
-    const sshHelp = runBuildTool(executableTemporary, ["ssh", "serve", "--help"], { env: environment })
-    const snapshotHelp = runBuildTool(executableTemporary, ["snapshot", "create", "--help"])
-    const loadHelp = runBuildTool(executableTemporary, ["snapshot", "load", "--help"])
-    const restoreHelp = runBuildTool(executableTemporary, ["restore", "--help"])
-    if (!loadHelp.includes("--stage-id") || !["--from-sandbox", "--group", "--dest-dir", "--full", "--guest-flush", "--integrity"].every(flag => snapshotHelp.includes(flag)) || !restoreHelp.includes("--cow-mem") || !restoreHelp.includes("--name") || !sshHelp.includes("--no-start") || !sshHelp.includes("--authorized-keys") || !sshHelp.includes("--exit-on-stdin-close") || !sshHelp.includes("--expected-machine-id") || !execHelp.includes("--no-start") || !execHelp.includes("--no-stdin") || version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--mount-owned") || !createHelp.includes("--no-start") || !createHelp.includes("--progress-json")) {
-      throw new Error("Patched MicroSandbox executable failed its version, stopped-create, or managed SSH capability check")
-    }
-    await rm(isolatedHome, { recursive: true, force: true })
-  }
-  await copyFile(library, libraryPath)
-  await chmod(libraryPath, 0o644)
+  await rm(stagedRoot, { recursive: true, force: true })
+  try {
+    await mkdir(dirname(libraryPath), { recursive: true })
 
-  const licensesRoot = join(stagedRoot, "licenses")
-  await mkdir(licensesRoot, { recursive: true })
-  for (const license of licenses) {
-    const licensePath = await fetchVerifiedFile(
+    await fetchVerifiedFile(
       fetchStream,
-      license.url,
-      license.sha256,
-      license.name,
-      join(cacheRoot, "licenses", basename(license.url)),
-      { maxBytes: 4 * 1024 * 1024 },
+      `${RELEASE_BASE_URL}/${selected.executableAsset}`,
+      selected.executableSha256,
+      selected.executableAsset,
+      join(cacheRoot, selected.executableAsset),
     )
-    await copyFile(licensePath, join(licensesRoot, license.name))
-    await chmod(join(licensesRoot, license.name), 0o644)
-  }
+    const sourceArchive = await fetchVerifiedFile(
+      fetchStream,
+      sourceArtifact.url,
+      sourceArtifact.sha256,
+      "MicroSandbox pinned source",
+      join(cacheRoot, `microsandbox-${MICROSANDBOX_COMMIT}.tar.gz`),
+    )
+    const agentdPath = await fetchVerifiedFile(
+      fetchStream,
+      `${RELEASE_BASE_URL}/${selected.agentdAsset}`,
+      selected.agentdSha256,
+      selected.agentdAsset,
+      join(cacheRoot, selected.agentdAsset),
+    )
+    const patches = []
+    for (const [index, patchInput] of MICROSANDBOX_PATCHES.entries()) {
+      const patchPath = resolve(appRoot, patchInput.path)
+      assertInside(appRoot, patchPath)
+      const patch = await readFile(patchPath)
+      verifySha256(patch, patchInput.sha256, `Silo runtime patch ${index + 1}`)
+      patches.push(patch)
+    }
+    const executable = Buffer.from(await buildExecutable({
+      appRoot,
+      targetTriple,
+      hostTriple,
+      sourceArchive,
+      patches,
+      agentd: await readFile(agentdPath),
+      cacheRoot,
+    }))
+    const library = await fetchVerifiedFile(
+      fetchStream,
+      `${RELEASE_BASE_URL}/${selected.libraryAsset}`,
+      selected.librarySha256,
+      selected.libraryAsset,
+      join(cacheRoot, selected.libraryAsset),
+    )
 
-  const manifest = {
-    schemaVersion: 2,
-    microsandboxVersion: MICRO_SANDBOX_VERSION,
-    libkrunfwVersion: LIBKRUNFW_VERSION,
-    targetTriple,
-    executable: {
-      bundledName: "msb",
-      sha256: sha256(executable),
-      sourceCommit: MICROSANDBOX_COMMIT,
-      sourceArchiveSha256: MICROSANDBOX_SOURCE_SHA256,
-      patchSha256s: MICROSANDBOX_PATCHES.map(({ sha256: digest }) => digest),
-      toolchain: MICROSANDBOX_BUILD_TOOLCHAIN,
-      features: MICROSANDBOX_BUILD_FEATURES,
-      officialReleaseAsset: selected.executableAsset,
-      officialReleaseSha256: selected.executableSha256,
-      embeddedAgentdReleaseAsset: selected.agentdAsset,
-      embeddedAgentdReleaseSha256: selected.agentdSha256,
-    },
-    library: {
-      bundledName: selected.libraryName,
-      releaseAsset: selected.libraryAsset,
-      sha256: selected.librarySha256,
-    },
-  }
-  await writeFile(join(stagedRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
-  await rename(executableTemporary, executablePath)
-  await rm(bundledRoot, { recursive: true, force: true })
-  await rename(stagedRoot, bundledRoot)
+    await mkdir(binariesRoot, { recursive: true })
+    await writeFile(executableTemporary, executable, { mode: 0o755 })
+    await chmod(executableTemporary, 0o755)
+    if (verifyExecutable) {
+      const isolatedHome = join(stagedRoot, "verify-home")
+      await mkdir(isolatedHome, { recursive: true })
+      const environment = {
+        ...process.env,
+        HOME: isolatedHome,
+        MSB_HOME: isolatedHome,
+        MSB_PATH: executableTemporary,
+        MSB_LIBKRUNFW_PATH: libraryPath,
+      }
+      const version = runBuildTool(executableTemporary, ["--version"], { env: environment }).trim()
+      const createHelp = runBuildTool(executableTemporary, ["create", "--help"], { env: environment })
+      const execHelp = runBuildTool(executableTemporary, ["exec", "--help"], { env: environment })
+      const sshHelp = runBuildTool(executableTemporary, ["ssh", "serve", "--help"], { env: environment })
+      const snapshotHelp = runBuildTool(executableTemporary, ["snapshot", "create", "--help"])
+      const loadHelp = runBuildTool(executableTemporary, ["snapshot", "load", "--help"])
+      const restoreHelp = runBuildTool(executableTemporary, ["restore", "--help"])
+      if (!loadHelp.includes("--stage-id") || !["--from-sandbox", "--group", "--dest-dir", "--full", "--guest-flush", "--integrity"].every(flag => snapshotHelp.includes(flag)) || !restoreHelp.includes("--cow-mem") || !restoreHelp.includes("--name") || !sshHelp.includes("--no-start") || !sshHelp.includes("--authorized-keys") || !sshHelp.includes("--exit-on-stdin-close") || !sshHelp.includes("--expected-machine-id") || !execHelp.includes("--no-start") || !execHelp.includes("--no-stdin") || version !== `msb ${MICRO_SANDBOX_VERSION}` || !createHelp.includes("--mount-owned") || !createHelp.includes("--no-start") || !createHelp.includes("--progress-json")) {
+        throw new Error("Patched MicroSandbox executable failed its version, stopped-create, or managed SSH capability check")
+      }
+      await rm(isolatedHome, { recursive: true, force: true })
+    }
+    await copyFile(library, libraryPath)
+    await chmod(libraryPath, 0o644)
 
-  return {
-    targetTriple,
-    executablePath,
-    libraryPath: join(bundledRoot, targetTriple, "lib", selected.libraryName),
-    manifestPath: join(bundledRoot, "manifest.json"),
+    const licensesRoot = join(stagedRoot, "licenses")
+    await mkdir(licensesRoot, { recursive: true })
+    for (const license of licenses) {
+      const licensePath = await fetchVerifiedFile(
+        fetchStream,
+        license.url,
+        license.sha256,
+        license.name,
+        join(cacheRoot, "licenses", basename(license.url)),
+        { maxBytes: 4 * 1024 * 1024 },
+      )
+      await copyFile(licensePath, join(licensesRoot, license.name))
+      await chmod(join(licensesRoot, license.name), 0o644)
+    }
+
+    const manifest = {
+      schemaVersion: 2,
+      microsandboxVersion: MICRO_SANDBOX_VERSION,
+      libkrunfwVersion: LIBKRUNFW_VERSION,
+      targetTriple,
+      executable: {
+        bundledName: "msb",
+        sha256: sha256(executable),
+        sourceCommit: MICROSANDBOX_COMMIT,
+        sourceArchiveSha256: MICROSANDBOX_SOURCE_SHA256,
+        patchSha256s: MICROSANDBOX_PATCHES.map(({ sha256: digest }) => digest),
+        toolchain: MICROSANDBOX_BUILD_TOOLCHAIN,
+        features: MICROSANDBOX_BUILD_FEATURES,
+        officialReleaseAsset: selected.executableAsset,
+        officialReleaseSha256: selected.executableSha256,
+        embeddedAgentdReleaseAsset: selected.agentdAsset,
+        embeddedAgentdReleaseSha256: selected.agentdSha256,
+      },
+      library: {
+        bundledName: selected.libraryName,
+        releaseAsset: selected.libraryAsset,
+        sha256: selected.librarySha256,
+      },
+    }
+    await writeFile(join(stagedRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
+    await rename(executableTemporary, executablePath)
+    await rm(bundledRoot, { recursive: true, force: true })
+    await rename(stagedRoot, bundledRoot)
+
+    return {
+      targetTriple,
+      executablePath,
+      libraryPath: join(bundledRoot, targetTriple, "lib", selected.libraryName),
+      manifestPath: join(bundledRoot, "manifest.json"),
+    }
+  } finally {
+    await Promise.all([
+      rm(executableTemporary, { force: true }),
+      rm(stagedRoot, { recursive: true, force: true }),
+    ])
   }
 }

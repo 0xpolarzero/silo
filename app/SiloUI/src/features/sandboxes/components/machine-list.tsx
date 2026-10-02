@@ -15,6 +15,7 @@ import { machineSummary } from "@/features/sandboxes/model/machine-summary"
 import { deleteSandboxDescription, deleteSandboxTitle } from "@/features/sandboxes/model/delete-sandbox-copy"
 import { DeleteSandboxBody, type DeleteSandboxDetails } from "@/features/sandboxes/components/delete-sandbox-confirmation"
 import { sandboxEditMenu } from "@/features/sandboxes/model/sandbox-edit-menu"
+import { restoreFocus } from "@/lib/focus"
 import type { HostCapacity } from "@/features/sandboxes/model/machine-limits"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 
@@ -101,6 +102,17 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   const addSelected = useRef<"editor" | "external" | null>(null)
   const [draggedID, setDraggedID] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState("")
+  const addButton = useRef<HTMLButtonElement>(null)
+  const editorTriggers = useRef(new Map<string, HTMLButtonElement>())
+  const previousEditor = useRef(editor)
+  useEffect(() => {
+    const closed = previousEditor.current
+    previousEditor.current = editor
+    if (!closed || editor || document.activeElement !== document.body) return
+    // The row is replaced while editing, so return to its newly mounted control.
+    const sourceId = closed.originalID ?? closed.displayAfterID
+    restoreFocus((sourceId ? editorTriggers.current.get(sourceId) : undefined) ?? addButton.current)
+  }, [editor])
 
   // Rows in this computer's saved order; rows it has not placed yet keep their place after them.
   const orderedMachines = useMemo(() => {
@@ -251,7 +263,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
           subtitle={summary ?? <>{sandboxCount} {sandboxCount === 1 ? "sandbox" : "sandboxes"} · {sandboxCount - remoteCount} on this computer · {remoteCount} on other computers · {sshHostCount} {sshHostCount === 1 ? "SSH host" : "SSH hosts"}</>}
           actions={(importPopover ?? ((node: ReactNode) => node))(<DropdownMenu.Root open={addOpen} onOpenChange={setAddOpen}>
             <DropdownMenu.Trigger asChild>
-              <Button type="button" variant="outline" size="xs" disabled={interactionDisabled}>
+              <Button ref={addButton} type="button" variant="outline" size="xs" disabled={interactionDisabled}>
                 <Plus aria-hidden="true" data-icon="inline-start" /> Add
               </Button>
             </DropdownMenu.Trigger>
@@ -327,7 +339,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       >
                         <GripVertical className="size-4" aria-hidden="true" />
                       </span>}
-                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu label={`More actions for ${machine.name}`} popovers={{
+                      actions={presentation?.actions || presentation?.menuActions ? <>{presentation?.actions}{presentation?.menuActions && <ActionsMenu ref={node => { if (node) editorTriggers.current.set(machine.id, node); else editorTriggers.current.delete(machine.id) }} label={`More actions for ${machine.name}`} popovers={{
                         ...presentation.popovers,
                         delete: close => <DeleteSandboxBody
                           kind={machine.kind}
@@ -359,7 +371,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       ]} />}</> : undefined}
                       actionsClassName={presentation?.actionsClassName}
                       hoverActions={presentation?.suppressInteractions || presentation?.menuActions ? undefined : <>
-                        <SandboxAction label={`Edit ${machine.name}`} tooltip={busyReason} disabled={interactionDisabled || Boolean(busyReason)} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
+                        <SandboxAction ref={node => { if (node) editorTriggers.current.set(machine.id, node); else editorTriggers.current.delete(machine.id) }} label={`Edit ${machine.name}`} tooltip={busyReason} disabled={interactionDisabled || Boolean(busyReason)} onClick={() => startEdit(machine)}><Pencil /></SandboxAction>
                         <SandboxAction tooltip={machine.kind === "vm" ? "Create a new empty sandbox with the same settings." : "Create a new SSH host connection with the same settings."} label={`Duplicate settings for ${machine.name}`} disabled={interactionDisabled} onClick={() => startDuplicate(machine)}>
                           <CopyPlus />
                         </SandboxAction>

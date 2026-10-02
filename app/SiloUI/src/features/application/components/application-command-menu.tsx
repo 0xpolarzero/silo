@@ -27,7 +27,10 @@ function filterCommand(label: string, search: string, keywords: string[] = []) {
 export function ApplicationCommandMenu({ commands, disabled = false, openRequest, nativeShortcuts = false }: { commands: readonly ApplicationCommand[]; disabled?: boolean; openRequest?: number; nativeShortcuts?: boolean }) {
   const [open, setOpenState] = useState(false)
   // A command with a question asks it here, in place of the list, before it runs.
-  const [confirming, setConfirming] = useState<ApplicationCommand | null>(null)
+  const [confirmingId, setConfirming] = useState<string | null>(null)
+  const confirming = commands.find(command => command.id === confirmingId)
+  // A snapshot can remove the action or its need for confirmation while the question is open.
+  if (confirmingId !== null && !confirming?.confirm) setConfirming(null)
   const setOpen = (next: boolean | ((current: boolean) => boolean)) => {
     setOpenState(next)
     setConfirming(null)
@@ -98,7 +101,7 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
             {groups.map((group) => <Command.Group key={group} value={group.replaceAll(" ", "-")} heading={group} className="[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:pb-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground">
               {commands.filter((command) => command.group === group).map((command) => <Command.Item key={command.id} value={command.id} keywords={[command.label, ...(command.keywords ?? [])]} onSelect={() => {
                 if (disabled) return
-                if (command.confirm) { setConfirming(command); return }
+                if (command.confirm) { setConfirming(command.id); return }
                 keepFocus.current = Boolean(command.opensPanel)
                 setOpen(false)
                 command.run()

@@ -31,3 +31,18 @@ inset focus indicator. Native scrolling keys remain browser-managed.
 Verification: both named and default-label cases in `log-disclosure.test.tsx`
 failed because Tab skipped the output before the fix. They now reach the named
 region after Copy. DOM fixtures verify focus access, not native scroll distances.
+
+## Closing computer connection setup lost focus
+
+Trigger: open Connect computer in Settings, then Cancel or connect successfully.
+The focused form unmounted and its opening button remounted without receiving
+focus. Both paths left focus on `document.body`, losing the keyboard position.
+
+The fix restores focus to the remounted button after the form closes, using the
+existing `restoreFocus` helper and the same post-render approach as secret editing.
+This follows [WCAG's focus-order guidance](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html)
+to preserve a meaningful keyboard sequence as content changes.
+
+Verification: both user-event tests in `remote-computers-settings.test.tsx`
+failed before the fix, then returned focus to Connect computer afterwards.
+The connection backend is a deterministic resolved mock; no SSH session is opened.

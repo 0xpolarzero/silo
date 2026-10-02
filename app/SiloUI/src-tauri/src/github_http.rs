@@ -88,10 +88,9 @@ fn key(route: &str, body: &[u8]) -> String {
     format!("{:x}", hash.finalize())
 }
 fn waiting(until: u64, at: u64) -> String {
-    format!(
-        "GitHub access update is waiting. Retrying in {} seconds.",
-        until.saturating_sub(at).max(1)
-    )
+    let seconds = until.saturating_sub(at).max(1);
+    let unit = if seconds == 1 { "second" } else { "seconds" };
+    format!("GitHub access update is waiting. Retrying in {seconds} {unit}.")
 }
 impl Gates {
     fn restore_floor(&mut self, class: &str, until: u64) {
@@ -448,6 +447,20 @@ pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retry_gate_pluralizes_the_remaining_seconds() {
+        let mut gates = Gates::default();
+        gates.restore_floor("fixture", 102);
+        assert_eq!(
+            gates.check("request", "fixture", 100).unwrap_err(),
+            "GitHub access update is waiting. Retrying in 2 seconds."
+        );
+        assert_eq!(
+            gates.check("request", "fixture", 101).unwrap_err(),
+            "GitHub access update is waiting. Retrying in 1 second."
+        );
+        assert!(gates.check("request", "fixture", 102).is_ok());
+    }
     fn wire_response(status: u16, body: &str, revoke: bool) -> Result<Value, String> {
         let reply = format!(
             "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",

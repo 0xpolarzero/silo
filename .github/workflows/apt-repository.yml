@@ -49,7 +49,8 @@ jobs:
         run: |
           set -eu
           test -n "$SILO_APT_SIGNING_KEY"
-          export GNUPGHOME="$(mktemp -d)"
+          GNUPGHOME=$(mktemp -d)
+          export GNUPGHOME
           trap 'rm -rf "$GNUPGHOME"' EXIT
           printf '%s' "$SILO_APT_SIGNING_KEY" | gpg --batch --import
           python3 app/SiloUI/scripts/apt-repository.py --packages apt-packages --output apt-site --previous-url "${PAGES_URL%/}/apt" --fingerprint "$(cat app/SiloUI/scripts/debian/signing-fingerprint.txt)"

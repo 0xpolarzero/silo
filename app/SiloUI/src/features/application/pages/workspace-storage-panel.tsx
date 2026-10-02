@@ -178,7 +178,7 @@ function ReclaimHistory({ history, open, onOpenChange }: { history: ReclaimEntry
   const latest = history[0]
   const summary = latest ? `${latest.error ? 'Failed' : `${formatBytes(latest.reclaimedBytes ?? 0)} freed`} · ${date(latest.at)}` : 'No reclaims yet'
   return <div className="border-t border-border pt-2">
-    <button type="button" aria-label={`Reclaim history, ${history.length} attempts`} aria-expanded={open} aria-controls={listId} onClick={() => onOpenChange(!open)} className="flex w-full items-center gap-2 py-1 text-muted-foreground hover:text-foreground">
+    <button type="button" aria-label={`Reclaim history, ${history.length} ${history.length === 1 ? 'attempt' : 'attempts'}`} aria-expanded={open} aria-controls={listId} onClick={() => onOpenChange(!open)} className="flex w-full items-center gap-2 py-1 text-muted-foreground hover:text-foreground">
       <History aria-hidden="true" className="size-3.5" />
       <span>Reclaim history</span>
       <span className="rounded bg-muted px-1.5 text-[10px]">{history.length}</span>
