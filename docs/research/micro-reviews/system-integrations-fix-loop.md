@@ -83,3 +83,15 @@ fixture, and focuses the window. It failed to find the overlay before the fix.
 Focus now retries a failed connection, while a guard prevents duplicate in-flight
 registration and cleanup removes the focus listener. This follows the existing
 settings lifecycle's focus-recovery policy; no app or real VM is used.
+
+## Follow-up: native notice registration never recovers
+
+`src/desktop/notices.ts` caught listener registration failure only to log it.
+Its subscription remained permanently disconnected for that mount, so subsequent
+native-originated in-app notices could not reach the handler, including while
+the focused main window suppresses system notifications. The regression rejects
+registration once, focuses the window after the bridge recovers, and emits a valid
+notice. Before the fix the handler received zero calls; after the fix it receives
+the notice. Focus retries failed registration without duplicating an active or
+in-flight subscription; disposal removes focus recovery and remains safe while
+registration is pending. This is a native-bridge fixture, without an app or VM.
