@@ -87,6 +87,22 @@ def launcher_contents(path, relative):
     return updated if updated != data else None
 
 
+def copy_file(path, target, contents=None, replace=False):
+    with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.silo-copy-', delete=False) as staged:
+        temporary = Path(staged.name)
+    try:
+        shutil.copy2(path, temporary)
+        if contents is not None:
+            temporary.write_text(contents)
+        if replace:
+            os.replace(temporary, target)
+        else:
+            # Publish complete bytes without replacing an entry created during copying.
+            os.link(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def copy_home(source, destination):
     """Preflight the whole merge; preserve conflicting entries and both legacy homes."""
     check_destination(destination)
@@ -135,17 +151,7 @@ def copy_home(source, destination):
             target.symlink_to(relocate(os.readlink(path)))
             shutil.copystat(path, target, follow_symlinks=False)
         else:
-            with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.silo-copy-', delete=False) as staged:
-                temporary = Path(staged.name)
-            try:
-                shutil.copy2(path, temporary)
-                updated = launcher_contents(path, path.relative_to(source))
-                if updated is not None:
-                    temporary.write_text(updated)
-                # Publish complete bytes without replacing an entry created during copying.
-                os.link(temporary, target)
-            finally:
-                temporary.unlink(missing_ok=True)
+            copy_file(path, target, launcher_contents(path, path.relative_to(source)))
     for path, target, mode in reversed(copies):
         if stat.S_ISDIR(mode):
             shutil.copystat(path, target)
@@ -163,12 +169,11 @@ def copy_shell_setup(source, destination):
                 conflict(target)
             originals.append((original, target))
     for original, target in originals:
-        shutil.copy2(original, target)
-        target.write_text(relocate(original.read_text()))
+        contents = relocate(original.read_text())
         # Root's profile does not put the user's own tools on PATH.
-        if original.name == '.profile' and PATH_SETUP not in target.read_text():
-            with target.open('a') as output:
-                output.write(PATH_SETUP)
+        if original.name == '.profile' and PATH_SETUP not in contents:
+            contents += PATH_SETUP
+        copy_file(original, target, contents, replace=True)
 
 
 def validate_account(entry):

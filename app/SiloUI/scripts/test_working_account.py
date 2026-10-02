@@ -238,6 +238,36 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertTrue((home / '.bashrc').is_symlink())
         self.assertEqual(external.read_bytes(), b'outside-home')
 
+    def test_shell_setup_replaces_home_entry_without_overwriting_hardlink_target(self):
+        source, home, external = self.root / 'source', self.root / 'home', self.root / 'external'
+        source.mkdir()
+        home.mkdir()
+        original = source / '.bashrc'
+        original.write_text('export PATH=/root/.local/bin:$PATH')
+        external.write_bytes(b'existing external shell setup')
+        os.link(external, home / '.bashrc')
+        guest.copy_shell_setup(source, home)
+        self.assertEqual(external.read_bytes(), b'existing external shell setup')
+        self.assertEqual((home / '.bashrc').read_text(), 'export PATH=/home/silo/.local/bin:$PATH')
+        self.assertEqual(original.read_text(), 'export PATH=/root/.local/bin:$PATH')
+
+    def test_interrupted_shell_setup_preserves_existing_file_and_retries(self):
+        source, home = self.root / 'source', self.root / 'home'
+        source.mkdir()
+        home.mkdir()
+        (source / '.profile').write_text('# /root/tools\n')
+        target = home / '.profile'
+        target.write_bytes(b'existing shell setup')
+        def interrupted(original, target):
+            Path(target).write_bytes(b'partial')
+            raise OSError('synthetic interrupted copy')
+        with mock.patch.object(guest.shutil, 'copy2', side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, 'synthetic interrupted copy'):
+                guest.copy_shell_setup(source, home)
+        self.assertEqual(target.read_bytes(), b'existing shell setup')
+        guest.copy_shell_setup(source, home)
+        self.assertEqual(target.read_text(), '# /home/silo/tools\n' + guest.PATH_SETUP)
+
     def test_resumed_account_requires_the_reserved_identity(self):
         guest.validate_account(SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir='/home/silo'))
         for values in [(0, 1001, '/home/silo'), (1001, 1000, '/home/silo'), (1001, 1001, '/root')]:
