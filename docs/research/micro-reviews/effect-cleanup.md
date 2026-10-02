@@ -11,3 +11,7 @@ Cleanup now clears timers, dismisses owned progress, and clears tracking entries
 ## Pending notice registration
 
 `listenForNotices` disposed late registrations but did not guard their callbacks. A disposed view could still show backend notifications before registration settled, or through an already queued callback. The existing expected-failure diagnostic reproduced this. It now runs as an ordinary regression and delivers events both before and after late registration resolves; the stopped callback ignores both.
+
+## Clipboard feedback timers
+
+`CopyButton` cleared the current timer on unmount but an unfinished clipboard write could create another timer afterward. Two overlapping writes could overwrite the timer handle and show feedback from an older request. A request revision now invalidates pending feedback on unmount and gives only the latest write ownership of status and its reset timer. Deferred clipboard regressions cover late success, late failure, and out-of-order completion.
