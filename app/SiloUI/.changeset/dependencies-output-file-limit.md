@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Limit dependency-probe output while checks run so excessive output cannot fill temporary storage.
+Limit setup-check output so it cannot fill temporary storage.
