@@ -19,6 +19,8 @@ def appimage_offset(path, machine):
         header=source.read(64)
         if len(header)!=64 or header[:6]!=b'\x7fELF\x02\x01' or struct.unpack_from('<H',header,18)[0]!=machine:
             raise RuntimeError('AppImage ELF architecture does not match the release.')
+        if header[8:11]!=b'AI\x02':
+            raise RuntimeError('Release package is not a type 2 AppImage.')
         offset=struct.unpack_from('<Q',header,40)[0]+struct.unpack_from('<H',header,58)[0]*struct.unpack_from('<H',header,60)[0]
         if offset<64 or offset>=path.stat().st_size:
             raise RuntimeError('Invalid AppImage filesystem offset.')
