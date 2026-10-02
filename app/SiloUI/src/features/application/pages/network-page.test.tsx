@@ -258,3 +258,11 @@ it("blocks a previous failure's Retry while another port save is pending", async
   expect(await screen.findByText("Port 9001 added · dev")).toBeVisible()
   expect(screen.getByRole("button", { name: "Add port" })).toBeEnabled()
 })
+
+
+it("shows an empty filter result without waiting for unrelated network discovery", () => {
+  const actions = { refreshNetwork: vi.fn(() => new Promise<void>(() => {})) } as unknown as ApplicationActions
+  render(<NetworkPage workspaces={[]} browser="Firefox" actions={actions} active />)
+  expect(screen.getByText("No matching sandboxes")).toBeVisible()
+  expect(screen.queryByRole("status", { name: "Loading network" })).not.toBeInTheDocument()
+})
