@@ -138,6 +138,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
               setOpen(true)
             }}
             onKeyDown={(event) => {
+              if (event.nativeEvent.isComposing) return
               if (event.key === "ArrowDown") {
                 event.preventDefault()
                 setOpen(true)
@@ -162,6 +163,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
         aria-label={`Repository results for ${workspace}`}
         className="max-h-[min(15rem,var(--radix-popover-content-available-height))] w-[var(--radix-popover-trigger-width)] overflow-y-auto overscroll-contain p-1"
         onOpenAutoFocus={(event) => event.preventDefault()}
+        onEscapeKeyDown={(event) => { if (event.isComposing) event.preventDefault() }}
       >
         {results.length > 0 ? results.map((repository, index) => (
           <button
@@ -355,7 +357,7 @@ export function GitHubAccessEditor({
                         onChange={(event) => onWorkspaceIdentityChange(name, { ...identity, name: event.target.value })}
                         onBlur={() => onCommitWorkspaceIdentity?.(name, identity)}
                         onKeyDown={(event) => {
-                          if (event.key === "Enter") event.currentTarget.blur()
+                          if (event.key === "Enter" && !event.nativeEvent.isComposing) event.currentTarget.blur()
                         }}
                       />
                       <Input technical
@@ -370,7 +372,7 @@ export function GitHubAccessEditor({
                         onChange={(event) => onWorkspaceIdentityChange(name, { ...identity, email: event.target.value })}
                         onBlur={() => onCommitWorkspaceIdentity?.(name, identity)}
                         onKeyDown={(event) => {
-                          if (event.key === "Enter") event.currentTarget.blur()
+                          if (event.key === "Enter" && !event.nativeEvent.isComposing) event.currentTarget.blur()
                         }}
                       />
                       <label className="flex shrink-0 items-center gap-1 text-[11px]">
