@@ -137,7 +137,23 @@ fn execute(
         }
     }
     drop(input);
-    let result = child.wait().map_err(|_| "The system updater could not be monitored. Check the system package manager before retrying.")?;
+    let result = if prepare.is_some() {
+        // A closed progress pipe does not mean authentication or downloading ended.
+        loop {
+            if let Some(result) = child.try_wait().map_err(|_| "The system updater could not be monitored. Check the system package manager before retrying.")? {
+                break result;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let _ = child.kill();
+                std::thread::spawn(move || child.wait());
+                return Err(TIMED_OUT.into());
+            }
+            std::thread::sleep(remaining.min(Duration::from_millis(50)));
+        }
+    } else {
+        child.wait().map_err(|_| "The system updater could not be monitored. Check the system package manager before retrying.")?
+    };
     if result.success() {
         return if prepare.is_none() {
             Ok(())
@@ -310,6 +326,19 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "stop failed");
         assert!(!installed.exists());
+    }
+    #[test]
+    fn a_closed_progress_pipe_does_not_bypass_prepare_timeout() {
+        let started = Instant::now();
+        let error = execute(
+            &mut shell("exec 1>&-; exec sleep 2"),
+            |_| {},
+            Duration::from_millis(100),
+            || panic!("sandboxes must keep running"),
+        )
+        .unwrap_err();
+        assert!(error.starts_with(TIMED_OUT), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
     #[test]
     fn a_stalled_authentication_or_download_times_out_without_stopping_sandboxes() {
