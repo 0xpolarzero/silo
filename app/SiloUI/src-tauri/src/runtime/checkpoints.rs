@@ -2603,11 +2603,40 @@ fn usage_with(
 ) -> Result<CheckpointUsage, RuntimeError> {
     let machine = machine(paths, workspace_id)?;
     let record = load(paths, workspace_id)?;
-    let survey = survey(runner, paths)?;
+    if record.checkpoints.is_empty() {
+        return Ok(CheckpointUsage {
+            total_bytes: Some(0),
+            checkpoints: Vec::new(),
+        });
+    }
     let group = record
         .snapshot_group
         .clone()
         .unwrap_or_else(|| machine.name().to_owned());
+    let metadata = read_metadata(&paths.metadata)?;
+    let uses = native::uses(paths, &metadata)?;
+    let inventory = native::inventory(runner, paths)?;
+    let native_ids: HashSet<&str> = record
+        .checkpoints
+        .iter()
+        .map(Checkpoint::native_id)
+        .collect();
+    let positions = if inventory.iter().any(|member| {
+        member.group.as_deref() == Some(group.as_str())
+            && member
+                .name
+                .as_deref()
+                .is_some_and(|name| native_ids.contains(name))
+    }) {
+        native::lineage_positions(runner, paths)?
+    } else {
+        HashMap::new()
+    };
+    let survey = Survey {
+        uses,
+        inventory,
+        positions,
+    };
     let mut counted = HashSet::new();
     let mut total = Some(0u64);
     let mut checkpoints = Vec::with_capacity(record.checkpoints.len());
@@ -2686,7 +2715,8 @@ pub(super) fn storage_totals(
     if count == 0 {
         return (Some(0), 0);
     }
-    let Ok(inventory) = native::inventory(runner, paths) else {
+    let group = record.snapshot_group.as_deref().unwrap_or(sandbox);
+    let Ok(inventory) = native::inventory_in_group(runner, paths, group) else {
         return (None, count);
     };
     let keys: HashSet<native::Key> = native::record_uses(&record, sandbox)
@@ -5753,6 +5783,157 @@ mod tests {
                 .collect::<Vec<_>>(),
             [A]
         );
+    }
+
+    #[test]
+    fn checkpoint_usage_skips_runtime_surveys_without_native_members() {
+        let _test_state = crate::test_support::global_state();
+        struct Fleet {
+            store: Store,
+            count: usize,
+        }
+        impl RuntimeRunner for Fleet {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                if args[0] != "list" {
+                    return self.store.run(paths, args, timeout);
+                }
+                self.store.calls.lock().unwrap().push(args.to_vec());
+                Ok(CommandOutput {
+                    stdout: serde_json::to_string(
+                        &(0..self.count)
+                            .map(|index| serde_json::json!({"name": format!("sandbox-{index}")}))
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                    stderr: String::new(),
+                })
+            }
+        }
+        let mut measured_calls = Vec::new();
+        for count in [1, 10, 100] {
+            for has_entry in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let entries = if has_entry {
+                    vec![entry(A, "Missing", "manual")]
+                } else {
+                    Vec::new()
+                };
+                let paths = delete_fixture(&directory, entries, None);
+                let fleet = Fleet {
+                    store: Store::new(vec![]).with("other-group", A, "snap_other", None),
+                    count,
+                };
+                let started = std::time::Instant::now();
+                survey(&fleet, &paths).unwrap();
+                let baseline = started.elapsed();
+                assert_eq!(fleet.store.calls.lock().unwrap().len(), count + 2);
+                fleet.store.calls.lock().unwrap().clear();
+                let started = std::time::Instant::now();
+                let usage = usage_with(&fleet, &paths, ID).unwrap();
+                let elapsed = started.elapsed();
+                let calls = fleet.store.calls.lock().unwrap();
+                eprintln!("usage: sandboxes={count} entry={has_entry} survey_calls={} survey={baseline:?} usage_calls={} usage={elapsed:?}", count + 2, calls.len());
+                assert_eq!(usage.total_bytes, Some(0));
+                assert_eq!(usage.checkpoints.len(), usize::from(has_entry));
+                measured_calls.push((calls.len(), usize::from(has_entry)));
+                if has_entry {
+                    assert_eq!(calls[0], ["snapshot", "list", "--format", "json"]);
+                    assert!(usage.checkpoints[0].delete_blocker.is_none());
+                }
+            }
+        }
+        for (actual, expected) in measured_calls {
+            assert_eq!(actual, expected);
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, Vec::new(), Some(Record::default()));
+        fs::write(path(&paths, FORK_ID), b"invalid history").unwrap();
+        let store = Store::new(vec![]);
+        let usage = usage_with(&store, &paths, ID).unwrap();
+        assert_eq!(usage.total_bytes, Some(0));
+        assert!(usage.checkpoints.is_empty());
+        assert!(store.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn checkpoint_usage_keeps_saved_dependencies_when_native_member_is_missing() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let mut pending = Record::default();
+        pending.pending_checkpoint_restore = Some(PendingRestore {
+            source_workspace: "dev".into(),
+            checkpoint_id: A.into(),
+            state: "full".into(),
+        });
+        let paths = delete_fixture(
+            &directory,
+            vec![entry(A, "Missing", "manual")],
+            Some(pending),
+        );
+        let store = Store::new(vec![("branch", None)]);
+        let usage = usage_with(&store, &paths, ID).unwrap();
+        assert_eq!(usage.checkpoints[0].used_by, ["branch"]);
+        assert!(usage.checkpoints[0]
+            .delete_blocker
+            .as_ref()
+            .unwrap()
+            .starts_with("Used by branch."));
+        assert_eq!(store.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn checkpoint_storage_totals_lists_only_the_selected_lineage_group() {
+        let _test_state = crate::test_support::global_state();
+        for group in [Some("source"), None] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = delete_fixture(&directory, vec![entry(A, "Base", "manual")], None);
+            let mut record = load(&paths, ID).unwrap();
+            record.snapshot_group = group.map(str::to_owned);
+            save(&paths, ID, &record).unwrap();
+            let group = group.unwrap_or("dev");
+            let store = Store::new(vec![]).with(group, A, "snap_a", None);
+            assert_eq!(storage_totals(&store, &paths, ID, "dev"), (None, 1));
+            assert_eq!(
+                *store.calls.lock().unwrap(),
+                [vec![
+                    "snapshot", "list", "--group", group, "--format", "json"
+                ]]
+            );
+        }
+    }
+
+    #[test]
+    fn checkpoint_usage_keeps_unconfigured_lineage_and_cross_group_children() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = delete_fixture(&directory, vec![entry(A, "Base", "manual")], None);
+        let store =
+            Store::new(vec![("outside-silo", Some("snap_a"))]).with("dev", A, "snap_a", None);
+        let usage = usage_with(&store, &paths, ID).unwrap();
+        assert_eq!(usage.checkpoints[0].used_by, ["outside-silo"]);
+        assert!(usage.checkpoints[0]
+            .delete_blocker
+            .as_ref()
+            .unwrap()
+            .starts_with("Used by outside-silo."));
+
+        let store = Store::new(vec![]).with("dev", A, "snap_a", None).with(
+            "another-group",
+            B,
+            "snap_b",
+            Some("snap_a"),
+        );
+        let usage = usage_with(&store, &paths, ID).unwrap();
+        assert!(usage.checkpoints[0]
+            .delete_blocker
+            .as_ref()
+            .unwrap()
+            .contains("A later saved state"));
     }
 
     #[test]
