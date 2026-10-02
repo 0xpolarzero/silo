@@ -139,6 +139,11 @@ fn advance(
     initial: InspectedSandbox,
 ) -> Result<(), RuntimeError> {
     let mut observed = stable(runner, paths, intent, initial)?;
+    if observed.status == "Paused"
+        && checkpoints::recover_paused_capture(runner, paths, &intent.machine_id, &intent.name)?
+    {
+        observed = stable(runner, paths, intent, inspect(runner, paths, intent)?)?;
+    }
     if stopped(&observed) {
         let _ = crate::secrets::workspace_stopped(&intent.name);
     }
