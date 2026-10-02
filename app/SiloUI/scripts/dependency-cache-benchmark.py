@@ -106,7 +106,7 @@ def build(args):
               'artifactScope': 'synthetic unbundled application; no package/release readiness claim'}
     write(args.report, report)
     if code:
-        return code
+        return code if code >= 0 else 128 - code
     if not fresh or not rotated:
         print('Application freshness or synthetic configuration boundary failed.', file=sys.stderr)
         return 1
