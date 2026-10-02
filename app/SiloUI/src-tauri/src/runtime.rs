@@ -4949,11 +4949,13 @@ fn apply_desktop_defaults(
     previous: &MachineConfigurationRequest,
     request: &mut MachineConfigurationRequest,
 ) {
-    apply_desktop_defaults_for(
-        guest_image::bundled_version(&paths.guest_image).as_deref(),
-        previous,
-        request,
-    );
+    // Tests never depend on which image happens to be bundled in `runtime/`: they
+    // run as a v3 image unless they pin another version (`guest_image::pin_test_version`).
+    #[cfg(test)]
+    let version = guest_image::test_version();
+    #[cfg(not(test))]
+    let version = guest_image::bundled_version(&paths.guest_image);
+    apply_desktop_defaults_for(version.as_deref(), previous, request);
 }
 
 fn apply_desktop_defaults_for(
@@ -7882,6 +7884,31 @@ esac
     }
 
     #[test]
+    fn tests_run_as_a_v3_image_unless_they_pin_another_version() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let defaulted = |paths: &RuntimePaths| {
+            let mut request = request(vec![vm()]);
+            apply_desktop_defaults(paths, &request_without_machines(), &mut request);
+            request.machines[0].clone()
+        };
+        // Whatever image is bundled in `runtime/`, the default is a plain v3 sandbox.
+        let plain = defaulted(&paths);
+        assert!(!crate::computer_use::is_built_in(&plain), "{plain:?}");
+        {
+            let _v4 = guest_image::pin_test_version("ubuntu-24.04-v4");
+            let built_in = defaulted(&paths);
+            assert!(crate::computer_use::is_built_in(&built_in), "{built_in:?}");
+        }
+        let plain = defaulted(&paths);
+        assert!(!crate::computer_use::is_built_in(&plain), "{plain:?}");
+    }
+
+    fn request_without_machines() -> MachineConfigurationRequest {
+        request(vec![])
+    }
+
+    #[test]
     fn resubmitted_failed_creation_without_desktop_matches_the_journaled_request() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -9685,6 +9712,8 @@ exit 9
         let paths = paths(&directory);
         let published = directory.path().join("published");
         fs::create_dir(&published).unwrap();
+        // Empty on purpose: the ChatGPT app may still be downloading.
+        assert_eq!(fs::read_dir(&published).unwrap().count(), 0);
         crate::computer_use::set_test_published_dir(Some(published.clone()));
         let runner = StubRunner::successful_json(vec![
             json!([]),

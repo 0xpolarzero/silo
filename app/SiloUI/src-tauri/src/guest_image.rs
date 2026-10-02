@@ -38,6 +38,38 @@ pub(crate) fn bundled_version(directory: &Path) -> Option<String> {
         .filter(|version| !version.is_empty())
 }
 
+#[cfg(test)]
+thread_local! {
+    static TEST_VERSION: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The image version tests run against on this thread: v3 unless pinned.
+#[cfg(test)]
+pub(crate) fn test_version() -> Option<String> {
+    Some(TEST_VERSION.with(|slot| {
+        slot.borrow()
+            .clone()
+            .unwrap_or_else(|| "ubuntu-24.04-v3".into())
+    }))
+}
+
+/// Pins the image version for the current test thread until the guard drops.
+#[cfg(test)]
+pub(crate) fn pin_test_version(version: &str) -> TestVersionGuard {
+    TEST_VERSION.with(|slot| *slot.borrow_mut() = Some(version.into()));
+    TestVersionGuard
+}
+
+#[cfg(test)]
+pub(crate) struct TestVersionGuard;
+
+#[cfg(test)]
+impl Drop for TestVersionGuard {
+    fn drop(&mut self) {
+        TEST_VERSION.with(|slot| *slot.borrow_mut() = None);
+    }
+}
+
 fn valid_sha256(value: &str) -> bool {
     value.len() == 64
         && value

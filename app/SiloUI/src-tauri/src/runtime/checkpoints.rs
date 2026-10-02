@@ -3065,6 +3065,8 @@ mod tests {
         let paths = paths(&directory);
         let published = directory.path().join("published");
         std::fs::create_dir(&published).unwrap();
+        // Empty on purpose: the ChatGPT app may still be downloading.
+        assert_eq!(std::fs::read_dir(&published).unwrap().count(), 0);
         crate::computer_use::set_test_published_dir(Some(published.clone()));
         pending_import(&paths);
         let runner = RestoreProbe(Mutex::new(Vec::new()));
