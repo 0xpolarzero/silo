@@ -298,17 +298,38 @@ pub(crate) async fn set_update_automatic_checks(
 ) -> Result<Snapshot, String> {
     // The durable write fsyncs twice; keep it off the main thread.
     tauri::async_runtime::spawn_blocking(move || {
-        save_preferences(&app.state::<Controller>().preferences, enabled)?;
-        modify(&app, |s| {
-            if enabled && !s.snapshot.automatic_checks {
-                s.schedule.enable(SystemTime::now());
-            }
-            s.snapshot.automatic_checks = enabled;
-        })
+        update_automatic_checks(
+            &app.state::<Controller>(),
+            enabled,
+            save_preferences,
+            |snapshot| {
+                let _ = app.emit("silo://update-state", snapshot);
+            },
+        )
     })
     .await
     .map_err(|_| "Update preferences could not be saved.".to_owned())?
 }
+fn update_automatic_checks(
+    controller: &Controller,
+    enabled: bool,
+    persist: impl FnOnce(&Path, bool) -> Result<(), String>,
+    publish: impl FnOnce(&Snapshot),
+) -> Result<Snapshot, String> {
+    let mut state = controller
+        .state
+        .lock()
+        .map_err(|_| "Update state is unavailable.")?;
+    persist(&controller.preferences, enabled)?;
+    if enabled && !state.snapshot.automatic_checks {
+        state.schedule.enable(SystemTime::now());
+    }
+    state.snapshot.automatic_checks = enabled;
+    let snapshot = state.snapshot.clone();
+    publish(&snapshot);
+    Ok(snapshot)
+}
+
 #[tauri::command]
 pub(crate) async fn check_for_update(app: AppHandle) -> Result<Snapshot, String> {
     check(app, false).await
@@ -972,6 +993,86 @@ mod tests {
             .contains("active operations"));
         drop(active);
         readiness(|| Ok(())).unwrap();
+    }
+    #[test]
+    fn concurrent_preference_changes_keep_disk_and_snapshot_in_agreement() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Controller {
+            preferences: directory.path().join("prefs.json"),
+            state: Mutex::new(State {
+                schedule: Schedule::new(SystemTime::now()),
+                snapshot: snapshot("idle"),
+                update: None,
+                bytes: None,
+            }),
+        };
+        let (first_saved, saved) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let (second_saved, second) = std::sync::mpsc::channel();
+        std::thread::scope(|threads| {
+            let controller = &controller;
+            let first = threads.spawn(move || {
+                update_automatic_checks(
+                    controller,
+                    false,
+                    |path, enabled| {
+                        save_preferences(path, enabled)?;
+                        first_saved.send(()).unwrap();
+                        released.recv().unwrap();
+                        Ok(())
+                    },
+                    |_| {},
+                )
+            });
+            saved.recv().unwrap();
+            let last = threads.spawn(move || {
+                update_automatic_checks(
+                    controller,
+                    true,
+                    |path, enabled| {
+                        save_preferences(path, enabled)?;
+                        second_saved.send(()).unwrap();
+                        Ok(())
+                    },
+                    |_| {},
+                )
+            });
+            // Give the second writer a chance to overtake the first publication.
+            let overtook = second.recv_timeout(Duration::from_secs(1)).is_ok();
+            release.send(()).unwrap();
+            first.join().unwrap().unwrap();
+            last.join().unwrap().unwrap();
+            assert!(
+                !overtook,
+                "a second save overtook an unpublished preference"
+            );
+        });
+        assert_eq!(
+            read_preferences(&controller.preferences).unwrap(),
+            controller.state.lock().unwrap().snapshot.automatic_checks
+        );
+    }
+    #[test]
+    fn failed_preference_save_preserves_snapshot_and_does_not_publish() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Controller {
+            preferences: directory.path().join("prefs.json"),
+            state: Mutex::new(State {
+                schedule: Schedule::new(SystemTime::now()),
+                snapshot: snapshot("idle"),
+                update: None,
+                bytes: None,
+            }),
+        };
+        let error = update_automatic_checks(
+            &controller,
+            false,
+            |_, _| Err("save failed".into()),
+            |_| panic!("failed persistence must not publish success"),
+        )
+        .unwrap_err();
+        assert_eq!(error, "save failed");
+        assert!(controller.state.lock().unwrap().snapshot.automatic_checks);
     }
     #[test]
     fn missing_preferences_enable_checks_but_corrupt_preferences_do_not() {
