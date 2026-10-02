@@ -466,7 +466,9 @@ The `publish-release.py` tests cover missing/empty/unexpected assets, symlinks,
 invalid signature encoding, version bounds, complete checksums and platform URLs.
 `verify-release-metadata.py` also rejects an old signed package advertised under
 a new version. It reads macOS Info.plist/Mach-O headers, Debian control metadata,
-and the signed AppImage release-info resource without executing any package.
+and the signed Debian and AppImage release-info resources without executing any
+package. Debian data is inspected through `dpkg-deb --fsys-tarfile` as a stream;
+control fields and bundled release metadata must both match the release.
 
 ### Linux software source
 
