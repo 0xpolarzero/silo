@@ -184,16 +184,20 @@ fn run_remote_action(
         _ => Duration::from_secs(600),
     };
     let allow_cancel = matches!(action.as_str(), "start" | "restart");
+    let last_request = std::cell::Cell::new(None);
     let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, RuntimeError> {
-        OPERATIONS
+        let guard = OPERATIONS
             .kind(operation_gate::OperationKind::Lifecycle)
+            .retry_after(last_request.get())
             .acquire(
                 operation_gate::Scope::Vm { id: vm_id.clone() },
                 Some(name.clone()),
                 label,
                 Some(key.clone()),
             )
-            .map_err(RuntimeError::from)
+            .map_err(RuntimeError::from)?;
+        last_request.set(Some(guard.request_id()));
+        Ok(guard)
     };
     let prepare = |guard: &operation_gate::OperationGuard<'static>| {
         if allow_cancel {
