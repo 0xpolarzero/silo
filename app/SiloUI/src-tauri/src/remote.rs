@@ -201,7 +201,7 @@ const METHODS: &[(&str, Access)] = &[
     ("chatgpt.retry", Access::Change),
     ("computer.approval", Access::Change),
     ("ssh.access.state", Access::Read),
-    ("ssh.access.connection", Access::Read),
+    ("ssh.access.connection", Access::Change),
     ("ssh.access.save", Access::Change),
     ("files.list", Access::Read),
     ("guest.prepare", Access::Change),
@@ -1903,13 +1903,20 @@ fn handle(
         }
         Some(Access::Read) => execute(method, params),
         Some(Access::Change) => {
+            // Earlier controllers treated key authorization as a read and sent no identity.
+            let legacy_key_request = method == "ssh.access.connection"
+                && request.get("operationId").is_none()
+                && request.get("startWithinMs").is_none();
+            let legacy_id = legacy_key_request.then(|| uuid::Uuid::new_v4().to_string());
             let id = request["operationId"]
                 .as_str()
+                .or(legacy_id.as_deref())
                 .filter(|id| uuid::Uuid::parse_str(id).is_ok())
                 .ok_or("Invalid remote request identity.")?;
             let start_within = request["startWithinMs"]
                 .as_u64()
                 .map(Duration::from_millis)
+                .or_else(|| legacy_key_request.then(|| request_timeout(request) / 2))
                 .ok_or("Invalid remote request deadline.")?
                 .min(request_timeout(request));
             let journal = dir.join("operations");
@@ -3906,6 +3913,101 @@ mod ssh_authorization_tests {
                 "Silo versions are incompatible. Update Silo on both computers."
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ssh_connection_admission_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn owner() -> (tempfile::TempDir, Value) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config {
+            host_id: uuid::Uuid::new_v4().to_string(),
+            enabled: true,
+            hosts: Vec::new(),
+        };
+        save_config_in(directory.path(), &config).unwrap();
+        let request = json!({
+            "version": VERSION,
+            "hostId": config.host_id,
+            "method": "ssh.access.connection",
+            "operationId": uuid::Uuid::new_v4().to_string(),
+            "startWithinMs": 60_000,
+            "params": {"vmId":uuid::Uuid::new_v4().to_string(),"publicKey":"ssh-ed25519 AAAA"},
+        });
+        (directory, request)
+    }
+
+    #[test]
+    fn remote_ssh_key_authorization_never_executes_after_access_is_revoked() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, request) = owner();
+        let executions = AtomicUsize::new(0);
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| false),
+            |_, _| {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok(Value::Null)
+            },
+        );
+        assert!(result.is_err(), "revoked key authorization was accepted");
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn older_controllers_authorize_keys_through_a_bounded_recorded_change() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, mut request) = owner();
+        request.as_object_mut().unwrap().remove("operationId");
+        request.as_object_mut().unwrap().remove("startWithinMs");
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| true),
+            |_, _| Ok(Value::Null),
+        );
+        assert_eq!(result.unwrap(), Value::Null);
+        assert_eq!(
+            fs::read_dir(directory.path().join("operations"))
+                .unwrap()
+                .count(),
+            1
+        );
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| false),
+            |_, _| panic!("revoked legacy key requests must not execute"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn retrying_remote_ssh_key_authorization_reuses_the_recorded_result() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, request) = owner();
+        let executions = AtomicUsize::new(0);
+        for _ in 0..2 {
+            let result = handle(
+                directory.path(),
+                &request,
+                Arc::new(|| true),
+                Arc::new(|| true),
+                |_, _| {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"port":2222,"address":"192.168.1.2"}))
+                },
+            );
+            assert_eq!(result.unwrap()["port"], 2222);
+        }
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
     }
 }
 
