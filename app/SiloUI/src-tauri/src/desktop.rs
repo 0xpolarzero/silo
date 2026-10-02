@@ -1219,6 +1219,24 @@ mod tests {
     }
 
     #[test]
+    fn sparse_desktop_settings_keep_legacy_defaults_on_round_trip() {
+        for (saved, expected_start) in [
+            (json!({}), true),
+            (json!({"startWithSandbox": false}), false),
+        ] {
+            let configuration: DesktopConfiguration = serde_json::from_value(saved).unwrap();
+            assert_eq!(configuration.start_with_sandbox, expected_start);
+            assert!(!configuration.built_in);
+            let encoded = serde_json::to_value(&configuration).unwrap();
+            assert_eq!(encoded, json!({"startWithSandbox": expected_start}));
+            assert_eq!(
+                serde_json::from_value::<DesktopConfiguration>(encoded).unwrap(),
+                configuration
+            );
+        }
+    }
+
+    #[test]
     fn older_images_keep_the_explicit_install_flow() {
         let mut machines = vec![vm("fresh", None)];
         default_new_vm_desktops(&mut machines, &[], "ubuntu-24.04-v3");
