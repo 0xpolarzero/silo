@@ -97,6 +97,17 @@ link rejection remain. The new round-trip regression verifies both contents
 and independent destination inodes; unsafe-path, link, checksum, and workflow
 boundary tests still pass. No native resources were built or downloaded.
 
+## WORKFLOWS-9: P3 — Empty unreviewed draft assets bypass exact membership
+
+Final publication excluded zero-byte assets before comparing the draft against
+its expected asset set. A draft containing an extra empty placeholder therefore
+passed all checks and published that unreviewed attachment, although draft
+creation rejects every extra file. The failing fixture confirmed publication
+was allowed. The final gate now compares every attachment name and separately
+requires every attachment to be nonempty. Regressions reject both an extra empty
+attachment and an empty required package before download or publication. The
+complete reviewed draft still publishes in the fixture.
+
 ## Verification
 
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow`: 22 tests pass after the queue fix.

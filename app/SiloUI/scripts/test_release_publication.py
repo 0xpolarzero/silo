@@ -75,6 +75,20 @@ class PublicationGateTests(unittest.TestCase):
         self.assertEqual(self.calls[-1], ('release', 'edit', 'v0.2.0', '--draft=false', '--latest', '--prerelease=false'))
         self.assertEqual(sum(call[:2] == ('release', 'edit') for call in self.calls), 1)
 
+    def test_empty_unexpected_draft_asset_cannot_publish(self):
+        (self.assets / 'unreviewed-placeholder.zip').write_bytes(b'')
+        with self.assertRaisesRegex(RuntimeError, 'Draft is incomplete'):
+            self.run_publish()
+        self.assertFalse(any(call[:2] == ('release', 'download') for call in self.calls))
+        self.assertFalse(any(call[:2] == ('release', 'edit') for call in self.calls))
+
+    def test_empty_required_draft_asset_cannot_publish(self):
+        (self.assets / 'Silo-linux-arm64.AppImage').write_bytes(b'')
+        with self.assertRaisesRegex(RuntimeError, 'Draft is incomplete'):
+            self.run_publish()
+        self.assertFalse(any(call[:2] == ('release', 'download') for call in self.calls))
+        self.assertFalse(any(call[:2] == ('release', 'edit') for call in self.calls))
+
     def test_changed_downloaded_package_cannot_publish(self):
         (self.assets / 'Silo-linux-arm64.AppImage').write_text('changed after checksum creation')
         with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
