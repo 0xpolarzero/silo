@@ -21,6 +21,21 @@ async function editCpuLimit(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("unsaved sandbox edits across navigation", () => {
+  it("keeps an edit when the Add menu is opened and dismissed", async () => {
+    const onMachinesChange = vi.fn()
+    const user = userEvent.setup()
+    const { rerender } = render(<Surface shown onMachinesChange={onMachinesChange} />)
+    await editCpuLimit(user)
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.keyboard("{Escape}")
+    expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
+    rerender(<Surface shown={false} onMachinesChange={onMachinesChange} />)
+    rerender(<Surface shown onMachinesChange={onMachinesChange} />)
+    expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(onMachinesChange).toHaveBeenCalledExactlyOnceWith([{ ...machine, cpus: 4 }], [machine])
+  })
+
   it("restores the open editor and its baseline after leaving and returning", async () => {
     const onMachinesChange = vi.fn()
     const user = userEvent.setup()
