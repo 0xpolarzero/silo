@@ -20,6 +20,14 @@ function setup(overrides: Partial<ApplicationActions> = {}, state: NetworkState 
   return {actions,user:userEvent.setup(),...render(<SettingsProvider initialSettings={{theme:"light"}}><Toaster /><NetworkPage workspaces={workspaces} browser={browser} network={state} actions={actions} active /></SettingsProvider>)}
 }
 describe("Network", () => {
+  it.each(["Starting", "Stopping"])("describes a transitioning sandbox's ports as %s", detail => {
+    const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
+    render(<NetworkPage workspaces={workspaces.map(workspace => ({ ...workspace, state: "starting", stateDetail: detail }))}
+      browser="Firefox" network={network} actions={actions} active={false} />)
+    expect(screen.getAllByText(`Sandbox ${detail.toLowerCase()}`)).toHaveLength(3)
+    expect(screen.queryByRole("button", { name: /^Open / })).not.toBeInTheDocument()
+  })
+
   it("uses actual forwarded addresses and opens only reachable web services", async () => {
     const {user,actions} = setup()
     expect(screen.getByText("127.0.0.1:45432")).toBeVisible()
