@@ -47,13 +47,18 @@ pub fn open_browser(selection: Option<&Path>, url: &str) -> Result<(), String> {
             .ok_or("The selected browser is unavailable. Choose another in Settings.")?;
         command.arg("-a").arg(path);
     }
-    let status = command
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|_| "The browser could not be opened.")?;
+    command.arg(url);
+    launch_browser(command, std::time::Duration::from_secs(10))
+}
+
+fn launch_browser(
+    command: std::process::Command,
+    timeout: std::time::Duration,
+) -> Result<(), String> {
+    let status = run_bounded(command, timeout).map_err(|error| match error {
+        Bounded::Spawn => "The browser could not be opened.",
+        Bounded::TimedOut => "Opening the browser timed out. Check your browser and retry.",
+    })?;
     if status.success() {
         Ok(())
     } else {
@@ -855,6 +860,23 @@ mod terminal_tests {
             String::from_utf8(output.stdout).unwrap(),
             format!("{command}\n")
         );
+    }
+
+    #[test]
+    fn browser_launcher_reports_timeout_failure_and_success() {
+        let mut sleeper = std::process::Command::new("/bin/sleep");
+        sleeper.arg("0.2");
+        assert!(launch_browser(sleeper, std::time::Duration::from_millis(20)).is_err());
+        assert!(launch_browser(
+            std::process::Command::new("/usr/bin/false"),
+            std::time::Duration::from_secs(1)
+        )
+        .is_err());
+        assert!(launch_browser(
+            std::process::Command::new("/usr/bin/true"),
+            std::time::Duration::from_secs(1)
+        )
+        .is_ok());
     }
 
     #[test]
