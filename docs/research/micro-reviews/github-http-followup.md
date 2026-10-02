@@ -23,6 +23,16 @@ The original GITHUB-HTTP-1 audit remains in the shared review worktree. Its inte
 - **Test that would catch it:** Give two synthetic tokens the same verified account ID, impose a primary floor through one, and assert that the other is blocked until reset. Give a third token another account ID and assert it remains admissible. Include token rotation for the first account.
 - **Status:** Skipped. Correct identity and resource plumbing crosses `github.rs`, `github_personal_token.rs`, and `github_tokens.rs`, beyond the assigned file scope. A transport-only global gate would reintroduce cross-account interference.
 
+## GITHUB-HTTP-4 — P2: Unrelated explicit retries reopen ambiguous writes
+
+- **File:line:** `app/SiloUI/src-tauri/src/github_http.rs:201`.
+- **Trigger:** A token-mint request has an unknown outcome and is stopped with `until: None`. The user then saves a personal token or retries another workspace's GitHub configuration.
+- **Evidence:** `reset_retries` clears the entire request map. `save_github_personal_token` calls it before validating its token, and `retry_github_configuration` calls it even when a specific workspace is supplied. Neither supplies the failed mint's identity. A disposable probe using an unchanged copy of the transport source records a non-retryable mint, confirms that its key is blocked, performs the public reset, and fails the assertion that the unrelated mint stays blocked. In `github.rs`, `access_update_due` permits another attempt for a failed workspace when its refresh deadline arrives.
+- **Consequence:** The worker can automatically repeat an ambiguous write that the user did not explicitly retry. Saving a personal token affects the OAuth/App transport's stopped requests as well as personal-token validation.
+- **Suggested fix:** Make reset operations accept the intended credential/request scope, and carry workspace or operation ownership where required. Personal-token save should reset its validation failures only. Preserve unrelated ambiguous-write refusals and server floors.
+- **Test that would catch it:** Stop distinct mint requests for workspaces A and B. Explicitly retry A and verify that only A becomes admissible. Save a personal token and verify that neither mint is reopened. Exercise the worker after the next refresh deadline and assert the outbound request count for B stays unchanged.
+- **Status:** Skipped. The reset API and its callers need intent/credential ownership plumbing outside the assigned file. The disposable failing probe and output remain under `/tmp/silo-codex-target/verification/github-http/`; no failing test was committed.
+
 ## Fix-loop verification
 
 - GITHUB-HTTP-1: fixed and folded as `f9f4363a`; the local interrupted-body regression failed before the fix.
