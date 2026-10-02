@@ -122,9 +122,9 @@ describe("Network", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Could not check services.")
     expect(screen.queryByText("No ports")).not.toBeInTheDocument()
   })
-  it("does not open cached services when the VM status is stale", () => {
+  it.each(["running", "starting", "stopped", "failed"] as const)("does not present a cached %s VM state as current when its status is stale", state => {
     const actions = {refreshNetwork:vi.fn(async () => {}),openNetworkPort:vi.fn(async () => {})} as unknown as ApplicationActions
-    render(<NetworkPage workspaces={workspaces.map(w => ({...w,freshness:"stale"}))} browser="Firefox" network={network} actions={actions} active />)
+    render(<NetworkPage workspaces={workspaces.map(w => ({...w,state,freshness:"stale"}))} browser="Firefox" network={network} actions={actions} active />)
     expect(screen.queryByRole("button",{name:/^Open /})).not.toBeInTheDocument()
     expect(screen.getAllByText("Unknown")).toHaveLength(3)
   })
