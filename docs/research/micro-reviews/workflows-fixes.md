@@ -71,6 +71,18 @@ asserted. No Docker daemon or real images were used. Twelve ordinary guest-image
 tests pass; eleven live-image tests are intentionally skipped. Lint, typecheck,
 Rust formatting, and whitespace checks pass.
 
+## WORKFLOWS-7: P2 — Final publication accepts a non-executable macOS updater
+
+`verify-release-metadata.py` checked the Mach-O header but ignored the archive
+entry's executable mode. An ARM64 archive with the correct production identifier,
+version, target, and binary header passed with mode `0644` or `0654`. The macOS
+updater's [archive installer](../../../app/SiloUI/src-tauri/vendor/tauri-plugin-updater/src/atomic_install.rs) extracts entries with their modes, so the
+installed application's owner cannot execute those files. The final publication
+gate now requires the executable entry's owner-execute bit. Regressions rejected
+both broken modes only after the fix and still accept `0755`; metadata and final
+publication fixture suites pass. These are archive fixtures, not installed-app
+or live updater tests.
+
 ## Verification
 
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow`: 22 tests pass after the queue fix.
