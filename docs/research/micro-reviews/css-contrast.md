@@ -64,3 +64,14 @@ Verification used static HTML fixtures in Chromium through Playwright, not a
 native bundle or live sandbox. Local evidence: `/tmp/silo-css-tooltip-before.html`
 and `/tmp/silo-css-tooltip-after.html`. No class-string unit assertion was added:
 the browser's measured text overflow is the relevant check.
+
+## Shared truncated string labels
+
+`ListRow`, `DisclosureHeader`, and `StatusBadge` truncate text but did not expose
+complete string labels on hover. Add native titles at the shared rendering seam
+for string details, headings, captions, and badge labels. React element content
+retains its existing rendering and caller-owned tooltip behavior.
+
+Regression: long string fixtures in `list-row.test.tsx`,
+`disclosure-header.test.tsx`, and `status-badge.test.tsx` failed for missing titles
+before the fix. Existing row action and disclosure keyboard tests still pass.
