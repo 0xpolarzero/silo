@@ -82,7 +82,7 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
         if (live && mine === requests.sequence) { setLoadError(message(cause)); setLoaded(true) }
       }
     }
-    void backend.subscribe(() => { void refresh.current() }).then(stop => {
+    void backend.subscribe(() => { if (live) void refresh.current() }).then(stop => {
       if (live) { unsubscribe = stop; setSubscriptionError(null) }
       else stop()
     }).catch(() => {
