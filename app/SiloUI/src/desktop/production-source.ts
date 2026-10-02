@@ -1808,6 +1808,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   /** Checks an export file under a request id so aborting `signal` stops the check (E-27).
    * The check changes no state, so no refresh follows it. */
   async function inspectBackupArchive(archivePath: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
     const requestId = crypto.randomUUID()
     const cancel = () => { void native.invoke("cancel_backup_inspection", { requestId }).catch(() => undefined) }
     signal?.addEventListener("abort", cancel, { once: true })
