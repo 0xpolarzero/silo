@@ -1848,9 +1848,11 @@ fn mint(
     {
         return Ok((token.token, token.expires_at));
     }
-    let response = token_operation(
+    let response = crate::github_tokens::execute_for_workspace(
+        &token_configuration()?,
         Operation::Scope,
         json!({"accessToken":c.access_token,"ownerId":s.owner,"repositoryIds":if s.all{vec![]}else if write{s.writes.clone()}else{s.ids.clone()},"allRepositories":s.all,"allowChanges":write}),
+        workspace,
     )?;
     let token = response["accessToken"]
         .as_str()
@@ -3273,12 +3275,16 @@ pub async fn retry_github_configuration(
     require_main(window.label())?;
     retry_credential_access();
     let ticket = INTENTS.ticket();
-    crate::github_http::reset_retries();
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
         let _state = serialize(&STATE);
         let mut d = load(&app)?;
+        if let Some(workspace) = workspace.as_deref() {
+            crate::github_http::reset_workspace_retries(workspace);
+        } else {
+            crate::github_http::reset_retries();
+        }
         prepare_retry(&mut d, workspace.as_deref());
         save(&app, &d)?;
         schedule(Duration::ZERO);
