@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Reduce background sandbox health checks during runtime failures and restore frequent checks after recovery.
+Reduce repeated sandbox health checks while their virtual-machine service is unavailable and resume normal checks after recovery.
