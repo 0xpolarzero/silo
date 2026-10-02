@@ -1905,10 +1905,33 @@ pub(crate) fn cached_status() -> Option<Status> {
     CACHE.lock().unwrap_or_else(|p| p.into_inner()).clone()
 }
 
-fn publish(app: &tauri::AppHandle, status: Status) {
+/// The `chatgpt-app-status` payload: the status plus the `computer` it describes, `null`
+/// for this computer or the owning computer's host id. Listeners that predate the field
+/// ignore it.
+pub(crate) fn event_payload(
+    status: serde_json::Value,
+    computer: Option<&str>,
+) -> serde_json::Value {
+    let mut payload = status;
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "computer".into(),
+            computer.map_or(serde_json::Value::Null, Into::into),
+        );
+    }
+    payload
+}
+
+fn emit_local(app: &tauri::AppHandle, status: &Status) {
     use tauri::Emitter;
+    if let Ok(value) = serde_json::to_value(status) {
+        let _ = app.emit(STATUS_EVENT, event_payload(value, None));
+    }
+}
+
+fn publish(app: &tauri::AppHandle, status: Status) {
     set_cache(&status);
-    let _ = app.emit(STATUS_EVENT, status);
+    emit_local(app, &status);
 }
 
 fn in_progress(status: &Status) -> bool {
@@ -1940,9 +1963,8 @@ fn compute_status(app: &tauri::AppHandle) -> Result<Status, String> {
 
 /// Recomputes and reports the status (blocking; startup and after changes).
 pub(crate) fn refresh_status_blocking(app: &tauri::AppHandle) -> Status {
-    use tauri::Emitter;
     let status = compute_status(app).unwrap_or(Status::Idle);
-    let _ = app.emit(STATUS_EVENT, status.clone());
+    emit_local(app, &status);
     status
 }
 
@@ -2109,7 +2131,7 @@ pub(crate) async fn chatgpt_app_prepare(
         let mut last = call_owner(&app, &host, "chatgpt.prepare", serde_json::json!({}))?;
         let deadline = Instant::now() + Duration::from_secs(45 * 60);
         loop {
-            let _ = app.emit(STATUS_EVENT, last.clone());
+            let _ = app.emit(STATUS_EVENT, event_payload(last.clone(), Some(&host)));
             let state = last["state"].as_str().unwrap_or("");
             if !matches!(state, "downloading" | "verifying" | "extracting") {
                 return Ok(last);
