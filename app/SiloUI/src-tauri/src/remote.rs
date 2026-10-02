@@ -21,20 +21,19 @@ mod operations;
 /// account's login shell, so the POSIX script is handed to `sh` in single quotes, which
 /// fish, csh and nushell also pass through unchanged; the script itself has no single quote.
 const INSTALL_PUBLIC_KEY: &str = r#"sh -c 'umask 077; mkdir -p ~/.ssh && chmod 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && key=$(cat) && { grep -qxF -- "$key" ~/.ssh/authorized_keys || printf "\n%s\n" "$key" >> ~/.ssh/authorized_keys; }'"#;
-/// Silo's key may only run the bridge and open `-N` tunnels to loopback ports on the owner.
+/// Silo's owner key may only run the bridge; forwarding uses the pinned guest transport.
 fn authorized_key_options() -> String {
     format!(
-        r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="{}""#,
+        r#"restrict,command="{}""#,
         crate::channel::current().remote_bridge_command()
     )
 }
 fn silo_key_comment() -> &'static str {
     crate::channel::current().remote_key_comment()
 }
-/// Bridge protocol version; both computers must match. 2 adds the method table, capabilities,
-/// changes named by a stable `operationId` that must start within `startWithinMs`, and a
-/// preamble before each bridge reply.
-const VERSION: u32 = 2;
+/// Bridge protocol version; both computers must match. 3 moves published-port tunnels
+/// into guest SSH so owner management keys no longer permit forwarding.
+const VERSION: u32 = 3;
 const LIMIT: usize = 4 * 1024 * 1024;
 const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 const CONFIG_TOO_LARGE: &str = "Remote management settings exceed the 1 MiB safety limit.";
@@ -647,25 +646,25 @@ fn with_identity_fallback(
     }
     retried
 }
-pub(crate) fn ssh_tunnel_commands(
-    host_id: &str,
+pub(crate) fn guest_tunnel_commands(
+    config: &Path,
+    alias: &str,
     local_port: u16,
-    remote_port: u16,
+    guest_address: std::net::IpAddr,
+    guest_port: u16,
     socket: &Path,
 ) -> Result<(Command, Command), String> {
-    if local_port == 0 || remote_port == 0 {
+    if local_port == 0 || guest_port == 0 {
         return Err("Invalid forwarded port.".into());
     }
-    let host = read_config()?
-        .hosts
-        .into_iter()
-        .find(|h| h.id == host_id)
-        .ok_or("Saved computer not found.")?;
+    let mut command = Command::new("/usr/bin/ssh");
+    command.arg("-F").arg(config);
     Ok(tunnel_commands(
-        ssh_for_address(&host.address)?,
-        &host.address,
+        command,
+        alias,
         local_port,
-        remote_port,
+        guest_address,
+        guest_port,
         socket,
     ))
 }
@@ -674,6 +673,7 @@ fn tunnel_commands(
     mut command: Command,
     address: &str,
     local_port: u16,
+    guest_address: std::net::IpAddr,
     remote_port: u16,
     socket: &Path,
 ) -> (Command, Command) {
@@ -691,9 +691,13 @@ fn tunnel_commands(
         "ClearAllForwardings=no",
         "-S",
     ]);
+    let target = match guest_address {
+        std::net::IpAddr::V4(address) => address.to_string(),
+        std::net::IpAddr::V6(address) => format!("[{address}]"),
+    };
     command.arg(socket).args([
         "-L",
-        &format!("127.0.0.1:{local_port}:127.0.0.1:{remote_port}"),
+        &format!("127.0.0.1:{local_port}:{target}:{remote_port}"),
         "--",
         address,
     ]);
@@ -798,14 +802,18 @@ fn authorized_key_line(public: &str) -> Result<String, String> {
         silo_key_comment()
     ))
 }
-/// Rewrites the unrestricted line earlier Silo versions installed; other lines are untouched.
+/// Rewrites Silo's earlier unrestricted and forwarding-enabled lines; other lines are untouched.
 fn restrict_authorized_keys(contents: &str, blob: &str) -> Option<String> {
     let unrestricted = format!("ssh-ed25519 {blob} {}", silo_key_comment());
+    let legacy = format!(
+        r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="{}" {unrestricted}"#,
+        crate::channel::current().remote_bridge_command()
+    );
     let mut changed = false;
     let rewritten = contents
         .split_inclusive('\n')
         .map(|line| {
-            if line.trim() == unrestricted {
+            if line.trim() == unrestricted || line.trim() == legacy {
                 changed = true;
                 let ending = if line.ends_with('\n') { "\n" } else { "" };
                 format!("{} {unrestricted}{ending}", authorized_key_options())
@@ -827,7 +835,7 @@ fn restrict_authorized_keys_file(path: &std::path::Path, public: &str) -> Result
             Err(error) => return Err(error.to_string()),
         };
         if restrict_authorized_keys(&contents, blob).is_some() {
-            return Err("The SSH key file is externally managed and still contains an unrestricted Silo key.".into());
+            return Err("The SSH key file is externally managed and still contains an older Silo key with excess permissions.".into());
         }
     }
     Ok(changed)
@@ -2669,14 +2677,14 @@ mod authorized_key_tests {
     }
 
     #[test]
-    fn installed_line_only_allows_the_bridge_and_loopback_tunnels() {
+    fn installed_line_only_allows_the_bridge() {
         let _test_state = crate::test_support::global_state();
         let line =
             authorized_key_line(&format!("ssh-ed25519 {BLOB} Silo remote management\n")).unwrap();
         assert_eq!(
             line,
             format!(
-                r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="exec ~/.local/bin/silo-remote --remote-bridge" ssh-ed25519 {BLOB} Silo remote management"#
+                r#"restrict,command="exec ~/.local/bin/silo-remote --remote-bridge" ssh-ed25519 {BLOB} Silo remote management"#
             )
         );
         for invalid in [
@@ -2689,6 +2697,30 @@ mod authorized_key_tests {
         ] {
             assert!(authorized_key_line(invalid).is_err(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn handshake_removes_legacy_forwarding_without_changing_personal_keys() {
+        let _test_state = crate::test_support::global_state();
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("authorized_keys");
+        let public = format!("ssh-ed25519 {BLOB} {}", silo_key_comment());
+        let legacy = format!(
+            r#"restrict,port-forwarding,permitopen="127.0.0.1:*",command="{}" {public}"#,
+            crate::channel::current().remote_bridge_command()
+        );
+        let personal = format!("ssh-ed25519 {BLOB} personal");
+        let custom = format!(r#"from="192.0.2.1" {public}"#);
+        fs::write(&path, format!("{legacy}\n{personal}\n{custom}\n{public}")).unwrap();
+        handshake_key_in(&path, Some(&public)).unwrap();
+        let restricted = format!(
+            r#"restrict,command="{}" {public}"#,
+            crate::channel::current().remote_bridge_command()
+        );
+        let expected = format!("{restricted}\n{personal}\n{custom}\n{restricted}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
+        handshake_key_in(&path, Some(&public)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), expected);
     }
 
     #[test]
@@ -3088,14 +3120,28 @@ mod identity_tests {
 
     #[test]
     fn published_port_readiness_uses_an_owned_foreground_master() {
-        let (forward, check) = tunnel_commands(
-            ssh_with_identity("office", None, Identity::SiloOnly).unwrap(),
-            "office",
+        let config = Path::new("/private/guest.conf");
+        let (forward, check) = guest_tunnel_commands(
+            config,
+            "guest-alias",
             43000,
-            32000,
+            "172.16.0.6".parse().unwrap(),
+            3000,
             Path::new("/tmp/ssh.sock"),
-        );
+        )
+        .unwrap();
         let args = arguments(&forward);
+        assert_eq!(&args[..2], ["-F", "/private/guest.conf"]);
+        assert!(!args.iter().any(|arg| arg == "-i"));
+        assert!(guest_tunnel_commands(
+            config,
+            "guest-alias",
+            0,
+            "172.16.0.6".parse().unwrap(),
+            3000,
+            Path::new("/tmp/ssh.sock")
+        )
+        .is_err());
         for option in [
             "ExitOnForwardFailure=yes",
             "ControlMaster=yes",
@@ -3108,7 +3154,7 @@ mod identity_tests {
         assert!(args.contains(&"-N".into()));
         assert!(args
             .windows(2)
-            .any(|pair| pair == ["-L", "127.0.0.1:43000:127.0.0.1:32000"]));
+            .any(|pair| pair == ["-L", "127.0.0.1:43000:172.16.0.6:3000"]));
         assert_eq!(
             arguments(&check),
             [
@@ -3119,9 +3165,51 @@ mod identity_tests {
                 "-O",
                 "check",
                 "--",
-                "office"
+                "guest-alias"
             ]
         );
+    }
+
+    #[test]
+    fn guest_port_tunnel_uses_pinned_config_in_openssh() {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("guest config");
+        fs::write(&config, "Host guest-alias\n  HostName guest-alias\n  User silo\n  IdentityFile /fixture/guest.key\n  IdentitiesOnly yes\n  IdentityAgent none\n  StrictHostKeyChecking yes\n  UserKnownHostsFile /fixture/known_hosts\n  ProxyCommand /fixture/silo --remote-guest owner vm\n").unwrap();
+        let (forward, _) = guest_tunnel_commands(
+            &config,
+            "guest-alias",
+            43000,
+            "172.16.0.6".parse().unwrap(),
+            3000,
+            &home.path().join("control"),
+        )
+        .unwrap();
+        let output = Command::new("/usr/bin/ssh")
+            .arg("-G")
+            .args(forward.get_args())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let resolved = String::from_utf8(output.stdout).unwrap();
+        for line in [
+            "user silo",
+            "identityfile /fixture/guest.key",
+            "identitiesonly yes",
+            "identityagent none",
+            "stricthostkeychecking true",
+            "userknownhostsfile /fixture/known_hosts",
+            "proxycommand /fixture/silo --remote-guest owner vm",
+            "localforward [127.0.0.1]:43000 [172.16.0.6]:3000",
+        ] {
+            assert!(
+                resolved.lines().any(|actual| actual == line),
+                "Missing {line}: {resolved}"
+            );
+        }
     }
 
     #[test]
