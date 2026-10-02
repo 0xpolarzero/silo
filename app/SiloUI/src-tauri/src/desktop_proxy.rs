@@ -150,13 +150,13 @@ fn forward_body(
     mut remaining: u64,
     stop: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
+    deadline: Option<Instant>,
 ) {
     let _ = from.read_timeout(Some(Duration::from_millis(250)));
     let _ = to.write_timeout(Some(Duration::from_secs(5)));
-    let deadline = Instant::now() + Duration::from_secs(120);
     let mut bytes = [0; 32 * 1024];
     while remaining > 0
-        && Instant::now() < deadline
+        && deadline.is_none_or(|at| Instant::now() < at)
         && !stop.load(Ordering::Acquire)
         && !ended.load(Ordering::Acquire)
     {
@@ -191,11 +191,15 @@ fn relay(
     mut to: impl Stream,
     stop: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
+    deadline: Option<Instant>,
 ) {
     let _ = from.read_timeout(Some(Duration::from_millis(250)));
     let _ = to.write_timeout(Some(Duration::from_secs(5)));
     let mut bytes = [0; 32 * 1024];
-    while !stop.load(Ordering::Acquire) && !ended.load(Ordering::Acquire) {
+    while !stop.load(Ordering::Acquire)
+        && !ended.load(Ordering::Acquire)
+        && deadline.is_none_or(|at| Instant::now() < at)
+    {
         match from.read(&mut bytes) {
             Ok(0) => break,
             Ok(n) => {
@@ -236,6 +240,7 @@ fn serve(
         token,
         authorization,
         stop,
+        Duration::from_secs(120),
         |_, _| {},
     )
 }
@@ -250,6 +255,7 @@ fn serve_with_header_progress(
     token: &str,
     authorization: &str,
     stop: Arc<AtomicBool>,
+    http_timeout: Duration,
     mut header_progress: impl FnMut(&TcpStream, usize),
 ) -> std::io::Result<()> {
     // On macOS, accepted sockets inherit the listener's O_NONBLOCK setting.
@@ -280,6 +286,7 @@ fn serve_with_header_progress(
         )?;
         return Ok(());
     };
+    let deadline = (!header.websocket).then(|| Instant::now() + http_timeout);
     let mut server = match UnixStream::connect(upstream) {
         Ok(server) => server,
         Err(_) => {
@@ -298,12 +305,19 @@ fn serve_with_header_progress(
     let peer_stop = stop.clone();
     let writer = thread::spawn(move || {
         if header.websocket {
-            relay(incoming, outgoing, peer_stop, peer_end);
+            relay(incoming, outgoing, peer_stop, peer_end, deadline);
         } else {
-            forward_body(incoming, outgoing, header.body_length, peer_stop, peer_end);
+            forward_body(
+                incoming,
+                outgoing,
+                header.body_length,
+                peer_stop,
+                peer_end,
+                deadline,
+            );
         }
     });
-    relay(server, client, stop, ended.clone());
+    relay(server, client, stop, ended.clone(), deadline);
     ended.store(true, Ordering::Release);
     let _ = writer.join();
     Ok(())
@@ -467,6 +481,71 @@ mod tests {
     }
 
     #[test]
+    fn stalled_http_response_closes_both_connections_at_deadline() {
+        stalled_http_request("GET", "");
+    }
+
+    #[test]
+    fn incomplete_http_upload_closes_both_connections_at_deadline() {
+        stalled_http_request("POST", "Content-Length: 5\r\n");
+    }
+
+    fn stalled_http_request(method: &str, headers: &str) {
+        let (_directory, upstream, socket) = guest();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let (accepted, _) = listener.accept().unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = serve_with_header_progress(
+                accepted,
+                port,
+                &socket,
+                6901,
+                "session",
+                "secret",
+                "auth",
+                worker_stop,
+                Duration::from_millis(50),
+                |_, _| {},
+            );
+            done_tx.send(result).unwrap();
+        });
+        write!(
+            client,
+            "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: session=secret\r\n{headers}\r\n"
+        )
+        .unwrap();
+        let (mut guest, _) = upstream.accept().unwrap();
+        guest
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0];
+        while !request.ends_with(b"\r\n\r\n") {
+            guest.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        // Keep the guest connection open without sending a response.
+        let completed = done_rx.recv_timeout(Duration::from_secs(1));
+        stop.store(true, Ordering::Release);
+        worker.join().unwrap();
+        assert!(
+            completed.is_ok(),
+            "stalled HTTP request exceeded its deadline"
+        );
+        assert!(completed.unwrap().is_ok());
+        assert_eq!(client.read(&mut byte).unwrap(), 0);
+        guest.read_to_end(&mut Vec::new()).unwrap();
+    }
+
+    #[test]
     fn accepted_nonblocking_client_waits_for_fragmented_request_headers() {
         use std::{os::fd::AsRawFd, sync::mpsc};
 
@@ -508,6 +587,7 @@ mod tests {
                 "secret",
                 "c2lsbzpwYXNzd29yZA==",
                 Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(120),
                 |stream, consumed| {
                     if consumed == 0 {
                         // Inspect the descriptor before sending any request bytes.
