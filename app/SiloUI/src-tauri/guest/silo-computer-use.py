@@ -1,9 +1,11 @@
 #!/usr/bin/python3
 """Built-in computer use for a Silo guest: LCU against the host's read-only ChatGPT app.
 
-Silo pushes this helper, the pinned pair (`pinned.json`) and the VM's approval mode
-into the guest, then runs `sync` after each boot and whenever the app becomes ready.
-`sync` is idempotent and cheap when nothing changed:
+Silo pushes this helper and the pinned pair (`pinned.json`) into the guest, then runs
+`apply --approval ask|auto` after each boot, whenever the app becomes ready and when the
+user changes the VM's approval switch. The helper is a plain executor: the host decides
+the mode, serializes the runs and keeps the result. `apply` is idempotent and cheap when
+nothing changed:
 
 * the pinned ChatGPT app folder must be mounted read-only at /opt/silo/chatgpt;
 * the pinned LCU archive (staged in the guest image, or downloaded and hash-checked)
@@ -15,7 +17,11 @@ into the guest, then runs `sync` after each boot and whenever the app becomes re
   again a few times with backoff instead of failing the receipt.
 
 The result is a receipt under /var/lib/silo-computer-use that `status` projects
-for the host. Nothing here talks to the host or holds credentials.
+for the host, and `apply` prints that status plus this run's approval outcome
+(`applied`, `partial` when `lcu setup` configured some agents and failed for others, or
+`failed`). Nothing here talks to the host or holds credentials. The approval switch
+configures agents' own approval prompts; agents in the VM have root, so it is a
+convenience and not a security boundary, and the helper keeps no record to defend.
 """
 import argparse
 import fcntl
@@ -31,7 +37,6 @@ from pathlib import Path
 
 STATE = Path('/var/lib/silo-computer-use')
 PINNED = STATE / 'pinned.json'
-APPROVAL = STATE / 'approval.json'
 RECEIPT = STATE / 'receipt.json'
 LOCK = STATE / 'lock'
 STAGE = STATE / 'stage'
@@ -47,7 +52,6 @@ HOME = '/home/silo'
 SCHEMA = 1
 APP_NAME = re.compile(r'[0-9][0-9A-Za-z.+~-]{0,63}-(arm64|amd64)')
 VERSION = re.compile(r'[0-9][0-9A-Za-z.+~-]{0,63}')
-GENERATION = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 SHA256 = re.compile(r'[0-9a-f]{64}')
 ARCHIVE_NAME = re.compile(r'lcu-[0-9][0-9A-Za-z.+~-]{0,31}-linux-(arm64|x64)\.tar\.gz')
 APPROVALS = ('ask', 'auto')
@@ -128,66 +132,6 @@ def load_pinned():
     return value
 
 
-def read_approval_state():
-    """The approval record: the mode the host requested with its revision and generation,
-    and `applied`, the `(mode, revision, generation)` that `lcu setup` confirmed (None until
-    one did). The disk is untrusted input: every field is validated."""
-    value = read_json(APPROVAL) or {}
-    mode = value.get('approval')
-    requested = (mode if mode in APPROVALS else 'ask', clean_revision(value.get('revision')),
-                 clean(value.get('generation'), GENERATION))
-    applied = value.get('applied')
-    if isinstance(applied, dict) and applied.get('approval') in APPROVALS:
-        applied = (applied['approval'], clean_revision(applied.get('revision')),
-                   clean(applied.get('generation'), GENERATION))
-    else:
-        applied = None
-    return requested, applied
-
-
-def clean_revision(value):
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-
-def read_approval():
-    """The mode `lcu setup` last applied (ask before any did)."""
-    applied = read_approval_state()[1]
-    return applied[0] if applied else 'ask'
-
-
-def write_approval(requested, applied=None):
-    mode, revision, generation = requested
-    record = {'schemaVersion': SCHEMA, 'approval': mode, 'revision': revision,
-              'generation': generation}
-    if applied:
-        record['applied'] = {'approval': applied[0], 'revision': applied[1],
-                             'generation': applied[2]}
-    write_json(APPROVAL, record)
-
-
-def mark_applied():
-    """Records that the requested approval is what `lcu setup` now has."""
-    requested, _applied = read_approval_state()
-    write_approval(requested, requested)
-
-
-def accepts_approval(mode, revision, generation, requested):
-    """Whether a request replaces the requested record `(mode, revision, generation)`.
-
-    The host is authoritative: a request of another generation always replaces the record,
-    whatever revision the record carries, because the guest's disk is untrusted (an
-    export dated in the future, a forged record) and the host issues a new generation
-    whenever it creates, imports, transfers or resets a VM's policy. Within one
-    generation a newer revision wins, and an equal revision with a different mode is
-    resolved the same way whatever the arrival order, in favour of `ask`."""
-    held_mode, held_revision, held_generation = requested
-    if generation != held_generation:
-        return True
-    if revision != held_revision:
-        return revision > held_revision
-    return mode == held_mode or mode == 'ask'
-
-
 def mount_state(mount=MOUNT, mounts=Path('/proc/mounts')):
     """`ok` for a read-only mount at the app folder, else `missing` or `writable`."""
     try:
@@ -232,11 +176,16 @@ def lock_held():
     return False
 
 
-def matches(receipt, pinned, approval):
+def matches_pair(receipt, pinned):
     return (receipt.get('schemaVersion') == SCHEMA and receipt.get('appDir') == pinned['app']['dir']
             and receipt.get('lcuVersion') == pinned['lcu']['version']
-            and receipt.get('archiveSha256') == pinned['lcu']['sha256']
-            and receipt.get('approval') == approval)
+            and receipt.get('archiveSha256') == pinned['lcu']['sha256'])
+
+
+def matches(receipt, pinned, approval):
+    """Whether the receipt shows a run for this pair that applied `approval` completely."""
+    return (matches_pair(receipt, pinned) and receipt.get('approval') == approval
+            and receipt.get('approvalOutcome') == 'applied')
 
 
 def clean(value, pattern=VERSION):
@@ -250,20 +199,12 @@ def clean_text(value, limit=300):
     return value or None
 
 
-def applied_record():
-    """The `(mode, revision, generation)` applied, or the defaults before any was."""
-    return read_approval_state()[1] or ('ask', 0, None)
-
-
 def status(pinned=None, receipt=None):
     """What the host shows, from the receipt alone. Never runs LCU."""
     pinned = pinned or load_pinned()
     mount = mount_state()
     result = {'schemaVersion': SCHEMA, 'state': 'not-set-up', 'reason': None, 'mount': mount,
-              'compatibility': None, 'warning': None, 'approval': read_approval(),
-              'approvalRevision': applied_record()[1],
-              'approvalGeneration': applied_record()[2],
-              'approvalConfirmed': read_approval_state()[1] is not None, 'appVersion': None,
+              'compatibility': None, 'warning': None, 'appVersion': None,
               'runtimeVersion': None, 'lcuVersion': None, 'agents': None, 'readiness': None}
     if pinned is None:
         result['reason'] = 'not-configured'
@@ -273,9 +214,8 @@ def status(pinned=None, receipt=None):
         return result
     receipt = receipt if receipt is not None else read_json(RECEIPT)
     held = lock_held()
-    # The receipt describes the attempt for the *requested* mode, while `approval` above is
-    # what was applied: a failed attempt shows as failed and the host sees the lag.
-    if receipt and matches(receipt, pinned, read_approval_state()[0][0]):
+    # The receipt describes the last run, whatever mode it applied.
+    if receipt and matches_pair(receipt, pinned):
         state = receipt.get('state')
         if state == 'installing' and not held:
             result.update(state='failed', reason='interrupted')
@@ -392,19 +332,56 @@ def install(pinned, stage):
 
 
 def setup(approval):
-    """Registers LCU with the agents found for the working account; returns their names."""
+    """Runs `lcu setup` for the working account and reports this run's outcome:
+    `(outcome, agents, reason)`, see `classify_setup`."""
     result = run([lcu_command('lcu'), 'setup', '--agent', 'auto', '--session', 'direct', '--yes',
-                  '--approval', approval], user=True, timeout=600)
-    return registered_agents(result.stdout)
+                  '--approval', approval], user=True, timeout=600, check=False)
+    return classify_setup(result.returncode, result.stdout, approval)
+
+
+AGENT_LABEL = r'([A-Z][A-Za-z ]{1,24})'
+FAILED_LINE = re.compile(AGENT_LABEL + r': [A-Za-z ]{2,24} failed: ')
+APPROVED_LINE = re.compile(AGENT_LABEL + r': approval (?:ask|auto): ')
+
+
+def agent_name(label):
+    return re.sub(r'[^a-z0-9]+', '-', label.lower()).strip('-')
+
+
+def classify_setup(returncode, output, approval):
+    """`(outcome, agents, reason)` of one `lcu setup` run from its exit status and its
+    per-agent lines (`Codex: MCP registered.`, `Codex: approval ask: ...`,
+    `Codex: approval failed: ...`).
+
+    `applied`: it exited 0 and no agent reported a failure. `partial`: some agents were
+    configured and others failed, or it failed in a way the lines do not explain after
+    configuring some (when unsure, partial: a guess of `failed` would claim nothing
+    changed). `failed`: nothing was configured."""
+    lines = (output or '').splitlines()
+    failed, approved = set(), set()
+    for line in lines:
+        line = line.strip()
+        if match := FAILED_LINE.match(line):
+            failed.add(agent_name(match.group(1)))
+        elif match := APPROVED_LINE.match(line):
+            approved.add(agent_name(match.group(1)))
+    agents = registered_agents(output)
+    if returncode == 0 and not failed:
+        return 'applied', agents, None
+    # Agents that both registered and had their approval handled, and did not fail anywhere.
+    configured = (approved | set(agents)) - failed
+    if configured:
+        return 'partial', agents, 'setup-partial'
+    return 'failed', agents, 'setup-failed'
 
 
 def registered_agents(output):
     """Agents whose registration `lcu setup` confirmed (`Codex: MCP registered.`)."""
     names = []
     for line in (output or '').splitlines():
-        match = re.fullmatch(r'([A-Z][A-Za-z ]{1,24}): [A-Za-z ]{2,24} registered\.', line.strip())
+        match = re.fullmatch(AGENT_LABEL + r': [A-Za-z ]{2,24} registered\.', line.strip())
         if match:
-            name = re.sub(r'[^a-z0-9]+', '-', match.group(1).lower()).strip('-')
+            name = agent_name(match.group(1))
             if name not in names:
                 names.append(name)
     return sorted(names)
@@ -492,20 +469,20 @@ def write_receipt(pinned, approval, state, reason=None, **fields):
     return receipt
 
 
-def sync(force=False, boot=False, approval=None, revision=None, generation=None):
-    """Brings computer use up to date for the pinned pair. Returns the public status.
+def report(approval, outcome, reason=None):
+    """This run's approval outcome, as the host records it."""
+    return {'approval': approval, 'outcome': outcome, 'reason': reason}
 
-    The host is authoritative over the approval record, which lives on this untrusted disk.
-    `generation` is issued by the host's Silo per policy: a request of another generation
-    replaces the record whatever revision it holds. Within one generation `revision` orders
-    changes: a request older than the held revision keeps the newer mode (a delayed boot
-    sync must not undo a change made after it was started).
 
-    The record keeps the requested approval apart from the applied one: it is marked
-    applied only after `lcu setup` succeeded, so a failed attempt stays pending."""
+def apply(approval, force=False, boot=False):
+    """Brings computer use up to date for the pinned pair with `approval` configured in
+    the agents. Returns the public status plus `apply`, this run's approval outcome.
+
+    The host decides the mode, serializes runs for the VM and keeps the result; nothing is
+    remembered here beyond the receipt, so a request is never ignored as stale."""
     pinned = load_pinned()
     if pinned is None:
-        return status(None)
+        return dict(status(None), apply=report(approval, 'failed', 'not-configured'))
     STATE.mkdir(mode=0o755, parents=True, exist_ok=True)
     with open(LOCK, 'a') as handle:
         deadline = time.monotonic() + LOCK_WAIT
@@ -517,21 +494,15 @@ def sync(force=False, boot=False, approval=None, revision=None, generation=None)
                 if time.monotonic() >= deadline:
                     raise Failure('busy') from None
                 time.sleep(1)
-        if approval is not None:
-            requested, applied = read_approval_state()
-            if revision is None:
-                write_approval((approval, requested[1], requested[2]), applied)
-            elif accepts_approval(approval, revision, generation, requested):
-                write_approval((approval, revision, generation), applied)
-            else:
-                log(f'ignored approval {approval} at revision {revision}: '
-                    f'{requested[0]} at {requested[1]} is newer')
-        mode = read_approval_state()[0][0]
-        # Whoever held the lock before may have finished the work already.
-        if mount_state() == 'ok' and app_present(pinned):
-            update(pinned, mode, force, boot)
-    # The lock is released: `status` reports `installing` only while another sync holds it.
-    return status(pinned)
+        mount = mount_state()
+        if mount != 'ok':
+            outcome = report(approval, 'failed', 'mount-' + mount)
+        elif not app_present(pinned):
+            outcome = report(approval, 'failed', 'app-missing')
+        else:
+            outcome = update(pinned, approval, force, boot)
+    # The lock is released: `status` reports `installing` only while another run holds it.
+    return dict(status(pinned), apply=outcome)
 
 
 def installed_for(report, pinned):
@@ -547,53 +518,63 @@ def installed_for(report, pinned):
 
 
 def update(pinned, mode, force, boot):
+    """One run for `mode`; returns its approval report (`report`)."""
     existing = read_json(RECEIPT)
     if (not force and existing and existing.get('state') == 'ready'
             and matches(existing, pinned, mode) and Path(lcu_command('lcu')).exists()):
-        # The receipt shows `lcu setup` ran for this mode.
-        mark_applied()
-        return
+        # The receipt shows `lcu setup` applied this mode completely.
+        return report(mode, 'applied')
     write_receipt(pinned, mode, 'installing')
+    # Set once `lcu setup` ran: later failures (the readiness check) do not change it.
+    result = None
     try:
         STAGE.mkdir(mode=0o700, parents=True, exist_ok=True)
         installed = lcu_status() if Path(lcu_command('lcu')).exists() else None
         if not installed_for(installed, pinned):
             install(pinned, STAGE)
-        agents = setup(mode)
-        mark_applied()
-        report = digest(lcu_status())
+        outcome, agents, reason = setup(mode)
+        if outcome == 'failed':
+            raise Failure(reason)
+        result = report(mode, outcome, reason)
+        digested = digest(lcu_status())
         if not doctor(SESSION_WAIT_BOOT if boot else SESSION_WAIT, repair=boot):
             raise Failure('doctor-failed')
-        write_receipt(pinned, mode, 'ready', readiness='ready', agents=agents, **report)
+        write_receipt(pinned, mode, 'ready', readiness='ready', agents=agents,
+                      approvalOutcome=outcome, **digested)
     except Failure as failure:
         log(f'computer use setup failed: {failure.reason}: {failure}')
-        write_receipt(pinned, mode, 'failed', failure.reason, readiness='failed')
+        result = result or report(mode, 'failed', failure.reason)
+        write_receipt(pinned, mode, 'failed', failure.reason, readiness='failed',
+                      approvalOutcome=result['outcome'])
     except Exception as error:  # noqa: BLE001 - the receipt must always record the end state
         log(f'computer use setup failed: {type(error).__name__}: {error}')
-        write_receipt(pinned, mode, 'failed', 'setup-failed', readiness='failed')
+        result = result or report(mode, 'failed', 'setup-failed')
+        write_receipt(pinned, mode, 'failed', 'setup-failed', readiness='failed',
+                      approvalOutcome=result['outcome'])
     finally:
         subprocess.run(['rm', '-rf', str(STAGE)], check=False)
+    return result
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('status')
-    sync_parser = commands.add_parser('sync')
-    sync_parser.add_argument('--force', action='store_true')
-    sync_parser.add_argument('--boot', action='store_true')
-    sync_parser.add_argument('--approval', choices=APPROVALS)
-    sync_parser.add_argument('--revision', type=int)
-    sync_parser.add_argument('--generation', type=lambda value: value if GENERATION.fullmatch(value) else sys.exit(2))
+    apply_parser = commands.add_parser('apply')
+    apply_parser.add_argument('--approval', choices=APPROVALS, required=True)
+    apply_parser.add_argument('--force', action='store_true')
+    apply_parser.add_argument('--boot', action='store_true')
     args = parser.parse_args(argv)
     if os.geteuid() != 0:
         print('Run as root', file=sys.stderr)
         return 1
     try:
-        result = status() if args.command == 'status' else sync(args.force, args.boot, args.approval, args.revision, args.generation)
+        result = status() if args.command == 'status' else apply(args.approval, args.force, args.boot)
     except Failure as failure:
-        print(json.dumps({'schemaVersion': SCHEMA, 'state': 'failed', 'reason': failure.reason}))
-        return 1
+        # The run could not even start (another run held the lock): still a report.
+        result = {'schemaVersion': SCHEMA, 'state': 'failed', 'reason': failure.reason}
+        if args.command == 'apply':
+            result['apply'] = report(args.approval, 'failed', failure.reason)
     print(json.dumps(result, sort_keys=True))
     return 0
 

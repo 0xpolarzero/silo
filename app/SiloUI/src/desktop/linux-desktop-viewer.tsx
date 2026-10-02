@@ -10,6 +10,7 @@ import { DesktopActionsMenu, NativeDesktopActionsMenu, type DesktopMenuProps } f
 
 // Guest pages draw inside Silo's window, so anything inside the frame,
 // including dialogs that look like Silo's, comes from the sandbox (G-20).
+const DOWNLOAD_RETRY_HINT = "Setup becomes possible once the ChatGPT download finishes: use Retry in Settings, Computers, or on the sandbox's page."
 const GUEST_CONTENT_NOTICE = "Everything inside the amber frame comes from the sandbox. Silo's own controls are only in this bar."
 
 export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry, onFullscreen, screenRef, lcuUpdated = false, MenuComponent = DesktopActionsMenu }: {
@@ -36,6 +37,8 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
   // v4 sandboxes report computer use as a unit; older ones report the legacy LCU fields.
   const computerUse = state?.computerUse
   const computerUseBusy = computerUse?.state === "installing" || computerUse?.state === "preparing"
+  // A failed ChatGPT download is the host's, and setting up the sandbox cannot fix it.
+  const downloadFailed = computerUse?.state === "failed" && computerUse.cause === "app-download"
   const lcuStatus = computerUse ? null : state?.lcuState === "needs-runtime" ? "LCU requires the official ChatGPT app in this sandbox"
     : state?.lcuState === "not-installed" ? "LCU is not set up"
       : state?.lcuState === "installing" ? "Setting up LCU…"
@@ -63,8 +66,9 @@ export function LinuxDesktopViewer({ name, state, busy, error, onAction, onRetry
           {running && state.lcuState !== "ready" && state.lcuState !== "installing" && <Button size="xs" variant="ghost" disabled={busy} aria-label="Set up LCU" onClick={() => onAction("setup-lcu")}>Set up LCU</Button>}
         </div>}
         {state?.installed && state.state !== "vm-stopped" && computerUse && <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
-          <span role={computerUseBusy ? "status" : undefined} title={computerUse.reason ?? "Approvals and details are in the sandbox's page."} className="truncate">Computer use: {computerUseLabel(computerUse.state)}</span>
-          {running && !computerUseBusy && <Button size="xs" variant="ghost" disabled={busy} title="Use after installing a new agent in this sandbox." onClick={() => onAction("setup-computer-use")}>Set up computer use</Button>}
+          <span role={computerUseBusy ? "status" : undefined} title={computerUse.reason ?? "Approvals and details are in the sandbox's page."} className="truncate">Computer use: {computerUseLabel(computerUse.state, computerUse.cause)}</span>
+          {running && !computerUseBusy && <Button size="xs" variant="ghost" disabled={busy || downloadFailed} title={downloadFailed ? DOWNLOAD_RETRY_HINT : "Use after installing a new agent in this sandbox."} onClick={() => onAction("setup-computer-use")}>Set up computer use</Button>}
+          {running && downloadFailed && <span className="truncate" title={DOWNLOAD_RETRY_HINT}>{DOWNLOAD_RETRY_HINT}</span>}
         </div>}
         {streamNeedsRecovery && <div role="alert" className="flex min-w-0 items-center gap-1 text-xs text-destructive">
           <CircleAlert aria-hidden="true" className="size-3.5 shrink-0" /><span className="truncate">Display disconnected</span>

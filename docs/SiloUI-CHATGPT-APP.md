@@ -323,7 +323,8 @@ The mount, guest flow and commands are in `computer_use.rs`; the guest side in
   what makes the importing computer mount its own folder. Pre-v4 VMs never get
   the mount.
 - **Guest.** Silo pushes the helper and the pinned pair into the guest and runs
-  `sync` after every boot (detached) and when the app becomes ready; see
+  `apply` after every boot and when the app becomes ready, on a host background
+  thread within a bound; see
   [Linux desktop](SiloUI-DESKTOP.md#built-in-computer-use).
 - **Evidence** (2026-10-02, macOS arm64, MicroSandbox 0.7.6, real v4 image and
   real app): a fresh VM mounted the folder read-only (`ro` in `/proc/mounts`,

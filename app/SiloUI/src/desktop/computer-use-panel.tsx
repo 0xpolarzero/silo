@@ -112,11 +112,18 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
   const switchId = useId()
   const auto = computerUse.approval === "auto"
   const unknownApproval = computerUse.approval === "unknown"
-  // The guest applied another mode than the one chosen (a change pending or failed). `unknown`
-  // says nothing either way, so it never warns on its own.
+  // Silo drives the sandbox toward the chosen mode itself and keeps the last result: the switch
+  // shows the choice, `approvalApply` how applying it stands, `appliedApproval` the last mode that was applied.
+  const apply = computerUse.approvalApply
   const applied = computerUse.appliedApproval
-  const unapplied = !unknownApproval && applied !== "unknown" && applied !== computerUse.approval
-  const stillAuto = unapplied && applied === "auto"
+  const applying = apply === "pending" && running
+  const waitsForStart = apply === "pending" && !running && applied !== "unknown" && applied !== computerUse.approval
+  // After choosing ask, agents may still act without asking when the previous applied mode was auto, only
+  // some agents were changed, or the change failed and nothing says ask is in place.
+  const mayActWithoutAsking = computerUse.approval === "ask" && (applied === "auto" || apply === "partial" || (apply === "failed" && applied !== "ask"))
+  const mayStillAsk = computerUse.approval === "auto" && (apply === "partial" || apply === "failed") || (computerUse.approval === "auto" && apply === "pending" && applied === "ask")
+  const problem = apply === "failed" ? "Silo could not apply the approval change." : apply === "partial" ? "Silo changed the approval setting for only some agents." : null
+  const showApproval = !unknownApproval && (problem || (apply === "pending" && (mayActWithoutAsking || mayStillAsk)))
   const downloadFailed = computerUse.state === "failed" && computerUse.cause === "app-download"
   const setupDisabled = busy || !running || downloadFailed || computerUse.state === "installing" || computerUse.state === "preparing"
   const details = [
@@ -140,7 +147,7 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
     <div className="flex items-start justify-between gap-3">
       <label htmlFor={switchId} className="min-w-0">
         Allow without asking
-        <span className="mt-1 block text-[11px] text-muted-foreground">Agents that ask before using the computer, such as Claude Code and Codex, stop asking in this sandbox. Other agents may not ask either way. It does not limit what an agent can do in accounts you are signed in to inside this sandbox.</span>
+        <span className="mt-1 block text-[11px] text-muted-foreground">Agents that ask before using the computer, such as Claude Code and Codex, stop asking in this sandbox. Other agents may not ask either way. It does not limit what an agent can do in accounts you are signed in to inside this sandbox. The switch configures the agents' approval prompts; it is not a security boundary inside the sandbox.</span>
       </label>
       <Switch id={switchId} checked={auto} disabled={busy || unknownApproval} onCheckedChange={checked => onApproval(checked ? "auto" : "ask")} />
     </div>
@@ -148,11 +155,15 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
       <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
       <span className="min-w-0 break-words">Silo could not read this sandbox's approval setting. Agents may be running without asking. Changes are disabled until it can be read.</span>
     </p>}
-    {unapplied && <p role="note" className={stillAuto ? "flex items-start gap-1.5 text-amber-700 dark:text-amber-400" : "flex items-start gap-1.5 text-muted-foreground"}>
+    {applying && <p role="status" className="text-muted-foreground">Applying…</p>}
+    {waitsForStart && <p className="text-muted-foreground">Applied when the sandbox starts.</p>}
+    {showApproval && <p role="note" className={mayActWithoutAsking ? "flex items-start gap-1.5 text-amber-700 dark:text-amber-400" : "flex items-start gap-1.5 text-muted-foreground"}>
       <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
-      <span className="min-w-0 break-words">{stillAuto
-        ? "Agents in this sandbox can still act without asking until this change is applied."
-        : "Agents in this sandbox still ask first until this change is applied."}</span>
+      <span className="min-w-0 break-words">
+        {problem}{problem && computerUse.approvalApplyReason ? ` ${computerUse.approvalApplyReason}` : ""}{problem ? " " : ""}
+        {mayActWithoutAsking ? `Some agents in this sandbox may still act without asking${apply === "pending" ? " until this change is applied" : ""}.`
+          : mayStillAsk ? `Some agents in this sandbox may still ask first${apply === "pending" ? " until this change is applied" : ""}.` : null}
+      </span>
     </p>}
     <div className="flex items-center justify-between gap-3">
       <span className="min-w-0 text-[11px] text-muted-foreground">Use after installing a new agent in this sandbox.{!running && " Start the sandbox first."}{downloadFailed && " It becomes possible once the ChatGPT download finishes: use Retry above."}</span>
@@ -212,9 +223,16 @@ export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: st
       setState(next); setLoadError(null)
       if (announce && next.computerUse?.state === "ready") setNotice(announce)
     }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setState(previous) }
+    catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+      // The change may have been stored or even applied before it failed to answer: show what the
+      // sandbox's own state says now, not the snapshot from before the change. Only when that read
+      // fails too does the old snapshot stand, with its read error.
+      try { setState(await bridge?.readState(workspace) ?? previous); setLoadError(null) }
+      catch (readCause) { setLoadError(readCause instanceof Error ? readCause.message : String(readCause)); setState(previous) }
+    }
     finally { working.current = false; setBusy(false) }
-  }, [state])
+  }, [bridge, state, workspace])
   if (!bridge) return null
   if (!state) return loadError ? <LoadFailure message={loadError} onReload={() => { void refresh() }} /> : null
   const computerUse = state.computerUse
@@ -225,7 +243,7 @@ export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: st
   return <ComputerUsePanel computerUse={computerUse} running={state.state === "running"} busy={busy} error={error} loadError={loadError} notice={notice}
     onDismissError={() => setError(null)} onReload={() => { void refresh() }}
     chatGpt={needsApp ? <ChatGptAppStatusView store={bridge.chatGptFor(computerOfWorkspace(workspace))} retry={downloadFailed} fallbackReason={downloadFailed ? computerUse.reason : null} /> : undefined}
-    onApproval={mode => { void run(() => bridge.setApproval(workspace, mode), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, approval: mode } : current.computerUse })) }}
+    onApproval={mode => { void run(() => bridge.setApproval(workspace, mode), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, approval: mode, approvalApply: "pending", approvalApplyReason: null } : current.computerUse })) }}
     onSetup={() => { void run(() => bridge.setup(workspace), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, state: "installing", reason: null } : current.computerUse }), SETUP_DONE) }} />
 }
 

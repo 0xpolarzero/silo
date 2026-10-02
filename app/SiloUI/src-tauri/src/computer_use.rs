@@ -3,8 +3,10 @@
 //! Every such VM mounts the computer's published ChatGPT app folder read-only at
 //! `/opt/silo/chatgpt` (see `chatgpt_app`). After each boot, and whenever the app
 //! becomes ready, Silo pushes `guest/silo-computer-use.py` and the pinned
-//! app/LCU pair into the guest and runs its `sync`, which installs LCU against the
-//! mounted app and runs `lcu setup` with the VM's approval mode. See
+//! app/LCU pair into the guest and runs its `apply`, which installs LCU against the
+//! mounted app and runs `lcu setup` with the VM's approval mode. The host drives the
+//! guest toward the mode the user chose and remembers how each attempt ended; the guest
+//! is a plain executor. See
 //! `docs/SiloUI-CHATGPT-APP.md` and `docs/SiloUI-COMPUTER-USE-PLAN.md`.
 use crate::{
     chatgpt_app::{self, DebArch, Status},
@@ -27,9 +29,11 @@ pub(crate) const GUEST_MOUNT: &str = "/opt/silo/chatgpt";
 const HELPER: &str = include_str!("../guest/silo-computer-use.py");
 const LCU_LOCK: &str = include_str!("../guest/lcu-lock.json");
 const GUEST_HELPER: &str = "/usr/local/libexec/silo-computer-use";
-const SYNC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
-/// How long the host waits for the detached helper to be started (about a second).
-const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
+/// The most one run of the guest helper may take (install, setup and the readiness check
+/// with its bounded wait for the desktop session), and the host's allowance on top of it
+/// for starting the command and collecting its output.
+const APPLY_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+const APPLY_GRACE: Duration = Duration::from_secs(60);
 
 // ------------------------------------------------------------- approval
 
@@ -78,48 +82,81 @@ pub(crate) struct Known {
     agents: Option<Vec<String>>,
 }
 
-/// The VM's approval policy: what the user chose and the revision of that choice.
-/// Kept in `<storage>/computer-use/<id>.json`. Only a user change, a fork or the first
-/// sync of an unstamped policy writes it; observations live in another file, so
-/// reading and reporting status can never overwrite a newer choice.
+/// How one run of the guest helper ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Outcome {
+    Applied,
+    Failed,
+    /// `lcu setup` configured some agents and failed for others.
+    Partial,
+}
+
+impl Outcome {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "applied" => Some(Self::Applied),
+            "failed" => Some(Self::Failed),
+            "partial" => Some(Self::Partial),
+            _ => None,
+        }
+    }
+}
+
+/// The last attempt to apply an approval mode in the guest: what was tried and how it
+/// ended. Kept until a later attempt replaces it; nothing is assumed rolled back.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Attempt {
+    pub(crate) mode: Approval,
+    pub(crate) outcome: Outcome,
+    /// Seconds since the Unix epoch.
+    pub(crate) at: u64,
+    /// A stable code (see `reason_text`); only for a failure or a partial application.
+    #[serde(default)]
+    pub(crate) reason: Option<String>,
+}
+
+/// The VM's approval policy, kept in `<storage>/computer-use/<id>.json`: the mode the user
+/// chose (`approval`, the desired one), the last mode that was applied completely
+/// (`applied`) and the last attempt. Only a user change, a fork or an apply writes it, all
+/// under one lock, so a status read never changes it. Files of older versions carry a
+/// revision and a generation; they are ignored.
 ///
-/// The host is authoritative: a policy carries a random `generation`, issued when Silo
-/// first creates the VM's policy (a new, imported, transferred or forked VM, or a policy
-/// that was lost) and renewed when the host finds the guest holding a revision it never
-/// issued. The revision increases with every change within a generation. The guest
-/// accepts any request whose generation differs from the one it holds (the host wins
-/// over whatever the guest's untrusted disk carries, including a future-dated revision)
-/// and orders revisions only within one generation, which keeps a delayed sync that
-/// captured an earlier mode from undoing a later change.
+/// The switch is a convenience, not a security boundary: agents in the VM have root and
+/// can edit their own harness settings. The host therefore only drives the guest toward
+/// the chosen mode and remembers how that went.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Policy {
     #[serde(default)]
     pub(crate) approval: Approval,
     #[serde(default)]
-    pub(crate) revision: u64,
-    /// Empty until the policy is stamped by its first sync or change.
+    pub(crate) applied: Option<Approval>,
     #[serde(default)]
-    pub(crate) generation: String,
+    pub(crate) last: Option<Attempt>,
+}
+
+impl Policy {
+    /// Whether the guest must be driven toward the chosen mode: no attempt yet, the last
+    /// one was for another mode, or it did not apply completely.
+    pub(crate) fn needs_apply(&self) -> bool {
+        self.last
+            .as_ref()
+            .is_none_or(|last| last.mode != self.approval || last.outcome != Outcome::Applied)
+    }
 }
 
 /// Per-VM computer-use settings as read: the policy plus the last observation.
 /// Removed with the VM.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Settings {
-    #[serde(default)]
     pub(crate) approval: Approval,
-    #[serde(default)]
-    pub(crate) revision: u64,
-    #[serde(default)]
+    pub(crate) applied: Option<Approval>,
+    pub(crate) last: Option<Attempt>,
     pub(crate) known: Option<Known>,
-    /// The policy's generation (empty until stamped); never serialized.
-    #[serde(skip)]
-    pub(crate) generation: String,
     /// The policy file exists but cannot be read, so `approval` is only the fail-closed
-    /// default and the user's choice is unknown; never serialized.
-    #[serde(skip)]
+    /// default and the user's choice is unknown.
     pub(crate) unreadable: bool,
 }
 
@@ -170,15 +207,11 @@ pub(crate) fn settings(paths: &RuntimePaths, id: &str) -> Settings {
     let policy = checked.unwrap_or_default();
     Settings {
         approval: policy.approval,
-        revision: policy.revision,
+        applied: policy.applied,
+        last: policy.last,
         known: read_json(observed_path(paths, id)),
-        generation: policy.generation,
         unreadable,
     }
-}
-
-fn new_generation() -> String {
-    uuid::Uuid::new_v4().to_string()
 }
 
 fn write_atomic<T: Serialize>(
@@ -203,91 +236,61 @@ fn lock_policies() -> std::sync::MutexGuard<'static, ()> {
     POLICY_LOCK.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn unix_millis() -> u64 {
+fn unix_seconds() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_millis() as u64)
+        .map_or(0, |elapsed| elapsed.as_secs())
 }
 
-/// A revision above `previous` and, normally, above any older computer's.
-fn next_revision(previous: u64) -> u64 {
-    previous.saturating_add(1).max(unix_millis())
-}
-
-/// Stores a new approval choice and returns its revision.
+/// Stores a new approval choice and returns the stored policy. The last attempt is kept:
+/// it is compared with the choice, never rewritten by it.
 pub(crate) fn set_approval(
-    paths: &RuntimePaths,
-    id: &str,
-    approval: Approval,
-) -> Result<u64, RuntimeError> {
-    set_approval_policy(paths, id, approval).map(|policy| policy.revision)
-}
-
-/// Stores a new approval choice and returns the stored policy.
-fn set_approval_policy(
     paths: &RuntimePaths,
     id: &str,
     approval: Approval,
 ) -> Result<Policy, RuntimeError> {
     let _lock = lock_policies();
-    let previous = read_policy(paths, id);
-    let policy = Policy {
-        approval,
-        revision: next_revision(previous.revision),
-        generation: if previous.generation.is_empty() {
-            new_generation()
-        } else {
-            previous.generation
-        },
+    // An unreadable file is replaced: the user's explicit choice repairs it.
+    let mut policy = read_policy(paths, id);
+    policy.approval = approval;
+    write_atomic(paths, policy_path(paths, id), &policy)?;
+    Ok(policy)
+}
+
+/// Remembers how an attempt to apply a mode ended. Touches only the attempt (and the
+/// last applied mode), never the user's choice, and writes nothing when the policy file
+/// cannot be read (the choice would be lost).
+fn record_attempt(paths: &RuntimePaths, id: &str, attempt: Attempt) {
+    let _lock = lock_policies();
+    let Some(mut policy) = read_policy_checked(paths, id) else {
+        return;
     };
-    write_atomic(paths, policy_path(paths, id), &policy)?;
-    Ok(policy)
-}
-
-/// The policy a sync carries. A policy that was never stamped (a new, imported,
-/// transferred, forked or lost one) gets a fresh generation and a revision first, so the
-/// guest takes it whatever its disk carries.
-fn sync_policy(paths: &RuntimePaths, id: &str) -> Result<Policy, RuntimeError> {
-    let _lock = lock_policies();
-    let mut policy = read_policy(paths, id);
-    if policy.revision == 0 || policy.generation.is_empty() {
-        policy.revision = next_revision(policy.revision);
-        policy.generation = new_generation();
-        let _ = write_atomic(paths, policy_path(paths, id), &policy);
+    if attempt.outcome == Outcome::Applied {
+        policy.applied = Some(attempt.mode);
     }
-    Ok(policy)
+    policy.last = Some(attempt);
+    let _ = write_atomic(paths, policy_path(paths, id), &policy);
 }
 
-/// Starts a new generation of the VM's policy: the guest holds a revision this computer
-/// never issued, so its record cannot be trusted to order anything.
-fn renew_generation(paths: &RuntimePaths, id: &str) -> Result<Policy, RuntimeError> {
+/// The policy an apply works from. A policy file that cannot be read is replaced by the
+/// default (ask) first: the user's choice is already lost, and failing closed keeps the
+/// guest from running with a mode nobody chose.
+fn policy_for_apply(paths: &RuntimePaths, id: &str) -> Policy {
     let _lock = lock_policies();
-    let mut policy = read_policy(paths, id);
-    policy.generation = new_generation();
-    policy.revision = policy.revision.max(1);
-    write_atomic(paths, policy_path(paths, id), &policy)?;
-    Ok(policy)
+    match read_policy_checked(paths, id) {
+        Some(policy) => policy,
+        None => {
+            let policy = Policy::default();
+            let _ = write_atomic(paths, policy_path(paths, id), &policy);
+            policy
+        }
+    }
 }
 
-/// Whether the guest reports an applied revision of the VM's current generation that is
-/// above anything this computer issued (forged or corrupt: it would make the guest
-/// ignore the host's later choices). Compared with the policy read now, never the one
-/// a sync carried, because newer changes may have been issued meanwhile.
-fn guest_forged(status: &Value, policy: &Policy) -> bool {
-    !policy.generation.is_empty()
-        && status.get("approvalGeneration").and_then(Value::as_str)
-            == Some(policy.generation.as_str())
-        && status
-            .get("approvalRevision")
-            .and_then(Value::as_u64)
-            .is_some_and(|applied| applied > policy.revision)
-}
-
-/// A fork starts with its source's approval mode and nothing else.
+/// A fork starts with its source's approval mode and nothing else: its guest disk
+/// carries the source's configuration, so no attempt is known and its first boot applies.
 pub(crate) fn inherit_settings(paths: &RuntimePaths, from: &str, to: &str) {
     let _lock = lock_policies();
-    // Only the mode: the fork's guest disk carries the source's record, so the fork is
-    // stamped with a generation of its own by its first sync.
     let approval = read_policy(paths, from).approval;
     let _ = write_atomic(
         paths,
@@ -299,7 +302,9 @@ pub(crate) fn inherit_settings(paths: &RuntimePaths, from: &str, to: &str) {
     );
 }
 
-/// Removes the settings of a deleted VM.
+/// Removes the settings of a deleted VM, or of an imported one: an import or transfer
+/// starts from the destination's default (ask) with no attempt known, so its first boot
+/// applies the default over whatever configuration the imported disk carries.
 pub(crate) fn forget(paths: &RuntimePaths, id: &str) {
     let _lock = lock_policies();
     for path in [policy_path(paths, id), observed_path(paths, id)]
@@ -308,10 +313,6 @@ pub(crate) fn forget(paths: &RuntimePaths, id: &str) {
     {
         let _ = fs::remove_file(path);
     }
-    APPLY_FAILED
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(id);
 }
 
 /// Records what the guest last reported. Touches only the observation file.
@@ -321,39 +322,41 @@ fn remember(paths: &RuntimePaths, id: &str, known: Known) {
     }
 }
 
-/// VM id -> the approval revision whose application failed, so the state can say so
-/// instead of waiting forever for the guest to catch up.
-static APPLY_FAILED: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+/// VM id -> the number of applies scheduled or running for it, so the state says
+/// `pending` while one is on its way.
+static PENDING: Mutex<BTreeMap<String, usize>> = Mutex::new(BTreeMap::new());
 
-/// Records the outcome of applying `revision`. Outcomes arrive out of order (an older
-/// launcher can finish after a newer change failed), so a success clears only failures
-/// at or below its own revision, and a failure never lowers a newer recorded one.
-fn record_apply(id: &str, revision: u64, succeeded: bool) {
-    let mut failed = APPLY_FAILED.lock().unwrap_or_else(|p| p.into_inner());
-    if succeeded {
-        if failed.get(id).is_some_and(|recorded| *recorded <= revision) {
-            failed.remove(id);
-        }
-    } else {
-        let recorded = failed.entry(id.to_owned()).or_insert(revision);
-        *recorded = (*recorded).max(revision);
+/// Held by an apply from its scheduling until it ends, whatever the outcome.
+struct Pending(String);
+
+impl Pending {
+    fn begin(id: &str) -> Self {
+        *PENDING
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(id.to_owned())
+            .or_default() += 1;
+        Self(id.to_owned())
     }
 }
 
-#[cfg(test)]
-fn forget_failure(id: &str) {
-    APPLY_FAILED
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .remove(id);
+impl Drop for Pending {
+    fn drop(&mut self) {
+        let mut pending = PENDING.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(count) = pending.get_mut(&self.0) {
+            *count -= 1;
+            if *count == 0 {
+                pending.remove(&self.0);
+            }
+        }
+    }
 }
 
-fn apply_failed(id: &str, revision: u64) -> bool {
-    APPLY_FAILED
+fn is_pending(id: &str) -> bool {
+    PENDING
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .get(id)
-        .is_some_and(|failed| *failed >= revision)
+        .contains_key(id)
 }
 
 // ---------------------------------------------------------------- mount
@@ -533,78 +536,90 @@ install -m 0644 -o root -g root \"$cu_stage/pinned.json\" /var/lib/silo-computer
     )
 }
 
-fn policy_arguments(policy: &Policy) -> String {
-    format!(
-        " --approval {} --revision {} --generation {}",
-        policy.approval.as_str(),
-        policy.revision,
-        policy.generation
-    )
-}
-
-fn sync_command(policy: Option<&Policy>, force: bool) -> String {
-    let mut command = format!("{GUEST_HELPER} sync");
-    if force {
-        command.push_str(" --force");
-    }
-    if let Some(policy) = policy {
-        command.push_str(&policy_arguments(policy));
-    }
-    command
-}
-
 /// The guest command that reads computer-use status (empty object when no helper yet).
 pub(crate) const STATUS_COMMAND: &str =
     "if [ -x /usr/local/libexec/silo-computer-use ]; then /usr/local/libexec/silo-computer-use status; else printf '%s\\n' '{}'; fi";
 
-/// Pushes the helper and runs `sync` to completion; returns the helper's status.
-fn sync_now(
-    runner: &dyn RuntimeRunner,
-    paths: &RuntimePaths,
-    name: &str,
-    policy: &Policy,
-    force: bool,
-) -> Result<Value, RuntimeError> {
-    let pinned = pinned(DebArch::host().map_err(|e| RuntimeError::Unavailable(e.message))?)
-        .map_err(RuntimeError::Unavailable)?;
-    let output = desktop::guest(
-        runner,
-        paths,
-        name,
-        &guest_script(&pinned, &sync_command(Some(policy), force)),
-        SYNC_TIMEOUT,
-        false,
-    )?;
-    serde_json::from_str(output.lines().last().unwrap_or("").trim())
-        .map_err(|_| RuntimeError::Malformed("Computer use returned an invalid status.".into()))
+fn apply_command(mode: Approval, force: bool, boot: bool) -> String {
+    let mut command = format!("{GUEST_HELPER} apply --approval {}", mode.as_str());
+    if force {
+        command.push_str(" --force");
+    }
+    if boot {
+        command.push_str(" --boot");
+    }
+    command
 }
 
-/// Starts `sync` in the background (it can take minutes the first time) and returns at
-/// once. The guest keeps running it after the command that launched it ends.
-fn sync_detached(
+/// What one helper run reported about the approval it was asked to apply.
+#[derive(Debug, PartialEq, Eq)]
+enum Report {
+    /// The run reached `lcu setup` (or found it done) and ended this way.
+    Done(Outcome, Option<String>),
+    /// The guest cannot apply yet because the ChatGPT app is not there. Not a result:
+    /// the next boot or the app becoming ready applies.
+    NotReady,
+}
+
+type Run = Result<(Value, Report), RuntimeError>;
+
+/// Runs the guest helper's `apply` to completion (never detached) within `APPLY_TIMEOUT`
+/// and returns its status and the report of the run.
+fn run_helper(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
-    policy: &Policy,
-) -> Result<(), RuntimeError> {
+    mode: Approval,
+    force: bool,
+    boot: bool,
+) -> Run {
     let pinned = pinned(DebArch::host().map_err(|e| RuntimeError::Unavailable(e.message))?)
         .map_err(RuntimeError::Unavailable)?;
-    let command = format!(
-        "( setsid {GUEST_HELPER} sync --boot{} >/dev/null 2>&1 </dev/null & )",
-        policy_arguments(policy)
-    );
-    // The helper runs detached in the guest: the host only starts it, so an unresponsive
-    // guest is given up on quickly instead of holding the VM's operation turn.
-    desktop::guest_within(
+    let output = desktop::guest_within(
         runner,
         paths,
         name,
-        &guest_script(&pinned, &command),
-        LAUNCH_TIMEOUT,
-        LAUNCH_TIMEOUT,
+        &guest_script(&pinned, &apply_command(mode, force, boot)),
+        APPLY_TIMEOUT,
+        APPLY_GRACE,
         false,
-    )
-    .map(drop)
+    )?;
+    let malformed = || RuntimeError::Malformed("Computer use returned an invalid status.".into());
+    let status: Value = serde_json::from_str(output.lines().last().unwrap_or("").trim())
+        .map_err(|_| malformed())?;
+    let report = status.get("apply").ok_or_else(malformed)?;
+    let outcome = report
+        .get("outcome")
+        .and_then(Value::as_str)
+        .and_then(Outcome::parse)
+        .ok_or_else(malformed)?;
+    let reason = report
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let report = match (outcome, reason.as_deref()) {
+        (Outcome::Failed, Some("app-missing" | "not-configured")) => Report::NotReady,
+        _ => Report::Done(outcome, reason),
+    };
+    Ok((status, report))
+}
+
+/// The attempt to remember for a run, `None` when it was not an attempt at all.
+fn attempt_of(mode: Approval, run: &Run) -> Option<Attempt> {
+    let (outcome, reason) = match run {
+        Ok((_, Report::NotReady)) => return None,
+        Ok((_, Report::Done(outcome, reason))) => (*outcome, reason.clone()),
+        Err(RuntimeError::Cancelled { .. }) => (Outcome::Failed, Some("cancelled".into())),
+        Err(RuntimeError::TimedOut { .. }) => (Outcome::Failed, Some("timed-out".into())),
+        Err(RuntimeError::Malformed(_)) => (Outcome::Failed, Some("invalid-report".into())),
+        Err(_) => (Outcome::Failed, Some("unreachable".into())),
+    };
+    Some(Attempt {
+        mode,
+        outcome,
+        at: unix_seconds(),
+        reason,
+    })
 }
 
 // ---------------------------------------------------------------- hooks
@@ -617,7 +632,7 @@ fn built_in_machine(paths: &RuntimePaths, name: &str) -> Option<MachineConfigura
         .find(|machine| machine.is_vm() && machine.name() == name && is_built_in(machine))
 }
 
-/// A runner the background sync can own.
+/// A runner the background apply can own.
 pub(crate) type SharedRunner = Arc<dyn RuntimeRunner + Send + Sync>;
 
 /// A running VM's identity: the runtime instance that is running now and the Silo VM id
@@ -646,34 +661,18 @@ fn running_identity(
         .filter(|instance| !instance.is_empty())
 }
 
-/// How long a queued sync waits for its turn before it gives up (the next boot or app
-/// start syncs again).
+/// How long a queued apply waits for its turn before it gives up (the next boot or app
+/// start applies again).
 const GATE_WAIT: Duration = Duration::from_secs(10 * 60);
 
-/// After a VM boots (start or restore): installs and configures computer use in the
-/// background. Returns at once, never fails the boot, and never waits for the guest:
-/// pushing the helper and starting its sync run on a host thread (returned for tests).
-///
-/// The thread takes the VM's operation turn, so a stop, delete or recreate cannot
-/// replace the named VM between the identity check and the launcher; inside the turn it
-/// confirms that the VM is the same recorded machine, the same labelled running
-/// instance Silo saw at boot, and only then reads the approval policy and launches. A VM
-/// whose identity could not be established at boot is never synced.
-pub(crate) fn after_boot(
-    runner: SharedRunner,
-    paths: &RuntimePaths,
-    name: &str,
-) -> Option<std::thread::JoinHandle<()>> {
-    after_boot_with(&runtime::OPERATIONS, runner, paths, name)
-}
-
-/// Label of the sync's queue entry; other work is never preempted by an identical one.
+/// Label of the apply's queue entry; other work is never preempted by an identical one.
 const SYNC_LABEL: &str = "Setting up computer use in";
 
-/// Ends the sync's turn quickly when work that must not wait queues for the same VM
-/// (stop, delete, quit): sets the running operation's cancel flag, which the runtime's
-/// polling loops observe by killing the child. The sync is retried at the next boot or
-/// app start, and a stopped VM has nothing to sync.
+/// Ends the apply's turn quickly when work that must not wait queues for it: a stop or
+/// delete of the same VM, or a computer-wide shutdown (Quit, update). Sets the running
+/// operation's cancel flag, which the runtime's polling loops observe by killing the
+/// child. The cut-short apply is recorded as such and tried again at the next boot or
+/// app start; a stopped VM has nothing to apply.
 struct Preempt {
     done: Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -685,6 +684,7 @@ impl Preempt {
         id: &str,
         token: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
+        use runtime::operation_gate::OperationKind;
         use std::sync::atomic::Ordering;
         let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let (flag, id) = (done.clone(), id.to_owned());
@@ -693,13 +693,15 @@ impl Preempt {
             .spawn(move || {
                 while !flag.load(Ordering::SeqCst) {
                     let blocked = gate.snapshot().waiting.iter().any(|entry| {
-                        entry.vm_id.as_deref() == Some(id.as_str())
-                            && !entry.label.starts_with(SYNC_LABEL)
-                            && matches!(
-                                entry.kind,
-                                runtime::operation_gate::OperationKind::Lifecycle
-                                    | runtime::operation_gate::OperationKind::Shutdown
-                            )
+                        !entry.label.starts_with(SYNC_LABEL)
+                            && match entry.kind {
+                                // Quit or update: computer-wide, whatever VM it names.
+                                OperationKind::Shutdown => true,
+                                OperationKind::Lifecycle => {
+                                    entry.vm_id.as_deref() == Some(id.as_str())
+                                }
+                                _ => false,
+                            }
                     });
                     if blocked {
                         token.store(true, Ordering::SeqCst);
@@ -722,19 +724,61 @@ impl Drop for Preempt {
     }
 }
 
-fn after_boot_with(
-    gate: &'static runtime::operation_gate::OperationGate,
+/// Why an apply runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Trigger {
+    /// A boot or the ChatGPT app becoming ready: always runs the helper, which installs
+    /// and sets up whatever is missing and is cheap when nothing is.
+    Boot,
+    /// The user changed the switch, or the app started and found the last attempt
+    /// incomplete: runs only while the VM's policy still needs it when its turn comes, so
+    /// a queued apply that an earlier one made redundant does nothing.
+    Change,
+}
+
+/// After a VM boots (start or restore): installs and configures computer use in the
+/// background. Returns at once, never fails the boot, and never waits for the guest:
+/// running the helper happens on a host thread (returned for tests).
+pub(crate) fn after_boot(
     runner: SharedRunner,
     paths: &RuntimePaths,
     name: &str,
 ) -> Option<std::thread::JoinHandle<()>> {
+    apply_with(&runtime::OPERATIONS, runner, paths, name, Trigger::Boot)
+}
+
+/// Drives a running built-in VM's guest toward the VM's chosen approval mode on a host
+/// thread, and returns the thread (for tests); `None` unless the VM is the running,
+/// labelled built-in one.
+///
+/// The thread takes the VM's operation turn, which is the per-VM lock that serializes
+/// applies (and any other work on the VM) and keeps a stop, delete or recreate from
+/// replacing the VM between the identity check and the helper. Inside the turn it
+/// confirms the VM is the same recorded machine and the same running instance, then reads
+/// the *current* choice and runs the helper synchronously within `APPLY_TIMEOUT`, so a
+/// queued apply never writes an older choice over a newer one. The turn is cancellable:
+/// it yields to a queued stop or delete of this VM and to Quit (`Preempt`). The outcome
+/// is recorded in every case, and the boot that scheduled the thread never waits for it.
+fn apply_with(
+    gate: &'static runtime::operation_gate::OperationGate,
+    runner: SharedRunner,
+    paths: &RuntimePaths,
+    name: &str,
+    trigger: Trigger,
+) -> Option<std::thread::JoinHandle<()>> {
     let machine = built_in_machine(paths, name)?;
     let id = machine.id().to_owned();
     let instance = running_identity(runner.as_ref(), paths, name, &id)?;
+    // Registered before the thread starts, so a state read right after a change says
+    // `pending` (and a boot that has nothing to change is not shown as applying).
+    let pending = read_policy(paths, &id)
+        .needs_apply()
+        .then(|| Pending::begin(&id));
     let (paths, name) = (paths.clone(), name.to_owned());
     std::thread::Builder::new()
-        .name("computer-use-sync".into())
+        .name("computer-use-apply".into())
         .spawn(move || {
+            let _pending = pending;
             let deadline = std::time::Instant::now() + GATE_WAIT;
             let Ok(turn) = gate
                 .kind(runtime::operation_gate::OperationKind::Other)
@@ -747,8 +791,6 @@ fn after_boot_with(
             else {
                 return;
             };
-            // The turn is cancellable and yields to a queued stop or delete, so an
-            // unresponsive guest never holds either up.
             turn.allow_cancel();
             let _preempt = Preempt::watch(gate, &id, turn.cancel_token());
             let same_vm = built_in_machine(&paths, &name).is_some_and(|m| m.id() == id)
@@ -757,158 +799,54 @@ fn after_boot_with(
             if !same_vm {
                 return;
             }
-            let policy = match sync_policy(&paths, &id) {
-                Ok(policy) => policy,
-                Err(error) => {
-                    eprintln!("Computer use could not be started in {name}: {error}");
-                    return;
-                }
-            };
-            let result = sync_detached(runner.as_ref(), &paths, &name, &policy);
-            // A launch that was cut short says nothing about the guest.
-            if matches!(result, Err(RuntimeError::Cancelled { .. })) {
+            let policy = policy_for_apply(&paths, &id);
+            let mode = policy.approval;
+            if trigger == Trigger::Change && !policy.needs_apply() {
                 return;
             }
-            record_apply(&id, policy.revision, result.is_ok());
-            if let Err(error) = result {
-                eprintln!("Computer use could not be started in {name}: {error}");
+            let run = run_helper(
+                runner.as_ref(),
+                &paths,
+                &name,
+                mode,
+                false,
+                trigger == Trigger::Boot,
+            );
+            if let Some(attempt) = attempt_of(mode, &run) {
+                record_attempt(&paths, &id, attempt);
+            }
+            match run {
+                Err(RuntimeError::Cancelled { .. }) | Ok(_) => {}
+                Err(error) => eprintln!("Computer use could not be applied in {name}: {error}"),
             }
         })
         .ok()
 }
 
-/// How a running guest compares with the VM's saved approval policy.
-#[derive(Debug, PartialEq, Eq)]
-enum Lag {
-    Current,
-    /// It applied an older revision, another generation's choice or another mode, or
-    /// has no helper at all: a sync installs and applies.
-    Behind,
-    /// The helper's status could not be read (the guest may still be starting).
-    Unknown,
-}
-
-/// Reads the helper's status and compares what the guest *applied* with the policy.
-fn guest_lag(runner: &dyn RuntimeRunner, paths: &RuntimePaths, name: &str, id: &str) -> Lag {
-    let Ok(output) = desktop::guest(
-        runner,
-        paths,
-        name,
-        STATUS_COMMAND,
-        Duration::from_secs(60),
-        false,
-    ) else {
-        return Lag::Unknown;
-    };
-    let Ok(status) = serde_json::from_str::<Value>(output.lines().last().unwrap_or("").trim())
-    else {
-        return Lag::Unknown;
-    };
-    // The policy is read after the status, so it is never older than what the guest
-    // reports applying.
-    let current = settings(paths, id);
-    let policy = Policy {
-        approval: current.approval,
-        revision: current.revision,
-        generation: current.generation.clone(),
-    };
-    if guest_forged(&status, &policy) {
-        let _ = renew_generation(paths, id);
-        return Lag::Behind;
-    }
-    let applied = status.get("approvalRevision").and_then(Value::as_u64);
-    let generation = status.get("approvalGeneration").and_then(Value::as_str);
-    match applied {
-        None => Lag::Behind,
-        Some(applied) => {
-            let behind = applied < current.revision
-                || status.get("approval").and_then(Value::as_str) != Some(current.approval.as_str())
-                // An unstamped policy was never issued to this guest.
-                || current.generation.is_empty()
-                || generation != Some(current.generation.as_str());
-            if behind {
-                Lag::Behind
-            } else {
-                Lag::Current
-            }
-        }
-    }
-}
-
-/// Waits between attempts to read a guest's status at app start, doubling: the guest
-/// may still be booting, or the runtime busy.
-const RECONCILE_RETRY: [Duration; 5] = [
-    Duration::from_secs(5),
-    Duration::from_secs(15),
-    Duration::from_secs(30),
-    Duration::from_secs(60),
-    Duration::from_secs(120),
-];
-
-/// One VM's reconciliation: reads the guest, launches a sync when it lags, and while the
-/// status cannot be read tries again after each of `retry`'s delays. Every attempt
-/// first confirms again that the VM is still the same recorded built-in machine and
-/// still runs, so a VM stopped, replaced or deleted meanwhile is left alone.
-fn reconcile_vm(
-    gate: &'static runtime::operation_gate::OperationGate,
-    runner: &SharedRunner,
-    paths: &RuntimePaths,
-    name: &str,
-    id: &str,
-    retry: &[Duration],
-) {
-    let mut attempt = 0;
-    loop {
-        let same_vm = built_in_machine(paths, name).is_some_and(|machine| machine.id() == id)
-            && running_identity(runner.as_ref(), paths, name, id).is_some();
-        if !same_vm {
-            return;
-        }
-        match guest_lag(runner.as_ref(), paths, name, id) {
-            Lag::Current => return,
-            Lag::Behind => {
-                if let Some(handle) = after_boot_with(gate, runner.clone(), paths, name) {
-                    let _ = handle.join();
-                }
-                return;
-            }
-            Lag::Unknown => {
-                let Some(delay) = retry.get(attempt) else {
-                    return;
-                };
-                attempt += 1;
-                std::thread::sleep(*delay);
-            }
-        }
-    }
-}
-
-/// At app start, after the runtime is ready: finishes approval changes that were saved
-/// but never launched (the app quit or crashed between saving a policy and starting
-/// its sync), or never applied (the guest's setup failed), so a running guest does not
-/// keep the old mode with "Applying approval change…" shown forever. Returns the
-/// threads started, one per VM (for tests).
+/// At app start, after the runtime is ready: finishes approval changes whose apply never
+/// ran, failed or was cut short (the app quit, the guest failed, the VM stopped), so a
+/// running guest does not keep an old mode. The host never reads the guest to decide:
+/// its own record of the last attempt is enough. Returns the threads started, one per
+/// VM that needs it (for tests).
 fn reconcile_in(
     gate: &'static runtime::operation_gate::OperationGate,
     runner: &SharedRunner,
     paths: &RuntimePaths,
     running: &[String],
-    retry: &'static [Duration],
 ) -> Vec<std::thread::JoinHandle<()>> {
     running
         .iter()
         .filter_map(|name| {
-            let id = built_in_machine(paths, name)?.id().to_owned();
-            let (runner, paths, name) = (runner.clone(), paths.clone(), name.clone());
-            std::thread::Builder::new()
-                .name("computer-use-reconcile".into())
-                .spawn(move || reconcile_vm(gate, &runner, &paths, &name, &id, retry))
-                .ok()
+            let machine = built_in_machine(paths, name)?;
+            read_policy(paths, machine.id())
+                .needs_apply()
+                .then_some(())?;
+            apply_with(gate, runner.clone(), paths, name, Trigger::Change)
         })
         .collect()
 }
 
-/// `reconcile_in` for every running VM of this computer. Runs on the caller's thread.
+/// `reconcile_in` for every running VM of this computer. Returns at once.
 pub(crate) fn reconcile(app: &AppHandle) {
     let Ok(paths) = runtime::runtime_paths(app) else {
         return;
@@ -917,16 +855,17 @@ pub(crate) fn reconcile(app: &AppHandle) {
         return;
     };
     let runner: SharedRunner = Arc::new(runtime::ProcessRunner);
-    for handle in reconcile_in(
-        &runtime::OPERATIONS,
-        &runner,
-        &paths,
-        &running,
-        &RECONCILE_RETRY,
-    ) {
-        let _ = handle.join();
+    let handles = reconcile_in(&runtime::OPERATIONS, &runner, &paths, &running);
+    if handles.is_empty() {
+        return;
     }
-    let _ = app.emit("silo://application-state-changed", ());
+    let app = app.clone();
+    std::thread::spawn(move || {
+        for handle in handles {
+            let _ = handle.join();
+        }
+        let _ = app.emit("silo://application-state-changed", ());
+    });
 }
 
 /// The ChatGPT app became ready: running built-in VMs set up computer use now instead
@@ -958,9 +897,21 @@ fn reason_text(code: &str) -> &'static str {
         "lcu-archive-unavailable" => "The LCU package is missing from this sandbox and could not be downloaded.",
         "lcu-archive-mismatch" | "lcu-archive-invalid" => "The LCU package did not pass verification.",
         "mount-missing" => "This sandbox has no shared ChatGPT folder. Create a new sandbox to use computer use.",
-        "approval-failed" => "Silo could not apply the approval change. Choose Set up computer use to retry.",
         "mount-writable" => "The shared ChatGPT folder is mounted writable; Silo refuses to use it.",
         _ => "Setup failed. Details are in /var/log/silo-computer-use.log in the sandbox.",
+    }
+}
+
+/// Why applying the approval mode failed or only partly worked, for the panel.
+fn approval_reason_text(code: &str) -> &'static str {
+    match code {
+        "cancelled" => "Applying was interrupted. Silo tries again when the sandbox starts.",
+        "timed-out" => "Applying took too long. Silo tries again when the sandbox starts.",
+        "unreachable" => "Silo could not reach the sandbox to apply it. Silo tries again when the sandbox starts.",
+        "invalid-report" => "The sandbox returned an unreadable answer. Silo tries again when the sandbox starts.",
+        "setup-partial" => "Some agents could not be configured. Details are in /var/log/silo-computer-use.log in the sandbox.",
+        "mount-missing" | "mount-writable" => reason_text(code),
+        _ => "Silo could not configure the agents' approval settings. Details are in /var/log/silo-computer-use.log in the sandbox.",
     }
 }
 
@@ -980,27 +931,56 @@ pub(crate) struct Inputs<'a> {
     /// The helper's `status` output, when the VM runs and reported one.
     pub(crate) guest: Option<&'a Value>,
     pub(crate) settings: &'a Settings,
-    /// Applying `settings.revision` in the guest already failed.
-    pub(crate) approval_failed: bool,
+    /// An apply of the chosen mode is scheduled or running.
+    pub(crate) pending: bool,
+}
+
+/// How applying the chosen mode stands: `applied`, `pending` (scheduled, running, or
+/// waiting for the sandbox to start), `failed` or `partial`. Judged against the *last
+/// attempt*, never the guest: a failed or partial attempt stays visible until a later one
+/// applies completely, and an attempt for another mode says nothing about this one.
+fn approval_apply(settings: &Settings, pending: bool) -> &'static str {
+    if pending {
+        return "pending";
+    }
+    match &settings.last {
+        Some(last) if last.mode == settings.approval => match last.outcome {
+            Outcome::Applied => "applied",
+            Outcome::Failed => "failed",
+            Outcome::Partial => "partial",
+        },
+        _ => "pending",
+    }
 }
 
 fn state_object(
     state: &str,
     reason: Option<&str>,
-    settings: &Settings,
+    inputs: &Inputs,
     details: Option<&Known>,
 ) -> Value {
+    let settings = inputs.settings;
     let known = details.cloned().unwrap_or_default();
+    let apply = approval_apply(settings, inputs.pending);
+    let apply_reason = settings
+        .last
+        .as_ref()
+        .filter(|_| matches!(apply, "failed" | "partial"))
+        .and_then(|last| last.reason.as_deref())
+        .map(approval_reason_text);
     json!({
         "state": state,
         "reason": reason,
         "compatibility": compat(known.compatibility.as_deref()),
         "warning": known.warning,
         // `approval` is what the user chose (unknown when the saved choice cannot be
-        // read); `appliedApproval` is what the guest confirmed applying, `unknown`
-        // whenever the guest has not said.
+        // read). `appliedApproval` is the last mode that was applied completely, `unknown`
+        // before any was, whatever the state of the app download or the guest. `approvalApply`
+        // is how applying the chosen mode stands.
         "approval": if settings.unreadable { "unknown" } else { settings.approval.as_str() },
-        "appliedApproval": "unknown",
+        "appliedApproval": settings.applied.map_or("unknown", Approval::as_str),
+        "approvalApply": apply,
+        "approvalApplyReason": apply_reason,
         "appVersion": known.app_version,
         "runtimeVersion": known.runtime_version,
         "lcuVersion": known.lcu_version,
@@ -1010,15 +990,14 @@ fn state_object(
 
 /// The `computerUse` object of the desktop state, plus what to remember for later.
 pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
-    let settings = inputs.settings;
-    let known = settings.known.as_ref();
+    let known = inputs.settings.known.as_ref();
     match inputs.app {
         None => {
             return (
                 state_object(
                     "preparing",
                     Some("Checking the ChatGPT app."),
-                    settings,
+                    inputs,
                     known,
                 ),
                 None,
@@ -1029,7 +1008,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
                 state_object(
                     "preparing",
                     Some("Waiting to download ChatGPT for Linux."),
-                    settings,
+                    inputs,
                     known,
                 ),
                 None,
@@ -1040,7 +1019,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
                 state_object(
                     "preparing",
                     Some("Preparing ChatGPT for Linux."),
-                    settings,
+                    inputs,
                     known,
                 ),
                 None,
@@ -1053,13 +1032,13 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
         }) => {
             let reason = format!("{reason} Silo tries again automatically.");
             return (
-                state_object("preparing", Some(&reason), settings, known),
+                state_object("preparing", Some(&reason), inputs, known),
                 None,
             );
         }
         // The host download failed for good: setting up the guest cannot fix it.
         Some(Status::Failed { reason, .. }) => {
-            let mut state = state_object("failed", Some(reason), settings, known);
+            let mut state = state_object("failed", Some(reason), inputs, known);
             state["cause"] = json!("app-download");
             return (state, None);
         }
@@ -1070,7 +1049,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
             Some(known) => {
                 let reason = (known.state == "failed").then(|| reason_text("setup-failed"));
                 (
-                    state_object(&known.state, reason, settings, Some(known)),
+                    state_object(&known.state, reason, inputs, Some(known)),
                     None,
                 )
             }
@@ -1078,7 +1057,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
                 state_object(
                     "unavailable",
                     Some("Start the sandbox to set up computer use."),
-                    settings,
+                    inputs,
                     known,
                 ),
                 None,
@@ -1090,7 +1069,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
             state_object(
                 "unavailable",
                 Some("Computer use is not set up yet. Choose Set up computer use."),
-                settings,
+                inputs,
                 known,
             ),
             None,
@@ -1113,24 +1092,7 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
         }),
     };
     let reason = text("reason");
-    // The guest shows what it applied; a lag behind the user's choice is reported.
-    let applied_revision = guest
-        .get("approvalRevision")
-        .and_then(Value::as_u64)
-        .unwrap_or(0);
-    let applied = text("approval").as_deref().and_then(Approval::parse);
-    let applied_generation = text("approvalGeneration");
-    let approval_pending = applied_revision < settings.revision
-        || applied.is_some_and(|applied| applied != settings.approval)
-        // The guest still holds a choice of another generation (an import, a transfer or
-        // a fork) or one the host never issued.
-        || (!settings.generation.is_empty()
-            && applied_generation.as_deref() != Some(&settings.generation));
     let (state, reason): (&str, Option<String>) = match details.state.as_str() {
-        "ready" if approval_pending && inputs.approval_failed => {
-            ("failed", Some(reason_text("approval-failed").into()))
-        }
-        "ready" if approval_pending => ("installing", Some("Applying approval change…".into())),
         "ready" => ("ready", None),
         "installing" => ("installing", None),
         "failed" => (
@@ -1146,16 +1108,14 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
             Some("Computer use is not set up yet. Choose Set up computer use.".into()),
         ),
     };
-    let remembered = (matches!(state, "ready" | "failed") && !approval_pending).then(|| Known {
+    let remembered = matches!(state, "ready" | "failed").then(|| Known {
         state: state.into(),
         ..details.clone()
     });
-    let confirmed = guest.get("approvalConfirmed").and_then(Value::as_bool) == Some(true);
-    let mut object = state_object(state, reason.as_deref(), settings, Some(&details));
-    if let (true, Some(applied)) = (confirmed, applied) {
-        object["appliedApproval"] = json!(applied.as_str());
-    }
-    (object, remembered)
+    (
+        state_object(state, reason.as_deref(), inputs, Some(&details)),
+        remembered,
+    )
 }
 
 /// The `computerUse` object for `machine`, or `None` for a VM without built-in
@@ -1176,7 +1136,7 @@ pub(crate) fn desktop_state(
         vm_running,
         guest,
         settings: &current,
-        approval_failed: apply_failed(machine.id(), current.revision),
+        pending: is_pending(machine.id()),
     });
     if let Some(known) = remembered {
         remember(paths, machine.id(), known);
@@ -1186,63 +1146,64 @@ pub(crate) fn desktop_state(
 
 // -------------------------------------------------------- commands
 
-/// Syncs `policy` to completion. When the guest answers with a revision of this
-/// policy's generation that the host never issued, the generation is renewed and the sync
-/// repeated once, so the guest's untrusted record cannot hold the host's choice back.
-/// Returns the policy that was last sent and the outcome.
-fn sync_authoritative(
-    runner: &dyn RuntimeRunner,
-    paths: &RuntimePaths,
-    machine: &MachineConfiguration,
-    policy: Policy,
-    force: bool,
-) -> (Policy, Result<Value, RuntimeError>) {
-    let result = sync_now(runner, paths, machine.name(), &policy, force);
-    let Ok(status) = &result else {
-        return (policy, result);
-    };
-    if !guest_forged(status, &read_policy(paths, machine.id())) {
-        return (policy, result);
-    }
-    match renew_generation(paths, machine.id()) {
-        Ok(renewed) => {
-            let result = sync_now(runner, paths, machine.name(), &renewed, force);
-            (renewed, result)
-        }
-        Err(_) => (policy, result),
-    }
-}
-
 /// Runs setup (or re-runs it for agents installed later) in a running VM and returns
-/// the helper's status.
+/// the helper's status. The caller holds the VM's operation turn, so this cannot overlap
+/// a background apply; the run applies the chosen mode and records how that went.
 pub(crate) fn setup_with(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
     force: bool,
 ) -> Result<Value, RuntimeError> {
-    let policy = sync_policy(paths, machine.id())?;
-    let (policy, result) = sync_authoritative(runner, paths, machine, policy, force);
-    record_apply(machine.id(), policy.revision, result.is_ok());
-    result
+    let policy = policy_for_apply(paths, machine.id());
+    let mode = policy.approval;
+    let _pending = policy.needs_apply().then(|| Pending::begin(machine.id()));
+    let run = run_helper(runner, paths, machine.name(), mode, force, false);
+    if let Some(attempt) = attempt_of(mode, &run) {
+        record_attempt(paths, machine.id(), attempt);
+    }
+    run.map(|(status, _)| status)
 }
 
-/// Stores the VM's approval mode and, when it runs, applies it. A stopped VM
-/// picks it up at its next boot.
+/// Stores the VM's approval mode and, when it runs, applies it on a background thread
+/// (returned for tests): the change returns at once and the state says `pending` until
+/// the apply ends. A stopped VM picks it up at its next boot.
 pub(crate) fn apply_approval_with(
-    runner: &dyn RuntimeRunner,
+    runner: SharedRunner,
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
     approval: Approval,
     running: bool,
-) -> Result<(), RuntimeError> {
-    let policy = set_approval_policy(paths, machine.id(), approval)?;
-    if running {
-        let (policy, result) = sync_authoritative(runner, paths, machine, policy, false);
-        record_apply(machine.id(), policy.revision, result.is_ok());
-        result?;
+) -> Result<Option<std::thread::JoinHandle<()>>, RuntimeError> {
+    apply_approval_in(
+        &runtime::OPERATIONS,
+        runner,
+        paths,
+        machine,
+        approval,
+        running,
+    )
+}
+
+fn apply_approval_in(
+    gate: &'static runtime::operation_gate::OperationGate,
+    runner: SharedRunner,
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+    approval: Approval,
+    running: bool,
+) -> Result<Option<std::thread::JoinHandle<()>>, RuntimeError> {
+    let policy = set_approval(paths, machine.id(), approval)?;
+    if !running || !policy.needs_apply() {
+        return Ok(None);
     }
-    Ok(())
+    Ok(apply_with(
+        gate,
+        runner,
+        paths,
+        machine.name(),
+        Trigger::Change,
+    ))
 }
 
 /// Prepares the shared folder and the status cache at app start, then downloads the

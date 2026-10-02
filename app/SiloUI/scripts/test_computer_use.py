@@ -58,6 +58,8 @@ class Guest(unittest.TestCase):
                                    'runtime': '0.0.27/20260927214556-b77d38801cca'}}
         self.setup_output = 'Claude Code: MCP registered.\nCodex: MCP registered.\nCodex: hooks registered.\n'
         self.failures = {}
+        # What `lcu setup` exits with (it prints `setup_output` either way).
+        self.setup_code = 0
         # The desktop session: True (running), False (still starting), a state name, or
         # a list of states reported in turn (the last one repeats).
         self.session = True
@@ -68,7 +70,6 @@ class Guest(unittest.TestCase):
         patches = [
             mock.patch.object(cu, 'STATE', self.state),
             mock.patch.object(cu, 'PINNED', self.state / 'pinned.json'),
-            mock.patch.object(cu, 'APPROVAL', self.state / 'approval.json'),
             mock.patch.object(cu, 'RECEIPT', self.state / 'receipt.json'),
             mock.patch.object(cu, 'LOCK', self.state / 'lock'),
             mock.patch.object(cu, 'STAGE', self.state / 'stage'),
@@ -139,7 +140,7 @@ class Guest(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 1, stdout='', stderr='')
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(self.lcu_status), stderr='')
         if name == 'lcu' and argv[1:2] == ['setup']:
-            return subprocess.CompletedProcess(argv, 0, stdout=self.setup_output, stderr='')
+            return subprocess.CompletedProcess(argv, self.setup_code, stdout=self.setup_output, stderr='')
         if name == 'curl':
             Path(argv[argv.index('--output') + 1]).write_bytes(self.served.read_bytes())
         return subprocess.CompletedProcess(argv, 0, stdout='', stderr='')
@@ -179,7 +180,7 @@ class Status(Guest):
         self.assertEqual(cu.status()['state'], 'needs-app')
 
     def test_status_reads_the_receipt_only(self):
-        cu.sync()
+        cu.apply('ask')
         self.commands.clear()
         result = cu.status()
         self.assertEqual(self.commands, [], 'status never runs LCU')
@@ -188,10 +189,9 @@ class Status(Guest):
         self.assertEqual(result['appVersion'], '26.928.31416')
         self.assertEqual(result['lcuVersion'], '0.8.0')
         self.assertEqual(result['agents'], ['claude-code', 'codex'])
-        self.assertEqual(result['approval'], 'ask')
 
     def test_a_receipt_for_another_pair_does_not_count(self):
-        cu.sync()
+        cu.apply('ask')
         self.write_pinned(version='0.8.1')
         self.assertEqual(cu.status()['state'], 'not-set-up')
 
@@ -203,7 +203,7 @@ class Status(Guest):
             self.assertEqual(cu.status()['state'], 'installing')
 
     def test_the_mount_must_be_read_only_and_present(self):
-        cu.sync()
+        cu.apply('ask')
         for mount in ('missing', 'writable'):
             self.mount_state = mount
             result = cu.status()
@@ -224,9 +224,9 @@ class Status(Guest):
 REAL_MOUNT_STATE = cu.mount_state
 
 
-class Sync(Guest):
+class Apply(Guest):
     def test_first_sync_installs_in_place_sets_up_and_checks_the_doctor(self):
-        result = cu.sync()
+        result = cu.apply('ask')
         self.assertEqual(result['state'], 'ready')
         names = [Path(argv[0]).name for argv in self.lcu_commands()]
         self.assertEqual(names, ['install.sh', 'lcu', 'lcu', 'lcu-session'])
@@ -247,141 +247,131 @@ class Sync(Guest):
         self.assertEqual(receipt['archiveSha256'], self.sha)
 
     def test_the_archive_is_extracted_on_local_disk_and_cleaned_up(self):
-        cu.sync()
+        cu.apply('ask')
         install_cwd = next(cwd for argv, _, cwd in self.commands if argv[0].endswith('install.sh'))
         self.assertTrue(str(install_cwd).startswith(str(self.state / 'stage')))
         self.assertFalse((self.state / 'stage').exists())
 
     def test_an_up_to_date_vm_runs_nothing(self):
-        cu.sync()
+        cu.apply('ask')
         self.commands.clear()
-        result = cu.sync(boot=True)
+        result = cu.apply('ask', boot=True)
         self.assertEqual(result['state'], 'ready')
         self.assertEqual(self.commands, [])
 
     def test_a_changed_approval_reruns_setup_only(self):
-        cu.sync()
+        cu.apply('ask')
         self.commands.clear()
-        result = cu.sync(approval='auto')
-        self.assertEqual(result['approval'], 'auto')
-        self.assertEqual(json.loads((self.state / 'approval.json').read_text())['approval'], 'auto')
+        result = cu.apply('auto')
+        self.assertEqual(result['apply'], {'approval': 'auto', 'outcome': 'applied', 'reason': None})
         names = [Path(argv[0]).name for argv in self.lcu_commands()]
         self.assertNotIn('install.sh', names)
         setup = next(argv for argv, *_ in self.commands if argv[1:2] == ['setup'])
         self.assertEqual(setup[-2:], ['--approval', 'auto'])
         # An explicit ask is applied too (it removes the entries).
-        cu.sync(approval='ask')
+        self.assertEqual(cu.apply('ask')['apply']['outcome'], 'applied')
         self.assertEqual(self.receipt()['approval'], 'ask')
 
-    def test_a_delayed_older_approval_never_undoes_a_newer_one(self):
-        cu.sync(approval='auto', revision=5)
-        self.commands.clear()
-        # A boot sync launched earlier with the old mode arrives after the change to ask.
-        cu.sync(approval='ask', revision=7)
-        result = cu.sync(boot=True, approval='auto', revision=5)
-        self.assertEqual((result['approval'], result['approvalRevision']), ('ask', 7))
-        record = json.loads((self.state / 'approval.json').read_text())
-        self.assertEqual((record['approval'], record['revision']), ('ask', 7))
-        self.assertEqual(self.receipt()['approval'], 'ask')
-        # The same revision is idempotent; a newer one wins.
-        self.assertEqual(cu.sync(approval='ask', revision=7)['approvalRevision'], 7)
-        self.assertEqual(cu.sync(approval='auto', revision=8)['approval'], 'auto')
+    def test_every_request_is_executed_in_the_order_it_arrives(self):
+        # The helper keeps no ordering record: the host serializes runs and decides the mode,
+        # so a request is never ignored as older than something remembered.
+        for mode in ('auto', 'ask', 'auto', 'auto', 'ask'):
+            result = cu.apply(mode)
+            self.assertEqual(result['apply'], {'approval': mode, 'outcome': 'applied', 'reason': None})
+            self.assertEqual(self.receipt()['approval'], mode)
+        self.assertFalse((self.state / 'approval.json').exists())
 
-    SOURCE = '11111111-1111-4111-8111-111111111111'
-    HOST = '22222222-2222-4222-8222-222222222222'
-
-    def record(self):
-        return json.loads((self.state / 'approval.json').read_text())
-
-    def test_a_new_generation_replaces_the_record_whatever_its_revision(self):
-        # A VM imported with a future-dated record: the host's fresh default `ask` must win
-        # even though the guest's disk carries `auto` at a huge revision.
-        cu.sync(approval='auto', revision=9_000_000_000_000, generation=self.SOURCE)
-        result = cu.sync(approval='ask', revision=1_000, generation=self.HOST)
-        self.assertEqual((result['approval'], result['approvalRevision'], result['approvalGeneration']),
-                         ('ask', 1_000, self.HOST))
-        # Within the host's generation revisions order again, and the old generation is new.
-        cu.sync(approval='auto', revision=1_001, generation=self.HOST)
-        result = cu.sync(approval='ask', revision=1_000, generation=self.HOST)
-        self.assertEqual((result['approval'], result['approvalRevision']), ('auto', 1_001))
-
-    def test_a_guest_record_forged_with_the_hosts_old_clock_cannot_block_a_new_generation(self):
-        # A forged record on the guest disk: any owner-like fields and an enormous revision.
-        (self.state / 'approval.json').write_text(json.dumps({
-            'schemaVersion': 1, 'approval': 'auto', 'revision': 2 ** 62, 'generation': self.SOURCE,
-            'applied': {'approval': 'auto', 'revision': 2 ** 62, 'generation': self.SOURCE}}))
-        self.assertEqual(cu.status()['approval'], 'auto')
-        result = cu.sync(approval='ask', revision=1, generation=self.HOST)
-        self.assertEqual((result['approval'], result['approvalRevision']), ('ask', 1))
-        self.assertEqual(self.receipt()['approval'], 'ask')
-
-    def test_same_generation_exceeding_the_hosts_revision_is_visible_to_the_host(self):
-        cu.sync(approval='auto', revision=2 ** 40, generation=self.HOST)
+    def test_status_reports_no_approval_state(self):
+        cu.apply('auto')
         result = cu.status()
-        self.assertEqual((result['approvalRevision'], result['approvalGeneration']), (2 ** 40, self.HOST))
+        for field in ('approval', 'approvalRevision', 'approvalGeneration', 'approvalConfirmed', 'apply'):
+            self.assertNotIn(field, result)
 
-    def test_equal_revisions_of_one_generation_converge_on_ask(self):
-        for revision, (first, second) in ((40, ('auto', 'ask')), (50, ('ask', 'auto'))):
-            cu.sync(approval=first, revision=revision, generation=self.HOST)
-            cu.sync(approval=second, revision=revision, generation=self.HOST)
-            self.assertEqual(cu.status()['approval'], 'ask')
+    def test_a_forged_record_on_the_guest_disk_changes_nothing(self):
+        # Agents in the VM have root: the approval switch is not a boundary, and the helper
+        # no longer reads any record of it. A stale or forged file is simply ignored.
+        (self.state / 'approval.json').write_text(json.dumps({'approval': 'auto', 'revision': 2 ** 62}))
+        result = cu.apply('ask')
+        self.assertEqual(result['apply']['outcome'], 'applied')
+        self.assertEqual(self.receipt()['approval'], 'ask')
 
-    def test_a_failed_setup_is_not_recorded_as_applied_and_is_retried(self):
-        cu.sync(approval='auto', revision=1, generation=self.HOST)
-        self.assertEqual(cu.status()['approval'], 'auto')
-        # `lcu setup` fails before it removed the auto-approval entries.
-        self.failures['setup --agent'] = True
-        result = cu.sync(approval='ask', revision=2, generation=self.HOST)
-        record = self.record()
-        self.assertEqual((record['approval'], record['revision']), ('ask', 2))
-        self.assertEqual(record['applied']['approval'], 'auto')
-        # The host sees what was applied (still auto, revision 1) and the failure.
-        self.assertEqual((result['approval'], result['approvalRevision']), ('auto', 1))
-        self.assertEqual((result['state'], result['reason']), ('failed', 'command-failed'))
-        self.assertEqual((cu.status()['approval'], cu.status()['approvalRevision']), ('auto', 1))
-        # The same request again (a reconcile, or Set up) runs setup again and succeeds.
-        self.failures.clear()
+    def test_a_failed_setup_is_reported_failed_and_retried(self):
+        cu.apply('auto')
+        self.setup_code = 1
+        self.setup_output = 'Codex: approval failed: boom\n'
+        result = cu.apply('ask')
+        self.assertEqual(result['apply'], {'approval': 'ask', 'outcome': 'failed', 'reason': 'setup-failed'})
+        self.assertEqual((result['state'], result['reason']), ('failed', 'setup-failed'))
+        # The same request again runs setup again and succeeds.
+        self.setup_code = 0
+        self.setup_output = 'Codex: MCP registered.\n'
         self.commands.clear()
-        result = cu.sync(approval='ask', revision=2, generation=self.HOST)
+        result = cu.apply('ask')
         self.assertTrue(any(argv[1:2] == ['setup'] for argv, *_ in self.commands))
-        self.assertEqual((result['state'], result['approval'], result['approvalRevision']),
-                         ('ready', 'ask', 2))
-        self.assertEqual(self.record()['applied']['approval'], 'ask')
+        self.assertEqual((result['state'], result['apply']['outcome']), ('ready', 'applied'))
 
-    def test_a_same_mode_revision_bump_is_applied_without_rerunning_setup(self):
-        cu.sync(approval='ask', revision=1, generation=self.HOST)
+    def test_a_timed_out_setup_is_reported_failed(self):
+        original = self.fake_run
+        def timing_out(argv, **kwargs):
+            if argv[1:2] == ['setup']:
+                raise cu.Failure('timed-out', 'lcu')
+            return original(argv, **kwargs)
+        with mock.patch.object(cu, 'run', timing_out):
+            result = cu.apply('auto')
+        self.assertEqual(result['apply'], {'approval': 'auto', 'outcome': 'failed', 'reason': 'timed-out'})
+
+    def test_some_agents_configured_and_others_failed_is_partial(self):
+        self.setup_code = 1
+        self.setup_output = ('Claude Code: MCP registered.\nClaude Code: approval auto: added.\n'
+                             'Codex: MCP registered.\nCodex: approval failed: permission denied\n')
+        result = cu.apply('auto')
+        self.assertEqual(result['apply'], {'approval': 'auto', 'outcome': 'partial', 'reason': 'setup-partial'})
+        # The readiness check still ran and the state follows it.
+        self.assertEqual(result['state'], 'ready')
+        self.assertEqual(self.receipt()['approvalOutcome'], 'partial')
+        # A partial run is never skipped as already applied.
         self.commands.clear()
-        result = cu.sync(approval='ask', revision=2, generation=self.SOURCE)
+        cu.apply('auto')
+        self.assertTrue(any(argv[1:2] == ['setup'] for argv, *_ in self.commands))
+
+    def test_an_unexplained_failure_after_configuring_some_agents_is_partial(self):
+        # When unsure, partial: `failed` would claim nothing changed.
+        self.setup_code = 1
+        self.setup_output = 'Codex: MCP registered.\nTraceback (most recent call last):\n'
+        self.assertEqual(cu.apply('ask')['apply']['outcome'], 'partial')
+
+    def test_a_failure_line_with_a_zero_exit_is_not_applied(self):
+        self.setup_output = 'Pi: extension registered.\nCodex: MCP failed: boom\n'
+        self.assertEqual(cu.apply('ask')['apply']['outcome'], 'partial')
+        self.setup_output = 'Codex: MCP failed: boom\n'
+        self.assertEqual(cu.apply('ask')['apply']['outcome'], 'failed')
+
+    def test_nothing_configured_and_a_failing_exit_is_failed(self):
+        self.setup_code = 2
+        self.setup_output = 'No agents detected\n'
+        self.assertEqual(cu.apply('ask')['apply']['outcome'], 'failed')
+
+    def test_a_failed_readiness_check_does_not_change_the_approval_outcome(self):
+        self.failures['lcu-session'] = 'soft'
+        result = cu.apply('auto')
+        self.assertEqual((result['state'], result['reason']), ('failed', 'doctor-failed'))
+        self.assertEqual(result['apply'], {'approval': 'auto', 'outcome': 'applied', 'reason': None})
+
+    def test_without_the_app_the_run_reports_the_reason_and_runs_nothing(self):
+        (self.mount / APP_DIR).rmdir()
+        self.assertEqual(cu.apply('auto')['apply'],
+                         {'approval': 'auto', 'outcome': 'failed', 'reason': 'app-missing'})
+        (self.mount / APP_DIR).mkdir()
+        self.mount_state = 'writable'
+        self.assertEqual(cu.apply('auto')['apply']['reason'], 'mount-writable')
+        (self.state / 'pinned.json').unlink()
+        self.assertEqual(cu.apply('auto')['apply']['reason'], 'not-configured')
         self.assertEqual(self.commands, [])
-        self.assertEqual((result['approvalRevision'], result['approvalGeneration']), (2, self.SOURCE))
-
-    def test_status_says_whether_an_approval_was_confirmed_applied(self):
-        self.assertFalse(cu.status()['approvalConfirmed'])
-        cu.sync(approval='auto', revision=1, generation=self.HOST)
-        self.assertTrue(cu.status()['approvalConfirmed'])
-
-    def test_a_record_without_applied_is_reported_as_nothing_applied(self):
-        cu.sync(approval='auto', revision=3, generation=self.HOST)
-        record = self.record()
-        del record['applied']
-        (self.state / 'approval.json').write_text(json.dumps(record))
-        result = cu.status()
-        self.assertEqual((result['approval'], result['approvalRevision'], result['approvalGeneration']),
-                         ('ask', 0, None))
-        # A sync finds setup already done for that mode and confirms it.
-        self.commands.clear()
-        result = cu.sync(approval='auto', revision=3, generation=self.HOST)
-        self.assertEqual(self.commands, [])
-        self.assertEqual((result['approval'], result['approvalRevision']), ('auto', 3))
-
-    def test_an_unrevised_request_keeps_the_applied_revision(self):
-        cu.sync(approval='auto', revision=5)
-        self.assertEqual(cu.sync(approval='ask')['approvalRevision'], 5)
 
     def test_force_reruns_setup_for_agents_installed_later(self):
-        cu.sync()
+        cu.apply('ask')
         self.commands.clear()
-        cu.sync(force=True)
+        cu.apply('ask', force=True)
         self.assertTrue(any(argv[1:2] == ['setup'] for argv, *_ in self.commands))
         self.assertFalse(any(argv[0].endswith('install.sh') for argv, *_ in self.commands))
 
@@ -391,60 +381,60 @@ class Sync(Guest):
                          ['oh-my-pi', 'pi'])
         self.assertEqual(cu.registered_agents('Codex: MCP failed: boom\nNo agents detected\n'), [])
         self.setup_output = ''
-        self.assertEqual(cu.sync()['agents'], [])
+        self.assertEqual(cu.apply('ask')['agents'], [])
 
     def test_lcu_installed_for_another_app_folder_is_installed_again(self):
-        cu.sync()
+        cu.apply('ask')
         self.lcu_status['app']['path'] = '/somewhere/else'
         self.commands.clear()
-        cu.sync(force=True)
+        cu.apply('ask', force=True)
         self.assertTrue(any(argv[0].endswith('install.sh') for argv, *_ in self.commands))
 
     def test_a_new_app_folder_installs_again_against_it(self):
-        cu.sync()
+        cu.apply('ask')
         (self.mount / '26.929.1-arm64').mkdir()
         pinned = json.loads((self.state / 'pinned.json').read_text())
         pinned['app']['dir'] = '26.929.1-arm64'
         (self.state / 'pinned.json').write_text(json.dumps(pinned))
         self.commands.clear()
-        cu.sync()
+        cu.apply('ask')
         install = next(argv for argv, *_ in self.commands if argv[0].endswith('install.sh'))
         self.assertEqual(install[install.index('--existing-app') + 1], str(self.mount / '26.929.1-arm64'))
 
     def test_a_missing_app_folder_installs_nothing(self):
         (self.mount / APP_DIR).rmdir()
-        result = cu.sync()
+        result = cu.apply('ask')
         self.assertEqual(result['state'], 'needs-app')
         self.assertEqual(self.commands, [])
 
     def test_a_missing_mount_installs_nothing(self):
         self.mount_state = 'missing'
-        self.assertEqual(cu.sync()['reason'], 'mount-missing')
+        self.assertEqual(cu.apply('ask')['reason'], 'mount-missing')
         self.assertEqual(self.commands, [])
 
     def test_untested_pairs_are_reported_not_blocked(self):
         self.lcu_status['compatibility'] = {'status': 'untested', 'warning': 'Not tested with this app.'}
-        result = cu.sync()
+        result = cu.apply('ask')
         self.assertEqual((result['state'], result['compatibility']), ('ready', 'untested'))
         self.assertEqual(result['warning'], 'Not tested with this app.')
 
     def test_a_failed_install_is_recorded_and_retried(self):
         self.failures['install.sh'] = True
-        result = cu.sync()
+        result = cu.apply('ask')
         self.assertEqual((result['state'], result['reason']), ('failed', 'command-failed'))
         self.failures.clear()
-        self.assertEqual(cu.sync()['state'], 'ready')
+        self.assertEqual(cu.apply('ask')['state'], 'ready')
 
     def test_a_failed_doctor_fails_the_setup(self):
         self.failures['lcu-session'] = 'soft'
-        result = cu.sync()
+        result = cu.apply('ask')
         self.assertEqual((result['state'], result['reason']), ('failed', 'doctor-failed'))
 
     def test_a_desktop_that_never_starts_fails_the_setup(self):
         self.session = False
         times = iter(range(0, 10_000, 100))
         with mock.patch.object(cu.time, 'monotonic', lambda: next(times)):
-            result = cu.sync(boot=True)
+            result = cu.apply('ask', boot=True)
         self.assertEqual((result['state'], result['reason']), ('failed', 'desktop-session-not-running'))
 
     def desktop_starts(self):
@@ -455,7 +445,7 @@ class Sync(Guest):
         # the session is `failed` when the helper looks, and `start` brings it back.
         self.session = 'failed'
         self.start_effect = 'running'
-        result = cu.sync(boot=True)
+        result = cu.apply('ask', boot=True)
         self.assertEqual(result['state'], 'ready')
         self.assertEqual(len(self.desktop_starts()), 1)
         self.assertLess(self.commands.index(next(c for c in self.commands if c[0] == self.desktop_starts()[0])),
@@ -464,7 +454,7 @@ class Sync(Guest):
 
     def test_a_session_still_starting_is_waited_for_without_starting_it_again(self):
         self.session = ['starting', 'starting', 'starting', 'running']
-        result = cu.sync(boot=True)
+        result = cu.apply('ask', boot=True)
         self.assertEqual(result['state'], 'ready')
         self.assertEqual(self.desktop_starts(), [])
 
@@ -472,7 +462,7 @@ class Sync(Guest):
         self.session = 'failed'
         slept = []
         with mock.patch.object(cu.time, 'sleep', slept.append):
-            result = cu.sync(boot=True)
+            result = cu.apply('ask', boot=True)
         self.assertEqual((result['state'], result['reason']), ('failed', 'desktop-session-not-running'))
         self.assertEqual(len(self.desktop_starts()), cu.SESSION_REPAIR_ATTEMPTS)
         self.assertEqual([n for n in slept if n >= cu.SESSION_REPAIR_BASE][:3], [2, 4, 8])
@@ -483,7 +473,7 @@ class Sync(Guest):
         self.session = 'stopped'
         times = iter(range(0, 10_000, 100))
         with mock.patch.object(cu.time, 'monotonic', lambda: next(times)):
-            result = cu.sync(boot=True)
+            result = cu.apply('ask', boot=True)
         self.assertEqual((result['state'], result['reason']), ('failed', 'desktop-session-not-running'))
         self.assertEqual(self.desktop_starts(), [])
 
@@ -491,27 +481,27 @@ class Sync(Guest):
         self.session = 'stopped'
         times = iter(range(0, 10_000, 100))
         with mock.patch.object(cu.time, 'monotonic', lambda: next(times)):
-            result = cu.sync()
+            result = cu.apply('ask')
         self.assertEqual((result['state'], result['reason']), ('failed', 'desktop-session-not-running'))
         self.assertEqual(self.desktop_starts(), [])
 
     def test_a_staged_archive_that_does_not_match_is_downloaded_and_verified(self):
         # The staged file no longer matches the lock, so the pinned URL is used.
         (self.image / ARCHIVE).write_bytes(b'tampered')
-        result = cu.sync()
+        result = cu.apply('ask')
         self.assertEqual(result['state'], 'ready')
         self.assertTrue(any(argv[0] == 'curl' for argv, *_ in self.commands))
 
     def test_an_archive_that_cannot_be_obtained_fails_clearly(self):
         (self.image / ARCHIVE).unlink()
         self.failures['curl'] = True
-        result = cu.sync()
+        result = cu.apply('ask')
         self.assertEqual((result['state'], result['reason']), ('failed', 'lcu-archive-unavailable'))
 
     def test_a_downloaded_archive_with_the_wrong_hash_is_refused(self):
         (self.image / ARCHIVE).unlink()
         self.write_pinned(sha256='0' * 64)
-        result = cu.sync()
+        result = cu.apply('ask')
         self.assertEqual((result['state'], result['reason']), ('failed', 'lcu-archive-mismatch'))
         self.assertFalse(any(argv[0].endswith('install.sh') for argv, *_ in self.commands))
 
@@ -525,11 +515,11 @@ class Sync(Guest):
             cu.extract(bad, self.state, 'lcu-0.8.0-linux-arm64')
         self.assertEqual(caught.exception.reason, 'lcu-archive-invalid')
 
-    def test_a_concurrent_sync_waits_then_finds_it_done(self):
-        cu.sync()
+    def test_a_concurrent_run_waits_then_finds_it_done(self):
+        cu.apply('ask')
         self.commands.clear()
         # Another process finished the work while this one waited for the lock.
-        self.assertEqual(cu.sync(boot=True)['state'], 'ready')
+        self.assertEqual(cu.apply('ask', boot=True)['state'], 'ready')
         self.assertEqual(self.commands, [])
 
     def test_the_digest_reads_the_documented_status_fields(self):
@@ -547,6 +537,26 @@ class Sync(Guest):
 
 
 class CommandLine(Guest):
+    def test_main_applies_with_the_requested_mode_and_prints_the_outcome(self):
+        with mock.patch.object(cu.os, 'geteuid', return_value=0), mock.patch('builtins.print') as shown:
+            self.assertEqual(cu.main(['apply', '--approval', 'auto', '--boot']), 0)
+        printed = json.loads(shown.call_args.args[0])
+        self.assertEqual(printed['apply'], {'approval': 'auto', 'outcome': 'applied', 'reason': None})
+        with mock.patch.object(cu.os, 'geteuid', return_value=0), self.assertRaises(SystemExit):
+            cu.main(['apply'])
+        with mock.patch.object(cu.os, 'geteuid', return_value=0), self.assertRaises(SystemExit):
+            cu.main(['apply', '--approval', 'maybe'])
+        # The removed ordering flags are refused.
+        with mock.patch.object(cu.os, 'geteuid', return_value=0), self.assertRaises(SystemExit):
+            cu.main(['apply', '--approval', 'ask', '--revision', '3'])
+
+    def test_a_run_that_cannot_start_is_still_a_report(self):
+        with mock.patch.object(cu, 'apply', side_effect=cu.Failure('busy')), \
+                mock.patch.object(cu.os, 'geteuid', return_value=0), mock.patch('builtins.print') as shown:
+            self.assertEqual(cu.main(['apply', '--approval', 'ask']), 0)
+        printed = json.loads(shown.call_args.args[0])
+        self.assertEqual(printed['apply'], {'approval': 'ask', 'outcome': 'failed', 'reason': 'busy'})
+
     def test_main_prints_status_and_requires_root(self):
         with mock.patch.object(cu.os, 'geteuid', return_value=0), mock.patch('builtins.print') as shown:
             self.assertEqual(cu.main(['status']), 0)

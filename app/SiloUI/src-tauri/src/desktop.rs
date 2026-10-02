@@ -675,36 +675,32 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
     status_with(&runtime::ProcessRunner, &paths, &machine)
 }
 
-/// Stores a VM's computer-use approval mode and, when it runs, applies it.
+/// Stores a VM's computer-use approval mode and, when it runs, starts applying it in the
+/// background: the answer is the desktop state at once, with the apply `pending`.
 fn local_approval(app: &AppHandle, workspace: &str, mode: &str) -> Result<Value, String> {
     let approval =
         crate::computer_use::Approval::parse(mode).ok_or("Unsupported computer-use approval.")?;
-    let paths = runtime::runtime_paths(app)?;
-    let vm_id = runtime::resolve_vm_id(&paths, workspace).map_err(|e| e.to_string())?;
-    let guard = runtime::OPERATIONS
-        .vm(
-            &vm_id,
-            workspace,
-            &format!("Updating {workspace} computer use"),
-        )
-        .map_err(|e| e.to_string())?;
-    guard.allow_cancel();
-    guard.expect_within(action_expected_duration("setup-computer-use"));
     runtime::shutdown::ensure_accepting_operations()?;
     let (paths, machine) = machine(app, workspace)?;
-    let status = approval_at(&runtime::ProcessRunner, &paths, &machine, approval)?;
+    let status = approval_at(
+        &runtime::ProcessRunner,
+        &paths,
+        &machine,
+        approval,
+        std::sync::Arc::new(runtime::ProcessRunner),
+    )?;
     let _ = app.emit("silo://application-state-changed", ());
-    drop(guard);
     Ok(status)
 }
 
-/// Stores the approval mode and applies it to a running VM. A stopped or pending-restore
-/// VM keeps it for its next boot, without any guest access.
+/// Stores the approval mode and starts applying it to a running VM. A stopped or
+/// pending-restore VM keeps it for its next boot, without any guest access.
 fn approval_at(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
     approval: crate::computer_use::Approval,
+    apply_runner: crate::computer_use::SharedRunner,
 ) -> Result<Value, String> {
     if !crate::computer_use::is_built_in(machine) {
         return Err(
@@ -715,7 +711,7 @@ fn approval_at(
         runtime::observe_vm(runner, paths, machine.name()).map_err(|e| e.to_string())?,
         runtime::VmRuntime::Present(inspected) if inspected.status == "Running"
     );
-    crate::computer_use::apply_approval_with(runner, paths, machine, approval, running)
+    crate::computer_use::apply_approval_with(apply_runner, paths, machine, approval, running)
         .map_err(|e| e.to_string())?;
     status_with(runner, paths, machine)
 }
@@ -970,6 +966,7 @@ mod tests {
             &paths,
             &resolved,
             crate::computer_use::Approval::Auto,
+            std::sync::Arc::new(runtime::ProcessRunner),
         )
         .unwrap();
         assert_eq!(status["computerUse"]["approval"], "auto");

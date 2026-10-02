@@ -10,7 +10,9 @@ for new VMs, and replaces Luda with [LCU](https://github.com/0xpolarzero/lcu).
 A new VM has a Linux desktop and agent computer use ready with no setup: a
 user creates a VM, starts an agent (Claude Code, Codex, Pi, OMP or Hermes), and
 the agent can use the desktop immediately. The only prompts are the harness's
-own approvals, which a per-VM switch can turn off for computer use.
+own approvals, which a per-VM switch can turn off for computer use. That switch
+configures the agents' approval prompts; it is a convenience, not a security
+boundary (see [Approval](#approval-design-2026-10-02)).
 
 ## Decisions
 
@@ -30,7 +32,8 @@ own approvals, which a per-VM switch can turn off for computer use.
   `/usr/lib/chatgpt`, not installed through dpkg, with no apt source and no
   launcher. A user who wants ChatGPT in a VM installs it normally; that copy
   never affects LCU.
-- Per-VM approvals switch, off (ask) by default.
+- Per-VM approvals switch, off (ask) by default, driven by the host and never
+  defended against the guest (see [Approval](#approval-design-2026-10-02)).
 
 ## Evidence (2026-10-01)
 
@@ -155,9 +158,9 @@ while VMs run, rather than by a guest boot hook, so the helper always matches
 Silo; garbage collection runs at start and after a prepare, only while no VM
 runs, and holds the computer-wide operation gate (which every VM start takes)
 from the inventory through the deletion, skipping when any operation is active or a download holds the storage lock (it never waits for either); a skipped pass stays pending and is retried every two minutes until it ran.
-Pushing the helper happens on a host background thread, never inside Start: it
+Running the helper happens on a host background thread, never inside Start: it
 first checks the VM is still the same running instance, then reads the approval
-policy at launch time.
+policy inside the VM's operation turn.
 
 - New VMs are created with a stable per-computer folder mounted read-only at
   `/opt/silo/chatgpt`. That folder holds only verified, published version
@@ -166,8 +169,8 @@ policy at launch time.
   possibly empty, before any VM starts, so a VM created before the automatic
   download finished gains computer use later, and a pinned-version change
   reaches existing VMs at their next boot.
-- At boot, a guest helper installs LCU against the mounted app when the pinned
-  pair changes, runs `lcu setup --agent auto`, and applies the VM's approval
+- At boot, a guest helper (`apply`) installs LCU against the mounted app when the
+  pinned pair changes, runs `lcu setup --agent auto`, and applies the VM's approval
   mode. A "Set up computer use" action reruns setup after a harness is
   installed.
 - Export, import and transfer pass the mount again on restore and verify it.
@@ -252,40 +255,81 @@ Backend (Rust, guest scripts) and frontend implement this together.
   `untested`, `unknown`, from `lcu status --json`), `warning`, `approval`
   (`ask`, `auto`, or `unknown` when the saved policy file exists but cannot be read:
   the user's choice, shown by the switch), `appliedApproval` (`ask`, `auto`, or
-  `unknown`: what the guest confirmed applying, `unknown` whenever it has not said;
-  it differs from `approval` while a change is pending or after applying it failed,
-  and the panel then warns that agents "can still act without asking" when the guest
-  still applies `auto`), `appVersion`, `runtimeVersion`, `lcuVersion`, `agents`.
+  `unknown`: the last mode the host applied completely, `unknown` before any was;
+  independent of the app download and of the VM running), `approvalApply`
+  (`applied`, `pending`, `failed` or `partial`: how applying `approval` stands, from
+  the host's own record of the last attempt) and `approvalApplyReason` (words for the
+  user, only with `failed` or `partial`), `appVersion`, `runtimeVersion`, `lcuVersion`,
+  `agents`. An older Silo omits `approvalApply`, which readers take as `applied`.
   The legacy `lcu*` fields remain for VMs created before v4.
-- Per-VM approval mode is stored in Silo's policy file, default `ask`, and applied
-  with `lcu setup --approval`. The host is authoritative over the guest's record,
-  which sits on an untrusted disk. A policy carries a random `generation` (UUID),
-  issued when Silo first stamps a VM's policy (a new, imported, transferred or
-  forked VM, or a lost one) and renewed when the host finds the guest reporting a
-  revision of the current generation that it never issued (a forged or corrupt
-  record would otherwise make the guest ignore later choices). Approval changes
-  carry a monotonically increasing `revision` within a generation, stored in the
-  policy file separately from receipt observations. Every sync passes `--approval`,
-  `--revision` and `--generation`. The helper accepts any request whose generation
-  differs from the one it holds (the host wins whatever revision the disk carries,
-  including an export dated in the future), orders revisions only within one
-  generation, and resolves equal revisions with different modes in favour of `ask`.
-- The helper keeps the *requested* approval apart from the *applied* one in its
-  record, and marks it applied only after `lcu setup` succeeded (a same-mode change
-  is confirmed without rerunning setup). Its status reports the applied values
-  (`approval`, `approvalRevision`, `approvalGeneration`, `approvalConfirmed`), while
-  its receipt and `state` describe the attempt for the requested mode. A failed setup
-  therefore stays pending and failed, is retried by the next sync (Set up computer
-  use, a boot, or app-start reconciliation), and cannot be mistaken for applied.
-- A sync runs in the VM's operation turn after confirming the runtime sandbox's
-  `silo.machine-id` label and instance. The turn is cancellable, and it yields to a
-  stop, delete or quit that queues for the same VM: the host only launches the
-  detached helper, so the launch gets a short timeout (10 s) and an unresponsive
-  guest never holds the turn for long. A cut-short sync is retried at the next boot or
-  app start. At app start Silo reads the status of every running built-in VM and
-  launches the sync when the guest lags the saved policy (a crash between saving and
-  launching, a failed apply, another generation's record); a status read that fails
-  (the guest may still be starting) is retried with backoff (5, 15, 30, 60 and 120
-  seconds) and a fresh identity check before each attempt. `computerUse` reports
-  `installing` with "Applying approval change…" while the guest lags the policy, and
-  `failed` when applying it failed.
+- Per-VM approval is the host's: see [Approval](#approval-design-2026-10-02) for the
+  contract (desired mode, last attempt, one apply at a time per VM, cancellable,
+  bounded). The guest helper is a plain executor: `silo-computer-use apply --approval
+  ask|auto [--force] [--boot]` installs what is missing, runs `lcu setup ... --approval
+  <mode>`, waits for the desktop session and runs `lcu doctor`, then prints its
+  `status` plus `apply: {approval, outcome, reason}` where `outcome` is `applied`,
+  `partial` or `failed`. It keeps no approval record, orders nothing and accepts every
+  request; `status` reads the receipt only and never reports approval.
+
+## Approval design (2026-10-02)
+
+The per-VM "Allow without asking" switch is a convenience, not a security boundary.
+Agents in the VM have root and can edit their own harness settings
+(`~/.claude/settings.json`, Codex's `config.toml`) directly, so no amount of
+bookkeeping on the guest's disk could make the switch binding. An earlier design (a
+random policy generation and a monotonic revision per VM, passed to the guest, which
+accepted or ignored requests by them, with forgery detection on the host and a record of
+"applied" derived from the guest's own report) defended against forged guest state. It was
+the source of a stream of race bugs and protected nothing a guest could not undo, so it was
+replaced by a model in which the host drives the guest and the guest cannot veto.
+
+- **What the host stores** in `<storage>/computer-use/<id>.json`: the *desired* mode (the
+  user's choice, default `ask`), the last mode applied completely (`applied`) and the
+  *last attempt* (`mode`, `outcome` of `applied`, `failed` or `partial`, time, reason code).
+  Old files carry a revision and a generation; both are ignored. Only a user change, a
+  fork, an import's reset or an apply writes the file, all under one lock; a status read
+  never changes it. A file that cannot be read shows as `unknown` and is replaced by the
+  default (ask) by the next apply, which fails closed.
+- **Applying.** Every apply runs on a host thread (never inside Start, never on the UI
+  thread) that takes the VM's operation turn: the per-VM lock that already serializes all
+  work on one VM. Inside the turn it re-checks that the VM is the same recorded machine
+  and the same running instance, reads the *current* desired mode, and runs the helper
+  synchronously within a bound (15 minutes plus a minute of host allowance), never
+  detached. Because the mode is read when the turn arrives, a queued apply can never write
+  an older choice over a newer one, and a queued apply that an earlier one made redundant
+  does nothing. A user change returns at once; the state says `pending` until the apply
+  ends. The boot sync stays on its own background thread, so Start is never blocked.
+- **Cancellation.** The turn is cancellable. A queued stop or delete of that VM, or a
+  computer-wide shutdown (Quit or an update, which has no VM id), cancels the running
+  helper at once. Other work waits for the turn like any other operation on that VM. A
+  cancelled or timed-out apply is recorded as a failed attempt (`cancelled`, `timed-out`)
+  and nothing is assumed rolled back; the next boot or app start tries again.
+- **When it runs.** After every boot and when the app becomes ready (the helper does the
+  install, setup and readiness check, and is cheap when nothing changed), when the user
+  changes the switch of a running VM and at app start for each running VM whose last
+  attempt is missing, failed, partial, cut short or for another mode than the desired one.
+  The host never reads the guest to decide. A run that finds the ChatGPT app not there yet
+  is not an attempt: the apply stays pending until the app is ready.
+- **Imports, transfers and forks.** An import or transfer starts from this computer's
+  default (ask) with no attempt on record, whatever policy an earlier VM of that id had,
+  so its first boot applies ask over the configuration the imported disk carries. A fork
+  inherits its source's desired mode with no attempt on record, so its own first boot
+  applies it.
+- **Reporting.** `approval` is the desired mode; `appliedApproval` the last mode applied
+  completely (never hidden by the app download state or by the VM being stopped);
+  `approvalApply` is `pending` while an apply is scheduled or running or no attempt for the
+  desired mode exists yet, and otherwise the last attempt's outcome. A failed or partial
+  attempt stays visible until a later one applies completely, even when the user chooses
+  the previously applied mode again.
+- **Panel.** The switch shows the desired mode. `pending` shows "Applying…" (for a stopped
+  VM, "Applied when the sandbox starts." when a different mode was applied before). After
+  choosing ask the panel warns "Some agents in this sandbox may still act without asking"
+  when the previous applied mode was `auto`, the result is `partial`, or the apply `failed`
+  and nothing says ask is in place; a failed or partial result also gives the host's
+  reason. After a command error the panel reads the state again instead of restoring the
+  snapshot from before the change, because the command may have stored the choice or even
+  applied it before the answer was lost.
+- **Why not more.** Defending the switch would need a boundary the guest cannot cross
+  (a host-side MCP gate), which is a different product decision. The documentation and the
+  panel say once that the switch configures the agents' approval prompts and is not a
+  security boundary inside the sandbox.
