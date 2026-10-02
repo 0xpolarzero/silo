@@ -417,7 +417,12 @@ restrictions and records the two signature-enforcement controls as skipped.
 A passing hosted result does not establish signature enforcement. Public release
 also requires the full suite on a Mac with SIP enabled, including the minimum
 supported macOS version. GitHub currently provides
-macOS 14 runners until November 2, 2026. Before their retirement, replace this
+macOS 14 runners until November 2, 2026, with
+[announced October brownouts](https://github.com/actions/runner-images/issues/13518)
+that fail jobs before retirement. The first window is October 5 at 14:00 UTC
+through October 6 at 00:00 UTC. Draft creation requires this job, so qualify a
+maintained replacement before that window; rerunning outside brownout windows
+is only a temporary workaround. Before their retirement, replace this
 minimum-version proof with a maintained runner rather than silently omitting it.
 This CI test checks library enforcement, not nested VM execution.
 
