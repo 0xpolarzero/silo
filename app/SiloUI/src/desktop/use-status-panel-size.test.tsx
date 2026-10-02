@@ -61,6 +61,19 @@ it("does not apply a pending native acknowledgment after unmount", async () => {
   expect(vi.getTimerCount()).toBe(0)
 })
 
+it("keeps the active panel height when a disposed StrictMode resize fails", async () => {
+  let fail!: (error: Error) => void
+  native.invoke.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { fail = reject }))
+  const log = vi.spyOn(console, "error").mockImplementation(() => {})
+  const view = render(<Panel />, { reactStrictMode: true })
+  await act(async () => {})
+  expect(native.invoke).toHaveBeenCalledTimes(2)
+  expect(view.container.firstElementChild).toHaveStyle({ height: "120px" })
+  await act(async () => { fail(new Error("Old request failed")) })
+  expect(view.container.firstElementChild).toHaveStyle({ height: "120px" })
+  expect(log).not.toHaveBeenCalled()
+})
+
 it("cancels the next animation frame before it can resize an unmounted panel", async () => {
   const view = render(<Panel />)
   await act(async () => {})

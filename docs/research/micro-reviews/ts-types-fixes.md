@@ -98,3 +98,29 @@ defines structured issue paths, including empty paths for root errors. The
 submission contract stays strict and retained configuration fields stay intact.
 Two model regressions and one editor regression failed before the fix. The
 editor regression checks both the visible alert and that Save does not run.
+
+## Empty submission before configuration loads
+
+Fixed: `configureMachines` derived an empty change list from an unloaded source
+and an empty request, then asserted `snapshot.source` was `ApplicationSource`.
+The promised successful result was actually `null`. Removing the last draft
+sandbox in onboarding submits through this method, so the adapter cleared its
+operation error despite never knowing the saved configuration.
+
+Reject that no-op while the source is unavailable and tell the user to refresh
+and retry. A loaded empty configuration still resolves without native changes.
+The two regressions reproduced successful `null` results both before loading and
+after the initial state read failed. The loaded-empty control remains covered.
+
+## Optional connection removal
+
+Fixed: the Computers settings section renders for an adapter with
+`connectComputer`, but its Remove connection button assumed the independently
+optional `removeComputer` callback existed. Its non-null assertion hid the
+missing capability and an enabled button called `undefined`. The browser
+preview explicitly supports partial action adapters.
+
+Capture the removal callback, disable its button when absent, and guard the
+event callback without an assertion. A missing-capability regression failed
+before the fix. Existing tests exercise successful removal and failure/retry
+with the callback present.

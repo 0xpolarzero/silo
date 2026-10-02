@@ -42,3 +42,15 @@ All 15 proxy module tests passed after the fix, compiled directly from the produ
 - **Regression:** Start with a running guest whose attachment fails, poll a stopped sandbox, require Start sandbox and no obsolete attachment alert or Reconnect control, and verify no desktop action is invoked automatically. Existing tests retain connection errors while a running guest's attachment continues failing.
 
 Both viewer test files passed all 29 tests. Frontend typecheck, lint, Rust formatting, and whitespace checks passed. Tests used mocked IPC and fake timers; no application or VM was launched.
+
+## DESKTOP-VIEWER-5: Development viewer titles use the production name
+
+- **Priority:** P3.
+- **Location before fix:** `app/SiloUI/src-tauri/src/desktop_viewer.rs`, `open_desktop` window title.
+- **Trigger:** Open a desktop viewer from Silo Dev while distinguishing its windows from production Silo.
+- **Evidence:** The native title hard-coded `Silo`; the shared build-channel policy names development `Silo Dev`. The extracted title regression passed the production expectation and failed the development expectation with `dev · Office — Silo` instead of `dev · Office — Silo Dev`.
+- **Consequence:** A development viewer's native title identifies the production product, removing the build distinction during window selection and inspection. This does not indicate shared VM or application state.
+- **Fix:** Derive the title suffix from `Channel::product_name`, using the current channel at window creation.
+- **Regression:** Assert exact production and development viewer titles while preserving the machine/computer name.
+
+The title regression and all five channel tests passed in a disposable harness using the production channel module and extracted title function/tests verbatim. Frontend typecheck/lint, Rust formatting, and whitespace checks passed. This proves title construction and channel configuration consistency, without launching or inspecting a packaged application.

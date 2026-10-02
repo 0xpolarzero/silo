@@ -88,8 +88,13 @@ inspection and retention cleanup that a new search performs. A file that shrank
 in place (retention truncation), a changed boot failure record, or an expired
 snapshot rebuilds the index from scratch. Rotation and a previously unfinished
 record also rebuild the index so PEM state follows the retained record order.
-Carried records keep the estimated time they were indexed with. Refresh, pagination and export always use a new
-search. Hosts running an older Silo ignore the follow token and run a full query.
+Carried records keep the estimated time they were indexed with. Refresh and export
+begin new searches. Pagination reads the cached snapshot selected by its cursor;
+it does not start a new search or perform Follow. The
+[query adapter](../app/SiloUI/src-tauri/src/runtime_logs.rs) returns cached pages
+before indexing new records, and its pagination regression preserves the original
+record set across append and rotation. Hosts running an older Silo ignore the
+follow token and run a full query.
 
 A malformed execution record, an unreadable boot failure, or any record over
 1 MiB no longer fails every query and export for the sandbox (review finding

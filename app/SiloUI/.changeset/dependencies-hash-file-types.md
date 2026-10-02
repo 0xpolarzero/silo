@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Reject invalid bundled Git and runtime files during Linux integrity checks without waiting for pipe writers.
+Report invalid bundled Git and virtual-machine files during Linux integrity checks instead of leaving checks waiting indefinitely.

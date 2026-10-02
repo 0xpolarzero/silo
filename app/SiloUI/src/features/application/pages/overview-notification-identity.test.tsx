@@ -1,6 +1,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react"
 import { expect, it, vi } from "vitest"
 
+import { showOperationFailure } from "@/lib/operation-toast"
 import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { createApplicationActionsMock } from "@/test/application-actions"
@@ -32,4 +33,25 @@ it.each(["local", "remote"])("deleting the %s sandbox clears only its backend no
   rerender(view({ ...source, workspaces: [remaining] }))
   await waitFor(() => expect(screen.queryByText(`${owner} failure`)).not.toBeInTheDocument())
   expect(screen.getByText(`${owner === "local" ? "remote" : "local"} failure`)).toBeVisible()
+})
+
+it("a recreated sandbox keeps its own frontend notification and clears its predecessor's", async () => {
+  const source = structuredClone(applicationSourceForScenario("running"))
+  const original = source.workspaces[0]
+  const replacement = { ...original, machine: { ...original.machine, id: "replacement-vm" } }
+  source.workspaces = [original]
+  const actions = createApplicationActionsMock()
+  const onMachinesChange = vi.fn()
+  const view = (current: ApplicationSource) => <><Toaster /><OverviewPage source={current} actions={actions} onMachinesChange={onMachinesChange} /></>
+  const { rerender } = render(view(source))
+  act(() => {
+    for (const [kind, workspace] of [["original", original], ["replacement", replacement]] as const) {
+      showOperationFailure(`frontend-${kind}`, `${kind} failure`, { sandbox: workspace.machine.name, noticeSandbox: { id: workspace.machine.id, name: workspace.machine.name }, native: false })
+    }
+  })
+  expect(await screen.findByText("original failure")).toBeVisible()
+  expect(await screen.findByText("replacement failure")).toBeVisible()
+  rerender(view({ ...source, workspaces: [replacement] }))
+  await waitFor(() => expect(screen.queryByText("original failure")).not.toBeInTheDocument())
+  expect(screen.getByText("replacement failure")).toBeVisible()
 })

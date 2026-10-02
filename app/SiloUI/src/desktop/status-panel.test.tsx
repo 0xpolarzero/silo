@@ -148,6 +148,18 @@ it("reports native menu failure and allows retry", async () => {
   error.mockRestore()
 })
 
+it("cancels quit confirmation before Escape dismisses the status panel", async () => {
+  const { user } = setup()
+  await user.click(screen.getByRole("button", { name: "Quit Silo" }))
+  expect(screen.getByRole("alertdialog", { name: "Quit Silo?" })).toBeVisible()
+  native.invoke.mockClear()
+  await user.keyboard("{Escape}")
+  expect(screen.queryByRole("alertdialog", { name: "Quit Silo?" })).not.toBeInTheDocument()
+  expect(native.invoke).not.toHaveBeenCalledWith("hide_status")
+  await user.keyboard("{Escape}")
+  expect(native.invoke).toHaveBeenCalledWith("hide_status")
+})
+
 it("dismisses with Escape after native menu tracking ends", async () => {
   const { user } = setup()
   await user.click(screen.getByRole("button", { name: "Actions for dev" }))

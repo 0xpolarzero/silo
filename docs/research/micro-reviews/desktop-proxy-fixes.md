@@ -49,3 +49,14 @@ Fixed and folded in `5d6c4346`. All 11 module tests, Rust formatting, module Cli
 - **Consequence:** Proxy framing validation accepts a different value from the one sent upstream. Similar trimming accepts malformed Upgrade, Host, Origin, and native cookie fields. No native-cookie bypass or request-smuggling exploit was established.
 - **Fix:** Trim only space and horizontal tab when interpreting field values and native-cookie parts.
 - **Regression:** `unicode_whitespace_cannot_disguise_typed_header_values` rejects nonbreaking/em/ideographic spaces around framing, upgrade, origin, host, and authentication values; valid space/tab-delimited Content-Length still forwards its declared body length.
+
+Fixed and folded in `a37abab9`. All 17 module tests, Rust formatting, module Clippy with warnings denied, frontend typecheck, and frontend lint passed.
+
+## DESKTOP-PROXY-6 · P3 · Header-only requests acquire undeclared trailing bytes
+
+- **Location:** `app/SiloUI/src-tauri/src/desktop_proxy.rs`, construction of the rewritten header in `request_header`.
+- **Trigger:** A valid authenticated GET contains only Host and the native cookie, with no retained client fields and no request body.
+- **Evidence:** The original format string emits the Connection line's CRLF, an empty retained-field string, and another two CRLFs. The upstream therefore receives an extra CRLF after the header terminator despite a body length of zero. Extending the existing real-socket regression to omit Content-Length failed with `unexpected bytes after the declared request body`. [RFC 9112 section 2.2](https://httpwg.org/specs/rfc9112.html#message.parsing) forbids following an HTTP/1.1 request with an extra CRLF.
+- **Consequence:** A bodyless client request gains bytes the client did not send. A strict upstream rejecting bytes after the declared request body closes without returning its response in the regression. No live guest failure was established.
+- **Fix:** Terminate each retained field once, then emit exactly one blank line whether or not retained fields exist.
+- **Regression:** `completed_http_requests_keep_write_side_open_for_response` now checks GET without Content-Length, GET with Content-Length zero, and POST with a body. The synthetic upstream rejects unexpected trailing bytes; all cases must still receive their response after client write-half-close.

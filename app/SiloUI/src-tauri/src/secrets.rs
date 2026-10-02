@@ -223,6 +223,9 @@ fn save(document: &Document) -> Result<(), String> {
         .map_err(|_| "Secret settings could not be saved.")?;
     file.persist(&path)
         .map_err(|_| "Secret settings could not be saved.")?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "Secret settings could not be saved.")?;
     Ok(())
 }
 fn update(f: impl FnOnce(&mut Document) -> Result<(), String>) -> Result<(), String> {
@@ -915,6 +918,38 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_document_save_reports_an_unreadable_parent_after_publication() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory = tempfile::tempdir().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let path = directory.path().join("secrets.json");
+        use_test_store(Some(path.clone()));
+        let document = Document {
+            activities: vec![serde_json::json!({"title": "fixture change"})],
+            ..Default::default()
+        };
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = save(&document);
+        use_test_store(None);
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let published: Document = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(published.activities, document.activities);
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        assert!(
+            result.is_err(),
+            "an unsynchronized rename must not report success"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        use_test_store(Some(path));
+        let retry = save(&document);
+        use_test_store(None);
+        assert!(retry.is_ok());
+    }
     fn request() -> Request {
         Request {
             operation: "add".into(),

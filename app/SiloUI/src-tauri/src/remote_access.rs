@@ -44,7 +44,11 @@ fn guest_access_turn<'a>(
 
 pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
     match method {
-        "desktop.connect" => crate::desktop_viewer::local_connection(app, &vm_name(app, params)?),
+        "desktop.connect" => crate::desktop_viewer::local_connection(
+            app,
+            &vm_name(app, params)?,
+            Some(string(params, "vmId")?),
+        ),
         "desktop.status" => {
             let mut state = crate::desktop::dispatch(app, method, params)?;
             state["name"] = Value::String(vm_name(app, params)?);

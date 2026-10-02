@@ -91,3 +91,21 @@ A broader caller run passed 100 of 101 tests; the existing 6,001-record log-wind
 - Fix: Use the JavaScript Unicode `Default_Ignorable_Code_Point` property alongside the existing C0/C1 control ranges. Unicode mode matches supplementary characters as complete code points. Ordinary combining accents, visible emoji, and non-Latin names remain unchanged.
 - Test: Six ignored-character cases plus a rendered folder whose Copy path action must retain the exact supplementary character. All seven regressions failed first; output is saved in `/tmp/fe-lib-hooks-10-red.log`.
 - Primary source: [Unicode 17.0 DerivedCoreProperties](https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt), the `Default_Ignorable_Code_Point` section, lists U+034F, U+180E, fillers, variation selectors, and tag characters. The fix uses the engine's maintained Unicode property rather than extending another incomplete local list. This does not address visually similar ordinary characters or whitespace.
+
+## FE-LIB-HOOKS-11: Sidebar preview consumes Escape belonging to another interaction
+
+- Priority: P3.
+- File: `app/SiloUI/src/hooks/use-sidebar-disclosure.ts`, window `onKeyDown`.
+- Trigger: A sidebar hover preview remains open while another control consumes Escape, or an input method sends Escape during composition.
+- Consequence: The preview closes in addition to the interaction that owns the key. The listener ignores neither `defaultPrevented` nor `isComposing`, unlike the operation cancellation question and desktop shortcut handler.
+- Fix: Ignore consumed and composing key events in the existing listener.
+- Test: Open the real sidebar preview and dispatch each event; assert it remains open, then dispatch ordinary Escape and assert it closes. Both cases failed before the fix; output is saved in `/tmp/fe-lib-hooks-11-red.log`.
+
+## FE-LIB-HOOKS-12: Unknown push outcomes silently remove progress
+
+- Priority: P2.
+- File: `app/SiloUI/src/features/application/components/use-repository-push-toasts.ts`, terminal-state handling.
+- Trigger: A watched push becomes `unknown` after repeated lost status responses or an interrupted publication. `desktop/production-source.ts` publishes this state and requires the user to check GitHub before retrying.
+- Consequence: The toast tracker falls through to dismissal, showing neither the outcome nor its required action. A user who navigated away from the repository row loses the background notification precisely when the remote branch may already have changed.
+- Fix: Replace progress with a persistent warning containing the backend's check-GitHub explanation. Offer no Retry and do not clear or acknowledge the backend record when this warning closes. Dismiss the warning once the repository check removes that record.
+- Test: Transition from pushing to unknown, assert the warning and explanation, verify no Retry, close the warning, and assert neither backend dismissal nor push runs. Also verify that the repository acknowledgment removes the warning. Both regressions failed first; output is saved in `/tmp/fe-lib-hooks-12-red.log` and `/tmp/fe-lib-hooks-12-ack-red.log`.

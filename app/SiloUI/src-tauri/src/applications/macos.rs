@@ -30,7 +30,7 @@ pub fn editor_command(application: &Application) -> Result<super::launch::Editor
         );
     };
     let program = root.join(relative);
-    if !program.is_file() {
+    if !super::launch::executable_file(&program) {
         return Err("The selected editor's command is unavailable.".into());
     }
     Ok(super::launch::EditorCommand {
@@ -604,6 +604,38 @@ mod tests {
     }
 
     #[test]
+    fn editor_handoffs_require_an_executable_bundled_cli() {
+        for (identifier, relative) in [
+            ("com.microsoft.VSCode", "Contents/Resources/app/bin/code"),
+            ("dev.zed.Zed", "Contents/MacOS/cli"),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = bundle(directory.path(), "Editor", "APPL", true);
+            let info = path.join("Contents/Info.plist");
+            let contents = fs::read_to_string(&info)
+                .unwrap()
+                .replace("org.silo.tests.Editor", identifier);
+            fs::write(info, contents).unwrap();
+            let application = Application {
+                name: "Editor".into(),
+                path: path.to_str().unwrap().into(),
+                icon: None,
+            };
+            assert!(editor_command(&application).is_err());
+            let cli = path.join(relative);
+            fs::create_dir_all(cli.parent().unwrap()).unwrap();
+            fs::write(&cli, "#!/bin/sh\nexit 0\n").unwrap();
+            fs::set_permissions(&cli, fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(
+                editor_command(&application).is_err(),
+                "{identifier}: a non-executable CLI was accepted"
+            );
+            fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
+            assert!(editor_command(&application).is_ok());
+        }
+    }
+
+    #[test]
     fn every_suggested_editor_has_a_handoff() {
         for identifier in EDITOR_IDS {
             assert!(editor_adapter(identifier).is_some(), "{identifier}");
@@ -615,7 +647,9 @@ mod tests {
             .unwrap()
             .replace("org.silo.tests.Nightly", "dev.zed.Zed-Nightly");
         fs::write(info, contents).unwrap();
-        fs::write(path.join("Contents/MacOS/cli"), b"").unwrap();
+        let cli = path.join("Contents/MacOS/cli");
+        fs::write(&cli, b"").unwrap();
+        fs::set_permissions(&cli, fs::Permissions::from_mode(0o755)).unwrap();
         let application = application_at(&path).unwrap();
         let crate::applications::launch::EditorCommand {
             program: command,

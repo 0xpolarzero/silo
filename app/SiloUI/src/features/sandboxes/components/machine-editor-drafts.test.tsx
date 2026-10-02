@@ -152,3 +152,26 @@ describe("unsaved sandbox edits across navigation", () => {
     expect(screen.queryByRole("combobox", { name: "CPUs" })).not.toBeInTheDocument()
   })
 })
+
+
+it.each(["conflict", "review"])("restores the %s notice with the unsaved draft after navigation", async notice => {
+  const props = { onMachinesChange: vi.fn(), onCommitMachine: vi.fn().mockRejectedValue(new Error("This sandbox changed while your edit was waiting. Review it and try again.")) }
+  const user = userEvent.setup()
+  const { rerender } = render(<Surface shown {...props} />)
+  await editCpuLimit(user)
+  const latest = { ...machine, cpus: 6, maxMemoryGiB: 64 }
+  rerender(<Surface shown machines={[latest]} {...props} />)
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  await screen.findByRole("button", { name: "Review changes" })
+  if (notice === "review") await user.click(screen.getByRole("button", { name: "Review changes" }))
+  rerender(<Surface shown={false} machines={[latest]} {...props} />)
+  rerender(<Surface shown machines={[latest]} {...props} />)
+  expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
+  if (notice === "conflict") {
+    expect(screen.getByRole("alert")).toHaveTextContent("This sandbox changed since you opened it.")
+    expect(screen.getByRole("button", { name: "Review changes" })).toBeVisible()
+  } else {
+    expect(screen.getByRole("status", { name: "Review changes" })).toHaveTextContent("CPUs: yours 4 CPUs, elsewhere 6 CPUs")
+    expect(screen.getByRole("status", { name: "Review changes" })).toHaveTextContent("Updated from elsewhere: Memory ceiling.")
+  }
+})

@@ -24,6 +24,16 @@ The initial audit is in the shared worktree at `docs/research/micro-reviews/runt
 - **Fix:** Save the intent inside the existing preflight result path, so persistence failures use the same Activity completion path as inspection and validation failures. No runtime mutation is admitted before a successful intent save.
 - **Regression:** The intent-write failure test requires a completed danger entry with the save-error detail and no VM mutation. The extracted production `perform`, intent storage, and Activity reader failed before correction and passed afterward, using temporary files and stubbed runtime inspection.
 
+## runtime-activity-logs-4: The saved-intent size check does not bound its read
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/runtime/lifecycle_recovery.rs:50–57` before this fix.
+- **Trigger:** A saved action exceeds the existing 1 MiB limit or its path supplies that oversized prefix without closing the input stream.
+- **Evidence:** `fs::read` allocates the entire input before `bytes.len()` checks the limit. The FIFO regression sent 1 MiB plus one byte and held its writer open; the original loader remained blocked until the test closed the writer, failing the pre-EOF rejection assertion.
+- **Consequence:** Large corrupt recovery documents consume memory proportional to their full size; an open stream blocks the action/recovery worker despite already exceeding its accepted size.
+- **Fix:** Open the input and consume at most 1 MiB plus one byte through standard `Read::take`, then apply the existing size and identity checks. Missing-file handling and diagnostic strings remain consistent.
+- **Regressions:** Reject an oversized FIFO before EOF, accept a valid exact-limit intent, reject one extra byte, and preserve the oversized file. These run against extracted production `load` and storage functions with disposable paths.
+
 ## Verification
 
 Both new regressions failed against the corresponding pre-fix functions and passed after correction in disposable Rust harnesses under `/tmp/silo-codex-target/verification/runtime-activity-logs/`. The complete extracted retained-log query suite passed all 21 tests with the default parallel test runner, including production JSON Lines export, redaction, rotation, pagination, and follow functions. These tests used temporary files only.
