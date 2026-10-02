@@ -60,9 +60,9 @@ describe("RemoteComputersSettings", () => {
   })
 
   it.each([
-    ["authorize", "Authorize SSH in Terminal…"],
-    ["setupKey", "Set up Silo SSH key…"],
-  ] as const)("retries %s repair and requires an explicit reconnect afterwards", async (kind, label) => {
+    ["authorize", "Authorize SSH in Terminal…", "Opening Terminal…"],
+    ["setupKey", "Set up Silo SSH key…", "Setting up SSH key…"],
+  ] as const)("retries %s repair and requires an explicit reconnect afterwards", async (kind, label, progress) => {
     let fail!: (error: Error) => void
     const repair = vi.fn().mockImplementationOnce(() => new Promise<void>((_, reject) => { fail = reject })).mockResolvedValueOnce(undefined)
     const connect = vi.fn().mockRejectedValueOnce(new Error("SSH authentication failed")).mockResolvedValueOnce(undefined)
@@ -72,7 +72,9 @@ describe("RemoteComputersSettings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Connect" }))
     await screen.findByRole("alert")
     fireEvent.click(screen.getByRole("button", { name: label }))
-    expect(screen.getByRole("button", { name: label })).toBeDisabled()
+    expect(screen.getByRole("button", { name: progress })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled()
+    expect(screen.queryByRole("button", { name: "Connecting…" })).not.toBeInTheDocument()
     expect(repair).toHaveBeenCalledExactlyOnceWith("owner@office")
     await act(async () => fail(new Error("Repair unavailable")))
     expect(screen.getByRole("alert")).toHaveTextContent("Repair unavailable")
