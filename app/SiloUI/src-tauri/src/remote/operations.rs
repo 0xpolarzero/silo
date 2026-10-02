@@ -169,11 +169,20 @@ impl Registry {
     /// True while the change may still start: before its deadline, with access still
     /// allowed and a connection open (or recently open, so a retry can attach).
     fn wanted(&self, id: &str, allowed: &Probe) -> bool {
+        self.wanted_with_clock(id, allowed, Instant::now)
+    }
+
+    fn wanted_with_clock(
+        &self,
+        id: &str,
+        allowed: &Probe,
+        clock: impl FnOnce() -> Instant,
+    ) -> bool {
         if !allowed() {
             return false;
         }
-        let now = Instant::now();
         let mut state = self.lock();
+        let now = clock();
         let Some(operation) = state.operations.get_mut(id) else {
             return false;
         };
@@ -492,6 +501,49 @@ mod tests {
         assert_eq!(
             *order.lock().unwrap(),
             ["first started", "first finished", "second started"]
+        );
+    }
+
+    #[test]
+    fn a_change_that_expires_while_waiting_for_the_registry_lock_is_not_wanted() {
+        let registry = registry();
+        let fixture = Fixture::new();
+        registry
+            .accept(&fixture.submission(always(), always()), Value::Null)
+            .unwrap();
+        let mut state = registry.lock();
+        let before = Instant::now();
+        let deadline = before + Duration::from_secs(1);
+        state.operations.get_mut(&fixture.id).unwrap().deadline = deadline;
+        let elapsed = Arc::new(AtomicBool::new(false));
+        let (entered, waiting) = std::sync::mpsc::channel();
+        let (sampled, clock_called) = std::sync::mpsc::channel();
+        let wanted = thread::scope(|scope| {
+            let elapsed_probe = elapsed.clone();
+            let id = &fixture.id;
+            let check = scope.spawn(move || {
+                entered.send(()).unwrap();
+                registry.wanted_with_clock(id, &always(), || {
+                    let now = if elapsed_probe.load(Ordering::SeqCst) {
+                        deadline
+                    } else {
+                        before
+                    };
+                    sampled.send(()).unwrap();
+                    now
+                })
+            });
+            waiting.recv().unwrap();
+            // A clock sampled before locking can complete here; a clock sampled
+            // under the held lock waits until it observes the advanced time.
+            let _ = clock_called.recv_timeout(Duration::from_secs(1));
+            elapsed.store(true, Ordering::SeqCst);
+            drop(state);
+            check.join().unwrap()
+        });
+        assert!(
+            !wanted,
+            "expired work must not be admitted after registry contention"
         );
     }
 
