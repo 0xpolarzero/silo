@@ -149,7 +149,17 @@ fn request_header(
     if websocket && body_length.is_some_and(|n| n != 0) {
         return Err(());
     }
-    Ok(Request { body_length: body_length.unwrap_or(0), websocket, header: format!("{first}\r\nHost: 127.0.0.1:{guest_port}\r\nOrigin: http://127.0.0.1:{guest_port}\r\nAuthorization: Basic {authorization}\r\nConnection: {}\r\n{}\r\n\r\n", if websocket { "Upgrade" } else { "close" }, kept.join("\r\n")) })
+    let mut forwarded = format!("{first}\r\nHost: 127.0.0.1:{guest_port}\r\nOrigin: http://127.0.0.1:{guest_port}\r\nAuthorization: Basic {authorization}\r\nConnection: {}\r\n", if websocket { "Upgrade" } else { "close" });
+    for line in kept {
+        forwarded.push_str(line);
+        forwarded.push_str("\r\n");
+    }
+    forwarded.push_str("\r\n");
+    Ok(Request {
+        body_length: body_length.unwrap_or(0),
+        websocket,
+        header: forwarded,
+    })
 }
 fn forward_body(
     mut from: impl Stream,
@@ -914,7 +924,7 @@ mod tests {
         upstream.set_nonblocking(true).unwrap();
         let upstream_worker = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(5);
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut stream, _) = loop {
                     match upstream.accept() {
                         Ok(connection) => break connection,
@@ -972,18 +982,26 @@ mod tests {
         });
 
         let proxy = Proxy::start(socket, 6901, "silo", "password").unwrap();
-        for (method, body) in [("GET", &b""[..]), ("POST", &b"body"[..])] {
+        for (method, body, content_length) in [
+            ("GET", &b""[..], false),
+            ("GET", &b""[..], true),
+            ("POST", &b"body"[..], true),
+        ] {
             let mut client = TcpStream::connect(("127.0.0.1", proxy.port)).unwrap();
             client
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
             write!(
                 client,
-                "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\nContent-Length: {}\r\n\r\n",
+                "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\n{}\r\n",
                 proxy.port,
                 proxy.cookie_name,
                 proxy.token,
-                body.len()
+                if content_length {
+                    format!("Content-Length: {}\r\n", body.len())
+                } else {
+                    String::new()
+                }
             )
             .unwrap();
             client.write_all(body).unwrap();
