@@ -142,8 +142,14 @@ pub(crate) fn repair(cache: &Path) -> Result<usize, String> {
         if !is_descriptor(&path) {
             continue;
         }
-        let Ok(descriptor) = fs::read_to_string(&path) else {
-            continue;
+        let descriptor = match fs::read_to_string(&path) {
+            Ok(descriptor) => descriptor,
+            Err(_) => {
+                failure = Some(
+                    "Silo could not read an image descriptor in the runtime's cache.".to_string(),
+                );
+                continue;
+            }
         };
         match rebind(&descriptor, cache) {
             Ok(Some(text)) => {
@@ -155,8 +161,8 @@ pub(crate) fn repair(cache: &Path) -> Result<usize, String> {
         }
     }
     match failure {
-        Some(error) if repaired == 0 => Err(error),
-        _ => Ok(repaired),
+        Some(error) => Err(error),
+        None => Ok(repaired),
     }
 }
 
@@ -262,6 +268,54 @@ mod tests {
             assert_eq!(cached_copy(path, &cache), None, "{path}");
         }
         assert_eq!(repair(&cache.join("absent")).unwrap(), 0);
+    }
+
+    #[test]
+    fn repairing_another_descriptor_does_not_hide_missing_extents() {
+        let (_directory, cache) = cache();
+        let old = "/gone/cache";
+        let repaired = cache.join("vmdk/repairable.vmdk");
+        fs::write(
+            &repaired,
+            descriptor(
+                &format!("{old}/fsmeta/{FSMETA}"),
+                &format!("{old}/layers/{LAYER}"),
+            ),
+        )
+        .unwrap();
+        let broken = cache.join("vmdk/broken.vmdk");
+        let missing = format!("{old}/layers/sha256_{}.erofs", "0".repeat(64));
+        let broken_text = descriptor(&format!("{old}/fsmeta/{FSMETA}"), &missing);
+        fs::write(&broken, &broken_text).unwrap();
+
+        let result = repair(&cache);
+        assert!(!fs::read_to_string(&repaired).unwrap().contains(old));
+        assert_eq!(fs::read_to_string(&broken).unwrap(), broken_text);
+        assert!(result.unwrap_err().contains("missing"));
+    }
+
+    #[test]
+    fn unreadable_descriptors_are_reported_without_stopping_other_repairs() {
+        let (_directory, cache) = cache();
+        fs::write(cache.join("vmdk/unreadable.vmdk"), [0xff, 0xfe]).unwrap();
+        let repaired = cache.join("vmdk/repairable.vmdk");
+        fs::write(
+            &repaired,
+            descriptor(
+                &format!("/gone/cache/fsmeta/{FSMETA}"),
+                &format!("/gone/cache/layers/{LAYER}"),
+            ),
+        )
+        .unwrap();
+
+        let result = repair(&cache);
+        assert!(!fs::read_to_string(&repaired).unwrap().contains("/gone"));
+        assert!(result.unwrap_err().contains("read an image descriptor"));
+        // A cache with only the unreadable descriptor must report it as well.
+        fs::remove_file(&repaired).unwrap();
+        assert!(repair(&cache)
+            .unwrap_err()
+            .contains("read an image descriptor"));
     }
 
     #[test]
