@@ -95,3 +95,12 @@ it("preserves focus moved outside the editor while a save settles", async () => 
   await user.click(screen.getByRole("button", { name: "Save" }))
   expect(screen.getByRole("button", { name: "Other action" })).toHaveFocus()
 })
+
+it.each(["Edit", "Duplicate settings for"])("focuses the editor after selecting %s from the row menu", async action => {
+  const machine = productionMachineDefaults[0]
+  const user = userEvent.setup()
+  render(<TooltipProvider><MachineList machines={[machine]} onMachinesChange={vi.fn()} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>)
+  await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
+  await user.click(screen.getByRole("menuitem", { name: `${action} ${machine.name}` }))
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveFocus())
+})
