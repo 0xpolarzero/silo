@@ -33,7 +33,9 @@ uses the same Python adapter. This requires Rust and Python 3.11 or newer but no
 Tauri build, GitHub configuration, or access to application state. It avoids a
 second registry of names or a parser tied to Rust source formatting. Linux
 verification harnesses use the same adapter for runtime aliases, including
-non-production identifiers, so Dev fixtures look under the Dev private home. Static Tauri
+non-production identifiers, so Dev fixtures look under the Dev private home. Production app bundle roots, disk-image volume names, release asset names and
+package identity checks also read the exporter; production output names stay
+unchanged. Static Tauri
 configuration and documentation examples remain pinned by channel tests.
 
 ## Shared state that is now per channel
