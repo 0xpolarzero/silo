@@ -194,6 +194,8 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
   const controller = useNetworkPorts({ workspaces: [workspace], network: source.network, error: source.networkError, actions, active })
   const { draft, rows } = controller
   const fallbackPorts = workspace.ports ?? []
+  const hasDiscoveryError = Boolean(controller.error) || controller.errors.length > 0
+  const hasPorts = useLive ? rows.length > 0 : fallbackPorts.length > 0
   const canAdd = Boolean(actions.saveNetworkPort) && controller.localWorkspaces.length > 0
   const inlineForm = <NetworkPortForm controller={controller} fieldID={fieldID} hideSandbox className={inlinePortFormClassName} />
 
@@ -209,7 +211,7 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
       <span>{controller.error || controller.errors.join(" · ")}</span>
       {actions.refreshNetwork && <Button size="sm" variant="ghost" onClick={() => void actions.refreshNetwork?.()}>Retry</Button>}
     </div>}
-    <ListCard>
+    {(hasPorts || draft || !hasDiscoveryError) && <ListCard>
       {draft && !draft.editing && <div className="border-b border-border">{inlineForm}</div>}
       {useLive
         ? rows.length > 0
@@ -263,7 +265,7 @@ function PortsSection({ workspace, source, actions, browser, active, onNavigate 
               title={<span className="font-normal text-muted-foreground">No ports</span>}
               detail=""
             />}
-    </ListCard>
+    </ListCard>}
   </Section>
 }
 

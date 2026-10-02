@@ -12,6 +12,12 @@ const draft = {
 }
 
 describe("onboarding recovery validation", () => {
+  it.each(["token", "oauth"])("persists %s authentication without storing credentials", (authenticationMethod) => {
+    const input = { ...draft, workspaceRepositoryAccess: { dev: { repositoryMode: "selected", allRepositoriesAllowChanges: false, authenticationMethod } } }
+    expect(onboardingDraftSchema.parse(input)).toEqual(input)
+    expect(onboardingDraftSchema.safeParse({ ...input, workspaceRepositoryAccess: { dev: { ...input.workspaceRepositoryAccess.dev, token: "secret" } } }).success).toBe(false)
+  })
+
   it("persists all-repository intent without expanding it into the current catalog", () => {
     const input = { ...draft, workspaceRepositoryAccess: { dev: { repositoryMode: "all", allRepositoriesAllowChanges: false } } }
     expect(onboardingDraftSchema.parse(input)).toEqual(input)

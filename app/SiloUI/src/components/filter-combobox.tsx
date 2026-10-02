@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
+import { isRestoringFocus } from "@/lib/focus"
 
 export interface FilterOption<Value extends string> {
   value: Value
@@ -50,6 +51,8 @@ export function FilterCombobox<Value extends string>({
     !selectedValues.has(value)
     && optionLabel.toLowerCase().includes(query.trim().toLowerCase())
   ))
+  const lastIndex = Math.max(0, results.length - 1)
+  if (activeIndex > lastIndex) setActiveIndex(lastIndex)
   const activeValue = results[activeIndex]?.value
   useEffect(() => {
     if (open) activeOption.current?.scrollIntoView({ block: "nearest", inline: "nearest" })
@@ -90,7 +93,7 @@ export function FilterCombobox<Value extends string>({
               className={cn("pl-8 text-xs", compact ? "h-7 w-36" : "h-8 w-48")}
               placeholder={placeholder}
               value={query}
-              onFocus={() => setOpen(true)}
+              onFocus={event => { if (!isRestoringFocus(event.currentTarget)) setOpen(true) }}
               onClick={() => setOpen(true)}
               onChange={(event) => {
                 setQuery(event.target.value)
@@ -135,6 +138,7 @@ export function FilterCombobox<Value extends string>({
               key={option.value}
               id={`${listboxId}-${index}`}
               type="button"
+              tabIndex={-1}
               role="option"
               aria-selected={index === activeIndex}
               className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus:bg-accent aria-selected:bg-accent"

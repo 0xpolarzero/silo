@@ -117,6 +117,18 @@ describe("export and verify", () => {
     production.dispose()
     await expect(completion).rejects.toMatchObject({ reason: "unavailable", operationId: "op-7" })
   })
+
+  it("rejects when the source is disposed before the export start reply arrives", async () => {
+    let finishStart: ((id: string) => void) | undefined
+    const { production } = await store(() => new Promise(resolve => { finishStart = resolve }))
+    const rejected = vi.fn()
+    const completion = production.backupActions.exportAndVerify("/Volumes/Backups", ["dev"])
+    void completion.catch(rejected)
+    await vi.waitFor(() => expect(finishStart).toBeDefined())
+    production.dispose()
+    finishStart?.("op-late")
+    await vi.waitFor(() => expect(rejected).toHaveBeenCalledWith(expect.objectContaining({ reason: "unavailable", operationId: "op-late" })))
+  })
 })
 
 // E-27: closing the import review stops the export file check it started.

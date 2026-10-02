@@ -47,6 +47,16 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertTrue((destination / '.local/bin/tool').read_text().startswith('#!/home/silo/.local/bin/python'))
         self.assertTrue((source / '.local/bin/tool').read_text().startswith('#!/root/'))
 
+    def test_utf8_decodable_binary_launcher_is_preserved_byte_for_byte(self):
+        source, home = self.root / 'source', self.root / 'home'
+        (source / '.local/bin').mkdir(parents=True)
+        binary = b'\x00\x01/root/binary-data\n/home/silo-desktop/data'
+        (source / '.local/bin/binary').write_bytes(binary)
+        guest.copy_home(source, home)
+        guest.copy_home(source, home)
+        self.assertEqual((home / '.local/bin/binary').read_bytes(), binary)
+        self.assertEqual((source / '.local/bin/binary').read_bytes(), binary)
+
     def test_home_copy_skips_transient_pipes_and_preserves_files(self):
         source, destination = self.root / 'root', self.root / 'silo'
         source.mkdir()
@@ -306,6 +316,26 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertFalse(guest.carried(root / '.bashrc'))
         (root / '.bashrc').write_text('# default root bashrc\nexport PATH=/root/.bun/bin:$PATH\n')
         self.assertTrue(guest.carried(root / '.bashrc'))
+
+    def test_shell_setup_relocates_paths_without_decoding_or_changing_other_bytes(self):
+        source, home = self.root / 'source', self.root / 'home'
+        source.mkdir()
+        originals = {
+            '.bashrc': b'# caf\xe9\r\nexport PATH=/root/.local/bin:$PATH\r\n',
+            '.profile': b'# caf\xe9\nexport TOOL=/home/silo-desktop/bin/tool\n',
+        }
+        for name, contents in originals.items():
+            (source / name).write_bytes(contents)
+        for _ in range(2):
+            guest.copy_home(source, home)
+            guest.copy_shell_setup(source, home)
+        for name, contents in originals.items():
+            expected = contents.replace(b'/root/', b'/home/silo/').replace(
+                b'/home/silo-desktop/', b'/home/silo/')
+            if name == '.profile':
+                expected += guest.PATH_SETUP.encode('utf-8')
+            self.assertEqual((home / name).read_bytes(), expected)
+            self.assertEqual((source / name).read_bytes(), contents)
 
 
 if __name__ == '__main__':

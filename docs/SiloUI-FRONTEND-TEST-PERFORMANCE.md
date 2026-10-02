@@ -116,15 +116,17 @@ Replace those waits with Vitest's supported asynchronous fake-timer advancement
 inside React `act`. Keep the real page, Sonner, stylesheet processing, user
 interaction, 4,500 ms persistence boundary, background-notification assertions,
 and all seven tests. Add an explicit Close toast interaction and disappearance
-assertion to complete the existing test's stated behavior. Install fake timers
-after the initial user click and restore real timers before the close click, so
-user-event retains its normal scheduling. Shared setup restores real timers on
-failure. A temporary mutation changing this success toast's `persist: true` to
+assertion to complete the existing test's stated behavior. During folding,
+`29dfb30b` independently landed the same optimization with the shared
+`setupFakeTimerUser` helper. The merged file keeps that helper, which uses
+user-event's supported `advanceTimers` option and an `act` async wrapper, and
+adds the close assertion followed by 200 ms of fake exit-animation time. Shared
+setup restores real timers on failure. A temporary mutation changing this success toast's `persist: true` to
 `false` failed at the post-4,500 ms assertion; the production source was restored.
 
 ### Controlled comparison
 
-Host: Apple M4 Max, 16 CPUs, macOS, Node 24.11.1, Vitest 4.1.11. Two
+Host: Apple M4 Max, 16 CPUs, macOS 26.5, Node 24.11.1, Vitest 4.1.11. Two
 interleaved real/fake pairs used the following command (replace `LABEL`):
 
 ```sh
@@ -135,15 +137,15 @@ PATH=/Users/polarzero/.nvm/versions/node/v24.11.1/bin:$PATH \
   --outputFile.json=src-tauri/target/verification/test-speed/LABEL.json
 ```
 
-The comparison baseline holds the new close assertion and `act` boundaries
-stable, but uses real timers. The higher CLI timeout is for both measurements
+The comparison baseline holds the merged assertions and `act` boundaries
+stable, but uses real timers and ordinary user-event scheduling. The higher CLI timeout is for both measurements
 only; the retained test uses the ordinary default timeout. All four runs passed
 the same seven names and assertions. Values below are medians of two runs.
 
 | Measurement | Real timers | Fake timers | Reduction |
 | --- | ---: | ---: | ---: |
-| Success test duration | 5.805 s | 1.605 s | 72.4% |
-| Sum of seven test durations | 9.702 s | 6.989 s | 28.0% |
+| Success test duration | 5.747 s | 1.293 s | 77.5% |
+| Sum of seven test durations | 10.390 s | 7.032 s | 32.3% |
 
 Twenty-two agents shared this host; load averages rose above 100. The paired
 results remove a known 5,100 ms of real waits but do not establish a stable
@@ -161,8 +163,10 @@ oxlint. This is fixture verification; no app bundle or live VM was inspected.
 Ignored raw evidence is under
 `app/SiloUI/src-tauri/target/verification/test-speed/`: `frontend-before.*`,
 `github-before-fixed.*`, `github-before-controlled.*`,
-`github-{real,fake}-{1,2}.{log,json}`, `github-mutation.log`, and the exact
-comparison sources `github-{baseline,treatment}.tsx`.
+`github-merged-{real,fake}-{1,2}.{log,json}`, `github-mutation.log`, and
+the exact comparison sources `github-merged-{baseline,treatment}.tsx`. Earlier
+`github-{real,fake}-{1,2}` pairs timed a narrower fake-timer variant before the
+merge and are excluded from the final table.
 
 Primary references: [Vitest timers](https://vitest.dev/guide/mocking/timers)
 and [Testing Library fake timers](https://testing-library.com/docs/using-fake-timers/).

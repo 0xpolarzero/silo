@@ -129,7 +129,7 @@ mod platform {
         }
         fn tool_tip(&self) -> ksni::ToolTip {
             ksni::ToolTip {
-                title: "Silo".into(),
+                title: crate::channel::current().product_name().into(),
                 description: self.label.clone(),
                 ..Default::default()
             }
@@ -150,7 +150,7 @@ mod platform {
         fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
             vec![
                 ksni::menu::StandardItem {
-                    label: "Open Silo".into(),
+                    label: format!("Open {}", crate::channel::current().product_name()),
                     activate: Box::new(|tray: &mut Self| {
                         status_panel::report(status_panel::open_main(tray.app.clone(), None))
                     }),
@@ -158,7 +158,7 @@ mod platform {
                 }
                 .into(),
                 ksni::menu::StandardItem {
-                    label: "Quit Silo".into(),
+                    label: format!("Quit {}", crate::channel::current().product_name()),
                     activate: Box::new(|tray: &mut Self| crate::settings::request_quit(&tray.app)),
                     ..Default::default()
                 }
@@ -222,7 +222,7 @@ mod platform {
                 online,
                 offline_generation: Arc::new(AtomicU64::new(0)),
                 tone: Tone::Neutral,
-                label: "Silo".into(),
+                label: crate::channel::current().product_name().into(),
             })
             .assume_sni_available(true)
             .spawn()

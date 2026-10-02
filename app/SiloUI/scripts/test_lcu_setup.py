@@ -241,6 +241,30 @@ class LcuSetupTests(unittest.TestCase):
                 'requiredRuntime': 'official-chatgpt-linux',
             })
 
+    def test_passive_status_rejects_non_object_receipts_without_running_commands(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            app = root / 'chatgpt'
+            app.mkdir()
+            receipt = root / 'lcu.json'
+            original_lstat = Path.lstat
+
+            def receipt_owned_by_root(path):
+                if path == receipt:
+                    return SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0)
+                return original_lstat(path)
+
+            for value in ([], None, 'ready', 1, True):
+                with self.subTest(value=value):
+                    receipt.write_text(json.dumps(value))
+                    with (mock.patch.object(Path, 'lstat', new=receipt_owned_by_root),
+                          mock.patch.object(setup_lcu.subprocess, 'run') as run):
+                        result = setup_lcu.receipt_status(receipt, root / 'prefix', app)
+                    self.assertEqual(result, {
+                        'status': 'repair-required', 'reason': 'invalid-receipt',
+                    })
+                    run.assert_not_called()
+
     def test_active_session_check_ignores_stream_health(self):
         with mock.patch.object(setup_lcu.subprocess, 'run', return_value=mock.Mock(
                 stdout='{"state":"failed","sessionState":"running","streamState":"failed"}')):

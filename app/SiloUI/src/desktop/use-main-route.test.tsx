@@ -24,3 +24,29 @@ it("does not consume main-window requests from the status panel", () => {
   expect(mocks.invoke).not.toHaveBeenCalled()
   expect(mocks.listen).not.toHaveBeenCalled()
 })
+
+it("keeps a newer main-window route when the startup drain answers last", async () => {
+  let notify!: () => void
+  let finish!: (value: unknown) => void
+  mocks.listen.mockImplementation(async (_name, handler) => { notify = handler; return vi.fn() })
+  mocks.invoke.mockReturnValueOnce(new Promise(resolve => { finish = resolve }))
+    .mockResolvedValueOnce({ workspace: "newer", sandboxTab: "storage" })
+  const { result } = renderHook(() => useMainRoute(true))
+  await waitFor(() => expect(mocks.invoke).toHaveBeenCalledOnce())
+  await act(async () => notify())
+  expect(result.current).toEqual({ workspace: "newer", sandboxTab: "storage" })
+  await act(async () => finish({ workspace: "older", workspaceSection: "logs" }))
+  expect(result.current).toEqual({ workspace: "newer", sandboxTab: "storage" })
+})
+
+it("still delivers a pending route when a later drain finds no route", async () => {
+  let notify!: () => void
+  let finish!: (value: unknown) => void
+  mocks.listen.mockImplementation(async (_name, handler) => { notify = handler; return vi.fn() })
+  mocks.invoke.mockReturnValueOnce(new Promise(resolve => { finish = resolve })).mockResolvedValueOnce(null)
+  const { result } = renderHook(() => useMainRoute(true))
+  await waitFor(() => expect(mocks.invoke).toHaveBeenCalledOnce())
+  await act(async () => notify())
+  await act(async () => finish({ workspace: "pending", workspaceSection: "logs" }))
+  expect(result.current).toEqual({ workspace: "pending", workspaceSection: "logs" })
+})

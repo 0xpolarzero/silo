@@ -438,20 +438,31 @@ pub(crate) async fn read_backup_state(
 }
 
 fn backup_state(controller: &Controller) -> Result<BackupState, String> {
-    let (journal_error, operation) = {
-        let view = controller.view.lock().map_err(|_| {
-            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
-        })?;
-        (view.journal_error.clone(), view.operation.clone())
+    let view = controller.view.lock().map_err(|_| {
+        "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+    })?;
+    let journal = recovery::snapshot(controller)?;
+    let busy = controller.busy.load(Ordering::Acquire);
+    // A worker saves its journal before publishing its view. A result must come
+    // from that same journal unless recovery failed and kept it pending for retry.
+    let operation = match (&view.operation, &journal) {
+        (Some(Operation::Result { .. }), Some(journal)) if !journal.is_pending() || busy => {
+            Some(journal.operation())
+        }
+        _ => view.operation.clone(),
     };
-    let availability_message = journal_error.or_else(|| {
-        recovery::unresolved(controller).unwrap_or(true).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
+    let availability_message = view.journal_error.clone().or_else(|| {
+        (!busy && journal.as_ref().is_some_and(recovery::Journal::is_pending)).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
     });
-    let result_unseen =
-        matches!(operation, Some(Operation::Result { .. })) && recovery::unseen(controller)?;
+    let result_unseen = matches!(operation, Some(Operation::Result { .. }))
+        && journal
+            .as_ref()
+            .is_some_and(recovery::Journal::is_unseen_result);
     Ok(BackupState {
         snapshot_id: controller.revision.load(Ordering::Relaxed).to_string(),
-        operation_id: recovery::token(controller)?,
+        operation_id: journal
+            .as_ref()
+            .map(|journal| journal.identity().to_string()),
         availability: if availability_message.is_some() {
             "unavailable"
         } else {
@@ -3202,6 +3213,83 @@ mod tests {
             serde_json::from_str(include_str!("../../src/test/contracts/backup-state.json"))
                 .unwrap();
         assert_eq!(serde_json::to_value(state).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_new_journal_never_reports_the_previous_exports_success() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let previous = Operation::Result {
+            operation: "backup",
+            archive: completed_archive(),
+            running_names: Vec::new(),
+            target_name: None,
+            outcome: "success",
+            title: "Export complete".into(),
+            message: "Sandbox exported.".into(),
+            detail: None,
+        };
+        set_operation(&controller, previous).unwrap();
+        // The next export has saved its journal but has not replaced the view yet.
+        controller.busy.store(true, Ordering::Release);
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        let state = backup_state(&controller).unwrap();
+        assert_eq!(state.operation_id, recovery::token(&controller).unwrap());
+        assert!(
+            matches!(state.operation, Some(Operation::Running { .. })),
+            "a new export must not inherit the old success"
+        );
+        let current = Operation::Result {
+            operation: "backup",
+            archive: Archive {
+                archive_path: "/backups/new.silo-backup".into(),
+                ..completed_archive()
+            },
+            running_names: Vec::new(),
+            target_name: None,
+            outcome: "success",
+            title: "Export complete".into(),
+            message: "Sandbox exported.".into(),
+            detail: None,
+        };
+        recovery::complete(&controller, current);
+        let state = backup_state(&controller).unwrap();
+        let Some(Operation::Result { archive, .. }) = state.operation else {
+            panic!("the current journal's result must be reported");
+        };
+        assert_eq!(archive.archive_path, "/backups/new.silo-backup");
+    }
+
+    #[test]
+    fn a_failed_recovery_stays_visible_while_its_journal_is_pending() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        set_operation(
+            &controller,
+            failed_transfer(
+                "backup",
+                completed_archive(),
+                None,
+                "Recovery failed".into(),
+            ),
+        )
+        .unwrap();
+        let state = backup_state(&controller).unwrap();
+        assert_eq!(state.availability, "unavailable");
+        assert!(
+            matches!(state.operation, Some(Operation::Result { outcome: "failed", message, .. }) if message == "Recovery failed")
+        );
     }
 
     #[test]

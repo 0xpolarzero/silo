@@ -81,6 +81,43 @@ fn a_fifo_record_is_refused_without_waiting_for_a_writer() {
 }
 
 #[test]
+fn collection_removes_interrupted_deletions_from_the_published_folder() {
+    let (dir, _, lock, path) = published();
+    let base = chatgpt_root(&dir);
+    let abandoned = base.join("published/.rejected-interrupted");
+    fs::create_dir_all(abandoned.join("resources")).unwrap();
+    fs::write(abandoned.join("resources/app.asar"), b"leftover").unwrap();
+    let in_use = base.join("published/1.1.0-arm64");
+    fs::create_dir_all(&in_use).unwrap();
+    let keep = HashSet::from(["1.1.0-arm64".to_owned()]);
+    assert!(collect_garbage(&base, &lock, DebArch::Arm64, &keep)
+        .unwrap()
+        .is_empty());
+    assert!(!abandoned.exists());
+    assert!(in_use.exists());
+    assert!(path.join("ChatGPT").is_file());
+}
+
+#[test]
+fn preparation_removes_interrupted_deletions_without_following_links() {
+    let dir = root();
+    let base = chatgpt_root(&dir);
+    let abandoned = base.join("published/.rejected-interrupted");
+    fs::create_dir_all(abandoned.join("resources")).unwrap();
+    fs::write(abandoned.join("resources/app.asar"), b"leftover").unwrap();
+    let outside = dir.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("keep"), b"precious").unwrap();
+    std::os::unix::fs::symlink(&outside, base.join("published/.rejected-link")).unwrap();
+    let package = deb(&good_items());
+    let (result, _) = again(&dir, &package, &lock_for(&package));
+    assert!(result.is_ok());
+    assert!(!abandoned.exists());
+    assert!(fs::symlink_metadata(base.join("published/.rejected-link")).is_err());
+    assert_eq!(fs::read(outside.join("keep")).unwrap(), b"precious");
+}
+
+#[test]
 fn a_planted_part_symlink_is_removed_not_written_through() {
     let dir = root();
     let package = deb(&good_items());

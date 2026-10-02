@@ -1,6 +1,6 @@
 # SiloUI runtime packaging
 
-Status: MicroSandbox 0.7.6 runtime inputs and fifteen patches are pinned; the qualification evidence in this document was collected on the 0.7.2 runtime and has not been repeated on 0.7.4 or 0.7.6 (see [MicroSandbox 0.7.4 upgrade](#microsandbox-074-upgrade) and [MicroSandbox 0.7.6 upgrade](#microsandbox-076-upgrade)). The optimized macOS qualification bundle passed disposable migration, checkpoint, fork, restore, restart, and authorized live GitHub policy checks. On Linux ARM64, the final AppImage passed native WebKit smoke, packaged-tool integrity, and dependency checks; the authentic predecessor passed migration, checkpoint/fork/restore, RAM/process replay, same-home lineage exports, cold-cache import/Start with the original source cache absent, relaunch persistence, and saved/native/physical capacity checks. These tests ran in an Ubuntu 24.04 ARM64 Lima guest with nested KVM on Apple Silicon, not bare-metal Linux ARM64. On Linux x86-64, the runtime-7 package passed authentic migration and the same-home export matrix; a separate production fresh-home import/Start passed with source cache paths absent. The x86 desktop package also passed unsaved Mousepad checkpoint/fork/source-restore and stale-X11 recovery. The positive live remote-viewer check passed on the final x86 AppImage SHA-256 `8079943262a6a70e007403aa3900d1fd857080d63a04ea8dc4fb700dc5c7d8b2`, controller executable SHA-256 `96ffb0bad56f0e655d2072a7d9ad7bf987c83961292b5c62d84f5d437d671465`. Pinned-key SSH authenticated and exited 0; the running remote viewer connected, while opening a stopped fork left it stopped. Evidence is in `app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/remote-final/`. The later user-authorized x86 runtime-8 AppImage passed payload, manifest, tool-version, protocol-probe, and dependency verification, as well as live port-control proof. Its package SHA-256 is `58a0516b396632390b9637966219ff732b577810fcf18483dcc9cbb1409d804a`; detailed hashes and evidence are in [Linux verification](SiloUI-LINUX-VERIFICATION.md). The native GTK destination chooser and source-only archive export passed; see [Linux verification](SiloUI-LINUX-VERIFICATION.md). Release signing and distribution are publication steps outside this implementation qualification.
+Status: MicroSandbox 0.7.6 runtime inputs and fifteen patches are pinned. The full app qualification below used 0.7.2 and has not been repeated in full on 0.7.4 or 0.7.6. Later runtime-specific builds, regressions and disposable-VM checks are recorded under [MicroSandbox 0.7.4 upgrade](#microsandbox-074-upgrade) and [MicroSandbox 0.7.6 upgrade](#microsandbox-076-upgrade); those checks do not requalify every app workflow. The optimized macOS qualification bundle passed disposable migration, checkpoint, fork, restore, restart, and authorized live GitHub policy checks. On Linux ARM64, the final AppImage passed native WebKit smoke, packaged-tool integrity, and dependency checks; the authentic predecessor passed migration, checkpoint/fork/restore, RAM/process replay, same-home lineage exports, cold-cache import/Start with the original source cache absent, relaunch persistence, and saved/native/physical capacity checks. These tests ran in an Ubuntu 24.04 ARM64 Lima guest with nested KVM on Apple Silicon, not bare-metal Linux ARM64. On Linux x86-64, the runtime-7 package passed authentic migration and the same-home export matrix; a separate production fresh-home import/Start passed with source cache paths absent. The x86 desktop package also passed unsaved Mousepad checkpoint/fork/source-restore and stale-X11 recovery. The positive live remote-viewer check passed on the final x86 AppImage SHA-256 `8079943262a6a70e007403aa3900d1fd857080d63a04ea8dc4fb700dc5c7d8b2`, controller executable SHA-256 `96ffb0bad56f0e655d2072a7d9ad7bf987c83961292b5c62d84f5d437d671465`. Pinned-key SSH authenticated and exited 0; the running remote viewer connected, while opening a stopped fork left it stopped. Evidence is in `app/SiloUI/src-tauri/target/verification/x86-final-desktop-20260927/remote-final/`. The later user-authorized x86 runtime-8 AppImage passed payload, manifest, tool-version, protocol-probe, and dependency verification, as well as live port-control proof. Its package SHA-256 is `58a0516b396632390b9637966219ff732b577810fcf18483dcc9cbb1409d804a`; detailed hashes and evidence are in [Linux verification](SiloUI-LINUX-VERIFICATION.md). The native GTK destination chooser and source-only archive export passed; see [Linux verification](SiloUI-LINUX-VERIFICATION.md). Release signing and distribution are publication steps outside this implementation qualification.
 
 ## Qualification evidence
 
@@ -400,16 +400,16 @@ Git and dugite-native use GPL-2.0. Git LFS uses MIT plus its recorded component 
 
 ## Approved push boundary
 
-The future native implementation keeps two push routes:
+The native implementation supports two push routes:
 
 - When VM pushes are enabled, tools in the VM may push through Silo-controlled GitHub access. GitHub credentials remain on the host.
 - When VM pushes are disabled, guest pushes stay blocked. The user may select commits and click Push in Silo, which pushes from the host.
 
-App Push never grants standing push permission to the VM. It uses the bundled Git and Git LFS, standard Git transfers, only required committed Git/LFS data, and incremental transfer where the protocol supports it. This section settles packaging and the push boundary. It does not claim that either route or native GitHub credential forwarding is implemented.
+App Push never grants standing push permission to the VM. It uses the bundled Git and Git LFS, standard Git transfers, only required committed Git/LFS data, and incremental transfer where the protocol supports it. The [GitHub implementation](SiloUI-GITHUB-IMPLEMENTATION.md#native-implementation) describes credential forwarding and host Push. The current [host adapter](../app/SiloUI/src-tauri/src/host_push.rs) checks authority before pushing the confirmed branch and commit through isolated bundled Git.
 
 ## Resource and VM backup UX recommendation (2026-09-08)
 
-Research recommendation only; no UI or backup implementation is approved by this section.
+Historical recommendation against MicroSandbox 0.6.17, not current export behavior. The later implementation supports checkpoints and exports while a sandbox runs; see [checkpoint qualification](SiloUI-CHECKPOINTS-PLAN.md) and [export and import testing](SiloUI-DEPENDENCIES-BACKUP-TESTING.md#export-a-sandbox). The original recommendation follows.
 
 - Onboarding should show genuine compatibility and packaged-runtime checks. There is no measured basis for a universal 16 GiB RAM or 20 GiB free-space gate. Check capacity when creating, starting, backing up, or restoring a selected VM. Show an actionable shortage at that operation; do not add a permanent capacity checklist or invent a minimum when no defensible requirement exists.
 - RAM admission must account for the selected VM and host pressure, rather than treating unused RAM as the available budget. [Apple documents memory pressure](https://support.apple.com/guide/activity-monitor/view-memory-usage-actmntr1004/mac) as a combination of free, cached and wired memory and swap activity; Linux documents `MemAvailable` as an estimate accounting for reclaimable memory in [procfs](https://docs.kernel.org/filesystems/proc.html). Performance estimates warrant warnings, not unsupported hard minimums. Runtime overhead and any reserve still require measurement.
@@ -421,7 +421,7 @@ Research recommendation only; no UI or backup implementation is approved by this
 
 ## Dependency assessment
 
-No SiloUI native code currently invokes Git, Git LFS, tar, gtar, or zstd. The visible backup and repository operations are fixtures.
+This assessment and the proposed checks below describe the 2026-09-08 snapshot, when native Git/Git LFS invocation and real backup operations were absent. The assessment is preserved as decision evidence. Current [dependency probes](../app/SiloUI/src-tauri/src/dependencies.rs) invoke bundled `git --version` and `git-lfs version` in an isolated environment; [host Push](../app/SiloUI/src-tauri/src/host_push.rs) invokes bundled Git for committed-object transfers. Follow [dependencies, export and import testing](SiloUI-DEPENDENCIES-BACKUP-TESTING.md) for current behavior.
 
 | Current row | Finding | Recommendation requiring approval |
 | --- | --- | --- |
@@ -437,14 +437,19 @@ The remaining thresholds also lack a current SiloUI requirement:
 - `20 GiB free`: no measured Silo plan supports this fixed minimum. Upstream currently defaults each managed writable root disk to 4 GiB in its [sandbox configuration](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/sdk/rust/lib/sandbox/config.rs), but actual image, workspace, and backup budgets vary.
 - `16 GiB memory`: no measured Silo plan supports this fixed minimum. Upstream defaults one sandbox to 512 MiB in its [global configuration](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/sdk/rust/lib/config/mod.rs).
 
-Pending decisions, unchanged by this work:
+Decisions pending at that snapshot:
 
 1. May we remove the `tar / gtar` and `zstd` onboarding rows and defer each check to its actual feature?
 2. May we replace or defer `macOS 26+`, `20 GiB free`, and `16 GiB memory` after compatibility and capacity tests establish real thresholds?
 
-This preparation leaves every row, label, layout, and interaction unchanged.
+That preparation left every row, label, layout, and interaction unchanged. The later dependency implementation replaced those fixture checks; the questions above are historical, not outstanding approval requests.
 
 ## Proposed real checks
+
+These are the original 2026-09-08 implementation requirements. The native
+[dependency module](../app/SiloUI/src-tauri/src/dependencies.rs) now implements
+the probes; its unit tests and the dated packaging records below state their
+verification boundaries.
 
 1. Resolve the app-private manifest, sidecar, and library by fixed platform layout; validate the manifest schema, pinned target and versions, files, and the macOS bundle signature or Linux staged hashes. Run only packaged `msb --version` with fixed arguments, bounded output, private environment paths, an empty `MSB_HOME`, and fixed per-probe and total timeouts; require its output to match the pinned version.
 2. On macOS require macOS at or above the bundle minimum, `arm64`, and Apple's documented [`kern.hv_support`](https://developer.apple.com/documentation/hypervisor) value of `1`. On Linux require the CPU to match a packaged `aarch64` or `x86_64` target, glibc 2.34 or newer for the combined package, and [`KVM_GET_API_VERSION`](https://docs.kernel.org/virt/kvm/api.html#kvm-get-api-version) on `/dev/kvm` to return `12`; close the descriptor without calling `KVM_CREATE_VM` or otherwise creating a VM. MicroSandbox alone supports glibc 2.28 under its [upstream platform requirements](https://github.com/superradcompany/microsandbox/blob/5eca4de8bf233e57f114140f8c076ea8c96f21ab/docs/cli/overview.mdx), but bundled Git raises Silo's current Linux floor to 2.34.

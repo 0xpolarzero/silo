@@ -4,6 +4,10 @@ Scope: `app/SiloUI/src/features/status-bar/`, `app/SiloUI/src/features/storage/`
 
 The initial two findings are recorded in the shared review worktree's `fe-status-storage-updates.md`. This file records additional defects reproduced during the isolated fix loop. Tests use frontend fixtures; no app or VM was launched.
 
+## fe-status-storage-updates-1 follow-up: Repeated focus during listener recovery
+
+The test `keeps a failed update connection visible when focus returns during listener recovery` reproduced the original error-masking defect under a second focus event during registration. That focus started an independent read, which resolved after registration failed again and cleared its error. The provider now tracks connecting, connected, and failed states; focus reads wait for a connected listener, and focus retries failed registration once per attempt.
+
 ## fe-status-storage-updates-3: Failed backup listener has no visible recovery
 
 - **Severity:** P3

@@ -25,6 +25,9 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-05 | P3 | Release guide omits the implemented in-app Debian update | Corrected and folded: `17edafc6` |
 | RL-06 | P2 | Required minimum-macOS gate uses a runner with imminent brownouts | Open; replacement qualification required |
 | RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed: `abae62fe` |
+| RL-08 | P2 | Failed license staging replaces the MicroSandbox sidecar without its manifest | Fixed; regression passes |
+| RL-09 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Confirmed; fix pending |
+| RL-10 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed: `8102c670` |
 
 ## Detailed findings
 
@@ -137,6 +140,52 @@ tools compiled eight times across the existing capability/source cases. Changing
 the four documented Cargo flag environment inputs. The regression checks rebuilds
 for changed plain, encoded, build-wide, and target-specific flags, and reuse when
 those inputs remain unchanged. The focused runtime staging tests pass.
+
+### RL-08 Failed license staging replaces the MicroSandbox sidecar without its manifest
+
+**P2.** `stageRuntime` published the compiled sidecar before fetching and verifying
+the remaining licenses and writing the new resource manifest. A later download
+failure left the previously prepared manifest and library alongside a replacement
+sidecar with a different digest.
+
+**Evidence.** A fixture first prepared a complete runtime, then attempted a new
+compiled executable with an unavailable license URL. The call rejected, but the
+sidecar contained the replacement bytes. The regression failed on the original
+sidecar comparison; no native executable or network request was used.
+
+**Correction and status.** Fixed: sidecar publication follows complete resource
+and manifest staging. The regression now verifies that a failed license fetch
+preserves all three previously prepared outputs. This does not claim atomic
+publication across a process crash or final filesystem errors.
+### RL-09 Optional GNOME verifier uses obsolete tray and channel expectations
+
+**P2.** Confirmed at `ac8aaf87`. Locations: [linux_desktop_services.py](../app/SiloUI/scripts/linux_desktop_services.py), tray item selection, Open action and health fixture; [tray.rs](../app/SiloUI/src-tauri/src/tray.rs), Linux `menu` and `title`.
+
+**Trigger.** Enable the smoke harness's optional `SILO_LINUX_DESKTOP_SERVICES=gnome` mode against a current production or Dev fixture.
+
+**Evidence.** Native Linux tray code exports the menu label `Open Silo`; the GNOME helper selects `Open Silo…` and therefore raises `StopIteration` for the current menu even in production. For Dev, it first rejects the channel's `Silo Dev` tray title and window title because both comparisons require `Silo`. Its health-error injection also writes metadata under the production identifier regardless of the selected fixture identifier. These are source-confirmed adapter mismatches; no desktop service was launched.
+
+**Consequence.** The optional verification cannot reach its claimed native reopen, health notification, and Quit checks. The title and metadata assumptions also prevent extending that qualification to the Dev channel selected by the current build workflow. This is separate from RL-02's ordinary settings/autostart smoke paths.
+
+**Correction.** Match the actual Open action and derive tray/window names and health metadata from the selected channel. Keep the native menu's current shared action labels; changing product menus is outside this fixture correction.
+
+**Rejecting test.** Feed the extracted real GNOME menu selector a layout populated from the native tray's actual action labels. It must select Open and Quit. Exercise the tray-title predicate and health metadata path for both standard channel identifiers, requiring Dev state to remain under the Dev fixture root. Then qualify the full optional GNOME run separately.
+
+### RL-10 Package identity gate accepts another Debian package or macOS Dev bundle
+
+**P2.** The final metadata verifier checked Debian version/architecture but not
+`Package`, and macOS version/CPU but not `CFBundleIdentifier`. Correctly versioned
+artifacts belonging to another application or the Dev channel therefore passed.
+
+**Evidence.** Synthetic signed-package contents for both Debian architectures
+with `Package: unrelated`, plus ARM64 macOS archives with Dev/other identifiers,
+all passed before the correction. Four rejecting subcases failed. These fixtures
+exercise the metadata verifier, not cryptographic signing or publication.
+
+**Correction and status.** Fixed: Debian packages must identify `silo`; macOS
+archives must use the production identifier from the tracked Tauri configuration.
+Positive production fixtures still pass. The Linux fixture builds real `.deb`
+files with `dpkg-deb` and accepts `silo` while rejecting an unrelated package.
 
 ## Verification and reproducibility
 
