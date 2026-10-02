@@ -636,6 +636,13 @@ matrix, frontend checks, package checks and minimum-macOS checks to pass. Native
 test jobs receive no signing credentials. Only the reviewed public release dependencies
 described above are cached; application and native-test products are excluded.
 
+Workflow checkouts set `persist-credentials: false`. The [pinned checkout action](https://github.com/actions/checkout/blob/3d3c42e5aac5ba805825da76410c181273ba90b1/action.yml)
+defaults to retaining its token for later authenticated Git commands. These jobs
+need Git authentication only during checkout; publication and package downloads
+receive explicit step-scoped tokens. Disabling persistence keeps that token out
+of subsequent build and test Git commands. Job permissions remain read-only by
+default, with existing write permissions confined to publication jobs.
+
 Reusable workflow and runtime-action string inputs enter shell commands through
 quoted environment variables. GitHub expands expressions before parsing inline
 scripts, so quoting a `${{ inputs.target }}` expression alone does not prevent

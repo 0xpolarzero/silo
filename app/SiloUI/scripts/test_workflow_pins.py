@@ -40,6 +40,17 @@ class WorkflowPinTests(unittest.TestCase):
                     self.assertRegex(rest, r'^\s+# v\d+(\.\d+)*$')
         self.assertGreater(checked, 0)
 
+    def test_checkout_does_not_persist_repository_credentials(self):
+        checked = 0
+        for path in GITHUB.glob('workflows/*.yml'):
+            for step in re.split(r'^ {6}- ', path.read_text(), flags=re.M):
+                if not re.search(r'(?:^|\n +)uses: actions/checkout@', step):
+                    continue
+                checked += 1
+                with self.subTest(file=path.name):
+                    self.assertRegex(step, r'(?m)^ {10}persist-credentials: false$')
+        self.assertGreater(checked, 0)
+
     def test_dependabot_updates_workflow_and_composite_actions(self):
         config = (GITHUB / 'dependabot.yml').read_text()
         self.assertIn('package-ecosystem: github-actions', config)
