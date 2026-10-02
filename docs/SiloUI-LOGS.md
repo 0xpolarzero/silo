@@ -130,6 +130,10 @@ pagination, lifecycle diagnostics, and exports reach the UI. The existing
 and [passwords](https://docs.rs/url/latest/url/struct.Url.html#method.password),
 including token-only usernames and percent-encoded credentials. Public URLs and
 email addresses remain readable. This filtering runs after runtime persistence.
+Command lines with password, passphrase, token, secret, key, credential, or user
+options are also hidden. The filter recognizes separated long-option words
+and [curl's `-u` credential option](https://curl.se/docs/manpage.html#-u),
+because its username/password value does not need an assignment or URL.
 
 The pinned runtime's [retention patch](../app/SiloUI/patches/microsandbox-log-retention-desktop-start-0.7.6.patch)
 renames older segments to increasing numeric suffixes. Silo uses numeric suffix

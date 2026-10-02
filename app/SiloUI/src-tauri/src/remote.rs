@@ -313,9 +313,20 @@ fn link_bridge(home: &Path, target: &Path) -> Result<(), String> {
                     || previous.file_name() == target.file_name()
                     || std::env::current_exe()
                         .is_ok_and(|current| previous.file_name() == current.file_name())
-                    || previous
+                    || (previous
                         .extension()
                         .is_some_and(|extension| extension == "AppImage")
+                        && previous
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .is_some_and(|stem| {
+                                let product = crate::channel::current().product_name();
+                                [product.to_owned(), product.replace(' ', "_")].iter().any(
+                                    |product| {
+                                        stem == product || stem.starts_with(&format!("{product}_"))
+                                    },
+                                )
+                            }))
             });
         if !ours {
             return Err(format!("~/.local/bin/{name} already exists. Choose a different name for that file before enabling remote management."));
@@ -3009,6 +3020,25 @@ mod bridge_link_tests {
             .unwrap_err()
             .contains("already exists"));
         assert_eq!(fs::read(&link).unwrap(), b"mine");
+    }
+
+    #[test]
+    fn unrelated_appimage_bridge_link_is_preserved() {
+        let _test_state = crate::test_support::global_state();
+        let home = tempfile::tempdir().unwrap();
+        let apps = tempfile::tempdir().unwrap();
+        let other = apps.path().join("other-tool.AppImage");
+        let target = apps.path().join("Silo_0.6.0_amd64.AppImage");
+        executable(&other);
+        executable(&target);
+        let link = home
+            .path()
+            .join(".local/bin")
+            .join(crate::channel::current().remote_bridge_name());
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(&other, &link).unwrap();
+        assert!(link_bridge(home.path(), &target).is_err());
+        assert_eq!(fs::read_link(&link).unwrap(), other);
     }
 
     #[test]

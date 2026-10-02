@@ -43,3 +43,18 @@ React's [useState bailout](https://react.dev/reference/react/useState#setstate) 
 children when the next state is identical; [context propagation](https://react.dev/reference/react/useContext#optimizing-re-renders-when-passing-objects-and-functions)
 otherwise updates consumers whenever the provider passes a new object. Consulted
 2026-10-02. These fixture counts establish avoided renders, not a CPU benchmark.
+
+## Unchanged remote download status
+
+Fixed in `desktop/computer-use-bridge.ts`. The remote ChatGPT download store
+previously published every partial update, including unchanged progress and
+repeated errors. The `keeps remote download consumers stable until progress or a
+read error changes` regression measured ten extra hook renders for ten equal
+polls. Comparing the merged snapshot before notifying reduces that to zero.
+
+The test also verifies changed byte counts, a new connection error, repeated
+failure without another render, and error clearance after recovery. All 133
+focused computer-use, polling and desktop-viewer tests pass. Poll scheduling,
+backoff and event/read ordering remain independent of notification suppression.
+The same React external-store identity contract above applies. Only deterministic
+frontend data was used; no app bundle or real computer was inspected.

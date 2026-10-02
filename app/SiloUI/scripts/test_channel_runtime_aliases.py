@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 import unittest
 
-from channel_names import channel_for_identifier
+from channel_names import channel_for_identifier, channel_names
 
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -19,7 +19,10 @@ def alias_expression(script, variable):
                            for target in node.targets)]
     if len(assignments) != 1:
         raise AssertionError(f'Expected one runtime alias assignment in {script}')
-    return compile(ast.Expression(assignments[0].value), script, 'eval')
+    setup = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+             and any(isinstance(target, ast.Name) and target.id == 'state_dir_name'
+                     for target in node.targets)]
+    return compile(ast.Module(body=[*setup, assignments[0]], type_ignores=[]), script, 'exec')
 
 
 class RuntimeAliasFixtureTests(unittest.TestCase):
@@ -41,9 +44,9 @@ class RuntimeAliasFixtureTests(unittest.TestCase):
                                  'environment': environment, 'identifier': identifier,
                                  'APPLICATION_ID': identifier, 'home': Path(environment['HOME']),
                                  'storage_home': storage, 'digest': digest,
-                                 'channel_for_identifier': channel_for_identifier}
-                    alias = eval(alias_expression(script, variable), namespace)
-                    self.assertEqual(alias, Path('/fixture/home') / state / digest)
+                                 'channel_for_identifier': channel_for_identifier, 'names': channel_names()}
+                    exec(alias_expression(script, variable), namespace)
+                    self.assertEqual(namespace[variable], Path('/fixture/home') / state / digest)
 
 
 if __name__ == '__main__':

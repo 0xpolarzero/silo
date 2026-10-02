@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from build_desktop import build
-from channel_names import channel_for_identifier, channel_names
+from channel_names import channel_names
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -37,8 +37,13 @@ class LinuxVerificationTests(unittest.TestCase):
                                      and any(isinstance(target, ast.Name) and target.id == 'identifier'
                                              for target in node.targets))
         default = eval(compile(ast.Expression(identifier_assignment.value), 'lifecycle-identifier', 'eval'),
-                       {'environment': {}, 'channel_names': channel_names})
+                       {'environment': {}, 'names': channel_names()})
         self.assertEqual(default, 'org.silo.dev')
+        changed_names = channel_names()
+        changed_names = {**changed_names, 'development': {**changed_names['development'],
+                                                        'identifier': 'org.fixture.development'}}
+        self.assertEqual(eval(compile(ast.Expression(identifier_assignment.value), 'lifecycle-identifier', 'eval'),
+                              {'environment': {}, 'names': changed_names}), 'org.fixture.development')
 
     def test_lifecycle_guest_probes_select_the_channel_runtime_alias(self):
         lifecycle = next(node for node in SMOKE.body if isinstance(node, ast.FunctionDef)
@@ -46,13 +51,14 @@ class LinuxVerificationTests(unittest.TestCase):
         guest_for = next(node for node in ast.walk(lifecycle) if isinstance(node, ast.FunctionDef)
                          and node.name == 'guest_for')
         channel_setup = [node for node in lifecycle.body if isinstance(node, ast.Assign)
-                         and any(isinstance(target, ast.Name) and target.id == 'state_dir_name'
+                         and any(isinstance(target, ast.Name) and target.id in ('names', 'state_dir_name')
                                  for target in node.targets)]
         probe = compile(ast.Module(body=[*channel_setup, guest_for], type_ignores=[]),
                         'lifecycle-guest-probe', 'exec')
         for identifier, private_directory in [('org.silo.dev', '.silo-dev'),
                                               ('org.silo.preview', '.silo'),
-                                              ('org.silo.preview.linux-checkpoints', '.silo-dev')]:
+                                              ('org.silo.preview.linux-checkpoints', '.silo-dev'),
+                                              ('org.fixture.custom', '.fixture-dev')]:
             with self.subTest(identifier=identifier), tempfile.TemporaryDirectory() as temporary:
                 app_data = Path(temporary) / 'data' / identifier
                 storage_home = app_data / 'runtime-checkpoints-converted/microsandbox'
@@ -66,8 +72,12 @@ class LinuxVerificationTests(unittest.TestCase):
                     calls.append((args, kwargs))
                     return SimpleNamespace(returncode=0, stdout='guest marker\n')
 
-                namespace = {'Path': Path, 'channel_names': channel_names, 'channel_for_identifier': channel_for_identifier, 'os': os, 'hashlib': hashlib, 'identifier': identifier,
-                             'app_data': app_data, 'environment': environment,
+                names = channel_names()
+                if private_directory == '.fixture-dev':
+                    names = {**names, 'development': {**names['development'], 'stateDir': private_directory}}
+                namespace = {'Path': Path, 'os': os, 'hashlib': hashlib, 'identifier': identifier,
+                             'app_data': app_data, 'environment': environment, 'channel_names': lambda: names,
+                             'names': names,
                              'subprocess': SimpleNamespace(run=run)}
                 exec(probe, namespace)
                 self.assertEqual(namespace['guest_for']('fixture-workspace', 'printf marker', 'guest marker'),
@@ -86,10 +96,11 @@ class LinuxVerificationTests(unittest.TestCase):
             sentinel = Path(caller) / '.silo-dev/desktop-remote/config.json'
             sentinel.parent.mkdir(parents=True)
             sentinel.write_text('existing caller state')
-            namespace = {'temporary': temporary, 'os': os, 'Path': Path, 'channel_names': channel_names, 'channel_for_identifier': channel_for_identifier}
+            namespace = {'temporary': temporary, 'os': os, 'Path': Path, 'channel_names': channel_names}
             with patch.dict(os.environ, {'HOME': caller}):
                 exec(prelude, namespace)
             environment = namespace['environment']
+            self.assertEqual(environment.get('SILO_LINUX_APPLICATION_ID'), channel_names()['development']['identifier'])
             for key in ('HOME', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME'):
                 with self.subTest(key=key):
                     path = Path(environment[key])
@@ -113,7 +124,7 @@ class LinuxVerificationTests(unittest.TestCase):
             environment = {'XDG_CONFIG_HOME': temporary}
             if match:
                 environment['SILO_LINUX_APPLICATION_ID'] = match.group(1).strip("'\"")
-            namespace = {'environment': environment, 'Path': Path, 'channel_names': channel_names, 'channel_for_identifier': channel_for_identifier}
+            namespace = {'environment': environment, 'Path': Path, 'names': channel_names()}
             identifier = eval(expression('identifier'), namespace)
             self.assertEqual(identifier, config['identifier'])
             namespace['identifier'] = identifier
@@ -124,7 +135,7 @@ class LinuxVerificationTests(unittest.TestCase):
 
     def test_explicit_production_fixture_retains_its_released_autostart_name(self):
         namespace = {'environment': {'XDG_CONFIG_HOME': '/synthetic/config'},
-                     'identifier': 'org.silo.preview', 'Path': Path, 'channel_names': channel_names, 'channel_for_identifier': channel_for_identifier}
+                     'identifier': 'org.silo.preview', 'Path': Path}
         self.assertEqual(eval(expression('entry'), namespace),
                          Path('/synthetic/config/autostart/org.silo.preview.desktop'))
 

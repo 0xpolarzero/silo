@@ -2,6 +2,8 @@ import importlib.util
 import io
 import json
 import os
+import selectors
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -197,6 +199,52 @@ for name, stream in [('stdout', sys.stdout), ('stderr', sys.stderr)]:
                 self.assertLess(children[0].returncode, 0)
                 with self.assertRaises(ChildProcessError):
                     os.waitpid(children[0].pid, os.WNOHANG)
+
+    def test_stream_failure_also_stops_bundle_descendants(self):
+        class FailedStream(io.BytesIO):
+            def write(self, _value):
+                raise OSError("fixture output failure")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            marker = Path(temporary) / "descendant-pid"
+            reader, writer = os.pipe()
+            popen = subprocess.Popen
+            descendant = None
+            child = """
+import pathlib, subprocess, sys, time
+fd = int(sys.argv[1])
+worker = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                          pass_fds=(fd,), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+pathlib.Path(sys.argv[2]).write_text(str(worker.pid))
+print('ready', flush=True)
+time.sleep(30)
+"""
+
+            def spawn(*args, **kwargs):
+                process = popen(*args, pass_fds=(writer,), **kwargs)
+                os.close(writer)
+                return process
+
+            try:
+                with patch.object(MODULE.subprocess, "Popen", side_effect=spawn):
+                    with self.assertRaisesRegex(OSError, "fixture output failure"):
+                        MODULE.run_attempt([sys.executable, "-c", child, str(writer), str(marker)],
+                                           io.BytesIO(), FailedStream(), io.BytesIO())
+                descendant = int(marker.read_text())
+                # Only this child and its descendant hold the writer. EOF proves
+                # both exited, even if the orphan's exit status awaits init.
+                with selectors.DefaultSelector() as selector:
+                    selector.register(reader, selectors.EVENT_READ)
+                    self.assertTrue(selector.select(1), "bundle descendant survived output failure")
+                self.assertEqual(os.read(reader, 1), b"")
+                descendant = None
+            finally:
+                if descendant is not None:
+                    try:
+                        os.kill(descendant, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                os.close(reader)
 
     def test_cli_does_not_mask_nonzero_exit_and_appends_to_existing_log(self):
         with tempfile.TemporaryDirectory() as temporary:

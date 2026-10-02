@@ -689,9 +689,12 @@ and package validation are outside this retry boundary; other errors fail
 immediately. This handles transient upstream download failures without
 repeating the expensive build phases.
 
-If forwarding stdout/stderr or writing the local log fails, the wrapper kills
-and reaps its bundle command before propagating that error. Python's
+Each bundle attempt runs in its own process group. If forwarding stdout/stderr
+or writing the local log fails, the wrapper stops that group and reaps its
+bundle command before propagating the error. Python's
 [`Popen` context manager](https://docs.python.org/3/library/subprocess.html#subprocess.Popen)
 waits for the child on exit; it does not stop it on an exception. The synthetic
 stream-failure regression checks all three output destinations and verifies
-that the child is reaped. This does not test a real package build.
+that the child is reaped. A descendant fixture inherits a separate pipe; EOF
+verifies that it also exits after forwarding fails. This does not test a real
+package build.

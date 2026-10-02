@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
@@ -179,6 +180,7 @@ pub(crate) struct Settings {
 
 /// Serializes every read-modify-write of a policy file.
 static POLICY_LOCK: Mutex<()> = Mutex::new(());
+const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 
 fn directory(paths: &RuntimePaths) -> PathBuf {
     paths.metadata.with_file_name("computer-use")
@@ -195,8 +197,22 @@ fn observed_path(paths: &RuntimePaths, id: &str) -> Option<PathBuf> {
     policy_path(paths, id).map(|path| path.with_extension("observed.json"))
 }
 
+fn read_settings_bytes(path: &Path) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(MAX_SETTINGS_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_SETTINGS_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "Computer-use settings exceed the 1 MiB safety limit.",
+        ));
+    }
+    Ok(bytes)
+}
+
 fn read_json<T: serde::de::DeserializeOwned>(path: Option<PathBuf>) -> Option<T> {
-    path.and_then(|path| fs::read(path).ok())
+    path.and_then(|path| read_settings_bytes(&path).ok())
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
 }
 
@@ -210,7 +226,7 @@ fn read_policy_checked(paths: &RuntimePaths, id: &str) -> Option<Policy> {
     let Some(path) = policy_path(paths, id) else {
         return Some(Policy::default());
     };
-    match fs::read(path) {
+    match read_settings_bytes(&path) {
         Ok(bytes) => serde_json::from_slice(&bytes).ok(),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(Policy::default()),
         Err(_) => None,

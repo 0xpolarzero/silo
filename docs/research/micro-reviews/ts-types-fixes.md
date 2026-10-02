@@ -41,3 +41,19 @@ Checks: 119 parser/bridge tests and seven settings UI tests passed on Node
 file exceeded both five-second and twenty-second test deadlines on the shared
 machine, then passed alone with `--maxWorkers=1 --testTimeout=60000`. The final
 run took 71.46 seconds. These are fixture checks, not live app verification.
+
+## Storage history trigger labels
+
+Fixed: `workspace-storage-panel.tsx` asserted a plain label object was
+`Record<string, string>`. A saved trigger named `__proto__` instead returned
+`Object.prototype`, which React rejected as a child when opening history.
+`constructor` and `toString` returned functions and caused invalid-child errors.
+Both the native `ReclaimEntry.trigger: String` in `runtime/storage.rs` and
+`workspaceStorageStateSchema` accept these strings.
+
+Use a `Map<string, string>` inferred from the existing labels. The
+[ECMAScript Map.get algorithm](https://tc39.es/ecma262/2023/multipage/keyed-collections.html#sec-map.prototype.get)
+looks up stored entries and returns `undefined` for missing keys, so all unknown
+triggers use the existing Automatic label. The actual storage panel regressions
+failed for the three prototype names before the fix. They also cover an ordinary
+future name and all five existing labels; history results stay readable.

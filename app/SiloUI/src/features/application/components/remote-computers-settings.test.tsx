@@ -279,3 +279,23 @@ it("stops subscription recovery timers when computer settings become inactive", 
     expect(listen).toHaveBeenCalledTimes(2)
   } finally { view.unmount(); vi.useRealTimers() }
 })
+
+
+it("blocks removal Retry while a remote management change is pending", async () => {
+  let finish!: () => void
+  const setRemoteManagement = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  const removeComputer = vi.fn().mockRejectedValueOnce(new Error("Connection could not be removed")).mockResolvedValue(undefined)
+  const remote = { id: "office", name: "Office", address: "owner@office", connected: false }
+  const management = remoteManagementSchema.parse({ enabled: true, hostId: "local", name: "This computer", address: "owner@local" })
+  render(<><Toaster /><RemoteComputersSettings source={{ ...source(management), remoteComputers: [remote] }} actions={actions({ setRemoteManagement, removeComputer })} /></>)
+  fireEvent.click(screen.getByRole("button", { name: "Remove connection to Office" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  const toggle = screen.getByRole("switch", { name: "Allow remote management" })
+  fireEvent.click(toggle)
+  expect(toggle).toBeDisabled()
+  await act(async () => fireEvent.click(retry))
+  expect(removeComputer).toHaveBeenCalledOnce()
+  expect(toggle).toBeDisabled()
+  await act(async () => finish())
+  expect(toggle).toBeEnabled()
+})
