@@ -77,3 +77,14 @@ The initial read-only audit remains in the shared review worktree. These additio
 ## Rejected menu-lifetime hypothesis
 
 The pinned versions are Tauri 2.11.5 and muda 0.19.3. GTK popup completion is not an early-dismissal defect in this checkout: [muda's pinned GTK implementation](https://github.com/tauri-apps/muda/blob/muda-v0.19.3/src/platform_impl/gtk/mod.rs#L1416-L1500) iterates GTK until cancel or selection-done, and [Tauri's menu implementation](https://github.com/tauri-apps/tauri/blob/tauri-v2.11.5/crates/tauri/src/menu/menu.rs#L43-L81) waits for its main-thread call. No menu-lifetime fix was made on that premise.
+
+## fe-desktop-contracts-8: Removed sandbox rows still open and dispatch native menus
+
+- **Severity:** P3
+- **Location:** `app/SiloUI/src/desktop/native-workspace-menu.tsx`, menu creation and item callbacks.
+- **Trigger:** A sandbox row disappears while asynchronous native menu creation or menu tracking is pending.
+- **Consequence:** Late creation opens an orphan menu, and its retained callbacks can start or operate the removed sandbox. An already open menu also remains owned by the discarded component.
+- **Evidence:** The deferred-creation regression failed because `popup` was called after unmount. This test supplies native API mocks; it does not establish installed-app menu behavior.
+- **Fix:** Close owned menus on disposal, close late-created menus without opening them, and guard item callbacks and feedback against disposal. Release ownership before closing so tracking completion cannot close a menu twice.
+- **Regression:** A late menu never opens or starts a sandbox; an open menu closes once on disposal and ignores subsequent actions. Existing remote targeting and website-copy behavior remain covered.
+- **Integration:** Concurrent fixes `5551ccad` and `c8b822a9` reached integration before folding. Retained their generation and target-change guards, added both action-disposal regressions, and removed this loop’s duplicate changeset.

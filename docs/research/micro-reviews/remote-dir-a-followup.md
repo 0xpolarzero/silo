@@ -55,3 +55,5 @@ The envelope regressions pass after correction (2 passed), including modern and 
 - **Regression:** Hold an isolated computer gate, queue preparation for A, replace or rename its metadata, then release the gate. Reject replacement, preserve rename, and retain unchanged-VM admission. The disposable seam harness uses the real operation gate and copied target-selection functions with synthetic metadata adapters; it never accesses a guest or real host configuration.
 
 Both guest-target regressions pass after correction. Focused Rust 1.94.0 Clippy reports no warnings; Cargo formatting and whitespace checks pass. These fixture checks validate queue admission and identity selection; they do not establish live guest access.
+
+Integration independently rejected same-name replacements in `37810b8b` during this loop. The fold keeps that identity protection and extends it to use a renamed VM's fresh name, with an additional stale-ID regression before admission. One changeset and one guest-target helper remain.

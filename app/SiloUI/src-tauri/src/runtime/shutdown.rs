@@ -290,12 +290,24 @@ fn stop_uncommitted_vm(
         match observed.status.to_ascii_lowercase().as_str() {
             "stopped" | "created" | "crashed" => return Ok(()),
             "running" if !requested_stop => {
-                runner.run(
+                let result = runner.run(
                     paths,
                     &["stop".into(), machine.name().into(), "--quiet".into()],
                     STOP_TIMEOUT,
-                )?;
+                );
                 requested_stop = true;
+                if let Err(error) = result {
+                    // The command may have stopped the VM before its client failed.
+                    // Confirm the exact identity and terminal state before accepting it.
+                    let observed = inspect()?;
+                    if matches!(
+                        observed.status.to_ascii_lowercase().as_str(),
+                        "stopped" | "created" | "crashed"
+                    ) {
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
                 continue;
             }
             "starting" | "stopping" | "draining" => {}
@@ -619,6 +631,65 @@ mod tests {
         assert!(stop_local_vms_with(&runner, &paths, &|_, _, _| {}).is_err());
         assert_eq!(runner.states.lock().unwrap()["first"], "Running");
         assert_eq!(runner.states.lock().unwrap()["second"], "Stopped");
+    }
+
+    #[test]
+    fn quit_verifies_an_uncommitted_stop_after_a_command_timeout() {
+        let _test_state = crate::test_support::global_state();
+        struct Timeout {
+            inner: Runner,
+            stopped: bool,
+        }
+        impl RuntimeRunner for Timeout {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                if args[0] == "stop" {
+                    if self.stopped {
+                        self.inner
+                            .states
+                            .lock()
+                            .unwrap()
+                            .insert(args[1].clone(), "Stopped".into());
+                    }
+                    return Err(RuntimeError::TimedOut {
+                        operation: "Stopping the VM".into(),
+                    });
+                }
+                self.inner.run(paths, args, timeout)
+            }
+        }
+        for stopped in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = setup(&dir);
+            let candidate = read_metadata(&paths.metadata).unwrap();
+            fs::remove_file(&paths.metadata).unwrap();
+            configuration_recovery::begin(&paths, &candidate).unwrap();
+            let runner = Timeout {
+                inner: runner(None),
+                stopped,
+            };
+            let result = stop_local_vms_with(&runner, &paths, &|_, _, _| {});
+            if stopped {
+                result.unwrap();
+            } else {
+                assert!(result.is_err(), "a still-running VM must prevent Quit");
+            }
+            assert_eq!(
+                configuration_recovery::shutdown_machines(&paths).unwrap(),
+                candidate.machines
+            );
+            assert!(runner
+                .inner
+                .states
+                .lock()
+                .unwrap()
+                .values()
+                .all(|state| state == if stopped { "Stopped" } else { "Running" }));
+        }
     }
 
     #[test]

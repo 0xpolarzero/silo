@@ -172,6 +172,9 @@ fn save_config_in(dir: &Path, config: &Config) -> Result<(), String> {
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
     temp.persist(dir.join("config.json"))
         .map_err(|e| e.to_string())?;
+    fs::File::open(dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 /// Whether a bridged method only observes state or changes it.
@@ -201,7 +204,7 @@ const METHODS: &[(&str, Access)] = &[
     ("chatgpt.retry", Access::Change),
     ("computer.approval", Access::Change),
     ("ssh.access.state", Access::Read),
-    ("ssh.access.connection", Access::Read),
+    ("ssh.access.connection", Access::Change),
     ("ssh.access.save", Access::Change),
     ("files.list", Access::Read),
     ("guest.prepare", Access::Change),
@@ -918,6 +921,15 @@ fn silo_public_key() -> Option<String> {
     Some(public.trim().to_owned())
 }
 fn request_timeout(request: &Value) -> Duration {
+    if matches!(
+        request["method"].as_str(),
+        Some("checkpoint.create" | "checkpoint.fork" | "checkpoint.restore")
+    ) {
+        // Admission uses half the request window. Reserve the other half for every
+        // owner stage within the restore window plus framing and transport.
+        return 2
+            * (crate::runtime::checkpoints::RESTORE_EXPECTED_DURATION + Duration::from_secs(60));
+    }
     // A new VM may get a desktop from the owner (it defaults one on v4 images), so
     // creation needs the desktop-capable time even when the request names none.
     if (request["method"] == "runtime.upsert"
@@ -1205,7 +1217,17 @@ fn send_change(
     request: &mut Value,
     deadline: Instant,
     delays: &[Duration],
+    send: impl FnMut(&Value) -> Result<Value, Failure>,
+) -> Result<Value, BridgeError> {
+    send_change_with_clock(request, deadline, delays, send, Instant::now)
+}
+
+fn send_change_with_clock(
+    request: &mut Value,
+    deadline: Instant,
+    delays: &[Duration],
     mut send: impl FnMut(&Value) -> Result<Value, Failure>,
+    mut now: impl FnMut() -> Instant,
 ) -> Result<Value, BridgeError> {
     let mut delays = delays.iter();
     let quit = crate::runtime::shutdown::generation();
@@ -1217,7 +1239,7 @@ fn send_change(
             ));
         }
         crate::runtime::shutdown::ensure_accepting_operations()?;
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(now());
         // Queued work must start early enough to finish while this computer still waits.
         request["startWithinMs"] = json!((remaining / 2).as_millis() as u64);
         match send(request) {
@@ -1936,13 +1958,20 @@ fn handle(
         }
         Some(Access::Read) => execute(method, params),
         Some(Access::Change) => {
+            // Earlier controllers treated key authorization as a read and sent no identity.
+            let legacy_key_request = method == "ssh.access.connection"
+                && request.get("operationId").is_none()
+                && request.get("startWithinMs").is_none();
+            let legacy_id = legacy_key_request.then(|| uuid::Uuid::new_v4().to_string());
             let id = request["operationId"]
                 .as_str()
+                .or(legacy_id.as_deref())
                 .filter(|id| uuid::Uuid::parse_str(id).is_ok())
                 .ok_or("Invalid remote request identity.")?;
             let start_within = request["startWithinMs"]
                 .as_u64()
                 .map(Duration::from_millis)
+                .or_else(|| legacy_key_request.then(|| request_timeout(request) / 2))
                 .ok_or("Invalid remote request deadline.")?
                 .min(request_timeout(request));
             let journal = dir.join("operations");
@@ -2043,6 +2072,95 @@ mod tests {
         assert!(
             checkpoint_remote_request("not-an-id", "create", Some("Point"), None, None).is_err()
         );
+    }
+
+    #[test]
+    fn checkpoint_requests_cover_queueing_and_complete_owner_work() {
+        for method in ["checkpoint.create", "checkpoint.fork", "checkpoint.restore"] {
+            let budget = request_timeout(&json!({"method":method}));
+            let queue = budget / 2;
+            assert!(
+                budget - queue >= Duration::from_secs(3600 + 60),
+                "{method} leaves only {:?} after admission for owner work and transport",
+                budget - queue,
+            );
+        }
+        assert_eq!(
+            request_timeout(&json!({"method":"runtime.snapshot"})),
+            Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn checkpoint_requests_keep_long_results_observable_and_reconnect_without_replay() {
+        use std::cell::Cell;
+        for (method, work, queued) in [
+            ("checkpoint.create", 601, false),
+            ("checkpoint.fork", 900, true),
+            ("checkpoint.restore", 3600, true),
+        ] {
+            let _test_state = crate::test_support::global_state();
+            let journal = tempfile::tempdir().unwrap();
+            let registry: &'static operations::Registry =
+                Box::leak(Box::new(operations::Registry::new()));
+            let mut request = json!({"method":method,"operationId":uuid::Uuid::new_v4().to_string(),"params":{"vmId":uuid::Uuid::new_v4().to_string()}});
+            let budget = request_timeout(&request);
+            let start = Instant::now();
+            let deadline = start + budget;
+            let clock = Cell::new(start);
+            let runs = Cell::new(0);
+            let attempts = Cell::new(0);
+            let result = send_change_with_clock(
+                &mut request,
+                deadline,
+                &[Duration::ZERO],
+                |request| {
+                    attempts.set(attempts.get() + 1);
+                    let start_within =
+                        Duration::from_millis(request["startWithinMs"].as_u64().unwrap());
+                    let result = registry
+                        .submit(
+                            operations::Submission {
+                                journal: journal.path(),
+                                id: request["operationId"].as_str().unwrap(),
+                                method,
+                                params: &request["params"],
+                                start_within,
+                                connection: std::sync::Arc::new(|| true),
+                                allowed: std::sync::Arc::new(|| true),
+                                wait: budget,
+                                reconnect_grace: operations::RECONNECT_GRACE,
+                            },
+                            || {
+                                runs.set(runs.get() + 1);
+                                let queue = if queued {
+                                    start_within - Duration::from_millis(1)
+                                } else {
+                                    Duration::ZERO
+                                };
+                                clock.set(start + queue + Duration::from_secs(work));
+                                Ok(json!({"checkpoint":"complete"}))
+                            },
+                        )
+                        .map_err(Failure::Reported)?;
+                    clock.set(clock.get() + Duration::from_secs(15));
+                    if clock.get() >= deadline {
+                        return Err(Failure::Failed("Remote operation timed out.".into()));
+                    }
+                    // Lose the first reply, then attach to the owner's retained result.
+                    if attempts.get() == 1 {
+                        Err(Failure::Lost("connection lost".into()))
+                    } else {
+                        Ok(result)
+                    }
+                },
+                || clock.get(),
+            );
+            assert_eq!(result, Ok(json!({"checkpoint":"complete"})), "{method}");
+            assert_eq!(runs.get(), 1);
+            assert_eq!(attempts.get(), 2);
+            assert!(clock.get() < deadline);
+        }
     }
 
     #[test]
@@ -3638,6 +3756,7 @@ mod dispatch_tests {
                 "desktop.action",
                 "chatgpt.retry",
                 "computer.approval",
+                "ssh.access.connection",
                 "ssh.access.save",
                 "guest.prepare",
                 "network.publish",
@@ -3718,6 +3837,25 @@ mod dispatch_tests {
             );
             assert_eq!(outcome, Err(expected.clone()));
         }
+    }
+
+    #[test]
+    fn ssh_key_registration_is_recorded_once_per_request() {
+        let _test_state = crate::test_support::global_state();
+        let (_home, dir, config) = owner();
+        let registration = request(&config, "ssh.access.connection");
+        let runs = AtomicUsize::new(0);
+        for _ in 0..2 {
+            let result = run(&dir, &registration, |_, _| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"port":2222,"address":"127.0.0.1","user":"silo"}))
+            })
+            .unwrap();
+            assert_eq!(result["port"], 2222);
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        let id = registration["operationId"].as_str().unwrap();
+        assert!(dir.join("operations").join(format!("{id}.json")).is_file());
     }
 
     #[test]
@@ -4049,6 +4187,101 @@ mod ssh_authorization_tests {
     }
 }
 
+#[cfg(test)]
+mod ssh_connection_admission_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn owner() -> (tempfile::TempDir, Value) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config {
+            host_id: uuid::Uuid::new_v4().to_string(),
+            enabled: true,
+            hosts: Vec::new(),
+        };
+        save_config_in(directory.path(), &config).unwrap();
+        let request = json!({
+            "version": VERSION,
+            "hostId": config.host_id,
+            "method": "ssh.access.connection",
+            "operationId": uuid::Uuid::new_v4().to_string(),
+            "startWithinMs": 60_000,
+            "params": {"vmId":uuid::Uuid::new_v4().to_string(),"publicKey":"ssh-ed25519 AAAA"},
+        });
+        (directory, request)
+    }
+
+    #[test]
+    fn remote_ssh_key_authorization_never_executes_after_access_is_revoked() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, request) = owner();
+        let executions = AtomicUsize::new(0);
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| false),
+            |_, _| {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok(Value::Null)
+            },
+        );
+        assert!(result.is_err(), "revoked key authorization was accepted");
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn older_controllers_authorize_keys_through_a_bounded_recorded_change() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, mut request) = owner();
+        request.as_object_mut().unwrap().remove("operationId");
+        request.as_object_mut().unwrap().remove("startWithinMs");
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| true),
+            |_, _| Ok(Value::Null),
+        );
+        assert_eq!(result.unwrap(), Value::Null);
+        assert_eq!(
+            fs::read_dir(directory.path().join("operations"))
+                .unwrap()
+                .count(),
+            1
+        );
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| false),
+            |_, _| panic!("revoked legacy key requests must not execute"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn retrying_remote_ssh_key_authorization_reuses_the_recorded_result() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, request) = owner();
+        let executions = AtomicUsize::new(0);
+        for _ in 0..2 {
+            let result = handle(
+                directory.path(),
+                &request,
+                Arc::new(|| true),
+                Arc::new(|| true),
+                |_, _| {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"port":2222,"address":"192.168.1.2"}))
+                },
+            );
+            assert_eq!(result.unwrap()["port"], 2222);
+        }
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+}
+
 pub(crate) fn log_identity() -> Result<(String, String), String> {
     let _guard = config_lock();
     Ok((read_config()?.host_id, name()))
@@ -4059,6 +4292,31 @@ mod config_io_limit_tests {
     use super::*;
 
     const LIMIT_BYTES: usize = 1024 * 1024;
+
+    #[test]
+    fn remote_config_save_reports_an_unreadable_parent_after_publication() {
+        use std::os::unix::fs::MetadataExt;
+        let directory = tempfile::tempdir().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let config = Config {
+            host_id: "fixture-owner".into(),
+            enabled: false,
+            hosts: vec![],
+        };
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = save_config_in(directory.path(), &config);
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let published = read_config_in(directory.path()).unwrap();
+        assert_eq!(published.host_id, "fixture-owner");
+        assert!(!published.enabled);
+        assert!(
+            result.is_err(),
+            "an unsynchronized rename must not report success"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn remote_config_accepts_the_limit_and_rejects_one_extra_byte_without_rewriting() {

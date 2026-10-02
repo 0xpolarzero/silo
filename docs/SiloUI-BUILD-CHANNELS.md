@@ -97,6 +97,13 @@ Silo Dev is running, lists what it will copy, and asks before replacing anything
 Dev already has (previous files are kept as `*.bak-<time>`). Re-running is safe.
 Values are never printed.
 
+The importer rejects symlinks at Dev channel roots and within destination paths,
+including dangling links, before applying any file or Keychain copy. It repeats
+the check after confirmation. [Node's `lstatSync`](https://nodejs.org/docs/latest-v24.x/api/fs.html#fslstatsyncpath-options)
+inspects the link itself instead of its target. Temporary-home regressions cover
+linked channel directories, nested remote directories, files, and links created
+while confirmation is open.
+
 Imported private files and their backups use `0600`, including when the previous
 Dev file had broader permissions. Backups use the same atomic writer as imports:
 [Node's file writer](https://nodejs.org/docs/latest-v24.x/api/fs.html#fswritefilesyncfile-data-options)

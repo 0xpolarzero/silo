@@ -37,15 +37,18 @@ export function InlineConfirmation({ active, onDismiss, children }: {
     }
 
     function dismissOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape" && isTopmost()) dismiss.current()
+      if (event.key === "Escape" && !event.defaultPrevented && isTopmost()) {
+        event.preventDefault()
+        dismiss.current()
+      }
     }
 
     document.addEventListener("pointerdown", dismissOutside, true)
-    document.addEventListener("keydown", dismissOnEscape)
+    document.addEventListener("keydown", dismissOnEscape, true)
     return () => {
       removeConfirmation(confirmationID)
       document.removeEventListener("pointerdown", dismissOutside, true)
-      document.removeEventListener("keydown", dismissOnEscape)
+      document.removeEventListener("keydown", dismissOnEscape, true)
     }
   }, [active])
 

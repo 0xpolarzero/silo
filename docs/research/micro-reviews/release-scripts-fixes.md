@@ -43,3 +43,68 @@ fresh-build failures still propagate. Regressions cover lost permissions and a
 cached probe exiting 17, then require a runnable replacement and matching digest.
 Tests use temporary sources and synthetic compiler executables, with no runtime
 preparation, app launch, VM or network operation.
+
+
+## Guest lock architecture validation
+
+Guest staging accepted an x86_64 manifest from an `arm64` lock entry and an
+aarch64 manifest from `amd64`, because it checked schema, size and checksum but
+not the manifest architecture. Three rejecting target regressions failed before
+the correction. Staging now rejects this mismatch before fetching or replacing
+any artifact; approved ARM64 and x86_64 downloads and warm-cache reuse still
+pass. These synthetic archives establish the preparation policy, not the
+architecture of bytes supplied by an incorrectly authored trusted lock.
+
+
+## Debian bundled release identity
+
+The final Debian metadata gate accepted stale bundled `release-info.json` when
+its control version and architecture were current. Two architecture regressions
+failed before the fix. The gate now requires the production resource path and
+matching version/target, using the upstream
+[`dpkg-deb --fsys-tarfile`](https://manpages.debian.org/bookworm/dpkg/dpkg-deb.1.en.html)
+data stream and Python's streaming tar reader without extracting package files.
+A metadata entry must be unique, regular and at most 1 MiB. Correct control
+identity remains required. Real disposable Debian packages cover the accepted
+production resource, stale version, wrong target, missing metadata and wrong
+package name; portable fake-dpkg child processes cover both target architectures.
+No package is installed or executed by these tests.
+
+Verification: 49 focused Python release/workflow tests passed with the two Linux
+package tests skipped on macOS. Both real-package tests then passed in the cached
+Linux container with networking disabled and a read-only source mount. That
+container lacks Rust, so its channel-name collaborator received public names
+read from the native source on the host. Typecheck, lint and Rust formatting
+passed. The initial all-tests container attempt failed on missing `rustc`, before
+any package verification; it is not reported as a passing native-name check.
+
+## RELEASE-SCRIPTS-5 — P2: Missing Linux inputs destroy the previous package tools
+
+- **Trigger and evidence:** `stageLinuxPackageTools` removes the published directory before copying its inputs. A temporary-directory fixture supplies the first new executable and omits the second; it reproduced a directory containing only the replacement `msb`, with all six prior tools lost. Failing output is preserved in ignored `target/verification/release-scripts/linux-package-before.log`.
+- **Fix:** Converged with integration commit `a173affb`. Copy and set modes in an operation-owned staging directory, then publish only after every input succeeds. Always clean that staging directory. This preserves the previous tools on input or copy failures; final directory replacement is not crash-atomic.
+- **Verification:** All four Linux package-tool tests passed, including exact bytes/modes and the packaging overlay contract. Typecheck, touched-file oxlint, Rust formatting, CI-coverage tests (two), and whitespace checks passed. Internal tooling only; no changeset required.
+
+## RELEASE-SCRIPTS-6 — P2: Local macOS overlays redirect the build while signing an old app
+
+- **Trigger and evidence:** An optimized local build receives a `--config` overlay changing `productName` or `identifier`. Tauri builds the overlaid product, but `build_desktop.py` signs and verifies the production path. The failing fixture creates a previous production bundle and a new redirected bundle; the signing callback receives the previous build. Evidence is preserved in ignored `target/verification/release-scripts/desktop-identity-before.log`.
+- **Fix:** The final wrapper configuration includes the production identifier and product name from the native channel API. This keeps the generated bundle and finalization path aligned with the required production channel. Debug routing retains the existing development configuration.
+- **Primary evidence:** The installed Tauri CLI's `build --help` and [Tauri CLI documentation](https://v2.tauri.app/reference/cli/) confirm that later configurations override earlier conflicting keys. The test models that documented merge at the process boundary, writes the selected fixture bundle, and asserts signing receives this build's marker.
+- **Verification:** Desktop routing, native channel-name, release-workflow and CI-coverage regressions passed; typecheck, Rust formatting and whitespace checks passed. No real build or signing command ran. This is an internal build-tool correction.
+
+
+## Release command symlink execution
+
+The preflight, release and version-sync entry points compared the lexical argv
+path to Node's canonical module path. Through symlinks, all three exited zero
+without running their command or reporting invalid input. Three CLI regressions
+failed before the fix using a bad patch, unsupported release action and forbidden
+zero version in temporary fixtures. The entry-point guard now compares canonical
+paths, following the guest builder's existing correction. Imports stay passive.
+The rejecting fixtures use an empty executable PATH, so they cannot tag, push,
+version, sign or publish anything.
+
+## RELEASE-SCRIPTS-7 — P2: Failed benchmark output abandons compiler processes
+
+- **Trigger and evidence:** `dependency-cache-benchmark.py build` encounters an exception while forwarding stdout or recording Cargo JSON. Its plain `Popen` has no exception cleanup. Both regression cases observed an unreaped running child after the exception; evidence is preserved in ignored `target/verification/release-scripts/benchmark-process-before.log`.
+- **Fix:** Start the owned command in its own process session, use the process context manager, and stop its group before unwinding on a forwarding exception. Preserve the original exception. This follows the existing release compiler wrapper's cleanup pattern and never selects unrelated host processes.
+- **Verification:** Real synthetic sleeping child processes exercise stdout and metadata-write failures, then assert the child was reaped before returning control. Existing benchmark build output, signal status, source gates, dependency integration and CI-coverage tests passed; typecheck, Rust formatting and whitespace checks passed. No Cargo compilation or application launch ran.

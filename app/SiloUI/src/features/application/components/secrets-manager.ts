@@ -3,9 +3,15 @@ import { useEffect, useRef, useState } from "react"
 import type { ApplicationSecret, ApplicationSource, SecretConfigurationRequest } from "@/features/application/model/application-source"
 import { restoreFocus } from "@/lib/focus"
 
+const actionableFailures = new Set([
+  "Cannot access secrets in the system credential store. Unlock it and retry.",
+  "Secret settings are too large. Reduce assignments or allowed domains and retry. No settings were overwritten.",
+  "A selected sandbox was removed while saving this secret. Select sandboxes again and retry.",
+])
+
 function operationFailure(error: unknown, fallback: string) {
   const message = typeof error === "string" ? error : error instanceof Error ? error.message : ""
-  return message === "Cannot access secrets in the system credential store. Unlock it and retry." ? message : fallback
+  return actionableFailures.has(message) ? message : fallback
 }
 
 interface EditorState {

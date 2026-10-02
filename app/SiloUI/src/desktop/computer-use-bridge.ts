@@ -164,7 +164,8 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
       else if (snapshot.subscriptionError) register()
     }
     document.addEventListener("visibilitychange", onVisibilityChange)
-    register()
+    if (computer === undefined) register()
+    else begin()
   }
   return {
     subscribe(listener) {

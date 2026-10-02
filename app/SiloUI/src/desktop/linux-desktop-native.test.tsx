@@ -56,6 +56,28 @@ it("keeps a transport failure visible when subsequent guest health checks succee
   expect(screen.getByRole("alert")).toHaveTextContent("Desktop connection unavailable")
 })
 
+it("hides an obsolete attachment error when the sandbox stops", async () => {
+  vi.useFakeTimers()
+  let stopped = false
+  invoke.mockImplementation(async command => {
+    if (command === "read_desktop_state") return {
+      installed: true, autoStart: true, state: stopped ? "vm-stopped" : "running",
+    }
+    if (command === "desktop_viewer_attach") throw new Error("Desktop connection unavailable")
+  })
+  const view = render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByRole("alert")).toHaveTextContent("Desktop connection unavailable")
+    stopped = true
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.getByRole("button", { name: "Start sandbox" })).toBeVisible()
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Reconnect" })).not.toBeInTheDocument()
+    expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
+  } finally { view.unmount(); vi.useRealTimers() }
+})
+
 it("backs off failed desktop health reads, resets after recovery, and stops on close", async () => {
   vi.useFakeTimers()
   let reachable = false

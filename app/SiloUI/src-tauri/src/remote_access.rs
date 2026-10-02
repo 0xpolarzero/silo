@@ -26,9 +26,14 @@ fn string<'a>(params: &'a Value, key: &str) -> Result<&'a str, String> {
 fn vm_name(app: &AppHandle, params: &Value) -> Result<String, String> {
     runtime::remote_ops::local_vm_name(app, string(params, "vmId")?)
 }
+
 pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
     match method {
-        "desktop.connect" => crate::desktop_viewer::local_connection(app, &vm_name(app, params)?),
+        "desktop.connect" => crate::desktop_viewer::local_connection(
+            app,
+            &vm_name(app, params)?,
+            Some(string(params, "vmId")?),
+        ),
         "desktop.status" => {
             let mut state = crate::desktop::dispatch(app, method, params)?;
             state["name"] = Value::String(vm_name(app, params)?);
@@ -293,6 +298,18 @@ mod tests {
             });
             assert!(gate.is_idle());
         }
+    }
+
+    #[test]
+    fn guest_preparation_rejects_a_stale_id_before_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(dir.path());
+        save_guest_target(&paths, "00000000-0000-4000-8000-000000000002", "dev");
+        let gate = runtime::operation_gate::OperationGate::new();
+        assert!(
+            prepare_guest_target(&gate, &paths, "00000000-0000-4000-8000-000000000001").is_err()
+        );
+        assert!(gate.is_idle());
     }
 
     #[test]

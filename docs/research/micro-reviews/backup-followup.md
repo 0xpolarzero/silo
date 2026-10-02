@@ -21,3 +21,13 @@ Scope: `app/SiloUI/src-tauri/src/backup.rs` and `app/SiloUI/src-tauri/src/pre_up
 - **Evidence:** The exact production publication seam and a temporary-file regression reproduced a missing replacement file after an injected `EIO` from directory syncing. No live runtime or real export was used.
 - **Fix:** Keep the committed path after publication. Return the sync error without unlinking a path whose ownership can already have changed.
 - **Regression:** Exercise real exclusive publication with an injected sync failure, both with and without another writer's atomic replacement. Assert the error remains reported and the expected file bytes remain. The extracted production seam and three publication tests pass; this does not substitute for the complete native suite.
+
+## BACKUP-4: Retention records can block readers or allocate without a bound
+
+- **Severity:** P2.
+- **Location:** `app/SiloUI/src-tauri/src/pre_upgrade_backup.rs`, `load`.
+- **Trigger:** `pre-upgrade-backup.json` is a FIFO with no writer, or is an oversized file. The old `fs::read` opens the FIFO in blocking mode and reads files without a byte limit.
+- **Consequence:** The FIFO stalls status and acknowledgment while holding the shared record mutex, and scheduled cleanup cannot continue. Oversized files can consume memory proportional to their contents. Symlinks also allow an unrelated record to drive automatic deletion.
+- **Evidence:** The exact production loader failed a one-second FIFO regression; fixture cleanup released and joined its blocked reader. A padded valid record beyond 64 KiB was accepted by the old loader.
+- **Fix:** Reuse the export module's no-follow, nonblocking regular-file opener and cap retention reads at 64 KiB, including a growth check on the opened handle. Unverifiable records use the existing unreadable-record policy, keeping automatic deletion disabled.
+- **Regression:** FIFO reads finish promptly without removing the FIFO; records at the limit remain valid, larger records and symlinks remain unreadable and untouched. Fixture tests also verify normal retention, unreadable-record manual deletion, and converted-runtime preservation.

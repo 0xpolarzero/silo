@@ -9,6 +9,29 @@ import { stageLinuxPackageTools } from "./linux-package-tools.mjs"
 
 const appRoot = join(dirname(fileURLToPath(import.meta.url)), "..")
 
+test("a missing Linux package input preserves the complete previous tool directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "silo-linux-package-failure-"))
+  try {
+    const triple = "x86_64-unknown-linux-gnu"
+    const binaries = join(root, "src-tauri", "binaries")
+    const packageRoot = join(root, "src-tauri", "runtime", "linux-package")
+    const destination = join(packageRoot, "tools")
+    await mkdir(binaries, { recursive: true })
+    await mkdir(destination, { recursive: true })
+    const names = ["msb", "git", "git-lfs", "git-remote-http", "git-remote-https", "libkrunfw.so.5.6.1"]
+    for (const name of names) await writeFile(join(destination, name), `previous-${name}`)
+    // Copying the first input succeeds before the missing second input fails.
+    await writeFile(join(binaries, `msb-${triple}`), "replacement-msb")
+
+    await assert.rejects(stageLinuxPackageTools({ appRoot: root, targetTriple: triple }), { code: "ENOENT" })
+    assert.deepEqual(await readdir(destination), [...names].sort())
+    for (const name of names) assert.equal(await readFile(join(destination, name), "utf8"), `previous-${name}`)
+    assert.deepEqual(await readdir(packageRoot), ["tools"])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("failed Linux tool staging preserves the previous complete package inputs", async () => {
   const root = await mkdtemp(join(tmpdir(), "silo-linux-package-"))
   try {

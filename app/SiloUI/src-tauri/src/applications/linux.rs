@@ -60,11 +60,7 @@ fn terminal_program(path: &Path) -> Option<PathBuf> {
         return None;
     }
     let argv = entry_argv(&info);
-    match launch::exec_program(&argv) {
-        Some(token) if Path::new(token).is_absolute() => Some(PathBuf::from(token)),
-        Some(token) => find_program(token),
-        None => Some(info.executable()),
-    }
+    launch::linux_terminal_program(&argv, info.executable(), &find_program)
 }
 
 fn launchable_terminal(path: &Path) -> bool {

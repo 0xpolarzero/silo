@@ -45,6 +45,19 @@ describe("production onboarding submission errors", () => {
     expect(verifySetupIdentities).toHaveBeenCalledWith({ machineConfiguration: { schemaVersion: 1, machines: [] }, github: { connectionState: application.github.state, workspaces: [] } })
   })
 
+  it("verifies an omitted identity for a recovered sandbox named constructor as unapplied", () => {
+    const machine = { ...requestB.machines[0], name: "constructor" }
+    const store = createMemorySettingsStore({}, { currentStep: "review", machines: [machine], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} })
+    const verifySetupIdentities = vi.fn().mockResolvedValue(undefined)
+    const source = { verifySetupIdentities, applicationActions: {} } as unknown as ProductionSource
+    render(<SettingsProvider store={store}><ProductionOnboarding application={application} dependencies={dependencies} source={source} /></SettingsProvider>)
+
+    expect(verifySetupIdentities).toHaveBeenCalledWith({
+      machineConfiguration: { schemaVersion: 1, machines: [machine] },
+      github: { connectionState: application.github.state, workspaces: [{ workspace: "constructor", repositories: [], identity: { name: "", email: "", apply: false } }] },
+    })
+  })
+
   it("ignores an older rejection while the newer submission succeeds", async () => {
     const first = deferred()
     const second = deferred()

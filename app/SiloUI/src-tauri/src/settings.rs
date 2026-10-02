@@ -558,6 +558,11 @@ impl SettingsState {
 /// How long Quit waits for the webview to acknowledge its settings flush.
 const FRONTEND_FLUSH_FALLBACK: Duration = Duration::from_secs(2);
 
+fn session_flush_wait(deadline: Instant, now: Instant) -> Duration {
+    // Keep at least half the remaining session budget for native shutdown.
+    FRONTEND_FLUSH_FALLBACK.min(deadline.saturating_duration_since(now) / 2)
+}
+
 #[derive(Default)]
 struct ShutdownState(Mutex<ShutdownProgress>);
 #[derive(Default)]
@@ -774,10 +779,14 @@ fn publish(app: &AppHandle, snapshot: &Snapshot) {
     // Native glass, titlebars, dialogs, and both webviews inherit app appearance.
     // None clears an explicit appearance so System follows the OS again.
     app.set_theme(snapshot.native_theme());
-    crate::status_panel::report(app.emit_to("main", "settings:changed", snapshot));
+    emit_snapshot(app, snapshot);
+}
+
+fn emit_snapshot<R: tauri::Runtime>(app: &AppHandle<R>, snapshot: &Snapshot) {
+    // Catch-all listeners receive targeted events too; drafts stay in authorized reads.
     let mut public = snapshot.clone();
     public.onboarding_draft = Value::Null;
-    crate::status_panel::report(app.emit_to("status", "settings:changed", public));
+    crate::status_panel::report(app.emit("settings:changed", public));
 }
 
 async fn change(
@@ -1031,7 +1040,7 @@ pub(crate) fn end_session(app: &AppHandle, budget: Duration) {
     // Also bound a Quit whose frontend flush started before the session ended.
     let app = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(FRONTEND_FLUSH_FALLBACK);
+        std::thread::sleep(session_flush_wait(deadline, Instant::now()));
         finish_exit(&app, false, None);
     });
 }
@@ -1072,6 +1081,7 @@ struct QuitConfirmation(Mutex<QuitRequests>);
 #[derive(Default)]
 struct QuitRequests {
     enabled: bool,
+    session_ending: bool,
     pending: Option<u64>,
     next: u64,
 }
@@ -1094,7 +1104,7 @@ impl QuitConfirmation {
     /// `None` exits now: nothing runs, or no UI can answer.
     fn ask(&self, running: Result<Vec<String>, String>) -> Option<QuitRequest> {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        if !state.enabled {
+        if !state.enabled || state.session_ending {
             return None;
         }
         let sandboxes = match running {
@@ -1120,10 +1130,9 @@ impl QuitConfirmation {
     }
     /// The session is ending: the open prompt no longer applies.
     fn close(&self) {
-        self.0
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .pending = None;
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        state.session_ending = true;
+        state.pending = None;
     }
     /// Returns whether Silo should exit.
     fn answer(&self, request_id: u64, confirmed: bool) -> Result<bool, String> {
@@ -1586,6 +1595,34 @@ mod tests {
         }
         assert!(require_main("main").is_ok());
         assert!(require_main("status").is_err());
+    }
+
+    #[test]
+    fn settings_events_never_expose_onboarding_drafts_to_catch_all_listeners() {
+        use tauri::Listener;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        app.listen_any("settings:changed", move |event| {
+            send.send(serde_json::from_str::<Value>(event.payload()).unwrap())
+                .unwrap();
+        });
+        let mut store = SettingsStore::load(None);
+        store.update_draft(unfinished_draft()).unwrap();
+        let snapshot = store.snapshot();
+
+        emit_snapshot(app.handle(), &snapshot);
+
+        let events: Vec<_> = receive.try_iter().collect();
+        assert!(!events.is_empty());
+        for event in events {
+            assert!(event["onboardingDraft"].is_null());
+            assert_eq!(event["revision"], snapshot.revision);
+            assert_eq!(event["settings"], json!(snapshot.settings));
+        }
+        assert_eq!(snapshot.onboarding_draft, unfinished_draft());
     }
 
     fn unfinished_draft() -> Value {
@@ -2158,9 +2195,42 @@ mod tests {
             quit.answer(request.request_id, false).is_err(),
             "a late Cancel cannot keep Silo open"
         );
-        assert_ne!(
-            quit.ask(Ok(vec!["dev".into()])).unwrap().request_id,
-            request.request_id
+        assert_eq!(quit.ask(Ok(vec!["dev".into()])), None);
+    }
+
+    #[test]
+    fn a_late_quit_status_read_cannot_reopen_the_session_end_prompt() {
+        let quit = QuitConfirmation::default();
+        quit.0.lock().unwrap().enabled = true;
+        quit.close();
+        assert_eq!(quit.ask(Ok(vec!["dev".into()])), None);
+        assert_eq!(quit.ask(Err("status unavailable".into())), None);
+    }
+
+    #[test]
+    fn session_fallback_starts_native_shutdown_before_a_short_deadline() {
+        let now = Instant::now();
+        for budget in [Duration::from_secs(1), Duration::from_millis(4250)] {
+            let deadline = now + budget;
+            let wait = session_flush_wait(deadline, now);
+            assert!(
+                now + wait < deadline,
+                "native shutdown needs time before expiry"
+            );
+        }
+        assert_eq!(
+            session_flush_wait(now + Duration::from_secs(20), now),
+            FRONTEND_FLUSH_FALLBACK
+        );
+    }
+
+    #[test]
+    fn an_elapsed_session_deadline_does_not_wait_for_the_frontend() {
+        let now = Instant::now();
+        assert_eq!(session_flush_wait(now, now), Duration::ZERO);
+        assert_eq!(
+            session_flush_wait(now, now + Duration::from_secs(1)),
+            Duration::ZERO
         );
     }
 

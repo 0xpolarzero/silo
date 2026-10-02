@@ -30,6 +30,22 @@ it.each(["before", "during"] as const)("does not restore a deleted backup from a
   expect(result.current.backup).toBeNull()
 })
 
+it("ignores backup events while a disposed view waits for registration to finish", async () => {
+  const registration = deferred<() => void>()
+  let refresh!: () => void
+  const backend: PreUpgradeBackupBackend = {
+    read: vi.fn(async () => null), remove: vi.fn(), measure: vi.fn(), reveal: vi.fn(), acknowledge: vi.fn(),
+    subscribe: handler => { refresh = handler; return registration.promise },
+  }
+  const view = renderHook(() => usePreUpgradeBackup(backend, { measure: false }))
+  view.unmount()
+  await act(async () => refresh())
+  const stop = vi.fn()
+  await act(async () => registration.resolve(stop))
+  expect(stop).toHaveBeenCalledOnce()
+  expect(backend.read).not.toHaveBeenCalled()
+})
+
 it("clears a previous read failure once deletion confirms the backup is gone", async () => {
   const backup: PreUpgradeBackup = { deleteAt: null, noticePending: true }
   let refresh!: () => void

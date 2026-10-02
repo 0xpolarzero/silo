@@ -38,8 +38,7 @@ pub(crate) fn exec_argv(tokens: impl IntoIterator<Item = String>) -> Vec<String>
     argv
 }
 
-/// The program an `Exec` line runs, skipping `env [-i] [-u NAME] [NAME=value]...` as
-/// snap entries use.
+/// The program an `Exec` line runs after env options and assignments.
 pub(crate) fn exec_program(argv: &[String]) -> Option<&str> {
     exec_program_index(argv).map(|index| argv[index].as_str())
 }
@@ -51,7 +50,7 @@ fn exec_program_index(argv: &[String]) -> Option<usize> {
         return Some(0);
     }
     while let Some((index, token)) = tokens.next() {
-        if matches!(token.as_str(), "-u" | "--unset") {
+        if matches!(token.as_str(), "-u" | "--unset" | "-C" | "--chdir") {
             tokens.next()?;
         } else if !token.starts_with('-') && !token.contains('=') {
             return Some(index);
@@ -64,7 +63,7 @@ fn file_name(path: &Path) -> &str {
     path.file_name().and_then(OsStr::to_str).unwrap_or("")
 }
 
-fn executable_file(path: &Path) -> bool {
+pub(super) fn executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
@@ -181,6 +180,20 @@ pub(crate) fn linux_editor_command(
         },
         find_program,
     )
+}
+
+/// Resolves the actual terminal executable behind an entry's env wrapper.
+pub(crate) fn linux_terminal_program(
+    argv: &[String],
+    fallback: PathBuf,
+    find_program: &dyn Fn(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let program = match exec_program(argv) {
+        Some(token) if Path::new(token).is_absolute() => Some(PathBuf::from(token)),
+        Some(token) => find_program(token),
+        None => Some(fallback),
+    }?;
+    executable_file(&program).then_some(program)
 }
 
 /// Commands that run the user's preferred terminal (G-07). The freedesktop
@@ -314,6 +327,61 @@ mod tests {
             "/usr/bin/flatpak run --branch=stable --command=code com.visualstudio.code @@ %F @@",
         );
         assert!(!flatpak.iter().any(|token| token == "@@" || token == "%F"));
+    }
+
+    #[test]
+    fn env_working_directory_operands_do_not_replace_the_editor_program() {
+        let directory = tempfile::tempdir().unwrap();
+        let cli = directory.path().join("code");
+        executable(&cli);
+        std::fs::write(&cli, "#!/bin/sh\npwd\nprintf '%s\\n' \"$1\"\n").unwrap();
+        for option in ["-C", "--chdir"] {
+            let argv = vec![
+                "/usr/bin/env".into(),
+                option.into(),
+                directory.path().to_str().unwrap().into(),
+                cli.to_str().unwrap().into(),
+            ];
+            assert_eq!(exec_program(&argv), cli.to_str(), "{option}");
+            let launch = linux_editor_command(&argv, None, &nowhere).unwrap();
+            // macOS env supports the short option; GNU env on Linux supports both.
+            if option == "-C" || cfg!(target_os = "linux") {
+                let output = Command::new(launch.program)
+                    .args(launch.args)
+                    .arg("--profile")
+                    .output()
+                    .unwrap();
+                assert!(output.status.success());
+                assert_eq!(
+                    String::from_utf8(output.stdout).unwrap(),
+                    format!(
+                        "{}\n--profile\n",
+                        directory.path().canonicalize().unwrap().display()
+                    )
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn env_wrapped_terminals_require_an_available_target() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("gnome-terminal");
+        let argv = vec![
+            "/usr/bin/env".into(),
+            "TERM=xterm".into(),
+            program.to_str().unwrap().into(),
+        ];
+        let resolve = || linux_terminal_program(&argv, PathBuf::from("/usr/bin/env"), &nowhere);
+        assert!(resolve().is_none(), "removed terminal was accepted");
+        executable(&program);
+        assert_eq!(resolve(), Some(program.clone()));
+        fs::set_permissions(&program, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(resolve().is_none(), "non-executable terminal was accepted");
+        fs::remove_file(&program).unwrap();
+        assert!(resolve().is_none());
     }
 
     #[test]

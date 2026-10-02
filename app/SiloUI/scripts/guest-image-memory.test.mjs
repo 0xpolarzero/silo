@@ -24,7 +24,7 @@ test("warm guest verification stays below an archive-sized RSS increase", async 
   await pipeline(Readable.from((function* () {
     for (let written = 0; written < archiveBytes; written += chunk.length) { hash.update(chunk); yield chunk }
   })()), createWriteStream(join(destination, "image.tar.gz")))
-  const manifest = { schemaVersion: 1, imageReference: "synthetic:test", archiveBytes, archiveSha256: hash.digest("hex") }
+  const manifest = { schemaVersion: 1, architecture: "aarch64", imageReference: "synthetic:test", archiveBytes, archiveSha256: hash.digest("hex") }
   await writeFile(join(appRoot, "guest-image/image-lock.json"), JSON.stringify({ images: { arm64: manifest } }))
   const moduleUrl = new URL("./guest-image.mjs", import.meta.url).href
   const { stdout } = await execute(process.execPath, ["--input-type=module", "-e", `

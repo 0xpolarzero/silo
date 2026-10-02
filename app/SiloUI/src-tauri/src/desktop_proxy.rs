@@ -100,7 +100,7 @@ fn request_header(
         {
             return Err(());
         }
-        let value = value.trim();
+        let value = value.trim_matches([' ', '\t']);
         match name.to_ascii_lowercase().as_str() {
             "host" => {
                 if host.replace(value).is_some() {
@@ -110,7 +110,7 @@ fn request_header(
             "cookie" => {
                 authenticated |= value
                     .split(';')
-                    .any(|part| part.trim() == format!("{cookie_name}={token}"));
+                    .any(|part| part.trim_matches([' ', '\t']) == format!("{cookie_name}={token}"));
             }
             "origin" => {
                 if value != format!("http://{expected_host}") {
@@ -149,7 +149,17 @@ fn request_header(
     if websocket && body_length.is_some_and(|n| n != 0) {
         return Err(());
     }
-    Ok(Request { body_length: body_length.unwrap_or(0), websocket, header: format!("{first}\r\nHost: 127.0.0.1:{guest_port}\r\nOrigin: http://127.0.0.1:{guest_port}\r\nAuthorization: Basic {authorization}\r\nConnection: {}\r\n{}\r\n\r\n", if websocket { "Upgrade" } else { "close" }, kept.join("\r\n")) })
+    let mut forwarded = format!("{first}\r\nHost: 127.0.0.1:{guest_port}\r\nOrigin: http://127.0.0.1:{guest_port}\r\nAuthorization: Basic {authorization}\r\nConnection: {}\r\n", if websocket { "Upgrade" } else { "close" });
+    for line in kept {
+        forwarded.push_str(line);
+        forwarded.push_str("\r\n");
+    }
+    forwarded.push_str("\r\n");
+    Ok(Request {
+        body_length: body_length.unwrap_or(0),
+        websocket,
+        header: forwarded,
+    })
 }
 fn forward_body(
     mut from: impl Stream,
@@ -572,6 +582,50 @@ mod tests {
     }
 
     #[test]
+    fn unicode_whitespace_cannot_disguise_typed_header_values() {
+        let base = "POST / HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nCookie: session=secret\r\n";
+        for field in [
+            "Content-Length: \u{00a0}1",
+            "Content-Length: 1\u{2003}",
+            "Upgrade: websocket\u{2003}",
+        ] {
+            assert!(
+                request_header(
+                    &format!("{base}{field}\r\n\r\n"),
+                    8000,
+                    "session",
+                    "secret",
+                    9000,
+                    "real",
+                )
+                .is_err(),
+                "accepted non-HTTP whitespace: {field:?}"
+            );
+        }
+        for field in [
+            "Host: 127.0.0.1:8000\u{00a0}\r\nCookie: session=secret",
+            "Host: 127.0.0.1:8000\r\nCookie: \u{2003}session=secret",
+            "Host: 127.0.0.1:8000\r\nCookie: session=secret\r\nOrigin: http://127.0.0.1:8000\u{3000}",
+        ] {
+            assert!(request_header(
+                &format!("GET / HTTP/1.1\r\n{field}\r\n\r\n"),
+                8000, "session", "secret", 9000, "real",
+            ).is_err());
+        }
+        let valid = request_header(
+            &format!("{base}Content-Length: \t1\t \r\n\r\n"),
+            8000,
+            "session",
+            "secret",
+            9000,
+            "real",
+        )
+        .unwrap();
+        assert_eq!(valid.body_length, 1);
+        assert!(valid.header.contains("Content-Length: \t1\t \r\n"));
+    }
+
+    #[test]
     fn forwards_authenticated_http_and_rejects_missing_cookie() {
         let (_directory, upstream, socket) = guest();
         let proxy = Proxy::start(socket, 6901, "silo", "password").unwrap();
@@ -870,7 +924,7 @@ mod tests {
         upstream.set_nonblocking(true).unwrap();
         let upstream_worker = thread::spawn(move || {
             let deadline = Instant::now() + Duration::from_secs(5);
-            for _ in 0..2 {
+            for _ in 0..3 {
                 let (mut stream, _) = loop {
                     match upstream.accept() {
                         Ok(connection) => break connection,
@@ -928,18 +982,26 @@ mod tests {
         });
 
         let proxy = Proxy::start(socket, 6901, "silo", "password").unwrap();
-        for (method, body) in [("GET", &b""[..]), ("POST", &b"body"[..])] {
+        for (method, body, content_length) in [
+            ("GET", &b""[..], false),
+            ("GET", &b""[..], true),
+            ("POST", &b"body"[..], true),
+        ] {
             let mut client = TcpStream::connect(("127.0.0.1", proxy.port)).unwrap();
             client
                 .set_read_timeout(Some(Duration::from_secs(3)))
                 .unwrap();
             write!(
                 client,
-                "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\nContent-Length: {}\r\n\r\n",
+                "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nCookie: {}={}\r\n{}\r\n",
                 proxy.port,
                 proxy.cookie_name,
                 proxy.token,
-                body.len()
+                if content_length {
+                    format!("Content-Length: {}\r\n", body.len())
+                } else {
+                    String::new()
+                }
             )
             .unwrap();
             client.write_all(body).unwrap();

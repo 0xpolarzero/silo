@@ -115,6 +115,8 @@ Export… saves all matching pages through the native save dialog as JSON
 Lines. It includes coverage metadata and complete record identities. Export
 queries each sandbox as a separate snapshot. Cancellation or a failed page leaves
 the selected destination untouched and removes partial output.
+If a selected remote computer cannot serve logs, export asks you to update Silo
+on that computer and leaves the destination untouched.
 
 The display and export use marker-based sensitive-output filtering. PEM block
 state crosses records within each stream and execution session. Search scans

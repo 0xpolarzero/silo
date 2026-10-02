@@ -16,7 +16,7 @@ import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditin
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { CircleAlert, Code, Download, GitFork, HardDrive, History, KeyRound, Loader2, Monitor, Play, RotateCw, Square, Terminal } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
-import { dismissOperationToast, dismissSandboxToasts, showActionFailure } from "@/lib/operation-toast"
+import { dismissOperationToast, dismissSandboxToasts, dismissSandboxToastsById, showActionFailure } from "@/lib/operation-toast"
 
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
 import { ConfirmBody } from "@/components/confirm-popover"
@@ -500,11 +500,12 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
 
   // A deleted sandbox takes its notifications with it: their actions (Open, Retry…) would
   // otherwise point at something that no longer exists.
-  const knownSandboxes = useRef(new Map<string, { name: string; computerId: string; target: string }>())
+  const knownSandboxes = useRef(new Map<string, { id: string; name: string; computerId: string; target: string }>())
   useEffect(() => {
-    const current = new Map(source.workspaces.map(workspace => [`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, { name: workspace.machine.name, computerId: workspace.computer?.id ?? "", target: workspaceTarget(workspace) }]))
+    const current = new Map(source.workspaces.map(workspace => [`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, { id: workspace.machine.id, name: workspace.machine.name, computerId: workspace.computer?.id ?? "", target: workspaceTarget(workspace) }]))
     for (const [key, known] of knownSandboxes.current) {
       if (current.has(key)) continue
+      dismissSandboxToastsById(known.id)
       if (known.computerId) dismissSandboxToasts(known.target)
       dismissOperationToast(`lifecycle:${key}`)
       // A name shared with a sandbox that still exists (e.g. on another computer) keeps its notifications.

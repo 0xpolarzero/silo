@@ -23,3 +23,25 @@ Evidence and the exact diagnostic/compiler commands are retained under `/tmp/sil
 `cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check`, `npm --prefix app/SiloUI run typecheck`, `npm --prefix app/SiloUI run lint`, and `git diff --check` passed. Frontend checks used Node 24.11.1. No app bundle was inspected or launched, and no live VM, production data, or real GitHub configuration was used.
 
 After folding, the integration merge changed neither `desktop.rs` nor the operation gate; the three diagnostic regressions passed again. The remaining scope review established no additional separate finding.
+
+## DESKTOP-2: Fresh runtime observations lose the captured identity
+
+- **Priority:** P2.
+- **Location before fix:** `desktop.rs:378` and `:768`.
+- **Trigger:** The runtime sandbox is replaced between initial machine resolution and the later status or approval inspection. The later inspection can also return an unmanaged sandbox or a different name.
+- **Evidence:** `status_with` checked only runtime state before reading the guest or returning a stopped fallback. `approval_at` likewise used only `Running` before saving policy. Native regressions reproduced acceptance of a stopped replacement, acceptance of unmanaged/renamed observations, and persistence of Auto approval for a replaced runtime. All three failed before the fix.
+- **Consequence:** A replacement's state can be reported for the original VM, and approval changes can be saved after the selected runtime identity is gone. A running replacement also reaches the guest status command because its labels were not checked.
+- **Fix:** Reuse the existing ownership, name, and stable-ID checks for every fresh desktop runtime inspection, before guest access or approval persistence. Pending restores retain their existing stopped behavior. This validates observed identity; it does not make an ungated guest read atomic with subsequent runtime changes.
+- **Regression:** Resolve A, return B from the next inspection, and reject the status without a guest command. Reject unmanaged and renamed observations. Reject approval before writing its policy. Existing stopped/running fixtures now carry the real ownership labels required by production.
+- **Verification:** The complete cached-dependency native harness runs `desktop::tests::` with synthetic GitHub configuration and temporary fixtures. Before-fix output is `/tmp/silo-desktop-2-before.log`; after-fix output is `/tmp/silo-desktop-2-after.log`. No app or live VM was launched. After the fix, all 27 desktop tests passed, as did Rust formatting, frontend typecheck/lint, and whitespace checks.
+
+## DESKTOP-3: Remote credential lookup drops the request's VM ID
+
+- **Priority:** P2.
+- **Location before fix:** `remote_access.rs:31`, `desktop_viewer.rs:239`, and `desktop.rs:878`.
+- **Trigger:** Remote `desktop.connect` resolves VM A's ID to a name. A replacement VM B takes that name before connection credential lookup reads metadata.
+- **Evidence:** The dispatcher passed only the resolved name through the viewer to `connection_local`; the metadata lookup had no expected ID. A native regression against the extracted connection seam returned B's synthetic credentials when given A's ID and their shared name. The regression failed before the fix; matching-ID and local-name connection behavior already passed.
+- **Consequence:** A response for A can contain B's private desktop credentials. The earlier action-dispatch fix does not cover this separate connection route.
+- **Fix:** Carry the request ID through the viewer connection wrapper and check fresh metadata before any runtime query. Keep local name-based connections and `--no-start` behavior.
+- **Regression:** Replace the metadata record under the same name and request credentials with the removed ID. Reject without runtime calls; retain matching-ID and local connection success.
+- **Verification:** Native before/after logs are `/tmp/silo-desktop-3-before.log` and `/tmp/silo-desktop-3-after.log`, using the complete cached-dependency test harness, synthetic GitHub configuration, and temporary fixtures. All 29 desktop, 18 viewer, and one remote-access tests passed, along with Rust formatting, typecheck/lint, and whitespace checks. Viewer transport tests used disposable processes and sockets. No app or live VM was launched.
