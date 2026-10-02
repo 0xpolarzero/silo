@@ -905,6 +905,8 @@ fn connection_with(
         false,
     )
     .map_err(|_| "Could not read desktop connection credentials.")?;
+    // A read stays ungated; reject credentials if the VM changed while it ran.
+    machine_at(runner, paths, workspace, Some(machine.id()))?;
     let value: Value = serde_json::from_str(output.trim())
         .map_err(|_| "Invalid desktop connection credentials.")?;
     let username = value["username"].as_str().filter(|s| {
@@ -1534,11 +1536,12 @@ mod tests {
     struct ConnectionRunner {
         machine: MachineConfiguration,
         calls: std::sync::Mutex<Vec<Vec<String>>>,
+        on_connection: Option<Box<dyn Fn(&RuntimePaths) + Send + Sync>>,
     }
     impl RuntimeRunner for ConnectionRunner {
         fn run(
             &self,
-            _: &RuntimePaths,
+            paths: &RuntimePaths,
             args: &[String],
             _: Duration,
         ) -> Result<runtime::CommandOutput, RuntimeError> {
@@ -1553,6 +1556,9 @@ mod tests {
                     if args.last().map(String::as_str)
                         == Some("/usr/local/bin/silo-desktop connection") =>
                 {
+                    if let Some(change) = &self.on_connection {
+                        change(paths);
+                    }
                     json!({"port":6901,"username":"silo","password":"b".repeat(64)}).to_string()
                 }
                 Some("exec")
@@ -1591,6 +1597,7 @@ mod tests {
         let runner = ConnectionRunner {
             machine: replacement,
             calls: Default::default(),
+            on_connection: None,
         };
         let removed_id = "00000000-0000-4000-8000-000000000002";
         let result = connection_with(&runner, &paths, "dev", Some(removed_id));
@@ -1599,6 +1606,52 @@ mod tests {
             "returned replacement credentials for the removed VM"
         );
         assert!(runner.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn desktop_connection_discards_credentials_if_the_vm_changes_during_lookup() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let original = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![original.clone()],
+            },
+        )
+        .unwrap();
+        let mut replacement = original.clone();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "00000000-0000-4000-8000-000000000002".into();
+        }
+        let runner = ConnectionRunner {
+            machine: original.clone(),
+            calls: Default::default(),
+            on_connection: Some(Box::new(move |paths| {
+                let _change = runtime::OPERATIONS
+                    .computer("Replace fixture sandbox")
+                    .unwrap();
+                runtime::write_metadata(
+                    &paths.metadata,
+                    &runtime::MachineConfigurationRequest {
+                        schema_version: 1,
+                        machines: vec![replacement.clone()],
+                    },
+                )
+                .unwrap();
+            })),
+        };
+        let result = connection_with(&runner, &paths, "dev", Some(original.id()));
+        assert!(
+            result.is_err(),
+            "returned credentials after the selected VM was replaced"
+        );
+        assert_ne!(
+            runtime::resolve_vm_id(&paths, "dev").unwrap(),
+            original.id()
+        );
     }
 
     #[test]
@@ -1619,6 +1672,7 @@ mod tests {
             let runner = ConnectionRunner {
                 machine: machine.clone(),
                 calls: Default::default(),
+                on_connection: None,
             };
             let result = connection_with(&runner, &paths, "dev", expected).unwrap();
             assert_eq!(
@@ -1626,7 +1680,7 @@ mod tests {
                 json!({"port":6901,"username":"silo","password":"b".repeat(64)})
             );
             let calls = runner.calls.lock().unwrap();
-            assert_eq!(calls.len(), 4);
+            assert_eq!(calls.len(), 5);
             assert!(calls
                 .iter()
                 .filter(|args| args[0] == "exec")
