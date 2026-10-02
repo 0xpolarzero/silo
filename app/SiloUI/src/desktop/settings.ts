@@ -37,8 +37,18 @@ export function createDesktopSettingsStore(initialSettings: SettingsPatch, main:
     },
     subscribe: (receive) => listen("settings:changed", ({ payload }) => {
       const parsed = nativeSnapshotSchema.safeParse(payload)
-      if (parsed.success) receive(parsed.data)
-      else console.error("Silo settings: invalid native event", parsed.error.message)
+      if (!parsed.success) {
+        console.error("Silo settings: invalid native event", parsed.error.message)
+        return
+      }
+      if (!main) {
+        receive(parsed.data)
+        return
+      }
+      // Events are public; the command returns the main window's recovery draft.
+      void invoke("read_settings")
+        .then(snapshot => receive(nativeSnapshotSchema.parse(snapshot)))
+        .catch(error => console.error("Silo settings: native refresh failed", error))
     }),
     updateSettings: async (patch) => nativeSnapshotSchema.parse(await invoke("update_settings", { patch })),
     updateOnboardingDraft: async (draft) => nativeSnapshotSchema.parse(await invoke("update_onboarding_draft", { draft })),
