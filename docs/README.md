@@ -51,6 +51,7 @@ above for current behavior and build commands.
 - [Codebase review, 2026-09-29](research/codebase-review-2026-09-29.md): ranked findings from a read-only review of the whole app — owner decisions, release blockers, security, data loss, stuck states, performance, UX, CI, tests and code health.
 - Follow-up review records, 2026-10-02: [release tooling](SiloUI-CODE-REVIEW-PASS-3-RELEASE-2026-10-02.md), [security](SiloUI-CODE-REVIEW-PASS-3-SECURITY-2026-10-02.md), [guest bridge](SiloUI-CODE-REVIEW-PASS-3-GUEST-BRIDGE-2026-10-02.md), and [computer use](SiloUI-CODE-REVIEW-PASS-3-COMPUTER-USE-2026-10-02.md). Findings and verification describe the recorded commits; compare HEAD before reopening an item.
 - [Micro-review index and finding counts](research/micro-reviews/README.md): original audits and fix-loop findings, including [status, storage and updates](research/micro-reviews/fe-status-storage-updates-fixes.md). Counts include fixed findings and overlap across reports; each record states its scope and verification limits.
+- [Changeset audit, 2026-10-02](research/micro-reviews/changesets.md): metadata, user-facing wording, duplicate corrections, and commit coverage since `f9421925`.
 
 The comprehensive `SiloUI-CODE-REVIEW-2026-10-02.md` report (R-01 through R-26)
 and `SiloUI-CODE-REVIEW-PASS-2-2026-10-02.md` (R-27 through R-37, plus historical
