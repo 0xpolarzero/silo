@@ -141,7 +141,10 @@ fn claim(
     }
     if let Some(job) = jobs.values().find(|job| {
         !job.dismissed
-            && job.operation["status"] == "pushing"
+            && matches!(
+                job.operation["status"].as_str(),
+                Some("pushing" | "unknown")
+            )
             && job.operation["workspace"] == workspace
             && job.operation["repositoryPath"] == path
     }) {
@@ -596,6 +599,29 @@ mod tests {
         assert_eq!(other["operationId"], id);
         assert_eq!(jobs.len(), 1);
         assert!(claim(&mut jobs, &id, "another", "/workspace/repo", &target()).is_err());
+    }
+    #[test]
+    fn unknown_publication_blocks_new_requests_until_acknowledged() {
+        let mut jobs = Journal::new();
+        let previous = uuid::Uuid::new_v4().to_string();
+        claim(&mut jobs, &previous, "dev", "/workspace/repo", &target()).unwrap();
+        jobs.get_mut(&previous).unwrap().operation["status"] = json!("unknown");
+        let next = uuid::Uuid::new_v4().to_string();
+        let (result, created) =
+            claim(&mut jobs, &next, "dev", "/workspace/repo", &target()).unwrap();
+        assert!(
+            !created,
+            "an unacknowledged unknown push must block another publication"
+        );
+        assert_eq!(result["operationId"], previous);
+        assert_eq!(result["status"], "unknown");
+        assert!(!jobs.contains_key(&next));
+        jobs.get_mut(&previous).unwrap().dismissed = true;
+        assert!(
+            claim(&mut jobs, &next, "dev", "/workspace/repo", &target())
+                .unwrap()
+                .1
+        );
     }
     #[test]
     fn journal_preserves_results_and_never_replays_after_restart() {
