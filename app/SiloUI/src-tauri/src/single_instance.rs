@@ -74,7 +74,12 @@ fn resolve_program(program: &str, cwd: &Path, path: Option<OsString>) -> Option<
     std::env::split_paths(&path?)
         .filter(|directory| directory.is_absolute())
         .map(|directory| directory.join(program))
-        .find(|candidate| candidate.is_file())
+        .find(|candidate| {
+            use std::os::unix::fs::PermissionsExt;
+            candidate.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+            })
+        })
 }
 
 /// Two launches are the same build when they run the same executable bytes. An
@@ -113,11 +118,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn path_lookup_skips_non_executable_copies_like_the_launcher() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let decoy = root.path().join("decoy");
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&decoy).unwrap();
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(decoy.join("silo-ui"), b"not an executable build").unwrap();
+        std::fs::set_permissions(
+            decoy.join("silo-ui"),
+            std::fs::Permissions::from_mode(0o600),
+        )
+        .unwrap();
+        let selected = bin.join("silo-ui");
+        std::fs::write(&selected, b"#!/bin/sh\nprintf selected").unwrap();
+        std::fs::set_permissions(&selected, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = std::env::join_paths([&decoy, &bin]).unwrap();
+        let launch = std::process::Command::new("silo-ui")
+            .env("PATH", &path)
+            .output()
+            .unwrap();
+        assert!(launch.status.success());
+        assert_eq!(launch.stdout, b"selected");
+        assert_eq!(
+            resolve_program("silo-ui", root.path(), Some(path)),
+            Some(selected)
+        );
+    }
+
+    #[test]
     fn resolves_absolute_relative_and_path_launches() {
         let directory = tempfile::tempdir().unwrap();
         let bin = directory.path().join("bin");
         std::fs::create_dir(&bin).unwrap();
         std::fs::write(bin.join("silo-ui"), b"build").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(bin.join("silo-ui"), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
         let path = Some(OsString::from(format!("relative:{}", bin.display())));
         assert_eq!(
             resolve_program("/opt/Silo/silo-ui", directory.path(), None),

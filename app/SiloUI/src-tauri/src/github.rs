@@ -789,20 +789,29 @@ fn document_path() -> Option<PathBuf> {
 fn load(app: &tauri::AppHandle) -> Result<Document, String> {
     load_at(&path(app)?)
 }
+const MAX_CONFIGURATION_BYTES: usize = 16 * 1024 * 1024;
 fn load_at(path: &std::path::Path) -> Result<Document, String> {
-    match fs::read(path) {
-        Ok(b) if b.len() <= 16 * 1024 * 1024 => {
-            let document: Document =
-                serde_json::from_slice(&b).map_err(|_| "GitHub configuration is invalid.")?;
-            if document.revision > MAX_POLICY_REVISION {
-                return Err("GitHub settings revision exceeds the supported range.".into());
-            }
-            Ok(document)
-        }
-        Ok(_) => Err("GitHub configuration exceeds the supported size.".into()),
+    match fs::File::open(path) {
+        Ok(file) => read_configuration(file),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Document::default()),
         Err(_) => Err("Cannot read GitHub configuration.".into()),
     }
+}
+fn read_configuration(reader: impl Read) -> Result<Document, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_CONFIGURATION_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Cannot read GitHub configuration.")?;
+    if bytes.len() > MAX_CONFIGURATION_BYTES {
+        return Err("GitHub configuration exceeds the supported size.".into());
+    }
+    let document: Document =
+        serde_json::from_slice(&bytes).map_err(|_| "GitHub configuration is invalid.")?;
+    if document.revision > MAX_POLICY_REVISION {
+        return Err("GitHub settings revision exceeds the supported range.".into());
+    }
+    Ok(document)
 }
 fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
     save_at(&path(app)?, d)?;
@@ -817,12 +826,15 @@ fn save_at(p: &std::path::Path, d: &Document) -> Result<(), String> {
     }
     let at = now();
     saved.rate_retry.retain(|_, until| *until > at);
-    let d = &saved;
+    let encoded = serde_json::to_vec(&saved).map_err(|_| "Cannot encode GitHub configuration.")?;
+    if encoded.len() > MAX_CONFIGURATION_BYTES {
+        return Err("GitHub configuration exceeds the supported size.".into());
+    }
     let parent = p.parent().ok_or("Missing configuration directory.")?;
     fs::create_dir_all(parent).map_err(|_| "Cannot create configuration directory.")?;
     let mut f = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| "Cannot write GitHub configuration.")?;
-    f.write_all(&serde_json::to_vec(d).map_err(|_| "Cannot encode GitHub configuration.")?)
+    f.write_all(&encoded)
         .map_err(|_| "Cannot write GitHub configuration.")?;
     f.as_file()
         .sync_all()
@@ -4608,6 +4620,62 @@ mod tests {
         )
         .is_err());
         assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+    }
+    #[test]
+    fn configuration_reader_stops_at_the_size_limit() {
+        struct CountingReader {
+            remaining: usize,
+            read: usize,
+        }
+        impl Read for CountingReader {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                let length = target.len().min(self.remaining);
+                target[..length].fill(b' ');
+                self.remaining -= length;
+                self.read += length;
+                Ok(length)
+            }
+        }
+        let mut reader = CountingReader {
+            remaining: MAX_CONFIGURATION_BYTES * 2,
+            read: 0,
+        };
+        assert!(read_configuration(&mut reader).is_err());
+        assert_eq!(reader.read, MAX_CONFIGURATION_BYTES + 1);
+        let document = Document::default();
+        let encoded = serde_json::to_vec(&document).unwrap();
+        assert!(read_configuration(encoded.as_slice()).is_ok());
+        assert!(read_configuration(&b"not-json"[..]).is_err());
+    }
+    #[test]
+    fn oversized_configuration_save_preserves_the_last_readable_document() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let mut document = Document {
+            account: Some("previous-account".into()),
+            ..Default::default()
+        };
+        save_at(&path, &document).unwrap();
+        let previous = fs::read(&path).unwrap();
+        document.account = Some("new-account".into());
+        let name = format!("{}/{}", "o".repeat(39), "r".repeat(100));
+        document.repositories = (1..=99_900)
+            .map(|id| json!({"id":id,"ownerId":7,"name":name}))
+            .collect();
+        assert!(serde_json::to_vec(&document).unwrap().len() > 16 * 1024 * 1024);
+        assert!(save_at(&path, &document).is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(
+            load_at(&path).unwrap().account.as_deref(),
+            Some("previous-account")
+        );
+        document.repositories.clear();
+        save_at(&path, &document).unwrap();
+        assert_eq!(
+            load_at(&path).unwrap().account.as_deref(),
+            Some("new-account")
+        );
     }
     #[test]
     fn durable_document_contains_no_credentials() {

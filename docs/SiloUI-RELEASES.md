@@ -296,12 +296,16 @@ platform-specific cases. CI also explicitly runs Debian package lifecycle
 tests as root on its disposable Ubuntu runner, after ordinary non-root discovery.
 Local discovery keeps the lifecycle opt-in disabled because those tests install
 packages and write system APT paths. The jobs do not run the ignored live VM tests.
-To run the link check locally, install lychee and run from the
-repository root:
+The link check includes first-party source documentation, guest notices and
+changesets. A coverage regression compares its globs with tracked Markdown,
+excluding documentation in the partial upstream vendor tree.
+To run the link check locally, install lychee and run from the repository root:
 
 ```sh
 lychee --offline --no-progress README.md AGENTS.md 'docs/**/*.md' 'app/SiloUI/*.md' \
-  'app/SiloUI/tests/**/*.md' 'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
+  'app/SiloUI/tests/**/*.md' 'app/SiloUI/src/**/*.md' 'app/SiloUI/.changeset/*.md' \
+  'app/SiloUI/src-tauri/guest/**/*.md' 'app/SiloUI/docs/**/*.html' \
+  'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
 ```
 
 `.github/workflows/linux-packaging.yml` builds the Debian package and AppImage
@@ -469,7 +473,9 @@ The `publish-release.py` tests cover missing/empty/unexpected assets, symlinks,
 invalid signature encoding, version bounds, complete checksums and platform URLs.
 `verify-release-metadata.py` also rejects an old signed package advertised under
 a new version. It reads macOS Info.plist/Mach-O headers, Debian control metadata,
-and the signed AppImage release-info resource without executing any package.
+and the signed Debian and AppImage release-info resources without executing any
+package. Debian data is inspected through `dpkg-deb --fsys-tarfile` as a stream;
+control fields and bundled release metadata must both match the release.
 
 ### Linux software source
 

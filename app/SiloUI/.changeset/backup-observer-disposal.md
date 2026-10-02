@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Stop backup and migration-result reads from closed views while their change listeners finish connecting.
+Stop refreshing backup and migration results for closed views, even if their updates are still connecting.

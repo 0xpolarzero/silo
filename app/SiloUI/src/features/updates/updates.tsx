@@ -31,6 +31,7 @@ export function UpdatesCard() {
     else if (state.packageKind === "manual" && state.phase === "available") updates.openRelease()
     else if (state.retryAction === "download") updates.download()
     else if (installing) requestInstall()
+    else if (state.phase === "available") updates.download()
     else updates.check()
   }
   const percent = state?.totalBytes ? Math.min(100, Math.round(state.downloadedBytes / state.totalBytes * 100)) : undefined

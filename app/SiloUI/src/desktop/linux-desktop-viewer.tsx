@@ -203,7 +203,7 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
     catch (cause) { setError(String(cause)); if (action === "setup-lcu" || action === "setup-computer-use") setState(previous) }
     finally { operation.current = false; setBusy(false) }
   }
-  return <LinuxDesktopViewer name={name} state={state} busy={busy} error={error ?? connectionError} screenRef={screenRef} lcuUpdated={lcuUpdated} MenuComponent={NativeDesktopActionsMenu}
+  return <LinuxDesktopViewer name={name} state={state} busy={busy} error={error ?? (streamReady ? connectionError : null)} screenRef={screenRef} lcuUpdated={lcuUpdated} MenuComponent={NativeDesktopActionsMenu}
     onAction={action => { void handleAction(action) }}
     onRetry={() => { setConnection(value => value + 1); void refresh(false) }}
     onFullscreen={() => { const window = getCurrentWindow(); void window.isFullscreen().then(value => window.setFullscreen(!value)).catch(cause => setError(String(cause))) }} />

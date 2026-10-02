@@ -42,9 +42,13 @@ export function secretConfiguration(draft: SecretDraft, secrets: readonly Applic
     errors.name = "A secret with this name already exists."
   }
   if (!original && !draft.value) errors.value = "Enter a value."
+  else if (draft.value.includes("\0")) errors.value = "Secret values cannot contain null characters."
+  else if (new TextEncoder().encode(draft.value).byteLength > 65536) errors.value = "Use a secret value of at most 64 KiB."
   if (draft.workspaces.length === 0) errors.workspaces = "Select at least one sandbox."
+  else if (draft.workspaces.length > 100) errors.workspaces = "Select no more than 100 sandboxes."
   else if (draft.workspaces.some((name) => !availableWorkspaces.includes(name))) errors.workspaces = "Select an available sandbox."
   if (allowedDomains.length === 0) errors.domains = "Enter at least one allowed domain."
+  else if (allowedDomains.length > 100) errors.domains = "Use no more than 100 allowed domains."
   else if (!allowedDomains.every(validDomain)) errors.domains = "Use hosts such as api.example.com or *.example.com, without a scheme, port, or path."
   if (allowedDomains.includes("*") && !draft.allowAnyDomain) errors.allowAnyDomain = "Confirm access to any HTTPS destination."
   if (Object.keys(errors).length > 0) return { errors }

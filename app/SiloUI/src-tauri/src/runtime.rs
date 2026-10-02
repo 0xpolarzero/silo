@@ -5176,6 +5176,8 @@ fn apply_whole_configuration_with_progress(
             progress("workspace-removal", machine.name(), 0);
             remove_machine_runtime(runner, paths, machine)?;
             changed = true;
+            crate::network::workspace_removed(paths, machine.name())
+                .map_err(RuntimeError::Unavailable)?;
             applied
                 .machines
                 .retain(|existing| existing.id() != machine.id());
@@ -11551,6 +11553,47 @@ exit 9
         let source = read_application_state_with(&unavailable_runtime, &paths).unwrap();
         assert!(source.workspaces.is_empty());
         assert!(unavailable_runtime.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn network_mappings_are_removed_before_a_deleted_name_can_be_reused() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let network = paths.metadata.with_file_name("network.json");
+        fs::write(
+            &network,
+            json!({"mappings":[
+                {"workspace":"dev","port":3000,"hostPort":43000,"scheme":"http","enabled":true},
+                {"workspace":"other","port":8080,"hostPort":null,"scheme":null,"enabled":true}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(&network).unwrap()).unwrap();
+        assert_eq!(saved["mappings"].as_array().unwrap().len(), 1);
+        assert_eq!(saved["mappings"][0]["workspace"], "other");
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+    }
+
+    #[test]
+    fn network_cleanup_failure_keeps_the_deleted_name_reserved_for_recovery() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = request(vec![vm()]);
+        write_metadata(&paths.metadata, &previous).unwrap();
+        fs::write(paths.metadata.with_file_name("network.json"), "invalid").unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]))
+            .unwrap_err();
+        assert!(error.to_string().contains("Saved ports are invalid"));
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), previous);
     }
 
     /// The runtime's sandbox `dev` as the bundled `msb` treats it: `inspect` reports its

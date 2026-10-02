@@ -33,3 +33,13 @@ Read-only source review. Checked the specified first, second, and third pass rep
 - **Consequence:** Logout or shutdown displays a fresh cancel-capable Quit prompt; its negative answer invokes operating-system cancellation even though session shutdown must proceed without confirmation.
 - **Fix:** Close confirmation admission permanently for this session, under the same mutex that allocates prompt IDs.
 - **Regression:** Close confirmation before a delayed status result is submitted and require no prompt for either running sandboxes or a failed status read. Continue rejecting answers to the invalidated prompt.
+
+## SETTINGS-5: A pending AppKit Quit suppresses session escalation
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/system_shutdown/macos.rs`, `should_terminate`.
+- **Trigger:** A terminate callback carrying Logout or Shutdown arrives while `PENDING` remains true for an earlier user Quit.
+- **Evidence:** The hook returned `TERMINATE_LATER` before parsing the new event reason, so the session request never reached `system_shutdown::route` or `settings::end_session`. Extracting this exact dispatch gate into `begin_terminate` reproduced the missing route: the failing test observed only UserQuit rather than UserQuit followed by Logout/Shutdown.
+- **Consequence:** An already pending confirmation or frontend flush keeps the ordinary unbounded Quit policy instead of receiving the session deadline and bypassing confirmation.
+- **Fix:** Continue suppressing repeated user Quit requests, but route session-ending reasons even while AppKit awaits a reply.
+- **Regression:** Route UserQuit followed by each session-ending reason, require both routes, and retain one route for repeated UserQuit. This proves the dispatch policy; no AppKit event or live VM was exercised.

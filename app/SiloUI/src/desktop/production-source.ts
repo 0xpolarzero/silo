@@ -1282,7 +1282,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
     const resolved: ConfigureAction = action ?? { kind: "changes", changes: deriveMachineChanges(committedMachines(), request.machines) }
     // A no-op submission changes nothing; resolve with the current source untouched.
-    if (resolved.kind === "changes" && resolved.changes.length === 0) return Promise.resolve(snapshot.source as ApplicationSource)
+    if (resolved.kind === "changes" && resolved.changes.length === 0) {
+      if (!snapshot.source) return Promise.reject(new Error("Sandbox configuration has not loaded. Refresh and retry."))
+      return Promise.resolve(snapshot.source)
+    }
     const key = canonicalKey([request, resolved])
     if (lastMachineJob?.key === key) return lastMachineJob.promise
     ++identityVerificationSequence
