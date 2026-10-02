@@ -1,5 +1,5 @@
 //! Opt-in live regressions for the built-in desktop and computer use, run against the
-//! real runtime with disposable /tmp homes and `e2e-*` sandboxes. They need the guest
+//! real runtime with disposable homes under `SILO_TEST_TMP` (default /tmp) and `e2e-*` sandboxes. They need the guest
 //! image directory (`SILO_TEST_GUEST_IMAGE`, a directory with manifest.json and
 //! image.tar.gz), a published ChatGPT folder (`SILO_TEST_PUBLISHED`, `<root>/published` of
 //! a prepared app), a signed msb (`SILO_TEST_MSB`, `SILO_TEST_LIBKRUNFW`) and
@@ -24,7 +24,7 @@ impl Fixture {
         crate::test_support::live::require_confirmation();
         let directory = tempfile::Builder::new()
             .prefix(prefix)
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let guest_image =
             image.unwrap_or_else(|| PathBuf::from(std::env::var("SILO_TEST_GUEST_IMAGE").unwrap()));
