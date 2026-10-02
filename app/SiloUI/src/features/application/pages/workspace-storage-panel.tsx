@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { formatStorageBytes as formatBytes, type WorkspaceStorageState } from '../model/workspace-storage'
 import { HardDrive, Database, Folder, Gauge, RefreshCw, Sparkles, History, ChevronDown, Check, CircleAlert, Clock, Layers, type LucideIcon } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -34,23 +34,25 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
   const [historyOpen, setHistoryOpen] = useState(false)
   const [reclaiming, setReclaiming] = useState(false)
   const [busy, setBusy] = useState(true)
-  const requests = useRef({ generation: 0 })
+  const requests = useRef({ generation: 0, busy: true })
+  const latestLoad = useRef<((reclaimSpace: boolean) => Promise<void>) | null>(null)
   const readInitial = useEffectEvent(() => {
     const active = requests.current
     const request = ++active.generation
     void read(workspaceId).then(value => {
       if (active.generation === request) setStorage(value)
     }, cause => {
-      if (active.generation === request) showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void load(false), native: false })
+      if (active.generation === request) showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
     }).finally(() => {
-      if (active.generation === request) setBusy(false)
+      if (active.generation === request) { active.busy = false; setBusy(false) }
     })
     return () => { active.generation++ }
   })
   useEffect(() => readInitial(), [requests])
 
   async function load(reclaimSpace: boolean) {
-    if (busy || disabled || (reclaimSpace && (!running || !reclaim))) return
+    if (requests.current.busy || disabled || (reclaimSpace && (!running || !reclaim))) return
+    requests.current.busy = true
     const request = ++requests.current.generation
     setBusy(true)
     setReclaiming(reclaimSpace)
@@ -63,13 +65,13 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
       setStorage(value)
       dismissOperationToast(`storage-read:${workspaceId}`)
       if (reclaimSpace) {
-        if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: value.lastError, retry: () => void load(true) })
+        if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: value.lastError, retry: () => void latestLoad.current?.(true) })
         else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: `Freed ${where}.`, persist: true, noticeSandbox })
       }
     } catch (cause) {
       if (requests.current.generation === request) {
-        if (reclaimSpace) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: errorMessage(cause), retry: () => void load(true) })
-        else showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void load(false), native: false })
+        if (reclaimSpace) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: errorMessage(cause), retry: () => void latestLoad.current?.(true) })
+        else showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
         if (reclaimSpace) {
           try {
             const value = await read(workspaceId)
@@ -78,9 +80,14 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
         }
       }
     } finally {
-      if (requests.current.generation === request) { setBusy(false); setReclaiming(false) }
+      if (requests.current.generation === request) { requests.current.busy = false; setBusy(false); setReclaiming(false) }
     }
   }
+
+  useLayoutEffect(() => {
+    latestLoad.current = load
+    return () => { latestLoad.current = null }
+  })
 
   const loading = !storage && busy
   const guest = (value: number | null | undefined) => running && value != null ? formatBytes(value) : 'Unavailable'

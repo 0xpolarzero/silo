@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 import { toast } from "sonner"
@@ -63,7 +63,7 @@ it("shows failures without claiming recovery and permits retry", async () => {
   const user = userEvent.setup()
   render(<Panel workspaceId="vm-id" running read={read} reclaim={reclaim} />)
   expect(await screen.findByText("Storage unavailable")).toBeVisible()
-  await user.click(screen.getByRole("button", { name: "Refresh storage" }))
+  await user.click(screen.getByRole("button", { name: "Retry" }))
   expect(await screen.findByText("36.00 GiB")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Reclaim unused space" }))
   expect(await screen.findByText("Workspace trim failed")).toBeVisible()
@@ -188,4 +188,26 @@ it("expands a failed reclaim's error inline from its Details button", async () =
   expect(screen.getByText(/Unused blocks were released; workspace files and capacity were preserved/)).toBeVisible()
   await user.click(details)
   expect(screen.queryByText(/its original length was restored/)).not.toBeInTheDocument()
+})
+
+
+it("uses current disabled state and prevents overlapping toast Retry reads", async () => {
+  let finish!: (value: WorkspaceStorageState) => void
+  const read = vi.fn().mockRejectedValueOnce(new Error("Initial storage read failed"))
+    .mockImplementationOnce(() => new Promise<WorkspaceStorageState>(resolve => { finish = resolve }))
+  const view = render(<Panel workspaceId="vm-id" running read={read} />)
+  expect(await screen.findByText("Initial storage read failed")).toBeVisible()
+  const retry = screen.getByRole("button", { name: "Retry" })
+  view.rerender(<Panel workspaceId="vm-id" running disabled read={read} />)
+  fireEvent.click(retry)
+  expect(read).toHaveBeenCalledOnce()
+  view.rerender(<Panel workspaceId="vm-id" running read={read} />)
+  act(() => { fireEvent.click(retry); fireEvent.click(retry) })
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole("button", { name: "Refresh storage" })).toBeDisabled()
+  expect(screen.queryByText("36.00 GiB")).not.toBeInTheDocument()
+  await act(async () => finish(storage))
+  expect(await screen.findByText("36.00 GiB")).toBeVisible()
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole("button", { name: "Refresh storage" })).toBeEnabled()
 })
