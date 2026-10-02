@@ -213,6 +213,48 @@ fn a_damaged_settings_file_means_ask() {
 }
 
 #[test]
+fn oversized_computer_use_policy_remains_unreadable_and_untouched() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let path = policy_path(&paths, VM_ID).unwrap();
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let mut bytes = br#"{"approval":"auto"}"#.to_vec();
+    bytes.resize(1024 * 1024, b' ');
+    fs::write(&path, &bytes).unwrap();
+    assert_eq!(
+        read_policy_checked(&paths, VM_ID).unwrap().approval,
+        Approval::Auto
+    );
+    bytes.push(b' ');
+    fs::write(&path, &bytes).unwrap();
+    let stored = settings(&paths, VM_ID);
+    assert!(stored.unreadable);
+    assert_eq!(stored.approval, Approval::Ask);
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
+fn oversized_computer_use_observation_is_ignored_without_changing_the_policy() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let policy = policy_path(&paths, VM_ID).unwrap();
+    let observed = observed_path(&paths, VM_ID).unwrap();
+    fs::create_dir_all(policy.parent().unwrap()).unwrap();
+    fs::write(&policy, br#"{"approval":"auto"}"#).unwrap();
+    let mut bytes = br#"{"state":"ready"}"#.to_vec();
+    bytes.resize(1024 * 1024, b' ');
+    fs::write(&observed, &bytes).unwrap();
+    assert_eq!(settings(&paths, VM_ID).known.unwrap().state, "ready");
+    bytes.push(b' ');
+    fs::write(&observed, &bytes).unwrap();
+    let stored = settings(&paths, VM_ID);
+    assert!(stored.known.is_none());
+    assert!(!stored.unreadable);
+    assert_eq!(stored.approval, Approval::Auto);
+    assert_eq!(fs::read(&observed).unwrap(), bytes);
+}
+
+#[test]
 fn unfamiliar_saved_attempt_outcome_preserves_the_approval_choice() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
