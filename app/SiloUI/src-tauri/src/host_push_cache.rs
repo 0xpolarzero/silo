@@ -212,6 +212,13 @@ fn idle_lock(root: &Path, name: &str) -> Result<Option<Option<File>>, String> {
 /// Evict least recently used caches beyond the budget, never one in use.
 /// Caller holds the root lock.
 fn sweep(root: &Path, budget: u64) -> Result<(), String> {
+    sweep_with_size(root, budget, tree_size)
+}
+fn sweep_with_size(
+    root: &Path,
+    budget: u64,
+    size: impl Fn(&Path) -> Result<u64, String>,
+) -> Result<(), String> {
     let mut entries = Vec::new();
     let mut total = 0_u64;
     for entry in fs::read_dir(root).map_err(|_| FAILED)? {
@@ -238,12 +245,27 @@ fn sweep(root: &Path, budget: u64) -> Result<(), String> {
             continue;
         }
         let path = entry.path();
-        if !fs::symlink_metadata(&path).map_err(|_| FAILED)?.is_dir() {
+        let lock = idle_lock(root, name)?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err(FAILED.into()),
+        };
+        if !metadata.is_dir() {
+            if lock.is_none() {
+                continue;
+            }
             fs::remove_file(&path).map_err(|_| FAILED)?;
             continue;
         }
-        let bytes = tree_size(&path)?;
-        let Some(lock) = idle_lock(root, name)? else {
+        // An active owner can rename Git objects or discard its directory.
+        // Its size is advisory until it releases the repository lock.
+        let bytes = match size(&path) {
+            Ok(bytes) => bytes,
+            Err(_) if lock.is_none() => continue,
+            Err(error) => return Err(error),
+        };
+        let Some(lock) = lock else {
             total = total.saturating_add(bytes);
             continue;
         };
@@ -429,6 +451,33 @@ mod tests {
         drop(first);
         assert!(first_path.exists());
         drop(acquire_with_budget(&root, "first", 100).unwrap());
+    }
+    #[test]
+    fn a_concurrent_discard_does_not_fail_another_repository_sweep() {
+        if in_subprocess("a_concurrent_discard_does_not_fail_another_repository_sweep") {
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("cache");
+        let active = acquire_with_budget(&root, "active", 100).unwrap();
+        fs::write(active.directory.join("objects"), b"committed data").unwrap();
+        let root_lock = RootLock::take(&root).unwrap();
+        // Another repository's scan has enumerated this directory when its
+        // owner discards a failed import, retaining the repository lock.
+        let result = sweep_with_size(&root, 100, |path| {
+            if path == active.directory {
+                active.discard();
+            }
+            tree_size(path)
+        });
+        assert!(
+            result.is_ok(),
+            "concurrent discard failed the sweep: {result:?}"
+        );
+        drop(root_lock);
+        let other = acquire_with_budget(&root, "other", 100).unwrap();
+        assert!(other.directory.is_dir());
+        assert!(acquire_with_budget(&root, "active", 100).is_err());
     }
     #[test]
     fn evicts_oldest_repository_and_removes_single_oversized_repository() {
