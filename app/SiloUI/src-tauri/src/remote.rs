@@ -172,6 +172,9 @@ fn save_config_in(dir: &Path, config: &Config) -> Result<(), String> {
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
     temp.persist(dir.join("config.json"))
         .map_err(|e| e.to_string())?;
+    fs::File::open(dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 /// Whether a bridged method only observes state or changes it.
@@ -4161,6 +4164,31 @@ mod config_io_limit_tests {
     use super::*;
 
     const LIMIT_BYTES: usize = 1024 * 1024;
+
+    #[test]
+    fn remote_config_save_reports_an_unreadable_parent_after_publication() {
+        use std::os::unix::fs::MetadataExt;
+        let directory = tempfile::tempdir().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let config = Config {
+            host_id: "fixture-owner".into(),
+            enabled: false,
+            hosts: vec![],
+        };
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = save_config_in(directory.path(), &config);
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let published = read_config_in(directory.path()).unwrap();
+        assert_eq!(published.host_id, "fixture-owner");
+        assert!(!published.enabled);
+        assert!(
+            result.is_err(),
+            "an unsynchronized rename must not report success"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn remote_config_accepts_the_limit_and_rejects_one_extra_byte_without_rewriting() {
