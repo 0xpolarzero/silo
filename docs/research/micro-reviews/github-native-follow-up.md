@@ -22,3 +22,14 @@ GitHub's [Get a repository parameters](https://docs.github.com/en/rest/repos/rep
 - **Suggested fix:** Prepare revision-bound narrowing work under `STATE`, perform runtime work outside it, and publish active-grant changes only after rechecking the saved revision. Preserve immediate invalidation and retirement ordering across every caller and both authentication methods.
 - **Test that would catch it:** Hold a fake VM mutation at a barrier, start narrowing, and verify that an unrelated policy save and browser cancellation finish before releasing the fake mutation. Release it and verify the latest revision remains applied and its removed tokens are retired.
 - **Disposition:** Skipped in this micro-fix loop. Correcting the lock boundary requires a coordinated refactor of narrowing callers and cache publication; dropping the guard alone would introduce stale-authority races. Source-confirmed; no live VM reproduction was attempted.
+
+## GITHUB-NATIVE-5 — P3: Interrupted reads discard valid OAuth callbacks
+
+- **Location:** `app/SiloUI/src-tauri/src/github.rs`, `read_callback_request`, formerly line 2402.
+- **Trigger:** A callback socket read returns `ErrorKind::Interrupted`, before or between complete header fragments.
+- **Consequence:** `.ok()?` turns the nonfatal interruption into `None`; the connection loop sends an invalid-callback response and drops the socket instead of receiving the authorization code.
+- **Evidence:** An interrupted reader alternating interruptions with three-byte header fragments fails the new `callback_retries_interrupted_reads_without_losing_partial_headers` test on the old function and passes after the fix. No OS signal or live authorization was used.
+- **Suggested fix:** Retry interrupted reads inside the existing bounded loop, preserving partial bytes and the original deadline. Continue rejecting EOF, other read failures, and oversized/incomplete headers.
+- **Test:** The production callback reader must return the complete request despite interruptions before the first fragment and between later fragments.
+
+Rust's [Read contract](https://doc.rust-lang.org/std/io/trait.Read.html#tymethod.read), checked 2026-10-02, defines interrupted reads as nonfatal and directs callers to retry them.
