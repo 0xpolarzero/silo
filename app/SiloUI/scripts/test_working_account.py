@@ -160,6 +160,26 @@ else:
         self.assertEqual((home / '.local/bin/binary').read_bytes(), binary)
         self.assertEqual((source / '.local/bin/binary').read_bytes(), binary)
 
+    def test_home_links_relocate_only_absolute_legacy_home_targets(self):
+        source, home = self.root / 'source', self.root / 'home'
+        source.mkdir()
+        targets = {
+            'root-home': ('/root', '/home/silo'),
+            'desktop-home': ('/home/silo-desktop', '/home/silo'),
+            'root-child': ('/root/tools', '/home/silo/tools'),
+            'desktop-child': ('/home/silo-desktop/tools', '/home/silo/tools'),
+            'external': ('/opt/root/tools', '/opt/root/tools'),
+            'relative': ('../root/tools', '../root/tools'),
+            'lookalike': ('/root-tools', '/root-tools'),
+        }
+        for name, (original, _) in targets.items():
+            (source / name).symlink_to(original)
+        for _ in range(2):
+            guest.copy_home(source, home)
+            for name, (original, expected) in targets.items():
+                self.assertEqual(os.readlink(home / name), expected, name)
+                self.assertEqual(os.readlink(source / name), original, name)
+
     def test_non_utf8_script_launcher_relocates_paths_without_changing_other_bytes(self):
         source, home = self.root / 'source', self.root / 'home'
         (source / '.local/bin').mkdir(parents=True)

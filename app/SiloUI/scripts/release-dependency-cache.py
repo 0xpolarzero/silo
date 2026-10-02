@@ -113,7 +113,7 @@ def build(args):
         process.stdout.close()
         code = process.wait()
     if code:
-        return code
+        return code if code >= 0 else 128 - code
     if not artifacts or any(row.get('fresh') is not False for row in artifacts):
         raise ValueError('Release application must be freshly compiled')
     print('Release application freshly compiled.')

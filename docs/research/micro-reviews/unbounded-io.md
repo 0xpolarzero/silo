@@ -72,3 +72,46 @@ The larger allowance retains compatibility with legacy request/result records.
 **Checks:** Source-extracted production reader and committed regression passed
 1/1. Rust formatting, typecheck, lint and diff checks passed. Native Cargo tests
 remain queued on the shared target lock; no running app or VM was accessed.
+
+## Sandbox metadata
+
+**Trigger:** `sandboxes.json` grows above the existing 1 MiB limit.
+
+**Evidence:** `read_metadata` checked size only after `fs::read` allocated the
+whole file. An isolated child-process regression reads a sparse 128 MiB fixture,
+checks the existing oversized-document error and verifies peak-RSS growth below
+32 MiB. It failed before the fix with 134,283,264 bytes of additional peak RSS
+and passed afterwards with 1,179,648 bytes on this Apple Silicon macOS host.
+
+**Correction:** Open the file and consume at most the existing limit plus one
+byte before checking size. Missing-file defaults, read-error classification and
+oversized-document errors retain their existing behavior; no rewrite occurs.
+
+**Checks:** The production reader and committed memory test ran in a disposable
+Rust harness with adapters for unreachable parsing/validation branches. The
+128 MiB rejection occurs before those adapters are invoked. Peak RSS comes from
+`getrusage(RUSAGE_SELF)` in a fresh test process, avoiding the parallel suite's
+prior allocation high-water mark. Exact failing/passing output is retained in
+`src-tauri/target/verification/unbounded-io/`. Formatting, typecheck, lint and diff
+checks passed; the complete Cargo test command is still waiting for the shared
+artifact lock.
+
+## Saved port settings
+
+**Trigger:** The saved `network.json` input exceeds the existing 128 KiB limit,
+or an input stream supplies that prefix and keeps the descriptor open.
+
+**Evidence:** `read_config` checked size after `fs::read`. The FIFO regression
+keeps its writer open until the reader rejects the oversized prefix. Before the
+fix, the reader waited for the writer's five-second EOF fallback and failed the
+ordering assertion; after the fix it rejects before the writer closes. A second
+test retains exact-limit acceptance and one-extra-byte rejection.
+
+**Correction:** Consume at most 128 KiB plus one byte before the existing size
+and mapping validation. Missing-file defaults and read/validation errors retain
+their previous behavior. The writer's existing size limit stays consistent.
+
+**Checks:** Source-extracted production reader, configuration types, validator
+and two regressions passed 2/2. Formatting, typecheck, lint and diff checks passed.
+The complete native Cargo run has not completed because the shared artifact lock
+remains held by another build; extracted checks do not prove full app compilation.

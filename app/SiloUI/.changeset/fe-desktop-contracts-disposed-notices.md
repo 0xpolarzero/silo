@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Ignore native notices delivered to an application view that has already closed.
+Ignore notifications delivered to an app view that has already closed.

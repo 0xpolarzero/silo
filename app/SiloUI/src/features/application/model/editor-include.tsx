@@ -37,6 +37,7 @@ export function useEditorIncludeLine(): string | null {
     let sequence = 0
     let unsubscribe: (() => void) | undefined
     const refresh = () => {
+      if (!live) return
       const mine = ++sequence
       backend.read().then(
         next => { if (live && mine === sequence) setLine(next) },

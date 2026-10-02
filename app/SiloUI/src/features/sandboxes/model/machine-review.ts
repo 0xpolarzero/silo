@@ -17,23 +17,16 @@ export interface MachineReview {
   adopted: string[]
 }
 
-const fieldLabels: Record<string, string> = {
-  name: "Name",
-  cpus: "CPUs",
-  maxCPUs: "CPUs ceiling",
-  memoryGiB: "Memory",
-  maxMemoryGiB: "Memory ceiling",
-  workspaceStorageGiB: "Workspace disk",
-  runtimeStorageGiB: "Runtime disk",
-  desktop: "Linux desktop",
-  host: "SSH host",
-  user: "SSH user",
-  port: "SSH port",
-}
+const fieldLabels = new Map([
+  ["name", "Name"], ["cpus", "CPUs"], ["maxCPUs", "CPUs ceiling"],
+  ["memoryGiB", "Memory"], ["maxMemoryGiB", "Memory ceiling"],
+  ["workspaceStorageGiB", "Workspace disk"], ["runtimeStorageGiB", "Runtime disk"],
+  ["desktop", "Linux desktop"], ["host", "SSH host"], ["user", "SSH user"], ["port", "SSH port"],
+])
 
 /** The editor's label for a configuration field. */
 export function machineFieldLabel(field: string): string {
-  return fieldLabels[field] ?? field
+  return fieldLabels.get(field) ?? field
 }
 
 function fieldValue(field: string, value: unknown): string {
@@ -58,18 +51,18 @@ export function rebaseMachineDraft(opened: SetupMachineConfiguration, latest: Se
   const edited = new Set(divergentMachineFields(opened, draft))
   const changedElsewhere = new Set(divergentMachineFields(opened, latest))
   const disagree = new Set(divergentMachineFields(latest, draft))
-  const mineValues = draft as unknown as Record<string, unknown>
-  const theirValues = latest as unknown as Record<string, unknown>
-  const merged: Record<string, unknown> = {}
+  const mineValues = new Map<string, unknown>(Object.entries(draft))
+  const theirValues = new Map<string, unknown>(Object.entries(latest))
+  const merged = new Map<string, unknown>()
   const conflicts: MachineReviewConflict[] = []
   const adopted: string[] = []
   for (const field of fields) {
-    const value = edited.has(field) ? mineValues[field] : theirValues[field]
-    if (value !== undefined) merged[field] = structuredClone(value)
+    const value = edited.has(field) ? mineValues.get(field) : theirValues.get(field)
+    if (value !== undefined) merged.set(field, structuredClone(value))
     if (edited.has(field) && changedElsewhere.has(field) && disagree.has(field)) {
-      conflicts.push({ field, label: machineFieldLabel(field), theirs: fieldValue(field, theirValues[field]), mine: fieldValue(field, mineValues[field]) })
+      conflicts.push({ field, label: machineFieldLabel(field), theirs: fieldValue(field, theirValues.get(field)), mine: fieldValue(field, mineValues.get(field)) })
     } else if (changedElsewhere.has(field) && !edited.has(field)) adopted.push(machineFieldLabel(field))
   }
-  const rebased = merged as unknown as SetupMachineConfiguration
+  const rebased = Object.fromEntries(merged) as SetupMachineConfiguration
   return { draft: sameMachineConfiguration(rebased, draft) ? draft : rebased, review: { conflicts, adopted } }
 }

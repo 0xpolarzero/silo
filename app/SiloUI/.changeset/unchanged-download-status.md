@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Avoid redrawing computer-use download status when remote polling returns unchanged progress or the same connection error.
+Avoid redrawing computer-use download progress when its status or connection errors have not changed.

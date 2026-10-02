@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Bound reads of saved computer-use settings and guest observations to 1 MiB. Oversized policies remain marked unreadable, and oversized observations are ignored without changing the saved approval choice.
+Reject oversized computer-use settings or status without using excessive memory or changing your saved approval choice.

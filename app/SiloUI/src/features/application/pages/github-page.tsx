@@ -293,8 +293,7 @@ export function GitHubPage({
   }
 
   function commitIdentity(workspace: string, identity: GitHubIdentity, currentDraft = draft) {
-    if (identity.apply && (!identity.name.trim() || !identity.email.trim())) return
-    if (sameIdentity(identityIntent.current[workspace], identity)) return
+    if ((identity.apply && (!identity.name.trim() || !identity.email.trim())) || sameIdentity(identityIntent.current[workspace], identity)) return
     identityIntent.current = { ...identityIntent.current, [workspace]: { ...identity } }
     applyWorkspaceDraft(workspace, {
       ...currentDraft,

@@ -326,6 +326,27 @@ impl<T: Clone + PartialEq> SessionSecret<T> {
             .map_err(|_| "Credential state is unavailable.")?;
         self.write_locked(&mut state, value, write)
     }
+    /// Explicit replacements become visible only after durable storage succeeds.
+    fn replace(&self, value: T, write: impl FnOnce() -> Result<(), String>) -> Result<(), String> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| "Credential state is unavailable.")?;
+        if let Some(Err(error)) = state.value.as_ref() {
+            return Err(error.clone());
+        }
+        if state.unsaved.is_none()
+            && matches!(state.value.as_ref(), Some(Ok(current)) if current == &value)
+        {
+            return Ok(());
+        }
+        write()?;
+        state.value = Some(Ok(value));
+        state.unsaved = None;
+        state.blocked = false;
+        self.publish(&state.value);
+        Ok(())
+    }
     fn update(
         &self,
         read: impl FnOnce() -> Result<T, String>,

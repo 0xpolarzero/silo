@@ -279,6 +279,7 @@ describe("native settings transport", () => {
   })
 
   it("includes changes made while the final native flush is running before acknowledging Quit", async () => {
+    vi.useFakeTimers()
     const flushStarted = deferred<void>()
     const finishFlush = deferred<void>()
     const finishWrite = deferred<ReturnType<typeof snapshot>>()
@@ -296,7 +297,7 @@ describe("native settings transport", () => {
     const updating = settings.updateSettings({ browser: "Firefox" })
     finishFlush.resolve()
     // Let the resolved flush and read promises finish while the write is held.
-    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    await vi.advanceTimersByTimeAsync(0)
     try {
       expect(native.invoke).not.toHaveBeenCalledWith("complete_settings_flush")
     } finally {

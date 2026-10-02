@@ -4,6 +4,8 @@ import json
 import io
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -89,6 +91,18 @@ class ReleaseDependencyIntegrationTests(unittest.TestCase):
                     self.assertEqual(DEPS.build(self.args), code)
                 self.assertTrue(stdout.getvalue().startswith(noise.decode('utf-8', errors='replace')))
                 self.assertEqual((self.state / 'messages.jsonl').read_text(), json.dumps(row) + '\n')
+
+    @unittest.skipUnless(os.name == 'posix', 'POSIX signal exit status')
+    def test_build_cli_reports_signal_termination_as_a_shell_exit_status(self):
+        (self.state / 'metadata.json').write_text(json.dumps({'resolve': {'root': 'app'}}))
+        runner = self.app / 'node_modules/.bin/tauri'
+        runner.parent.mkdir(parents=True)
+        runner.write_text(f'#!{sys.executable}\nimport signal\nsignal.raise_signal(signal.SIGTERM)\n')
+        runner.chmod(0o755)
+        result = subprocess.run([sys.executable, DEPS.__file__, 'build',
+                                 '--app-root', str(self.app), '--state', str(self.state),
+                                 '--target', 'fixture'], capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 128 + signal.SIGTERM, result.stderr)
 
     def test_workflow_reader_writer_and_signing_order(self):
         root = Path(__file__).resolve().parents[3]

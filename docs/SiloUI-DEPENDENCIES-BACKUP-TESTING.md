@@ -463,3 +463,14 @@ After reopening the rebuilt production app, the existing three-VM draft showed
 **Not started · Continue to start this step**, **Continue to create sandboxes**,
 and **0 of 6 operations complete**. The user's draft was not submitted during
 verification. Screenshot: `src-tauri/target/ui-evidence/setup-draft-idle.jpg`.
+
+## Export folder picker execution
+
+The export picker reads its saved folder inside its existing blocking worker.
+Backup-state reads hold the view mutex while reading the recovery journal, so the
+picker can wait for filesystem I/O even though the destination itself is cached.
+The blocking worker covers that lock wait as well as the native dialog and path
+validation, following [Tauri's async command execution](https://v2.tauri.app/develop/calling-rust/#async-commands)
+and [Tokio's blocking-work boundary](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
+The destination persistence and picker path regressions cover the retained data
+behavior; they do not exercise a live native dialog.
