@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Reject unsupported GitHub settings revisions without wrapping counters or changing saved sandbox choices.
+Reject invalid GitHub settings revision numbers without changing saved sandbox choices.
