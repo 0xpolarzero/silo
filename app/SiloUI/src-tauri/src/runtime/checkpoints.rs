@@ -4,6 +4,8 @@ use super::*;
 use std::collections::{HashMap, HashSet};
 
 mod native;
+#[cfg(test)]
+mod running_retry_tests;
 pub(crate) use native::{plan as native_removal_plan, Member as NativeMember};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
