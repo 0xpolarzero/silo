@@ -93,7 +93,10 @@ def copy_file(path, target, contents=None, replace=False):
     try:
         shutil.copy2(path, temporary)
         if contents is not None:
-            temporary.write_text(contents)
+            if isinstance(contents, bytes):
+                temporary.write_bytes(contents)
+            else:
+                temporary.write_text(contents)
         if replace:
             os.replace(temporary, target)
         else:
@@ -169,10 +172,10 @@ def copy_shell_setup(source, destination):
                 conflict(target)
             originals.append((original, target))
     for original, target in originals:
-        contents = relocate(original.read_text())
+        contents = original.read_bytes().replace(b'/home/silo-desktop/', b'/home/silo/').replace(b'/root/', b'/home/silo/')
         # Root's profile does not put the user's own tools on PATH.
-        if original.name == '.profile' and PATH_SETUP not in contents:
-            contents += PATH_SETUP
+        if original.name == '.profile' and PATH_SETUP.encode('utf-8') not in contents:
+            contents += PATH_SETUP.encode('utf-8')
         copy_file(original, target, contents, replace=True)
 
 
