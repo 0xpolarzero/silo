@@ -66,3 +66,12 @@ The test `keeps a failed update connection visible when focus returns during lis
 - Reproduction: `native-workspace-menu.test.tsx` delays `Menu.new`, unmounts the row, resolves creation, and observes `popup` called once. Failing output: `/tmp/fe-status-storage-updates-8-failing.log`.
 - Fix: check the originating button's connection before showing the menu; the existing `finally` releases its native resource.
 - Validation: focused native-menu and status-panel tests, frontend typecheck, touched-file lint, and Rust formatting. Fixture data only; no application launched.
+
+## Finding 9: Escape cancels quit confirmation and hides the status panel together (P2)
+
+- Location: `app/SiloUI/src/components/inline-confirmation.tsx`, Escape event listener.
+- Trigger: open the native status panel's quit confirmation, then press Escape.
+- Consequence: `StatusPanel` handles the bubbling key before the confirmation's document listener; one Escape both cancels confirmation and sends `hide_status`, contrary to the host's nested-dismissal policy.
+- Reproduction: `status-panel.test.tsx` opens quit confirmation and requires no `hide_status` until a second Escape. Failing output: `/tmp/fe-status-storage-updates-9-failing.log`.
+- Fix: the topmost inline confirmation handles Escape in document capture and prevents its default dismissal before the status panel receives the key. Already handled keys are ignored.
+- Validation: focused status, inline confirmation, updates, and shutdown tests; typecheck, touched-file lint, Rust formatting. Fixture data only.
