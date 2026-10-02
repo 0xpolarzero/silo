@@ -5951,8 +5951,8 @@ pub(crate) fn validate_name(name: &str) -> Result<(), RuntimeError> {
 }
 
 pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, RuntimeError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(MachineConfigurationRequest {
                 schema_version: 1,
@@ -5965,6 +5965,14 @@ pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, 
             )))
         }
     };
+    let mut bytes = Vec::new();
+    file.take(MAX_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            RuntimeError::Unavailable(format!(
+                "Silo could not read its sandbox configuration: {error}"
+            ))
+        })?;
     if bytes.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(RuntimeError::Malformed(
             "Silo's sandbox configuration is too large.".into(),
@@ -6035,6 +6043,58 @@ pub(crate) fn write_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_large_input_memory_is_bounded() {
+        const PROBE: &str = "SILO_TEST_METADATA_MEMORY_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::metadata_large_input_memory_is_bounded",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            return;
+        }
+
+        fn peak_bytes() -> u64 {
+            // SAFETY: getrusage initializes the supplied rusage structure.
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
+            #[cfg(target_os = "macos")]
+            return usage.ru_maxrss as u64;
+            #[cfg(not(target_os = "macos"))]
+            return usage.ru_maxrss as u64 * 1024;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sandboxes.json");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        let before = peak_bytes();
+        assert!(
+            matches!(read_metadata(&path), Err(RuntimeError::Malformed(message))
+            if message == "Silo's sandbox configuration is too large.")
+        );
+        let extra = peak_bytes().saturating_sub(before);
+        eprintln!("large metadata peak RSS increase: {extra} bytes");
+        assert!(
+            extra < 32 * 1024 * 1024,
+            "oversized metadata allocated {extra} bytes"
+        );
+        assert_eq!(fs::metadata(&path).unwrap().len(), 128 * 1024 * 1024);
+    }
 
     #[test]
     fn auto_retry_retries_transient_failures_and_releases_the_gate_between_attempts() {
