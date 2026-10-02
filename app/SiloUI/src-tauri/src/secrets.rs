@@ -372,6 +372,9 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
     if store_path().is_none() {
         return Ok(());
     }
+    // Finish saves that validated this name before clearing their assignments.
+    // Runtime removal persists the inventory before cleanup and recreates names after it.
+    let _operation = lock_unit(&OPERATION);
     update(|document| {
         document
             .pending_revocations
@@ -1200,6 +1203,52 @@ mod tests {
             workspace_revision("dev").unwrap(),
             revision(&Document::default(), "dev")
         );
+        use_test_store(None);
+    }
+    #[test]
+    fn deletion_cleans_assignments_committed_by_an_already_validated_save() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        use_test_store(Some(path.clone()));
+        save(&Document {
+            secrets: vec![secret()],
+            ..Default::default()
+        })
+        .unwrap();
+        // A save has validated the old sandbox and is waiting on its credential store.
+        let save_operation = lock_unit(&OPERATION);
+        let original = load().unwrap().secrets.remove(0);
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let deletion = std::thread::spawn(move || {
+            use_test_store(Some(path));
+            started_tx.send(()).unwrap();
+            let result = workspace_removed("dev");
+            finished_tx.send(()).unwrap();
+            use_test_store(None);
+            result
+        });
+        started_rx.recv().unwrap();
+        // Give deletion a chance to reach cleanup before the delayed save commits.
+        let cleaned_before_commit = finished_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        let committed = update(|document| {
+            document.secrets.clear();
+            document.secrets.push(original);
+            Ok(())
+        });
+        drop(save_operation);
+        deletion.join().unwrap().unwrap();
+        committed.unwrap();
+        assert!(
+            !cleaned_before_commit,
+            "deletion must wait for an already validated assignment save"
+        );
+        let document = load().unwrap();
+        assert!(document.secrets[0].workspaces.is_empty());
+        assert!(document.secrets[0].affected.is_empty());
+        // A replacement sandbox with this name selects no material or credential values.
+        assert!(runtime_material("dev").unwrap().is_empty());
         use_test_store(None);
     }
     #[test]
