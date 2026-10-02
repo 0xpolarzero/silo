@@ -250,7 +250,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
           subtitle={summary ?? <>{sandboxCount} {sandboxCount === 1 ? "sandbox" : "sandboxes"} · {sandboxCount - remoteCount} on this computer · {remoteCount} on other computers · {sshHostCount} {sshHostCount === 1 ? "SSH host" : "SSH hosts"}</>}
           actions={(importPopover ?? ((node: ReactNode) => node))(<Popover open={addOpen} onOpenChange={setAddOpen}>
             <PopoverTrigger asChild>
-              <Button type="button" variant="outline" size="xs" aria-haspopup="menu" disabled={interactionDisabled} onClick={beginOperation}>
+              <Button type="button" variant="outline" size="xs" aria-haspopup="menu" disabled={interactionDisabled}>
                 <Plus aria-hidden="true" data-icon="inline-start" /> Add
               </Button>
             </PopoverTrigger>
