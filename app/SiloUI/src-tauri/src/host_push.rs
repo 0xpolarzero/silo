@@ -287,7 +287,7 @@ const DISCOVER_REPOSITORIES: &str = r#"find "$1" \( -name node_modules -o -name 
 p=${directory%/.git}
 branch=$(git -C "$p" symbolic-ref --quiet --short HEAD) || continue
 counts=$(git -C "$p" rev-list --left-right --count HEAD..."refs/remotes/origin/$branch" 2>/dev/null) || counts="$(git -C "$p" rev-list --count HEAD --not --remotes=origin) 0"
-dirty=$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null)
+dirty=$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null) || { echo 'Cannot read repository working tree status' >&2; exit 1; }
 head=$(git -C "$p" rev-parse --verify --quiet HEAD) || head=
 origin=$(git -C "$p" remote get-url origin 2>/dev/null) || origin=
 printf '%s\000%s\000%s\000%s\000%s\000%s\000' "$p" "$branch" "$counts" "$dirty" "$head" "$origin"
@@ -1531,6 +1531,56 @@ mod tests {
             .lock()
             .unwrap()
             .remove(&format!("{}:dev", paths.home.display()));
+    }
+
+    #[test]
+    fn discovery_rejects_unreadable_worktree_status() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repository");
+        fs::create_dir(&repository).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                ])
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .current_dir(&repository)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+            String::from_utf8(output.stdout).unwrap()
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        fs::write(repository.join("README"), "committed\n").unwrap();
+        git(&["add", "README"]);
+        git(&["commit", "--quiet", "-m", "fixture"]);
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        fs::write(repository.join("README"), "uncommitted\n").unwrap();
+        let discover = || {
+            Command::new("/bin/sh")
+                .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
+                .arg(root.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+        };
+        let healthy = discover();
+        assert!(healthy.status.success());
+        let record = String::from_utf8(healthy.stdout).unwrap();
+        assert!(record.split('\0').nth(3).unwrap().contains("README"));
+        fs::write(repository.join(".git/index"), "corrupt index").unwrap();
+        let output = discover();
+        assert!(
+            !output.status.success(),
+            "A failed status read must not publish a clean repository: {:?}",
+            output.stdout
+        );
     }
 
     #[test]
