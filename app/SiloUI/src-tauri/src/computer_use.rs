@@ -109,12 +109,19 @@ impl Outcome {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Attempt {
     pub(crate) mode: Approval,
+    #[serde(deserialize_with = "saved_outcome")]
     pub(crate) outcome: Outcome,
     /// Seconds since the Unix epoch.
     pub(crate) at: u64,
     /// A stable code (see `reason_text`); only for a failure or a partial application.
     #[serde(default)]
     pub(crate) reason: Option<String>,
+}
+
+fn saved_outcome<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Outcome, D::Error> {
+    let value = String::deserialize(deserializer)?;
+    // A newer outcome cannot prove success, but must not discard the user's choice.
+    Ok(Outcome::parse(&value).unwrap_or(Outcome::Failed))
 }
 
 /// The VM's approval policy, kept in `<storage>/computer-use/<id>.json`: the mode the user
