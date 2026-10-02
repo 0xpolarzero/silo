@@ -143,6 +143,7 @@ export function GitHubPage({
   const saveSequence = useRef(0)
   const rejectedSaves = useRef(new Set<string>())
   const pendingSaves = useRef(new Map<string, number>())
+  const saveIntents = useRef(new Map<string, ApplicationGitHubConfiguration["workspaces"][number]>())
   const sourceDraftKey = useRef(JSON.stringify(sourceDraft))
   const sourceOperationsKey = useRef(JSON.stringify([source.github.policyRevision, source.github.workspaceOperations]))
   const catalogAvailable = source.github.repositoryCatalogStatus?.status !== "unavailable"
@@ -158,16 +159,22 @@ export function GitHubPage({
     if (sourceDraftKey.current === key) return
     sourceDraftKey.current = key
     const submittedIdentities = identityIntent.current
+    const next = copyDraft(sourceDraft)
+    for (const [workspace, policy] of saveIntents.current) {
+      if (!next.access[workspace]) continue
+      next.access[workspace] = { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false, authenticationMethod: policy.authenticationMethod }
+      next.selections[workspace] = policy.repositories.map((repository) => ({ ...repository }))
+      next.identities[workspace] = { ...policy.identity }
+    }
+    identityIntent.current = copyDraft(next).identities
     // Preserve text still being edited; blur submits it separately.
     // oxlint-disable-next-line react/set-state-in-effect
     setDraft((current) => {
-      const next = copyDraft(sourceDraft)
       for (const [workspace, identity] of Object.entries(current.identities)) {
         if (next.identities[workspace] && !sameIdentity(submittedIdentities[workspace], identity)) next.identities[workspace] = identity
       }
       return next
     })
-    identityIntent.current = copyDraft(sourceDraft).identities
   }, [sourceDraft])
 
   useEffect(() => {
@@ -240,10 +247,17 @@ export function GitHubPage({
     for (const name of rejectedSaves.current) pendingSaves.current.set(name, sequence)
     rejectedSaves.current.clear()
     pendingSaves.current.set(workspace, sequence)
-    const configuration = configurationFromDraft(source, { ...nextDraft, identities: identityIntent.current }, new Set(pendingSaves.current.keys()))
+    const submittedDraft = copyDraft({ ...nextDraft, identities: identityIntent.current })
+    const intent = configurationFromDraft(source, submittedDraft, new Set([workspace])).workspaces[0]
+    if (intent) saveIntents.current.set(workspace, intent)
+    const configuration = configurationFromDraft(source, submittedDraft, new Set(pendingSaves.current.keys()))
+    configuration.workspaces = configuration.workspaces.map((policy) => saveIntents.current.get(policy.workspace) ?? policy)
     void Promise.resolve().then(() => actions.saveGitHubConfiguration?.(configuration)).then(() => {
       for (const [name, pendingSequence] of pendingSaves.current) {
-        if (pendingSequence <= sequence) pendingSaves.current.delete(name)
+        if (pendingSequence <= sequence) {
+          pendingSaves.current.delete(name)
+          saveIntents.current.delete(name)
+        }
       }
     }).catch((cause: unknown) => {
       if (sequence !== saveSequence.current) return
