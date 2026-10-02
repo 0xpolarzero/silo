@@ -906,6 +906,15 @@ failure and retry against fixtures, and the native JSON contract. None of this
 deleted a real migrated install or booted a converted VM after deleting its
 backup.
 
+Migration-state reads and async runtime command admission wait on the progress
+mutex on Tauri's blocking pool. The
+writer retains that mutex while it commits the progress file and synchronizes the
+file and directory; a slow commit therefore cannot stall the main thread through
+a progress read. A held-lock regression requires an independent future to run
+before the writer releases the mutex and checks that the snapshot stays unchanged.
+This follows [Tauri's async command execution](https://v2.tauri.app/develop/calling-rust/#async-commands)
+and [Tokio's blocking-work boundary](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
+
 ### Editor connections after the migration (2026-10-01)
 
 "Open in editor" writes one SSH entry per sandbox into `<runtime home>/ssh/*.conf`

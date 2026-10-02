@@ -2554,7 +2554,7 @@ pub async fn read_application_state(
     app: AppHandle,
     refresh_repositories: Option<bool>,
 ) -> Result<ApplicationSource, BridgeError> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         crate::secrets::schedule_revocations(&app);
@@ -3122,7 +3122,7 @@ pub async fn workspace_action(
     name: String,
     path: Option<String>,
 ) -> Result<ApplicationSource, BridgeError> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     if matches!(action.as_str(), "open-editor" | "open-terminal") {
         shutdown::ensure_accepting_operations()?;
         return tauri::async_runtime::spawn_blocking(move || {
@@ -4027,7 +4027,7 @@ pub async fn retry_machine_configuration(
     request_id: Option<String>,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
     let failure_title = retry_workspace.as_deref().map_or_else(
@@ -4082,7 +4082,7 @@ pub async fn change_machine_configuration(
     request_id: Option<String>,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
     let failure_title = change.failure_title();
