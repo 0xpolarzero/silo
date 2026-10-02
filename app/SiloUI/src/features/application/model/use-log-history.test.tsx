@@ -159,6 +159,58 @@ describe("cached log history", () => {
     expect(loader).toHaveBeenCalledTimes(2)
   })
 
+  it("refreshes on Retry when a new cursor adds no unique records", async () => {
+    const { options, workspace, loader } = fixture()
+    const view = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    const firstPage = fixtureLogPage(workspace, { sandboxId: workspace.machine.id, limit: 2 })
+    loader.mockResolvedValueOnce({ ...firstPage, nextCursor: "different-cursor" })
+
+    await act(() => view.result.current.loadOlder())
+
+    expect(loader).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "2" }))
+    expect(view.result.current.rows).toHaveLength(2)
+    expect(view.result.current.hasOlder).toBe(false)
+    expect(view.result.current.error).toContain("Log history did not advance. Refresh to continue.")
+    loader.mockResolvedValueOnce(fixtureLogPage(workspace, { sandboxId: workspace.machine.id }))
+
+    await act(() => view.result.current.retry())
+
+    expect(loader).toHaveBeenCalledTimes(3)
+    expect(loader).toHaveBeenLastCalledWith(expect.not.objectContaining({ cursor: expect.any(String) }))
+    expect(view.result.current.rows).toHaveLength(4)
+    expect(view.result.current.error).toBe("")
+    expect(view.result.current.busy).toBe(false)
+  })
+
+  it("makes no initial or explicit reads while inactive or the date range is invalid", async () => {
+    const { options, loader } = fixture()
+    const view = renderHook(({ active, invalidRange }) => useLogHistory({ ...options, active, invalidRange }), {
+      initialProps: { active: false, invalidRange: false },
+    })
+    const tryReads = async () => {
+      await act(async () => {
+        await view.result.current.refresh()
+        await view.result.current.follow()
+        await view.result.current.retry()
+        await view.result.current.loadOlder()
+      })
+    }
+    await tryReads()
+    expect(loader).not.toHaveBeenCalled()
+    view.rerender({ active: true, invalidRange: true })
+    await tryReads()
+    expect(loader).not.toHaveBeenCalled()
+
+    view.rerender({ active: true, invalidRange: false })
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    expect(view.result.current.rows).toHaveLength(2)
+    view.rerender({ active: false, invalidRange: false })
+    await tryReads()
+    expect(loader).toHaveBeenCalledOnce()
+    expect(view.result.current.rows).toHaveLength(2)
+  })
+
   it("expires inactive views before retained backend cursors expire", async () => {
     const { options, loader } = fixture()
     const first = renderHook(() => useLogHistory(options))
