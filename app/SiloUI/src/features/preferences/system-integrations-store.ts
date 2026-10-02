@@ -150,7 +150,7 @@ export function createSystemIntegrationStore(
       }
       let verified = fresh.notifications
       ++refreshSequence
-      publish({ notifications: verified, initialized: true })
+      publish({ ...fresh, initialized: true })
       if (verified.state === "notDetermined") {
         verified = status(notificationStateSchema).parse(await service.requestNotifications())
         ++refreshSequence
