@@ -20,6 +20,12 @@ function actions(overrides: Partial<ApplicationActions> = {}): ApplicationAction
 afterEach(() => { toast.dismiss() })
 
 describe("RemoteComputersSettings", () => {
+  it("disables connection removal when the adapter does not provide it", () => {
+    const remote = { id: "office", name: "Office", address: "office.example", connected: false }
+    render(<RemoteComputersSettings source={{ ...source(undefined), remoteComputers: [remote] }} actions={actions()} />)
+    expect(screen.getByRole("button", { name: "Remove connection to Office" })).toBeDisabled()
+  })
+
   it("reveals the complete name of a computer with a long SSH address", () => {
     const name = "Office workstation ".repeat(20).trim()
     const remote = { id: "office-id", name, address: `${"account".repeat(30)}@office.example`, connected: false }
