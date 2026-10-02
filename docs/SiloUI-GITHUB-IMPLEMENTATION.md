@@ -76,6 +76,9 @@ exponential backoff and positive jitter. Automatic retries are bounded at five;
 explicit Retry retains GitHub's imposed waiting period, including after relaunch.
 Ambiguous code exchange, refresh or mint outcomes are not automatically replayed.
 Safe reads and idempotent revocations can retry. Guest writes are never replayed.
+Repository Refresh resets only safe operations after acquiring the GitHub operation
+lock. Stopped token mints and rotating OAuth refreshes require their explicit Retry;
+refreshing the catalog preserves their refusal and every server waiting deadline.
 
 When refresh succeeds but secure storage fails, the renewed credential is retained
 in host memory for storage retry, tied to the original account token. The consumed
@@ -566,3 +569,24 @@ publishing its pushing state. Although the count is cached, resolving its cache
 key reads the selected runtime generation and takes the migration progress mutex.
 This filesystem and lock boundary follows
 [Tokio's blocking-work guidance](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
+
+### Policy revision numeric boundary
+
+GitHub policy revisions are persisted as Rust `u64` values and sent over IPC as
+JavaScript numbers. The [ECMAScript specification](https://tc39.es/ecma262/multipage/numbers-and-dates.html#sec-number.max_safe_integer)
+defines the largest safe integer as 9,007,199,254,740,991. Larger integers can
+share the same number representation. Silo's frontend schema already rejects
+unsafe integers, so an unsafe saved revision made the GitHub snapshot unavailable.
+The native document loader now rejects that revision without rewriting the file.
+
+Every native policy increment uses
+[`u64::checked_add`](https://doc.rust-lang.org/std/primitive.u64.html#method.checked_add)
+and enforces the JavaScript boundary. Wrapping would reuse old revision stamps;
+saturation would stop distinguishing changes. An exhausted revision therefore
+returns an error before publishing a new policy. The last safe revision remains
+readable, and a save that changes no choices still succeeds. Reconnection checks
+the next revision before replacing the account credential or detaching VM access.
+
+Regression fixtures cover unsafe persisted values, exhausted policy edits without
+document mutation, and the last safe increment followed by save, reload, and a
+no-op edit. These use temporary files and synthetic native-test configuration.

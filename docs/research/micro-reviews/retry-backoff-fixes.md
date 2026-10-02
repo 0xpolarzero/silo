@@ -71,3 +71,15 @@ The standalone Rust verification extracts the production retry helper, failure c
 - Evidence: the picker retried failed reads on every ten-second interval. The regression observed an extra read before the first twenty-second failure deadline.
 - Change: grow the failed-read delay from twenty to forty seconds, capped at sixty seconds. Successful reads reset the delay; focus, visibility, and explicit Retry remain immediate.
 - Verification: the fixture regression covers repeated caps, focus recovery, the restored ten-second cadence, and disposal. Existing focus, stale-workspace, StrictMode, pagination, and queued-read cancellation tests remain in place.
+
+## Offline-computer snapshot polling
+
+- Evidence: the production source's ten-second refresh retried every computer, regardless of its preceding snapshot failure. The fixture regression observed a second failed request before the first twenty-second deadline.
+- Change: track independent failure deadlines, doubling to a sixty-second cap, and honor them only for background polling. Healthy computers retain their cadence; explicit refresh, focus, mutation refreshes, and computer address changes bypass the wait. A valid snapshot or busy response resets the delay.
+- Verification: the fixture regression covers independent healthy reads, growing and repeated caps, immediate focus recovery, the restored cadence, and disposal.
+
+## Network and SSH service polling
+
+- Evidence: five-second UI polling and ten-second application polling repeated failed native service reads. Both production service actions consume failures and publish unavailable rows, so a rejection-based UI timer would never observe the defect. Regressions against both production actions observed an extra request before the ten-second first failure deadline.
+- Change: distinguish background polling from explicit refresh and enforce separate per-computer deadlines for network and SSH read failures. Delays double to a sixty-second cap and reset after valid replies or host address changes. Focus, opening a panel, native events, mutation reconciliation, and Retry bypass the wait.
+- Verification: deterministic production-source tests cover healthy-owner independence, growing and repeated caps, explicit recovery, and the restored five-second caller cadence. Polling-hook fixtures verify background requests and focus overrides.

@@ -39,3 +39,37 @@ regression failed before correction; it and the existing byte-preservation and
 symlink-refusal test passed with the exact production file functions isolated
 from the editor adapters, using Rust 1.94.0 and warnings denied. Root skips the
 permission fixture. No live SSH connection or editor was used.
+
+## Secret metadata: fixed
+
+`secrets.rs::save` synchronized its JSON file but omitted parent-directory sync
+after publication. It now propagates that failure instead of acknowledging the
+save. The regression verifies complete private JSON after replacement, rejects
+the unsynchronized save and then successfully retries after restoring directory
+access. It failed before the fix and passed afterward in a harness with the exact
+production document types, thread-local path override, path resolver, writer and
+test, compiled with Rust 1.94.0 and warnings denied. No credential store or guest
+was accessed; root skips the permission boundary.
+
+## Log exports: fixed
+
+`log_export.rs::save_atomically` returned success after publishing synchronized
+file bytes without synchronizing the selected directory. It now syncs the
+directory before acknowledging success. The real permission fixture confirms
+complete published output while rejecting that unconfirmed save; it failed
+before the change. Three exact-source persistence tests passed after the fix,
+including existing failure/cancellation preservation and 1,001 JSONL rows with
+Unicode, using Rust 1.94.0 with warnings denied. The harness isolates the writer
+from Tauri dialogs and log-query adapters; root skips the permission fixture.
+
+## Saved ports: fixed
+
+`network.rs::write_config` acknowledged a file replacement without synchronizing
+the configuration directory. It now completes that sync and propagates failure.
+The real permission fixture verifies a disabled mapping remains fully readable
+after publication, rejects success and confirms retry after restoring access.
+The regression failed before the fix; it and the existing size-limit and bounded
+FIFO-reader regressions passed afterward. The exact-source harness includes the
+production runtime-path type and fixture, configuration types, validator,
+reader and writer, compiled with Rust 1.94.0 and warnings denied. It runs no
+runtime forwarding or Tauri adapter; root skips the permission fixture.

@@ -91,8 +91,26 @@ any package verification; it is not reported as a passing native-name check.
 - **Primary evidence:** The installed Tauri CLI's `build --help` and [Tauri CLI documentation](https://v2.tauri.app/reference/cli/) confirm that later configurations override earlier conflicting keys. The test models that documented merge at the process boundary, writes the selected fixture bundle, and asserts signing receives this build's marker.
 - **Verification:** Desktop routing, native channel-name, release-workflow and CI-coverage regressions passed; typecheck, Rust formatting and whitespace checks passed. No real build or signing command ran. This is an internal build-tool correction.
 
+
+## Release command symlink execution
+
+The preflight, release and version-sync entry points compared the lexical argv
+path to Node's canonical module path. Through symlinks, all three exited zero
+without running their command or reporting invalid input. Three CLI regressions
+failed before the fix using a bad patch, unsupported release action and forbidden
+zero version in temporary fixtures. The entry-point guard now compares canonical
+paths, following the guest builder's existing correction. Imports stay passive.
+The rejecting fixtures use an empty executable PATH, so they cannot tag, push,
+version, sign or publish anything.
+
 ## RELEASE-SCRIPTS-7 — P2: Failed benchmark output abandons compiler processes
 
 - **Trigger and evidence:** `dependency-cache-benchmark.py build` encounters an exception while forwarding stdout or recording Cargo JSON. Its plain `Popen` has no exception cleanup. Both regression cases observed an unreaped running child after the exception; evidence is preserved in ignored `target/verification/release-scripts/benchmark-process-before.log`.
 - **Fix:** Start the owned command in its own process session, use the process context manager, and stop its group before unwinding on a forwarding exception. Preserve the original exception. This follows the existing release compiler wrapper's cleanup pattern and never selects unrelated host processes.
 - **Verification:** Real synthetic sleeping child processes exercise stdout and metadata-write failures, then assert the child was reaped before returning control. Existing benchmark build output, signal status, source gates, dependency integration and CI-coverage tests passed; typecheck, Rust formatting and whitespace checks passed. No Cargo compilation or application launch ran.
+
+## RELEASE-SCRIPTS-8 — P2: A partial update confirmation bypasses its timeout
+
+- **Trigger and evidence:** The Debian update helper waits for initial readability with a timeout, then calls blocking `readline()` without a deadline. A pipe sends `install` immediately and its newline after the deadline; the original helper accepted it. Failing evidence is preserved in ignored `target/verification/release-scripts/confirm-deadline-before.log`.
+- **Fix:** Read bounded chunks under the same monotonic deadline until a complete command or EOF arrives. Reject incomplete, oversized, cancelled and expired input before installation. Existing complete-line and closed-pipe confirmations retain their behavior.
+- **Verification:** The pipe regression and existing privilege/sequence/cancellation tests passed, along with Debian package and CI-coverage tests (20 total). Typecheck, Rust formatting and whitespace checks passed. Tests use temporary pipes and package trees; no root helper, APT operation or live update ran. Includes a patch changeset because this changes the installed Linux helper.

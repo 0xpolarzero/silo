@@ -104,3 +104,15 @@ Git failures, ownership-scan failure, matching/mismatching commits, and correct/
 incorrect ownership. Four failure cases falsely passed before the fix; all three
 tests pass afterward. ShellCheck, Dash syntax, Python compilation, and whitespace
 checks passed. The tests do not run the opt-in proof, a VM, or a real repository.
+
+Production repository discovery ignored `git status` failures and emitted an
+empty dirty field, presenting an unreadable working tree as clean. A real Git
+fixture with a committed file, an uncommitted edit, and a corrupt index reproduces
+the defect while branch and commit reads still work. The status assignment now
+explicitly exits on failure, so the existing guest-command error path rejects
+the discovery result. The corrupt-index regression failed before the fix and
+passed afterward, alongside the existing new-branch count and dependency-tree
+checks, in the source-extracted Rust harness. ShellCheck, Dash syntax, Rust
+formatting, and whitespace checks passed. The fixture uses temporary repositories
+and isolated Git configuration; it never reads a user's repository or launches
+Silo. Evidence is in `/tmp/silo-discovery-status-{failing,passing}.log`.

@@ -31,7 +31,8 @@ use crate::{runtime::image_cache, runtime_migration};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashSet,
-    fs, io,
+    fs,
+    io::{self, Read},
     path::{Path, PathBuf},
     sync::{Mutex, MutexGuard, PoisonError},
     time::Duration,
@@ -41,6 +42,7 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 
 const FILE: &str = "pre-upgrade-backup.json";
 const VERSION: u32 = 1;
+const MAX_RECORD_BYTES: u64 = 64 * 1024;
 const RETENTION: time::Duration = time::Duration::days(14);
 /// Hourly rather than daily: the sleep does not count time the computer spent asleep, and a
 /// check that finds nothing due only reads one small file.
@@ -84,11 +86,27 @@ enum Saved {
 }
 
 fn load(app_data: &Path) -> Saved {
-    let bytes = match fs::read(app_data.join(FILE)) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Saved::Missing,
+    let (file, metadata) = match crate::backup::open_regular_file(&app_data.join(FILE)) {
+        Ok(opened) => opened,
+        Err(crate::backup::OpenRegularError::Io(error))
+            if error.kind() == io::ErrorKind::NotFound =>
+        {
+            return Saved::Missing;
+        }
         Err(_) => return Saved::Unreadable,
     };
+    if metadata.len() > MAX_RECORD_BYTES {
+        return Saved::Unreadable;
+    }
+    let mut bytes = Vec::new();
+    if file
+        .take(MAX_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .is_err()
+        || bytes.len() as u64 > MAX_RECORD_BYTES
+    {
+        return Saved::Unreadable;
+    }
     let Ok(record) = serde_json::from_slice::<Record>(&bytes) else {
         return Saved::Unreadable;
     };
@@ -855,6 +873,61 @@ mod tests {
             b"mine"
         );
         assert_eq!(fs::read(elsewhere.path().join("file")).unwrap(), b"mine");
+    }
+
+    #[test]
+    fn a_retention_record_cannot_block_on_a_fifo() {
+        use std::os::unix::{
+            ffi::OsStrExt,
+            fs::{FileTypeExt, OpenOptionsExt},
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        let encoded = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the path is NUL terminated and belongs to this temporary fixture.
+        assert_eq!(unsafe { libc::mkfifo(encoded.as_ptr(), 0o600) }, 0);
+        let app_data = dir.path().to_path_buf();
+        let (send, receive) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _ = send.send(matches!(load(&app_data), Saved::Unreadable));
+        });
+        let result = receive.recv_timeout(Duration::from_secs(1));
+        // Release a blocking reader before failing the regression, so the test
+        // leaves no thread behind when run against the previous implementation.
+        if result.is_err() {
+            if let Ok(mut writer) = fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&path)
+            {
+                let _ = io::Write::write_all(&mut writer, b"invalid record");
+            }
+        }
+        reader.join().unwrap();
+        assert!(result.unwrap());
+        assert!(fs::symlink_metadata(path).unwrap().file_type().is_fifo());
+    }
+
+    #[test]
+    fn oversized_and_redirected_retention_records_are_unreadable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE);
+        let valid = br#"{"version":1,"startedAt":"2020-01-01T00:00:00Z"}"#;
+        let mut oversized = valid.to_vec();
+        oversized.resize(64 * 1024, b' ');
+        fs::write(&path, &oversized).unwrap();
+        assert!(matches!(load(dir.path()), Saved::Valid { .. }));
+        oversized.resize(64 * 1024 + 1, b' ');
+        fs::write(&path, &oversized).unwrap();
+        assert!(matches!(load(dir.path()), Saved::Unreadable));
+        assert_eq!(fs::read(&path).unwrap(), oversized);
+        fs::remove_file(&path).unwrap();
+        let target = dir.path().join("other-record.json");
+        fs::write(&target, valid).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(matches!(load(dir.path()), Saved::Unreadable));
+        assert_eq!(fs::read(&target).unwrap(), valid);
+        assert!(fs::symlink_metadata(path).unwrap().file_type().is_symlink());
     }
 
     #[test]

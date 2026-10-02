@@ -51,6 +51,7 @@ above for current behavior and build commands.
 - [Codebase review, 2026-09-29](research/codebase-review-2026-09-29.md): ranked findings from a read-only review of the whole app — owner decisions, release blockers, security, data loss, stuck states, performance, UX, CI, tests and code health.
 - Follow-up review records, 2026-10-02: [release tooling](SiloUI-CODE-REVIEW-PASS-3-RELEASE-2026-10-02.md), [security](SiloUI-CODE-REVIEW-PASS-3-SECURITY-2026-10-02.md), [guest bridge](SiloUI-CODE-REVIEW-PASS-3-GUEST-BRIDGE-2026-10-02.md), and [computer use](SiloUI-CODE-REVIEW-PASS-3-COMPUTER-USE-2026-10-02.md). Findings and verification describe the recorded commits; compare HEAD before reopening an item.
 - [Micro-review index and finding counts](research/micro-reviews/README.md): original audits and fix-loop findings, including [status, storage and updates](research/micro-reviews/fe-status-storage-updates-fixes.md). Counts include fixed findings and overlap across reports; each record states its scope and verification limits.
+- [Changeset audit, 2026-10-02](research/micro-reviews/changesets.md): metadata, user-facing wording, duplicate corrections, and commit coverage since `f9421925`.
 
 The comprehensive `SiloUI-CODE-REVIEW-2026-10-02.md` report (R-01 through R-26)
 and `SiloUI-CODE-REVIEW-PASS-2-2026-10-02.md` (R-27 through R-37, plus historical
@@ -94,6 +95,7 @@ recorded revisions; check current code before treating an item as open.
 - [Application launch selection, 2026-10-02](research/application-launch-selection-2026-10-02.md): preserving Flatpak desktop-entry selectors and targeting the selected Ghostty bundle, with resolver and escaping tests rather than live application launches.
 - [Editor folder identity, 2026-10-02](research/editor-folder-identity-2026-10-02.md): rejecting control characters that URI serialization would discard, with extracted-function regression evidence and no live editor qualification.
 - [Editor environment wrapper follow-up, 2026-10-02](research/editor-env-directory-2026-10-02.md): preserving `env` working-directory operands when resolving and launching a supported Linux editor, with a temporary CLI regression and no GUI or live VM.
+- Editor follow-ups, 2026-10-02: [literal directories in SSH Includes](research/editor-ssh-include-2026-10-02.md) checks glob escaping with the system OpenSSH parser; [percent signs in Linux desktop entries](research/editor-desktop-percent-2026-10-02.md) checks field-code decoding with a temporary CLI. Neither qualifies a live editor connection.
 - [Guest image size experiment](SiloUI-GUEST-IMAGE-SIZE.md): measured image-size tradeoffs.
 - [Codex skills and context audit](CODEX-CONTEXT-AUDIT-2026-09-14.md): agent instruction and skill-trigger recommendations for working on this repository.
 - [Jev for natural-language commands](SiloUI-JEV-RESEARCH.md): primary-source findings, command-palette fit, limitations and proposed evaluation.

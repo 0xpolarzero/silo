@@ -38,6 +38,7 @@ struct Failure {
     message: String,
     class: String,
     workspace: Option<String>,
+    safe: bool,
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -178,6 +179,7 @@ impl Gates {
                 message: message.clone(),
                 class: class.into(),
                 workspace: None,
+                safe: persistent,
             },
         );
         message
@@ -216,6 +218,12 @@ pub(crate) fn reset_workspace_retries(workspace: &str) {
     gates()
         .requests
         .retain(|_, failure| failure.workspace.as_deref() != Some(workspace));
+}
+pub(crate) fn reset_catalog_retries(token: &str) {
+    let class = rate_class(&Authentication::Bearer(token.into()));
+    gates().requests.retain(|_, failure| {
+        failure.class != class || failure.workspace.is_some() || !failure.safe
+    });
 }
 fn preflight(key: &str, class: &str) -> Result<(), String> {
     gates().check(key, class, now())
@@ -293,7 +301,7 @@ fn is_rate_limit(status: u16, headers: &HeaderMap, body: &Value) -> bool {
         || message.contains("abuse detection")
 }
 fn retryable_response(status: u16, headers: &HeaderMap, body: &Value, safe: bool) -> bool {
-    is_rate_limit(status, headers, body) || (status >= 500 && safe)
+    is_rate_limit(status, headers, body) || ((status == 408 || status >= 500) && safe)
 }
 /// A connection failure means nothing was sent, so even a non-idempotent request
 /// can be retried automatically; only a failure after sending has an unknown outcome.
@@ -483,6 +491,41 @@ pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
 mod tests {
     use super::*;
     #[test]
+    fn catalog_retry_preserves_ambiguous_writes_and_unrelated_reads() {
+        let _test_state = crate::test_support::global_state();
+        let token = uuid::Uuid::new_v4().to_string();
+        let class = rate_class(&Authentication::Bearer(token.clone()));
+        let other_class = rate_class(&Authentication::Bearer(uuid::Uuid::new_v4().to_string()));
+        let read = uuid::Uuid::new_v4().to_string();
+        let write = uuid::Uuid::new_v4().to_string();
+        let workspace_read = uuid::Uuid::new_v4().to_string();
+        let other_read = uuid::Uuid::new_v4().to_string();
+        {
+            let mut g = gates();
+            for (key, owner, safe) in [
+                (&read, &class, true),
+                (&write, &class, false),
+                (&workspace_read, &class, true),
+                (&other_read, &other_class, true),
+            ] {
+                g.fail(key.clone(), owner, 100, false, 0, false, 0, "failed", safe);
+            }
+            g.requests.get_mut(&workspace_read).unwrap().workspace = Some("workspace".into());
+            g.restore_floor(&class, 5000);
+        }
+        reset_catalog_retries(&token);
+        let mut g = gates();
+        assert!(g.check(&read, &class, 5000).is_ok());
+        assert!(g.check(&read, &class, 4999).is_err());
+        assert!(g.check(&write, &class, u64::MAX).is_err());
+        assert!(g.check(&workspace_read, &class, u64::MAX).is_err());
+        assert!(g.check(&other_read, &other_class, u64::MAX).is_err());
+        for key in [&write, &workspace_read, &other_read] {
+            g.requests.remove(key);
+        }
+        g.rate_until.remove(&class);
+    }
+    #[test]
     fn workspace_retry_preserves_other_workspaces_and_account_operations() {
         let _test_state = crate::test_support::global_state();
         let target = uuid::Uuid::new_v4().to_string();
@@ -520,6 +563,38 @@ mod tests {
         assert!(g.check(&account_key, &class, u64::MAX).is_err());
         g.requests.remove(&other_key);
         g.requests.remove(&account_key);
+        g.rate_until.remove(&class);
+    }
+    #[test]
+    fn repository_refresh_preserves_ambiguous_writes_and_server_floors() {
+        let _test_state = crate::test_support::global_state();
+        let token = uuid::Uuid::new_v4().to_string();
+        let class = rate_class(&Authentication::Bearer(token.clone()));
+        let read_key = uuid::Uuid::new_v4().to_string();
+        let mint_key = uuid::Uuid::new_v4().to_string();
+        let refresh_key = uuid::Uuid::new_v4().to_string();
+        {
+            let mut g = gates();
+            for (key, safe) in [(&read_key, true), (&mint_key, false), (&refresh_key, false)] {
+                g.fail(key.clone(), &class, 100, false, 0, false, 0, "failed", safe);
+                assert!(g.check(key, &class, u64::MAX).is_err());
+            }
+            g.restore_floor(&class, 5000);
+        }
+        reset_catalog_retries(&token);
+        let mut g = gates();
+        assert!(g.check(&read_key, &class, 5000).is_ok());
+        assert!(g.check(&read_key, &class, 4999).is_err());
+        assert!(
+            g.check(&mint_key, &class, u64::MAX).is_err(),
+            "Repository Refresh reopened an ambiguous mint"
+        );
+        assert!(
+            g.check(&refresh_key, &class, u64::MAX).is_err(),
+            "Repository Refresh replayed a rotating refresh token"
+        );
+        g.requests.remove(&mint_key);
+        g.requests.remove(&refresh_key);
         g.rate_until.remove(&class);
     }
     #[test]
@@ -628,6 +703,48 @@ mod tests {
         );
         server.join().unwrap();
         result
+    }
+    #[test]
+    fn request_timeouts_retry_safe_reads_without_replaying_unsafe_writes() {
+        let _test_state = crate::test_support::global_state();
+        for safe in [true, false] {
+            let key = uuid::Uuid::new_v4().to_string();
+            let class = uuid::Uuid::new_v4().to_string();
+            let error = wire_reply(
+                &key,
+                &class,
+                "HTTP/1.1 408 Request Timeout\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                    .into(),
+                safe,
+                false,
+            )
+            .unwrap_err();
+            let mut g = gates();
+            if safe {
+                let until = g.requests[&key]
+                    .until
+                    .expect("safe read stopped after HTTP 408");
+                assert!(error.contains("Retrying"));
+                assert!(g.check(&key, &class, until - 1).is_err());
+                assert!(g.check(&key, &class, until).is_ok());
+            } else {
+                assert!(g.requests[&key].until.is_none());
+                assert!(g.check(&key, &class, u64::MAX).is_err());
+            }
+            g.requests.remove(&key);
+        }
+        assert!(!retryable_response(
+            401,
+            &HeaderMap::new(),
+            &Value::Null,
+            true
+        ));
+        assert!(!retryable_response(
+            404,
+            &HeaderMap::new(),
+            &Value::Null,
+            true
+        ));
     }
     #[test]
     fn interrupted_successful_body_retries_safe_reads_but_not_ambiguous_writes() {

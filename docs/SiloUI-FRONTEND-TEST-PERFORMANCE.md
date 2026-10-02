@@ -172,3 +172,12 @@ Primary references: [Vitest timers](https://vitest.dev/guide/mocking/timers)
 and [Testing Library fake timers](https://testing-library.com/docs/using-fake-timers/).
 Both document advancing supported fake timers and restoring real timers;
 Testing Library also warns about user-event scheduling with fake timers.
+
+### Rejected query-scope follow-up
+
+A disposable change scoped `onboarding-machines.test.tsx`'s configured-sandbox
+list query to the active tab panel. The baseline passed all 15 tests; treatment
+failed the existing editor-focus assertion (14 passed). These durations are not
+a valid speed comparison. Restore the original query rather than retaining an
+unverified optimization. Both verbose logs and JSON reports remain in
+`test-speed/machines-{before,after}.{log,json}` under the ignored evidence root.

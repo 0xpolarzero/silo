@@ -80,9 +80,31 @@ Scope: `app/SiloUI/docs/silo-help.html`, checked against app code. The initial a
 - **Consequence:** Dev users are told that a check queries releases and can update the app, although that channel has no feed.
 - **Fix:** Qualify the instructions as production-only and state the Dev channel's update behavior.
 - **Test:** The new bundled-help regression failed before the qualification. Help and existing update-card tests cover the corrected instructions and the production update controls.
-- **Status:** Fixed in the accompanying `docs(help): qualify updates for the production build` commit.
+- **Status:** Fixed and folded, `d8508ef9`; 36 focused help/update-card tests passed, plus typecheck, focused lint and whitespace checks.
 
-Final verification used Node.js 24.11.1: `npm --prefix app/SiloUI test -- src/test/bundled-help.test.ts src/features/application/components/checkpoint-panel.test.tsx src/features/application/pages/network-page.test.tsx src/features/updates/updates.test.tsx --maxWorkers=1` passed all 76 tests. `npm --prefix app/SiloUI run typecheck`, focused oxlint for `src/test/bundled-help.test.ts`, and `git diff --check` passed. No Rust files changed, so Rust formatting and native tests were not applicable. No packaged bundle or live data was inspected.
+## USER-DOCS-9 — P3 — Older desktop startup skips a required update
+
+- **File:line:** `app/SiloUI/docs/silo-help.html:38`.
+- **Trigger:** Open an installed, stopped legacy desktop whose state has `updateRequired: true`, then follow the help's manual startup instruction.
+- **Evidence:** `linux-desktop-viewer.tsx:34,49–50` replaces Start desktop with Update desktop in this state. `linux-desktop-native.test.tsx:263–284` verifies that updating makes Start desktop available without starting or attaching the desktop. `guest/setup-desktop.sh:156–158` requires the desktop session to be stopped, while `desktop.rs` executes the installer inside the running sandbox.
+- **Consequence:** The documented manual startup path is unavailable until an explicit update, and the help provides no update steps.
+- **Fix:** Explain the conditional update prerequisite, running-sandbox/stopped-desktop requirements, and the explicit Start desktop step afterward.
+- **Test:** A new help regression failed on the missing prerequisite; existing deterministic desktop-viewer tests verify required and optional update behavior.
+- **Status:** Fixed and folded, `e6d100e9`; 28 focused help/desktop-viewer tests passed, plus typecheck, focused lint and whitespace checks.
+
+## USER-DOCS-10 — P3 — Settings menu path uses the production name in Dev
+
+- **File:line:** `app/SiloUI/docs/silo-help.html:50`.
+- **Trigger:** Follow the macOS Settings menu path in bundled help while using Silo Dev.
+- **Evidence:** `app_menu.rs:165,177–183` names the application submenu with `channel::current().product_name()`; `channel.rs:65–66` returns Silo Dev in the development channel. Both builds bundle this same help.
+- **Consequence:** The documented Silo menu does not exist in the Dev build, although the Settings action and shortcut are available under Silo Dev.
+- **Fix:** Name both application-menu paths while retaining the macOS shortcut.
+- **Test:** The bundled-help regression failed on the missing Dev menu path. Focused menu and help tests verify the correction; native naming code was inspected without launching an app.
+- **Status:** Fixed in the accompanying `docs(help): name the Dev settings menu` commit; 13 focused help/menu tests passed, plus typecheck, focused lint and whitespace checks.
+
+Second-loop verification used Node.js 24.11.1. The combined Vitest run of `bundled-help`, `checkpoint-panel`, `workspace-storage-panel`, `network-page`, `updates`, `computer-use`, `production-surface`, `linux-desktop-native`, and `app-menu` tests with `--maxWorkers=1` passed all 271 tests in nine files. All seven corrections had a failing help regression before their text changed, a patch changeset, focused tests, typecheck, focused oxlint, and whitespace checks. Changes were folded individually after merging current integration. No app, packaged bundle, or VM was launched; UI behavior was tested with deterministic fixtures, and native behavior was checked in source.
+
+First-loop verification used Node.js 24.11.1: `npm --prefix app/SiloUI test -- src/test/bundled-help.test.ts src/features/application/components/checkpoint-panel.test.tsx src/features/application/pages/network-page.test.tsx src/features/updates/updates.test.tsx --maxWorkers=1` passed all 76 tests. `npm --prefix app/SiloUI run typecheck`, focused oxlint for `src/test/bundled-help.test.ts`, and `git diff --check` passed. No Rust files changed, so Rust formatting and native tests were not applicable. No packaged bundle or live data was inspected.
 
 ## Original read-only audit
 

@@ -17,11 +17,14 @@ const catalogSchema = z.object({
 export const emptyApplicationCatalog: ApplicationCatalog = { terminal: [], editor: [], browser: [], defaults: {} }
 
 export function createApplicationService(store: SettingsStore): ApplicationService {
+  let readSequence = 0
   return {
     async read() {
+      const sequence = ++readSequence
       const settings = store.getSnapshot().settings
       const selections = Object.fromEntries(kinds.flatMap((kind) => settings[`${kind}Path`] ? [[kind, settings[`${kind}Path`]]] : []))
       const catalog = catalogSchema.parse(await invoke("list_applications", { selections }))
+      if (sequence !== readSequence) return catalog
       const defaults: SettingsPatch = {}
       for (const kind of kinds) {
         const selected = catalog[kind].find(({ path }) => path === catalog.defaults[kind])

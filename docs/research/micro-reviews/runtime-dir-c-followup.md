@@ -38,3 +38,12 @@ Full-crate Cargo regressions were queued with the shared `/tmp/silo-codex-target
 - **Consequence:** Startup reports the selected sandbox as ready and omits the replacement warning even though that exact sandbox is absent. The running replacement is not started or stopped by this branch.
 - **Fix:** Reuse `ensure_machine_identity()` before accepting any launch observation, including Running.
 - **Regression test:** Both a changed runtime ID under the selected name and an unexpected observed name must report an identity error without mutation. Existing matching-ID Running behavior remains successful and mutation-free. The extracted launch-function checks fail before and pass after the fix; native integration validation remains queued behind the shared Cargo lock.
+
+## runtime-dir-c-6 — P2 — A completed uncommitted stop still fails Quit
+
+- **Location:** `app/SiloUI/src-tauri/src/runtime/shutdown.rs`, `stop_uncommitted_vm()`.
+- **Trigger:** A VM created before metadata publication stops, but the runtime command client reports a timeout or other error after applying the stop.
+- **Evidence:** The Stop branch propagated the command error immediately with `?`, without another inspection. Committed lifecycle shutdown already verifies desired state after command failures. The extracted production helper returned the timeout in a fixture whose exact VM was Stopped after the command.
+- **Consequence:** Quit reports a shutdown failure and leaves the app open even though its owned VM stopped. A second Quit succeeds after inspecting the already-stopped VM.
+- **Fix:** After a command error, re-inspect the exact journal-owned identity. Accept only Stopped, Created, or Crashed; otherwise retain the command error. An unreadable or replaced VM still blocks Quit.
+- **Regression test:** The full uncommitted shutdown transaction must succeed when fake Stop commands set their VMs Stopped before returning timeout errors, and preserve the unfinished configuration journal. The same fixture must fail if the commands leave the VMs Running. Both extracted helper checks pass after the fix; the completed-stop assertion failed before it.

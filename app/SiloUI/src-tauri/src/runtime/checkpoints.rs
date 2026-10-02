@@ -3,6 +3,8 @@
 use super::*;
 use std::collections::{HashMap, HashSet};
 
+pub(crate) const RESTORE_EXPECTED_DURATION: Duration = Duration::from_secs(60 * 60);
+
 mod native;
 #[cfg(test)]
 mod running_retry_tests;
@@ -2119,7 +2121,7 @@ pub async fn restore_checkpoint(
             .vm(&workspace_id, &vm_name, "Restoring checkpoint")
             .map_err(|error| error.to_string())?;
         // Restore is deliberately not cancellable; flag it slow after the restore window.
-        guard.expect_within(std::time::Duration::from_secs(60 * 60));
+        guard.expect_within(RESTORE_EXPECTED_DURATION);
         let _guard = guard;
         shutdown::ensure_accepting_operations()?;
         let result = restore_with(&ProcessRunner, &paths, &workspace_id, &checkpoint_id)

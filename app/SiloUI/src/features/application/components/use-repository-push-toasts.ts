@@ -11,7 +11,8 @@ const repositoryName = (path: string) => path.split("/").filter(Boolean).at(-1) 
 
 /**
  * Announces backend-driven push transitions as notifications: loading (with Cancel once the host accepts it),
- * then a success that stays until closed (the finished operation is then cleared) or a failure with Retry.
+ * then a success that stays until closed (the finished operation is then cleared), a failure with Retry,
+ * or an unknown outcome that requires checking GitHub before another push.
  * Operations already finished when first seen are not announced.
  */
 export function useRepositoryPushToasts(
@@ -74,11 +75,18 @@ export function useRepositoryPushToasts(
           // The user confirmed this exact target before; a retry pushes it again or aborts if the sandbox moved on.
           retry: operation.target ? () => callbacks.current.onPush(operation.workspace, operation.repositoryPath, operation.commitCount, operation.target!) : undefined,
         })
+      } else if (operation.status === "unknown") {
+        showOperationFailure(id, `Push outcome unknown · ${name}`, {
+          description: operation.message,
+          sandbox: operation.workspace,
+          noticeSandbox: callbacks.current.resolveSandbox?.(operation.workspace),
+          tone: "warning",
+        })
       } else {
         dismissOperationToast(id)
       }
     }
-    for (const [id, state] of previous) if (state.startsWith("pushing") && !next.has(id)) dismissOperationToast(id)
+    for (const [id, state] of previous) if ((state.startsWith("pushing") || state.startsWith("unknown")) && !next.has(id)) dismissOperationToast(id)
     seen.current = next
   }, [enabled, operations, queue, onCancel])
 }
