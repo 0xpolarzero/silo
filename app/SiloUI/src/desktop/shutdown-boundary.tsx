@@ -66,7 +66,10 @@ export function ShutdownBoundary({ children, compact = false, pendingWork }: { c
       if (disposed) { stop(); return }
       unsubscribe = stop
       void read()
-    }).catch(error => console.error("Silo shutdown queue:", error))
+    }).catch(error => {
+      console.error("Silo shutdown queue:", error)
+      if (!disposed) void read()
+    })
     return () => { disposed = true; unsubscribe?.(); setQueue(emptyOperationQueue) }
   }, [quitting])
   const waitingLabel = shutdownWaitingLabel(queue)
