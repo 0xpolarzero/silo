@@ -68,3 +68,15 @@ APP-MENU-4 verification: the regression failed with an old OS notice still activ
 - **Regression:** `queued_delivery_rechecks_preferences_after_an_in_flight_notice` holds the first delivery in its fake adapter, queues a second, disables the preference, then releases the first. The old path submitted both notices; the fixed path submits only the already in-flight one.
 
 APP-MENU-5 verification: the regression first submitted both `older` and `newer` after the preference was disabled, then submitted only `older` with policy evaluation inside the gate. The native fixture root passed all 43 tests, including the real macOS adapter's compiled types and the Linux ID-cache fixtures. Formatting, typecheck, and lint passed. Fixture callbacks were the only notification senders exercised; no app, real notifications, VM state, or user settings were accessed.
+
+## APP-MENU-6 — P2 — Deletion during policy evaluation still submits a notice
+
+- **Scope:** `notifications.rs` per-key delivery seam.
+- **Trigger:** A background delivery checks its revision, then queries main-window focus and settings. Sandbox deletion invalidates the request while those queries are running.
+- **Consequence:** The old path still submitted the now-cancelled request to the OS and only withdrew it afterward, allowing a notification to appear unnecessarily.
+- **Fix:** Recheck cancellation and the issuance revision after policy evaluation, immediately before OS submission.
+- **Regression:** `deletion_during_policy_evaluation_prevents_os_submission` invalidates the request from the policy callback. It failed because the send callback was invoked, then passed after the additional revision check.
+
+APP-MENU-6 verification: the new regression failed with OS submission recorded after deletion during the policy callback, then passed after the final cancellation/revision check. All 44 fixture tests passed with the real macOS adapter compiled. Formatting, frontend typecheck, and lint passed. The full application Cargo test was attempted with the shared target and explicit synthetic GitHub configuration, remained waiting for the artifact-directory lock through the follow-up loop, and was stopped after verifying its saved PID, Cargo executable, cwd, and unchanged waiting log. No application bundle or live OS notification was exercised.
+
+Resume verification: completed fix `2ab3446c`; preserved the original audit and moved its follow-up evidence here when resolving the integration merge. The refreshed scoped native fixture harness passed all 44 tests, and Rust formatting passed. No full native Cargo test was run during resume.
