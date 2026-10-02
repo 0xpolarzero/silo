@@ -97,10 +97,13 @@ pub(crate) fn forget_host(home: &Path, host: &str) -> Result<(), String> {
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
     let prefix = format!("{host}-");
     for root in [remote_client_root(home), legacy_connection_root(home)] {
-        let Ok(entries) = std::fs::read_dir(&root) else {
-            continue;
+        let entries = match std::fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(_) => return Err("Could not read SSH connection keys.".into()),
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = entry.map_err(|_| "Could not read SSH connection keys.")?;
             if entry
                 .file_name()
                 .to_str()
@@ -238,6 +241,21 @@ mod tests {
             0o600
         );
         assert!(remote_client_key(home, "../escape", &vm).is_err());
+    }
+    #[test]
+    fn removing_a_computer_reports_unreadable_key_directories() {
+        let host = "00000000-0000-4000-8000-000000000001";
+        let missing = tempfile::tempdir().unwrap();
+        forget_host(missing.path(), host).unwrap();
+        for root in [remote_client_root, legacy_connection_root] {
+            let directory = tempfile::tempdir().unwrap();
+            std::fs::create_dir(directory.path().join("ssh")).unwrap();
+            std::fs::write(root(directory.path()), "not a key directory").unwrap();
+            assert_eq!(
+                forget_host(directory.path(), host).unwrap_err(),
+                "Could not read SSH connection keys."
+            );
+        }
     }
     #[test]
     fn removing_a_computer_deletes_only_its_connection_keys() {
