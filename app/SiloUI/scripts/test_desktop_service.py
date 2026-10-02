@@ -785,5 +785,168 @@ class DesktopLifecycle(unittest.TestCase):
         self.assertIsNone(service.read('config.json'))
 
 
+class StaleSessionRuntime(unittest.TestCase):
+    """/run is on the VM's disk: a restart or an imported disk carries the last session's files."""
+    setUp = DesktopLifecycle.setUp
+    command = DesktopLifecycle.command
+    unified_policy = DesktopLifecycle.unified_policy
+
+    def pulse_dir(self):
+        pulse = service.RUN / 'user' / 'pulse'
+        pulse.mkdir(parents=True)
+        (pulse / 'pid').write_text('224\n')
+        (pulse / 'native').write_text('')
+        return pulse
+
+    def test_a_stale_pulse_pid_file_is_removed_before_the_session_starts(self):
+        # The new boot's PulseAudio often gets the pid the old file names, which is
+        # itself: PulseAudio then exits with "Daemon already running".
+        pulse = self.pulse_dir()
+        account = SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
+        with patch.object(service, 'prepare_display_socket_directory', return_value=True), \
+             patch.object(service, 'DISPLAY_LOCK', self.root / 'no-lock'), \
+             patch.object(service, 'DISPLAY_SOCKET_DIR', self.root / 'x11'), \
+             patch.object(service.subprocess, 'run'), patch.object(service.os, 'chown'):
+            service.prepare_selkies_runtime(account)
+        self.assertFalse((pulse / 'pid').exists())
+        self.assertFalse((pulse / 'native').exists())
+
+    def test_a_live_pulse_of_this_boot_keeps_its_files(self):
+        pulse = self.pulse_dir()
+        record = {'name': 'pulse', 'pid': 224}
+        with patch.object(service, 'current_boot_id', return_value='boot-1'), \
+             patch.object(service, 'managed_process_matches', return_value=True):
+            service.write_selkies_state({'bootId': 'boot-1', 'sessionProcesses': [record]})
+            service.clear_stale_pulse_runtime(pulse)
+        self.assertTrue((pulse / 'pid').exists())
+
+    def test_pulse_of_a_previous_boot_is_stale_even_if_its_pid_is_alive(self):
+        pulse = self.pulse_dir()
+        record = {'name': 'pulse', 'pid': 224}
+        service.write_selkies_state({'bootId': 'old-boot', 'sessionProcesses': [record]})
+        with patch.object(service, 'current_boot_id', return_value='new-boot'), \
+             patch.object(service, 'managed_process_matches', return_value=True):
+            service.clear_stale_pulse_runtime(pulse)
+        self.assertFalse((pulse / 'pid').exists())
+
+    def test_a_new_boot_empties_the_previous_session_runtime_once(self):
+        self.pulse_dir()
+        (service.RUN / 'user' / 'at-spi2-ABC').mkdir()
+        (service.RUN / 'user' / 'at-spi2-ABC' / 'socket').write_text('')
+        (service.RUN / 'user' / 'ICEauthority').write_text('x')
+        (service.RUN / 'boot-id').write_text('old-boot')
+        boot = self.root / 'boot_id'
+        boot.write_text('new-boot')
+        with patch.object(service, 'BOOT_ID', boot):
+            self.command('status')
+            self.assertEqual(list((service.RUN / 'user').iterdir()), [])
+            self.assertTrue((service.RUN / 'user').is_dir())
+            # Later calls in the same boot leave the running session's files alone.
+            (service.RUN / 'user' / 'bus').write_text('')
+            self.command('status')
+        self.assertTrue((service.RUN / 'user' / 'bus').exists())
+        self.assertEqual((service.RUN / 'boot-id').read_text(), 'new-boot')
+
+    def test_reset_never_follows_a_symlink_planted_in_the_runtime_directory(self):
+        outside = self.root / 'outside'
+        outside.mkdir()
+        (outside / 'keep').write_text('x')
+        runtime = service.RUN / 'user'
+        runtime.mkdir()
+        (runtime / 'link').symlink_to(outside)
+        service.reset_session_runtime()
+        self.assertEqual(list(runtime.iterdir()), [])
+        self.assertTrue((outside / 'keep').exists())
+        # A symlinked runtime directory itself is left alone.
+        runtime.rmdir()
+        runtime.symlink_to(outside)
+        service.reset_session_runtime()
+        self.assertTrue((outside / 'keep').exists())
+
+
+class SessionStartRetry(unittest.TestCase):
+    COMMANDS = [('xvfb', ['Xvfb']), ('pulse', ['pulseaudio']), ('xfce', ['startxfce4'])]
+
+    def run_start(self, launch, stopping=lambda: False, commands=None):
+        state = {'sessionProcesses': []}
+        children = []
+        slept = []
+        with patch.object(service, 'launch_managed_process', side_effect=launch) as launcher, \
+             patch.object(service, 'write_selkies_state'), \
+             patch.object(service, 'log_line'), \
+             patch.object(service.shutil, 'which', return_value='/usr/bin/x'), \
+             patch.object(service, 'prepare_selkies_runtime') as prepare, \
+             patch.object(service, 'stop_managed_child') as stop_child, \
+             patch.object(service, 'sleep_until_service_event', side_effect=slept.append):
+            try:
+                service.start_session_processes(commands or self.COMMANDS, {}, 'account', state,
+                                                children, stopping)
+                error = None
+            except Exception as caught:  # noqa: BLE001 - asserted by the caller
+                error = caught
+        return SimpleNamespace(state=state, children=children, slept=slept, launcher=launcher,
+                               prepare=prepare, stop_child=stop_child, error=error)
+
+    @staticmethod
+    def launches(failures):
+        """Launch results: an exception per failing call (in order), else a child."""
+        calls = iter(failures)
+
+        def launch(name, *_args):
+            outcome = next(calls, None)
+            if isinstance(outcome, Exception):
+                raise outcome
+            return SimpleNamespace(name=name), {'name': name, 'pid': len(name)}
+        return launch
+
+    def test_a_clean_start_launches_each_process_once_in_order(self):
+        result = self.run_start(self.launches([]))
+        self.assertIsNone(result.error)
+        self.assertEqual([record['name'] for record in result.state['sessionProcesses']],
+                         ['xvfb', 'pulse', 'xfce'])
+        self.assertEqual(result.slept, [])
+        result.prepare.assert_not_called()
+
+    def test_a_pulse_that_exits_at_once_is_retried_from_a_clean_session(self):
+        result = self.run_start(self.launches([None, RuntimeError('pulse exited or failed identity validation')]))
+        self.assertIsNone(result.error)
+        # The failed attempt stopped Xvfb, which the retry started again with the others.
+        self.assertEqual([call.args[0].name for call in result.stop_child.call_args_list], ['xvfb'])
+        self.assertEqual([call.args[0] for call in result.launcher.call_args_list],
+                         ['xvfb', 'pulse', 'xvfb', 'pulse', 'xfce'])
+        self.assertEqual([record['name'] for record in result.state['sessionProcesses']],
+                         ['xvfb', 'pulse', 'xfce'])
+        self.assertEqual(len(result.children), 3)
+        result.prepare.assert_called_once_with('account')
+        self.assertEqual(sum(result.slept), service.SESSION_RETRY_BASE_SECONDS)
+
+    def test_the_session_fails_after_three_attempts_with_bounded_backoff(self):
+        error = RuntimeError('xfce exited')
+        result = self.run_start(self.launches([None, None, error, None, None, error, None, None, error]))
+        self.assertIs(result.error, error)
+        self.assertEqual(result.launcher.call_count, 9)
+        self.assertEqual(result.state['sessionProcesses'], [])
+        self.assertEqual(result.children, [])
+        self.assertEqual(sum(result.slept), 1 + 2)
+        self.assertEqual(result.prepare.call_count, 2)
+
+    def test_a_missing_session_program_is_not_retried(self):
+        with patch.object(service.shutil, 'which', return_value=None):
+            state = {'sessionProcesses': []}
+            with patch.object(service, 'launch_managed_process') as launcher, \
+                 patch.object(service, 'sleep_until_service_event') as sleep:
+                with self.assertRaisesRegex(RuntimeError, 'Required desktop command is missing: Xvfb'):
+                    service.start_session_processes(self.COMMANDS, {}, 'account', state, [], lambda: False)
+        launcher.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_a_stop_request_ends_the_retry_wait(self):
+        stops = iter([False, False, True, True, True, True])
+        result = self.run_start(self.launches([None, RuntimeError('pulse exited')]),
+                                stopping=lambda: next(stops, True))
+        self.assertIsNone(result.error)
+        self.assertEqual(result.launcher.call_count, 2)
+
+
 if __name__ == '__main__':
     unittest.main()

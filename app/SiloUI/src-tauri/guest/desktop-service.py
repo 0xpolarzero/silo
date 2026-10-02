@@ -40,6 +40,12 @@ SELKIES_STABLE_SECONDS = 60
 # Retry n (n >= 1) waits SELKIES_RETRY_BASE_SECONDS * 2 ** (n - 1) seconds.
 SELKIES_RETRY_BASE_SECONDS = 2
 SELKIES_RETRY_MAX_SECONDS = 30
+# The session processes (Xvfb, PulseAudio, Xfce) are started together. A launch that
+# fails tears the partial session down and retries; retry n waits
+# SESSION_RETRY_BASE_SECONDS * 2 ** (n - 1) seconds.
+SESSION_MAX_ATTEMPTS = 3
+SESSION_RETRY_BASE_SECONDS = 1
+BOOT_ID = Path('/proc/sys/kernel/random/boot_id')
 
 
 def validate_policy_file(path):
@@ -101,7 +107,7 @@ def write(path, value):
 def identity(pid):
     try:
         # Field 22, accounting for spaces in the parenthesized process name.
-        return (Path('/proc/sys/kernel/random/boot_id').read_text().strip() + ':' +
+        return (BOOT_ID.read_text().strip() + ':' +
                 Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[19])
     except (FileNotFoundError, ProcessLookupError):
         return None
@@ -109,7 +115,7 @@ def identity(pid):
 
 def current_boot_id():
     try:
-        return Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        return BOOT_ID.read_text().strip()
     except OSError:
         return None
 
@@ -676,6 +682,52 @@ def selkies_stream_state(state, service_running):
     return 'failed' if saved == 'running' else 'stopped'
 
 
+class SessionCommandMissing(RuntimeError):
+    """A required session program is not installed; retrying cannot help."""
+
+
+def session_pulse_is_live():
+    """True while PulseAudio of this boot's recorded session still runs."""
+    state = selkies_state()
+    if not isinstance(state, dict) or state.get('bootId') != current_boot_id():
+        return False
+    records = state.get('sessionProcesses')
+    return isinstance(records, list) and any(
+        isinstance(item, dict) and item.get('name') == 'pulse' and managed_process_matches(item)
+        for item in records)
+
+
+def clear_stale_pulse_runtime(pulse):
+    """Remove the pid file and socket of a PulseAudio that is gone.
+
+    /run lives on the VM's disk, so a restart or an imported disk still carries the
+    previous session's `pid`. Boots are nearly deterministic: the new PulseAudio often
+    gets the very pid the file names, and PulseAudio then refuses to start ("Daemon
+    already running") because that pid is itself."""
+    if session_pulse_is_live():
+        return
+    for name in ('pid', 'native'):
+        try:
+            (pulse / name).unlink()
+        except FileNotFoundError:
+            pass
+
+
+def reset_session_runtime():
+    """Empty the previous boot's session runtime directory (sockets, bus and ICE files)."""
+    runtime = RUN / 'user'
+    try:
+        if runtime.is_symlink() or not runtime.is_dir():
+            return
+        for entry in runtime.iterdir():
+            if entry.is_symlink() or not entry.is_dir():
+                entry.unlink()
+            else:
+                shutil.rmtree(entry)
+    except OSError:
+        pass
+
+
 def prepare_selkies_runtime(account):
     if not prepare_display_socket_directory():
         raise RuntimeError('The X11 socket directory is active or unsafe; inspect the desktop service log')
@@ -695,6 +747,7 @@ def prepare_selkies_runtime(account):
     pulse.mkdir(mode=0o700, exist_ok=True)
     os.chown(pulse, account.pw_uid, account.pw_gid)
     os.chmod(pulse, 0o700)
+    clear_stale_pulse_runtime(pulse)
     authority = runtime / 'Xauthority'
     if authority.exists() or authority.is_symlink():
         info = authority.lstat()
@@ -730,6 +783,50 @@ def start_selkies():
             raise RuntimeError('Selkies failed to start; desktop session remains running; inspect /var/log/silo-desktop.log')
         time.sleep(0.1)
     raise RuntimeError('Desktop is still starting; check status before retrying')
+
+
+def log_line(text):
+    try:
+        with LOG.open('a') as output:
+            output.write(text + '\n')
+    except OSError:
+        pass
+
+
+def start_session_processes(commands, environment, account, state, children, stopping):
+    """Launch the session processes in order, retrying a failed launch with backoff.
+
+    A failed attempt stops what it started, so the next one begins from nothing."""
+    for attempt in range(1, SESSION_MAX_ATTEMPTS + 1):
+        try:
+            if attempt > 1:
+                prepare_selkies_runtime(account)
+            for command, argv in commands:
+                if stopping():
+                    return
+                if not shutil.which(argv[0]):
+                    raise SessionCommandMissing(f'Required desktop command is missing: {argv[0]}')
+                child, record = launch_managed_process(command, argv, environment, account)
+                children.append(child)
+                state['sessionProcesses'].append(record)
+                write_selkies_state(state)
+            return
+        except SessionCommandMissing:
+            raise
+        except (OSError, RuntimeError) as error:
+            log_line(f'Desktop session start attempt {attempt} of {SESSION_MAX_ATTEMPTS} failed: {error}')
+            for child in reversed(children):
+                stop_managed_child(child)
+            children.clear()
+            state['sessionProcesses'] = []
+            write_selkies_state(state)
+            if attempt == SESSION_MAX_ATTEMPTS:
+                raise
+            delay = SESSION_RETRY_BASE_SECONDS * 2 ** (attempt - 1)
+            for _ in range(int(delay / 0.5)):
+                if stopping():
+                    return
+                sleep_until_service_event(0.5)
 
 
 def supervise_selkies():
@@ -780,26 +877,19 @@ def supervise_selkies():
                 ('pulse', ['pulseaudio', '--daemonize=no', '--exit-idle-time=-1']),
                 ('xfce', ['dbus-run-session', '--', 'startxfce4']),
             ]
-            for command, argv in commands:
-                if stopping:
-                    break
-                if not shutil.which(argv[0]):
-                    raise RuntimeError(f'Required desktop command is missing: {argv[0]}')
-                child, record = launch_managed_process(command, argv, environment, account)
-                session_children.append(child)
-                state['sessionProcesses'].append(record)
-                write_selkies_state(state)
+            start_session_processes(commands, environment, account, state, session_children,
+                                    lambda: stopping)
             if stopping:
                 return
             state['sessionState'] = 'running'
             write_selkies_state(state)
             supervise_selkies_stream(state, account, environment,
                                      lambda: stopping, should_restart_stream)
-        except Exception:
+        except Exception as error:
             failed = True
             (RUN / 'failed').write_text('Desktop service failed; inspect /var/log/silo-desktop.log\n')
             with LOG.open('a') as output:
-                output.write('Selkies desktop service failed; inspect the pinned recipe and session logs\n')
+                output.write(f'Selkies desktop service failed ({error}); inspect the pinned recipe and session logs\n')
         finally:
             try:
                 stop_selkies_processes(state, {child.pid: child for child in session_children})
@@ -1046,12 +1136,14 @@ def main():
         return
     with (RUN / 'operation.lock').open('w') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        boot = Path('/proc/sys/kernel/random/boot_id')
+        boot = BOOT_ID
         if boot.exists():
             epoch = boot.read_text()
             marker = RUN / 'boot-id'
             if not marker.exists() or marker.read_text() != epoch:
                 (RUN / 'failed').unlink(missing_ok=True)
+                # Nothing of the previous boot runs, but /run is on the VM's disk.
+                reset_session_runtime()
                 marker.write_text(epoch)
         if action == 'status':
             pass
