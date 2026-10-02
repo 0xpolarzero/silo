@@ -29,3 +29,12 @@ Full-crate Cargo regressions were queued with the shared `/tmp/silo-codex-target
 - **Fix:** Use pending-view rules to bypass runtime inspection only for an unattempted restore. After a restore attempt, inspect actual state and propagate errors; a genuinely missing runtime VM remains absent. Keep the original pending selector for explicit recovery.
 - **Regression test:** A pending attempted restore that still exposes a revoked binding must execute the removal callback and retain the pending revocation if post-removal inspection still exposes the binding. Extend the observation/terminal regression to cover a running attempted restore and a missing attempt. An unattempted restore still performs no runtime command.
 - **Focused reproduction:** The exact production observation function and pending-view predicate, extracted into a disposable Rust harness, failed the attempted-restore assertion before the fix while its unattempted no-query check passed. Both checks pass afterward. Full-crate native verification remains subject to the shared Cargo lock.
+
+## runtime-dir-c-5 — P2 — Launch accepts a running replacement by name
+
+- **Location:** `app/SiloUI/src-tauri/src/runtime.rs`, `start_at_launch_with()`.
+- **Trigger:** A launch-selected metadata VM has a managed runtime VM under the same name but a different immutable ID. The replacement is already Running.
+- **Evidence:** Launch inspected the name and checked only the managed label before returning `LaunchStart::Done`. The desired-state path never entered lifecycle recovery, where identity normally gets checked. The extracted production function returned `Ok(Done)` for a replacement ID in the failing regression.
+- **Consequence:** Startup reports the selected sandbox as ready and omits the replacement warning even though that exact sandbox is absent. The running replacement is not started or stopped by this branch.
+- **Fix:** Reuse `ensure_machine_identity()` before accepting any launch observation, including Running.
+- **Regression test:** Both a changed runtime ID under the selected name and an unexpected observed name must report an identity error without mutation. Existing matching-ID Running behavior remains successful and mutation-free. The extracted launch-function checks fail before and pass after the fix; native integration validation remains queued behind the shared Cargo lock.
