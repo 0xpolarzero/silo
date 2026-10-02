@@ -3935,6 +3935,21 @@ mod tests {
         assert_eq!(error, None);
         assert_eq!(ports, vec![("waiting", None)]);
 
+        // A failed restore may already own a live VM. Its pending record must
+        // not hide that VM from terminal access or secret revocation checks.
+        record.restore_attempted = true;
+        save(&paths, ID, &record).unwrap();
+        assert!(matches!(
+            observe_vm(&pending, &paths, "dev").unwrap(),
+            VmRuntime::Present(_)
+        ));
+        assert!(crate::terminal::running_vm_with(&pending, &paths, "dev").is_ok());
+        assert_eq!(*pending.calls.lock().unwrap(), 2);
+        assert!(matches!(
+            observe_vm(&missing, &paths, "dev").unwrap(),
+            VmRuntime::Absent
+        ));
+
         // Other runtime failures still surface.
         let broken = crate::test_support::runner::ScriptedRunner::new([
             crate::test_support::runner::ExpectedCommand::error(
