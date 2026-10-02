@@ -9,6 +9,7 @@ import select
 import stat
 import subprocess
 import sys
+import time
 
 SOURCE = Path('/etc/apt/sources.list.d/silo.sources')
 DIRECTORY = Path('/run/silo')
@@ -59,9 +60,22 @@ def stage(name):
 def confirm(stream=None, timeout=CONFIRM_TIMEOUT):
     """Wait for Silo's go-ahead. It stops sandboxes only once everything before installation succeeded."""
     stream = sys.stdin if stream is None else stream
-    readable, _, _ = select.select([stream], [], [], timeout)
-    if not readable or stream.readline().strip() != 'install':
-        raise RuntimeError('Silo cancelled the update before installation. Nothing was installed.')
+    deadline = time.monotonic() + timeout
+    line = b''
+    while len(line) <= 64:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        readable, _, _ = select.select([stream], [], [], remaining)
+        if not readable:
+            break
+        chunk = os.read(stream.fileno(), 65 - len(line))
+        line += chunk
+        if b'\n' in line or not chunk:
+            if line.split(b'\n', 1)[0].strip() == b'install' and time.monotonic() <= deadline:
+                return
+            break
+    raise RuntimeError('Silo cancelled the update before installation. Nothing was installed.')
 
 
 def upgrade(selected, run=run, stage=stage, confirm=confirm):
