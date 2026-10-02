@@ -98,6 +98,20 @@ pub(super) struct Record {
     pub(super) checkpoint_operation: Option<Operation>,
 }
 
+/// Git and jj identity variables are owned by Silo's Git identity configuration, which
+/// removes them from the computer and writes the identity into the guest's own configuration.
+fn identity_override(key: &str) -> bool {
+    matches!(
+        key,
+        "GIT_AUTHOR_NAME"
+            | "GIT_AUTHOR_EMAIL"
+            | "GIT_COMMITTER_NAME"
+            | "GIT_COMMITTER_EMAIL"
+            | "JJ_USER"
+            | "JJ_EMAIL"
+    )
+}
+
 fn error(message: &str) -> RuntimeError {
     RuntimeError::Unavailable(message.into())
 }
@@ -973,7 +987,7 @@ pub(crate) fn import_pending_restore_with_environment(
     record.snapshot_group = Some(source_group.to_owned());
     record.desired_environment = environment
         .into_iter()
-        .filter(|entry| entry.key != "GH_TOKEN")
+        .filter(|entry| entry.key != "GH_TOKEN" && !identity_override(&entry.key))
         .collect();
     record.pending_checkpoint_restore = Some(PendingRestore {
         checkpoint_id: member.to_owned(),
@@ -1261,7 +1275,7 @@ pub(super) fn start_pending(
         args.extend(["--label".into(), label]);
     }
     for entry in &record.desired_environment {
-        if entry.key != "GH_TOKEN" {
+        if entry.key != "GH_TOKEN" && !identity_override(&entry.key) {
             args.push(format!("--env={}={}", entry.key, entry.value));
         }
     }
@@ -3484,6 +3498,9 @@ mod tests {
         let config = serde_json::json!({"env":[
             {"key":"PROJECT_MODE","value":"portable value=with spaces"},
             {"key":"-PORTABLE_FLAG","value":"literal"},
+            {"key":"GIT_AUTHOR_NAME","value":"Old Author"},
+            {"key":"GIT_COMMITTER_EMAIL","value":"old@example.test"},
+            {"key":"JJ_USER","value":"Old Author"},
             {"key":"GH_TOKEN","value":"synthetic-old-token"}
         ]});
         import_pending_restore_with_environment(
@@ -3495,6 +3512,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(load(&paths, ID).unwrap().desired_environment.len(), 2);
+        let mut legacy = load(&paths, ID).unwrap();
+        legacy.desired_environment.push(Environment {
+            key: "GIT_AUTHOR_EMAIL".into(),
+            value: "legacy@example.test".into(),
+        });
+        save(&paths, ID, &legacy).unwrap();
         let runner = RestoreProbe(Mutex::new(Vec::new()));
         assert!(start_pending(&runner, &paths, &machine())
             .unwrap_err()
@@ -3511,6 +3534,11 @@ mod tests {
         assert!(restore
             .windows(2)
             .any(|pair| pair == ["--env", "GH_TOKEN=$MSB_SILO_GITHUB"]));
+        assert!(!restore.iter().any(|arg| arg.contains("Old Author")
+            || arg.contains("old@example.test")
+            || arg.contains("legacy@example.test")
+            || arg.contains("GIT_")
+            || arg.contains("JJ_")));
         assert!(!fs::read_to_string(path(&paths, ID))
             .unwrap()
             .contains("synthetic-old-token"));
