@@ -28,7 +28,7 @@ export function SshAccessPanel({ workspaces, state, error, actions, active }: { 
   return <TooltipProvider delayDuration={150}><section aria-label="SSH access" className="space-y-2 text-xs">
     <h3 className="font-medium">SSH access</h3>
     {error && <div role="alert" className="text-destructive">{error}<Button variant="ghost" size="xs" onClick={() => void actions.refreshSshAccess?.()}>Retry SSH status</Button></div>}
-    {workspaces.filter(w => w.machine.kind === "vm").map(workspace => <SshAccessRow key={workspaceTarget(workspace)} workspace={workspace} access={state?.workspaces.find(s => s.workspace === workspaceTarget(workspace))} save={actions.saveSshAccess} connection={actions.sshConnection} stale={Boolean((error && !workspace.computer) || workspace.computer?.connected === false || workspace.freshness === "stale")} />)}
+    {workspaces.filter(w => w.machine.kind === "vm").map(workspace => <SshAccessRow key={JSON.stringify([workspace.computer?.id, workspace.machine.id])} workspace={workspace} access={state?.workspaces.find(s => s.workspace === workspaceTarget(workspace))} save={actions.saveSshAccess} connection={actions.sshConnection} stale={Boolean((error && !workspace.computer) || workspace.computer?.connected === false || workspace.freshness === "stale")} />)}
   </section></TooltipProvider>
 }
 
