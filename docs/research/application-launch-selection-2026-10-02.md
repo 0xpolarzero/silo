@@ -21,3 +21,31 @@ An additional regression covers `code -- %F` and the equivalent Flatpak entry. A
 Before the fix, `linux_editor_command` accepted an absolute editor path without checking that the resolved command could execute. An entry such as `Exec=/usr/bin/env A=b /removed/code %F` passed desktop-entry validation because [GLib 2.78.6 validates only `argv[0]`](https://github.com/GNOME/glib/blob/2.78.6/gio/gdesktopappinfo.c#L1803-L1831). Silo's discovery accepted that entry through `entry_editor(...).is_ok()` and could choose it as the editor default even though opening a sandbox failed.
 
 The resolver now requires the final native CLI or Flatpak launcher to be an executable file. The regression transitions a temporary env-wrapped target through missing, non-executable, and executable states. Existing adapter tests now use actual temporary executable fixtures instead of nonexistent host paths.
+
+## APPLICATIONS-5: stale env-wrapped terminals remain suggested (P3, skipped)
+
+- **File:line:** `app/SiloUI/src-tauri/src/applications/linux.rs:63–71`.
+- **Trigger:** A visible terminal entry has `Exec=/usr/bin/env A=b /removed/gnome-terminal` without `TryExec`, and its target has been removed or lost execute permission.
+- **Evidence:** GLib's validation above accepts the existing `env` wrapper. `terminal_program` returns the absolute target without checking it, and `launchable_terminal` checks only whether its basename has a supported argument adapter.
+- **Consequence:** The catalog still offers an unavailable terminal. Choosing it and opening a sandbox fails at process launch. That error is reported, so this is a stale suggestion, not false success.
+- **Suggested fix:** Require the resolved terminal target to be an executable file before including the entry.
+- **Regression:** On Linux, create an env-wrapped terminal entry and transition its target from executable to non-executable and removed; require `launchable_terminal` to become false in both failure states.
+- **Skipped:** This macOS host cannot execute the GIO desktop-entry regression. The fix loop prohibits launching a Linux VM; use the ordinary Linux native-test runner to complete the failing-test loop.
+
+## Fix-loop results
+
+All code changes were made in `codex/fix-applications` and folded into `codex/integration` separately:
+
+| Finding | Fix commit |
+| --- | --- |
+| APPLICATIONS-1, Flatpak selection | `9e62895f` |
+| APPLICATIONS-2, Ghostty bundle selection | `9ad90fa6` |
+| APPLICATIONS-3, native editor options | `e808832e` |
+| Editor file-separator regression | `1510ec7f` |
+| APPLICATIONS-4, stale editor launchers | `3e38bba0` |
+
+Each behavior regression failed before its correction. The full Cargo test build used Rust 1.94.0, `/tmp/silo-codex-target`, and explicit synthetic GitHub values. Its focused Flatpak test passed. A retained copy of that built test executable then passed all 30 `applications::` tests, including the Ghostty and native-editor-option regressions. The later separator and executable-validation changes were verified by compiling the production `launch.rs` module directly with `rustc --test` and its existing `tempfile` dependency in the shared target directory. Formatting, frontend typecheck, and lint passed; intermediate runs included warnings outside this scope. Evidence logs remain local under `/tmp/silo-applications-*`, and test artifacts remain under `/tmp/silo-codex-target/verification/applications/`.
+
+All inputs were temporary fixtures. No packaged bundle was inspected or launched, and no live editor, terminal, VM, production state, or credential store was exercised. Linux GIO discovery and actual application handoffs remain outside this verification.
+
+At the final merged checkout, the isolated `launch.rs` run passed all 13 tests, including two AppImage regressions folded by another task. Direct `clippy-driver` analysis completed with the existing `nonminimal_bool` warning at `launch.rs:30`; an additional strict `-D warnings` run rejected that expression. No new Clippy warning was reported.
