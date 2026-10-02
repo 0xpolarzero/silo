@@ -310,7 +310,7 @@ fn response(
             failure(
                 key,
                 class,
-                retryable_response(status, &headers, &Value::Null, safe),
+                safe || retryable_response(status, &headers, &Value::Null, safe),
                 retry_after(&headers, now()),
                 is_rate_limit(status, &headers, &Value::Null),
                 "GitHub returned an incomplete response.",
@@ -449,33 +449,90 @@ pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
 mod tests {
     use super::*;
     fn wire_response(status: u16, body: &str, revoke: bool) -> Result<Value, String> {
-        use std::io::Write;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
         let reply = format!(
             "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
+        wire_reply(
+            &uuid::Uuid::new_v4().to_string(),
+            "wire-test",
+            reply,
+            false,
+            revoke,
+        )
+    }
+    fn wire_reply(
+        key: &str,
+        class: &str,
+        reply: String,
+        safe: bool,
+        revoke: bool,
+    ) -> Result<Value, String> {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0u8; 1024];
-            stream.read(&mut request).unwrap();
+            assert!(stream.read(&mut request).unwrap() > 0);
             stream.write_all(reply.as_bytes()).unwrap();
         });
         let result = response(
-            &uuid::Uuid::new_v4().to_string(),
-            "wire-test",
+            key,
+            class,
             Client::builder()
                 .no_proxy()
+                .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap()
                 .get(format!("http://{address}"))
                 .send(),
-            false,
+            safe,
             revoke,
         );
         server.join().unwrap();
         result
+    }
+    #[test]
+    fn interrupted_successful_body_retries_safe_reads_but_not_ambiguous_writes() {
+        let _test_state = crate::test_support::global_state();
+        for safe in [true, false] {
+            let key = uuid::Uuid::new_v4().to_string();
+            let class = uuid::Uuid::new_v4().to_string();
+            let error = wire_reply(
+                &key,
+                &class,
+                "HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{".into(),
+                safe,
+                false,
+            )
+            .unwrap_err();
+            let until = gates().requests[&key].until;
+            if safe {
+                let until = until.expect("interrupted safe read stopped retrying");
+                assert!(error.contains("Retrying"));
+                assert!(gates().check(&key, &class, until - 1).is_err());
+                assert!(gates().check(&key, &class, until).is_ok());
+                assert_eq!(
+                    wire_reply(
+                        &key,
+                        &class,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                            .into(),
+                        safe,
+                        false,
+                    )
+                    .unwrap(),
+                    serde_json::json!({})
+                );
+                assert!(!gates().requests.contains_key(&key));
+            } else {
+                assert!(until.is_none());
+                assert!(error.contains("Automatic retries stopped"));
+                assert!(gates().check(&key, &class, u64::MAX).is_err());
+                gates().requests.remove(&key);
+            }
+        }
     }
     #[test]
     fn real_http_oauth_errors_are_redacted_and_revocation_accepts_empty_responses() {
