@@ -40,7 +40,17 @@ Scope: `app/SiloUI/docs/silo-help.html`, checked against app code. The initial a
 - **Evidence:** `runtime/storage.rs:473–516` guards and restores disk length and measures host allocation; `runtime/storage/tests.rs:748–812` covers releasing allocated blocks without shortening the disk. `workspace-storage-panel.tsx:192` explicitly says files and capacity stay the same.
 - **Fix:** Describe releasing unused allocation on the computer while preserving workspace files and capacity, and retain the runtime/checkpoint exclusion.
 - **Test:** The bundled-help regression failed on the old description. Focused help and Storage UI tests, typecheck, focused lint and whitespace checks validate the correction.
-- **Status:** Fixed in the accompanying `docs(help): clarify reclaimed storage allocation` commit.
+- **Status:** Fixed and folded, `6f5ca5ae`; 29 focused help/Storage tests passed, plus typecheck, focused lint and whitespace checks. The audit merge was resolved in `e2cb0c54`, preserving the original review below.
+
+## USER-DOCS-5 — P3 — Duplicating settings does not preserve manual desktop startup
+
+- **File:line:** `app/SiloUI/docs/silo-help.html:10`.
+- **Trigger:** Duplicate an older sandbox whose desktop has `startWithSandbox: false` on a computer with built-in computer use.
+- **Evidence:** `machine-editor.tsx:162–173,236` replaces that setting with automatic startup for new built-in sandboxes. `desktop/computer-use.test.tsx:367–373` already verifies the duplicated settings are saved with `startWithSandbox: true`.
+- **Consequence:** The help promises the same settings, but the new sandbox starts its desktop automatically when the source would not.
+- **Fix:** State the built-in desktop exception in the Duplicate settings instructions.
+- **Test:** The new bundled-help regression failed on the unqualified promise. The help regression and existing computer-use suite cover the corrected instruction and its creation behavior.
+- **Status:** Fixed in the accompanying `docs(help): qualify duplicated desktop settings` commit.
 
 Final verification used Node.js 24.11.1: `npm --prefix app/SiloUI test -- src/test/bundled-help.test.ts src/features/application/components/checkpoint-panel.test.tsx src/features/application/pages/network-page.test.tsx src/features/updates/updates.test.tsx --maxWorkers=1` passed all 76 tests. `npm --prefix app/SiloUI run typecheck`, focused oxlint for `src/test/bundled-help.test.ts`, and `git diff --check` passed. No Rust files changed, so Rust formatting and native tests were not applicable. No packaged bundle or live data was inspected.
 
