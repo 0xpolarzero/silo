@@ -136,8 +136,20 @@ fn read_config() -> Result<Config, String> {
     read_config_in(&directory()?)
 }
 fn read_config_in(dir: &Path) -> Result<Config, String> {
-    match fs::File::open(dir.join("config.json")) {
+    use std::os::unix::fs::OpenOptionsExt;
+    match fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(dir.join("config.json"))
+    {
         Ok(file) => {
+            if !file
+                .metadata()
+                .map_err(|error| error.to_string())?
+                .is_file()
+            {
+                return Err("Remote management settings must be a regular file.".into());
+            }
             let mut bytes = Vec::new();
             file.take(MAX_CONFIG_BYTES as u64 + 1)
                 .read_to_end(&mut bytes)
@@ -4417,6 +4429,57 @@ mod config_io_limit_tests {
     use super::*;
 
     const LIMIT_BYTES: usize = 1024 * 1024;
+
+    #[test]
+    fn remote_config_fifo_is_rejected_without_waiting_for_a_writer() {
+        const CHILD_DIRECTORY: &str = "SILO_TEST_REMOTE_CONFIG_FIFO";
+        if let Some(directory) = std::env::var_os(CHILD_DIRECTORY) {
+            let _guard = config_lock();
+            assert_eq!(
+                read_config_in(Path::new(&directory)).err().as_deref(),
+                Some("Remote management settings must be a regular file.")
+            );
+            return;
+        }
+        use std::os::unix::ffi::OsStrExt;
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                &format!("{module}::remote_config_fifo_is_rejected_without_waiting_for_a_writer"),
+            ])
+            .env(CHILD_DIRECTORY, directory.path())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break Some(status);
+            }
+            if Instant::now() >= deadline {
+                assert_eq!(
+                    unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) },
+                    0
+                );
+                child.wait().unwrap();
+                break None;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            status.is_some_and(|status| status.success()),
+            "settings inspection blocked on a FIFO"
+        );
+        use std::os::unix::fs::FileTypeExt;
+        assert!(fs::symlink_metadata(path).unwrap().file_type().is_fifo());
+    }
 
     #[test]
     fn remote_config_preserves_additive_preferences_when_management_changes() {
