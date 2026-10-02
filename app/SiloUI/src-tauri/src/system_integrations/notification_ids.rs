@@ -157,4 +157,48 @@ mod tests {
             "old ID must not replace another notice"
         );
     }
+
+    #[test]
+    fn clear_waits_for_an_in_flight_replacement_before_withdrawing_it() {
+        let ids = Arc::new(NotificationIds::new());
+        let server = Arc::new(Mutex::new(Server::default()));
+        ids.deliver(":1.1", "sandbox", |replaces| {
+            Ok(server.lock().unwrap().notify(replaces))
+        })
+        .unwrap();
+        let (entered, wait_entered) = mpsc::channel();
+        let (release, wait_release) = mpsc::channel();
+        let delivery_ids = ids.clone();
+        let delivery_server = server.clone();
+        let delivery = std::thread::spawn(move || {
+            delivery_ids
+                .deliver(":1.1", "sandbox", |replaces| {
+                    entered.send(()).unwrap();
+                    wait_release.recv().unwrap();
+                    Ok(delivery_server.lock().unwrap().notify(replaces))
+                })
+                .unwrap();
+        });
+        wait_entered.recv().unwrap();
+        let (started, wait_started) = mpsc::channel();
+        let (cleared, wait_cleared) = mpsc::channel();
+        let clearing_ids = ids.clone();
+        let clearing_server = server.clone();
+        let clearing = std::thread::spawn(move || {
+            started.send(()).unwrap();
+            clearing_ids.clear(":1.1", &["sandbox".into()], |id| {
+                clearing_server.lock().unwrap().active.remove(&id);
+            });
+            cleared.send(()).unwrap();
+        });
+        wait_started.recv().unwrap();
+        let _ = wait_cleared.recv_timeout(Duration::from_millis(100));
+        release.send(()).unwrap();
+        delivery.join().unwrap();
+        clearing.join().unwrap();
+        assert!(
+            server.lock().unwrap().active.is_empty(),
+            "replacement must not reappear after deletion"
+        );
+    }
 }

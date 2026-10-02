@@ -123,7 +123,7 @@ impl Journal {
         }
     }
     /// Whether this holds a result the user has not yet been shown (see `unseen`).
-    fn is_unseen_result(&self) -> bool {
+    pub(super) fn is_unseen_result(&self) -> bool {
         self.terminal.is_some() && self.unseen
     }
     /// Whether the first launch of an upgrade settled everything it could without the
@@ -566,6 +566,13 @@ pub(super) fn pending(controller: &Controller) -> Result<bool, String> {
         .as_ref()
         .is_some_and(Journal::is_pending))
 }
+pub(super) fn snapshot(controller: &Controller) -> Result<Option<Journal>, String> {
+    Ok(controller
+        .journal
+        .lock()
+        .map_err(|_| "Saved operation unavailable.")?
+        .clone())
+}
 pub(super) fn token(controller: &Controller) -> Result<Option<String>, String> {
     Ok(controller
         .journal
@@ -575,6 +582,7 @@ pub(super) fn token(controller: &Controller) -> Result<Option<String>, String> {
         .map(|j| j.id.clone()))
 }
 /// Whether the journal holds a result the user has not been shown yet.
+#[cfg(test)]
 pub(super) fn unseen(controller: &Controller) -> Result<bool, String> {
     Ok(controller
         .journal

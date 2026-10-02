@@ -60,7 +60,7 @@ it("accepts a notice without a sandbox and rejects an unknown category", () => {
   expect(noticeSchema.safeParse({ ...notice, category: "health" }).success).toBe(false)
 })
 
-it("ignores events after disposal while registration is pending", async () => {
+it("ignores notices after disposal while native registration is still pending", async () => {
   let register!: (stop: () => void) => void
   let emit!: (event: { payload: unknown }) => void
   const stop = vi.fn()

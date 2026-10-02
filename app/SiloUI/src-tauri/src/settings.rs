@@ -1758,9 +1758,9 @@ mod tests {
     #[test]
     fn invalid_saved_machine_semantics_protect_the_entire_original_file() {
         let mut candidates = Vec::new();
-        let mut empty = unfinished_draft();
-        empty["machines"] = json!([]);
-        candidates.push(empty);
+        let mut malformed = unfinished_draft();
+        malformed["machines"] = json!({});
+        candidates.push(malformed);
         for (field, invalid) in [
             ("id", json!("not-a-uuid")),
             ("name", json!("Invalid name")),

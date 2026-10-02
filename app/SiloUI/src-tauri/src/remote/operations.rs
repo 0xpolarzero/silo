@@ -172,19 +172,25 @@ impl Registry {
         if !allowed() {
             return false;
         }
-        let now = Instant::now();
         let mut state = self.lock();
         let Some(operation) = state.operations.get_mut(id) else {
             return false;
         };
-        if now >= operation.deadline {
-            return false;
-        }
         operation.connections.retain(|(_, open)| open());
         if !operation.connections.is_empty() {
-            operation.connected_at = now;
+            operation.connected_at = Instant::now();
         }
-        now.duration_since(operation.connected_at) < operation.reconnect_grace
+        let (deadline, connected_at, reconnect_grace) = (
+            operation.deadline,
+            operation.connected_at,
+            operation.reconnect_grace,
+        );
+        drop(state);
+        if !allowed() {
+            return false;
+        }
+        let now = Instant::now();
+        now < deadline && now.duration_since(connected_at) < reconnect_grace
     }
 
     fn run(
@@ -493,6 +499,72 @@ mod tests {
             *order.lock().unwrap(),
             ["first started", "first finished", "second started"]
         );
+    }
+
+    #[test]
+    fn access_revoked_during_the_connection_check_prevents_the_change() {
+        let gate = gate();
+        let registry = registry();
+        let fixture = Fixture::new();
+        let (enabled, allowed) = flag(true);
+        let checked = AtomicUsize::new(0);
+        let connection = Arc::new(move || {
+            if checked.fetch_add(1, Ordering::SeqCst) == 1 {
+                enabled.store(false, Ordering::SeqCst);
+            }
+            true
+        });
+        let runs = counter();
+
+        let result = registry.submit(
+            fixture.submission(connection, allowed),
+            change_on(gate, fixture.vm(), runs),
+        );
+
+        assert_eq!(result, Err(EXPIRED.into()));
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_connection_check_that_outlasts_the_deadline_never_starts_the_change() {
+        let gate = gate();
+        let registry = registry();
+        let fixture = Fixture::new();
+        let checked = Arc::new(AtomicUsize::new(0));
+        let deadline = Arc::new(std::sync::OnceLock::<Instant>::new());
+        let connection = {
+            let checked = checked.clone();
+            let deadline = deadline.clone();
+            Arc::new(move || {
+                if checked.fetch_add(1, Ordering::SeqCst) == 1 {
+                    // Pause the admission check until the accepted request has expired.
+                    let deadline = *deadline.get().unwrap();
+                    thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                }
+                true
+            }) as Probe
+        };
+        let submission = fixture.submission(connection, always());
+        registry
+            .accept(
+                &submission,
+                json!({"method": submission.method, "params": submission.params}),
+            )
+            .unwrap();
+        let cutoff = Instant::now() + Duration::from_millis(300);
+        registry
+            .lock()
+            .operations
+            .get_mut(&fixture.id)
+            .unwrap()
+            .deadline = cutoff;
+        deadline.set(cutoff).unwrap();
+        let runs = counter();
+
+        let result = registry.run(&submission, change_on(gate, fixture.vm(), runs));
+
+        assert_eq!(result, Err(EXPIRED.into()));
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
     }
 
     #[test]

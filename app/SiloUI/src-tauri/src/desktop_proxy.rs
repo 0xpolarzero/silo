@@ -74,7 +74,8 @@ fn request_header(
     let mut lines = header.split("\r\n");
     let first = lines.next().ok_or(())?;
     let parts: Vec<_> = first.split(' ').collect();
-    if parts.len() != 3
+    if first.bytes().any(|byte| byte.is_ascii_control())
+        || parts.len() != 3
         || !matches!(parts[0], "GET" | "POST" | "HEAD")
         || !parts[1].starts_with('/')
         || parts[1].starts_with("//")
@@ -91,6 +92,12 @@ fn request_header(
     for line in lines.filter(|line| !line.is_empty()) {
         let (name, value) = line.split_once(':').ok_or(())?;
         if name.is_empty() || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
+            return Err(());
+        }
+        if value
+            .bytes()
+            .any(|byte| byte.is_ascii_control() && byte != b'\t')
+        {
             return Err(());
         }
         let value = value.trim();
@@ -427,6 +434,57 @@ mod tests {
             assert!(request_header(&bad, 8000, "session", "secret", 9000, "real").is_err());
         }
     }
+    #[test]
+    fn control_characters_cannot_bypass_header_sanitization() {
+        let base = "GET / HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nCookie: session=secret\r\n";
+        for field in [
+            "X-Note: harmless\nAuthorization: Basic attacker",
+            "X-Note: harmless\rCookie: leaked=secret",
+            "X-Note: harmless\0suffix",
+            "X-Note: harmless\u{000b}suffix",
+            "Content-Length: 0\n",
+            "Upgrade: websocket\r",
+        ] {
+            assert!(
+                request_header(
+                    &format!("{base}{field}\r\n\r\n"),
+                    8000,
+                    "session",
+                    "secret",
+                    9000,
+                    "real",
+                )
+                .is_err(),
+                "accepted malformed field: {field:?}",
+            );
+        }
+        for target in [
+            "/path\nX:injected",
+            "/path\rX:injected",
+            "/path\0",
+            "/path\t",
+        ] {
+            assert!(request_header(
+                &format!("GET {target} HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nCookie: session=secret\r\n\r\n"),
+                8000,
+                "session",
+                "secret",
+                9000,
+                "real",
+            )
+            .is_err());
+        }
+        assert!(request_header(
+            &format!("{base}X-Note: two\twords\r\n\r\n"),
+            8000,
+            "session",
+            "secret",
+            9000,
+            "real",
+        )
+        .is_ok());
+    }
+
     #[test]
     fn forwards_authenticated_http_and_rejects_missing_cookie() {
         let (_directory, upstream, socket) = guest();

@@ -288,7 +288,7 @@ pub fn show_startup_notice(message: &str) {
         gtk::ButtonsType::Ok,
         message,
     );
-    dialog.set_title("Silo");
+    dialog.set_title(crate::channel::current().product_name());
     dialog.run();
     dialog.close();
 }

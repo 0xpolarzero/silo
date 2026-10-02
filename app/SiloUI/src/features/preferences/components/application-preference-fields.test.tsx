@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { render, screen } from "@testing-library/react"
+import { act, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -22,7 +22,7 @@ function setup(value: ApplicationPreferenceSelection = initialSelection) {
     return <ApplicationPreferenceFields value={current} onChange={(next) => { onChange(next); setCurrent(next) }} />
   }
   const view = render(<Fields />)
-  return { user: userEvent.setup(), onChange, refreshView: () => view.rerender(<Fields />) }
+  return { user: userEvent.setup(), onChange, refreshView: () => view.rerender(<Fields />), unmount: view.unmount }
 }
 
 function catalog() {
@@ -223,4 +223,51 @@ describe("application preference choices", () => {
     expect(screen.getByRole("option", { name: "iTerm" })).not.toHaveAttribute("aria-disabled")
     expect(source.choose).not.toHaveBeenCalled()
   })
+})
+
+
+function pendingChoice() {
+  let resolve!: (value: { name: string; path: string }) => void
+  let reject!: (cause: Error) => void
+  const promise = new Promise<{ name: string; path: string }>((done, fail) => { resolve = done; reject = fail })
+  applications.useApplications().choose.mockReturnValueOnce(promise)
+  return { resolve, reject }
+}
+
+it("keeps another preference's newer selection when an earlier chooser returns", async () => {
+  const pending = pendingChoice()
+  const { user, onChange } = setup()
+  await user.click(screen.getByRole("combobox", { name: "Code editor" }))
+  await user.click(screen.getByRole("option", { name: "Choose…" }))
+  await user.click(screen.getByRole("combobox", { name: "Terminal" }))
+  await user.click(screen.getByRole("option", { name: "iTerm" }))
+  await act(async () => pending.resolve({ name: "Nova", path: "/Applications/Nova.app" }))
+  expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({ terminal: "iTerm", editor: "Nova" }))
+  expect(screen.getByRole("combobox", { name: "Terminal" })).toHaveTextContent("iTerm")
+})
+
+it.each(["resolve", "reject"] as const)("ignores an older chooser that will %s after a newer selection", async settle => {
+  const pending = pendingChoice()
+  const { user, onChange } = setup()
+  await user.click(screen.getByRole("combobox", { name: "Code editor" }))
+  await user.click(screen.getByRole("option", { name: "Choose…" }))
+  await user.click(screen.getByRole("combobox", { name: "Code editor" }))
+  await user.click(screen.getByRole("option", { name: "System default (Cursor)" }))
+  await act(async () => {
+    if (settle === "resolve") pending.resolve({ name: "Nova", path: "/Applications/Nova.app" })
+    else pending.reject(new Error("Old chooser failed"))
+  })
+  expect(onChange).toHaveBeenCalledOnce()
+  expect(screen.getByRole("combobox", { name: "Code editor" })).toHaveTextContent("Cursor (default)")
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})
+
+it("does not save a chooser result after its preference fields unmount", async () => {
+  const pending = pendingChoice()
+  const { user, onChange, unmount } = setup()
+  await user.click(screen.getByRole("combobox", { name: "Code editor" }))
+  await user.click(screen.getByRole("option", { name: "Choose…" }))
+  unmount()
+  await act(async () => pending.resolve({ name: "Nova", path: "/Applications/Nova.app" }))
+  expect(onChange).not.toHaveBeenCalled()
 })

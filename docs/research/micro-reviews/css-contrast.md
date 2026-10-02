@@ -14,3 +14,14 @@ contrast ratio. See [CSS Color 4 conversion code](https://www.w3.org/TR/css-colo
 
 Regression: `src/components/theme-contrast.test.ts` reads the rendered pending
 row's token and opacity and checks both theme surfaces against 4.5:1.
+
+## Truncated file browser labels
+
+The file tree truncated folder, file, symlink and sandbox labels without a title
+or tooltip. The menu bar folder picker did the same for folders and its sandbox
+heading. Add native titles to those labels, using `visibleText` for guest names
+so titles preserve the existing hidden-character disclosure.
+
+Regression: file-tree and status-folder-picker tests supply long names and
+bidirectional control characters, then require complete sanitized titles.
+Existing navigation and path tests continue to check the original guest paths.

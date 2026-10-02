@@ -875,8 +875,34 @@ describe("native state validation", () => {
 })
 
 describe("React binding", () => {
-  it("returns the same value across renders until the snapshot changes (H-19)", async () => {
+  it("does not rerender subscribers during ten unchanged polling ticks", async () => {
+    vi.useFakeTimers()
     const mock = bridge()
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      await vi.advanceTimersByTimeAsync(0)
+      let renders = 0
+      const { result } = renderHook(() => { renders++; return useProductionSource(store) })
+      const first = result.current
+      const notified = vi.fn()
+      const unsubscribe = store.subscribe(notified)
+      const reads = count(mock.invoke, "read_application_state")
+      for (let tick = 0; tick < 10; tick++) {
+        await act(() => vi.advanceTimersByTimeAsync(10_000))
+      }
+      unsubscribe()
+      expect(count(mock.invoke, "read_application_state") - reads).toBe(10)
+      expect({ renders, notifications: notified.mock.calls.length }).toEqual({ renders: 1, notifications: 0 })
+      expect(result.current).toBe(first)
+    } finally { store.dispose(); vi.useRealTimers() }
+  })
+
+  it("returns the same value across renders until the snapshot changes (H-19)", async () => {
+    let changed = false
+    const mock = bridge(command => command === "read_application_state" && changed
+      ? { ...structuredClone(source), github: { state: "disconnected" } }
+      : undefined)
     const store = createProductionSource(mock.native)
     try {
       await store.initialize()
@@ -884,6 +910,7 @@ describe("React binding", () => {
       const first = result.current
       rerender()
       expect(result.current).toBe(first)
+      changed = true
       await act(() => store.refresh())
       expect(result.current).not.toBe(first)
       expect(result.current.backup.actions).toBe(store.backupActions)
