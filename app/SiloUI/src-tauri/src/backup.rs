@@ -1475,8 +1475,8 @@ fn descriptor_scope_supported(scope: Option<&str>, state_kind: Option<&str>) -> 
 /// descriptor: image, root layout, owned volumes, the default user and, for
 /// a full checkpoint, the VM geometry. Env, patches, init, rlimits and
 /// host-bound mounts have no descriptor field (it is closed with
-/// `deny_unknown_fields`), and host resources need explicit `msb restore`
-/// flags, which Silo never passes. So the descriptor must match the export
+/// `deny_unknown_fields`). Environment defaults are reapplied from the export
+/// manifest on Start; host-bound resources are not portable. The descriptor must match the export
 /// manifest's validated configuration exactly, and anything else in it is
 /// refused.
 fn compare_loaded_descriptor(

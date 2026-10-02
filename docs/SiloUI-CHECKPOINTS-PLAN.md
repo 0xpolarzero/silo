@@ -611,3 +611,24 @@ changes capture limits, not this selection contract.
 A deterministic production Start test covers all three combinations. The
 opt-in full-checkpoint export/import test also checks a changed boot ID and
 absence of a captured process and RAM-only file; it remains unexecuted here.
+
+### Checkpoint environment defaults, 2026-10-02
+
+Every checkpoint Start sends `GH_TOKEN=$MSB_SILO_GITHUB`, matching fresh
+creation. The [bundled restore-policy patch](../app/SiloUI/patches/microsandbox-restore-policy-0.7.6.patch)
+supports destination `--env` arguments for new exec commands; resumed processes
+retain their captured environments. The placeholder resolves through the
+current target's host-side GitHub profile, including the disabled profile.
+Neither the restore arguments nor the imported pending record carry an old
+`GH_TOKEN` value.
+
+Other environment entries accepted by backup validation are portable key/value
+defaults. Import persists them before committing sandbox settings, checks their
+shape and NUL-free values, and passes them as individual `--env` arguments on
+Start. Forks retain those imported defaults. Current GitHub identity
+reconciliation still owns author/committer settings. Arbitrary environment
+values remain archive contents, so export warnings about sensitive data apply.
+
+Deterministic tests exercise disk/full Start with denied and synthetic authorized
+profiles, imported environment persistence and argument boundaries, and invalid
+entries. They do not prove a live GitHub CLI request.
