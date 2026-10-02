@@ -87,3 +87,13 @@ The focused live test passed against the running `dev` VM with the patched bundl
 This exposed and fixed two runtime bugs, covered by the live transfer regression: SSH/SFTP previously used `/` instead of the login home, and SFTP channel completion omitted SSH exit status (OpenSSH SCP returned failure despite successfully transferring bytes). The patch sets a shared login-home cwd and sends subsystem completion status on client EOF. Neither fix uses Zed-specific paths.
 
 VS Code and Linux editor opening still require real-platform verification; URI/configuration and preference validation tests do not substitute for those checks. For the Silo profile (G-19) the macOS check is: the first open creates the Silo profile and offers Remote - SSH, the window opens the sandbox folder with the four workspace settings in effect, the user's default profile settings file is unchanged, and a second open reuses the profile without a prompt.
+
+## Configuration repair failures
+
+Startup repair reports per-file read and replacement failures through the existing
+editor connection warning. It repairs writable entries in a partial batch, preserves
+files whose atomic replacement fails, and adds the converted runtime's Include
+only after every entry succeeds. Repeating repair after storage becomes writable
+updates ProxyCommand, IdentityFile and UserKnownHostsFile before reporting success.
+An absent optional SSH configuration directory is harmless. AppImage transport
+refresh reports the same incomplete rewrite errors.
