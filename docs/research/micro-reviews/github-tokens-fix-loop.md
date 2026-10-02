@@ -23,3 +23,13 @@ Scope: `app/SiloUI/src-tauri/src/github_tokens.rs`.
 - **Regression:** An omitted ID mints the requested restricted credential. Explicit null, number, object, array and mismatched IDs never mint.
 
 Focused verification imports the unchanged token and HTTP modules into a temporary harness under `/tmp/silo-codex-target/verification/github-tokens/` and links the shared cache's compiled dependencies. The harness supplies a mutex for the HTTP tests' process-state guard; it does not include application startup or runtime shutdown. The final focused run passed 30 tests. Formatting, frontend typecheck and frontend lint passed. Focused Clippy passed with two existing HTTP-module lints allowed only on that module. Full Cargo verification was queued on the shared target lock at the time of this commit. No application, real credential or VM was used.
+
+## GITHUB-TOKENS-3: OAuth configuration errors cause an unrevoked disconnect
+
+- **Priority:** P2.
+- **Location:** `github_http.rs:338`, consumed by `github.rs:929` and the disconnect worker.
+- **Trigger:** Disconnect with an account token within its refresh window while GitHub returns `incorrect_client_credentials` for renewal, such as after a source build ships an incorrect App secret.
+- **Evidence:** The transport classified every HTTP 200 OAuth error as `authorization_rejected`. `live_access_token` interpreted that marker as no usable account credential, so the disconnect worker skipped grant revocation and deleted the stored credential. GitHub's [token troubleshooting contract](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app#troubleshooting) distinguishes incorrect App configuration from an invalid or expired refresh token. The local wire-response regression failed on `incorrect_client_credentials` before the fix.
+- **Consequence:** Disconnect could report completion and forget a valid refresh credential without revoking its authorization.
+- **Fix:** Reserve the unusable-refresh classification for `bad_refresh_token`. Other OAuth errors remain failures and retain the pending revocation and credential. Continue redacting provider descriptions.
+- **Regression:** Local HTTP responses for incorrect client credentials, unsupported grant type, unverified email and an unavailable provider do not classify the credential as unusable. An explicit bad refresh token does. The focused token/HTTP run passed 34 tests after the change; no live account was used.

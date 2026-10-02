@@ -15,10 +15,10 @@ use std::{
 
 const MAX_RETRIES: u32 = 5;
 const MAX_RESPONSE: u64 = 8 * 1024 * 1024;
-/// GitHub refused an OAuth grant (for example a used or expired refresh token).
+/// GitHub explicitly refused the stored refresh token.
 const AUTHORIZATION_REJECTED: &str = "GitHub rejected the authorization.";
-/// Whether an error means GitHub itself rejected the OAuth grant, as opposed to a
-/// network failure or rate limit after which the same request may still succeed.
+/// Whether GitHub rejected the refresh credential itself. App configuration and
+/// transport failures do not prove that the stored credential cannot renew.
 pub(crate) fn authorization_rejected(error: &str) -> bool {
     error.starts_with(AUTHORIZATION_REJECTED)
 }
@@ -338,15 +338,12 @@ fn response(
     }
     if (200..300).contains(&status) {
         if body.get("error").is_some() {
-            return Err(failure(
-                key,
-                class,
-                false,
-                0,
-                false,
-                &format!("{AUTHORIZATION_REJECTED} Connect GitHub again."),
-                safe,
-            ));
+            let message = if body["error"] == "bad_refresh_token" {
+                format!("{AUTHORIZATION_REJECTED} Connect GitHub again.")
+            } else {
+                "GitHub rejected the token request.".into()
+            };
+            return Err(failure(key, class, false, 0, false, &message, safe));
         }
         if body.is_null() {
             return Err(failure(
@@ -622,13 +619,33 @@ mod tests {
         .unwrap_err();
         assert!(!error.contains("fixture-secret"));
         assert!(error.contains("rejected"));
-        assert!(authorization_rejected(&error));
+        assert!(!authorization_rejected(&error));
         assert!(!authorization_rejected("Cannot reach GitHub."));
         assert_eq!(wire_response(204, "", true).unwrap()["revoked"], true);
         assert_eq!(wire_response(404, "", true).unwrap()["revoked"], true);
         assert!(wire_response(204, "", false).is_err());
         assert!(wire_response(302, "", false).is_err());
         assert!(wire_response(200, "not json", false).is_err());
+    }
+    #[test]
+    fn oauth_configuration_errors_do_not_discard_a_refreshable_authorization() {
+        for code in [
+            "incorrect_client_credentials",
+            "unsupported_grant_type",
+            "unverified_user_email",
+            "temporarily_unavailable",
+        ] {
+            let error = wire_response(
+                200,
+                &serde_json::json!({"error":code,"error_description":"fixture-secret"}).to_string(),
+                false,
+            )
+            .unwrap_err();
+            assert!(!error.contains("fixture-secret"));
+            assert!(!authorization_rejected(&error), "{code}: {error}");
+        }
+        let error = wire_response(200, r#"{"error":"bad_refresh_token"}"#, false).unwrap_err();
+        assert!(authorization_rejected(&error));
     }
     #[test]
     fn credential_destinations_are_fixed_before_network() {
