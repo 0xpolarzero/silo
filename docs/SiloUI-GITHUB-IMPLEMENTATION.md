@@ -76,6 +76,9 @@ exponential backoff and positive jitter. Automatic retries are bounded at five;
 explicit Retry retains GitHub's imposed waiting period, including after relaunch.
 Ambiguous code exchange, refresh or mint outcomes are not automatically replayed.
 Safe reads and idempotent revocations can retry. Guest writes are never replayed.
+Repository Refresh resets only safe operations after acquiring the GitHub operation
+lock. Stopped token mints and rotating OAuth refreshes require their explicit Retry;
+refreshing the catalog preserves their refusal and every server waiting deadline.
 
 When refresh succeeds but secure storage fails, the renewed credential is retained
 in host memory for storage retry, tied to the original account token. The consumed
