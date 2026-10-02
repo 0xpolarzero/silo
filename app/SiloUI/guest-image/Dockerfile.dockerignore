@@ -9,3 +9,4 @@
 !src-tauri/guest/silo-accessibility.py
 !src-tauri/guest/desktop-packages.txt
 !src-tauri/guest/lcu-lock.json
+!src-tauri/guest/guest-third-party-notices.md

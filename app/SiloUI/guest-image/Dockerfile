@@ -35,11 +35,16 @@ RUN sh /tmp/silo-setup-github.sh \
 # under /usr/local/share/silo/lcu/. A VM installs it against the ChatGPT app the host
 # mounts at boot (src-tauri/guest/silo-computer-use.py). LCU itself is not installed
 # here, and no OpenAI file is ever part of the image.
+#
+# The third-party notices for the Selkies streamer, its bundled GPL/LGPL codecs and the
+# Ubuntu packages (src-tauri/guest/guest-third-party-notices.md, the text that
+# THIRD-PARTY-NOTICES.md repeats) ship in /usr/share/doc/silo-guest-third-party/.
 ARG TARGETARCH
 RUN --mount=type=bind,source=src-tauri/guest/desktop-streamer-lock.json,target=/mnt/desktop-streamer-lock.json \
     --mount=type=bind,source=src-tauri/guest/desktop-packages.txt,target=/mnt/desktop-packages.txt \
     --mount=type=bind,source=src-tauri/guest/silo-accessibility.py,target=/mnt/silo-accessibility.py \
     --mount=type=bind,source=src-tauri/guest/lcu-lock.json,target=/mnt/lcu-lock.json \
+    --mount=type=bind,source=src-tauri/guest/guest-third-party-notices.md,target=/mnt/guest-third-party-notices.md \
     set -eu \
     && export DEBIAN_FRONTEND=noninteractive \
     && apt-get update \
@@ -68,6 +73,7 @@ RUN --mount=type=bind,source=src-tauri/guest/desktop-streamer-lock.json,target=/
     && curl --silent --show-error --fail --location --retry 2 --connect-timeout 30 --max-time 600 \
         --proto '=https' --tlsv1.2 "$lcu_url" -o "$lcu_archive" \
     && echo "$lcu_sha256  $lcu_archive" | sha256sum --check --status \
+    && install -D -m 0644 /mnt/guest-third-party-notices.md /usr/share/doc/silo-guest-third-party/NOTICES.md \
     && install -d -m 0755 /usr/local/libexec /etc/dconf/profile /etc/dconf/db/local.d /etc/xdg/autostart \
     && install -m 0755 /mnt/silo-accessibility.py /usr/local/libexec/silo-accessibility \
     && printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Silo accessibility' \

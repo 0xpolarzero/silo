@@ -165,6 +165,28 @@ The apt lists and caches are removed in the same layer, and
 `verifyGuestImage` also checks the desktop, poller, dconf and editor defaults, and
 that Mousepad is absent. Measurements are in [guest image size](SiloUI-GUEST-IMAGE-SIZE.md).
 
+**Licensing of the desktop streamer.** v4 redistributes the upstream Selkies 2.0.0 package
+unchanged. Its pixelflux extension is upstream's default GPL build and carries private copies of
+x264, x265, FFmpeg n8.1, kvazaar, libvpx, SVT-AV1 and dav1d, and pcmflux carries AlmaLinux 8
+audio libraries, none of which are part of the Ubuntu package set. Silo therefore treats those
+parts as redistributed GPL/LGPL software: `app/SiloUI/THIRD-PARTY-NOTICES.md` lists each component
+with its version and license, the exact upstream sources and the build recipe are mirrored in the
+[`guest-ubuntu-24.04-v4-source` release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v4-source)
+with their SHA-256 values (`SOURCES.md`, `sources.json`, `SHA256SUMS`), and the v4 release notes and
+the notices include a written offer for the corresponding source. The x264 commit is established by
+upstream's build log and branch history rather than a pinned ref (see `SOURCES.md`). Ubuntu packages
+keep their `/usr/share/doc/*/copyright` files and their source is in the Ubuntu archive for the
+versions in `/usr/local/share/silo-packages.txt`. The published v4 image does not contain these
+notices; the recipe now installs `src-tauri/guest/guest-third-party-notices.md` (the text
+`THIRD-PARTY-NOTICES.md` repeats, which a test enforces) as
+`/usr/share/doc/silo-guest-third-party/NOTICES.md`, so the next image version carries them. H.264
+and H.265 are covered by patents these licenses do not grant; Silo provides no patent license.
+Alternatives considered: installing Selkies at first boot (no redistribution, but it needs the
+network at first start and does not remove the Ubuntu GPL packages from the image), and rebuilding
+pixelflux without its GPL codecs (`PIXELFLUX_ENABLE_GPL=0`; needs Silo-built wheels and loses x265
+4:4:4). When bumping `desktop-streamer-lock.json`, update the notice table and the source mirror
+in the same change.
+
 ## Runtime behavior
 
 The app validates the bundled image before importing it into its private

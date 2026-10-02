@@ -38,6 +38,7 @@ python3 -c 'import json; m = json.load(open("/usr/local/share/silo/guest-image.j
 echo '${lcu.sha256}  /usr/local/share/silo/lcu/${lcu.name}' | sha256sum --check --status || { echo "The staged LCU archive does not match guest/lcu-lock.json" >&2; exit 1; }
 test "$(ls /usr/local/share/silo/lcu | wc -l)" = 1 || { echo "Only the pinned LCU archive may be staged" >&2; exit 1; }
 test ! -e /opt/lcu && test ! -e /usr/lib/chatgpt && test ! -e /opt/silo || { echo "The image must not contain LCU or a ChatGPT app" >&2; exit 1; }
+test -s /usr/share/doc/silo-guest-third-party/NOTICES.md && grep -q 'x264' /usr/share/doc/silo-guest-third-party/NOTICES.md || { echo "The third-party notices are missing from the image" >&2; exit 1; }
 test -x /usr/local/libexec/silo-accessibility
 python3 -c 'import py_compile; py_compile.compile("/usr/local/libexec/silo-accessibility", cfile="/tmp/silo-accessibility.pyc", doraise=True)' || { echo "The accessibility poller does not compile" >&2; exit 1; }
 test -f /etc/xdg/autostart/silo-accessibility.desktop

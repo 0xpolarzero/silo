@@ -37,8 +37,20 @@ test("the recipe matches the version and never leaves package files in a layer",
   assert.ok(dockerfile.includes("/usr/local/share/silo/guest-image.json"))
   assert.doesNotMatch(dockerfile.replace(/^#.*$/gm, ""), /openai|oaistatic|chatgpt/i)
   const ignore = readFileSync(new URL("../guest-image/Dockerfile.dockerignore", import.meta.url), "utf8")
-  for (const input of ["desktop-streamer-lock.json", "desktop-packages.txt", "silo-accessibility.py", "setup-github.sh"]) {
+  for (const input of ["desktop-streamer-lock.json", "desktop-packages.txt", "silo-accessibility.py", "setup-github.sh", "guest-third-party-notices.md"]) {
     assert.ok(ignore.includes(`!src-tauri/guest/${input}`), input)
+  }
+})
+
+test("the image ships the third-party notices that THIRD-PARTY-NOTICES.md repeats", () => {
+  const dockerfile = readFileSync(new URL("../guest-image/Dockerfile", import.meta.url), "utf8")
+  assert.match(dockerfile, /source=src-tauri\/guest\/guest-third-party-notices\.md,target=\/mnt\/guest-third-party-notices\.md/)
+  assert.ok(dockerfile.includes("/mnt/guest-third-party-notices.md /usr/share/doc/silo-guest-third-party/NOTICES.md"))
+  const notices = readFileSync(new URL("../src-tauri/guest/guest-third-party-notices.md", import.meta.url), "utf8")
+  const bundled = readFileSync(new URL("../THIRD-PARTY-NOTICES.md", import.meta.url), "utf8")
+  assert.ok(bundled.includes(notices.trim()), "THIRD-PARTY-NOTICES.md must contain the guest notices verbatim")
+  for (const required of ["x264", "x265", "n8.1", "guest-ubuntu-24.04-v4-source", "written offer"]) {
+    assert.ok(notices.toLowerCase().includes(required.toLowerCase()), required)
   }
 })
 
