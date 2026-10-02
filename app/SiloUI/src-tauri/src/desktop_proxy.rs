@@ -193,7 +193,12 @@ fn relay(
     ended: Arc<AtomicBool>,
     deadline: Option<Instant>,
 ) {
-    let _ = from.read_timeout(Some(Duration::from_millis(250)));
+    let poll_interval = Duration::from_millis(250);
+    let _ = from.read_timeout(Some(deadline.map_or(poll_interval, |at| {
+        at.saturating_duration_since(Instant::now())
+            .max(Duration::from_millis(1))
+            .min(poll_interval)
+    })));
     let _ = to.write_timeout(Some(Duration::from_secs(5)));
     let mut bytes = [0; 32 * 1024];
     while !stop.load(Ordering::Acquire)
@@ -486,6 +491,47 @@ mod tests {
     }
 
     #[test]
+    fn continuing_response_bytes_do_not_extend_http_deadline() {
+        let (mut guest, source) = UnixStream::pair().unwrap();
+        let (destination, mut client) = UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            relay(
+                source,
+                destination,
+                worker_stop,
+                Arc::new(AtomicBool::new(false)),
+                Some(Instant::now() + Duration::from_millis(50)),
+            );
+            done_tx.send(()).unwrap();
+        });
+        let producer = thread::spawn(move || {
+            for _ in 0..100 {
+                if guest.write_all(b"x").is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let completed = done_rx.recv_timeout(Duration::from_millis(300));
+        stop.store(true, Ordering::Release);
+        worker.join().unwrap();
+        producer.join().unwrap();
+        assert!(
+            completed.is_ok(),
+            "response progress extended the total deadline"
+        );
+        let mut received = Vec::new();
+        client.read_to_end(&mut received).unwrap();
+        assert!(!received.is_empty());
+    }
+
+    #[test]
     fn incomplete_http_upload_closes_both_connections_at_deadline() {
         stalled_http_request("POST", "Content-Length: 5\r\n");
     }
@@ -703,6 +749,7 @@ mod tests {
             )
             .unwrap();
             client.write_all(body).unwrap();
+            client.shutdown(Shutdown::Write).unwrap();
             let mut response = String::new();
             client.read_to_string(&mut response).unwrap();
             assert!(
@@ -711,6 +758,65 @@ mod tests {
             );
         }
         upstream_worker.join().unwrap();
+    }
+
+    #[test]
+    fn ordinary_http_response_idle_timeout_releases_silent_upstream() {
+        for (method, body) in [("GET", &b""[..]), ("POST", &b"body"[..])] {
+            let (_directory, upstream, socket) = guest();
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let (accepted, _) = listener.accept().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = stop.clone();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = thread::spawn(move || {
+                let result = serve_with_header_progress(
+                    accepted,
+                    port,
+                    &socket,
+                    6901,
+                    "session",
+                    "secret",
+                    "real",
+                    worker_stop,
+                    Duration::from_millis(100),
+                    |_, _| {},
+                );
+                done_tx.send(result).unwrap();
+            });
+            write!(
+                client,
+                "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: session=secret\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            client.write_all(body).unwrap();
+            let (mut guest, _) = upstream.accept().unwrap();
+            guest
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut header = Vec::new();
+            let mut byte = [0];
+            while !header.ends_with(b"\r\n\r\n") {
+                guest.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+            }
+            let mut received_body = vec![0; body.len()];
+            guest.read_exact(&mut received_body).unwrap();
+            assert_eq!(received_body, body);
+            // Keep the guest silent and open after the browser abandons its request.
+            drop(client);
+            let completed = done_rx.recv_timeout(Duration::from_secs(3));
+            // Always release the worker, including when the regression fails.
+            stop.store(true, Ordering::Release);
+            worker.join().unwrap();
+            completed
+                .expect("silent HTTP response retained its handler")
+                .unwrap();
+            assert_eq!(guest.read(&mut byte).unwrap(), 0);
+        }
     }
 
     #[test]

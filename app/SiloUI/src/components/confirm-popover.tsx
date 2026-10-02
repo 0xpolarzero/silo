@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode, typ
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { restoreFocus } from "@/lib/focus"
 
 /**
  * Ask in a popover, do in a toast. Use `ConfirmPopover` for yes/no confirmations and
@@ -87,7 +88,15 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
       // Move focus into the popover ourselves so Escape and Enter always act on it.
       event.preventDefault()
       contentElement.current?.querySelector<HTMLElement>("[data-popover-initial-focus], input, textarea, select")?.focus()
-    }} onCloseAutoFocus={(event) => { if (anchor) { event.preventDefault(); element.current?.focus() } }}>
+    }} onCloseAutoFocus={(event) => {
+      if (!anchor) return
+      event.preventDefault()
+      const target = element.current
+      restoreFocus(target)
+      if (target && target.ownerDocument.activeElement !== target) {
+        restoreFocus(target.querySelector<HTMLElement>("button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1']):not(:disabled)"))
+      }
+    }}>
       {content}
     </PopoverContent>
   </Popover>

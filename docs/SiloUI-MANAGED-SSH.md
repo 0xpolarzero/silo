@@ -127,6 +127,13 @@ address changes and are deleted (and later regenerated) when access is turned
 off. Export requires enabled access and a current sandbox identity, and only the
 owning computer ever reads this private key.
 
+Settings also record the managed public key independently of those files, so
+turning access off revokes an exported key even if its local key files were lost.
+For older settings without that record, Silo recovers the public identity from
+the private key or its `.pub` file. If both are unavailable, disabling reports an
+error instead of retaining an unidentified managed authorization. Restore
+`MSB_HOME/ssh/managed-clients/MACHINE_ID.pub` and retry.
+
 External authorized keys live in `MSB_HOME/ssh/managed-access/MACHINE_ID.authorized_keys`.
 Neither `MSB_HOME/ssh/authorized_keys` nor Silo's internal client private key is
 read or modified by this feature. Keys are structurally validated as Ed25519

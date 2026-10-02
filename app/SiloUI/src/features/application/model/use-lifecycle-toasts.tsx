@@ -56,7 +56,16 @@ export function useLifecycleToasts(source: ApplicationSource, actions: Applicati
     }
   })
   useEffect(() => { if (enabled) trackLifecycle(source.workspaces) }, [enabled, source.workspaces, source.operationQueue])
-  useEffect(() => () => { for (const entry of lifecycleProgress.current.values()) if (entry.timer) window.clearTimeout(entry.timer) }, [])
+  useEffect(() => {
+    const tracked = lifecycleProgress.current
+    return () => {
+      for (const [key, entry] of tracked) {
+        if (entry.timer) window.clearTimeout(entry.timer)
+        if (entry.shown) dismissOperationToast(`lifecycle:${key}`)
+      }
+      tracked.clear()
+    }
+  }, [enabled])
 
   // Lifecycle failures and cancellations arrive from the backend as workspace state. Toast each
   // new one (both the list and the detail page render from here); failures already present at

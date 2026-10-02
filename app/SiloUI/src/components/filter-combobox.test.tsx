@@ -17,6 +17,15 @@ function Filter() {
 }
 
 describe("FilterCombobox keyboard navigation", () => {
+  it("leaves the filter on Tab without entering its popup options", async () => {
+    const user = userEvent.setup()
+    render(<Filter />)
+    await user.click(screen.getByRole("combobox"))
+    await user.tab()
+    expect(document.body).toHaveFocus()
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+  })
+
   it("reveals the active option in both directions while keeping focus in the input", async () => {
     const user = userEvent.setup()
     const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
