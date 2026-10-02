@@ -1108,7 +1108,15 @@ fn send_change(
     mut send: impl FnMut(&Value) -> Result<Value, Failure>,
 ) -> Result<Value, BridgeError> {
     let mut delays = delays.iter();
+    let quit = crate::runtime::shutdown::generation();
     loop {
+        if crate::runtime::shutdown::generation() != quit {
+            return Err(BridgeError::new(
+                ErrorCode::Cancelled,
+                "The remote action was cancelled when Silo began shutting down. Refresh the remote computer to check its state.",
+            ));
+        }
+        crate::runtime::shutdown::ensure_accepting_operations()?;
         let remaining = deadline.saturating_duration_since(Instant::now());
         // Queued work must start early enough to finish while this computer still waits.
         request["startWithinMs"] = json!((remaining / 2).as_millis() as u64);
@@ -3557,6 +3565,34 @@ mod dispatch_tests {
             );
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn a_lost_change_is_not_retried_after_a_failed_quit_reopens_admission() {
+        let _test_state = crate::test_support::global_state();
+        struct Reopen;
+        impl Drop for Reopen {
+            fn drop(&mut self) {
+                crate::runtime::shutdown::cancel();
+            }
+        }
+        let _reopen = Reopen;
+        let mut request = json!({"method":"runtime.action","operationId":"fixed"});
+        let mut attempts = 0;
+        let result = send_change(
+            &mut request,
+            Instant::now() + Duration::from_secs(60),
+            &[Duration::ZERO],
+            |_| {
+                attempts += 1;
+                crate::runtime::shutdown::begin();
+                crate::runtime::shutdown::cancel();
+                Err(Failure::Lost("dropped".into()))
+            },
+        );
+        assert_eq!(attempts, 1);
+        assert_eq!(result.unwrap_err().code, ErrorCode::Cancelled);
+        assert!(crate::runtime::shutdown::ensure_accepting_operations().is_ok());
     }
 
     #[test]

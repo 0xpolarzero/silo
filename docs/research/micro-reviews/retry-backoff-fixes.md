@@ -15,3 +15,11 @@
 - Consequence: guest state reads or remote connection attempts continue at the normal progress interval throughout an outage.
 - Fix: schedule the next read after completion, double the delay on failure up to 30 seconds, and reset the delay on success. Effect cleanup prevents in-flight reads from restarting an inactive schedule.
 - Verification: the regression checks growing and capped delays, recovery, and inactivity; existing tests cover hidden documents and explicit mutations.
+
+## Remote changes after a failed Quit
+
+- Trigger: a remote mutation loses its response, Quit starts and fails, and admission reopens before the retry.
+- Evidence: `send_change` checked only current admission after its delay. The exact-source disposable regression sent twice after a synthetic failed Quit, rejecting the required single-send behavior.
+- Consequence: an action requested before shutdown can resume after the user began quitting, even though local retry sequences already stop across shutdown generations.
+- Fix: capture the shutdown generation and reject later attempts with the cancellation error code when it changes. Check admission before each send.
+- Verification: the native regression checks one send, typed cancellation, and reopened admission; existing tests check stable operation identities, retry caps, and terminal failures.
