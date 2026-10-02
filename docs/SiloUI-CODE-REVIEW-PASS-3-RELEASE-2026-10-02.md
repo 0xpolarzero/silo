@@ -19,7 +19,8 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | ID | Priority | Finding | Status |
 | --- | --- | --- | --- |
 | RL-01 | P2 | Wrapper configuration crosses the Cargo argument separator | Fixed and folded: `9baaac4e` |
-| RL-02 | P2 | Linux verification seeds production paths for a Dev binary | Confirmed; fix pending |
+| RL-02 | P2 | Linux verification seeds production paths for a Dev binary | Fixed and folded: `5a14fe19` |
+| RL-03 | P2 | Desktop smoke isolation leaves HOME-dependent state live | Confirmed; fix pending |
 
 ## Detailed findings
 
@@ -53,11 +54,29 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 
 **Rejecting test.** Run the actual build-wrapper seam with the workflow's build arguments, resolve its configuration identifier, and evaluate the harness's fixture path expressions with the workflow environment. Settings and autostart paths must match that identifier's channel. Then qualify the full WebDriver smoke on Linux; deterministic path checks alone do not prove native GUI behavior.
 
+**Status.** Fixed and folded in `5a14fe19`. The new path regression failed before the fix; both path tests, all eight wrapper tests and both workflow-pin checks pass. These tests execute the actual wrapper and extracted harness expressions, not WebDriver. This is internal verification tooling and needs no application changeset.
+
+### RL-03 Desktop smoke isolation leaves HOME-dependent state live
+
+**P2.** Confirmed at `9ea078cd`. Locations: [test-linux-desktop.py](../app/SiloUI/scripts/test-linux-desktop.py), `run` environment setup; [remote.rs](../app/SiloUI/src-tauri/src/remote.rs), `directory`, `read_config_in`, and `start`; [runtime.rs](../app/SiloUI/src-tauri/src/runtime.rs), `runtime_home_alias`.
+
+**Trigger.** Run the documented desktop smoke command on an account that already has Silo or Silo Dev host state. The smoke harness copies the caller's environment and replaces only XDG CONFIG/DATA/CACHE roots.
+
+**Evidence.** `HOME` remains inherited. Native startup calls `remote::start`; its directory comes directly from HOME plus the current channel's private directory, reads or creates the remote host configuration, and binds the channel's control socket. Runtime aliases also use HOME. A disposable XDG directory therefore does not isolate those paths. With the Dev workflow fixed in RL-02 this is `.silo-dev`; explicit production-package smoke uses `.silo`. No real host state was accessed in this review.
+
+**Consequence.** A supposedly isolated smoke run can read existing remote-host settings, create persistent host state, contend with a user's control socket, or repoint an enabled management bridge to the test app. Its temporary XDG state can disappear while aliases remain in the caller's home. Hosted CI has disposable accounts; the documented local invocation does not provide that boundary.
+
+**Correction.** Create HOME inside the smoke fixture before starting any native process and pass it alongside the XDG roots. Preserve inherited executable/tool search paths. Keep the separately supplied lifecycle fixture contract separate from this automatically created smoke fixture.
+
+**Rejecting test.** Execute the real smoke environment prelude against a synthetic caller HOME containing sentinel channel state. HOME and all three XDG roots passed to the app must be inside the temporary task root, and the sentinel must remain unchanged. Native GUI qualification remains separate.
+
 ## Verification and reproducibility
 
 RL-01: `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_desktop_release` passed 8 tests. The new regression first failed in 3 subcases. Failure/passing output is retained under ignored `app/SiloUI/src-tauri/target/verification/release-review-2026-10-02/rl01-{before,after}.log`.
 
 Before the fix commit: Node 24.11.1 `typecheck` passed; `lint` passed with 12 existing warnings; `cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check` passed. Native checks use the shared `/tmp/silo-codex-target`; Node dependencies use the existing main-checkout installation. A fixture or source review does not qualify a signed release or installed application.
+
+RL-02: `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_linux_verification_release test_desktop_release test_workflow_pins` passed 12 tests. Typecheck, lint (5 existing warnings after integration updates), and Rust formatting passed before its fix commit. `rl02-{before,after}.log` retains the failing/passing evidence in the same ignored directory.
 
 ## Next action
 
