@@ -109,6 +109,13 @@ class ReleaseWorkflowTests(unittest.TestCase):
 
 
 class PublicationWorkflowTests(unittest.TestCase):
+    def test_distinct_publication_requests_are_queued_without_replacement(self):
+        publication = (ROOT / '.github/workflows/publish-release.yml').read_text()
+        concurrency = publication.split('\nconcurrency:\n', 1)[1].split('\npermissions:', 1)[0]
+        self.assertIn('  group: silo-release-publish', concurrency.splitlines())
+        self.assertIn('  queue: max', concurrency.splitlines())
+        self.assertIn('  cancel-in-progress: false', concurrency.splitlines())
+
     def test_publication_passes_stable_opt_in_only_when_requested(self):
         publication = (ROOT / '.github/workflows/publish-release.yml').read_text()
         draft = WORKFLOW.split('      - name: Create complete versioned draft\n', 1)[1]
