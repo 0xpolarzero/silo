@@ -1,7 +1,7 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { spawn, execFileSync } from "node:child_process"
-import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
@@ -155,3 +155,25 @@ test("failed capability verification removes staging files and preserves the pub
   assert.deepEqual(await readdir(binaries), [`msb-${targetTriple}`])
   assert.deepEqual(await readdir(resources), ["microsandbox"])
 })
+
+
+for (const failure of ["permissions", "probe exit"]) {
+  test(`a checksum-valid cached executable with invalid ${failure} is rebuilt`, async t => {
+    const paths = await fixture(t)
+    const first = await runWorker(t, paths, "second")
+    assert.equal(first.code, 0, first.output)
+    const builds = join(paths.root, "cache", "patched-builds")
+    const [key] = await readdir(builds)
+    const cached = join(builds, key, "msb")
+    if (failure === "permissions") await chmod(cached, 0o644)
+    else {
+      const broken = `#!${process.execPath}\nprocess.exit(17)\n`
+      await writeFile(cached, broken)
+      await writeFile(join(builds, key, "msb.sha256"), sha256(broken))
+    }
+    const result = await runWorker(t, paths, "second")
+    assert.equal(result.code, 0, result.output)
+    assert.equal(sha256(await readFile(cached)), (await readFile(join(builds, key, "msb.sha256"), "utf8")).trim())
+    execFileSync(cached, ["--version"])
+  })
+}
