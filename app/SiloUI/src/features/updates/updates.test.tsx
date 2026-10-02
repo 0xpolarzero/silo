@@ -77,6 +77,23 @@ it("restores update events after returning to a window whose subscription failed
   expect(screen.getByRole("status")).toHaveTextContent("Silo 0.2.0 is available.")
   expect(backend.check).not.toHaveBeenCalled()
 })
+it("keeps a failed update connection visible when focus returns during listener recovery", async () => {
+  let rejectRegistration!: (cause: Error) => void
+  let resolveRead: ((next: UpdateSnapshot) => void) | undefined
+  const { backend } = mount({}, backend => {
+    vi.mocked(backend.subscribe).mockRejectedValueOnce(new Error("event registration failed"))
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectRegistration = reject }))
+    vi.mocked(backend.read).mockImplementation(() => new Promise(resolve => { resolveRead = resolve }))
+  })
+  await screen.findByRole("alert")
+  fireEvent.focus(window)
+  await waitFor(() => expect(backend.subscribe).toHaveBeenCalledTimes(2))
+  fireEvent.focus(window)
+  await act(async () => rejectRegistration(new Error("registration failed again")))
+  await act(async () => resolveRead?.(state))
+  expect(screen.getByRole("alert")).toHaveTextContent("Silo could not load updates. Try again.")
+  expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled()
+})
 it("loads the installed version without a fake up-to-date result and persists automatic checks", async () => {
   const user = userEvent.setup()
   const { backend } = mount()
