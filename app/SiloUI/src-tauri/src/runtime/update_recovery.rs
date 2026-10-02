@@ -1,6 +1,7 @@
 //! Update installation changes the app, never VM disks. Keep the original running
 //! set durable before stopping anything, then restore only those exact identities.
 use super::*;
+use std::io::Read;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -45,11 +46,15 @@ fn save(paths: &RuntimePaths, machines: &[RunningMachine]) -> Result<(), String>
         .map_err(|_| "Update recovery could not be synced.".into())
 }
 fn load(paths: &RuntimePaths) -> Result<Option<Journal>, String> {
-    let bytes = match fs::read(path(paths)) {
-        Ok(b) => b,
+    let file = match File::open(path(paths)) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err("Update recovery could not be read.".into()),
     };
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Update recovery could not be read.")?;
     if bytes.len() > 1024 * 1024 {
         return Err("Update recovery is invalid; it was preserved.".into());
     }
@@ -465,6 +470,57 @@ mod tests {
         assert_eq!(load(&paths).unwrap().unwrap().machines, vec![first]);
     }
 
+    #[test]
+    fn journal_large_input_memory_is_bounded() {
+        const PROBE: &str = "SILO_TEST_UPDATE_JOURNAL_MEMORY_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::update_recovery::tests::journal_large_input_memory_is_bounded",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            return;
+        }
+
+        fn peak_bytes() -> u64 {
+            // SAFETY: getrusage initializes the supplied rusage structure.
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
+            #[cfg(target_os = "macos")]
+            return usage.ru_maxrss as u64;
+            #[cfg(not(target_os = "macos"))]
+            return usage.ru_maxrss as u64 * 1024;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&directory);
+        let file = path(&paths);
+        fs::File::create(&file)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        let before = peak_bytes();
+        assert!(
+            matches!(load(&paths), Err(message) if message == "Update recovery is invalid; it was preserved.")
+        );
+        let extra = peak_bytes().saturating_sub(before);
+        eprintln!("large update journal peak RSS increase: {extra} bytes");
+        assert!(
+            extra < 32 * 1024 * 1024,
+            "oversized update journal allocated {extra} bytes"
+        );
+        assert_eq!(fs::metadata(&file).unwrap().len(), 128 * 1024 * 1024);
+    }
     #[test]
     fn missing_metadata_preserves_the_update_resume_journal() {
         let _test_state = crate::test_support::global_state();

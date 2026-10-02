@@ -110,3 +110,17 @@ UPDATES-NATIVE-6 merge verification: retained the concurrent metadata reader's 1
 UPDATES-NATIVE-7 verification: the peak-memory regression failed before the fix and 12 extracted preference/scheduler tests passed afterward, including exact-limit preservation and previous preference repairs. Formatting, typecheck, lint, and whitespace checks passed. Full native validation remains queued on the shared artifact lock.
 
 UPDATES-NATIVE-7 merge verification: retained concurrent additive-field preservation. Its save path reproduced a further 134,332,416-byte peak-memory increase while repairing the same sparse fixture. Reads and repair saves now share the bounded preference reader. A save that would grow a valid exact-limit document past the read limit fails before replacing it; its regression also failed before the writer check. Fifteen extracted preference/scheduler tests passed, including both concurrent additive-field regressions. Typecheck, lint, formatting, and whitespace checks passed after resolution.
+
+## UPDATES-NATIVE-8: Journal size validation runs after an unbounded allocation
+
+- **Priority:** P2.
+- **Location:** `runtime/update_recovery.rs::load` before the fix.
+- **Trigger:** A corrupted update-resume journal grows past its existing 1 MiB limit.
+- **Evidence:** The production loader read a sparse 128 MiB file in full before checking its size. The child-process peak-memory regression failed its 32 MiB budget.
+- **Consequence:** Startup recovery allocates memory proportional to arbitrary journal size before reporting the preserved invalid file.
+- **Correction:** Bound consumption to the existing 1 MiB limit plus one byte with standard `Read::take`; retain the existing validation and preserved-file errors.
+- **Regression:** `journal_large_input_memory_is_bounded` measures the production read in a child process, rejects oversized input, and verifies the original sparse file retains its length.
+
+UPDATES-NATIVE-8 verification: the child-process regression measured a 134,283,264-byte peak increase before the fix and failed. Eight extracted journal/metadata tests passed afterward. Formatting, typecheck, lint, and whitespace checks passed.
+
+Second fix-loop record: UPDATES-NATIVE-6 is fixed in `68f17fd3` with integration resolution `f254b80e`; UPDATES-NATIVE-7 is fixed in `c9333cf9` with additive-field integration and bounded saves in `5bf1eeee`. Both units are folded into `codex/integration`. Fifteen preference/scheduler tests and eight journal/metadata tests passed in disposable source-extracted harnesses with cached dependencies. The full native Cargo request never acquired the shared target lock and was stopped after verifying its command, owner, and exact worktree. No app, real VM, package manager, or production state was used.
