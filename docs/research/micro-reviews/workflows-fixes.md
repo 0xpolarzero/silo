@@ -83,6 +83,20 @@ both broken modes only after the fix and still accept `0755`; metadata and final
 publication fixture suites pass. These are archive fixtures, not installed-app
 or live updater tests.
 
+## WORKFLOWS-8: P2 — Runtime cache producer emits links rejected by its consumer
+
+The public-cache packer accepted ordinary files sharing an inode, then Python's
+default tar writer encoded the second pathname as a hardlink. The importer
+correctly rejects every link entry, so a cold platform job could successfully
+produce an archive that both downstream jobs refused to import. A fixture with
+two hardlinked, allowlisted public license files reproduced this round-trip
+failure. The producer now uses Python's supported
+[`dereference` option](https://docs.python.org/3.12/library/tarfile.html#tarfile.TarFile.dereference)
+to emit file bytes at both paths. Existing producer symlink checks and consumer
+link rejection remain. The new round-trip regression verifies both contents
+and independent destination inodes; unsafe-path, link, checksum, and workflow
+boundary tests still pass. No native resources were built or downloaded.
+
 ## Verification
 
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow`: 22 tests pass after the queue fix.

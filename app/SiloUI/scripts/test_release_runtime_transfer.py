@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -63,6 +64,22 @@ class RuntimeTransferTests(unittest.TestCase):
             self.assertEqual((consumer / MSB).stat().st_mode & 0o777, 0o755)
             for private in forbidden:
                 self.assertFalse((consumer / private).exists())
+
+    def test_hardlinked_public_license_files_transfer_as_independent_regular_files(self):
+        first_name = 'app/SiloUI/src-tauri/target/runtime-cache/v0.7.6/licenses/GPL.txt'
+        second_name = 'app/SiloUI/src-tauri/target/runtime-cache/dugite/v1/licenses/GPL.txt'
+        first = self.write(first_name, b'public license', 0o644)
+        second = self.producer / second_name
+        second.parent.mkdir(parents=True)
+        os.link(first, second)
+        approved_digest = CACHE.pack(self.producer, self.archive)
+        consumer = self.root / 'consumer'
+        consumer.mkdir()
+        CACHE.unpack(consumer, self.archive, approved_digest)
+        for name in (first_name, second_name):
+            self.assertEqual((consumer / name).read_bytes(), b'public license')
+        self.assertNotEqual((consumer / first_name).stat().st_ino,
+                            (consumer / second_name).stat().st_ino)
 
     def test_archive_paths_match_existing_public_cache_allowlist(self):
         paths = re.findall(r'        path: \|\n((?:          .+\n)+)', ACTION)[0].split()
