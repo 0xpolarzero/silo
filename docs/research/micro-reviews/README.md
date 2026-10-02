@@ -57,7 +57,7 @@ report's revision, status and verification limits against current code.
 | [fe-lib-hooks.md](fe-lib-hooks.md) | 2 |
 | [fe-onboarding-prefs.md](fe-onboarding-prefs.md) | 1 |
 | [fe-sandboxes-followups.md](fe-sandboxes-followups.md) | 5 |
-| [fe-sandboxes-second-loop.md](fe-sandboxes-second-loop.md) | 6 |
+| [fe-sandboxes-second-loop.md](fe-sandboxes-second-loop.md) | 7 |
 | [fe-sandboxes.md](fe-sandboxes.md) | 2 |
 | [fe-status-storage-updates-fixes.md](fe-status-storage-updates-fixes.md) | 9 |
 | [fe-status-storage-updates.md](fe-status-storage-updates.md) | 2 |
@@ -67,13 +67,13 @@ report's revision, status and verification limits against current code.
 | [github-http-followup.md](github-http-followup.md) | 4 |
 | [github-http.md](github-http.md) | 1 |
 | [github-native-follow-up.md](github-native-follow-up.md) | 3 |
-| [github-native-round-two.md](github-native-round-two.md) | 5 |
+| [github-native-round-two.md](github-native-round-two.md) | 6 |
 | [github-native.md](github-native.md) | 2 |
 | [github-tokens-fix-loop.md](github-tokens-fix-loop.md) | 5 |
 | [github-tokens.md](github-tokens.md) | 1 |
 | [guest-scripts-follow-up.md](guest-scripts-follow-up.md) | 4 |
 | [guest-scripts.md](guest-scripts.md) | 2 |
-| [host-push-followup.md](host-push-followup.md) | 4 |
+| [host-push-followup.md](host-push-followup.md) | 5 |
 | [host-push.md](host-push.md) | 2 |
 | [log-secrets.md](log-secrets.md) | 3 |
 | [native-entry-fix-loop.md](native-entry-fix-loop.md) | 7 |
@@ -103,7 +103,7 @@ report's revision, status and verification limits against current code.
 | [runtime-dir-a.md](runtime-dir-a.md) | 1 |
 | [runtime-dir-b-followup.md](runtime-dir-b-followup.md) | 7 |
 | [runtime-dir-b.md](runtime-dir-b.md) | 2 |
-| [runtime-dir-c-followup.md](runtime-dir-c-followup.md) | 4 |
+| [runtime-dir-c-followup.md](runtime-dir-c-followup.md) | 5 |
 | [runtime-dir-c.md](runtime-dir-c.md) | 2 |
 | [runtime-migration.md](runtime-migration.md) | 2 |
 | [secrets-followups.md](secrets-followups.md) | 4 |
