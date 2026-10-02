@@ -1,11 +1,13 @@
 """Check the workflow and desktop fixture agree without launching a native app."""
 import ast
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import shlex
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -27,6 +29,50 @@ def expression(name):
 
 
 class LinuxVerificationTests(unittest.TestCase):
+    def test_lifecycle_default_and_guest_probes_use_development_host_state(self):
+        lifecycle = next(node for node in SMOKE.body if isinstance(node, ast.FunctionDef)
+                         and node.name == 'run_lifecycle')
+        identifier_assignment = next(node for node in lifecycle.body if isinstance(node, ast.Assign)
+                                     and any(isinstance(target, ast.Name) and target.id == 'identifier'
+                                             for target in node.targets))
+        default = eval(compile(ast.Expression(identifier_assignment.value), 'lifecycle-identifier', 'eval'),
+                       {'environment': {}})
+        self.assertEqual(default, 'org.silo.dev')
+
+    def test_lifecycle_guest_probes_select_the_channel_runtime_alias(self):
+        lifecycle = next(node for node in SMOKE.body if isinstance(node, ast.FunctionDef)
+                         and node.name == 'run_lifecycle')
+        guest_for = next(node for node in ast.walk(lifecycle) if isinstance(node, ast.FunctionDef)
+                         and node.name == 'guest_for')
+        channel_setup = [node for node in lifecycle.body if isinstance(node, ast.Assign)
+                         and any(isinstance(target, ast.Name) and target.id == 'state_dir_name'
+                                 for target in node.targets)]
+        probe = compile(ast.Module(body=[*channel_setup, guest_for], type_ignores=[]),
+                        'lifecycle-guest-probe', 'exec')
+        for identifier, private_directory in [('org.silo.dev', '.silo-dev'),
+                                              ('org.silo.preview', '.silo'),
+                                              ('org.silo.preview.linux-checkpoints', '.silo-dev')]:
+            with self.subTest(identifier=identifier), tempfile.TemporaryDirectory() as temporary:
+                app_data = Path(temporary) / 'data' / identifier
+                storage_home = app_data / 'runtime-checkpoints-converted/microsandbox'
+                alias = Path(temporary) / 'home' / private_directory / hashlib.sha256(os.fsencode(storage_home)).hexdigest()[:12]
+                alias.mkdir(parents=True)
+                environment = {'HOME': str(Path(temporary) / 'home'),
+                               'SILO_LINUX_MSB': '/fixture/msb', 'SILO_LINUX_MSB_LIBRARY': '/fixture/library'}
+                calls = []
+
+                def run(args, **kwargs):
+                    calls.append((args, kwargs))
+                    return SimpleNamespace(returncode=0, stdout='guest marker\n')
+
+                namespace = {'Path': Path, 'os': os, 'hashlib': hashlib, 'identifier': identifier,
+                             'app_data': app_data, 'environment': environment,
+                             'subprocess': SimpleNamespace(run=run)}
+                exec(probe, namespace)
+                self.assertEqual(namespace['guest_for']('fixture-workspace', 'printf marker', 'guest marker'),
+                                 'guest marker')
+                self.assertEqual(calls[0][1]['env']['MSB_HOME'], str(alias))
+
     def test_smoke_environment_keeps_home_and_xdg_state_inside_the_fixture(self):
         fixture = next(node for node in RUN.body if isinstance(node, ast.With))
         statements = []
