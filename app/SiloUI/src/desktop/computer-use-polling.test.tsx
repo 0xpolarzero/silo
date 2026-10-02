@@ -29,6 +29,59 @@ function section(b: ComputerUseBackend, active = true) {
 beforeEach(() => { vi.useFakeTimers(); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible") })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
+it("backs off failed remote download reads to a cap and restores polling after recovery", async () => {
+  const read = vi.fn(async (): Promise<unknown> => { throw new Error("Computer disconnected") })
+  const store = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 1000, idle: 1000 }).chatGptFor("office")
+  const stop = store.subscribe(() => {})
+  try {
+    await advance(0)
+    expect(read).toHaveBeenCalledOnce()
+    for (const delay of [2000, 4000, 8000, 16000, 30000, 30000]) {
+      const calls = read.mock.calls.length
+      await advance(delay - 1)
+      expect(read).toHaveBeenCalledTimes(calls)
+      await advance(1)
+      expect(read).toHaveBeenCalledTimes(calls + 1)
+    }
+    expect(store.getSnapshot().loadError).toBe("Computer disconnected")
+    read.mockResolvedValue({ state: "idle" })
+    await advance(30000)
+    expect(store.getSnapshot().loadError).toBeNull()
+    const calls = read.mock.calls.length
+    await advance(999)
+    expect(read).toHaveBeenCalledTimes(calls)
+    await advance(1)
+    expect(read).toHaveBeenCalledTimes(calls + 1)
+    stop()
+    await advance(60000)
+    expect(read).toHaveBeenCalledTimes(calls + 1)
+  } finally { stop() }
+})
+
+it("backs off failed computer-use state reads and stops a pending schedule when inactive", async () => {
+  const read = vi.fn(async (): Promise<unknown> => { throw new Error("Sandbox unavailable") })
+  const view = section(backend({ readDesktopState: read }))
+  await advance(0)
+  expect(read).toHaveBeenCalledOnce()
+  for (const delay of [10000, 20000, 30000, 30000]) {
+    const calls = read.mock.calls.length
+    await advance(delay - 1)
+    expect(read).toHaveBeenCalledTimes(calls)
+    await advance(1)
+    expect(read).toHaveBeenCalledTimes(calls + 1)
+  }
+  read.mockResolvedValue(fixtureDesktopState("ready"))
+  await advance(30000)
+  const calls = read.mock.calls.length
+  await advance(4999)
+  expect(read).toHaveBeenCalledTimes(calls)
+  await advance(1)
+  expect(read).toHaveBeenCalledTimes(calls + 1)
+  view.setActive(false)
+  await advance(60000)
+  expect(read).toHaveBeenCalledTimes(calls + 1)
+})
+
 it("pauses an inactive computer-use section and refreshes once on return", async () => {
   const read = vi.fn(async () => fixtureDesktopState("ready"))
   const view = section(backend({ readDesktopState: read }), false)

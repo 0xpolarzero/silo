@@ -182,7 +182,7 @@ int main(int argc, char **argv) {
 
 
 class MacOSReleaseSignerEnvironmentTests(unittest.TestCase):
-    def run_packager(self, file_key):
+    def run_packager(self, file_key, signer_exit=0):
         with tempfile.TemporaryDirectory(prefix='silo-signer-env-') as temporary:
             root = Path(temporary)
             app = root / 'Silo.app'
@@ -202,19 +202,29 @@ class MacOSReleaseSignerEnvironmentTests(unittest.TestCase):
 
             def command(args, **kwargs):
                 invocations.append((args, kwargs))
+                if args[0] == 'npx' and signer_exit:
+                    raise subprocess.CalledProcessError(signer_exit, args)
                 return subprocess.CompletedProcess(args, 0)
 
             environment = {'TAURI_SIGNING_PRIVATE_KEY': key,
                            'TAURI_SIGNING_PRIVATE_KEY_PATH': 'stale-path',
-                           'TAURI_SIGNING_PRIVATE_KEY_PASSWORD': ''}
+                           'TAURI_SIGNING_PRIVATE_KEY_PASSWORD': 'disposable-password-sentinel'}
             with patch.dict(os.environ, environment), \
                     patch.object(sys, 'argv', [str(script), str(app), str(root / 'output')]), \
                     patch.object(module, 'sign_runtime'), patch.object(module, 'verify_bundle'), \
                     patch.object(module.subprocess, 'run', side_effect=command):
-                module.main()
+                if signer_exit:
+                    with self.assertRaisesRegex(RuntimeError, 'Updater signing failed.*exit code 17') as failure:
+                        module.main()
+                    self.assertNotIn(environment['TAURI_SIGNING_PRIVATE_KEY_PASSWORD'], str(failure.exception))
+                else:
+                    module.main()
             signer = [(args, kwargs) for args, kwargs in invocations if args[0] == 'npx']
             self.assertEqual(len(signer), 1)
             args, kwargs = signer[0]
+            self.assertNotIn(environment['TAURI_SIGNING_PRIVATE_KEY_PASSWORD'], args)
+            self.assertNotIn('-p', args)
+            self.assertEqual(kwargs['env']['TAURI_SIGNING_PRIVATE_KEY_PASSWORD'], environment['TAURI_SIGNING_PRIVATE_KEY_PASSWORD'])
             self.assertNotIn('TAURI_SIGNING_PRIVATE_KEY_PATH', kwargs['env'])
             if file_key:
                 self.assertEqual(args[args.index('-f') + 1], key)
@@ -229,6 +239,9 @@ class MacOSReleaseSignerEnvironmentTests(unittest.TestCase):
 
     def test_inline_key_remains_in_environment_only(self):
         self.run_packager(file_key=False)
+
+    def test_signer_failure_does_not_disclose_password(self):
+        self.run_packager(file_key=False, signer_exit=17)
 
 
 if __name__ == '__main__':

@@ -21,7 +21,13 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-01 | P2 | Wrapper configuration crosses the Cargo argument separator | Fixed and folded: `9baaac4e` |
 | RL-02 | P2 | Linux verification seeds production paths for a Dev binary | Fixed and folded: `5a14fe19` |
 | RL-03 | P2 | Desktop smoke isolation leaves HOME-dependent state live | Fixed and folded: `024c8268` |
-| RL-04 | P2 | Direct publication bypasses the explicit stable-release opt-in | Confirmed; fix pending |
+| RL-04 | P2 | Direct publication bypasses the explicit stable-release opt-in | Fixed and folded: `5b18ec21` |
+| RL-05 | P3 | Release guide omits the implemented in-app Debian update | Corrected and folded: `17edafc6` |
+| RL-06 | P2 | Required minimum-macOS gate uses a runner with imminent brownouts | Open; replacement qualification required |
+| RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed: `abae62fe` |
+| RL-08 | P2 | Failed license staging replaces the MicroSandbox sidecar without its manifest | Fixed; regression passes |
+| RL-09 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Confirmed; fix pending |
+| RL-10 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed: `8102c670` |
 
 ## Detailed findings
 
@@ -83,9 +89,103 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 
 **Consequence.** The final publication boundary does not enforce the repository's requirement to keep Silo below 1.0.0 until explicitly authorized. Environment review alone does not express the promised distinct stable-release decision.
 
-**Correction.** Require an explicit stable-release flag in the final Python publication gate and carry it through the workflow's boolean input and the existing local wrapper option. Keep parsing/comparison of historical public versions independent of this policy so a prior 1.x tag does not cause unrelated parsing failures. The early build gate still needs the same policy before owner-approved 1.x release qualification.
+**Correction.** Require an explicit stable-release flag in the final Python publication gate and carry it through the workflow's boolean input and the existing local wrapper option. Keep parsing/comparison of historical public versions independent of this policy so a prior 1.x tag does not cause unrelated parsing failures. Enforce the same opt-in in the early draft build gate.
 
 **Rejecting test.** Direct draft creation and publication for `1.0.0` and later must fail before any GitHub call without opt-in; explicit opt-in must reach the ordinary asset gates. The local wrapper must dispatch the workflow opt-in only when explicitly requested. Execute the workflow command with a fake Python verifier and verify its argument list in both modes, without signing or contacting GitHub.
+
+**Status.** Fixed and folded in `5b18ec21`, including the early build gate, both final workflow commands, the backend, wrapper propagation and release-guide instructions. Tag-triggered 1.x drafts have no opt-in and fail early; an owner-approved stable draft requires manual dispatch with both booleans selected. No stable release is authorized by this change. The four Python rejection subcases, wrapper propagation, workflow forwarding, and early draft regression failed before their fixes. All 33 focused Python tests and all 27 Node release-adapter tests pass. This is release-policy tooling and needs no application changeset.
+
+### RL-05 Release guide omits the implemented in-app Debian update
+
+**P3.** Confirmed at `2c78975b`. Location: [SiloUI-RELEASES.md](SiloUI-RELEASES.md), supported-packages table and Debian update description.
+
+**Trigger.** Use the authoritative release guide to choose the Linux update acceptance path or advise an installed Debian-package user.
+
+**Evidence.** Both Linux rows say in-app updates are AppImage-only, and the following prose describes Debian's package-manager/download flow. Current `updates.rs::install_update` instead dispatches Debian packages to `install_debian`, which invokes the authenticated `pkexec` helper, refreshes and downloads through APT, then installs the selected version. [The dedicated Linux update guide](SiloUI-LINUX-UPDATES.md#in-app-debian-updates-14-september-2026) documents that implemented route.
+
+**Consequence.** The release guide understates supported behavior and directs contributors away from the actual in-app system-authentication and update path when planning installer qualification. Existing acceptance requirements still mention Debian upgrades, so this is narrower than missing all Debian coverage.
+
+**Correction.** Describe AppImage's signed updater and Debian's authenticated APT operation separately in both Linux rows, and link the in-app Debian procedure. Corrected in this update without changing application behavior.
+
+**Rejecting test.** Review the table against the package-kind branches in `install_update`: macOS uses the signed app archive, AppImage uses signed replacement, and Debian uses authenticated APT. Keep all three represented. This is a prose correction; no implementation-mirroring test was added and no package was installed.
+
+### RL-06 Required minimum-macOS gate uses a runner with imminent brownouts
+
+**P2; scheduled availability failure, not an observed hosted run.** Confirmed at `071ca883` against the primary runner announcement on 2026-10-02. Locations: [release.yml](../.github/workflows/release.yml), `macos-minimum-constraints` and the draft job's required dependencies; [SiloUI-RELEASES.md](SiloUI-RELEASES.md), minimum-version runner qualification.
+
+**Trigger.** Build a draft during a macOS 14 runner brownout, first October 5 at 14:00 UTC through October 6 at 00:00 UTC, or after runner retirement on November 2, 2026.
+
+**Evidence.** The required `macos-minimum-constraints` job runs only on `macos-14`; the draft job requires its success. GitHub's [runner retirement announcement](https://github.com/actions/runner-images/issues/13518) explicitly says brownout jobs fail, lists eight October windows, and says the image becomes unsupported November 2. The release guide correctly names the retirement date but misses the earlier brownout failure windows. There is no alternative minimum-version job or qualified runner in this workflow. Package/platform jobs can still complete while draft creation remains blocked.
+
+**Consequence.** Draft delivery predictably fails during the announced windows and becomes unavailable on this workflow after retirement. Successful macOS 15 package builds cannot satisfy the separate promised macOS 14 library-constraint evidence.
+
+**Correction.** Qualify and configure a maintained macOS 14 execution environment before the first brownout. Keep the minimum-version gate blocking. Until replacement is ready, document the brownout windows and rerun failed draft builds outside them; that workaround expires at retirement. Changing the runner to macOS 15 or skipping the job would discard the supported-minimum proof.
+
+**Rejecting test.** Run the exact constraint suite on the replacement's verified macOS 14 environment and attach its OS identity and results to a complete draft-verification run. Inject a gate failure and confirm draft creation stays blocked. A source assertion that merely changes `runs-on` or a newer-OS passing run rejects neither failure mode.
+
+**Status.** Left open because no qualified replacement runner or macOS 14 host was provided, and the shared task instructions prohibit app launches and network-heavy builds. Provisioning and qualifying a runner is not a small obvious source fix. No CI/environment configuration was changed to bypass this gate.
+
+### RL-07 MicroSandbox fallback executable cache ignores compiler flags and build recipe
+
+**P2.** The compiled cache key in `microsandbox-runtime.mjs` included source,
+patches, agent bytes, compiler version, target, and features, but omitted the
+staging recipe and inherited Cargo compiler flags. A changed `RUSTFLAGS` could
+therefore reuse a previous executable after fallback cache restoration.
+
+**Evidence.** The real staging/cache orchestration with deterministic external
+tools compiled eight times across the existing capability/source cases. Changing
+`RUSTFLAGS` left that count at eight instead of nine. No native build was run.
+
+**Correction and status.** Fixed: the key includes the staging script digest and
+the four documented Cargo flag environment inputs. The regression checks rebuilds
+for changed plain, encoded, build-wide, and target-specific flags, and reuse when
+those inputs remain unchanged. The focused runtime staging tests pass.
+
+### RL-08 Failed license staging replaces the MicroSandbox sidecar without its manifest
+
+**P2.** `stageRuntime` published the compiled sidecar before fetching and verifying
+the remaining licenses and writing the new resource manifest. A later download
+failure left the previously prepared manifest and library alongside a replacement
+sidecar with a different digest.
+
+**Evidence.** A fixture first prepared a complete runtime, then attempted a new
+compiled executable with an unavailable license URL. The call rejected, but the
+sidecar contained the replacement bytes. The regression failed on the original
+sidecar comparison; no native executable or network request was used.
+
+**Correction and status.** Fixed: sidecar publication follows complete resource
+and manifest staging. The regression now verifies that a failed license fetch
+preserves all three previously prepared outputs. This does not claim atomic
+publication across a process crash or final filesystem errors.
+### RL-09 Optional GNOME verifier uses obsolete tray and channel expectations
+
+**P2.** Confirmed at `ac8aaf87`. Locations: [linux_desktop_services.py](../app/SiloUI/scripts/linux_desktop_services.py), tray item selection, Open action and health fixture; [tray.rs](../app/SiloUI/src-tauri/src/tray.rs), Linux `menu` and `title`.
+
+**Trigger.** Enable the smoke harness's optional `SILO_LINUX_DESKTOP_SERVICES=gnome` mode against a current production or Dev fixture.
+
+**Evidence.** Native Linux tray code exports the menu label `Open Silo`; the GNOME helper selects `Open Silo…` and therefore raises `StopIteration` for the current menu even in production. For Dev, it first rejects the channel's `Silo Dev` tray title and window title because both comparisons require `Silo`. Its health-error injection also writes metadata under the production identifier regardless of the selected fixture identifier. These are source-confirmed adapter mismatches; no desktop service was launched.
+
+**Consequence.** The optional verification cannot reach its claimed native reopen, health notification, and Quit checks. The title and metadata assumptions also prevent extending that qualification to the Dev channel selected by the current build workflow. This is separate from RL-02's ordinary settings/autostart smoke paths.
+
+**Correction.** Match the actual Open action and derive tray/window names and health metadata from the selected channel. Keep the native menu's current shared action labels; changing product menus is outside this fixture correction.
+
+**Rejecting test.** Feed the extracted real GNOME menu selector a layout populated from the native tray's actual action labels. It must select Open and Quit. Exercise the tray-title predicate and health metadata path for both standard channel identifiers, requiring Dev state to remain under the Dev fixture root. Then qualify the full optional GNOME run separately.
+
+### RL-10 Package identity gate accepts another Debian package or macOS Dev bundle
+
+**P2.** The final metadata verifier checked Debian version/architecture but not
+`Package`, and macOS version/CPU but not `CFBundleIdentifier`. Correctly versioned
+artifacts belonging to another application or the Dev channel therefore passed.
+
+**Evidence.** Synthetic signed-package contents for both Debian architectures
+with `Package: unrelated`, plus ARM64 macOS archives with Dev/other identifiers,
+all passed before the correction. Four rejecting subcases failed. These fixtures
+exercise the metadata verifier, not cryptographic signing or publication.
+
+**Correction and status.** Fixed: Debian packages must identify `silo`; macOS
+archives must use the production identifier from the tracked Tauri configuration.
+Positive production fixtures still pass. The Linux fixture builds real `.deb`
+files with `dpkg-deb` and accepts `silo` while rejecting an unrelated package.
 
 ## Verification and reproducibility
 
@@ -96,6 +196,8 @@ Before the fix commit: Node 24.11.1 `typecheck` passed; `lint` passed with 12 ex
 RL-02: `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_linux_verification_release test_desktop_release test_workflow_pins` passed 12 tests. Typecheck, lint (5 existing warnings after integration updates), and Rust formatting passed before its fix commit. `rl02-{before,after}.log` retains the failing/passing evidence in the same ignored directory.
 
 RL-03: the same focused command passed 13 tests. Lint (2 existing warnings) and Rust formatting passed. Typecheck at `60c1b862` failed on two stale `ComputerUseProvider` imports introduced by concurrent integration changes; the next integration fold supplied corrected imports. The failure preceded the fix commit and did not involve the changed Python files. Typecheck is rerun after integration. `rl03-{before,after}.log` retains the focused regression evidence.
+
+RL-04: `python3 -m unittest test_publish_release test_release_publication test_release_workflow test_workflow_pins` (with the scripts directory on PYTHONPATH) passed 33 tests; Node 24.11.1 `node --test app/SiloUI/scripts/release.test.mjs` passed 27. Typecheck, lint without warnings, and Rust formatting passed before commit. Logs prefixed `rl04-` retain failures and passing results. The initial Python diagnostic omitted synthetic GH_REPO and failed fixture setup; the corrected diagnostic reached the unexpected mocked GitHub calls. An intermediate shell regression caught macOS Bash 3's empty-array/nounset behavior; positional arguments replaced that array before the final pass.
 
 ## Next action
 

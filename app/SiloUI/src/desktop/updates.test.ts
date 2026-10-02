@@ -36,3 +36,16 @@ it("listens to real native update progress and returns the native unsubscriber",
   native.listen.mock.calls[0][1]({ payload: { ...state, phase: "downloading", downloadedBytes: 75, totalBytes: 100 } })
   expect(receive).toHaveBeenCalledWith(expect.objectContaining({ phase: "downloading", downloadedBytes: 75 }))
 })
+
+it("ignores malformed native update events without losing the next valid event", async () => {
+  native.listen.mockResolvedValue(vi.fn())
+  const receive = vi.fn()
+  const log = vi.spyOn(console, "error").mockImplementation(() => {})
+  await desktopUpdateBackend.subscribe(receive)
+  const emit = native.listen.mock.calls[0][1]
+  emit({ payload: { ...state, downloadedBytes: -1 } })
+  expect(receive).not.toHaveBeenCalled()
+  expect(log).toHaveBeenCalledWith("Silo updates: invalid native state")
+  emit({ payload: { ...state, phase: "ready", availableVersion: "0.2.0" } })
+  expect(receive).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ phase: "ready", availableVersion: "0.2.0" }))
+})

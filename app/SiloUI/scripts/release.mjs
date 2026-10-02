@@ -52,7 +52,7 @@ export function release(action, root = app, run = (command, args) => execFileSyn
     const remote = run("git", ["ls-remote", "origin", `refs/tags/${tag}`, `refs/tags/${tag}^{}`]).split("\n")
     const peeled = remote.find(line => line.endsWith(`refs/tags/${tag}^{}`)) ?? remote.find(line => line.endsWith(`refs/tags/${tag}`))
     if (peeled?.split(/\s+/)[0] !== head) throw new Error(`The remote ${tag} does not identify this commit. Publish from the tagged release checkout.`)
-    run("gh", ["workflow", "run", "publish-release.yml", "--ref", tag, "-f", `version=${version}`])
+    run("gh", ["workflow", "run", "publish-release.yml", "--ref", tag, "-f", `version=${version}`, ...(allowStable ? ["-f", "allow_stable=true"] : [])])
     console.log(`Requested verified publication of ${tag}. Approve release-publish if requested; publication is complete only when the workflow succeeds.`)
   }
 }

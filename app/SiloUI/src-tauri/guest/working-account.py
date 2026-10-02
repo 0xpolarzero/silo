@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 POLICY = {'schemaVersion': 1, 'user': 'silo', 'home': '/home/silo'}
 RECORD = Path('/var/lib/silo/working-account.json')
@@ -82,8 +83,29 @@ def launcher_contents(path, relative):
         data = path.read_text()
     except (UnicodeError, OSError):
         return None
+    if '\x00' in data:
+        return None
     updated = relocate(data)
     return updated if updated != data else None
+
+
+def copy_file(path, target, contents=None, replace=False):
+    with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.silo-copy-', delete=False) as staged:
+        temporary = Path(staged.name)
+    try:
+        shutil.copy2(path, temporary)
+        if contents is not None:
+            if isinstance(contents, bytes):
+                temporary.write_bytes(contents)
+            else:
+                temporary.write_text(contents)
+        if replace:
+            os.replace(temporary, target)
+        else:
+            # Publish complete bytes without replacing an entry created during copying.
+            os.link(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def copy_home(source, destination):
@@ -134,10 +156,7 @@ def copy_home(source, destination):
             target.symlink_to(relocate(os.readlink(path)))
             shutil.copystat(path, target, follow_symlinks=False)
         else:
-            shutil.copy2(path, target)
-            updated = launcher_contents(path, path.relative_to(source))
-            if updated is not None:
-                target.write_text(updated)
+            copy_file(path, target, launcher_contents(path, path.relative_to(source)))
     for path, target, mode in reversed(copies):
         if stat.S_ISDIR(mode):
             shutil.copystat(path, target)
@@ -155,12 +174,11 @@ def copy_shell_setup(source, destination):
                 conflict(target)
             originals.append((original, target))
     for original, target in originals:
-        shutil.copy2(original, target)
-        target.write_text(relocate(original.read_text()))
+        contents = original.read_bytes().replace(b'/home/silo-desktop/', b'/home/silo/').replace(b'/root/', b'/home/silo/')
         # Root's profile does not put the user's own tools on PATH.
-        if original.name == '.profile' and PATH_SETUP not in target.read_text():
-            with target.open('a') as output:
-                output.write(PATH_SETUP)
+        if original.name == '.profile' and PATH_SETUP.encode('utf-8') not in contents:
+            contents += PATH_SETUP.encode('utf-8')
+        copy_file(original, target, contents, replace=True)
 
 
 def validate_account(entry):

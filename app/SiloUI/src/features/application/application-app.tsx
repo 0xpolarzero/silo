@@ -1,3 +1,5 @@
+import { useLifecycleToasts } from "./model/use-lifecycle-toasts"
+import { useRepositoryPushToasts } from "./components/use-repository-push-toasts"
 import { workspaceTarget } from "./model/remote-computers"
 import { useBackendNotices } from "@/features/application/model/use-backend-notices"
 import { useUpdates } from "@/features/updates/update-store"
@@ -234,6 +236,18 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
     setRepositoryPushOperations((current) => current.filter((operation) => operation.workspace !== workspace || operation.repositoryPath !== repositoryPath))
   }, [actions])
 
+  useLifecycleToasts(applicationSource, actions)
+  useRepositoryPushToasts(repositoryPushOperations, {
+    onPush: pushRepository,
+    onDismiss: dismissRepositoryPush,
+    queue: source.operationQueue,
+    onCancel: actions.cancelOperation,
+    resolveSandbox: target => {
+      const machine = workspaces.find(workspace => workspaceTarget(workspace) === target)?.machine
+      return machine ? { id: machine.id, name: machine.name } : undefined
+    },
+  })
+
   function resolveSandboxId(value: string) {
     return source.workspaces.find((workspace) => workspace.machine.id === value || workspace.machine.name === value || workspaceTarget(workspace) === value)?.machine.id ?? value
   }
@@ -350,7 +364,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
       <QuitRequestConfirmation connect={connectQuitConfirmation} />
       <section id="application-panel-workspaces" role="region" aria-labelledby="application-nav-workspaces" hidden={visibleTab !== "workspaces"} className="h-full min-h-0 overflow-hidden">
         {visibleWorkspaceSection === "overview" ? (
-          <OverviewPage active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)}
+          <OverviewPage notifyOperations={false} active={visibleTab === "workspaces"} newSandboxRequest={newSandboxRequest} onNewSandboxRequestHandled={(id) => setNewSandboxRequest(current => current === id ? 0 : current)}
             sandboxRequest={sandboxRequest} onSandboxRequestHandled={(token) => setSandboxRequest(current => current?.token === token ? undefined : current)} onExportSandbox={transfer.exportSandbox} onImportSandbox={openImport} importPopover={transfer.importPopover} backup={backup} source={applicationSource}
             selectedSandboxId={navigation.workspace ? resolveSandboxId(navigation.workspace) : null}
             sandboxTab={navigation.sandboxTab}
@@ -365,6 +379,7 @@ function ApplicationContent({ source, actions, backup, initialRoute, routeReques
           } }} onMachinesChange={updateMachines} />
         ) : (
           <WorkspacesPage
+            notifyOperations={false}
             source={applicationSource}
             onSectionChange={navigation.selectWorkspaceSection}
             network={source.network}

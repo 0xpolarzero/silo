@@ -9,7 +9,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from contextlib import contextmanager
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 SOURCE = Path(__file__).resolve().parents[1] / 'src-tauri/guest/desktop-service.py'
 spec = importlib.util.spec_from_file_location('desktop_service', SOURCE)
@@ -46,6 +46,66 @@ class DesktopLifecycle(unittest.TestCase):
              patch('sys.stdout', new_callable=io.StringIO) as output:
             service.main()
             return json.loads(output.getvalue())
+
+    def test_autostart_file_sync_failure_preserves_previous_preference(self):
+        start = patch.object(service, 'start')
+        start.start()
+        self.addCleanup(start.stop)
+        self.command('autostart', 'false')
+        before = (service.STATE / 'config.json').read_bytes()
+        entries = set(service.STATE.iterdir())
+        with patch.object(service.os, 'fsync', side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                self.command('autostart', 'true')
+        self.assertEqual((service.STATE / 'config.json').read_bytes(), before)
+        self.assertEqual(set(service.STATE.iterdir()), entries)
+        self.command('autostart', 'true')
+        self.assertEqual(service.read('config.json'), {'autoStart': True})
+
+    def test_autostart_syncs_complete_file_before_publishing_and_directory_after(self):
+        start = patch.object(service, 'start')
+        start.start()
+        self.addCleanup(start.stop)
+        self.command('autostart', 'false')
+        path = service.STATE / 'config.json'
+        synced = []
+        fsync = os.fsync
+
+        def sync(fd):
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode):
+                self.assertEqual(service.read('config.json'), {'autoStart': False})
+                self.assertEqual(os.pread(fd, info.st_size, 0), b'{"autoStart": true}\n')
+                self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+                synced.append('file')
+            else:
+                self.assertTrue(stat.S_ISDIR(info.st_mode))
+                self.assertEqual(info.st_ino, service.STATE.stat().st_ino)
+                self.assertEqual(service.read('config.json'), {'autoStart': True})
+                synced.append('directory')
+            fsync(fd)
+
+        with patch.object(service.os, 'fsync', side_effect=sync):
+            self.command('autostart', 'true')
+        self.assertEqual(synced, ['file', 'directory'])
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_autostart_directory_sync_failure_does_not_report_success(self):
+        start = patch.object(service, 'start')
+        start.start()
+        self.addCleanup(start.stop)
+        self.command('autostart', 'false')
+        fsync = os.fsync
+
+        def sync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError('directory sync failed')
+            fsync(fd)
+
+        with patch.object(service.os, 'fsync', side_effect=sync):
+            with self.assertRaisesRegex(OSError, 'directory sync failed'):
+                self.command('autostart', 'true')
+        self.assertEqual(service.read('config.json'), {'autoStart': True})
 
     def test_absent_account_policy_requires_migration_even_when_installed(self):
         service.WORKING_ACCOUNT.unlink()
@@ -507,6 +567,88 @@ class DesktopLifecycle(unittest.TestCase):
         self.assertEqual(result['state'], 'running')
         self.assertFalse(result['updateRequired'])
 
+    def test_session_repair_restarts_a_failed_session_with_a_live_supervisor(self):
+        cu_spec = importlib.util.spec_from_file_location(
+            'session_repair', SOURCE.with_name('silo-computer-use.py'))
+        cu = importlib.util.module_from_spec(cu_spec)
+        cu_spec.loader.exec_module(cu)
+        executable = self.root / 'selkies'
+        executable.write_text('#!/bin/sh\n')
+        executable.chmod(0o755)
+        current = {'bootId': service.current_boot_id(), 'sessionState': 'running',
+                   'sessionProcesses': [{'pid': 10}, {'pid': 11}, {'pid': 12}]}
+        running = {'supervisor': 42, 'session': False}
+        events = []
+
+        def session_state():
+            return service.selkies_session_state(current, bool(running['supervisor']))
+
+        def stop():
+            events.append('stop')
+            running['supervisor'] = None
+
+        def launch(*_args, **_kwargs):
+            events.append('launch')
+            running.update(supervisor=43, session=True)
+
+        with patch.object(service, 'supervisor', side_effect=lambda: running['supervisor']), \
+             patch.object(service, 'selkies_state', return_value=current), \
+             patch.object(service, 'managed_process_matches',
+                          side_effect=lambda record: running['session'] or record['pid'] != 11), \
+             patch.object(service, 'stop', side_effect=stop), \
+             patch.object(service, 'SELKIES_EXECUTABLE', executable), \
+             patch.object(service.pwd, 'getpwnam', return_value='account'), \
+             patch.object(service, 'prepare_selkies_runtime', side_effect=lambda _: events.append('prepare')), \
+             patch.object(service.subprocess, 'Popen', side_effect=launch), \
+             patch.object(service, 'status', side_effect=lambda: {
+                 'sessionState': session_state(), 'streamState': 'running'}), \
+             patch.object(cu, 'desktop_session', side_effect=session_state), \
+             patch.object(cu, 'desktop_autostart', return_value=True), \
+             patch.object(cu, 'start_desktop', side_effect=service.start_selkies), \
+             patch.object(cu, 'log'), patch.object(cu.time, 'sleep'):
+            cu.wait_for_session(90, repair=True)
+        self.assertEqual(events, ['stop', 'prepare', 'launch'])
+        self.assertTrue(running['session'])
+
+    def test_start_preserves_a_healthy_or_starting_selkies_session(self):
+        for saved in ('starting', 'running'):
+            with self.subTest(saved=saved):
+                current = {'bootId': service.current_boot_id(), 'sessionState': saved,
+                           'sessionProcesses': [{'pid': 10}, {'pid': 11}, {'pid': 12}]}
+                with patch.object(service, 'supervisor', return_value=42), \
+                     patch.object(service, 'selkies_state', return_value=current), \
+                     patch.object(service, 'managed_process_matches', return_value=True), \
+                     patch.object(service, 'stop') as stop, \
+                     patch.object(service.subprocess, 'Popen') as launch:
+                    service.start_selkies()
+                stop.assert_not_called()
+                launch.assert_not_called()
+
+    def test_stream_supervision_reaps_exited_session_children(self):
+        children = [SimpleNamespace(pid=pid, poll=Mock(return_value=1 if pid == 11 else None))
+                    for pid in (10, 11, 12)]
+
+        def start(_commands, _environment, _account, state, session_children, _stopping):
+            session_children.extend(children)
+            state['sessionProcesses'] = [{'pid': child.pid} for child in children]
+
+        def stream(_state, _account, _environment, stopping, _restart):
+            self.assertFalse(stopping())
+            for child in children:
+                child.poll.assert_called()
+
+        with patch.object(service, 'streamer_backend', return_value='selkies'), \
+             patch.object(service, 'LOG', self.root / 'log'), \
+             patch.object(service, 'identity', return_value='supervisor-start'), \
+             patch.object(service.signal, 'signal'), \
+             patch.object(service.pwd, 'getpwnam', return_value='account'), \
+             patch.object(service, 'start_session_processes', side_effect=start), \
+             patch.object(service, 'supervise_selkies_stream', side_effect=stream), \
+             patch.object(service, 'stop_managed_child') as stop_child:
+            service.supervise_selkies()
+        self.assertFalse((service.RUN / 'failed').exists())
+        self.assertEqual([call.args[0].pid for call in stop_child.call_args_list], [12, 11, 10])
+
     def test_selkies_stream_failure_preserves_the_session_records(self):
         session = [
             {'name': 'xvfb', 'pid': 10},
@@ -702,6 +844,46 @@ class DesktopLifecycle(unittest.TestCase):
         result = self.command('status')
         self.assertNotIn('secret', json.dumps(result))
         self.assertNotIn('password', result)
+
+    def test_selkies_supervision_bounds_logs_with_open_append_descriptors(self):
+        log = self.root / 'service.log'
+        log.write_bytes(b'old' * (1024 * 1024))
+        handlers = {}
+        waits = []
+        session = [SimpleNamespace(pid=pid, poll=lambda: None) for pid in (10, 11, 12)]
+
+        def start(_commands, _environment, _account, state, children, _stopping):
+            children.extend(session)
+            state['sessionProcesses'] = [{'pid': child.pid} for child in session]
+
+        with log.open('ab', buffering=0) as appender:
+            def wait(timeout):
+                # Every monitor cycle must retain the recent output, even though
+                # the children keep their original append descriptors open.
+                self.assertLessEqual(log.stat().st_size, 1024 * 1024)
+                if waits:
+                    self.assertEqual(log.read_bytes(), waits[-1][-256 * 1024:])
+                payload = bytes([len(waits) + 65]) * (1280 * 1024)
+                appender.write(payload)
+                waits.append(payload)
+                if len(waits) == 3:
+                    handlers[service.signal.SIGTERM](service.signal.SIGTERM, None)
+
+            stream = SimpleNamespace(pid=13, poll=lambda: None, wait=wait)
+            with patch.object(service, 'streamer_backend', return_value='selkies'), \
+                 patch.object(service, 'HOME', self.root / 'home'), \
+                 patch.object(service, 'LOG', log), \
+                 patch.object(service, 'identity', return_value='supervisor-start'), \
+                 patch.object(service.signal, 'signal', side_effect=lambda sig, fn: handlers.update({sig: fn})), \
+                 patch.object(service.pwd, 'getpwnam', return_value='account'), \
+                 patch.object(service, 'start_session_processes', side_effect=start), \
+                 patch.object(service, 'launch_selkies_streamer', return_value=(stream, {'pid': 13})), \
+                 patch.object(service, 'selkies_http_ready', return_value=True), \
+                 patch.object(service, 'stop_managed_child'):
+                service.supervise_selkies()
+        self.assertFalse((service.RUN / 'failed').exists())
+        self.assertEqual(len(waits), 3)
+        self.assertEqual(log.read_bytes(), waits[-1][-256 * 1024:])
 
     def test_log_bounds_preserve_tail_and_do_not_follow_symlinks(self):
         home = self.root / 'home'

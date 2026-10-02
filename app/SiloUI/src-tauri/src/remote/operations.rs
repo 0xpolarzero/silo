@@ -169,31 +169,28 @@ impl Registry {
     /// True while the change may still start: before its deadline, with access still
     /// allowed and a connection open (or recently open, so a retry can attach).
     fn wanted(&self, id: &str, allowed: &Probe) -> bool {
-        self.wanted_with_clock(id, allowed, Instant::now)
-    }
-
-    fn wanted_with_clock(
-        &self,
-        id: &str,
-        allowed: &Probe,
-        clock: impl FnOnce() -> Instant,
-    ) -> bool {
         if !allowed() {
             return false;
         }
         let mut state = self.lock();
-        let now = clock();
         let Some(operation) = state.operations.get_mut(id) else {
             return false;
         };
-        if now >= operation.deadline {
-            return false;
-        }
         operation.connections.retain(|(_, open)| open());
         if !operation.connections.is_empty() {
-            operation.connected_at = now;
+            operation.connected_at = Instant::now();
         }
-        now.duration_since(operation.connected_at) < operation.reconnect_grace
+        let (deadline, connected_at, reconnect_grace) = (
+            operation.deadline,
+            operation.connected_at,
+            operation.reconnect_grace,
+        );
+        drop(state);
+        if !allowed() {
+            return false;
+        }
+        let now = Instant::now();
+        now < deadline && now.duration_since(connected_at) < reconnect_grace
     }
 
     fn run(
@@ -505,46 +502,69 @@ mod tests {
     }
 
     #[test]
-    fn a_change_that_expires_while_waiting_for_the_registry_lock_is_not_wanted() {
+    fn access_revoked_during_the_connection_check_prevents_the_change() {
+        let gate = gate();
         let registry = registry();
         let fixture = Fixture::new();
-        registry
-            .accept(&fixture.submission(always(), always()), Value::Null)
-            .unwrap();
-        let mut state = registry.lock();
-        let before = Instant::now();
-        let deadline = before + Duration::from_secs(1);
-        state.operations.get_mut(&fixture.id).unwrap().deadline = deadline;
-        let elapsed = Arc::new(AtomicBool::new(false));
-        let (entered, waiting) = std::sync::mpsc::channel();
-        let (sampled, clock_called) = std::sync::mpsc::channel();
-        let wanted = thread::scope(|scope| {
-            let elapsed_probe = elapsed.clone();
-            let id = &fixture.id;
-            let check = scope.spawn(move || {
-                entered.send(()).unwrap();
-                registry.wanted_with_clock(id, &always(), || {
-                    let now = if elapsed_probe.load(Ordering::SeqCst) {
-                        deadline
-                    } else {
-                        before
-                    };
-                    sampled.send(()).unwrap();
-                    now
-                })
-            });
-            waiting.recv().unwrap();
-            // A clock sampled before locking can complete here; a clock sampled
-            // under the held lock waits until it observes the advanced time.
-            let _ = clock_called.recv_timeout(Duration::from_secs(1));
-            elapsed.store(true, Ordering::SeqCst);
-            drop(state);
-            check.join().unwrap()
+        let (enabled, allowed) = flag(true);
+        let checked = AtomicUsize::new(0);
+        let connection = Arc::new(move || {
+            if checked.fetch_add(1, Ordering::SeqCst) == 1 {
+                enabled.store(false, Ordering::SeqCst);
+            }
+            true
         });
-        assert!(
-            !wanted,
-            "expired work must not be admitted after registry contention"
+        let runs = counter();
+
+        let result = registry.submit(
+            fixture.submission(connection, allowed),
+            change_on(gate, fixture.vm(), runs),
         );
+
+        assert_eq!(result, Err(EXPIRED.into()));
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_connection_check_that_outlasts_the_deadline_never_starts_the_change() {
+        let gate = gate();
+        let registry = registry();
+        let fixture = Fixture::new();
+        let checked = Arc::new(AtomicUsize::new(0));
+        let deadline = Arc::new(std::sync::OnceLock::<Instant>::new());
+        let connection = {
+            let checked = checked.clone();
+            let deadline = deadline.clone();
+            Arc::new(move || {
+                if checked.fetch_add(1, Ordering::SeqCst) == 1 {
+                    // Pause the admission check until the accepted request has expired.
+                    let deadline = *deadline.get().unwrap();
+                    thread::sleep(deadline.saturating_duration_since(Instant::now()));
+                }
+                true
+            }) as Probe
+        };
+        let submission = fixture.submission(connection, always());
+        registry
+            .accept(
+                &submission,
+                json!({"method": submission.method, "params": submission.params}),
+            )
+            .unwrap();
+        let cutoff = Instant::now() + Duration::from_millis(300);
+        registry
+            .lock()
+            .operations
+            .get_mut(&fixture.id)
+            .unwrap()
+            .deadline = cutoff;
+        deadline.set(cutoff).unwrap();
+        let runs = counter();
+
+        let result = registry.run(&submission, change_on(gate, fixture.vm(), runs));
+
+        assert_eq!(result, Err(EXPIRED.into()));
+        assert_eq!(runs.load(Ordering::SeqCst), 0);
     }
 
     #[test]

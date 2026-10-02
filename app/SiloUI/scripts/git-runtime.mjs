@@ -2,6 +2,8 @@ import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { promisify } from "node:util"
 import {
+  copyFile,
+  chmod,
   lstat,
   mkdir,
   readFile,
@@ -12,7 +14,9 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises"
-import { basename, dirname, join, relative, resolve, sep } from "node:path"
+import { basename, join, relative, resolve, sep } from "node:path"
+
+import { fetchVerifiedFile } from "./build-input.mjs"
 
 const execFileAsync = promisify(execFile)
 
@@ -113,23 +117,6 @@ function assertInside(root, candidate) {
   throw new Error(`Refusing to stage outside ${resolve(root)}: ${resolve(candidate)}`)
 }
 
-async function validCachedFile(file, expectedSha256) {
-  try {
-    return (await stat(file)).isFile() && gitRuntimeSha256(await readFile(file)) === expectedSha256
-  } catch {
-    return false
-  }
-}
-
-async function fetchVerified(fetchBytes, url, expectedSha256, label, cacheFile) {
-  if (await validCachedFile(cacheFile, expectedSha256)) return readFile(cacheFile)
-  const bytes = Buffer.from(await fetchBytes(url))
-  verifyGitRuntimeSha256(bytes, expectedSha256, label)
-  await mkdir(dirname(cacheFile), { recursive: true })
-  await writeFile(cacheFile, bytes)
-  return bytes
-}
-
 async function defaultExtractArchive(archiveFile, destination) {
   const { stdout } = await execFileAsync("tar", ["-tzf", archiveFile], {
     encoding: "utf8",
@@ -220,7 +207,7 @@ async function assertContainedLinks(root, directory = root) {
 export async function stageGitRuntime({
   appRoot,
   targetTriple,
-  fetchBytes,
+  fetchStream,
   selected = selectGitRuntime(targetTriple),
   licenses = gitLicenseArtifacts,
   extractArchive = defaultExtractArchive,
@@ -240,16 +227,13 @@ export async function stageGitRuntime({
   await rm(stagedRoot, { recursive: true, force: true })
   await mkdir(stagedRoot, { recursive: true })
   try {
-    const archive = await fetchVerified(
-      fetchBytes,
+    await fetchVerifiedFile(
+      fetchStream,
       `${RELEASE_BASE_URL}/${selected.archive}`,
       selected.sha256,
       selected.archive,
       archiveFile,
     )
-    if (!(await validCachedFile(archiveFile, selected.sha256))) {
-      await writeFile(archiveFile, archive)
-    }
     await extractArchive(archiveFile, stagedRoot)
     await retainClientRuntime(stagedRoot, selected)
     await assertRequiredLayout(stagedRoot, selected)
@@ -259,14 +243,16 @@ export async function stageGitRuntime({
     const licensesRoot = join(stagedRoot, "licenses")
     await mkdir(licensesRoot, { recursive: true })
     for (const license of licenses) {
-      const bytes = await fetchVerified(
-        fetchBytes,
+      const licensePath = await fetchVerifiedFile(
+        fetchStream,
         license.url,
         license.sha256,
         license.name,
         join(cacheRoot, "licenses", license.name),
+        { maxBytes: 4 * 1024 * 1024 },
       )
-      await writeFile(join(licensesRoot, license.name), bytes, { mode: 0o644 })
+      await copyFile(licensePath, join(licensesRoot, license.name))
+      await chmod(join(licensesRoot, license.name), 0o644)
     }
 
     const manifest = {

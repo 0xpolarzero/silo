@@ -27,6 +27,73 @@ function bridge(handlers: NativeCommandHandlers = {}) {
 }
 
 describe("production command behavior", () => {
+  it.each([
+    ["authorizeComputer", "remote_authorize_ssh"],
+    ["setupComputerKey", "remote_setup_ssh_key"],
+  ] as const)("passes the address to %s and preserves a failed repair for the caller to retry", async (action, command) => {
+    const failure = { code: "ssh_authentication_failed", message: "Unlock your SSH key" }
+    let attempts = 0
+    const native = bridge({ [command]: () => { if (++attempts === 1) throw failure } })
+    const store = createProductionSource(native)
+    try {
+      await expect(store.applicationActions[action]!("owner@office")).rejects.toBe(failure)
+      await store.applicationActions[action]!("owner@office")
+      expect(native.invoke.mock.calls).toEqual([[command, { address: "owner@office" }], [command, { address: "owner@office" }]])
+      expect(store.getSnapshot().error).toBeNull()
+    } finally { store.dispose() }
+  })
+
+  it.each([false, true])("connects a computer with explicit address replacement=%s and publishes its authoritative list", async replaceAddress => {
+    const computer = { id: "office", name: "Office", address: "owner@office" }
+    let connected = false
+    const native = bridge({
+      connect_remote_host: () => { connected = true; return computer },
+      remote_host_list: () => connected ? [computer] : [],
+      remote_host_snapshot: () => structuredClone(source),
+    })
+    const store = createProductionSource(native)
+    try {
+      await store.initialize()
+      await store.applicationActions.connectComputer!(computer.address, replaceAddress ? { replaceAddress } : undefined)
+      expect(native.invoke).toHaveBeenCalledWith("connect_remote_host", { address: computer.address, replace: replaceAddress })
+      await vi.waitFor(() => expect(store.getSnapshot().source?.remoteComputers).toContainEqual(expect.objectContaining({ id: "office", connected: true })))
+      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.computer?.id === "office")).toBe(true)
+    } finally { store.dispose() }
+  })
+
+  it.each(["save_secret", "remove_secret", "retry_secret"])("rejects a malformed %s reply without replacing cached secrets", async command => {
+    const request = { operation: "edit" as const, id: "package-token", name: "PACKAGE_TOKEN", workspaces: ["dev"], allowedDomains: ["registry.npmjs.org"] }
+    const native = bridge({ [command]: () => ({ secrets: "not a secret list" }) })
+    const store = createProductionSource(native)
+    try {
+      await store.initialize()
+      const saved = store.getSnapshot().source!.secrets
+      const action = command === "save_secret" ? store.applicationActions.saveSecret(request)
+        : command === "remove_secret" ? store.applicationActions.removeSecret(request.id) : store.applicationActions.retrySecret!(request.id)
+      await expect(action).rejects.toThrow()
+      expect(native.invoke).toHaveBeenCalledWith(command, command === "save_secret" ? { request } : { id: request.id })
+      expect(store.getSnapshot().source!.secrets).toEqual(saved)
+    } finally { store.dispose() }
+  })
+
+  it("preserves a computer and its rows when native connection removal is rejected", async () => {
+    const failure = { code: "settings_write_failed", message: "Connection not saved" }
+    const native = bridge({
+      remote_host_list: () => [{ id: "office", name: "Office", address: "owner@office" }],
+      remote_host_snapshot: () => structuredClone(source),
+      remove_remote_host: () => { throw failure },
+    })
+    const store = createProductionSource(native)
+    try {
+      await store.initialize()
+      await vi.waitFor(() => expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.computer?.id === "office")).toBe(true))
+      await expect(store.applicationActions.removeComputer!("office")).rejects.toBe(failure)
+      expect(native.invoke).toHaveBeenCalledWith("remove_remote_host", { hostId: "office" })
+      expect(store.getSnapshot().source?.remoteComputers?.map(computer => computer.id)).toEqual(["office"])
+      expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.computer?.id === "office")).toBe(true)
+    } finally { store.dispose() }
+  })
+
   it("dismisses only the matching remote completed push and retains other results and running pushes", async () => {
     const remote = structuredClone(source)
     const completed = { workspace: "dev", repositoryPath: "/workspace/repo", commitCount: 1, status: "succeeded" as const }

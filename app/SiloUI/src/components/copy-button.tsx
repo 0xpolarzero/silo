@@ -8,9 +8,9 @@ type CopyStatus = "idle" | "copied" | "failed"
 
 type CopyLabels = Record<CopyStatus, string>
 
-interface CopyButtonProps extends Omit<ComponentProps<typeof Button>, "aria-label" | "children"> {
+interface CopyButtonProps extends Omit<ComponentProps<typeof Button>, "aria-label" | "children" | "value"> {
   icon?: LucideIcon
-  value: string
+  value: string | (() => string)
   labels: CopyLabels
   text?: CopyLabels
 }
@@ -24,7 +24,7 @@ export function CopyButton({ value, labels, text, icon: IdleIcon = Copy, type = 
   async function copy() {
     window.clearTimeout(resetTimer.current)
     try {
-      await navigator.clipboard.writeText(value)
+      await navigator.clipboard.writeText(typeof value === "function" ? value() : value)
       setStatus("copied")
     } catch {
       setStatus("failed")

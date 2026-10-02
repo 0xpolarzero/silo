@@ -441,8 +441,14 @@ class PreinstalledImageDesktop(DesktopRecipe):
         self.assertNotIn('guest image', stderr)
 
     def test_v4_missing_runtime_command_falls_back(self):
-        if shutil.which('xauth', path='/usr/bin:/bin'):
-            self.skipTest('The host provides xauth outside the stubbed PATH')
+        tools = self.root / 'fallback-tools'
+        tools.mkdir()
+        for name in ('awk', 'cat', 'chmod', 'dirname', 'mkdir', 'mv', 'rm'):
+            executable = shutil.which(name, path='/usr/bin:/bin')
+            self.assertIsNotNone(executable, name)
+            (tools / name).symlink_to(executable)
+        # Keep the recipe's real command lookup, without host desktop binaries.
+        self.env['PATH'] = str(self.root / 'bin') + ':' + str(tools)
         (self.root / 'bin/xauth').unlink()
         stderr = self.run_fallback()
         self.assertIn('missing xauth', stderr)

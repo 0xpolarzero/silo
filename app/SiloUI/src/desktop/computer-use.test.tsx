@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
+import { setupFakeTimerUser } from "@/test/fake-timer-user"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
 import { MachineList } from "@/features/sandboxes/components/machine-list"
@@ -426,27 +427,44 @@ describe("ChatGPT app store per computer", () => {
     unsubscribe.forEach(stop => stop())
   })
   it("reads a remote computer's status again on a schedule, faster while it works", async () => {
+    vi.useFakeTimers()
     const statuses: unknown[] = [{ state: "downloading", receivedBytes: 1, totalBytes: 10 }, { state: "downloading", receivedBytes: 5, totalBytes: 10 }, { state: "ready", path: "/p", version: "1" }]
     const read = vi.fn(async () => statuses.shift() ?? { state: "ready", path: "/p", version: "1" })
     const bridge = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 10, idle: 10_000 })
     const store = bridge.chatGptFor(HOST)
     const stop = store.subscribe(() => {})
-    await waitFor(() => expect(store.getSnapshot().status).toMatchObject({ state: "ready" }))
-    expect(read.mock.calls.length).toBeGreaterThanOrEqual(3)
-    const settled = read.mock.calls.length
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)) })
-    // Ready: the next read waits for the long interval.
-    expect(read.mock.calls.length).toBe(settled)
-    stop()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(read).toHaveBeenCalledOnce()
+      expect(store.getSnapshot().status).toMatchObject({ state: "downloading", receivedBytes: 1 })
+      await vi.advanceTimersByTimeAsync(9)
+      expect(read).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(read).toHaveBeenCalledTimes(2)
+      expect(store.getSnapshot().status).toMatchObject({ state: "downloading", receivedBytes: 5 })
+      await vi.advanceTimersByTimeAsync(10)
+      expect(read).toHaveBeenCalledTimes(3)
+      expect(store.getSnapshot().status).toMatchObject({ state: "ready" })
+      await vi.advanceTimersByTimeAsync(9_999)
+      expect(read).toHaveBeenCalledTimes(3)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(read).toHaveBeenCalledTimes(4)
+      stop()
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(read).toHaveBeenCalledTimes(4)
+    } finally { stop() }
   })
   it("does not poll this computer: it has events", async () => {
+    vi.useFakeTimers()
     const read = vi.fn(async () => ({ state: "idle" }))
     const bridge = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 10, idle: 10 })
     const stop = bridge.chatGptFor().subscribe(() => {})
-    await waitFor(() => expect(read).toHaveBeenCalledOnce())
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)) })
-    expect(read).toHaveBeenCalledOnce()
-    stop()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(read).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(60)
+      expect(read).toHaveBeenCalledOnce()
+    } finally { stop() }
   })
   it("shows an owner running an older Silo as unknown, without an error", async () => {
     const bridge = createComputerUseBridge(backend({ chatGptStatus: async () => ({ state: "notConsented" }) }))
@@ -539,28 +557,49 @@ describe("local ChatGPT status subscription recovery", () => {
 
 describe("ChatGPT status ordering", () => {
   it("reads only after the listener is registered", async () => {
+    vi.useFakeTimers()
     const registration = deferred<() => void>()
     const read = vi.fn(async () => ({ state: "idle" }))
     const bridge = createComputerUseBridge(backend({ chatGptStatus: read, listenStatus: () => registration.promise }))
-    bridge.chatGptFor().subscribe(() => {})
-    await new Promise(resolve => setTimeout(resolve, 10))
-    expect(read).not.toHaveBeenCalled()
-    registration.resolve(() => {})
-    await waitFor(() => expect(read).toHaveBeenCalledOnce())
+    const stop = bridge.chatGptFor().subscribe(() => {})
+    try {
+      await vi.advanceTimersByTimeAsync(60_000)
+      expect(read).not.toHaveBeenCalled()
+      registration.resolve(() => {})
+      await vi.advanceTimersByTimeAsync(0)
+      expect(read).toHaveBeenCalledOnce()
+    } finally { stop() }
   })
   it("drops a read superseded by an event, so a late older status cannot replace it", async () => {
-    const read = deferred<unknown>()
+    vi.useFakeTimers()
+    const pending = deferred<unknown>()
+    const read = vi.fn(() => pending.promise)
     let emit!: (payload: unknown) => void
-    const bridge = createComputerUseBridge(backend({ chatGptStatus: () => read.promise, listenStatus: async handler => { emit = handler; return () => {} } }))
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: read, listenStatus: async handler => { emit = handler; return () => {} } }))
     const store = bridge.chatGptFor()
     const stop = store.subscribe(() => {})
-    await waitFor(() => expect(emit).toBeDefined())
-    await new Promise(resolve => setTimeout(resolve, 0))
-    act(() => emit({ state: "ready", path: "/p", version: "1.2" }))
-    expect(store.getSnapshot().status).toMatchObject({ state: "ready", version: "1.2" })
-    await act(async () => { read.resolve({ state: "idle" }) })
-    expect(store.getSnapshot().status).toMatchObject({ state: "ready", version: "1.2" })
-    stop()
+    try {
+      await vi.advanceTimersByTimeAsync(0)
+      expect(read).toHaveBeenCalledOnce()
+      act(() => emit({ state: "ready", path: "/p", version: "1.2" }))
+      expect(store.getSnapshot().status).toMatchObject({ state: "ready", version: "1.2" })
+      await act(async () => { pending.resolve({ state: "idle" }) })
+      expect(store.getSnapshot().status).toMatchObject({ state: "ready", version: "1.2" })
+    } finally { stop() }
+  })
+  it("drops a read error superseded by a status event", async () => {
+    const pending = deferred<unknown>()
+    const read = vi.fn(() => pending.promise)
+    let emit!: (payload: unknown) => void
+    const bridge = createComputerUseBridge(backend({ chatGptStatus: read, listenStatus: async handler => { emit = handler; return () => {} } }))
+    const store = bridge.chatGptFor()
+    const stop = store.subscribe(() => {})
+    try {
+      await waitFor(() => expect(read).toHaveBeenCalledOnce())
+      act(() => emit({ state: "ready", path: "/p", version: "1.2" }))
+      await act(async () => { pending.reject(new Error("Status read failed")) })
+      expect(store.getSnapshot()).toMatchObject({ status: { state: "ready", version: "1.2" }, loadError: null })
+    } finally { stop() }
   })
   it("lets the latest of overlapping reads win", async () => {
     const first = deferred<unknown>()
@@ -625,6 +664,7 @@ describe("ChatGPT app errors", () => {
 describe("computer use section reads and errors", () => {
   const section = (b: ComputerUseBackend, pollMs = 60_000) => render(wrap(b, <ComputerUseSection workspace="office/vm-1" pollMs={pollMs} />))
   it("never runs two reads at once, so a slow older read cannot overwrite a newer one", async () => {
+    vi.useFakeTimers()
     const slow = deferred<unknown>()
     let active = 0
     let peak = 0
@@ -635,13 +675,13 @@ describe("computer use section reads and errors", () => {
       peak = Math.max(peak, active)
       try { return calls === 1 ? await slow.promise : fixtureDesktopState("failed") } finally { active -= 1 }
     } }), 10)
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 80)) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(80) })
     expect(calls).toBe(1)
     await act(async () => { slow.resolve(fixtureDesktopState("ready")) })
-    // Later reads return "failed" every 10 ms, so a transient "Ready" may be
-    // replaced before a slow runner observes it; what matters is that reads
-    // continue and never overlap.
-    await waitFor(() => expect(calls).toBeGreaterThan(1))
+    expect(screen.getByText("Ready")).toBeVisible()
+    await act(async () => { await vi.advanceTimersByTimeAsync(10) })
+    expect(calls).toBe(2)
+    expect(screen.getByText("Setup failed")).toBeVisible()
     expect(peak).toBe(1)
   })
   it("shows a failed first read instead of nothing, and recovers with Try again", async () => {
@@ -655,19 +695,28 @@ describe("computer use section reads and errors", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
   it("keeps a failed change visible while polling succeeds, until dismissed", async () => {
-    section(backend({ readDesktopState: async () => fixtureDesktopState("ready"), setApproval: async () => { throw new Error("office-mac is offline") } }), 20)
-    await userEvent.setup().click(await screen.findByRole("switch", { name: /Allow without asking/ }))
-    expect(await screen.findByRole("alert")).toHaveTextContent("office-mac is offline")
-    await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)) })
+    vi.useFakeTimers()
+    const user = setupFakeTimerUser()
+    const read = vi.fn(async () => fixtureDesktopState("ready"))
+    section(backend({ readDesktopState: read, setApproval: async () => { throw new Error("office-mac is offline") } }), 20)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await user.click(screen.getByRole("switch", { name: /Allow without asking/ }))
     expect(screen.getByRole("alert")).toHaveTextContent("office-mac is offline")
-    await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss error" }))
+    expect(read).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(120) })
+    expect(read).toHaveBeenCalledTimes(8)
+    expect(screen.getByRole("alert")).toHaveTextContent("office-mac is offline")
+    await user.click(screen.getByRole("button", { name: "Dismiss error" }))
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   })
   it("keeps the panel and reports a poll that fails after a good read", async () => {
+    vi.useFakeTimers()
     const reads: Array<Promise<unknown>> = [Promise.resolve(fixtureDesktopState("ready"))]
     section(backend({ readDesktopState: () => reads.shift() ?? Promise.reject(new Error("Connection lost")) }), 20)
-    expect(await screen.findByText("Ready")).toBeVisible()
-    expect(await screen.findByRole("alert")).toHaveTextContent("Connection lost")
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("Ready")).toBeVisible()
+    await act(async () => { await vi.advanceTimersByTimeAsync(20) })
+    expect(screen.getByRole("alert")).toHaveTextContent("Connection lost")
     expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeVisible()
   })
   it("reads the download progress of the computer that owns the sandbox", async () => {

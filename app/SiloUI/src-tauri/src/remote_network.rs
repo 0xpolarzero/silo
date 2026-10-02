@@ -14,7 +14,7 @@ use std::{
     net::TcpListener,
     path::Path,
     process::{Child, Command, Stdio},
-    sync::{Mutex, MutexGuard, OnceLock},
+    sync::{Arc, Mutex, MutexGuard, OnceLock},
     time::{Duration, Instant},
 };
 use tauri::{AppHandle, Emitter};
@@ -60,6 +60,31 @@ struct Tunnels {
     intents: HashMap<Key, Intent>,
     /// Keys a background reconnect is opening right now.
     connecting: HashSet<Key>,
+    saves: HashMap<Key, Arc<()>>,
+    revisions: HashMap<String, Arc<()>>,
+}
+impl Tunnels {
+    fn revision(&self, host: &str) -> Option<Arc<()>> {
+        self.revisions.get(host).cloned()
+    }
+    fn changed(&mut self, host: &str) {
+        self.revisions.insert(host.into(), Arc::new(()));
+    }
+    fn has_connection(&self, key: &Key) -> bool {
+        self.live.contains_key(key)
+            || self.intents.contains_key(key)
+            || self.saves.contains_key(key)
+            || self.connecting.contains(key)
+    }
+    fn connection_count(&self) -> usize {
+        self.live
+            .keys()
+            .chain(self.intents.keys())
+            .chain(self.saves.keys())
+            .chain(self.connecting.iter())
+            .collect::<HashSet<_>>()
+            .len()
+    }
 }
 static TUNNELS: OnceLock<Mutex<Tunnels>> = OnceLock::new();
 /// A short data lock: never held while ssh starts or a port is probed.
@@ -69,6 +94,39 @@ fn tunnels() -> MutexGuard<'static, Tunnels> {
         "remote tunnels",
     )
 }
+/// A save remains current only until another save or removal supersedes it.
+struct PendingSave {
+    key: Key,
+    token: Arc<()>,
+}
+impl PendingSave {
+    fn new(key: Key) -> Result<Self, String> {
+        runtime::shutdown::ensure_accepting_operations()?;
+        let token = Arc::new(());
+        let mut tunnels = tunnels();
+        if !tunnels.has_connection(&key) && tunnels.connection_count() >= TUNNEL_LIMIT {
+            return Err("Close an unused connection before opening another port.".into());
+        }
+        tunnels.changed(&key.0);
+        tunnels.saves.insert(key.clone(), token.clone());
+        Ok(Self { key, token })
+    }
+    fn current(&self, tunnels: &Tunnels) -> bool {
+        tunnels
+            .saves
+            .get(&self.key)
+            .is_some_and(|token| Arc::ptr_eq(token, &self.token))
+    }
+}
+impl Drop for PendingSave {
+    fn drop(&mut self) {
+        let mut tunnels = tunnels();
+        if self.current(&tunnels) {
+            tunnels.saves.remove(&self.key);
+        }
+    }
+}
+
 const TUNNEL_LIMIT: usize = 128;
 /// How long a new tunnel may take to confirm forwarding.
 const READY_WITHIN: Duration = Duration::from_secs(12);
@@ -129,6 +187,7 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
     if let Some(error) = remote::offline(host) {
         return Err(error.into());
     }
+    let revision = tunnels().revision(host);
     let value = match remote::call_remote_typed(app, host, "network.state", json!({})) {
         Ok(value) => {
             remote::poll_succeeded(host);
@@ -141,7 +200,7 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
             return Err(error);
         }
     };
-    let projection = project_ports(value, host, &mut tunnels())?;
+    let projection = project_observed(value, host, revision, &mut tunnels())?;
     let Projection {
         value,
         closed,
@@ -161,6 +220,23 @@ struct Projection {
     /// Intended tunnels to open again: key, intent, the owner's current endpoint.
     reconnect: Vec<(Key, Intent, u16)>,
 }
+fn project_observed(
+    value: Value,
+    host: &str,
+    revision: Option<Arc<()>>,
+    tunnels: &mut Tunnels,
+) -> Result<Projection, String> {
+    let current = match (revision.as_ref(), tunnels.revisions.get(host)) {
+        (None, None) => true,
+        (Some(before), Some(now)) => Arc::ptr_eq(before, now),
+        _ => false,
+    };
+    if !current || tunnels.saves.keys().any(|key| key.0 == host) {
+        return Err("Network settings changed while refreshing. Refresh network services.".into());
+    }
+    project_ports(value, host, tunnels)
+}
+
 /// Rewrites the owner's rows for this computer: rows become remote targets, ports show this
 /// computer's tunnel (never the owner's loopback endpoint). Each sandbox gets the host
 /// name its websites open at here (C-24; the owner's own host choice is ignored).
@@ -373,6 +449,7 @@ fn reconnect_in_background(app: AppHandle, key: Key, intent: Intent, remote_port
 /// around map updates. A different local port is opened before the previous tunnel closes,
 /// so a failed replacement keeps the working one; reusing the same local port needs the
 /// previous tunnel closed first.
+#[cfg(test)]
 fn save_tunnel(
     key: Key,
     host_port: Option<u16>,
@@ -380,11 +457,22 @@ fn save_tunnel(
     endpoint: u16,
     open: impl FnOnce(Option<u16>) -> Result<Tunnel, String>,
 ) -> Result<(), String> {
+    finish_save(PendingSave::new(key)?, host_port, scheme, endpoint, open)
+}
+
+fn finish_save(
+    pending: PendingSave,
+    host_port: Option<u16>,
+    scheme: Option<String>,
+    endpoint: u16,
+    open: impl FnOnce(Option<u16>) -> Result<Tunnel, String>,
+) -> Result<(), String> {
+    let key = pending.key.clone();
     let (requested, blocking) = {
         let mut tunnels = tunnels();
         runtime::shutdown::ensure_accepting_operations()?;
-        if tunnels.live.len() >= TUNNEL_LIMIT && !tunnels.live.contains_key(&key) {
-            return Err("Close an unused connection before opening another port.".into());
+        if !pending.current(&tunnels) {
+            return Err("This port configuration was superseded. Refresh network services.".into());
         }
         // Automatic keeps the port this computer used before, so bookmarks keep working.
         let requested =
@@ -397,6 +485,7 @@ fn save_tunnel(
         if unchanged {
             let local_port = tunnels.live[&key].local_port;
             tunnels.intents.insert(key, Intent { local_port, scheme });
+            tunnels.changed(&pending.key.0);
             return Ok(());
         }
         let occupies = tunnels
@@ -419,6 +508,9 @@ fn save_tunnel(
         if runtime::shutdown::ensure_accepting_operations().is_err() {
             return Err("Silo is quitting.".into());
         }
+        if !pending.current(&tunnels) {
+            return Err("This port configuration was superseded. Refresh network services.".into());
+        }
         tunnels.intents.insert(
             key.clone(),
             Intent {
@@ -427,6 +519,7 @@ fn save_tunnel(
             },
         );
         tunnels.connecting.remove(&key);
+        tunnels.changed(&pending.key.0);
         tunnels.live.insert(key, tunnel)
     };
     drop(replaced);
@@ -455,6 +548,7 @@ pub async fn remote_save_network_port(
         {
             return Err("Invalid port configuration.".into());
         }
+        let pending = PendingSave::new((host_id.clone(), vm_id.clone(), port))?;
         let state = remote::call_remote_typed(
             &app,
             &host_id,
@@ -470,25 +564,31 @@ pub async fn remote_save_network_port(
             .and_then(|p| u16::try_from(p).ok())
             .ok_or("The remote VM port is not available yet. Check the VM service and retry.")?;
         let host = host_id.clone();
-        save_tunnel(
-            (host_id.clone(), vm_id, port),
-            host_port,
-            scheme,
-            endpoint,
-            |local| {
-                open_tunnel(
-                    |local, socket| remote::ssh_tunnel_commands(&host, local, endpoint, socket),
-                    local,
-                    endpoint,
-                    READY_WITHIN,
-                )
-            },
-        )?;
+        finish_save(pending, host_port, scheme, endpoint, |local| {
+            open_tunnel(
+                |local, socket| remote::ssh_tunnel_commands(&host, local, endpoint, socket),
+                local,
+                endpoint,
+                READY_WITHIN,
+            )
+        })?;
         read(&app, &host_id)
     })
     .await
     .map_err(|e| e.to_string())?
 }
+fn forget_port(key: &Key) {
+    let closed = {
+        let mut tunnels = tunnels();
+        tunnels.changed(&key.0);
+        tunnels.saves.remove(key);
+        tunnels.connecting.remove(key);
+        tunnels.intents.remove(key);
+        tunnels.live.remove(key)
+    };
+    drop(closed);
+}
+
 /// Stops publishing the port on the owning computer, then closes this computer's tunnel.
 #[tauri::command]
 pub async fn remote_remove_network_port(
@@ -504,13 +604,7 @@ pub async fn remote_remove_network_port(
             "network.unpublish",
             json!({"vmId":vm_id,"port":port}),
         )?;
-        let closed = {
-            let mut tunnels = tunnels();
-            let key = (host_id.clone(), vm_id, port);
-            tunnels.intents.remove(&key);
-            tunnels.live.remove(&key)
-        };
-        drop(closed);
+        forget_port(&(host_id.clone(), vm_id, port));
         read(&app, &host_id)
     })
     .await
@@ -583,6 +677,8 @@ pub(crate) fn disconnect_host(host: &str) {
 pub(crate) fn close_host(host: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
+        tunnels.revisions.remove(host);
+        tunnels.saves.retain(|key, _| key.0 != host);
         tunnels.intents.retain(|key, _| key.0 != host);
         tunnels.connecting.retain(|key| key.0 != host);
         let keys: Vec<Key> = tunnels
@@ -736,7 +832,144 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_saves_reserve_the_last_connection_slot() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        for vm in 0..TUNNEL_LIMIT - 1 {
+            tunnels()
+                .intents
+                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+        }
+        let first = PendingSave::new((host.clone(), "first".into(), 3000)).unwrap();
+        let second = PendingSave::new((host.clone(), "second".into(), 3000));
+        let rejected = second.is_err();
+        drop(second);
+        drop(first);
+        close_host(&host);
+        assert!(rejected, "two saves were admitted into the last slot");
+    }
+
+    #[test]
+    fn a_failed_save_releases_its_connection_slot() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        for vm in 0..TUNNEL_LIMIT - 1 {
+            tunnels()
+                .intents
+                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+        }
+        let failed = save_tunnel(
+            (host.clone(), "failed".into(), 3000),
+            None,
+            None,
+            32000,
+            |_| Err("SSH fixture failed".into()),
+        );
+        let next = PendingSave::new((host.clone(), "next".into(), 3000));
+        let admitted = next.is_ok();
+        drop(next);
+        close_host(&host);
+        assert!(failed.is_err());
+        assert!(admitted, "a failed open leaked its connection slot");
+    }
+
+    #[test]
+    fn disconnected_intents_keep_their_connection_slots() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        for vm in 0..TUNNEL_LIMIT {
+            tunnels()
+                .intents
+                .insert((host.clone(), vm.to_string(), 3000), intent(43000));
+        }
+        disconnect_host(&host);
+        let extra = PendingSave::new((host.clone(), "extra".into(), 3000));
+        let rejected = extra.is_err();
+        drop(extra);
+        // Editing an existing connection remains possible at the limit.
+        let existing = PendingSave::new((host.clone(), "0".into(), 3000));
+        let editable = existing.is_ok();
+        drop(existing);
+        close_host(&host);
+        assert!(rejected, "disconnecting freed slots promised to reconnects");
+        assert!(editable, "a configured connection could not be edited");
+    }
+
+    #[test]
+    fn an_older_poll_cannot_forget_a_newly_saved_tunnel() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        let key = key(&host);
+        let before = tunnels().revision(&host);
+        save_tunnel(key.clone(), None, Some("http".into()), 32000, |_| {
+            Ok(tunnel(43100, 32000))
+        })
+        .unwrap();
+        let mut state = tunnels();
+        let result = project_observed(json!({"workspaces":[]}), &host, before, &mut state);
+        let kept = state.live.contains_key(&key) && state.intents.contains_key(&key);
+        let current = state.revision(&host);
+        let fresh = project_observed(json!({"workspaces":[]}), &host, current, &mut state).unwrap();
+        let deleted = !state.live.contains_key(&key) && !state.intents.contains_key(&key);
+        drop(state);
+        drop(fresh);
+        close_host(&host);
+        assert!(result.is_err(), "an obsolete poll was applied");
+        assert!(kept, "an obsolete poll deleted the saved connection");
+        assert!(deleted, "a current deletion must still close the tunnel");
+    }
+
+    #[test]
+    fn polls_wait_for_their_own_hosts_pending_save() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        let pending = PendingSave::new(key(&host)).unwrap();
+        let mut state = tunnels();
+        let revision = state.revision(&host);
+        assert!(project_observed(json!({"workspaces":[]}), &host, revision, &mut state).is_err());
+        assert!(project_observed(json!({"workspaces":[]}), "other", None, &mut state).is_ok());
+        drop(state);
+        drop(pending);
+        close_host(&host);
+    }
+
+    #[test]
+    fn a_removed_port_is_not_restored_by_an_older_save() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        let key = key(&host);
+        let result = save_tunnel(key.clone(), None, Some("http".into()), 32000, |_| {
+            forget_port(&key);
+            Ok(tunnel(43100, 32000))
+        });
+        let mut state = tunnels();
+        let projection = project_ports(observed(None), &host, &mut state).unwrap();
+        let restored = state.live.contains_key(&key) || state.intents.contains_key(&key);
+        drop(state);
+        close_host(&host);
+        assert!(result.is_err(), "an obsolete save succeeded after removal");
+        assert!(!restored, "removal was undone by the older save");
+        assert_eq!(port(&projection)["configured"], false);
+    }
+
+    #[test]
+    fn a_save_removed_during_publication_never_opens_a_tunnel() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        let key = key(&host);
+        let pending = PendingSave::new(key.clone()).unwrap();
+        forget_port(&key);
+        let result = finish_save(pending, None, Some("http".into()), 32000, |_| {
+            panic!("an obsolete publication must not start SSH")
+        });
+        assert!(result.is_err());
+        assert!(!tunnels().saves.contains_key(&key));
+        close_host(&host);
+    }
+
+    #[test]
     fn saving_a_port_never_holds_the_lock_while_ssh_starts_and_keeps_the_old_tunnel_on_failure() {
+        let _guard = crate::test_support::global_state();
         let host = uuid::Uuid::new_v4().to_string();
         let key = key(&host);
         save_tunnel(key.clone(), None, Some("http".into()), 32000, |requested| {

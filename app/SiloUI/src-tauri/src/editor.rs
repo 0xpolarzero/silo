@@ -153,14 +153,14 @@ fn require_openssh_at(ssh: &Path, keygen: &Path, purpose: &str) -> Result<(), St
 
 fn validate_path(path: &str) -> Result<(), String> {
     if path.len() > 4096
-        || path.contains('\0')
+        || path.bytes().any(|byte| byte.is_ascii_control())
         || !(path == "/workspace"
             || path.strip_prefix("/workspace/").is_some_and(|tail| {
                 tail.split('/')
                     .all(|part| !part.is_empty() && part != "." && part != "..")
             }))
     {
-        return Err("Choose a folder inside /workspace.".into());
+        return Err("Choose a folder inside /workspace with no control characters.".into());
     }
     Ok(())
 }
@@ -248,10 +248,21 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
             folder
         }
     ));
-    let mut document = serde_json::from_slice::<serde_json::Value>(&read_regular(&file)?)
-        .ok()
-        .filter(serde_json::Value::is_object)
-        .unwrap_or_else(|| serde_json::json!({}));
+    let old = read_regular(&file)?;
+    let invalid = || {
+        format!(
+            "Silo cannot update the editor workspace {} as a JSON object. The file was left unchanged. Remove comments or repair its JSON, then retry.",
+            file.display()
+        )
+    };
+    let mut document = if old.is_empty() && !file.exists() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice::<serde_json::Value>(&old).map_err(|_| invalid())?
+    };
+    if !document.is_object() {
+        return Err(invalid());
+    }
     document["folders"] = serde_json::json!([{ "uri": remote_uri(alias, path, false)? }]);
     document["remoteAuthority"] = serde_json::json!(format!("ssh-remote+{alias}"));
     if !document["settings"].is_object() {
@@ -266,13 +277,17 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
 }
 
 fn remote_uri(alias: &str, path: &str, zed: bool) -> Result<String, String> {
+    validate_path(path)?;
     let mut uri = reqwest::Url::parse(&if zed {
         format!("ssh://{alias}/")
     } else {
         format!("vscode-remote://ssh-remote+{alias}/")
     })
     .map_err(|_| FAILED)?;
-    uri.set_path(path);
+    uri.path_segments_mut()
+        .map_err(|_| FAILED)?
+        .clear()
+        .extend(path.split('/').skip(1));
     Ok(uri.into())
 }
 
@@ -1125,6 +1140,36 @@ mod tests {
         }
     }
     #[test]
+    fn control_characters_cannot_change_the_requested_editor_folder() {
+        for path in ["/workspace/a\tb", "/workspace/a\nb", "/workspace/a\rb"] {
+            assert!(validate_path(path).is_err());
+            assert!(remote_uri("silo-test-dev", path, true).is_err());
+            assert!(remote_uri("silo-test-dev", path, false).is_err());
+        }
+    }
+
+    #[test]
+    fn literal_percent_sequences_keep_the_guest_folder_identity() {
+        for (path, encoded) in [
+            ("/workspace/some%20comments", "/workspace/some%2520comments"),
+            ("/workspace/a%2Fb", "/workspace/a%252Fb"),
+            ("/workspace/%2e%2e/secret", "/workspace/%252e%252e/secret"),
+            ("/workspace/100%", "/workspace/100%25"),
+        ] {
+            validate_path(path).unwrap();
+            for (zed, prefix) in [
+                (true, "ssh://silo-test-dev"),
+                (false, "vscode-remote://ssh-remote+silo-test-dev"),
+            ] {
+                assert_eq!(
+                    remote_uri("silo-test-dev", path, zed).unwrap(),
+                    format!("{prefix}{encoded}")
+                );
+            }
+        }
+    }
+
+    #[test]
     fn shell_and_ssh_paths_are_escaped() {
         assert_eq!(quote("a'b $()"), "'a'\\''b $()'");
         assert_eq!(ssh_quote(Path::new("/a%b\"c")).unwrap(), "\"/a%%b\\\"c\"");
@@ -1314,6 +1359,25 @@ mod tests {
             document["folders"][0]["uri"],
             "vscode-remote://ssh-remote+silo-abc-dev/workspace"
         );
+    }
+
+    #[test]
+    fn an_unparseable_workspace_is_preserved_instead_of_replaced() {
+        let home = tempfile::tempdir().unwrap();
+        let root = crate::channel::current().state_dir(home.path());
+        let file = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap();
+        for contents in [
+            "{\n// keep my workspace settings\n\"settings\": {\"editor.fontSize\": 15}}",
+            "{\"settings\":",
+            "[]",
+            "",
+        ] {
+            fs::write(&file, contents).unwrap();
+            let error = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap_err();
+            assert!(error.contains("workspace"));
+            assert!(error.contains("unchanged"));
+            assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+        }
     }
 
     #[test]

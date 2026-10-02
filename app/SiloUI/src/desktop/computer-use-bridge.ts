@@ -62,6 +62,7 @@ const LOCAL = "local"
 // A remote computer's status has no events: it is read again on this schedule.
 const REMOTE_BUSY_POLL_MS = 3000
 const REMOTE_IDLE_POLL_MS = 15000
+const REMOTE_FAILURE_POLL_MAX_MS = 30000
 const working = (status: ChatGptAppStatus | null) => status?.state === "downloading" || status?.state === "verifying" || status?.state === "extracting" || status?.state === "idle"
 
 /** The host id of the computer that owns a sandbox workspace target, undefined for a local sandbox. */
@@ -80,6 +81,7 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
   let events = 0
   let reads = 0
   let generation = 0
+  let failureDelay = 0
   const set = (next: Partial<ChatGptAppSnapshot>) => { snapshot = { ...snapshot, ...next }; listeners.forEach(listener => listener()) }
   // An event this Silo cannot read leaves the last status in place.
   const receive = (value: unknown) => {
@@ -95,9 +97,14 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
       const value = await backend.chatGptStatus(computer)
       if (read !== reads || seenEvents !== events) return
       const status = parseChatGptAppStatus(value)
-      if (status) set({ status, loadError: null })
+      if (status) { failureDelay = 0; set({ status, loadError: null }) }
       else if (!snapshot.status) set({ loadError: "Silo could not read the ChatGPT for Linux status." })
-    } catch (cause) { if (read === reads) set({ loadError: message(cause) }) }
+    } catch (cause) {
+      if (read === reads && seenEvents === events) {
+        failureDelay = Math.min(Math.max(failureDelay, working(snapshot.status) ? pollMs.busy : pollMs.idle) * 2, REMOTE_FAILURE_POLL_MAX_MS)
+        set({ loadError: message(cause) })
+      }
+    }
   }
   const retry = async () => {
     set({ busy: true, error: null })
@@ -111,7 +118,7 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
     timer = window.setTimeout(() => {
       if (mine !== generation || document.visibilityState === "hidden") return
       void refresh().finally(() => { if (mine === generation) schedule(mine) })
-    }, working(snapshot.status) ? pollMs.busy : pollMs.idle)
+    }, Math.max(failureDelay, working(snapshot.status) ? pollMs.busy : pollMs.idle))
   }
   const start = () => {
     const mine = ++generation

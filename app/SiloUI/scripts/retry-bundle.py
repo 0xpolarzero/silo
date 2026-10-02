@@ -81,21 +81,28 @@ def run_attempt(command, log, stdout, stderr):
         log.write(message)
         log.flush()
         return 127, message
-    with process, selectors.DefaultSelector() as selector:
-        selector.register(process.stdout, selectors.EVENT_READ, stdout)
-        selector.register(process.stderr, selectors.EVENT_READ, stderr)
-        while selector.get_map():
-            for key, _ in selector.select():
-                chunk = os.read(key.fileobj.fileno(), 65536)
-                if not chunk:
-                    selector.unregister(key.fileobj)
-                    continue
-                key.data.write(chunk)
-                key.data.flush()
-                log.write(chunk)
-                log.flush()
-                output.extend(chunk)
-        code = process.wait()
+    with process:
+        try:
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, stdout)
+                selector.register(process.stderr, selectors.EVENT_READ, stderr)
+                while selector.get_map():
+                    for key, _ in selector.select():
+                        chunk = os.read(key.fileobj.fileno(), 65536)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            continue
+                        key.data.write(chunk)
+                        key.data.flush()
+                        log.write(chunk)
+                        log.flush()
+                        output.extend(chunk)
+            code = process.wait()
+        except BaseException:
+            # Popen's context manager waits; stop the child before that wait
+            # when output forwarding fails or the wrapper is interrupted.
+            process.kill()
+            raise
     return code if code >= 0 else 128 - code, bytes(output)
 
 

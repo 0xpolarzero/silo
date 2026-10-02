@@ -438,20 +438,31 @@ pub(crate) async fn read_backup_state(
 }
 
 fn backup_state(controller: &Controller) -> Result<BackupState, String> {
-    let (journal_error, operation) = {
-        let view = controller.view.lock().map_err(|_| {
-            "Export and import status could not be read. Relaunch Silo and retry.".to_string()
-        })?;
-        (view.journal_error.clone(), view.operation.clone())
+    let view = controller.view.lock().map_err(|_| {
+        "Export and import status could not be read. Relaunch Silo and retry.".to_string()
+    })?;
+    let journal = recovery::snapshot(controller)?;
+    let busy = controller.busy.load(Ordering::Acquire);
+    // A worker saves its journal before publishing its view. A result must come
+    // from that same journal unless recovery failed and kept it pending for retry.
+    let operation = match (&view.operation, &journal) {
+        (Some(Operation::Result { .. }), Some(journal)) if !journal.is_pending() || busy => {
+            Some(journal.operation())
+        }
+        _ => view.operation.clone(),
     };
-    let availability_message = journal_error.or_else(|| {
-        recovery::unresolved(controller).unwrap_or(true).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
+    let availability_message = view.journal_error.clone().or_else(|| {
+        (!busy && journal.as_ref().is_some_and(recovery::Journal::is_pending)).then(|| "The interrupted export or import could not finish. Relaunch Silo to retry. Saved progress was preserved.".into())
     });
-    let result_unseen =
-        matches!(operation, Some(Operation::Result { .. })) && recovery::unseen(controller)?;
+    let result_unseen = matches!(operation, Some(Operation::Result { .. }))
+        && journal
+            .as_ref()
+            .is_some_and(recovery::Journal::is_unseen_result);
     Ok(BackupState {
         snapshot_id: controller.revision.load(Ordering::Relaxed).to_string(),
-        operation_id: recovery::token(controller)?,
+        operation_id: journal
+            .as_ref()
+            .map(|journal| journal.identity().to_string()),
         availability: if availability_message.is_some() {
             "unavailable"
         } else {
@@ -539,10 +550,21 @@ pub(crate) async fn inspect_backup_archive(
 ) -> Result<ArchiveInspectionResult, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let path = PathBuf::from(archive_path);
-        let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let cancellation = register_inspection(&controller, request_id.clone());
+    let path = PathBuf::from(archive_path);
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    tauri::async_runtime::spawn_blocking(inspection_worker(controller, path, request_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn inspection_worker(
+    controller: Arc<Controller>,
+    path: PathBuf,
+    request_id: String,
+) -> impl FnOnce() -> Result<ArchiveInspectionResult, String> + Send {
+    // Register before dispatch so cancellation and replacement also cover queued work.
+    let cancellation = register_inspection(&controller, request_id.clone());
+    move || {
         let inspected = controller.service.inspect_archive(&path, &cancellation);
         finish_inspection(&controller, &request_id);
         match inspected {
@@ -573,9 +595,7 @@ pub(crate) async fn inspect_backup_archive(
                 reason: Some(error.to_string()),
             }),
         }
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    }
 }
 
 /// Stops the export file check started under `request_id`, if it is still running.
@@ -1944,7 +1964,7 @@ pub(crate) async fn cancel_backup_operation(
 }
 
 fn cancel_operation(controller: &Controller) -> Result<(), String> {
-    {
+    let operation_id = {
         let view = controller.view.lock().map_err(|_| {
             "Export and import status could not be read. Relaunch Silo and retry.".to_string()
         })?;
@@ -1965,8 +1985,11 @@ fn cancel_operation(controller: &Controller) -> Result<(), String> {
             .as_ref()
             .ok_or("No export or import is running.")?
             .cancel();
+        recovery::token(controller).ok().flatten()
+    };
+    if let Some(operation_id) = operation_id {
+        let _ = recovery::cancel(controller, &operation_id);
     }
-    let _ = recovery::cancel(controller);
     Ok(())
 }
 
@@ -3193,6 +3216,83 @@ mod tests {
     }
 
     #[test]
+    fn a_new_journal_never_reports_the_previous_exports_success() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        let previous = Operation::Result {
+            operation: "backup",
+            archive: completed_archive(),
+            running_names: Vec::new(),
+            target_name: None,
+            outcome: "success",
+            title: "Export complete".into(),
+            message: "Sandbox exported.".into(),
+            detail: None,
+        };
+        set_operation(&controller, previous).unwrap();
+        // The next export has saved its journal but has not replaced the view yet.
+        controller.busy.store(true, Ordering::Release);
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        let state = backup_state(&controller).unwrap();
+        assert_eq!(state.operation_id, recovery::token(&controller).unwrap());
+        assert!(
+            matches!(state.operation, Some(Operation::Running { .. })),
+            "a new export must not inherit the old success"
+        );
+        let current = Operation::Result {
+            operation: "backup",
+            archive: Archive {
+                archive_path: "/backups/new.silo-backup".into(),
+                ..completed_archive()
+            },
+            running_names: Vec::new(),
+            target_name: None,
+            outcome: "success",
+            title: "Export complete".into(),
+            message: "Sandbox exported.".into(),
+            detail: None,
+        };
+        recovery::complete(&controller, current);
+        let state = backup_state(&controller).unwrap();
+        let Some(Operation::Result { archive, .. }) = state.operation else {
+            panic!("the current journal's result must be reported");
+        };
+        assert_eq!(archive.archive_path, "/backups/new.silo-backup");
+    }
+
+    #[test]
+    fn a_failed_recovery_stays_visible_while_its_journal_is_pending() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        recovery::begin(
+            &controller,
+            recovery::Journal::backup(completed_archive(), vec!["dev".into()], None),
+        )
+        .unwrap();
+        set_operation(
+            &controller,
+            failed_transfer(
+                "backup",
+                completed_archive(),
+                None,
+                "Recovery failed".into(),
+            ),
+        )
+        .unwrap();
+        let state = backup_state(&controller).unwrap();
+        assert_eq!(state.availability, "unavailable");
+        assert!(
+            matches!(state.operation, Some(Operation::Result { outcome: "failed", message, .. }) if message == "Recovery failed")
+        );
+    }
+
+    #[test]
     fn backup_state_reads_only_memory_and_reports_a_saved_operation_error() {
         let _test_state = crate::test_support::global_state();
         // The export folder is on a volume that no longer exists; reading state
@@ -3524,6 +3624,56 @@ mod tests {
         finish_inspection(&controller, "third");
         assert!(!cancel_inspection(&controller, "third"));
         assert!(!third.cancelled());
+    }
+
+    #[test]
+    fn a_queued_inspection_can_be_cancelled_before_its_worker_starts() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
+        let worker = inspection_worker(
+            controller.clone(),
+            directory.path().join("missing.silo-backup"),
+            "queued".into(),
+        );
+        assert!(cancel_inspection(&controller, "queued"));
+        let result = worker().unwrap();
+        assert!(!result.valid);
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("The operation was cancelled.")
+        );
+    }
+
+    #[test]
+    fn an_older_queued_inspection_cannot_cancel_a_newer_request() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
+        let older = inspection_worker(
+            controller.clone(),
+            directory.path().join("older.silo-backup"),
+            "older".into(),
+        );
+        let newer = inspection_worker(
+            controller.clone(),
+            directory.path().join("newer.silo-backup"),
+            "newer".into(),
+        );
+        let result = older().unwrap();
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("The operation was cancelled.")
+        );
+        assert!(cancel_inspection(&controller, "newer"));
+        assert_eq!(
+            newer().unwrap().reason.as_deref(),
+            Some("The operation was cancelled.")
+        );
     }
 
     #[test]
