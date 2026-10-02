@@ -56,6 +56,16 @@ describe("live file tree", () => {
     expect(onOpenEditor).toHaveBeenCalledWith(workspace.machine.name, "/workspace/con\u00ADfig")
   })
 
+  it("reveals an invisible Unicode tag while copying the original folder path", async () => {
+    const user = userEvent.setup()
+    const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)
+    const store = createDirectoryStore(vi.fn().mockResolvedValue(page("con\u{E0061}fig", "folder")))
+    render(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active onOpenEditor={vi.fn()} />)
+    const folder = await screen.findByRole("button", { name: "Folder con⟨U+E0061⟩fig" })
+    await user.click(within(folder.parentElement!).getByRole("button", { name: "Copy path" }))
+    expect(writeText).toHaveBeenCalledWith("/workspace/con\u{E0061}fig")
+  })
+
   it("shows skeletons, lazily opens folders and immediately reuses cached contents", async () => {
     const user = userEvent.setup()
     let resolve!: (value: DirectoryPage) => void
