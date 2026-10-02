@@ -181,15 +181,18 @@ it("keeps progress and cancellation available when Retry replaces the failure in
 it("retains sandbox ownership while Retry waits for backend-driven progress", async () => {
   render(<Host />)
   const retry = vi.fn()
-  act(() => showOperationFailure("retry-waiting", "Waiting retry", { retry, sandbox: "waiting-vm", native: false }))
+  const onDismiss = vi.fn()
+  act(() => showOperationFailure("retry-waiting", "Waiting retry", { retry, onDismiss, sandbox: "waiting-vm", native: false }))
   await tick()
   fireEvent.click(screen.getByRole("button", { name: "Retry" }))
   await tick()
   expect(retry).toHaveBeenCalledOnce()
+  expect(onDismiss).not.toHaveBeenCalled()
   act(() => dismissSandboxToasts("waiting-vm"))
   await tick()
   await act(async () => { await vi.advanceTimersByTimeAsync(500) })
   expect(screen.queryByText("Waiting retry")).not.toBeInTheDocument()
+  expect(onDismiss).toHaveBeenCalledOnce()
 })
 
 
@@ -208,4 +211,21 @@ it.each(["Retry", "Open"])("clears the previous %s action when a toast becomes p
   expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument()
   expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument()
   act(() => dismissOperationToast(id))
+})
+
+
+it("acknowledges a result exactly once when its action closes the notification", async () => {
+  render(<Host />)
+  const onDismiss = vi.fn(() => dismissOperationToast("acknowledge-result"))
+  const open = vi.fn()
+  act(() => showOperationSuccess("acknowledge-result", "Imported sandbox", {
+    action: { label: "Open imported sandbox", onClick: open }, onDismiss,
+  }))
+  await tick()
+  fireEvent.click(screen.getByRole("button", { name: "Open imported sandbox" }))
+  await tick()
+  await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+  expect(open).toHaveBeenCalledOnce()
+  expect(onDismiss).toHaveBeenCalledOnce()
+  expect(screen.queryByText("Imported sandbox")).not.toBeInTheDocument()
 })
