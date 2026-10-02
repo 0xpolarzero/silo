@@ -255,7 +255,7 @@ fn forks_inherit_only_the_approval_and_deleted_vms_are_forgotten() {
             ..Known::default()
         },
     );
-    inherit_settings(&paths, VM_ID, child);
+    inherit_settings(&paths, VM_ID, child).unwrap();
     let inherited = settings(&paths, child);
     assert_eq!(inherited.approval, Approval::Auto);
     // The fork's disk carries the source's configuration: nothing is known to be applied,
@@ -1223,7 +1223,7 @@ fn the_boot_applies_what_an_imported_or_forked_disk_does_not_have() {
     // A fork inherits its source's choice and applies it at its own first boot.
     let child = vm(18);
     set_approval(&paths, &id, Approval::Auto).unwrap();
-    inherit_settings(&paths, &id, &child);
+    inherit_settings(&paths, &id, &child).unwrap();
     write_machines_of(&paths, &child);
     let guest = Guest::new(&child);
     boot_of(test_gate(), &guest, &paths)
