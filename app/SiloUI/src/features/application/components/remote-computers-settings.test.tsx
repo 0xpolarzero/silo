@@ -339,6 +339,25 @@ it("ignores an obsolete management Retry after a newer choice succeeds", async (
   expect(setRemoteManagement).toHaveBeenLastCalledWith(false)
 })
 
+it("keeps a removal Retry after unrelated computer changes succeed", async () => {
+  const user = userEvent.setup()
+  const management = { enabled: false, hostId: "local", name: "Laptop", address: "owner@laptop" }
+  const setRemoteManagement = vi.fn().mockResolvedValue(undefined)
+  const removeComputer = vi.fn().mockRejectedValueOnce(new Error("Connection could not be removed")).mockResolvedValue(undefined)
+  const remotes = [{ id: "office", name: "Office", address: "owner@office", connected: false }, { id: "lab", name: "Lab", address: "owner@lab", connected: false }]
+  render(<><Toaster /><RemoteComputersSettings source={{ ...source(management), remoteComputers: remotes }} actions={actions({ setRemoteManagement, removeComputer })} /></>)
+  await user.click(screen.getByRole("button", { name: "Remove connection to Office" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  await user.click(screen.getByRole("switch", { name: "Allow remote management" }))
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Allow remote management" })).toBeEnabled())
+  await user.click(screen.getByRole("button", { name: "Remove connection to Lab" }))
+  await waitFor(() => expect(removeComputer).toHaveBeenCalledTimes(2))
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Allow remote management" })).toBeEnabled())
+  await user.click(retry)
+  expect(removeComputer).toHaveBeenCalledTimes(3)
+  expect(removeComputer).toHaveBeenLastCalledWith("office")
+})
+
 it("ignores a computer setting Retry after the settings controls unmount", async () => {
   const user = userEvent.setup()
   const management = { enabled: false, hostId: "local", name: "Laptop", address: "owner@laptop" }

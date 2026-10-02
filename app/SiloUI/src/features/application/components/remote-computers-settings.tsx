@@ -128,27 +128,31 @@ function ComputersSection({ source, actions }: { source: ApplicationSource; acti
     setConnecting(false)
   }
   const pending = useRef(false)
-  const sequence = useRef(0)
-  useEffect(() => () => { sequence.current++ }, [])
-  async function perform(operation: () => Promise<void>) {
+  const unmounts = useRef(0)
+  const generations = useRef(new Map<string, number>())
+  useEffect(() => () => { unmounts.current++ }, [])
+  async function perform(resource: string, operation: () => Promise<void>) {
     if (pending.current) return
-    const request = ++sequence.current
+    const epoch = unmounts.current
+    const generation = (generations.current.get(resource) ?? 0) + 1
+    generations.current.set(resource, generation)
+    const current = () => epoch === unmounts.current && generation === generations.current.get(resource)
     pending.current = true
     setBusy(true)
     try { await operation() } catch (cause) {
-      if (request === sequence.current) showActionFailure("Computer setting not changed", cause, () => { if (request === sequence.current) void perform(operation) }, { native: false })
-    } finally { if (request === sequence.current) { pending.current = false; setBusy(false) } }
+      if (epoch === unmounts.current) showActionFailure("Computer setting not changed", cause, () => { if (current()) void perform(resource, operation) }, { native: false })
+    } finally { if (epoch === unmounts.current) { pending.current = false; setBusy(false) } }
   }
   const removeComputer = actions.removeComputer
   if (!actions.connectComputer) return null
   return <section aria-label="Computers" className="grid gap-3">
     <h2 className="text-xs font-medium">Computers</h2>
     <div className="grid gap-3 rounded-lg border p-3">
-      <div className="flex items-center justify-between gap-4"><div><label htmlFor="remote-management" className="text-xs font-medium">Allow remote management</label><p className="text-xs text-muted-foreground">Let computers with SSH access to your account manage these sandboxes while Silo is running.</p><p className="text-xs text-muted-foreground">Quit stops local sandboxes and disconnects remote sessions.</p></div><Switch id="remote-management" checked={source.remoteManagement?.enabled ?? false} disabled={busy || !source.remoteManagement || !actions.setRemoteManagement} onCheckedChange={enabled => { void perform(() => actions.setRemoteManagement!(enabled)) }} /></div>
+      <div className="flex items-center justify-between gap-4"><div><label htmlFor="remote-management" className="text-xs font-medium">Allow remote management</label><p className="text-xs text-muted-foreground">Let computers with SSH access to your account manage these sandboxes while Silo is running.</p><p className="text-xs text-muted-foreground">Quit stops local sandboxes and disconnects remote sessions.</p></div><Switch id="remote-management" checked={source.remoteManagement?.enabled ?? false} disabled={busy || !source.remoteManagement || !actions.setRemoteManagement} onCheckedChange={enabled => { void perform("remote-management", () => actions.setRemoteManagement!(enabled)) }} /></div>
       {source.remoteManagement?.error && <p role="alert" className="text-xs text-destructive">{source.remoteManagement.error}</p>}
       {source.remoteManagement?.enabled && <p className="text-xs text-muted-foreground">Enable Remote Login on macOS or the SSH server on Linux so other computers can connect.</p>}
       {source.remoteManagement?.enabled && <ManagementAddresses management={source.remoteManagement} />}
-      {source.remoteComputers?.map(computer => <div key={computer.id} className="flex items-center justify-between gap-3 border-t pt-3"><div className="min-w-0 [overflow-wrap:anywhere]"><p className="truncate text-xs font-medium" title={computer.name}>{computer.name}</p><p className="text-xs text-muted-foreground">{computer.busy ? "Updating…" : computer.connected ? "Connected" : "Offline · last known status"} · {computer.address}</p>{computer.error && <p className="text-xs text-destructive">{computer.error}</p>}<p className="text-xs text-muted-foreground">Removing the connection leaves sandboxes on {computer.name} unchanged.</p></div><Button size="xs" variant="ghost" disabled={busy || !removeComputer} aria-label={`Remove connection to ${computer.name}`} onClick={() => { if (removeComputer) void perform(() => removeComputer(computer.id)) }}>Remove connection</Button></div>)}
+      {source.remoteComputers?.map(computer => <div key={computer.id} className="flex items-center justify-between gap-3 border-t pt-3"><div className="min-w-0 [overflow-wrap:anywhere]"><p className="truncate text-xs font-medium" title={computer.name}>{computer.name}</p><p className="text-xs text-muted-foreground">{computer.busy ? "Updating…" : computer.connected ? "Connected" : "Offline · last known status"} · {computer.address}</p>{computer.error && <p className="text-xs text-destructive">{computer.error}</p>}<p className="text-xs text-muted-foreground">Removing the connection leaves sandboxes on {computer.name} unchanged.</p></div><Button size="xs" variant="ghost" disabled={busy || !removeComputer} aria-label={`Remove connection to ${computer.name}`} onClick={() => { if (removeComputer) void perform(`computer:${computer.id}`, () => removeComputer(computer.id)) }}>Remove connection</Button></div>)}
       {!connecting && <Button ref={connectButton} size="sm" variant="outline" className="justify-self-start" onClick={() => setConnecting(true)}>Connect computer…</Button>}
       {connecting && <ConnectComputerForm connect={actions.connectComputer} authorize={actions.authorizeComputer} setupKey={actions.setupComputerKey} onClose={closeConnectionForm} />}
       {source.remoteComputersError && <p role="alert" className="text-xs text-destructive">{source.remoteComputersError}</p>}
