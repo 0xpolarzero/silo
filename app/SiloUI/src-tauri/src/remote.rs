@@ -172,6 +172,9 @@ fn save_config_in(dir: &Path, config: &Config) -> Result<(), String> {
     temp.as_file().sync_all().map_err(|e| e.to_string())?;
     temp.persist(dir.join("config.json"))
         .map_err(|e| e.to_string())?;
+    fs::File::open(dir)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 /// Whether a bridged method only observes state or changes it.
@@ -201,7 +204,7 @@ const METHODS: &[(&str, Access)] = &[
     ("chatgpt.retry", Access::Change),
     ("computer.approval", Access::Change),
     ("ssh.access.state", Access::Read),
-    ("ssh.access.connection", Access::Read),
+    ("ssh.access.connection", Access::Change),
     ("ssh.access.save", Access::Change),
     ("files.list", Access::Read),
     ("guest.prepare", Access::Change),
@@ -1005,6 +1008,18 @@ impl Failure {
         self.error().message
     }
 }
+/// A bridge reply carries either an explicit result or a reported error.
+fn decode_reply(response: &Value) -> Result<Value, Failure> {
+    let invalid = || Failure::Failed("Invalid remote Silo response.".into());
+    match (response.get("result"), response.get("error")) {
+        (Some(result), None) => Ok(result.clone()),
+        (None, Some(_)) => Err(BridgeError::from_remote_reply(response)
+            .map(Failure::Reported)
+            .unwrap_or_else(invalid)),
+        _ => Err(invalid()),
+    }
+}
+
 /// An ssh failure that sending the request again may overcome: the connection dropped or
 /// could not be made, not a host key, authentication, name or refused-connection problem.
 fn lost_connection(code: Option<i32>, stderr: &str) -> bool {
@@ -1119,10 +1134,7 @@ fn run_exchange(
     let mut stdout = stdout;
     stdout.seek(SeekFrom::Start(0)).map_err(failed)?;
     let response = read_reply(std::io::BufReader::new(stdout)).map_err(Failure::Failed)?;
-    if let Some(error) = BridgeError::from_remote_reply(&response) {
-        return Err(Failure::Reported(error));
-    }
-    Ok(response["result"].clone())
+    decode_reply(&response)
 }
 /// Legacy adapter for callers whose command error contract has not migrated yet.
 pub(crate) fn call_remote(
@@ -1683,9 +1695,7 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
             &json!({"version":VERSION,"hostId":host.id,"method":method,"params":params}),
         )?;
         let reply = read_reply(&mut output)?;
-        if let Some(error) = reply["error"].as_str() {
-            return Err(error.to_owned());
-        }
+        decode_reply(&reply).map_err(Failure::message)?;
         thread::spawn(move || {
             let _ = std::io::copy(&mut std::io::stdin().lock(), &mut input);
         });
@@ -1929,13 +1939,20 @@ fn handle(
         }
         Some(Access::Read) => execute(method, params),
         Some(Access::Change) => {
+            // Earlier controllers treated key authorization as a read and sent no identity.
+            let legacy_key_request = method == "ssh.access.connection"
+                && request.get("operationId").is_none()
+                && request.get("startWithinMs").is_none();
+            let legacy_id = legacy_key_request.then(|| uuid::Uuid::new_v4().to_string());
             let id = request["operationId"]
                 .as_str()
+                .or(legacy_id.as_deref())
                 .filter(|id| uuid::Uuid::parse_str(id).is_ok())
                 .ok_or("Invalid remote request identity.")?;
             let start_within = request["startWithinMs"]
                 .as_u64()
                 .map(Duration::from_millis)
+                .or_else(|| legacy_key_request.then(|| request_timeout(request) / 2))
                 .ok_or("Invalid remote request deadline.")?
                 .min(request_timeout(request));
             let journal = dir.join("operations");
@@ -3392,6 +3409,51 @@ mod reply_tests {
             .contains("shell startup files"));
     }
 
+    fn exchange_fixture_reply(response: &Value) -> Result<Value, Failure> {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("reply");
+        fs::write(&path, reply(response)).unwrap();
+        let mut command = Command::new("/bin/cat");
+        command.arg(path);
+        run_exchange(
+            command,
+            &json!({"method":"handshake"}),
+            Instant::now() + Duration::from_secs(2),
+        )
+    }
+
+    #[test]
+    fn exchange_rejects_malformed_reply_envelopes() {
+        for response in [
+            json!({}),
+            json!([]),
+            json!({"error":{"message":"failed"}}),
+            json!({"result":null,"error":"failed"}),
+        ] {
+            assert!(
+                matches!(exchange_fixture_reply(&response), Err(Failure::Failed(message)) if message.contains("Invalid remote Silo response")),
+                "malformed reply was accepted: {response}"
+            );
+        }
+    }
+
+    #[test]
+    fn exchange_preserves_null_results_and_reported_errors() {
+        assert_eq!(
+            exchange_fixture_reply(&json!({"result":null})),
+            Ok(Value::Null)
+        );
+        let error = BridgeError::new(ErrorCode::Cancelled, "Cancelled by owner.");
+        assert_eq!(
+            exchange_fixture_reply(&error_reply(&error)),
+            Err(Failure::Reported(error))
+        );
+        assert!(matches!(
+            exchange_fixture_reply(&json!({"error":"Legacy owner error."})),
+            Err(Failure::Reported(error)) if error.message == "Legacy owner error."
+        ));
+    }
+
     #[test]
     fn exchange_deadline_covers_a_full_request_pipe() {
         let _test_state = crate::test_support::global_state();
@@ -3586,6 +3648,7 @@ mod dispatch_tests {
                 "desktop.action",
                 "chatgpt.retry",
                 "computer.approval",
+                "ssh.access.connection",
                 "ssh.access.save",
                 "guest.prepare",
                 "network.publish",
@@ -3666,6 +3729,25 @@ mod dispatch_tests {
             );
             assert_eq!(outcome, Err(expected.clone()));
         }
+    }
+
+    #[test]
+    fn ssh_key_registration_is_recorded_once_per_request() {
+        let _test_state = crate::test_support::global_state();
+        let (_home, dir, config) = owner();
+        let registration = request(&config, "ssh.access.connection");
+        let runs = AtomicUsize::new(0);
+        for _ in 0..2 {
+            let result = run(&dir, &registration, |_, _| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"port":2222,"address":"127.0.0.1","user":"silo"}))
+            })
+            .unwrap();
+            assert_eq!(result["port"], 2222);
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        let id = registration["operationId"].as_str().unwrap();
+        assert!(dir.join("operations").join(format!("{id}.json")).is_file());
     }
 
     #[test]
@@ -3997,6 +4079,101 @@ mod ssh_authorization_tests {
     }
 }
 
+#[cfg(test)]
+mod ssh_connection_admission_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn owner() -> (tempfile::TempDir, Value) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config {
+            host_id: uuid::Uuid::new_v4().to_string(),
+            enabled: true,
+            hosts: Vec::new(),
+        };
+        save_config_in(directory.path(), &config).unwrap();
+        let request = json!({
+            "version": VERSION,
+            "hostId": config.host_id,
+            "method": "ssh.access.connection",
+            "operationId": uuid::Uuid::new_v4().to_string(),
+            "startWithinMs": 60_000,
+            "params": {"vmId":uuid::Uuid::new_v4().to_string(),"publicKey":"ssh-ed25519 AAAA"},
+        });
+        (directory, request)
+    }
+
+    #[test]
+    fn remote_ssh_key_authorization_never_executes_after_access_is_revoked() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, request) = owner();
+        let executions = AtomicUsize::new(0);
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| false),
+            |_, _| {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok(Value::Null)
+            },
+        );
+        assert!(result.is_err(), "revoked key authorization was accepted");
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn older_controllers_authorize_keys_through_a_bounded_recorded_change() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, mut request) = owner();
+        request.as_object_mut().unwrap().remove("operationId");
+        request.as_object_mut().unwrap().remove("startWithinMs");
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| true),
+            |_, _| Ok(Value::Null),
+        );
+        assert_eq!(result.unwrap(), Value::Null);
+        assert_eq!(
+            fs::read_dir(directory.path().join("operations"))
+                .unwrap()
+                .count(),
+            1
+        );
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| false),
+            |_, _| panic!("revoked legacy key requests must not execute"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn retrying_remote_ssh_key_authorization_reuses_the_recorded_result() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, request) = owner();
+        let executions = AtomicUsize::new(0);
+        for _ in 0..2 {
+            let result = handle(
+                directory.path(),
+                &request,
+                Arc::new(|| true),
+                Arc::new(|| true),
+                |_, _| {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"port":2222,"address":"192.168.1.2"}))
+                },
+            );
+            assert_eq!(result.unwrap()["port"], 2222);
+        }
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
+    }
+}
+
 pub(crate) fn log_identity() -> Result<(String, String), String> {
     let _guard = config_lock();
     Ok((read_config()?.host_id, name()))
@@ -4007,6 +4184,31 @@ mod config_io_limit_tests {
     use super::*;
 
     const LIMIT_BYTES: usize = 1024 * 1024;
+
+    #[test]
+    fn remote_config_save_reports_an_unreadable_parent_after_publication() {
+        use std::os::unix::fs::MetadataExt;
+        let directory = tempfile::tempdir().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let config = Config {
+            host_id: "fixture-owner".into(),
+            enabled: false,
+            hosts: vec![],
+        };
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = save_config_in(directory.path(), &config);
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let published = read_config_in(directory.path()).unwrap();
+        assert_eq!(published.host_id, "fixture-owner");
+        assert!(!published.enabled);
+        assert!(
+            result.is_err(),
+            "an unsynchronized rename must not report success"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 
     #[test]
     fn remote_config_accepts_the_limit_and_rejects_one_extra_byte_without_rewriting() {

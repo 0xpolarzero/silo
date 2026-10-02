@@ -35,6 +35,17 @@ it("hands focus to the new sandbox editor after a keyboard menu selection", asyn
   expect(screen.queryByRole("menu")).not.toBeInTheDocument()
 })
 
+it("restores Add focus when an import selection opens no review", async () => {
+  const onImportSandbox = vi.fn()
+  const user = userEvent.setup()
+  render(<TooltipProvider><MachineList machines={[]} onMachinesChange={vi.fn()} onImportSandbox={onImportSandbox} /></TooltipProvider>)
+  const add = screen.getByRole("button", { name: "Add" })
+  await user.click(add)
+  await user.click(screen.getByRole("menuitem", { name: "Import sandbox…" }))
+  expect(onImportSandbox).toHaveBeenCalledOnce()
+  await waitFor(() => expect(add).toHaveFocus())
+})
+
 it("returns focus to Add when a new sandbox editor is cancelled", async () => {
   const user = userEvent.setup()
   render(<TooltipProvider><MachineList machines={[]} onMachinesChange={vi.fn()} /></TooltipProvider>)

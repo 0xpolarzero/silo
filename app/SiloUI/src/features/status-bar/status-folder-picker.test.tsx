@@ -109,6 +109,29 @@ describe("status folder picker live directories", () => {
     expect(screen.queryByRole("button", { name: "projects" })).not.toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Open in Cursor" })).toBeDisabled()
   })
+  it("backs off failed reads, refreshes on focus, and restores the healthy interval", async () => {
+    vi.useFakeTimers()
+    try {
+      const loader = vi.fn().mockRejectedValue(new Error("unavailable"))
+      const { unmount } = setup(loader)
+      await act(async () => {})
+      let calls = 1
+      for (const delay of [20_000, 40_000, 60_000, 60_000]) {
+        await act(async () => vi.advanceTimersByTimeAsync(delay - 1))
+        expect(loader).toHaveBeenCalledTimes(calls)
+        await act(async () => vi.advanceTimersByTimeAsync(1))
+        expect(loader).toHaveBeenCalledTimes(++calls)
+      }
+      loader.mockResolvedValue(page([]))
+      await act(async () => window.dispatchEvent(new Event("focus")))
+      expect(loader).toHaveBeenCalledTimes(++calls)
+      await act(async () => vi.advanceTimersByTimeAsync(10_000))
+      expect(loader).toHaveBeenCalledTimes(++calls)
+      unmount()
+      await act(async () => vi.advanceTimersByTimeAsync(60_000))
+      expect(loader).toHaveBeenCalledTimes(calls)
+    } finally { vi.useRealTimers() }
+  })
   it("does not poll after the status panel loses focus or unmounts", async () => {
     vi.useFakeTimers()
     try {

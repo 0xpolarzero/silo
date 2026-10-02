@@ -11,3 +11,13 @@ Scope: `app/SiloUI/src-tauri/src/backup.rs` and `app/SiloUI/src-tauri/src/pre_up
 - **Evidence:** A standalone Rust test using the exact production `Record`, `Saved`, `load`, and `delete_at` code reproduced `resulting value is out of range` with the synthetic record. No app or real backup was accessed.
 - **Fix:** Validate both retention addition and UTC conversion with checked operations before treating a loaded record as valid. Keep invalid records unchanged and use the existing manual-deletion behavior.
 - **Regression:** Extend the existing unreadable-record behavior test with arithmetic-overflow and UTC-conversion-overflow dates. It asserts status remains readable, automatic deletion stays disabled, acknowledgment preserves the record, and manual deletion succeeds.
+
+## BACKUP-3: A failed directory sync deletes the published path without checking ownership
+
+- **Severity:** P2.
+- **Location:** `app/SiloUI/src-tauri/src/backup.rs`, publication at the end of `write_immutable_package`.
+- **Trigger:** The verified export is published, another writer replaces that path, and syncing the destination directory fails.
+- **Consequence:** Error cleanup deletes the other writer's file. Without a replacement, it also deletes the already-verified export when the filesystem cannot confirm directory durability.
+- **Evidence:** The exact production publication seam and a temporary-file regression reproduced a missing replacement file after an injected `EIO` from directory syncing. No live runtime or real export was used.
+- **Fix:** Keep the committed path after publication. Return the sync error without unlinking a path whose ownership can already have changed.
+- **Regression:** Exercise real exclusive publication with an injected sync failure, both with and without another writer's atomic replacement. Assert the error remains reported and the expected file bytes remain. The extracted production seam and three publication tests pass; this does not substitute for the complete native suite.

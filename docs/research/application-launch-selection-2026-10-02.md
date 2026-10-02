@@ -61,3 +61,15 @@ The command now retains the original environment launcher and prefix arguments a
 `exec_program` treated the operand of `env -u NAME` or `env --unset NAME` as the executable. Ordinary entries were rejected as unsupported editors; when the operand equaled the editor name, the resolver also rebuilt the prefix around the wrong token occurrence. The failing regression executed `env -u code code` under a fixture-only PATH: the child retained the `code` variable instead of removing it.
 
 The parser now consumes the unset operand and returns the actual program index. Editor resolution uses that index rather than searching for the first equal string. The same parser supplies Linux terminal identity. The regression verifies the executed child's environment and workspace argument, both unset option spellings, and rejection of a missing operand. No real editor or terminal is launched.
+
+## APPLICATIONS-8: SSH Include interpreted runtime paths as globs (P2)
+
+`editor.rs::include_line` quoted the directory as SSH configuration text but did not escape glob characters. A runtime directory named `ssh[fixture]` therefore produced an Include that missed the actual directory, and SSH-based editor aliases were unavailable. The rejecting regression runs the real `/usr/bin/ssh -G -F` configuration parser against temporary files and requires the included host's literal address to appear. It failed for the bracket fixture before the fix.
+
+The [OpenSSH Include reference](https://man.openbsd.org/ssh_config.5#Include) specifies glob expansion. The directory is now escaped for that expansion before the existing SSH configuration quoting, while the final `*.conf` remains a wildcard. The test covers brackets, question marks, asterisks, and backslashes. `ssh -G` only parses the fixture configuration; it does not connect to a VM or other host.
+
+## APPLICATIONS-9: macOS editor CLI permissions were not checked (P2)
+
+The macOS resolver accepted an existing bundled editor CLI with mode `0644`. Opening a remote folder then failed during process spawn instead of returning the established unavailable-editor error. The regression builds temporary VS Code and Zed bundles, transitions each CLI through missing, non-executable, and executable states, and requires resolution to succeed only in the last state. It failed on the non-executable VS Code fixture before the fix.
+
+The resolver now reuses the existing executable-file validation used by Linux editor handoffs. The pre-existing Zed handoff fixture also sets execute permission explicitly. The focused test links the real Foundation bundle reader and reads only temporary bundles; no editor or application is launched.

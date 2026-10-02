@@ -2,7 +2,7 @@
 
 This pass confirms four P2 findings: a restore topology regression in the device-inventory cap, an upstream LCU publication failure that blocks upgrade retries, a manual-setup approval race, and an unsynchronized attempt-marker rename. The manual race is corrected with a focused regression. The runtime and installer findings need upstream boundary fixes; marker durability needs filesystem failure qualification.
 
-Initial revision: `f9421925`. Findings rechecked after folding the fix and synchronizing with integration at `aa085336`; CU-01, CU-02 and CU-04 remain open there. Scope includes commits returned by `git log --since=2026-10-01`, with particular attention to `57d8b380`, `4d58e654`, `dd2b6d80`, and `b6354934`. Findings use CU-01 onward. The two existing reports were read from the main checkout; this report does not reproduce their ledgers. R-11 and R-15 are excluded because another agent owns their fixes.
+Initial revision: `f9421925`. Findings rechecked after folding the fix and synchronizing with integration at `aa085336`; CU-01, CU-02 and CU-04 remain open there and were rechecked at `9bbb1558` after the final focused Cargo run. Scope includes commits returned by `git log --since=2026-10-01`, with particular attention to `57d8b380`, `4d58e654`, `dd2b6d80`, and `b6354934`. Findings use CU-01 onward. The two existing reports were read from the main checkout; this report does not reproduce their ledgers. R-11 and R-15 are excluded because another agent owns their fixes.
 
 Evidence distinguishes source confirmation from executed deterministic fixtures. No app launch, live VM, production state, runtime preparation, or network-heavy verification is authorized by the shared task instructions. Native tests use the shared `/tmp/silo-codex-target` and explicit synthetic GitHub configuration only.
 
@@ -51,7 +51,7 @@ Evidence distinguishes source confirmation from executed deterministic fixtures.
 
 **Consequence.** The chosen Ask can remain unapplied while agents retain Auto. The UI correctly says pending, but no worker remains to finish. This is distinct from historical R-21: that background-turn defect is already fixed; this finding concerns the manual turn.
 
-**Correction.** Re-read the chosen mode after each manual attempt and converge inside the existing turn. Stop on cancellation or an unavailable app. Subsequent convergence attempts use ordinary idempotent setup rather than forcing another installation. The extracted production function now passes convergence and cancellation assertions. No new scheduler or guest approval record was introduced.
+**Correction.** Re-read the chosen mode after each manual attempt and converge inside the existing turn. Stop on cancellation or an unavailable app. Subsequent convergence attempts use ordinary idempotent setup. The extracted production function now passes convergence and cancellation assertions. No new scheduler or guest approval record was introduced.
 
 **Acceptance.** Save a new choice during a blocked manual helper, then release it with no surviving queued follower. The turn must finish with desired and applied Ask, no unfinished marker or pending slot, and one helper at a time. Keep Stop, Restart, Delete and shutdown cancellation tests passing. The fixture does not qualify live LCU behavior or a fifteen-minute real guest installation.
 
@@ -65,7 +65,7 @@ Evidence distinguishes source confirmation from executed deterministic fixtures.
 
 **Correction.** Synchronize the containing directory after publication before reporting marker success, and persist newly created policy-directory entries in their parent too. Propagate synchronization failure so the helper cannot start under an unconfirmed marker. Qualify the supported Linux and macOS filesystem guarantees rather than assuming one syscall proves every storage platform.
 
-**Acceptance.** A disposable filesystem or fault-injection fixture must cut persistence between file sync, rename and directory sync, then reboot/reopen from durable state. Guest mutation starts only after the marker's name and bytes are durable. Inject directory-sync failure after rename and assert no helper runs; cover first directory creation and replacing an existing completed policy. No storage crash test was executed in this pass, so this boundary remains open rather than receiving an unqualified durability claim.
+**Acceptance.** A disposable filesystem or fault-injection fixture must cut persistence between file sync, rename and directory sync, then reboot/reopen from durable state. An acknowledged Ask choice must survive reopening from durable state, including a choice saved while the VM is stopped. Guest mutation starts only after the marker's name and bytes are durable. Inject directory-sync failure after rename and assert no helper runs; cover first directory creation and replacing an existing completed policy. No storage crash test was executed in this pass, so this boundary remains open rather than receiving an unqualified durability claim.
 
 ## Verification and review boundaries
 
@@ -78,11 +78,11 @@ All evidence is under ignored `app/SiloUI/src-tauri/target/verification/pass3-co
 | CU-04 persistence source and Linux fsync contract | Confirmed missing directory synchronization; no crash/reboot execution |
 | CU-03 extracted production manual turn | Failed before correction with `[Auto]`; passed after correction with `[Auto, Ask]`; cancellation stops after one attempt |
 | Native CU-03 behavior regression through Cargo | 1 passed; actual policy files, operation gate and barrier-controlled runner |
-| Native focused computer-use group through Cargo | Pending |
-| `python3 -m unittest discover -s app/SiloUI/scripts -p test_computer_use.py` | 56 passed, including the separately owned R-11 correction received through integration |
+| Native focused computer-use group through Cargo | 66 passed, 0 failed, including the new regression and existing cancellation/identity/marker cases; final source at `9bbb1558` |
+| `python3 -m unittest discover -s app/SiloUI/scripts -p test_computer_use.py` | 58 passed at the final cutoff; earlier run: 56 passed before subsequent guest-persistence tests arrived through integration. Includes the separately owned R-11 correction |
 | `npm --prefix app/SiloUI test -- src/test/microsandbox-runtime.test.ts --maxWorkers=1` | 13 passed, Node 24.11.1; cached runtime/protocol staging fixtures |
-| `npm --prefix app/SiloUI run typecheck` | Passed |
-| `npm --prefix app/SiloUI run lint` | Passed with two existing warnings in Status bar and Storage |
+| `npm --prefix app/SiloUI run typecheck` | Passed before subsequent integration merges |
+| `npm --prefix app/SiloUI run lint` | Passed before subsequent integration merges, with two existing warnings in Status bar and Storage |
 | `cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check`; `git diff --check` | Passed after formatting the new native regression |
 
 Native Cargo commands used `CARGO_TARGET_DIR=/tmp/silo-codex-target`, the release guide's synthetic `SILO_GITHUB_APP_SLUG=silo-ci-test`, `SILO_GITHUB_CLIENT_ID=test-client`, `SILO_GITHUB_CLIENT_SECRET=test-secret`, and test-only `TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[],"macOS":{"frameworks":[]}}}'`. This excludes absent generated packaging inputs without preparing runtime resources or changing tracked configuration. Two initial attempts used an empty resources map, which merges with existing entries rather than clearing them; both failed on absent generated resources before tests. Their logs remain. A direct shared-executable group run was subsequently found to be another worktree's binary (the new regression was absent) and is excluded from branch validation. Use Cargo to keep the artifact lock through execution.
@@ -91,6 +91,6 @@ The LCU diagnostic initially compared a canonical temporary path with its `/var`
 
 Review covered the helper's pin matching, download/hash checks, install/setup/readiness phases, host attempt marker and failure persistence, approval convergence, operation-gate preemption, guest transport cleanup, runtime instance restoration and probes, checkpoint integrity/restore limits, and changed opt-in live-test inputs. Counter-evidence matters: the pinned agent's relay disconnect cleanup explicitly signals the guest process group, so killing `msb exec` was not promoted to an orphan-process finding. Identity checks revalidate both machine label and runtime instance after admission; existing native cases cover replaced instances and missing identity. The cap's per-type and aggregate limits remain useful; CU-01 concerns its topology bound.
 
-The upgrade unit fixture substitutes installer behavior and therefore does not qualify a real 0.8.1-to-0.8.2 installation or rollback. No live upgrade/rollback, Linux checkpoint, full device-state stress, or cancellation-to-guest-exit timing was run. R-11 and R-15 remain owned elsewhere and are not counted here.
+The upgrade unit fixture substitutes installer behavior and therefore does not qualify a real 0.8.1-to-0.8.2 installation or rollback. Concurrent integration added bounded host policy reads, forward-compatible attempt outcomes and directory synchronization for guest receipts; the final Cargo group includes those changes. The host policy writer in CU-04 still omits directory synchronization. No live upgrade/rollback, Linux checkpoint, full device-state stress, or cancellation-to-guest-exit timing was run. R-11 and R-15 remain owned elsewhere and are not counted here.
 
 Next action: add CU-04's directory-sync failure and crash-recovery regression, then make marker publication durable before the guest helper starts.

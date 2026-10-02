@@ -69,9 +69,10 @@ struct Controller {
     preferences: PathBuf,
 }
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Preferences {
     automatic_checks: bool,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 const PREFERENCE_READ_ERROR: &str =
     "Update preferences could not be read. Save your preference again.";
@@ -89,12 +90,18 @@ fn save_preferences(path: &Path, enabled: bool) -> Result<(), String> {
         .parent()
         .ok_or("Update preference storage is unavailable.")?;
     fs::create_dir_all(parent).map_err(|_| "Update preferences could not be saved.")?;
+    let extra = fs::read(path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<Preferences>(&bytes).ok())
+        .map(|preferences| preferences.extra)
+        .unwrap_or_default();
     let mut file = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| "Update preferences could not be saved.")?;
     serde_json::to_writer(
         &mut file,
         &Preferences {
             automatic_checks: enabled,
+            extra,
         },
     )
     .map_err(|_| "Update preferences could not be saved.")?;
@@ -1100,6 +1107,46 @@ mod tests {
         assert_eq!(unrelated.phase, "error");
         assert_eq!(unrelated.retry_action.as_deref(), Some("download"));
     }
+    #[test]
+    fn additive_update_preferences_keep_the_choice_and_survive_saves() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        for automatic in [false, true] {
+            let saved = serde_json::json!({
+                "automatic_checks": automatic,
+                "future_preference": {"channel": "preview", "days": [1, 3, 5]}
+            });
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(read_preferences(&path).unwrap(), automatic);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+
+            save_preferences(&path, !automatic).unwrap();
+            let written: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(written["automatic_checks"], !automatic);
+            assert_eq!(written["future_preference"], saved["future_preference"]);
+            assert_eq!(read_preferences(&path).unwrap(), !automatic);
+        }
+    }
+
+    #[test]
+    fn malformed_known_update_preferences_are_not_accepted_as_additive_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        for bytes in [
+            br#"{"automatic_checks":"false","future_preference":true}"#.as_slice(),
+            br#"{"automatic_checks":null,"future_preference":true}"#,
+            br#"{"future_preference":true}"#,
+        ] {
+            fs::write(&path, bytes).unwrap();
+            assert!(read_preferences(&path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        save_preferences(&path, false).unwrap();
+        assert!(!read_preferences(&path).unwrap());
+    }
+
     #[test]
     fn missing_preferences_enable_checks_but_corrupt_preferences_do_not() {
         let dir = tempfile::tempdir().unwrap();

@@ -50,7 +50,7 @@ const githubStateShape = z.object({
   ]).optional(),
   workspaces: z.array(z.object({
     workspace: z.string(), identity: z.object({ name: z.string(), email: z.string(), apply: z.boolean() }),
-    authenticationMethod: z.enum(["oauth", "token"]).optional(),
+    authenticationMethod: z.enum(["oauth", "token"]).nullish().transform(value => value ?? undefined),
     repositoryMode: z.enum(["selected", "all"]).default("selected"), allRepositoriesAllowChanges: z.boolean().default(false),
     repositories: z.array(z.object({ repository: z.string(), allowPushes: z.boolean() })),
   })).optional(),
@@ -379,6 +379,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let remoteComputers: RemoteComputer[] = []
   let remoteManagement: RemoteManagement | undefined
   let remoteManagementError: string | undefined
+  let remoteManagementSequence = 0
+  let remoteManagementSaveSequence = 0
   let remoteComputersError: string | undefined
   const remoteSnapshots = new Map<string, ApplicationSource>()
   let remoteHosts: RemoteHost[] = []
@@ -864,6 +866,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         try { hosts = z.array(remoteComputerSchema).parse(await native.invoke("remote_host_list")) }
         catch (cause) {
           if (disposed) return false
+          if (revision !== remoteListRevision) continue
           // The known computers stay listed; the failure is about the list itself.
           remoteComputersError = `Silo could not read its list of computers: ${errorMessage(cause)}`
           publish({ ...snapshot })
@@ -887,12 +890,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function readRemoteManagement() {
+    const sequence = ++remoteManagementSequence
     try {
       const management = remoteManagementSchema.parse(await native.invoke("remote_management_status"))
-      if (disposed) return
+      if (disposed || sequence !== remoteManagementSequence) return
       remoteManagement = management
       remoteManagementError = undefined
-    } catch (cause) { remoteManagementError = errorMessage(cause) }
+    } catch (cause) {
+      if (!disposed && sequence === remoteManagementSequence) remoteManagementError = errorMessage(cause)
+    }
   }
 
   async function refreshComputers(refreshRepositories = false) {
@@ -1276,7 +1282,10 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     if (!acceptingSetup) return Promise.reject(new Error("Silo is quitting. Setup was not submitted."))
     const resolved: ConfigureAction = action ?? { kind: "changes", changes: deriveMachineChanges(committedMachines(), request.machines) }
     // A no-op submission changes nothing; resolve with the current source untouched.
-    if (resolved.kind === "changes" && resolved.changes.length === 0) return Promise.resolve(snapshot.source as ApplicationSource)
+    if (resolved.kind === "changes" && resolved.changes.length === 0) {
+      if (!snapshot.source) return Promise.reject(new Error("Sandbox configuration has not loaded. Refresh and retry."))
+      return Promise.resolve(snapshot.source)
+    }
     const key = canonicalKey([request, resolved])
     if (lastMachineJob?.key === key) return lastMachineJob.promise
     ++identityVerificationSequence
@@ -1605,7 +1614,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     exportLogs: async requests => z.boolean().parse(await native.invoke("export_workspace_logs", { requests })),
     cancelLogExport: async () => { await native.invoke("cancel_log_export") },
     setRemoteManagement: async enabled => {
-      remoteManagement = remoteManagementSchema.parse(await native.invoke("set_remote_management", { enabled }))
+      const sequence = ++remoteManagementSaveSequence
+      ++remoteManagementSequence
+      const management = remoteManagementSchema.parse(await native.invoke("set_remote_management", { enabled }))
+      if (disposed || sequence !== remoteManagementSaveSequence) return
+      ++remoteManagementSequence
+      remoteManagement = management
       remoteManagementError = undefined
       publish({ ...snapshot })
     },

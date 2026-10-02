@@ -13,6 +13,37 @@ function SecretsPreview({ source }: { source: ApplicationSource }) {
 }
 
 describe("SecretsPage", () => {
+  it("explains an oversized replacement before submitting it to the native controller", async () => {
+    const user = userEvent.setup()
+    const save = vi.fn()
+    render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={save} onRemoveSecret={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    const value = screen.getByLabelText("Replacement value")
+    fireEvent.change(value, { target: { value: "é".repeat(32769) } })
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(save).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert")).toHaveTextContent("64 KiB")
+    expect(value).toHaveFocus()
+    expect(value).toHaveValue("é".repeat(32769))
+  })
+
+  it.each([true, false])("keeps secret assignment badges local when a same-named remote exists (local present: %s)", (localPresent) => {
+    const source = structuredClone(applicationSourceForScenario("running"))
+    const local = source.workspaces.find(({ machine, computer }) => machine.name === "dev" && !computer)!
+    local.state = "running"
+    const remote = {
+      ...local, state: "failed" as const,
+      computer: { id: "office", vmId: "remote-vm", name: "Office", address: "office", connected: true },
+    }
+    source.workspaces = [remote, ...source.workspaces.filter(workspace => localPresent || workspace !== local)]
+    source.secrets = [{ ...source.secrets[0], workspaces: ["dev"] }]
+    render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={vi.fn()} />)
+    const assignments = screen.getByRole("group", { name: "Sandboxes for PACKAGE_TOKEN" })
+    expect(assignments).toHaveTextContent(/^dev$/)
+    if (localPresent) expect(within(assignments).getByLabelText("dev, Running")).toBeVisible()
+    else expect(within(assignments).queryByLabelText(/dev,/)).not.toBeInTheDocument()
+  })
+
   it("requires a new wildcard acknowledgement after the allowed domains change", async () => {
     const user = userEvent.setup()
     const save = vi.fn()

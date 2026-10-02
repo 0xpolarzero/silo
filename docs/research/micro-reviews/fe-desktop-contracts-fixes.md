@@ -87,3 +87,4 @@ The pinned versions are Tauri 2.11.5 and muda 0.19.3. GTK popup completion is no
 - **Evidence:** The deferred-creation regression failed because `popup` was called after unmount. This test supplies native API mocks; it does not establish installed-app menu behavior.
 - **Fix:** Close owned menus on disposal, close late-created menus without opening them, and guard item callbacks and feedback against disposal. Release ownership before closing so tracking completion cannot close a menu twice.
 - **Regression:** A late menu never opens or starts a sandbox; an open menu closes once on disposal and ignores subsequent actions. Existing remote targeting and website-copy behavior remain covered.
+- **Integration:** Concurrent fixes `5551ccad` and `c8b822a9` reached integration before folding. Retained their generation and target-change guards, added both action-disposal regressions, and removed this loop’s duplicate changeset.

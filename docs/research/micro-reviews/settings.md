@@ -23,3 +23,23 @@ Read-only source review. Checked the specified first, second, and third pass rep
 - **Consequence:** Logout/SIGTERM loses the promised bounded exit when it overlaps an ordinary Quit. Silo can remain waiting past the session deadline, delaying logout or being terminated externally before completing cleanup.
 - **Suggested fix:** Make session escalation bound the existing shutdown worker as well as frontend flushing. Preserve one VM-stop owner, but let the exit coordinator stop waiting at the earliest session deadline even when the phase is already `FINISHING`.
 - **Test that would catch it:** Use a controllable VM-stop seam: begin ordinary Quit, block its stop worker, then signal session end with a short budget. Assert the coordinator exits by that deadline without requiring the stop seam to resolve and without starting a second stop transaction. The existing session fallback test covers `FLUSHING` only.
+
+## SETTINGS-4: An in-flight Quit status read reopens a session-end prompt
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/settings.rs`, `QuitConfirmation::close` and `request_quit`.
+- **Trigger:** A user Quit passes the initial admission check and waits in `running_names`; session shutdown closes the pending prompt before that status read returns.
+- **Evidence:** `close` cleared only the pending request ID. The delayed worker then called `ask`, which allocated another request ID and emitted another prompt. The regression `a_late_quit_status_read_cannot_reopen_the_session_end_prompt` failed with `Some(QuitRequest)` after closing session confirmation.
+- **Consequence:** Logout or shutdown displays a fresh cancel-capable Quit prompt; its negative answer invokes operating-system cancellation even though session shutdown must proceed without confirmation.
+- **Fix:** Close confirmation admission permanently for this session, under the same mutex that allocates prompt IDs.
+- **Regression:** Close confirmation before a delayed status result is submitted and require no prompt for either running sandboxes or a failed status read. Continue rejecting answers to the invalidated prompt.
+
+## SETTINGS-5: A pending AppKit Quit suppresses session escalation
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/system_shutdown/macos.rs`, `should_terminate`.
+- **Trigger:** A terminate callback carrying Logout or Shutdown arrives while `PENDING` remains true for an earlier user Quit.
+- **Evidence:** The hook returned `TERMINATE_LATER` before parsing the new event reason, so the session request never reached `system_shutdown::route` or `settings::end_session`. Extracting this exact dispatch gate into `begin_terminate` reproduced the missing route: the failing test observed only UserQuit rather than UserQuit followed by Logout/Shutdown.
+- **Consequence:** An already pending confirmation or frontend flush keeps the ordinary unbounded Quit policy instead of receiving the session deadline and bypassing confirmation.
+- **Fix:** Continue suppressing repeated user Quit requests, but route session-ending reasons even while AppKit awaits a reply.
+- **Regression:** Route UserQuit followed by each session-ending reason, require both routes, and retain one route for repeated UserQuit. This proves the dispatch policy; no AppKit event or live VM was exercised.

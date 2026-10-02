@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "linux", test))]
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::fs;
 use std::{
-    fs::{self, File},
+    fs::File,
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -18,7 +20,7 @@ const RETRY_GUIDANCE: &str =
 // Finish native probes before the frontend watchdog abandons the report at 15 seconds.
 const COLLECTION_TIMEOUT: Duration = Duration::from_secs(12);
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const MAX_HASH_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_OUTPUT: u64 = 8 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -236,7 +238,7 @@ fn expected_target() -> Option<&'static str> {
     }
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError> {
+fn open_regular_file(path: &Path) -> Result<File, ProbeError> {
     let unreadable = |error: io::Error| match error.kind() {
         io::ErrorKind::NotFound => ProbeError::Missing(format!("{} is missing", path.display())),
         io::ErrorKind::PermissionDenied => {
@@ -255,14 +257,21 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError>
     let file = options.open(path).map_err(unreadable)?;
     if !file.metadata().map_err(unreadable)?.is_file() {
         return Err(ProbeError::Malformed(format!(
-            "{} is not a regular manifest file",
+            "{} is not a regular file",
             path.display()
         )));
     }
+    Ok(file)
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError> {
+    let file = open_regular_file(path)?;
     let mut bytes = Vec::new();
     file.take(MAX_MANIFEST_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(unreadable)?;
+        .map_err(|error| {
+            ProbeError::Unreadable(format!("{} could not be read: {error}", path.display()))
+        })?;
     if bytes.len() as u64 > MAX_MANIFEST_BYTES {
         return Err(ProbeError::Malformed(format!(
             "{} exceeds the manifest size limit",
@@ -275,36 +284,12 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError>
 }
 
 fn readable_file(path: &Path) -> Result<(), ProbeError> {
-    let metadata = fs::metadata(path).map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => ProbeError::Missing(format!("{} is missing", path.display())),
-        io::ErrorKind::PermissionDenied => {
-            ProbeError::Unreadable(format!("{} cannot be read", path.display()))
-        }
-        _ => ProbeError::Unreadable(format!(
-            "{} could not be inspected: {error}",
-            path.display()
-        )),
-    })?;
-    if !metadata.is_file() {
-        return Err(ProbeError::Malformed(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
-    File::open(path)
-        .map_err(|_| ProbeError::Unreadable(format!("{} cannot be read", path.display())))?;
-    Ok(())
+    open_regular_file(path).map(|_| ())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn sha256_file(path: &Path, deadline: Instant) -> Result<String, ProbeError> {
-    let mut file = File::open(path).map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => ProbeError::Missing(format!("{} is missing", path.display())),
-        io::ErrorKind::PermissionDenied => {
-            ProbeError::Unreadable(format!("{} cannot be read", path.display()))
-        }
-        _ => ProbeError::Unreadable(format!("{} could not be read: {error}", path.display())),
-    })?;
+    let mut file = open_regular_file(path)?;
     let length = file
         .metadata()
         .map_err(|error| {
@@ -1467,6 +1452,114 @@ mod tests {
         );
         let output = result.expect("FIFO manifest reader must finish without a writer");
         assert!(output.contains("1 passed"), "{output}");
+    }
+
+    #[cfg(unix)]
+    fn assert_guest_image_fifo_is_rejected(name: &str) {
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("guest-image");
+        fs::create_dir(&image).unwrap();
+        fs::write(image.join("image.tar.gz"), b"a").unwrap();
+        fs::write(
+            image.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "architecture": std::env::consts::ARCH,
+                "imageReference": "ghcr.io/0xpolarzero/silo-guest:test",
+                "imageDigest": format!("sha256:{}", "a".repeat(64)),
+                "archiveSha256": "b".repeat(64),
+                "archiveBytes": 1,
+                "unpackedBytes": 1,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let path = image.join(name);
+        fs::remove_file(&path).unwrap();
+        let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let helper = format!("{module}::guest_image_fifo_reader_helper");
+        let output = run_bounded_with_timeout(
+            &std::env::current_exe().unwrap(),
+            &["--exact", &helper, "--nocapture"],
+            &[("SILO_TEST_GUEST_IMAGE_FIFO", directory.path())],
+            PROCESS_TIMEOUT,
+        )
+        .expect("guest-image validation must not wait for a FIFO writer");
+        assert!(output.contains("1 passed"), "{output}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_manifest_fifo_is_rejected_before_the_collection_deadline() {
+        assert_guest_image_fifo_is_rejected("manifest.json");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_archive_fifo_is_rejected_before_the_collection_deadline() {
+        assert_guest_image_fifo_is_rejected("image.tar.gz");
+    }
+
+    #[test]
+    fn guest_image_fifo_reader_helper() {
+        let Some(directory) = std::env::var_os("SILO_TEST_GUEST_IMAGE_FIFO") else {
+            return;
+        };
+        let paths = ProbePaths {
+            executable_dir: PathBuf::from(&directory),
+            resource_dir: PathBuf::from(&directory),
+            frameworks_dir: Some(PathBuf::from(&directory)),
+        };
+        let check = microsandbox_check(&paths, Instant::now() + Duration::from_secs(2));
+        assert_eq!(check.status, CheckStatus::Failed, "{check:?}");
+        assert!(check.detail.contains("regular file"), "{check:?}");
+    }
+
+    #[test]
+    fn dependency_hash_rejects_directories_and_hashes_valid_files() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            sha256_file(directory.path(), Instant::now() + PROCESS_TIMEOUT),
+            Err(ProbeError::Malformed(_))
+        ));
+        let path = directory.path().join("binary");
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            sha256_file(&path, Instant::now() + PROCESS_TIMEOUT).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_hash_fifo_is_rejected_without_waiting_for_a_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("git");
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let helper = format!("{module}::dependency_hash_fifo_reader_helper");
+        let output = run_bounded_with_timeout(
+            &std::env::current_exe().unwrap(),
+            &["--exact", &helper, "--nocapture"],
+            &[("SILO_TEST_DEPENDENCY_HASH_FIFO", path.as_path())],
+            PROCESS_TIMEOUT,
+        )
+        .expect("dependency hashing must not wait for a FIFO writer");
+        assert!(output.contains("1 passed"), "{output}");
+    }
+
+    #[test]
+    fn dependency_hash_fifo_reader_helper() {
+        let Some(path) = std::env::var_os("SILO_TEST_DEPENDENCY_HASH_FIFO") else {
+            return;
+        };
+        assert!(matches!(
+            sha256_file(Path::new(&path), Instant::now() + PROCESS_TIMEOUT),
+            Err(ProbeError::Malformed(_))
+        ));
     }
 
     #[test]

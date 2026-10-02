@@ -8,7 +8,7 @@ import test from "node:test"
 import { stageGuestImage } from "./guest-image.mjs"
 
 const bytes = Buffer.from("approved archive")
-const manifest = { schemaVersion: 1, imageReference: "silo:test", archiveBytes: bytes.length, archiveSha256: createHash("sha256").update(bytes).digest("hex") }
+const manifest = { schemaVersion: 1, architecture: "aarch64", imageReference: "silo:test", archiveBytes: bytes.length, archiveSha256: createHash("sha256").update(bytes).digest("hex") }
 async function setup(t) {
   const appRoot = await mkdtemp(join(tmpdir(), "silo-guest-stream-"))
   t.after(() => rm(appRoot, { recursive: true, force: true }))
@@ -74,4 +74,45 @@ test("a corrupt local artifact falls back to a verified streamed download", asyn
   assert.equal(downloads, 1)
   assert.deepEqual(await readFile(join(options.destination, "image.tar.gz")), bytes)
   assert.deepEqual((await readdir(options.destination)).sort(), ["image.tar.gz", "manifest.json"])
+})
+
+
+for (const [targetTriple, key, declared] of [
+  ["aarch64-apple-darwin", "arm64", "x86_64"],
+  ["aarch64-unknown-linux-gnu", "arm64", "x86_64"],
+  ["x86_64-unknown-linux-gnu", "amd64", "aarch64"],
+]) {
+  test(`rejects a ${declared} guest lock for ${targetTriple} before replacing cached artifacts`, async t => {
+    const options = await setup(t)
+    await writeFile(join(options.appRoot, "guest-image/image-lock.json"), JSON.stringify({
+      releaseUrl: "https://example.test/release", images: { [key]: { ...manifest, architecture: declared } },
+    }))
+    let downloads = 0
+    await assert.rejects(stageGuestImage({ ...options, targetTriple, fetchStream: async () => {
+      downloads += 1
+      return Readable.from([bytes])
+    } }), /invalid locked guest image/)
+    assert.equal(downloads, 0)
+    assert.equal(await readFile(join(options.destination, "image.tar.gz"), "utf8"), "previous archive")
+    assert.equal(await readFile(join(options.destination, "manifest.json"), "utf8"), "previous manifest")
+  })
+}
+
+
+test("stages and reuses an approved x86_64 guest for the amd64 lock entry", async t => {
+  const options = await setup(t)
+  const amd64 = { ...manifest, architecture: "x86_64" }
+  await writeFile(join(options.appRoot, "guest-image/image-lock.json"), JSON.stringify({
+    releaseUrl: "https://example.test/release", images: { amd64 },
+  }))
+  let downloads = 0
+  const fetchStream = async url => {
+    downloads += 1
+    assert.equal(url, "https://example.test/release/image-amd64.tar.gz")
+    return Readable.from([bytes])
+  }
+  await stageGuestImage({ ...options, targetTriple: "x86_64-unknown-linux-gnu", fetchStream })
+  await stageGuestImage({ ...options, targetTriple: "x86_64-unknown-linux-gnu", fetchStream })
+  assert.equal(downloads, 1)
+  assert.deepEqual(JSON.parse(await readFile(join(options.destination, "manifest.json"), "utf8")), amd64)
 })

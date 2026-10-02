@@ -7,10 +7,10 @@ import { showOperationFailure, showOperationSuccess } from "@/lib/operation-toas
  * Show the in-app toast for a backend-originated notice (an unexpected sandbox change, a
  * startup or update failure). The backend already sent the system notification, so nothing
  * here mirrors it back (`native: false`). The notice key is the toast id: a repeat replaces
- * the earlier toast in place, and a tagged sandbox name lets deleting that sandbox clear it.
+ * the earlier toast in place, and a tagged sandbox ID lets deleting that sandbox clear it.
  */
 export function showBackendNotice(notice: Notice) {
-  const common = { description: notice.body || undefined, sandbox: notice.sandbox?.name, native: false }
+  const common = { description: notice.body || undefined, noticeSandbox: notice.sandbox ?? undefined, native: false }
   if (notice.category === "completions") showOperationSuccess(notice.key, notice.title, { ...common, persist: true })
   else showOperationFailure(notice.key, notice.title, { ...common, tone: notice.category === "changes" ? "warning" : "error" })
 }

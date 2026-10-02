@@ -64,3 +64,33 @@ run of GNOME setup, APT shell steps, workflow pins, and Linux verification tests
 passed 18 tests. Typecheck and lint passed again on Node 24.11.1, replacing the
 earlier host Node 26 checks. Final scan evidence is under
 `/tmp/silo-shellcheck-final/`.
+
+The opt-in storage test's workspace checksum used a three-command pipeline under
+`set -e`. A failed `find` or `sort` still returned the final hasher's success,
+allowing a partial or empty scan to become a baseline. The shell now writes a
+private temporary manifest, checks each command separately, hashes the sorted
+bytes through stdin, and removes the manifest on exit. This preserves the
+existing digest for empty and populated workspaces without buffering the whole
+manifest in shell variables. The [Bash pipeline rules](https://www.gnu.org/software/bash/manual/html_node/Pipelines)
+explain why the last command's success masks earlier failures without pipefail.
+
+Three ordinary Rust regressions execute the actual checksum shell with fake
+scan/hash tools: scan failure, sort failure, and successful sorted/empty streams.
+Both failure regressions failed before the fix; all three passed afterward in a
+source-extracted Rust 1.94.0 harness with the existing tempfile dependency.
+ShellCheck, Dash syntax, Rust formatting, and whitespace checks passed. The full
+Cargo filter remained queued on the shared artifact lock at commit time. No live
+storage test or VM was run. Local failure/passing evidence is in
+`/tmp/silo-checksum-{failing,passing}.log`.
+
+The live approval fixture also piped `npm install` into `tail` under `set -e`.
+A failed upgrade could pass when previously installed Codex/Claude binaries still
+answered their version checks. Its package-install seam now checks npm's status
+before showing the last two output lines and before probing the harnesses. The
+failure output remains visible. Two ordinary shell-execution Rust regressions
+cover a failed npm command and the unchanged successful output tail. The failure
+regression failed before the fix; both passed in the source-extracted Rust
+harness afterward. ShellCheck, Dash syntax, formatting, and whitespace checks
+passed. These regressions use a temporary fake npm executable and make no
+network request or real package installation. Evidence remains under
+`/tmp/silo-harness-install-{failing,passing}.log`.
