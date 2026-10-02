@@ -50,6 +50,8 @@ export function FilterCombobox<Value extends string>({
     !selectedValues.has(value)
     && optionLabel.toLowerCase().includes(query.trim().toLowerCase())
   ))
+  const lastIndex = Math.max(0, results.length - 1)
+  if (activeIndex > lastIndex) setActiveIndex(lastIndex)
   const activeValue = results[activeIndex]?.value
   useEffect(() => {
     if (open) activeOption.current?.scrollIntoView({ block: "nearest", inline: "nearest" })
