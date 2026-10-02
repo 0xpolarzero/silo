@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Flush repaired VM image descriptors and their permissions before reporting success, and report directory synchronization failures.
+Save repaired sandbox image information to disk before reporting success, and report errors if saving cannot be completed.
