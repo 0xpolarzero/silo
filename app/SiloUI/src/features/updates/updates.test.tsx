@@ -18,9 +18,52 @@ function mount(initial: Partial<UpdateSnapshot> = {}, adjust: (backend: UpdateBa
   }
   const open = vi.fn()
   adjust(backend)
-  render(<UpdatesProvider backend={backend}><UpdateNotice onOpen={open} /><UpdatesCard /></UpdatesProvider>)
-  return { backend, open, emit: (patch: Partial<UpdateSnapshot>) => act(() => emit({ ...state, ...initial, ...patch })) }
+  const view = render(<UpdatesProvider backend={backend}><UpdateNotice onOpen={open} /><UpdatesCard /></UpdatesProvider>)
+  return { backend, open, view, emit: (patch: Partial<UpdateSnapshot>) => act(() => emit({ ...state, ...initial, ...patch })) }
 }
+
+it("reconnects after a failed initial read without running an update action", async () => {
+  const user = userEvent.setup()
+  const stop = vi.fn()
+  const read = vi.fn().mockRejectedValueOnce(new Error("private native failure")).mockResolvedValueOnce(state)
+  const subscribe = vi.fn(async () => stop)
+  const { backend, view } = mount({}, backend => { backend.read = read; backend.subscribe = subscribe })
+  expect(await screen.findByRole("alert")).toHaveTextContent("Silo could not load updates. Try again.")
+  expect(screen.getByRole("alert")).not.toHaveTextContent("private native failure")
+  await user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(await screen.findByText("Version 0.1.0")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(subscribe).toHaveBeenCalledTimes(2)
+  expect(stop).toHaveBeenCalledOnce()
+  expect(backend.check).not.toHaveBeenCalled()
+  expect(backend.download).not.toHaveBeenCalled()
+  expect(backend.install).not.toHaveBeenCalled()
+  view.unmount()
+  expect(stop).toHaveBeenCalledTimes(2)
+})
+
+it("cleans up a subscription that registers after the updates view unmounts", async () => {
+  let register!: (stop: () => void) => void
+  const stop = vi.fn()
+  const subscribe = vi.fn(() => new Promise<() => void>(resolve => { register = resolve }))
+  const { backend, view } = mount({}, backend => { backend.subscribe = subscribe })
+  view.unmount()
+  await act(async () => register(stop))
+  expect(stop).toHaveBeenCalledOnce()
+  expect(backend.read).not.toHaveBeenCalled()
+})
+
+it.fails("bug: an obsolete initial read failure shows a connection error after a newer native event", async () => {
+  let reject!: (error: Error) => void
+  const read = vi.fn(() => new Promise<UpdateSnapshot>((_, fail) => { reject = fail }))
+  const { emit } = mount({}, backend => { backend.read = read })
+  await waitFor(() => expect(read).toHaveBeenCalledOnce())
+  emit({ phase: "ready", availableVersion: "0.2.0" })
+  expect(screen.getByRole("button", { name: "Restart and update" })).toBeEnabled()
+  await act(async () => reject(new Error("Obsolete read failed")))
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})
 it("restores update events after returning to a window whose subscription failed", async () => {
   const { backend, emit } = mount({}, backend => {
     vi.mocked(backend.subscribe).mockRejectedValueOnce(new Error("event registration failed"))
