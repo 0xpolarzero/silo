@@ -29,7 +29,7 @@ Published version tags are never intentionally reused. For an image update,
 increment `GUEST_IMAGE_VERSION` in `app/SiloUI/scripts/build-guest-image.mjs`
 (and the recipe as needed); the workflow derives the release tag, title and
 container image names from it and from the publishing repository. The workflow refuses
-publication once its companion release or an architecture tag exists. If publication
+publication once its companion release, an architecture tag, or the multi-architecture tag exists. If publication
 fails halfway, recover the exact already-built artifacts; do not rebuild over the
 version. Otherwise increment the version.
 
@@ -58,8 +58,8 @@ outside the workflow's concurrency group.
 The supported Docker inspector cannot distinguish these failures reliably:
 its [registry client](https://github.com/docker/cli/blob/master/internal/registryclient/fetcher.go)
 can return the same missing-manifest error after unauthorized or unexpected HTTP
-responses. The preflight therefore uses Python's standard HTTP client for three
-read-only API operations, without a new registry tool or credential service.
+responses. The preflight therefore uses Python's standard HTTP client for
+read-only API requests, without a new registry tool or credential service.
 The [OCI Distribution 1.1.1 manifest and error contract](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md)
 provides typed registry failures; [GitHub's container registry authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
 supports the existing Actions job token. Keep builds and pushes in the maintained

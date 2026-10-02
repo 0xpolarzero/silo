@@ -44,6 +44,16 @@ publication policy regression failed before the change; the release workflow
 and publication fixture suites pass afterward. This uses the same supported
 GitHub queue contract and documented Actionlint exception as WORKFLOWS-3.
 
+## WORKFLOWS-5: P2 — Existing multi-architecture image tag can be overwritten
+
+The preflight checked `-arm64` and `-amd64` tags but omitted the unsuffixed
+multi-architecture tag that the workflow also publishes. If that tag exists
+while the architecture tags and GitHub release are absent, publication would
+replace its manifest. A transport fixture reproduced the missing rejection
+before the fix. The guard now requires confirmed absence of all three tags;
+fixtures cover the existing index and failed index lookups as well as successful
+first publication. This retains WORKFLOWS-2's external-writer race limitation.
+
 ## Verification
 
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow`: 22 tests pass after the queue fix.
