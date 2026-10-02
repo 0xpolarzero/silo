@@ -106,6 +106,37 @@ class PublicationGateTests(unittest.TestCase):
         self.assert_not_published()
         self.assertEqual(self.verifiers, [])
 
+    def test_malformed_optional_feed_metadata_cannot_publish_with_matching_checksum(self):
+        original = (self.assets / 'latest.json').read_text()
+        for field, value in [('pub_date', 'not a date'), ('pub_date', '2026-02-30T12:00:00Z'),
+                             ('pub_date', '2026-10-02T12:00:00'), ('pub_date', 42),
+                             ('notes', {'text': 'invalid shape'})]:
+            with self.subTest(field=field, value=value):
+                self.calls.clear()
+                self.verifiers.clear()
+                feed = json.loads(original)
+                feed[field] = value
+                (self.assets / 'latest.json').write_text(json.dumps(feed))
+                self.checksum('latest.json')
+                with self.assertRaisesRegex(RuntimeError, 'Draft update feed'):
+                    self.run_publish()
+                self.assert_not_published()
+                self.assertEqual(self.verifiers, [])
+
+    def test_supported_optional_feed_metadata_publishes(self):
+        original = (self.assets / 'latest.json').read_text()
+        for date in (None, '2026-10-02T12:00:00Z', '2026-10-02T12:00:00.123456+02:00'):
+            with self.subTest(date=date):
+                self.calls.clear()
+                self.verifiers.clear()
+                feed = json.loads(original)
+                feed['pub_date'] = date
+                feed['notes'] = None
+                (self.assets / 'latest.json').write_text(json.dumps(feed))
+                self.checksum('latest.json')
+                self.run_publish()
+                self.assertEqual(self.calls[-1][:2], ('release', 'edit'))
+
     def test_invalid_signature_cannot_publish_even_with_matching_checksums(self):
         with self.assertRaises(subprocess.CalledProcessError):
             self.run_publish('verify-release-signatures.py')
