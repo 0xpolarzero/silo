@@ -118,14 +118,22 @@ def load_pinned():
     return value
 
 
-def read_approval():
+def read_approval_record():
+    """The applied approval mode and the host's revision of it (0 when never stamped)."""
     value = read_json(APPROVAL)
     mode = value.get('approval') if value else None
-    return mode if mode in APPROVALS else 'ask'
+    revision = value.get('revision') if value else None
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        revision = 0
+    return (mode if mode in APPROVALS else 'ask'), revision
 
 
-def write_approval(mode):
-    write_json(APPROVAL, {'schemaVersion': SCHEMA, 'approval': mode})
+def read_approval():
+    return read_approval_record()[0]
+
+
+def write_approval(mode, revision=0):
+    write_json(APPROVAL, {'schemaVersion': SCHEMA, 'approval': mode, 'revision': revision})
 
 
 def mount_state(mount=MOUNT, mounts=Path('/proc/mounts')):
@@ -196,7 +204,7 @@ def status(pinned=None, receipt=None):
     mount = mount_state()
     result = {'schemaVersion': SCHEMA, 'state': 'not-set-up', 'reason': None, 'mount': mount,
               'compatibility': None, 'warning': None, 'approval': read_approval(),
-              'appVersion': None, 'runtimeVersion': None, 'lcuVersion': None,
+              'approvalRevision': read_approval_record()[1], 'appVersion': None, 'runtimeVersion': None, 'lcuVersion': None,
               'agents': None, 'readiness': None}
     if pinned is None:
         result['reason'] = 'not-configured'
@@ -388,8 +396,11 @@ def write_receipt(pinned, approval, state, reason=None, **fields):
     return receipt
 
 
-def sync(force=False, boot=False, approval=None):
-    """Brings computer use up to date for the pinned pair. Returns the public status."""
+def sync(force=False, boot=False, approval=None, revision=None):
+    """Brings computer use up to date for the pinned pair. Returns the public status.
+
+    `revision` orders approval changes: a request older than the applied revision keeps
+    the newer mode (a delayed boot sync must not undo a change made after it was started)."""
     pinned = load_pinned()
     if pinned is None:
         return status(None)
@@ -405,7 +416,14 @@ def sync(force=False, boot=False, approval=None):
                     raise Failure('busy') from None
                 time.sleep(1)
         if approval is not None:
-            write_approval(approval)
+            applied_mode, applied_revision = read_approval_record()
+            if revision is None:
+                write_approval(approval, applied_revision)
+            elif revision >= applied_revision:
+                write_approval(approval, revision)
+            else:
+                log(f'ignored approval {approval} at revision {revision}: '
+                    f'{applied_mode} at {applied_revision} is newer')
         mode = read_approval()
         # Whoever held the lock before may have finished the work already.
         if mount_state() == 'ok' and app_present(pinned):
@@ -460,12 +478,13 @@ def main(argv=None):
     sync_parser.add_argument('--force', action='store_true')
     sync_parser.add_argument('--boot', action='store_true')
     sync_parser.add_argument('--approval', choices=APPROVALS)
+    sync_parser.add_argument('--revision', type=int)
     args = parser.parse_args(argv)
     if os.geteuid() != 0:
         print('Run as root', file=sys.stderr)
         return 1
     try:
-        result = status() if args.command == 'status' else sync(args.force, args.boot, args.approval)
+        result = status() if args.command == 'status' else sync(args.force, args.boot, args.approval, args.revision)
     except Failure as failure:
         print(json.dumps({'schemaVersion': SCHEMA, 'state': 'failed', 'reason': failure.reason}))
         return 1

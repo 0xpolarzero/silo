@@ -757,3 +757,55 @@ fn status_events_identify_their_computer() {
     assert_eq!(remote["state"], "downloading");
     assert_eq!(remote["receivedBytes"], 1);
 }
+
+#[test]
+fn collection_holds_the_computer_gate_so_a_start_cannot_slip_between_check_and_delete() {
+    use crate::runtime::operation_gate::OperationGate;
+    use std::sync::mpsc;
+    let dir = root();
+    let lock = lock_for(&deb(&good_items()));
+    let root_dir = dir.path().join("chatgpt");
+    let old = root_dir.join("published").join("0.9.0-arm64");
+    fs::create_dir_all(old.join("sub")).unwrap();
+    let gate = OperationGate::new();
+    let vm = "00000000-0000-4000-8000-000000000001";
+
+    // A start already in flight: collection is skipped and nothing is removed.
+    {
+        let _starting = gate.vm(vm, "dev", "Starting dev").unwrap();
+        assert!(!collect_unused_gated(
+            &gate,
+            &root_dir,
+            &lock,
+            DebArch::Arm64,
+            || panic!("the inventory must not run while a start holds the gate")
+        ));
+        assert!(old.exists());
+    }
+
+    // While the inventory is being read, no start is admitted; after the collection
+    // finished, a start is admitted and sees the final folder state.
+    let (inspecting, inspecting_seen) = mpsc::channel();
+    let (proceed, proceed_seen) = mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        let (gate, root_dir, lock) = (&gate, &root_dir, &lock);
+        let collector = scope.spawn(move || {
+            collect_unused_gated(gate, root_dir, lock, DebArch::Arm64, || {
+                inspecting.send(()).unwrap();
+                proceed_seen.recv().unwrap();
+                true
+            })
+        });
+        inspecting_seen.recv().unwrap();
+        assert!(
+            gate.try_vm(vm, "dev", "Starting dev").is_err(),
+            "a start was admitted between the inventory and the deletion"
+        );
+        assert!(old.exists());
+        proceed.send(()).unwrap();
+        assert!(collector.join().unwrap());
+    });
+    assert!(!old.exists());
+    let _starting = gate.vm(vm, "dev", "Starting dev").unwrap();
+    assert!(root_dir.join("published").exists());
+}

@@ -1970,14 +1970,37 @@ pub(crate) fn refresh_status_blocking(app: &tauri::AppHandle) -> Status {
 
 /// Removes published versions other than the pinned one, unless a VM runs (a running
 /// guest may still use the previous version until it next syncs).
+///
+/// The check and the removal happen under the computer-wide operation gate that every
+/// VM start, restore and resume also takes, so no VM can begin booting from a version
+/// between the inventory and the deletion. Collection is skipped, not queued, while
+/// any operation runs; the next start or prepare tries again.
 pub(crate) fn collect_unused(app: &tauri::AppHandle) {
     let Ok(root) = storage_root(app) else { return };
     let (Ok(lock), Ok(arch)) = (Lock::bundled(), DebArch::host()) else {
         return;
     };
-    if crate::runtime::update_recovery::running_names(app).is_ok_and(|names| names.is_empty()) {
-        let _ = collect_garbage(&root, &lock, arch, &HashSet::new());
+    collect_unused_gated(&crate::runtime::OPERATIONS, &root, &lock, arch, || {
+        crate::runtime::update_recovery::running_names(app).is_ok_and(|names| names.is_empty())
+    });
+}
+
+/// Collects garbage while holding `gate` exclusively; `none_running` is evaluated
+/// inside it. Returns whether collection ran.
+fn collect_unused_gated(
+    gate: &crate::runtime::operation_gate::OperationGate,
+    root: &Path,
+    lock: &Lock,
+    arch: DebArch,
+    none_running: impl FnOnce() -> bool,
+) -> bool {
+    let Ok(_gate) = gate.try_computer_hidden("Removing unused ChatGPT app versions") else {
+        return false;
+    };
+    if !none_running() {
+        return false;
     }
+    collect_garbage(root, lock, arch, &HashSet::new()).is_ok()
 }
 
 /// Downloads and publishes the pinned app (blocking), reporting progress. Returns the
