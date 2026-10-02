@@ -6,9 +6,9 @@ import { computerUseStates } from "@/desktop/linux-desktop-state"
 // Deterministic fixtures for built-in computer use. Select with `?computer-use=<name>`,
 // `&chatgpt=<name>` (this computer's ChatGPT app) and `&chatgpt-remote=<name>` (every remote
 // computer's) in the browser preview; nothing here reaches Silo services.
-export const computerUseFixtureNames = [...computerUseStates, "untested", "auto", "unknown-approval", "pre-v4"] as const
+export const computerUseFixtureNames = [...computerUseStates, "untested", "auto", "unknown-approval", "app-failed", "pre-v4"] as const
 export type ComputerUseFixtureName = typeof computerUseFixtureNames[number]
-export const chatGptFixtureNames = ["idle", "downloading", "verifying", "extracting", "ready", "failed", "failed-final", "unknown"] as const
+export const chatGptFixtureNames = ["idle", "downloading", "verifying", "extracting", "ready", "failed", "failed-final", "unknown", "ready-then-unreadable"] as const
 export type ChatGptFixtureName = typeof chatGptFixtureNames[number]
 
 export function computerUseFixtureFromSearch(search: string): ComputerUseFixtureName | undefined {
@@ -30,6 +30,7 @@ export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseSta
     case "preparing": return { ...base, state: "preparing", reason: "Preparing ChatGPT for Linux.", appVersion: null, runtimeVersion: null, lcuVersion: null, agents: null }
     case "installing": return { ...base, state: "installing", reason: "Configuring Claude Code and Codex." }
     case "failed": return { ...base, state: "failed", reason: "No supported agent was found. Install one, then choose Set up computer use.", agents: [] }
+    case "app-failed": return { ...base, state: "failed", cause: "app-download", reason: "The downloaded file did not match the expected checksum. It was removed.", appVersion: null, runtimeVersion: null, lcuVersion: null, agents: null }
     case "untested": return { ...base, compatibility: "untested", warning: "ChatGPT for Linux 26.1002.1 has not been tested with this version of Silo. Computer use may not work as expected." }
     case "auto": return { ...base, approval: "auto" }
     case "unknown-approval": return { ...base, approval: "unknown" }
@@ -50,6 +51,8 @@ export function fixtureChatGptStatus(name: ChatGptFixtureName): ChatGptAppStatus
     case "ready": return { state: "ready", path: "/chatgpt/26.928.31416-arm64", version: "26.928.31416" }
     case "failed": return { state: "failed", reason: "The connection to OpenAI was interrupted.", retryable: true }
     case "failed-final": return { state: "failed", reason: "The downloaded file did not match the expected checksum. It was removed.", retryable: false }
+    // Readable once, then every read fails: the last status stays on screen as "last known".
+    case "ready-then-unreadable": return fixtureChatGptStatus("ready")
     case "idle": case "verifying": case "extracting": case "unknown": return { state: name }
   }
 }
@@ -82,6 +85,7 @@ export function createFixtureComputerUseBackend(name: ComputerUseFixtureName, ch
   const statuses = new Map<string, ChatGptAppStatus>()
   const key = (computer?: string) => computer ?? ""
   const statusOf = (computer?: string) => statuses.get(key(computer)) ?? fixtureChatGptStatus(computer ? remote : chatgpt)
+  const reads = new Map<string, number>()
   const handlers = new Set<(status: unknown) => void>()
   const emit = (computer: string | undefined, next: ChatGptAppStatus) => { statuses.set(key(computer), next); if (!computer) handlers.forEach(handler => handler(next)) }
   const delay = (ms: number) => new Promise(resolve => window.setTimeout(resolve, ms))
@@ -89,15 +93,19 @@ export function createFixtureComputerUseBackend(name: ComputerUseFixtureName, ch
   return {
     readDesktopState: async () => structuredClone(desktop),
     setApproval: async (_workspace, mode) => { setUse({ approval: mode }); return structuredClone(desktop) },
-    setup: async () => { await delay(900); setUse({ state: "ready", reason: null }); return structuredClone(desktop) },
-    chatGptStatus: async computer => statusOf(computer),
+    setup: async () => { await delay(900); setUse({ state: "ready", reason: null, cause: null }); return structuredClone(desktop) },
+    chatGptStatus: async computer => {
+      if (computer && remote === "ready-then-unreadable" && reads.get(computer)) throw new Error("The SSH connection to this computer was lost.")
+      reads.set(key(computer), 1)
+      return statusOf(computer)
+    },
     retry: async computer => {
       void (async () => {
         for (const received of [60_000_000, 190_000_000, 340_000_000, 453_000_000]) { emit(computer, { state: "downloading", receivedBytes: received, totalBytes: 453_000_000 }); await delay(500) }
         emit(computer, { state: "verifying" }); await delay(500)
         emit(computer, { state: "extracting" }); await delay(500)
         emit(computer, { state: "ready", path: "/chatgpt/26.928.31416-arm64", version: "26.928.31416" })
-        if (!computer) setUse({ state: "ready", reason: null })
+        if (!computer) setUse({ state: "ready", reason: null, cause: null })
       })()
       return statusOf(computer)
     },

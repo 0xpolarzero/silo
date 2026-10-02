@@ -13,7 +13,7 @@ const stateLabels: Record<ComputerUseState["state"], string> = {
   ready: "Ready",
   failed: "Setup failed",
 }
-export const computerUseLabel = (state: ComputerUseState["state"]) => stateLabels[state]
+export const computerUseLabel = (state: ComputerUseState["state"], cause?: ComputerUseState["cause"]) => state === "failed" && cause === "app-download" ? "Download failed" : stateLabels[state]
 
 function megabytes(bytes: number) {
   return `${Math.max(0, Math.round(bytes / 1_000_000)).toLocaleString("en-US")} MB`
@@ -70,16 +70,27 @@ export function ChatGptAppProgress({ status, busy = false, onRetry }: { status: 
   }
 }
 
-/** The progress of the ChatGPT download of a sandbox's computer, read-only. Settings → Computers has Retry. */
-export function ChatGptAppStatusView({ store }: { store: ChatGptAppStore | undefined }) {
-  const { status, loadError } = useChatGptApp(store)
-  if (!status) return loadError ? <ErrorLine message={loadError} /> : null
-  if (status.state === "ready" || status.state === "unknown") return null
-  return <ChatGptAppProgress status={status} />
+/** The progress of the ChatGPT download of a sandbox's computer. `retry` adds Retry to a failure, which acts on that computer's download.
+ * `fallbackReason` is shown with Retry until the status itself is read. */
+export function ChatGptAppStatusView({ store, retry = false, fallbackReason }: { store: ChatGptAppStore | undefined; retry?: boolean; fallbackReason?: string | null }) {
+  const { status, busy, error, loadError } = useChatGptApp(store)
+  const onRetry = retry && store ? () => { void store.retry() } : undefined
+  if (!status) {
+    if (loadError) return <ErrorLine message={loadError} />
+    return fallbackReason ? <ErrorLine message={fallbackReason} actionLabel={onRetry ? "Retry" : undefined} onAction={onRetry} busy={busy} /> : null
+  }
+  if (status.state === "ready" || status.state === "unknown") return fallbackReason ? <ErrorLine message={fallbackReason} /> : null
+  return <div className="grid gap-1.5">
+    <ChatGptAppProgress status={status} busy={busy} onRetry={onRetry} />
+    {error && <ErrorLine message={error} onDismiss={() => store?.dismissError()} />}
+  </div>
 }
 
+/** What the viewer says after it updates the tools: running agent sessions only load them when they reconnect. */
+export const SETUP_DONE = "Computer use is set up. Reconnect agent sessions to load computer use."
+
 /** Presentational: the state of one VM's built-in computer use. */
-export function ComputerUsePanel({ computerUse, running, busy, error, loadError, chatGpt, onApproval, onSetup, onDismissError, onReload }: {
+export function ComputerUsePanel({ computerUse, running, busy, error, loadError, notice, chatGpt, onApproval, onSetup, onDismissError, onReload }: {
   computerUse: ComputerUseState
   /** The sandbox and its desktop are running, so setup can run. */
   running: boolean
@@ -88,6 +99,8 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
   error: string | null
   /** The latest read of the sandbox's state failed; what is shown may be stale. */
   loadError?: string | null
+  /** Setup just succeeded: announced, kept until the next change. */
+  notice?: string | null
   onDismissError?: () => void
   onReload?: () => void
   /** The ChatGPT download progress, read-only, while the app is not ready. */
@@ -99,7 +112,8 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
   const switchId = useId()
   const auto = computerUse.approval === "auto"
   const unknownApproval = computerUse.approval === "unknown"
-  const setupDisabled = busy || !running || computerUse.state === "installing" || computerUse.state === "preparing"
+  const downloadFailed = computerUse.state === "failed" && computerUse.cause === "app-download"
+  const setupDisabled = busy || !running || downloadFailed || computerUse.state === "installing" || computerUse.state === "preparing"
   const details = [
     computerUse.appVersion && ["ChatGPT app", computerUse.appVersion],
     computerUse.runtimeVersion && ["Runtime", computerUse.runtimeVersion],
@@ -110,7 +124,7 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
     <div className="grid gap-0.5">
       <h3 id={headingId} className="font-medium">Computer use</h3>
       <p role={computerUse.state === "installing" || computerUse.state === "preparing" ? "status" : undefined} className={computerUse.state === "failed" ? "text-destructive" : "text-muted-foreground"}>
-        {computerUseLabel(computerUse.state)}{computerUse.reason ? <span className="block break-words">{computerUse.reason}</span> : null}
+        {computerUseLabel(computerUse.state, computerUse.cause)}{computerUse.reason && !(downloadFailed && chatGpt) ? <span className="block break-words">{computerUse.reason}</span> : null}
       </p>
     </div>
     {chatGpt}
@@ -130,9 +144,10 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
       <span className="min-w-0 break-words">Silo could not read this sandbox's approval setting. Agents may be running without asking. Changes are disabled until it can be read.</span>
     </p>}
     <div className="flex items-center justify-between gap-3">
-      <span className="min-w-0 text-[11px] text-muted-foreground">Use after installing a new agent in this sandbox.{!running && " Start the sandbox first."}</span>
+      <span className="min-w-0 text-[11px] text-muted-foreground">Use after installing a new agent in this sandbox.{!running && " Start the sandbox first."}{downloadFailed && " It becomes possible once the ChatGPT download finishes: use Retry above."}</span>
       <Button type="button" size="xs" variant="outline" disabled={setupDisabled} onClick={onSetup}>Set up computer use</Button>
     </div>
+    {notice && <p role="status" className="text-xs">{notice}</p>}
     {error && <ErrorLine message={error} onDismiss={onDismissError} />}
     {loadError && <ErrorLine message={loadError} actionLabel="Try again" onAction={onReload} />}
     {details.length > 0 && <details className="text-[11px] text-muted-foreground">
@@ -152,6 +167,7 @@ export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: st
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const working = useRef(false)
   const reading = useRef(false)
   const revision = useRef(0)
@@ -171,15 +187,20 @@ export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: st
     const interval = window.setInterval(() => { void refresh() }, pollMs)
     return () => { window.clearTimeout(initial); window.clearInterval(interval) }
   }, [refresh, pollMs])
-  const run = useCallback(async (work: () => Promise<LinuxDesktopState>, optimistic?: (state: LinuxDesktopState) => LinuxDesktopState) => {
+  const run = useCallback(async (work: () => Promise<LinuxDesktopState>, optimistic?: (state: LinuxDesktopState) => LinuxDesktopState, announce?: string) => {
     if (working.current) return
     working.current = true
     revision.current += 1
     setBusy(true)
     setError(null)
+    setNotice(null)
     const previous = state
     if (optimistic) setState(current => current ? optimistic(current) : current)
-    try { setState(await work()); setLoadError(null) }
+    try {
+      const next = await work()
+      setState(next); setLoadError(null)
+      if (announce && next.computerUse?.state === "ready") setNotice(announce)
+    }
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); setState(previous) }
     finally { working.current = false; setBusy(false) }
   }, [state])
@@ -188,12 +209,13 @@ export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: st
   const computerUse = state.computerUse
   // A loaded state without computerUse is a sandbox from before it was built in.
   if (!computerUse) return null
-  const needsApp = computerUse.state === "preparing"
-  return <ComputerUsePanel computerUse={computerUse} running={state.state === "running"} busy={busy} error={error} loadError={loadError}
+  const downloadFailed = computerUse.state === "failed" && computerUse.cause === "app-download"
+  const needsApp = computerUse.state === "preparing" || downloadFailed
+  return <ComputerUsePanel computerUse={computerUse} running={state.state === "running"} busy={busy} error={error} loadError={loadError} notice={notice}
     onDismissError={() => setError(null)} onReload={() => { void refresh() }}
-    chatGpt={needsApp ? <ChatGptAppStatusView store={bridge.chatGptFor(computerOfWorkspace(workspace))} /> : undefined}
+    chatGpt={needsApp ? <ChatGptAppStatusView store={bridge.chatGptFor(computerOfWorkspace(workspace))} retry={downloadFailed} fallbackReason={downloadFailed ? computerUse.reason : null} /> : undefined}
     onApproval={mode => { void run(() => bridge.setApproval(workspace, mode), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, approval: mode } : current.computerUse })) }}
-    onSetup={() => { void run(() => bridge.setup(workspace), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, state: "installing", reason: null } : current.computerUse })) }} />
+    onSetup={() => { void run(() => bridge.setup(workspace), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, state: "installing", reason: null } : current.computerUse }), SETUP_DONE) }} />
 }
 
 function LoadFailure({ message, onReload }: { message: string; onReload: () => void }) {

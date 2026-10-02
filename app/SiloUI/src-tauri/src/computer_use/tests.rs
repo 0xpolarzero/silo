@@ -730,6 +730,8 @@ fn app_status_maps_to_the_computer_use_state() {
         ),
         (Some("failed"), Some("The checksum did not match."))
     );
+    assert_eq!(final_failure["cause"], "app-download");
+    assert!(failed.get("cause").is_none());
     // Ready app, running VM, no helper yet.
     let waiting = map(Some(&ready()));
     assert_eq!(waiting["state"], "unavailable");

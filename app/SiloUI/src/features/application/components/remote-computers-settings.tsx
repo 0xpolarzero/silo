@@ -59,20 +59,26 @@ function ChatGptAppRow({ name, computer, connected = true }: { name: string; com
   const bridge = useComputerUseBridge()
   const store = connected ? bridge?.chatGptFor(computer) : undefined
   const { status, busy, error, loadError } = useChatGptApp(store)
+  const stale = Boolean(status) && Boolean(loadError)
   // An offline computer, or one whose Silo is older, simply has no status to show: unknown, never an error.
   const known = connected && status !== null && status.state !== "unknown"
   const text = known ? chatGptStatusText(status) : "Unknown"
+  // After a failed read the retained status is only the last one seen, never current.
+  const lastKnown = stale && known
   const failed = status?.state === "failed"
-  const working = status?.state === "downloading" || status?.state === "verifying" || status?.state === "extracting"
+  const working = !stale && (status?.state === "downloading" || status?.state === "verifying" || status?.state === "extracting")
   return <li className="flex items-start justify-between gap-3">
     <div className="min-w-0">
       <p className="truncate text-xs font-medium">{name}</p>
-      <p role={working ? "status" : undefined} className="text-xs text-muted-foreground">{text}{!connected && " · offline"}</p>
+      <p role={working ? "status" : undefined} className="text-xs text-muted-foreground">{lastKnown ? `Last known: ${text}` : text}{!connected && " · offline"}</p>
       {failed && <p role="alert" className="break-words text-xs text-destructive">{status.reason}{status.retryable ? " Silo tries again automatically." : ""}</p>}
       {error && <p role="alert" className="break-words text-xs text-destructive">{error}</p>}
-      {!computer && loadError && !status && <p role="alert" className="break-words text-xs text-destructive">{loadError}</p>}
+      {connected && loadError && <p role="alert" className="break-words text-xs text-destructive">{stale ? `Could not refresh: ${loadError}` : loadError}</p>}
     </div>
+    <div className="flex shrink-0 gap-1.5">
+    {connected && loadError && <Button size="xs" variant="outline" aria-label={`Refresh ChatGPT for Linux status on ${name}`} onClick={() => { void store?.refresh() }}>Refresh</Button>}
     {failed && <Button size="xs" variant="outline" disabled={busy} aria-label={`Retry ChatGPT for Linux on ${name}`} onClick={() => { void store?.retry() }}>Retry</Button>}
+    </div>
   </li>
 }
 

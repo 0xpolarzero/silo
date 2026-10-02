@@ -241,7 +241,10 @@ Backend (Rust, guest scripts) and frontend implement this together.
 - Desktop state (`read_desktop_state`) gains an optional `computerUse` object
   for v4 VMs: `state` (`unavailable`, `preparing`, `installing`, `ready`,
   `failed`; `preparing` covers waiting, downloading and a failure Silo retries
-  by itself, with the reason; `failed` is a final failure), `reason`, `compatibility` (`tested`,
+  by itself, with the reason; `failed` is a final failure), `reason`, `cause`
+  (present only with `app-download`: the failure is the host's ChatGPT download,
+  which Retry in Settings → Computers or on the sandbox's page restarts; setting up
+  the guest cannot fix it; absent for a guest setup failure), `compatibility` (`tested`,
   `untested`, `unknown`, from `lcu status --json`), `warning`, `approval`
   (`ask` or `auto`), `appVersion`, `runtimeVersion`, `lcuVersion`, `agents`.
   The legacy `lcu*` fields remain for VMs created before v4.

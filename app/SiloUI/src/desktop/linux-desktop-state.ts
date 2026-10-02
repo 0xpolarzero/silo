@@ -8,6 +8,8 @@ export const computerUseStates = ["unavailable", "preparing", "installing", "rea
 export const computerUseSchema = z.object({
   state: z.enum(computerUseStates).catch("unavailable"),
   reason: z.string().nullish().catch(null),
+  // `app-download`: a failure of the host's ChatGPT download, which setting up the sandbox cannot fix.
+  cause: z.enum(["app-download"]).nullish().catch(null),
   compatibility: z.enum(["tested", "untested", "unknown"]).catch("unknown"),
   warning: z.string().nullish().catch(null),
   // A missing or unreadable policy is "unknown", never "ask": the guest may still auto-approve.

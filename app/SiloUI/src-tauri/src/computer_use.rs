@@ -861,8 +861,11 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
                 None,
             );
         }
+        // The host download failed for good: setting up the guest cannot fix it.
         Some(Status::Failed { reason, .. }) => {
-            return (state_object("failed", Some(reason), settings, known), None)
+            let mut state = state_object("failed", Some(reason), settings, known);
+            state["cause"] = json!("app-download");
+            return (state, None);
         }
         Some(Status::Ready { .. }) => {}
     }

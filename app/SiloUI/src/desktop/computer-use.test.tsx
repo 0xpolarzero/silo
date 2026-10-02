@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
 import { MachineList } from "@/features/sandboxes/components/machine-list"
-import { computerUseFixtureNames, createFixtureComputerUseBackend, fixtureComputerUse, fixtureDesktopState } from "@/fixtures/computer-use"
+import { computerUseFixtureNames, createFixtureComputerUseBackend, fixtureChatGptStatus, fixtureComputerUse, fixtureDesktopState } from "@/fixtures/computer-use"
 import { ComputerUseProvider, computerOfWorkspace, createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
 import { CHATGPT_DOWNLOAD_NOTE, ChatGptAppProgress, ChatGptAppStatusView, ComputerUsePanel, ComputerUseSection, chatGptStatusText, computerUseLabel } from "./computer-use-panel"
 import { LinuxDesktopViewer } from "./linux-desktop-viewer"
@@ -64,7 +64,7 @@ describe("computer use panel", () => {
   it.each(computerUseFixtureNames.filter(name => !["untested", "auto", "pre-v4"].includes(name)))("shows the %s state and its reason", name => {
     const state = fixtureComputerUse(name)
     panel(state)
-    expect(screen.getByRole("region", { name: "Computer use" })).toHaveTextContent(computerUseLabel(state.state))
+    expect(screen.getByRole("region", { name: "Computer use" })).toHaveTextContent(computerUseLabel(state.state, state.cause))
     if (state.reason) expect(screen.getByText(state.reason)).toBeVisible()
   })
   it("announces work in progress", () => {
@@ -206,6 +206,36 @@ describe("computer use section", () => {
     section(backend({ readDesktopState: async () => fixtureDesktopState("preparing"), chatGptStatus: async () => ({ state: "downloading", receivedBytes: 187_000_000, totalBytes: 453_000_000 }) }))
     expect(await screen.findByText(/187 MB of 453 MB/)).toBeVisible()
     expect(screen.queryByRole("button", { name: /Accept|Not now|Retry|Download/ })).not.toBeInTheDocument()
+  })
+  it("announces that setup finished and tells running agent sessions to reconnect", async () => {
+    section(backend({ readDesktopState: async () => fixtureDesktopState("failed"), setup: async () => fixtureDesktopState("ready") }))
+    await screen.findByText("Setup failed")
+    await userEvent.setup().click(screen.getByRole("button", { name: "Set up computer use" }))
+    expect(await screen.findByRole("status")).toHaveTextContent("Reconnect agent sessions to load computer use.")
+  })
+  it("does not announce success when setup fails", async () => {
+    section(backend({ readDesktopState: async () => fixtureDesktopState("failed"), setup: async () => { throw new Error("The sandbox stopped.") } }))
+    await screen.findByText("Setup failed")
+    await userEvent.setup().click(screen.getByRole("button", { name: "Set up computer use" }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("The sandbox stopped.")
+    expect(screen.queryByText(/Reconnect agent sessions/)).not.toBeInTheDocument()
+  })
+  it("tells a failed ChatGPT download from a failed setup, and retries the download on the owning computer", async () => {
+    const retry = vi.fn(async (_computer?: string) => ({}))
+    section(backend({ readDesktopState: async () => fixtureDesktopState("app-failed"), chatGptStatus: async () => fixtureChatGptStatus("failed-final"), retry }))
+    expect(await screen.findByText("Download failed")).toBeVisible()
+    expect(await screen.findByRole("button", { name: "Retry" })).toBeEnabled()
+    // Setting up the guest cannot fix the host download.
+    expect(screen.getByRole("button", { name: "Set up computer use" })).toBeDisabled()
+    expect(screen.getAllByText(/did not match the expected checksum/)).toHaveLength(1)
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
+    await waitFor(() => expect(retry).toHaveBeenCalledTimes(1))
+  })
+  it("keeps a guest setup failure on Set up computer use, without a download Retry", async () => {
+    section(backend({ readDesktopState: async () => fixtureDesktopState("failed"), chatGptStatus: async () => fixtureChatGptStatus("ready") }))
+    expect(await screen.findByText("Setup failed")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Set up computer use" })).toBeEnabled()
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument()
   })
   it("renders nothing for a pre-v4 sandbox", async () => {
     const read = vi.fn(async () => fixtureDesktopState("pre-v4"))
@@ -363,6 +393,15 @@ describe("ChatGPT app store per computer", () => {
     const store = bridge.chatGptFor(HOST)
     await store.refresh()
     expect(store.getSnapshot()).toMatchObject({ status: { state: "unknown" }, loadError: null, error: null })
+  })
+})
+
+describe("fixture for an unreadable remote status", () => {
+  it("is readable once, then every read of a remote computer fails, while this computer stays readable", async () => {
+    const fixture = createFixtureComputerUseBackend("ready", "ready", "ready-then-unreadable")
+    await expect(fixture.chatGptStatus("11111111-1111-4111-8111-111111111111")).resolves.toMatchObject({ state: "ready" })
+    await expect(fixture.chatGptStatus("11111111-1111-4111-8111-111111111111")).rejects.toThrow("connection")
+    await expect(fixture.chatGptStatus()).resolves.toMatchObject({ state: "ready" })
   })
 })
 
