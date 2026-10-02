@@ -320,14 +320,17 @@ pub(crate) fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
 
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     read_regular(path)?;
-    let mut file =
-        tempfile::NamedTempFile::new_in(path.parent().ok_or(FAILED)?).map_err(|_| FAILED)?;
+    let parent = path.parent().ok_or(FAILED)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|_| FAILED)?;
     file.as_file()
         .set_permissions(fs::Permissions::from_mode(0o600))
         .map_err(|_| FAILED)?;
     file.write_all(bytes).map_err(|_| FAILED)?;
     file.as_file().sync_all().map_err(|_| FAILED)?;
     file.persist(path).map_err(|_| FAILED)?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| FAILED)?;
     Ok(())
 }
 
@@ -512,6 +515,7 @@ fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
@@ -1176,6 +1180,37 @@ pub(crate) fn prepare_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_file_writers_report_an_unreadable_parent_after_replacement() {
+        use std::os::unix::fs::MetadataExt;
+        for private in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            if fs::metadata(directory.path()).unwrap().uid() == 0 {
+                return; // Root bypasses the permission boundary exercised here.
+            }
+            let path = directory.path().join("config");
+            fs::write(&path, b"previous SSH configuration").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+            let result = if private {
+                write_private(&path, b"complete replacement").map_err(std::io::Error::other)
+            } else {
+                replace_file(&path, b"complete replacement")
+            };
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"complete replacement");
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                if private { 0o600 } else { 0o640 }
+            );
+            assert!(
+                result.is_err(),
+                "an unsynchronized rename must not report success"
+            );
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
     #[test]
     fn a_panic_while_writing_ssh_files_does_not_disable_editor_connections() {
         let _ = std::thread::spawn(|| {
@@ -1298,6 +1333,43 @@ mod tests {
                     format!("{prefix}{encoded}")
                 );
             }
+        }
+    }
+
+    #[test]
+    fn ssh_includes_keep_wildcard_characters_in_directory_names_literal() {
+        let home = tempfile::tempdir().unwrap();
+        for (index, name) in ["home[1]", "home?", "home*", "home\\folder"]
+            .into_iter()
+            .enumerate()
+        {
+            let root = home.path().join(name).join("ssh");
+            fs::create_dir_all(&root).unwrap();
+            let hostname = format!("selected-vm-{index}");
+            fs::write(
+                root.join("dev.conf"),
+                format!("Host silo-test-dev\n  HostName {hostname}\n"),
+            )
+            .unwrap();
+            let config = home.path().join("config");
+            fs::write(&config, format!("{}\n", include_line(&root).unwrap())).unwrap();
+            let output = Command::new("/usr/bin/ssh")
+                .args(["-G", "-F"])
+                .arg(&config)
+                .arg("silo-test-dev")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains(&format!("hostname {hostname}\n")),
+                "{name}: the Include must read the exact directory"
+            );
         }
     }
 

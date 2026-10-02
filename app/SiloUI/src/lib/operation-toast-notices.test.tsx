@@ -10,6 +10,7 @@ import { showBackendNotice } from "@/features/application/model/use-backend-noti
 import {
   dismissOperationToast,
   dismissSandboxToasts,
+  dismissSandboxToastsById,
   LONG_OPERATION_MS,
   runWithOperationToast,
   showActionFailure,
@@ -116,7 +117,7 @@ describe("backend notices", () => {
     await tick()
     expect(screen.getByText("Update failed")).toBeInTheDocument()
     expect(screen.getByText("Export finished")).toBeInTheDocument()
-    act(() => dismissSandboxToasts(sandbox.id))
+    act(() => dismissSandboxToastsById(sandbox.id))
     await tick()
     await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(screen.queryByText("dev is running again")).not.toBeInTheDocument()

@@ -102,3 +102,9 @@ zero version in temporary fixtures. The entry-point guard now compares canonical
 paths, following the guest builder's existing correction. Imports stay passive.
 The rejecting fixtures use an empty executable PATH, so they cannot tag, push,
 version, sign or publish anything.
+
+## RELEASE-SCRIPTS-7 — P2: Failed benchmark output abandons compiler processes
+
+- **Trigger and evidence:** `dependency-cache-benchmark.py build` encounters an exception while forwarding stdout or recording Cargo JSON. Its plain `Popen` has no exception cleanup. Both regression cases observed an unreaped running child after the exception; evidence is preserved in ignored `target/verification/release-scripts/benchmark-process-before.log`.
+- **Fix:** Start the owned command in its own process session, use the process context manager, and stop its group before unwinding on a forwarding exception. Preserve the original exception. This follows the existing release compiler wrapper's cleanup pattern and never selects unrelated host processes.
+- **Verification:** Real synthetic sleeping child processes exercise stdout and metadata-write failures, then assert the child was reaped before returning control. Existing benchmark build output, signal status, source gates, dependency integration and CI-coverage tests passed; typecheck, Rust formatting and whitespace checks passed. No Cargo compilation or application launch ran.

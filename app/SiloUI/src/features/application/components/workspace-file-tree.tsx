@@ -96,17 +96,35 @@ export function WorkspaceFileTree({ workspace, store, active, editor, onOpenEdit
   const polling = open && available && active
   useEffect(() => {
     if (!polling) return
-    const refresh = () => {
-      if (document.visibilityState === "hidden") return
-      for (const path of shown.current) void store.load(target, path, { refresh: true })
+    let disposed = false
+    const failures = new Map<string, { delay: number; nextRead: number }>()
+    const refresh = (force = false) => {
+      if (disposed || document.visibilityState === "hidden") return
+      for (const path of failures.keys()) if (!shown.current.has(path)) failures.delete(path)
+      for (const path of shown.current) {
+        const key = directoryKey(target, path)
+        const snapshot = store.getSnapshot(key)
+        if (!snapshot.error) failures.delete(path)
+        if (snapshot.loading || (!force && (failures.get(path)?.nextRead ?? 0) > Date.now())) continue
+        void store.load(target, path, { refresh: true }).then(() => {
+          if (disposed) return
+          if (!store.getSnapshot(key).error) failures.delete(path)
+          else {
+            const delay = Math.min((failures.get(path)?.delay ?? refreshInterval) * 2, 60000)
+            failures.set(path, { delay, nextRead: Date.now() + delay })
+          }
+        })
+      }
     }
     const timer = window.setInterval(refresh, refreshInterval)
-    document.addEventListener("visibilitychange", refresh)
-    window.addEventListener("focus", refresh)
+    const onReturn = () => refresh(true)
+    document.addEventListener("visibilitychange", onReturn)
+    window.addEventListener("focus", onReturn)
     return () => {
+      disposed = true
       window.clearInterval(timer)
-      document.removeEventListener("visibilitychange", refresh)
-      window.removeEventListener("focus", refresh)
+      document.removeEventListener("visibilitychange", onReturn)
+      window.removeEventListener("focus", onReturn)
     }
   }, [polling, store, target])
   return <li><Collapsible open={open} onOpenChange={setOpen}>

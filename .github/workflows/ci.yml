@@ -92,7 +92,8 @@ jobs:
         run: >-
           "$LYCHEE" --offline --no-progress
           README.md AGENTS.md 'docs/**/*.md' 'app/SiloUI/*.md' 'app/SiloUI/tests/**/*.md'
-          'app/SiloUI/docs/**/*.html'
+          'app/SiloUI/docs/**/*.html' 'app/SiloUI/src/**/*.md'
+          'app/SiloUI/src-tauri/guest/**/*.md' 'app/SiloUI/.changeset/*.md'
           'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
 
   rust:

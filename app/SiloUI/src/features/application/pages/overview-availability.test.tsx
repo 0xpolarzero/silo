@@ -56,3 +56,27 @@ it("disables Stop while the sandbox is still starting, in the list and on the pa
   await user.click(row.getByRole("button", { name: "Open dev" }))
   expect(screen.getByRole("button", { name: "Stop dev" })).toBeDisabled()
 })
+
+
+it.each(["list", "detail"])("pauses an open %s editor while a checkpoint runs and keeps its draft", async surface => {
+  const user = userEvent.setup()
+  const source = sourceWith(workspace => { workspace.state = "stopped" })
+  const onMachinesChange = vi.fn()
+  const view = (current: ApplicationSource) => <OverviewPage source={current} actions={{} as ApplicationActions} onMachinesChange={onMachinesChange} />
+  const result = render(view(source))
+  if (surface === "detail") await user.click(screen.getByRole("button", { name: "Open dev" }))
+  await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+  await user.click(screen.getByRole("menuitem", { name: "Edit dev" }))
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
+  const busy = structuredClone(source)
+  busy.workspaces.find(({ machine }) => machine.name === "dev")!.checkpointOperation = {
+    kind: "capture", status: "running", stage: "Saving disk copies",
+  }
+  result.rerender(view(busy))
+  expect(screen.getByRole("button", { name: "Save" })).toBeDisabled()
+  expect(screen.getByRole("button", { name: "Save" })).toHaveAccessibleDescription("Wait for the checkpoint to finish.")
+  expect(onMachinesChange).not.toHaveBeenCalled()
+  result.rerender(view(source))
+  expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
+  expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
+})

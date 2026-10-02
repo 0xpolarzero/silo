@@ -53,5 +53,8 @@ zbus = "5"
 gio = "0.18"
 gtk = "0.18"
 
+[dev-dependencies]
+tauri = { version = "2.11.3", features = ["test"] }
+
 [patch.crates-io]
 tauri-plugin-updater = { path = "vendor/tauri-plugin-updater" }

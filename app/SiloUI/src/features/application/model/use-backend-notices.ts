@@ -10,7 +10,7 @@ import { showOperationFailure, showOperationSuccess } from "@/lib/operation-toas
  * the earlier toast in place, and a tagged sandbox ID lets deleting that sandbox clear it.
  */
 export function showBackendNotice(notice: Notice) {
-  const common = { description: notice.body || undefined, sandbox: notice.sandbox?.id, native: false }
+  const common = { description: notice.body || undefined, noticeSandbox: notice.sandbox ?? undefined, native: false }
   if (notice.category === "completions") showOperationSuccess(notice.key, notice.title, { ...common, persist: true })
   else showOperationFailure(notice.key, notice.title, { ...common, tone: notice.category === "changes" ? "warning" : "error" })
 }

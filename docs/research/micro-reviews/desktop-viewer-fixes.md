@@ -30,3 +30,27 @@ Native verification uses a disposable Rust harness extracting the production wat
 - **Protocol evidence:** [RFC 6455 section 7.1.4](https://www.rfc-editor.org/rfc/rfc6455.html#section-7.1.4) ties WebSocket closure to closing its underlying TCP connection; [section 7.2.1](https://www.rfc-editor.org/rfc/rfc6455.html#section-7.2.1) requires failure when the transport is unexpectedly lost. This proxy propagates transport termination without interpreting WebSocket frames.
 
 All 15 proxy module tests passed after the fix, compiled directly from the production module with Rust 1.94.0 and shared cached dependencies, without stubs. Scoped Clippy with warnings denied, frontend typecheck/lint, Rust formatting, and whitespace checks passed. Synthetic TCP/Unix sockets and credentials were used; no app or VM was launched. The direct module run does not establish whole-application compilation.
+
+## DESKTOP-VIEWER-4: Obsolete attachment errors remain on stopped sandboxes
+
+- **Priority:** P3.
+- **Location before fix:** `app/SiloUI/src/desktop/linux-desktop-viewer.tsx`, native viewer error projection.
+- **Trigger:** Native attachment fails, then a subsequent successful health read reports `vm-stopped`.
+- **Evidence:** Connection errors have a separate lifetime from health-read errors. Successful health reads clear only the latter, and a stopped display cannot attach to clear the former. The mocked-IPC regression failed because the stopped sandbox retained the old attachment alert and Reconnect button alongside Start sandbox.
+- **Consequence:** The viewer presents a transport recovery action when the current state instead requires starting the sandbox. The same stale alert can obscure display-recovery controls while the stream is stopped or failed.
+- **Fix:** Show attachment errors only while the current guest state permits attachment. Keep health-read and action errors visible independently, and retain connection errors during healthy running-state reads until attachment succeeds.
+- **Regression:** Start with a running guest whose attachment fails, poll a stopped sandbox, require Start sandbox and no obsolete attachment alert or Reconnect control, and verify no desktop action is invoked automatically. Existing tests retain connection errors while a running guest's attachment continues failing.
+
+Both viewer test files passed all 29 tests. Frontend typecheck, lint, Rust formatting, and whitespace checks passed. Tests used mocked IPC and fake timers; no application or VM was launched.
+
+## DESKTOP-VIEWER-5: Development viewer titles use the production name
+
+- **Priority:** P3.
+- **Location before fix:** `app/SiloUI/src-tauri/src/desktop_viewer.rs`, `open_desktop` window title.
+- **Trigger:** Open a desktop viewer from Silo Dev while distinguishing its windows from production Silo.
+- **Evidence:** The native title hard-coded `Silo`; the shared build-channel policy names development `Silo Dev`. The extracted title regression passed the production expectation and failed the development expectation with `dev · Office — Silo` instead of `dev · Office — Silo Dev`.
+- **Consequence:** A development viewer's native title identifies the production product, removing the build distinction during window selection and inspection. This does not indicate shared VM or application state.
+- **Fix:** Derive the title suffix from `Channel::product_name`, using the current channel at window creation.
+- **Regression:** Assert exact production and development viewer titles while preserving the machine/computer name.
+
+The title regression and all five channel tests passed in a disposable harness using the production channel module and extracted title function/tests verbatim. Frontend typecheck/lint, Rust formatting, and whitespace checks passed. This proves title construction and channel configuration consistency, without launching or inspecting a packaged application.
