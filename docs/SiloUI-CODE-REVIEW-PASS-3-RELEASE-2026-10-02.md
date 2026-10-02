@@ -24,6 +24,7 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-04 | P2 | Direct publication bypasses the explicit stable-release opt-in | Fixed and folded: `5b18ec21` |
 | RL-05 | P3 | Release guide omits the implemented in-app Debian update | Corrected and folded: `17edafc6` |
 | RL-06 | P2 | Required minimum-macOS gate uses a runner with imminent brownouts | Open; replacement qualification required |
+| RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed: `abae62fe` |
 
 ## Detailed findings
 
@@ -120,6 +121,22 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 **Rejecting test.** Run the exact constraint suite on the replacement's verified macOS 14 environment and attach its OS identity and results to a complete draft-verification run. Inject a gate failure and confirm draft creation stays blocked. A source assertion that merely changes `runs-on` or a newer-OS passing run rejects neither failure mode.
 
 **Status.** Left open because no qualified replacement runner or macOS 14 host was provided, and the shared task instructions prohibit app launches and network-heavy builds. Provisioning and qualifying a runner is not a small obvious source fix. No CI/environment configuration was changed to bypass this gate.
+
+### RL-07 MicroSandbox fallback executable cache ignores compiler flags and build recipe
+
+**P2.** The compiled cache key in `microsandbox-runtime.mjs` included source,
+patches, agent bytes, compiler version, target, and features, but omitted the
+staging recipe and inherited Cargo compiler flags. A changed `RUSTFLAGS` could
+therefore reuse a previous executable after fallback cache restoration.
+
+**Evidence.** The real staging/cache orchestration with deterministic external
+tools compiled eight times across the existing capability/source cases. Changing
+`RUSTFLAGS` left that count at eight instead of nine. No native build was run.
+
+**Correction and status.** Fixed: the key includes the staging script digest and
+the four documented Cargo flag environment inputs. The regression checks rebuilds
+for changed plain, encoded, build-wide, and target-specific flags, and reuse when
+those inputs remain unchanged. The focused runtime staging tests pass.
 
 ## Verification and reproducibility
 
