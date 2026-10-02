@@ -505,7 +505,7 @@ export function OnboardingApp({
             editedRepositoryAccess.current.add(workspace)
             updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })
           }}
-          workspaceIdentities={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceIdentities, name) ?? { name: "", email: "", apply: true }]))}
+          workspaceIdentities={Object.fromEntries(machineNames.map((name) => [name, workspaceValue(workspaceIdentities, name) ?? { name: "", email: "", apply: false }]))}
           currentHostGitIdentity={source.currentHostGitIdentity}
           onConnect={actions.connectGitHub}
           onCancelConnection={actions.cancelGitHubConnection}
