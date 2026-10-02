@@ -103,6 +103,11 @@ node app/SiloUI/scripts/build-guest-image.mjs arm64
 node app/SiloUI/scripts/build-guest-image.mjs amd64
 ```
 
+The CLI also accepts a symlink to the script. Entry-point detection uses Node's
+[canonical path resolution](https://nodejs.org/download/release/v24.11.1/docs/api/fs.html#fsrealpathsyncpath-options)
+so a symlink runs the requested command instead of silently exiting; importing
+the module for tests still performs no build.
+
 Build outputs are ignored under `src-tauri/guest-image-artifacts/<architecture>`.
 Docker export is compressed into a temporary archive. The builder waits for both
 the export process and compression to succeed before replacing `image.tar.gz`.

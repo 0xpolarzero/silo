@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { createReadStream, createWriteStream, readFileSync } from "node:fs"
-import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
+import { createReadStream, createWriteStream, existsSync, readFileSync, realpathSync } from "node:fs"
+import { mkdir, mkdtemp, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { pipeline } from "node:stream/promises"
 import { fileURLToPath } from "node:url"
@@ -96,29 +96,30 @@ export async function buildGuestImage(architecture) {
   const image = JSON.parse(execFileSync("docker", ["image", "inspect", imageReference], { encoding: "utf8" }))[0]
   verifyGuestImage(architecture, imageReference)
   const packages = execFileSync("docker", ["run", "--rm", "--network", "none", "--platform", `linux/${architecture}`, imageReference, "cat", "/usr/local/share/silo-packages.txt"], { encoding: "utf8" })
-  const archive = resolve(output, "image.tar.gz")
-  const temporaryArchive = `${archive}.${process.pid}.tmp`
-  let unpackedBytes = 0
-  const save = spawn("docker", ["image", "save", imageReference], { stdio: ["ignore", "pipe", "inherit"] })
-  const exited = new Promise((resolve, reject) => { save.on("error", reject); save.on("exit", code => code === 0 ? resolve() : reject(new Error(`docker save exited ${code}`))) })
-  save.stdout.on("data", chunk => { unpackedBytes += chunk.length })
+  const stage = await mkdtemp(resolve(output, ".export-"))
+  const archive = resolve(stage, "image.tar.gz")
   try {
+    let unpackedBytes = 0
+    const save = spawn("docker", ["image", "save", imageReference], { stdio: ["ignore", "pipe", "inherit"] })
+    const exited = new Promise((resolve, reject) => { save.on("error", reject); save.on("exit", code => code === 0 ? resolve() : reject(new Error(`docker save exited ${code}`))) })
+    save.stdout.on("data", chunk => { unpackedBytes += chunk.length })
     const outcomes = await Promise.allSettled([
-      pipeline(save.stdout, createGzip({ level: 9 }), createWriteStream(temporaryArchive)), exited,
+      pipeline(save.stdout, createGzip({ level: 9 }), createWriteStream(archive)), exited,
     ])
     for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason
-    await rename(temporaryArchive, archive)
+    const hash = createHash("sha256")
+    for await (const chunk of createReadStream(archive)) hash.update(chunk)
+    const manifest = { schemaVersion: 1, version, ubuntuVersion: "24.04", architecture: architecture === "arm64" ? "aarch64" : "x86_64", imageReference, imageDigest: image.Id, archiveSha256: hash.digest("hex"), archiveBytes: (await stat(archive)).size, unpackedBytes, baseImage: "ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254", packages: Object.fromEntries(packages.trim().split("\n").map(line => line.split("\t"))) }
+    await writeFile(resolve(stage, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
+    await rename(archive, resolve(output, "image.tar.gz"))
+    await rename(resolve(stage, "manifest.json"), resolve(output, "manifest.json"))
+    console.log(`Built ${imageReference}: ${manifest.archiveBytes} compressed bytes, config ${manifest.imageDigest}`)
   } finally {
-    await rm(temporaryArchive, { force: true })
+    await rm(stage, { recursive: true, force: true })
   }
-  const hash = createHash("sha256")
-  for await (const chunk of createReadStream(archive)) hash.update(chunk)
-  const manifest = { schemaVersion: 1, version, ubuntuVersion: "24.04", architecture: architecture === "arm64" ? "aarch64" : "x86_64", imageReference, imageDigest: image.Id, archiveSha256: hash.digest("hex"), archiveBytes: (await stat(archive)).size, unpackedBytes, baseImage: "ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254", packages: Object.fromEntries(packages.trim().split("\n").map(line => line.split("\t"))) }
-  await writeFile(resolve(output, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
-  console.log(`Built ${imageReference}: ${manifest.archiveBytes} compressed bytes, config ${manifest.imageDigest}`)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (process.argv[2] === "metadata") {
     // key=value lines for $GITHUB_OUTPUT.
     for (const [key, value] of Object.entries(guestImageMetadata())) console.log(`${key}=${value}`)

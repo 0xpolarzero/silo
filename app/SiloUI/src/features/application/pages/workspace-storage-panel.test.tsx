@@ -8,13 +8,30 @@ import { SettingsProvider } from "@/features/preferences/settings-store"
 import { OverviewPage } from "./overview-page"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
-import type { WorkspaceStorageState } from "../model/workspace-storage"
+import { workspaceStorageStateSchema, type WorkspaceStorageState } from "../model/workspace-storage"
 
 afterEach(() => { toast.dismiss() })
 function Panel(props: React.ComponentProps<typeof WorkspaceStoragePanel>) { return <SettingsProvider initialSettings={{ theme: "light" }}><Toaster /><WorkspaceStoragePanel {...props} /></SettingsProvider> }
 
 const gib = 1024 ** 3
 const storage: WorkspaceStorageState = { history: [], workspaceHostBytes: 36 * gib, runtimeHostBytes: 5 * gib, checkpointHostBytes: 3 * gib, checkpointCount: 2, workspaceUsedBytes: gib, workspaceCapacityBytes: 64 * gib, lastReclaimedBytes: null, lastTrimAt: null, lastError: null }
+
+it.each(["__proto__", "constructor", "toString", "future-trigger"])("shows unknown reclaim trigger %s as Automatic", async trigger => {
+  const state = workspaceStorageStateSchema.parse({ ...storage, history: [{ at: 1000, trigger, reclaimedBytes: 0, error: null }] })
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue(state)} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Reclaim history, 1 attempt" }))
+  expect(screen.getByText(/^Automatic ·/)).toBeVisible()
+  expect(screen.getByText("No unused space to reclaim")).toBeVisible()
+})
+
+it.each([
+  ["manual", "Manual"], ["scheduled", "Scheduled"], ["beforeStop", "Before stop"],
+  ["afterStart", "After start"], ["legacy", "Previous reclaim"],
+])("preserves the label for reclaim trigger %s", async (trigger, label) => {
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, history: [{ at: 1000, trigger, reclaimedBytes: 0, error: null }] })} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Reclaim history, 1 attempt" }))
+  expect(screen.getByText(new RegExp(`^${label} ·`))).toBeVisible()
+})
 
 it.each([[1, "attempt"], [2, "attempts"]])("pluralizes the reclaim history label for %i %s", async (count, noun) => {
   const history = Array.from({ length: count }, (_, i) => ({ at: 1000 + i, trigger: "manual", reclaimedBytes: 0, error: null }))
@@ -69,8 +86,12 @@ it("shows failures without claiming recovery and permits retry", async () => {
   const user = userEvent.setup()
   render(<Panel workspaceId="vm-id" running read={read} reclaim={reclaim} />)
   expect(await screen.findByText("Storage unavailable")).toBeVisible()
+  expect(screen.queryByText(/No checkpoints are saved/)).not.toBeInTheDocument()
+  expect(screen.queryByText("No reclaims yet")).not.toBeInTheDocument()
+  expect(screen.getByText("Refresh storage to check saved checkpoints.")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Retry" }))
   expect(await screen.findByText("36.00 GiB")).toBeVisible()
+  expect(screen.getByText("No reclaims yet")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Reclaim unused space" }))
   expect(await screen.findByText("Workspace trim failed")).toBeVisible()
   expect(screen.getAllByRole("button", { name: "Retry" }).length).toBeGreaterThan(0)

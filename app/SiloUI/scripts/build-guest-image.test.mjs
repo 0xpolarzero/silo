@@ -1,13 +1,25 @@
 import assert from "node:assert/strict"
 import { execFileSync, spawnSync } from "node:child_process"
 import { readFileSync } from "node:fs"
-import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { gunzipSync } from "node:zlib"
 import { createHash } from "node:crypto"
 import test from "node:test"
 import { GUEST_IMAGE_VERSION, guestImageMetadata, lcuArchive, verifyGuestImage } from "./build-guest-image.mjs"
+
+test("metadata CLI works through a symlink to the script", async t => {
+  const root = await mkdtemp(join(tmpdir(), "silo-guest-cli-link-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const entry = join(root, "guest-image.mjs")
+  await symlink(new URL("./build-guest-image.mjs", import.meta.url), entry)
+  const result = spawnSync(process.execPath, [entry, "metadata"], { encoding: "utf8",
+    env: { ...process.env, GITHUB_REPOSITORY: "fixture/silo" } })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, new RegExp(`^version=${GUEST_IMAGE_VERSION}$`, "m"))
+  assert.match(result.stdout, /^image=ghcr.io\/fixture\/silo-guest:/m)
+})
 
 for (const saveExit of [1, 0]) {
   test(`guest archive publication preserves complete outputs when docker save exits ${saveExit}`, async t => {
@@ -47,6 +59,9 @@ if (args[0] === 'image' && args[1] === 'save') {
       const manifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"))
       assert.equal(manifest.archiveSha256, createHash("sha256").update(archive).digest("hex"))
       assert.equal(manifest.archiveBytes, archive.length)
+      assert.equal(manifest.unpackedBytes, Buffer.byteLength("saved image fixture"))
+      assert.equal(manifest.architecture, "aarch64")
+      assert.deepEqual(manifest.packages, { "fixture-package": "1" })
     }
     assert.deepEqual((await readdir(output)).sort(), ["image.tar.gz", "manifest.json"])
   })

@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep the latest requested main-window destination when route responses arrive out of order, while preserving pending routes after an empty read.
+Preserve the latest requested destination in the main window when earlier navigation finishes late.

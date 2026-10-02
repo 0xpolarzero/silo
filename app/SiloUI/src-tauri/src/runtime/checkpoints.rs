@@ -1487,14 +1487,25 @@ fn with_context(failure: RuntimeError, context: &str) -> RuntimeError {
 }
 
 /// Phase two of a fork, under the computer-wide lane: add the stopped fork to the shared
-/// inventory. Every failure removes what this phase added and returns the original error;
-/// a failing cleanup is appended as context instead of replacing it (E-17).
+/// inventory. Failures before publication remove what this phase added. A published fork
+/// keeps its dependent state even when the inventory's directory sync fails.
 pub(super) fn fork_commit(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     assignments: &dyn ForkAssignments,
     fork: &ForkSource,
     new_name: &str,
+) -> Result<(), RuntimeError> {
+    fork_commit_with_metadata_writer(runner, paths, assignments, fork, new_name, &write_metadata)
+}
+
+fn fork_commit_with_metadata_writer(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    assignments: &dyn ForkAssignments,
+    fork: &ForkSource,
+    new_name: &str,
+    write: &dyn Fn(&Path, &MachineConfigurationRequest) -> Result<(), RuntimeError>,
 ) -> Result<(), RuntimeError> {
     validate_name(new_name)?;
     let mut metadata = read_metadata(&paths.metadata)?;
@@ -1545,11 +1556,32 @@ pub(super) fn fork_commit(
             .map_err(RuntimeError::Unavailable)?;
         copied_secrets = true;
         metadata.machines.push(child);
-        write_metadata(&paths.metadata, &metadata)
+        write(&paths.metadata, &metadata)
     })();
     let Err(failure) = result else {
         return Ok(());
     };
+    // A metadata write can fail after replacement, while syncing its parent directory.
+    // Remove dependencies only when the inventory proves the child was not published.
+    match read_metadata(&paths.metadata) {
+        Ok(saved)
+            if !saved
+                .machines
+                .iter()
+                .any(|machine| machine.id() == child_id) => {}
+        Ok(_) => {
+            return Err(with_context(
+                failure,
+                " The fork was saved. Its checkpoint and assignments were preserved; refresh the sandbox list before retrying.",
+            ));
+        }
+        Err(_) => {
+            return Err(with_context(
+                failure,
+                " The sandbox list could not be checked. The fork's checkpoint and assignments were preserved.",
+            ));
+        }
+    }
     // Undo in reverse order; every step runs even if an earlier one fails.
     let mut failed = Vec::new();
     if copied_secrets {
@@ -4765,6 +4797,78 @@ mod tests {
             .unwrap();
         assert_eq!(pending.checkpoint_id, fork.member);
         assert_eq!(pending.source_workspace, "dev");
+        assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
+        assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
+    }
+
+    #[test]
+    fn a_published_fork_keeps_its_checkpoint_and_assignments_after_a_durability_error() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let assignments = FakeAssignments::new(&[]);
+        let failure = fork_commit_with_metadata_writer(
+            &journal_runner("Running", ""),
+            &paths,
+            &assignments,
+            &fork,
+            "branch",
+            &|path, metadata| {
+                write_metadata(path, metadata)?;
+                Err(RuntimeError::Unavailable("Directory sync failed.".into()))
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(failure.starts_with("Directory sync failed."), "{failure}");
+        let metadata = read_metadata(&paths.metadata).unwrap();
+        let child = metadata
+            .machines
+            .iter()
+            .find(|machine| machine.name() == "branch")
+            .unwrap();
+        let record = load(&paths, child.id()).unwrap();
+        assert_eq!(
+            record.pending_checkpoint_restore.unwrap().checkpoint_id,
+            fork.member
+        );
+        assert_eq!(record.desired_network_policy, Some(fork.desired_policy));
+        assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
+        assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
+    }
+
+    #[test]
+    fn an_unreadable_inventory_keeps_fork_dependencies_after_a_write_error() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let assignments = FakeAssignments::new(&[]);
+        let failure = fork_commit_with_metadata_writer(
+            &journal_runner("Running", ""),
+            &paths,
+            &assignments,
+            &fork,
+            "branch",
+            &|path, _| {
+                fs::write(path, b"{broken").unwrap();
+                Err(RuntimeError::Unavailable("Inventory write failed.".into()))
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(failure.starts_with("Inventory write failed."), "{failure}");
+        assert!(failure.contains("could not be checked"), "{failure}");
+        let ids = record_ids(&paths);
+        assert_eq!(ids.len(), 2);
+        let child_id = ids.iter().find(|id| id.as_str() != ID).unwrap();
+        assert_eq!(
+            load(&paths, child_id)
+                .unwrap()
+                .pending_checkpoint_restore
+                .unwrap()
+                .checkpoint_id,
+            fork.member
+        );
         assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
         assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
     }

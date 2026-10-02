@@ -890,8 +890,8 @@ pub(crate) fn prepare_private_directory(path: &Path) -> std::io::Result<()> {
             ),
         ));
     }
-    if metadata.mode() & 0o022 != 0 {
-        directory.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o777 & !0o022))?;
+    if metadata.mode() & 0o077 != 0 {
+        directory.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o700))?;
     }
     Ok(())
 }
@@ -901,8 +901,12 @@ pub(crate) fn prepare_runtime_home(
     storage_home: Option<&Path>,
 ) -> Result<(), RuntimeError> {
     let prepare = || -> std::io::Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
         let Some(storage_home) = storage_home else {
-            return fs::create_dir_all(home);
+            builder.create(home)?;
+            return prepare_private_directory(home);
         };
         let maximum = if cfg!(target_os = "macos") { 103 } else { 107 };
         let longest_socket = home.join("run/sandboxes/000000000000000000000000/control.sock");
@@ -948,7 +952,8 @@ pub(crate) fn prepare_runtime_home(
                 Err(error) => return Err(error),
             }
         }
-        fs::create_dir_all(storage_home)
+        builder.create(storage_home)?;
+        prepare_private_directory(storage_home)
     };
     prepare().map_err(|error| {
         RuntimeError::Unavailable(format!(
@@ -10630,6 +10635,41 @@ exit 9
     }
 
     #[test]
+    fn pre_desktop_metadata_keeps_its_persisted_field_names_on_round_trip() {
+        let saved = json!({
+            "schemaVersion": 1,
+            "machines": [
+                {
+                    "kind": "vm",
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "name": "dev",
+                    "cpus": 2,
+                    "maxCPUs": 4,
+                    "memoryGiB": 2,
+                    "maxMemoryGiB": 4,
+                    "workspaceStorageGiB": 10,
+                    "runtimeStorageGiB": 5
+                },
+                {
+                    "kind": "ssh",
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "name": "remote",
+                    "host": "example.test",
+                    "user": "developer",
+                    "port": 2222
+                }
+            ]
+        });
+        let request: MachineConfigurationRequest = serde_json::from_value(saved.clone()).unwrap();
+        validate_request(&request).unwrap();
+        assert!(matches!(
+            request.machines[0],
+            MachineConfiguration::Vm { desktop: None, .. }
+        ));
+        assert_eq!(serde_json::to_value(&request).unwrap(), saved);
+    }
+
+    #[test]
     fn metadata_round_trip_is_atomic_and_preserves_split_storage_settings() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -11005,8 +11045,58 @@ exit 9
         fs::set_permissions(parent, fs::Permissions::from_mode(0o775)).unwrap();
         fs::write(parent.join("existing"), b"preserved").unwrap();
         prepare_runtime_home(&alias, Some(&storage)).unwrap();
-        assert_eq!(fs::metadata(parent).unwrap().mode() & 0o777, 0o755);
+        assert_eq!(fs::metadata(parent).unwrap().mode() & 0o777, 0o700);
         assert_eq!(fs::read(parent.join("existing")).unwrap(), b"preserved");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_home_is_private_with_permissive_umask() {
+        const CHILD: &str = "SILO_PRIVATE_RUNTIME_HOME_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::runtime_home_is_private_with_permissive_umask",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // This process runs only this test, so its umask cannot affect parallel tests.
+        unsafe { libc::umask(0) };
+        let directory = tempfile::Builder::new()
+            .prefix("silo")
+            .tempdir_in(crate::test_support::live::temp_root())
+            .unwrap();
+        let storage = directory.path().join("generation/microsandbox");
+        let alias = runtime_home_alias(directory.path(), &storage);
+        prepare_runtime_home(&alias, Some(&storage)).unwrap();
+        assert_eq!(fs::metadata(&storage).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(storage.parent().unwrap()).unwrap().mode() & 0o777,
+            0o700
+        );
+        fs::write(storage.join("private-config"), b"fixture").unwrap();
+        fs::set_permissions(&storage, fs::Permissions::from_mode(0o755)).unwrap();
+        prepare_runtime_home(&alias, Some(&storage)).unwrap();
+        assert_eq!(fs::metadata(&storage).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::read(storage.join("private-config")).unwrap(),
+            b"fixture"
+        );
+        let standalone = directory.path().join("standalone");
+        prepare_runtime_home(&standalone, None).unwrap();
+        assert_eq!(fs::metadata(standalone).unwrap().mode() & 0o777, 0o700);
     }
 
     #[cfg(unix)]

@@ -79,3 +79,11 @@ calculations while their dependencies retain identity. Consulted 2026-10-02.
 Filtering depends on the catalog, selected-name set, and query, and event-driven
 search still computes fresh results for new text. The measured result concerns
 catalog reads; option element construction and large-list DOM costs remain.
+
+Merge verification: all 34 editor, GitHub-page and onboarding-GitHub tests pass
+with `--maxWorkers=1 --testTimeout=15000`. The default five-second limit timed
+out twice in the existing identity-edit interaction; the isolated interaction
+completed in 8.2 seconds with the longer limit. Original failures remain in
+`/tmp/silo-catalog-rerenders-merge*.log`. Typecheck, touched-file lint, formatting,
+and whitespace checks pass. The merge preserves own-property checks for sandbox
+names such as `constructor` alongside the stable empty-selection fallback.

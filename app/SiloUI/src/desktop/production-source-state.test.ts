@@ -195,6 +195,7 @@ describe("remote computer refresh", () => {
   })
 
   it("does not let a read that started before a remote edit revert it (H-06)", async () => {
+    vi.useFakeTimers()
     const stale = deferred<unknown>()
     let reads = 0
     let current = remoteSource({ purpose: "Before" })
@@ -208,16 +209,17 @@ describe("remote computer refresh", () => {
     try {
       await store.initialize()
       void store.refresh()
-      await vi.waitFor(() => expect(reads).toBe(2))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reads).toBe(2)
       const machine = { ...source.workspaces[0].machine, id: remoteTarget("office") }
       await store.applicationActions.saveRemoteMachine!("office", machine, machine)
       expect(purpose()).toBe("Edited")
       const shown: Array<string | undefined> = []
       const unsubscribe = store.subscribe(() => shown.push(purpose()))
       stale.resolve(remoteSource({ purpose: "Before" }))
-      // The overlapping read is dropped and the computer is read again.
-      await vi.waitFor(() => expect(reads).toBeGreaterThanOrEqual(3))
-      await new Promise(resolve => setTimeout(resolve, 10))
+      // Drain the overlapping read and its follow-up before checking every published value.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reads).toBeGreaterThanOrEqual(3)
       unsubscribe()
       expect(shown).not.toContain("Before")
       expect(purpose()).toBe("Edited")
@@ -225,6 +227,7 @@ describe("remote computer refresh", () => {
   })
 
   it("does not bring back a computer removed while the list was being read (H-06)", async () => {
+    vi.useFakeTimers()
     const list = deferred<unknown>()
     let lists = 0
     let hosts = [office]
@@ -237,12 +240,13 @@ describe("remote computer refresh", () => {
     try {
       await store.initialize()
       const refreshing = store.refresh()
-      await vi.waitFor(() => expect(lists).toBe(2))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(lists).toBe(2)
       await store.applicationActions.removeComputer!("office")
       list.resolve([office])
       await refreshing
-      await vi.waitFor(() => expect(lists).toBe(3))
-      await new Promise(resolve => setTimeout(resolve, 0))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(lists).toBe(3)
       expect(store.getSnapshot().source?.remoteComputers).toEqual([])
       expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.computer)).toBe(false)
     } finally { store.dispose() }

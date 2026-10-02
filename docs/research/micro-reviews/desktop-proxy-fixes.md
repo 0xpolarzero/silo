@@ -6,6 +6,8 @@ Scope: `app/SiloUI/src-tauri/src/desktop_proxy.rs`.
 
 Fixed and folded in `e0bfb0df`: ordinary HTTP responses have a 120-second idle deadline, reset when response data is forwarded. WebSocket streams retain their existing lifetime. TCP EOF alone cannot distinguish an abandoned client from a client that half-closes its request and still expects a response, so cleanup uses the response deadline.
 
+Integration subsequently reconciled this fix with `d9936652` in `cfe608d1`: the final behavior uses a shared 120-second total deadline for HTTP request bodies and responses, including responses that keep producing data. WebSocket streams remain exempt. The deadline argument added to `forward_body` also requires the interruption regression to pass `None` for its finite synthetic transfer. Integration replaced the duplicate idle-timeout changeset with the total-deadline changeset.
+
 The real-socket regression failed before the implementation with `silent HTTP response retained its handler: Timeout`, then passed for GET and POST. The existing completed-request test now also half-closes the client write side and verifies that both methods still receive their response. All eight module tests passed. Rust formatting, standalone module Clippy with warnings denied, frontend typecheck, and frontend lint passed. Cargo native tests were queued behind the shared target lock at fold time. Tests used only synthetic sockets and credentials; no app or VM was launched.
 
 ## DESKTOP-PROXY-2 · P2 · Bare control characters bypass header sanitization
@@ -27,3 +29,5 @@ Fixed and folded in `dd7d2fe2`. All nine module tests, Rust formatting, module C
 - **Consequence:** A transient interruption ends an otherwise readable request body or response/WebSocket stream. An interrupted header read closes the request before authentication.
 - **Fix:** Retry Interrupted reads while retaining the existing cancellation checks and deadlines.
 - **Regression:** `interrupted_body_reads_do_not_truncate_requests` and `interrupted_response_reads_do_not_truncate_streams` require delivery of the complete payload after the injected interruption. Tests use synthetic Unix socket pairs and do not install signal handlers or touch process-wide signal state.
+
+Fixed and folded in `5d6c4346`. All 11 module tests, Rust formatting, module Clippy with warnings denied, frontend typecheck, and frontend lint passed before integrating the additional deadline tests.
