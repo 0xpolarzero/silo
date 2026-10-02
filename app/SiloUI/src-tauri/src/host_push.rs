@@ -210,7 +210,7 @@ const TARGET_CHANGED: &str =
 const UPDATE_TRACKING_REF: &str = r#"set -eu
 origin=$(git -C "$1" remote get-url origin) || exit 0
 [ "$origin" = "$5" ] || exit 0
-git -C "$1" update-ref "$2" "$3" "$4"
+git -C "$1" update-ref --no-deref "$2" "$3" "$4"
 "#;
 /// Rows at most this old are served without reading the guest again.
 const DISCOVERY_FRESH: Duration = Duration::from_secs(15);
@@ -1796,6 +1796,12 @@ mod tests {
         assert_eq!(git(&["rev-parse", tracking]), commits[1]);
         git(&["update-ref", "-d", tracking]);
         assert!(update("").success());
+        assert_eq!(git(&["rev-parse", tracking]), commits[1]);
+        git(&["update-ref", "refs/heads/main", &commits[1]]);
+        git(&["update-ref", "refs/heads/work", &commits[2]]);
+        git(&["symbolic-ref", tracking, "refs/heads/work"]);
+        assert!(update(&commits[2]).success());
+        assert_eq!(git(&["rev-parse", "refs/heads/work"]), commits[2]);
         assert_eq!(git(&["rev-parse", tracking]), commits[1]);
     }
 
