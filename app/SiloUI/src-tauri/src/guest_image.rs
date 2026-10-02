@@ -410,7 +410,7 @@ mod tests {
         }
         let directory = tempfile::Builder::new()
             .prefix("silo-image-live-")
-            .tempdir_in("/tmp")
+            .tempdir_in(crate::test_support::live::temp_root())
             .unwrap();
         let paths = RuntimePaths {
             guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

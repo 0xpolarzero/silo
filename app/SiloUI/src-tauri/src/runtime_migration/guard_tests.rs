@@ -14,7 +14,7 @@ fn app_data() -> tempfile::TempDir {
     // The runtime alias must keep Unix socket paths short, so use /tmp, not TMPDIR.
     tempfile::Builder::new()
         .prefix("sg")
-        .tempdir_in("/tmp")
+        .tempdir_in(crate::test_support::live::temp_root())
         .unwrap()
 }
 

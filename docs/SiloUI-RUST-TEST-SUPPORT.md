@@ -41,6 +41,29 @@ A pipe-coordinated fork reproduction confirmed that parent close left the lock
 busy until child exit. Separate test processes isolate the file descriptor table
 while preserving the cache's real locking and intentional inherited-child test.
 
+`configuration_recovery` tests fork the whole test process on purpose, which copies
+every descriptor open at that moment, including the worker-lock files of the
+`backup` command tests. A forked copy kept `cancel_asks_the_runtime_to_stop_before_killing_it`
+failing in nearly every full parallel run on Linux (its final zero-wait lock check
+saw the lock still busy) while it passed alone. The lock-releasing `backup` tests
+now take the shared isolation guard, which the forking tests also hold, so the two
+groups never overlap.
+
+## Live test temporary directories
+
+Live tests create their temporary directories under `/tmp` because the runtime's
+control socket needs a short absolute path (104 bytes on macOS). `/tmp` is a small
+tmpfs on many Linux hosts, so set `SILO_TEST_TMP` to a short directory on a larger
+file system (for example `/var/tmp/silo-t`) before running them:
+
+```sh
+SILO_TEST_TMP=/var/tmp/silo-t SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures \
+  cargo test --locked <live test> -- --ignored --nocapture
+```
+
+The helper is `test_support::live::temp_root`. Live computer-use tests pin the v4
+guest image themselves (`guest_image::pin_test_version`); ordinary tests default to v3.
+
 Keep environment overrides on child `Command` instances, filesystem state in
 owned temporary directories, and listener ports allocated by the OS. A test's
 workers must finish before its isolation guard or temporary directory drops.
@@ -116,6 +139,24 @@ comments explaining the macOS 104-byte limit. The retention module is also
 embedded in the MicroSandbox patch, so its test-only cleanup change updates that
 patch and its pinned SHA. This changes the runtime preparation cache key, without
 changing production retention policy.
+
+The built-in desktop and computer-use live tests share `test_support::computer_use_live`
+(one disposable `/tmp` home per test, `e2e-*` sandboxes, a registered published ChatGPT
+folder). Inputs: `SILO_LIVE_TEST_CONFIRM`, a signed `msb` and libkrunfw (`SILO_TEST_MSB`,
+`SILO_TEST_LIBKRUNFW`), the v4 image directory (`SILO_TEST_GUEST_IMAGE`: manifest.json and
+image.tar.gz) and a published ChatGPT folder (`SILO_TEST_PUBLISHED`; `SILO_LIVE_CHATGPT_ROOT`
+keeps the folder `chatgpt_app::tests::live_download_of_the_pinned_arm64_package` publishes).
+`SILO_LIVE_KEEP=1` leaves a failed test's stopped home for inspection;
+`SILO_LIVE_EVIDENCE` names a directory for the drive test's screenshots. The tests:
+
+| Test | Proves |
+| --- | --- |
+| `live_lcu_drives_the_desktop_without_a_model` | Create to ready, `lcu status`/`doctor`, read-only mount, LCU's own MCP client drives GNOME Text Editor (typeText, paste, Save As) and a terminal (per-key), with the files verified from outside; also records memory, disk and times |
+| `live_approval_switch_edits_only_the_installed_harnesses` | `auto` adds and `ask` removes exactly LCU's approval entries in Codex and Claude Code (installed from npm; `SILO_LIVE_SKIP_HARNESS_INSTALL=1` skips that phase) |
+| `live_built_in_lifecycle_keeps_the_desktop_and_computer_use` | Restart, stop/start, checkpoint of the running VM, fork and in-place restore each end with the session running, computer use ready, the folder read-only and `lcu doctor` passing |
+| `live_pre_v4_vm_gets_no_mount_no_desktop_and_keeps_its_flows` | A VM from the v3 image (`SILO_TEST_V3_GUEST_IMAGE`) has no mount, no desktop and no helper, and its lifecycle flows work |
+| `live_built_in_computer_use_sets_up_and_survives_export_and_import` | Export and import into a second home with its own folder; the imported VM takes the destination's `ask` |
+| `live_built_in_desktop_boots_repeatedly` | `SILO_BOOT_LOOP_ROUNDS` (default 3) restarts and imports with no desktop failure |
 
 These checks use temporary fixture data. They do not launch the packaged Silo app
 or establish live VM, installed-app or release readiness.

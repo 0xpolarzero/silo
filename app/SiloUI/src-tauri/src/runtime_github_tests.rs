@@ -110,7 +110,7 @@ fn github_guest_bootstrap_and_live_identity() {
         PathBuf::from(std::env::var("SILO_TEST_LIBKRUNFW").expect("set SILO_TEST_LIBKRUNFW"));
     let directory = tempfile::Builder::new()
         .prefix("silo-gh-test-")
-        .tempdir_in("/tmp")
+        .tempdir_in(crate::test_support::live::temp_root())
         .unwrap();
     let paths = RuntimePaths {
         guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -436,7 +436,7 @@ fn github_authenticated_guest_workflow() {
     assert!(secret_values.len() >= 2, "missing scoped test credentials");
     let directory = tempfile::Builder::new()
         .prefix("silo-gh-live-")
-        .tempdir_in("/tmp")
+        .tempdir_in(crate::test_support::live::temp_root())
         .unwrap();
     let paths = RuntimePaths {
         guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

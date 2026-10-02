@@ -540,7 +540,8 @@ pub(super) fn after_start(
     else {
         return;
     };
-    let Some(instance) = &observed.runtime_instance_id else {
+    // A runtime that lacks the capability is reported by name, not skipped silently.
+    let Ok(Some(instance)) = running_instance_id(paths, observed) else {
         return;
     };
     if !observed.status.eq_ignore_ascii_case("running") {
@@ -563,7 +564,7 @@ pub(super) fn after_start(
         return;
     }
     if let Ok(mut starts) = verified_starts().lock() {
-        starts.insert((paths.home.clone(), id.into()), instance.clone());
+        starts.insert((paths.home.clone(), id.into()), instance);
     }
     automatic(
         runner,

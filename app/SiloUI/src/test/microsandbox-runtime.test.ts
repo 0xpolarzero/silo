@@ -177,6 +177,7 @@ describe("bundled MicroSandbox release staging", () => {
     let outdatedCachedSsh = false
     let outdatedCachedAccount = false
     let outdatedCachedStdin = false
+    let outdatedCachedInstance = false
     let outdatedCachedStaging = false
     let outdatedCachedNoStdin = false
     const sourceArtifact = { url: "https://example.test/source.tar.gz", sha256: sha256(source) }
@@ -218,7 +219,8 @@ describe("bundled MicroSandbox release staging", () => {
       if (command.startsWith(appRoot) && command.endsWith("/msb")) {
         if (outdatedCachedAccount && !command.includes("cargo-target") && args[0] === "--silo-working-account-protocol") return "0"
         if (outdatedCachedStdin && !command.includes("cargo-target") && args[0] === "--silo-secret-values-protocol") return "0"
-        if (["--silo-storage-protocol", "--silo-desktop-protocol", "--silo-github-token-protocol", "--silo-github-protocol", "--silo-working-account-protocol", "--silo-secret-values-protocol"].includes(args[0])) return "1"
+        if (outdatedCachedInstance && !command.includes("cargo-target") && args[0] === "--silo-runtime-instance-protocol") return "0"
+        if (["--silo-storage-protocol", "--silo-desktop-protocol", "--silo-github-token-protocol", "--silo-github-protocol", "--silo-working-account-protocol", "--silo-secret-values-protocol", "--silo-runtime-instance-protocol"].includes(args[0])) return "1"
         if (args[0] === "--version") return `msb ${MICRO_SANDBOX_VERSION}`
         if (outdatedCachedStaging && !command.includes("cargo-target") && args[0] === "snapshot" && args[1] === "load") return "--group"
         if (args.includes("--help")) {
@@ -261,21 +263,27 @@ describe("bundled MicroSandbox release staging", () => {
         expect(compilations).toBe(4)
         outdatedCachedStdin = false
 
-        outdatedCachedStaging = true
+        // A cached runtime whose inspect output lacks the running instance is rebuilt.
+        outdatedCachedInstance = true
         await stage()
         expect(compilations).toBe(5)
+        outdatedCachedInstance = false
+
+        outdatedCachedStaging = true
+        await stage()
+        expect(compilations).toBe(6)
         outdatedCachedStaging = false
 
         outdatedCachedNoStdin = true
         await stage()
-        expect(compilations).toBe(6)
+        expect(compilations).toBe(7)
         outdatedCachedNoStdin = false
 
         agentd = Buffer.from("agent revision two")
         selected.agentdSha256 = sha256(agentd)
         const changed = await stage()
         expect(await readFile(changed.executablePath, "utf8")).toBe("compiled runtime:agent revision two")
-        expect(compilations).toBe(7)
+        expect(compilations).toBe(8)
         const manifest = JSON.parse(await readFile(changed.manifestPath, "utf8"))
         expect(manifest.executable.embeddedAgentdReleaseSha256).toBe(sha256(agentd))
         expect(manifest.executable.sha256).toBe(sha256(await readFile(changed.executablePath)))

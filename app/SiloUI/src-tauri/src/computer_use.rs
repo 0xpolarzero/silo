@@ -455,8 +455,13 @@ pub(crate) fn is_built_in(machine: &MachineConfiguration) -> bool {
     desktop::configuration(machine).is_some_and(|configuration| configuration.built_in)
 }
 
+/// `uid=0,gid=0` pins the guest owner of every file in the folder. Without it MicroSandbox
+/// maps the host owner to the guest's default user only after the guest's agent
+/// reports it, which a RAM restore (a checkpoint fork or restore) never repeats: the
+/// restored guest then saw the host's own uid, and LCU refuses an app folder that root
+/// does not own ("not in a location only root and this account can change").
 fn mount_spec(dir: &Path) -> String {
-    format!("{}:{GUEST_MOUNT}:ro", dir.display())
+    format!("{}:{GUEST_MOUNT}:ro,uid=0,gid=0", dir.display())
 }
 
 /// The `msb create` / `msb restore` arguments that mount the published folder: empty
@@ -731,9 +736,10 @@ fn running_identity(
     if inspected.status != "Running" || !labelled {
         return None;
     }
-    inspected
-        .runtime_instance_id
-        .filter(|instance| !instance.is_empty())
+    // A runtime that lacks the capability is reported by name, not skipped silently.
+    runtime::running_instance_id(paths, &inspected)
+        .ok()
+        .flatten()
 }
 
 /// How long a queued apply waits for its turn before it gives up (the next boot or app

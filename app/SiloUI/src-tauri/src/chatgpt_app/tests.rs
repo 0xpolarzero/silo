@@ -460,6 +460,9 @@ fn malicious_entries_are_refused_and_publish_nothing() {
         let dir = tempfile::tempdir().unwrap();
         let dest = dir.path().join("tree");
         fs::create_dir(&dest).unwrap();
+        // The production check refuses a group- or world-writable root, and `create_dir`
+        // follows the process umask (002 by default on Ubuntu). State the mode explicitly.
+        fs::set_permissions(&dest, fs::Permissions::from_mode(0o700)).unwrap();
         let dest_dir = Dir::open_root(&dest, false).unwrap();
         let error = extract_tree(&data_tar(&items)[..], &dest_dir).expect_err(label);
         assert!(!error.retryable, "{label}: {error}");
@@ -697,6 +700,7 @@ mod http;
 #[test]
 #[ignore = "downloads 453 MB from OpenAI and extracts about 1.5 GB"]
 fn live_download_of_the_pinned_arm64_package() {
+    let arch = DebArch::host().unwrap();
     crate::test_support::live::require_confirmation();
     let dir = tempfile::tempdir().unwrap();
     // `SILO_LIVE_CHATGPT_ROOT` keeps the published app for a manual VM check.
@@ -705,51 +709,41 @@ fn live_download_of_the_pinned_arm64_package() {
     let lock = Lock::bundled().unwrap();
     let started = Instant::now();
     let last = Mutex::new(None);
-    let path = ensure(
-        &root,
-        &lock,
-        DebArch::Arm64,
-        &HttpDownloader::default(),
-        &|s| {
-            *last.lock().unwrap() = Some(s);
-        },
-    )
+    let path = ensure(&root, &lock, arch, &HttpDownloader::default(), &|s| {
+        *last.lock().unwrap() = Some(s);
+    })
     .unwrap();
     println!("ready in {:?} at {}", started.elapsed(), path.display());
     assert_eq!(
         path,
-        fs::canonicalize(root.join("published/26.928.31416-arm64")).unwrap()
+        fs::canonicalize(root.join("published").join(lock.directory_name(arch))).unwrap()
     );
     let executable = path.join("ChatGPT");
     assert!(fs::metadata(&executable).unwrap().permissions().mode() & 0o111 != 0);
     assert!(path.join("resources").is_dir());
     assert!(path.join("resources/cua_node/manifest.json").is_file());
     assert!(!root
-        .join("downloads/chatgpt_26.928.31416_arm64.deb")
+        .join(format!(
+            "downloads/chatgpt_26.928.31416_{}.deb",
+            arch.name()
+        ))
         .exists());
     assert!(matches!(
         last.into_inner().unwrap(),
         Some(Status::Ready { .. })
     ));
     // Idempotent: a second call neither downloads nor changes anything.
-    let again = ensure(
-        &root,
-        &lock,
-        DebArch::Arm64,
-        &Fake::new(Vec::new()),
-        &|_| {},
-    )
-    .unwrap();
+    let again = ensure(&root, &lock, arch, &Fake::new(Vec::new()), &|_| {}).unwrap();
     assert_eq!(again, path);
     // Reuse costs: cheap check in this session, then the full digest as a new
     // process would run it for the first time.
     let lock = Lock::bundled().unwrap();
     let started = Instant::now();
-    assert!(verify_published(&root, &lock, DebArch::Arm64).is_some());
+    assert!(verify_published(&root, &lock, arch).is_some());
     println!("cheap reuse check: {:?}", started.elapsed());
     hardening::forget_session(&root);
     let started = Instant::now();
-    assert!(verify_published(&root, &lock, DebArch::Arm64).is_some());
+    assert!(verify_published(&root, &lock, arch).is_some());
     let full = digest_tree(&path, true).unwrap();
     println!(
         "full digest verification: {:?} ({} entries, {} bytes)",

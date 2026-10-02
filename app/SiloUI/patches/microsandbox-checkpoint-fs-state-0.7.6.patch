@@ -1,0 +1,29 @@
+diff --git a/crates/image/lib/checkpoint/resolver.rs b/crates/image/lib/checkpoint/resolver.rs
+index bfe8276..c7672ef 100644
+--- a/crates/image/lib/checkpoint/resolver.rs
++++ b/crates/image/lib/checkpoint/resolver.rs
+@@ -23,6 +23,10 @@ const CHECKPOINT_ROOT_FILE: &str = "checkpoint.json";
+ const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
+ const MAX_EXECUTION_STATE_BYTES: u64 = 512 * 1024 * 1024;
+ const MAX_DEVICE_STATE_BYTES: u64 = 1024 * 1024;
++/// The runtime restores a virtio-fs device (type 26) with up to this much state, since its
++/// passthrough table grows with the files the guest has touched; verification must agree.
++const MAX_FS_DEVICE_STATE_BYTES: u64 = 8 * 1024 * 1024;
++const VIRTIO_FS_DEVICE_TYPE: u32 = 26;
+ 
+ //--------------------------------------------------------------------------------------------------
+ // Types
+@@ -114,7 +118,12 @@ impl CheckpointClosure {
+             MAX_EXECUTION_STATE_BYTES,
+         )?;
+         for device in &checkpoint.devices {
+-            read_object_verified(&root, &device.state, MAX_DEVICE_STATE_BYTES)?;
++            let max_state_bytes = if device.device_type == VIRTIO_FS_DEVICE_TYPE {
++                MAX_FS_DEVICE_STATE_BYTES
++            } else {
++                MAX_DEVICE_STATE_BYTES
++            };
++            read_object_verified(&root, &device.state, max_state_bytes)?;
+         }
+ 
+         let mut disks = Vec::with_capacity(checkpoint.disks.len());

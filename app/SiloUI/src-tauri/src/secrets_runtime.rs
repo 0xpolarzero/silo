@@ -485,6 +485,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let inspected = InspectedSandbox {
             runtime_instance_id: None,
+            runtime_instance_reported: true,
             updated_at: None,
             name: "dev".into(),
             status: "Running".into(),
@@ -522,6 +523,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let inspected = InspectedSandbox {
             runtime_instance_id: None,
+            runtime_instance_reported: true,
             updated_at: None,
             name: "dev".into(),
             status: "Stopped".into(),
@@ -619,7 +621,7 @@ fn live_secret_adapter_uses_refs_and_preserves_boot_for_live_updates() {
     crate::test_support::live::require_confirmation();
     let directory = tempfile::Builder::new()
         .prefix("silo-secret-test-")
-        .tempdir_in("/tmp")
+        .tempdir_in(crate::test_support::live::temp_root())
         .unwrap();
     let paths = RuntimePaths {
         guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

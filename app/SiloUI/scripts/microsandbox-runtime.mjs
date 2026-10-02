@@ -85,6 +85,9 @@ const SILO_PROTOCOL_PROBES = [
   "--silo-github-protocol",
   "--silo-working-account-protocol",
   "--silo-secret-values-protocol",
+  // `msb inspect --format json` reports `runtime_instance_id` for a running sandbox.
+  // Computer-use setup and storage reclaim refuse to act without it.
+  "--silo-runtime-instance-protocol",
 ]
 
 function hasSiloProtocolProbes(executable) {

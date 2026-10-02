@@ -17,6 +17,22 @@ pub(crate) fn require_confirmation() {
         .expect("Live test authorization missing");
 }
 
+/// Parent of a live test's temporary directories. The runtime control socket needs a short
+/// absolute path (104 bytes on macOS), so the default is `/tmp`. Set `SILO_TEST_TMP` to a
+/// short path on another file system when `/tmp` is small (a tmpfs on Linux).
+pub(crate) const TEMP_ROOT_VARIABLE: &str = "SILO_TEST_TMP";
+
+pub(crate) fn temp_root() -> PathBuf {
+    temp_root_from(std::env::var_os(TEMP_ROOT_VARIABLE).as_deref())
+}
+
+fn temp_root_from(value: Option<&std::ffi::OsStr>) -> PathBuf {
+    match value {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => PathBuf::from("/tmp"),
+    }
+}
+
 pub(crate) fn isolated_editor_home(home: &Path, real_home: &Path) -> Result<PathBuf, &'static str> {
     if !home.is_absolute() || !real_home.is_absolute() {
         return Err("Live editor tests require absolute, existing fixture and user homes.");
@@ -43,6 +59,17 @@ mod tests {
             assert!(validate_confirmation(value).is_err());
         }
         assert!(validate_confirmation(Some(CONFIRM_VALUE)).is_ok());
+    }
+
+    #[test]
+    fn temp_root_defaults_to_tmp_and_honours_the_override() {
+        use std::ffi::OsStr;
+        assert_eq!(temp_root_from(None), PathBuf::from("/tmp"));
+        assert_eq!(temp_root_from(Some(OsStr::new(""))), PathBuf::from("/tmp"));
+        assert_eq!(
+            temp_root_from(Some(OsStr::new("/s/t"))),
+            PathBuf::from("/s/t")
+        );
     }
 
     #[test]
