@@ -114,7 +114,7 @@ export interface SshAccessWorkspace {
   user?: string
 }
 export interface SshAccessState { workspaces: SshAccessWorkspace[] }
-export type SshAccessRequest = Pick<SshAccessWorkspace, "workspace" | "enabled" | "port" | "bindAddress" | "keys">
+export type SshAccessRequest = Pick<SshAccessWorkspace, "workspace" | "enabled" | "port" | "bindAddress"> & { keys?: string[] }
 export interface NetworkPortRequest { workspace: string; port: number; hostPort: number | null; scheme: "http" | "https" | null }
 
 export interface ApplicationPort {
