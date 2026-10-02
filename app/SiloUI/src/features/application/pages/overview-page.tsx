@@ -539,15 +539,16 @@ export function OverviewPage({ active = true, readOnly = false,
 
   // A deleted sandbox takes its notifications with it: their actions (Open, Retry…) would
   // otherwise point at something that no longer exists.
-  const knownSandboxes = useRef(new Map<string, { name: string; computerId: string }>())
+  const knownSandboxes = useRef(new Map<string, { name: string; computerId: string; target: string }>())
   useEffect(() => {
-    const current = new Map(source.workspaces.map(workspace => [`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, { name: workspace.machine.name, computerId: workspace.computer?.id ?? "" }]))
+    const current = new Map(source.workspaces.map(workspace => [`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, { name: workspace.machine.name, computerId: workspace.computer?.id ?? "", target: workspaceTarget(workspace) }]))
     for (const [key, known] of knownSandboxes.current) {
       if (current.has(key)) continue
+      if (known.computerId) dismissSandboxToasts(known.target)
+      dismissOperationToast(`lifecycle:${key}`)
       // A name shared with a sandbox that still exists (e.g. on another computer) keeps its notifications.
       if ([...current.values()].some(other => other.name === known.name)) continue
       dismissSandboxToasts(known.name)
-      dismissOperationToast(`lifecycle:${key}`)
     }
     knownSandboxes.current = current
   }, [source.workspaces])

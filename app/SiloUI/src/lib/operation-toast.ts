@@ -58,7 +58,7 @@ export type OperationAction = { label: string; onClick: () => void }
 
 /**
  * Notifications about a specific sandbox, so they can be dismissed when it is deleted (their
- * actions would point at a sandbox that no longer exists). Current sandbox names by toast ID.
+ * actions would point at a sandbox that no longer exists). Current sandbox targets by toast ID. Remote targets include their computer and VM IDs.
  */
 const toastSandboxes = new Map<string, Set<string>>()
 
@@ -81,10 +81,10 @@ function resultCallbacks(id: string, sandbox: string | string[] | undefined, onD
   }
 }
 
-/** Dismiss every notification tagged with this sandbox name. Call when the sandbox is deleted. */
-export function dismissSandboxToasts(name: string) {
+/** Dismiss every notification tagged with this sandbox target. Call when the sandbox is deleted. */
+export function dismissSandboxToasts(target: string) {
   for (const [id, names] of toastSandboxes) {
-    if (names.has(name)) dismissOperationToast(id)
+    if (names.has(target)) dismissOperationToast(id)
   }
 }
 
