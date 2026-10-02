@@ -30,6 +30,11 @@ folder change using a flattened map. Their reader retains the 1 MiB limit and
 schema-version check; malformed destinations or archive arrays remain unreadable.
 The temporary-file tests verify that reads leave the saved bytes untouched.
 
+Remote-management settings retain unknown top-level preferences when their known
+fields change. Temporary-file round trips verify the saved identity and host list,
+while malformed or absent required fields still fail to load. Existing read/write
+size-limit and directory-sync regressions exercise the same reader and writer.
+
 ## Process-wide state
 
 `test_support::global_state()` guards tests in modules that reach the global

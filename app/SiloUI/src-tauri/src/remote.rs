@@ -59,6 +59,8 @@ struct Config {
     host_id: String,
     enabled: bool,
     hosts: Vec<RemoteHost>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,6 +154,7 @@ fn read_config_in(dir: &Path) -> Result<Config, String> {
                 host_id: uuid::Uuid::new_v4().to_string(),
                 enabled: false,
                 hosts: vec![],
+                extra: serde_json::Map::new(),
             };
             save_config_in(dir, &config)?;
             Ok(config)
@@ -3339,6 +3342,7 @@ mod bridge_link_tests {
             host_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         record_start_error(Some("Another Silo instance owns remote management.".into()));
         assert_eq!(
@@ -4157,6 +4161,7 @@ mod ssh_authorization_tests {
             host_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         for method in [
             "ssh.access.state",
@@ -4198,6 +4203,7 @@ mod ssh_connection_admission_tests {
             host_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
             hosts: Vec::new(),
+            extra: serde_json::Map::new(),
         };
         save_config_in(directory.path(), &config).unwrap();
         let request = json!({
@@ -4294,6 +4300,46 @@ mod config_io_limit_tests {
     const LIMIT_BYTES: usize = 1024 * 1024;
 
     #[test]
+    fn remote_config_preserves_additive_preferences_when_management_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let saved = serde_json::json!({
+            "hostId": "fixture-owner",
+            "enabled": false,
+            "hosts": [{"id": "peer", "name": "Peer", "address": "fixture.test"}],
+            "futurePreference": {"mode": "newer", "ids": [1, 2]}
+        });
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut config = read_config_in(directory.path()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        config.enabled = true;
+        save_config_in(directory.path(), &config).unwrap();
+        let reloaded: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
+        assert_eq!(reloaded["hostId"], saved["hostId"]);
+        assert_eq!(reloaded["hosts"], saved["hosts"]);
+        assert!(read_config_in(directory.path()).unwrap().enabled);
+    }
+
+    #[test]
+    fn remote_config_additive_preferences_do_not_replace_required_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        for saved in [
+            serde_json::json!({"enabled": false, "hosts": [], "future": true}),
+            serde_json::json!({"hostId": "fixture-owner", "enabled": "false", "hosts": [], "future": true}),
+            serde_json::json!({"hostId": "fixture-owner", "enabled": false, "hosts": {}, "future": true}),
+        ] {
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(read_config_in(directory.path()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
     fn remote_config_save_reports_an_unreadable_parent_after_publication() {
         use std::os::unix::fs::MetadataExt;
         let directory = tempfile::tempdir().unwrap();
@@ -4304,6 +4350,7 @@ mod config_io_limit_tests {
             host_id: "fixture-owner".into(),
             enabled: false,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
         let result = save_config_in(directory.path(), &config);
@@ -4347,6 +4394,7 @@ mod config_io_limit_tests {
             host_id: "fixture-owner".into(),
             enabled: true,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         save_config_in(directory.path(), &config).unwrap();
         let previous = fs::read(&path).unwrap();
