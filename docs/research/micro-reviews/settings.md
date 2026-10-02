@@ -43,3 +43,13 @@ Read-only source review. Checked the specified first, second, and third pass rep
 - **Consequence:** An already pending confirmation or frontend flush keeps the ordinary unbounded Quit policy instead of receiving the session deadline and bypassing confirmation.
 - **Fix:** Continue suppressing repeated user Quit requests, but route session-ending reasons even while AppKit awaits a reply.
 - **Regression:** Route UserQuit followed by each session-ending reason, require both routes, and retain one route for repeated UserQuit. This proves the dispatch policy; no AppKit event or live VM was exercised.
+
+## SETTINGS-6: Short session deadlines expire before native shutdown starts
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/settings.rs`, `end_session` frontend fallback.
+- **Trigger:** The frontend does not answer its settings-flush request and the session budget is less than two seconds. `system_shutdown::logind_budget` explicitly supports a one-second budget.
+- **Evidence:** The fallback waited a fixed two seconds while the session deadline independently approved exit. Native `finish_exit` therefore had no opportunity to claim shutdown, and the approved state bypassed the exit backstop. The scheduling regression failed for the supported one-second budget; an elapsed-deadline regression also reproduced the unnecessary wait.
+- **Consequence:** Short Linux shutdown budgets can end Silo without even starting its local-VM stop transaction.
+- **Fix:** Cap frontend waiting at half the remaining session budget, retaining the existing two-second ceiling. Schedule immediately when the deadline has elapsed.
+- **Regression:** Require native fallback admission to be scheduled strictly before a one-second deadline, preserve the two-second wait for the ordinary twenty-second session budget, and require zero wait for elapsed deadlines. No live shutdown or VM was exercised.

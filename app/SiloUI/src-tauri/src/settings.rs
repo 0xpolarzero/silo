@@ -558,6 +558,11 @@ impl SettingsState {
 /// How long Quit waits for the webview to acknowledge its settings flush.
 const FRONTEND_FLUSH_FALLBACK: Duration = Duration::from_secs(2);
 
+fn session_flush_wait(deadline: Instant, now: Instant) -> Duration {
+    // Keep at least half the remaining session budget for native shutdown.
+    FRONTEND_FLUSH_FALLBACK.min(deadline.saturating_duration_since(now) / 2)
+}
+
 #[derive(Default)]
 struct ShutdownState(Mutex<ShutdownProgress>);
 #[derive(Default)]
@@ -1031,7 +1036,7 @@ pub(crate) fn end_session(app: &AppHandle, budget: Duration) {
     // Also bound a Quit whose frontend flush started before the session ended.
     let app = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(FRONTEND_FLUSH_FALLBACK);
+        std::thread::sleep(session_flush_wait(deadline, Instant::now()));
         finish_exit(&app, false, None);
     });
 }
@@ -2168,6 +2173,33 @@ mod tests {
         quit.close();
         assert_eq!(quit.ask(Ok(vec!["dev".into()])), None);
         assert_eq!(quit.ask(Err("status unavailable".into())), None);
+    }
+
+    #[test]
+    fn session_fallback_starts_native_shutdown_before_a_short_deadline() {
+        let now = Instant::now();
+        for budget in [Duration::from_secs(1), Duration::from_millis(4250)] {
+            let deadline = now + budget;
+            let wait = session_flush_wait(deadline, now);
+            assert!(
+                now + wait < deadline,
+                "native shutdown needs time before expiry"
+            );
+        }
+        assert_eq!(
+            session_flush_wait(now + Duration::from_secs(20), now),
+            FRONTEND_FLUSH_FALLBACK
+        );
+    }
+
+    #[test]
+    fn an_elapsed_session_deadline_does_not_wait_for_the_frontend() {
+        let now = Instant::now();
+        assert_eq!(session_flush_wait(now, now), Duration::ZERO);
+        assert_eq!(
+            session_flush_wait(now, now + Duration::from_secs(1)),
+            Duration::ZERO
+        );
     }
 
     #[test]
