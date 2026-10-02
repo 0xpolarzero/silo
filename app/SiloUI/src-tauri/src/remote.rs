@@ -1251,11 +1251,14 @@ fn send_change_with_clock(
         }
         crate::runtime::shutdown::ensure_accepting_operations()?;
         let remaining = deadline.saturating_duration_since(now());
+        if remaining.is_zero() {
+            return Err("Remote operation timed out. Its outcome is unknown; reconnect and inspect before issuing another change.".into());
+        }
         // Queued work must start early enough to finish while this computer still waits.
         request["startWithinMs"] = json!((remaining / 2).as_millis() as u64);
         match send(request) {
             Err(Failure::Lost(message)) => match delays.next() {
-                Some(delay) if remaining > *delay => {
+                Some(delay) if deadline.saturating_duration_since(now()) > *delay => {
                     thread::sleep(*delay);
                     crate::runtime::shutdown::ensure_accepting_operations()?;
                 }
@@ -4144,6 +4147,34 @@ mod dispatch_tests {
         assert_eq!(attempts, 1);
         assert_eq!(result.unwrap_err().code, ErrorCode::Cancelled);
         assert!(crate::runtime::shutdown::ensure_accepting_operations().is_ok());
+    }
+
+    #[test]
+    fn an_expired_change_never_opens_a_connection() {
+        let _test_state = crate::test_support::global_state();
+        let mut request = json!({"method":"runtime.action","operationId":"fixed"});
+        let mut attempts = 0;
+        let result = send_change(&mut request, Instant::now(), &[Duration::ZERO], |_| {
+            attempts += 1;
+            Ok(Value::Null)
+        });
+        assert_eq!(attempts, 0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_lost_change_that_exhausted_its_deadline_is_not_sent_again() {
+        let _test_state = crate::test_support::global_state();
+        let mut request = json!({"method":"runtime.action","operationId":"fixed"});
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let mut attempts = 0;
+        let result = send_change(&mut request, deadline, &[Duration::ZERO], |_| {
+            attempts += 1;
+            thread::sleep(deadline.saturating_duration_since(Instant::now()));
+            Err(Failure::Lost("dropped after deadline".into()))
+        });
+        assert_eq!(attempts, 1, "an expired change opened another connection");
+        assert_eq!(result, Err("dropped after deadline".into()));
     }
 
     #[test]
