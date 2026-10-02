@@ -114,6 +114,11 @@ async function buildPatchedExecutable({
     throw new Error(`Patched MicroSandbox cross-builds are not supported: host ${hostTriple}, target ${targetTriple}`)
   }
   const rustcVersion = runBuildTool("rustc", [`+${MICROSANDBOX_BUILD_TOOLCHAIN}`, "--version"]).trim()
+  const targetEnvironment = targetTriple.toUpperCase().replaceAll("-", "_")
+  const compilerFlags = Object.fromEntries([
+    "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS",
+    `CARGO_TARGET_${targetEnvironment}_RUSTFLAGS`,
+  ].map(name => [name, process.env[name] ?? null]))
   const cacheKey = sha256(Buffer.from([
     MICROSANDBOX_SOURCE_SHA256,
     ...MICROSANDBOX_PATCHES.map(({ sha256: digest }) => digest),
@@ -121,6 +126,8 @@ async function buildPatchedExecutable({
     rustcVersion,
     targetTriple,
     MICROSANDBOX_BUILD_FEATURES,
+    sha256(await readFile(new URL(import.meta.url))),
+    JSON.stringify(compilerFlags),
   ].join("\n")))
   const buildRoot = join(cacheRoot, "patched-builds", cacheKey)
   const cachedExecutable = join(buildRoot, "msb")

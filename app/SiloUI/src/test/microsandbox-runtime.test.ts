@@ -287,8 +287,28 @@ describe("bundled MicroSandbox release staging", () => {
         const manifest = JSON.parse(await readFile(changed.manifestPath, "utf8"))
         expect(manifest.executable.embeddedAgentdReleaseSha256).toBe(sha256(agentd))
         expect(manifest.executable.sha256).toBe(sha256(await readFile(changed.executablePath)))
+
+        vi.stubEnv("RUSTFLAGS", "-C opt-level=1")
+        await stage()
+        expect(compilations).toBe(9)
+        await stage()
+        expect(compilations).toBe(9)
+
+        vi.stubEnv("CARGO_ENCODED_RUSTFLAGS", "-C\u001fopt-level=2")
+        await stage()
+        expect(compilations).toBe(10)
+
+        vi.stubEnv("CARGO_BUILD_RUSTFLAGS", "-C opt-level=3")
+        await stage()
+        expect(compilations).toBe(11)
+        vi.stubEnv("CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS", "-C target-cpu=generic")
+        await stage()
+        expect(compilations).toBe(12)
+        await stage()
+        expect(compilations).toBe(12)
       })
     } finally {
+      vi.unstubAllEnvs()
       await rm(appRoot, { recursive: true, force: true })
     }
   })

@@ -22,6 +22,7 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-02 | P2 | Linux verification seeds production paths for a Dev binary | Fixed and folded: `5a14fe19` |
 | RL-03 | P2 | Desktop smoke isolation leaves HOME-dependent state live | Fixed and folded: `024c8268` |
 | RL-04 | P2 | Direct publication bypasses the explicit stable-release opt-in | Confirmed; fix pending |
+| RL-05 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed; regression passes |
 
 ## Detailed findings
 
@@ -86,6 +87,22 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 **Correction.** Require an explicit stable-release flag in the final Python publication gate and carry it through the workflow's boolean input and the existing local wrapper option. Keep parsing/comparison of historical public versions independent of this policy so a prior 1.x tag does not cause unrelated parsing failures. The early build gate still needs the same policy before owner-approved 1.x release qualification.
 
 **Rejecting test.** Direct draft creation and publication for `1.0.0` and later must fail before any GitHub call without opt-in; explicit opt-in must reach the ordinary asset gates. The local wrapper must dispatch the workflow opt-in only when explicitly requested. Execute the workflow command with a fake Python verifier and verify its argument list in both modes, without signing or contacting GitHub.
+
+### RL-05 MicroSandbox fallback executable cache ignores compiler flags and build recipe
+
+**P2.** The compiled cache key in `microsandbox-runtime.mjs` included source,
+patches, agent bytes, compiler version, target, and features, but omitted the
+staging recipe and inherited Cargo compiler flags. A changed `RUSTFLAGS` could
+therefore reuse a previous executable after fallback cache restoration.
+
+**Evidence.** The real staging/cache orchestration with deterministic external
+tools compiled eight times across the existing capability/source cases. Changing
+`RUSTFLAGS` left that count at eight instead of nine. No native build was run.
+
+**Correction and status.** Fixed: the key includes the staging script digest and
+the four documented Cargo flag environment inputs. The regression checks rebuilds
+for changed plain, encoded, build-wide, and target-specific flags, and reuse when
+those inputs remain unchanged. The focused runtime staging tests pass.
 
 ## Verification and reproducibility
 
