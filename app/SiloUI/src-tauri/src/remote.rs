@@ -1821,7 +1821,7 @@ fn listen(app: AppHandle) -> Result<(), String> {
     thread::spawn(move || {
         let _lease = lease;
         serve_connections(listener.incoming(), ACCEPT_BACKOFF, |mut stream| {
-            let Some(permit) = ConnectionPermit::acquire() else {
+            let Some(permit) = CONNECTIONS.acquire() else {
                 let _ = write_frame(
                     &mut stream,
                     &json!({"error":"This computer has too many active Silo connections. Close an unused connection and retry."}),
@@ -1830,13 +1830,14 @@ fn listen(app: AppHandle) -> Result<(), String> {
             };
             let app = app.clone();
             thread::spawn(move || {
-                let _permit = permit;
+                let mut permit = Some(permit);
                 let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
                 let result = read_socket_frame(&mut stream, Duration::from_secs(15))
                     .map_err(BridgeError::from)
                     .and_then(|request| {
                         if request["method"] == "guest.ssh" {
                             authorize(&request)?;
+                            let _stream_permit = admit_stream(&mut permit, &STREAMS)?;
                             let mut child = crate::remote_access::spawn_stream(
                                 &app,
                                 "guest.ssh",
@@ -2454,6 +2455,34 @@ mod stream_tests {
             .unwrap()
     }
     #[test]
+    fn streams_at_capacity_leave_management_connections_admissible() {
+        static MANAGEMENT: Budget = Budget::new(2);
+        static STREAMS: Budget = Budget::new(3);
+        let mut streams = Vec::new();
+        for _ in 0..STREAMS.limit {
+            let mut connection = MANAGEMENT.acquire();
+            assert!(connection.is_some());
+            streams.push(admit_stream(&mut connection, &STREAMS).unwrap());
+            // Admission releases the management permit.
+            assert!(connection.is_none());
+        }
+        // Only the extra stream is rejected, and it keeps its management permit to reply.
+        let mut extra = MANAGEMENT.acquire();
+        assert!(admit_stream(&mut extra, &STREAMS)
+            .err()
+            .unwrap()
+            .contains("too many active Silo streams"));
+        assert!(extra.is_some());
+        // Management requests (snapshots, unpublish, VM actions) still fit beside the streams.
+        let second = MANAGEMENT.acquire();
+        assert!(second.is_some());
+        assert!(MANAGEMENT.acquire().is_none());
+        drop(streams.pop());
+        drop(extra);
+        assert!(MANAGEMENT.acquire().is_some());
+    }
+
+    #[test]
     fn input_eof_drains_response_and_reaps_child() {
         let _test_state = crate::test_support::global_state();
         let (mut client, server) = UnixStream::pair().unwrap();
@@ -2569,23 +2598,58 @@ fn copy_cancellable<R: Read + std::os::fd::AsRawFd, W: Write + std::os::fd::AsRa
     Ok(())
 }
 
-static CONNECTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-struct ConnectionPermit;
-impl ConnectionPermit {
-    fn acquire() -> Option<Self> {
+/// Counts concurrent connections against a fixed limit.
+struct Budget {
+    count: std::sync::atomic::AtomicUsize,
+    limit: usize,
+}
+impl Budget {
+    const fn new(limit: usize) -> Self {
+        Self {
+            count: std::sync::atomic::AtomicUsize::new(0),
+            limit,
+        }
+    }
+    fn acquire(&'static self) -> Option<Permit> {
         use std::sync::atomic::Ordering;
-        CONNECTIONS
+        self.count
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < 64).then_some(count + 1)
+                (count < self.limit).then_some(count + 1)
             })
             .ok()
-            .map(|_| Self)
+            .map(|_| Permit(self))
     }
 }
-impl Drop for ConnectionPermit {
+struct Permit(&'static Budget);
+impl Drop for Permit {
     fn drop(&mut self) {
-        CONNECTIONS.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        self.0
+            .count
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     }
+}
+
+/// Connections that have not yet become streams: management requests, and any connection
+/// still awaiting its first frame.
+static CONNECTIONS: Budget = Budget::new(64);
+/// Long-lived guest streams (published ports, desktop, editor). They hold only a stream
+/// permit once admitted, so they can never consume the capacity of `CONNECTIONS`. It covers
+/// every tunnel a controller may open plus the desktop and editor streams.
+static STREAMS: Budget = Budget::new(STREAM_LIMIT);
+const STREAM_LIMIT: usize = 192;
+const _: () = assert!(STREAM_LIMIT > crate::remote_network::TUNNEL_LIMIT);
+
+/// Moves a connection from the management budget to the stream budget, releasing its
+/// management permit only after a stream permit is held.
+fn admit_stream(
+    connection: &mut Option<Permit>,
+    streams: &'static Budget,
+) -> Result<Permit, String> {
+    let stream = streams.acquire().ok_or(
+        "This computer has too many active Silo streams. Close an unused port, desktop, or editor connection and retry.",
+    )?;
+    connection.take();
+    Ok(stream)
 }
 
 #[cfg(test)]
