@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 /// One disposable runtime home with its own metadata and, for built-in VMs, the published
 /// ChatGPT folder registered for this thread.
 pub(crate) struct Fixture {
-    pub(crate) directory: tempfile::TempDir,
+    directory: Option<tempfile::TempDir>,
     pub(crate) paths: RuntimePaths,
     names: Vec<String>,
 }
@@ -56,7 +56,7 @@ impl Fixture {
         std::fs::create_dir_all(&paths.home).unwrap();
         std::fs::create_dir_all(&paths.volumes).unwrap();
         Self {
-            directory,
+            directory: Some(directory),
             paths,
             names: Vec::new(),
         }
@@ -164,6 +164,11 @@ impl Drop for Fixture {
         }
         crate::computer_use::set_test_published_dir(None);
         crate::chatgpt_app::set_test_cache(None);
+        // `SILO_LIVE_KEEP=1` leaves the (stopped) home behind for inspection after a failure.
+        if std::env::var_os("SILO_LIVE_KEEP").is_some() {
+            eprintln!("kept {}", self.paths.home.display());
+            std::mem::forget(self.directory.take());
+        }
     }
 }
 

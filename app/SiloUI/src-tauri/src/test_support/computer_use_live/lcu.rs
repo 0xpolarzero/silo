@@ -149,6 +149,20 @@ fn live_lcu_drives_the_desktop_without_a_model() {
     assert!(mounts.contains(" ro,"), "{mounts}");
     assert!(mounts.contains("Read-only file system"), "{mounts}");
 
+    // Accessibility is on without any app asking: the system default and the poller that
+    // makes Chromium and Electron expose their trees. No browser ships in the image.
+    let accessibility = fixture.exec_status(
+        name,
+        "grep -rh toolkit-accessibility /etc/dconf; pgrep -fc 'silo-accessibility'; \
+         which firefox chromium chromium-browser google-chrome || echo no-browser-installed",
+    );
+    eprintln!("accessibility: {accessibility}");
+    assert!(
+        accessibility.contains("toolkit-accessibility=true"),
+        "{accessibility}"
+    );
+    assert!(!accessibility.contains("\n0\n"), "{accessibility}");
+
     // LCU's server in its default configuration keeps the node_repl sandbox on, which
     // is what Claude Code and Codex leave on too. Reported, not asserted: see the
     // computer-use plan for the finding.
