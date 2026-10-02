@@ -2399,7 +2399,11 @@ fn read_callback_request(reader: &mut impl Read) -> Option<String> {
     let mut chunk = [0; 1024];
     while bytes.len() < 8192 && Instant::now() < deadline {
         let remaining = (8192 - bytes.len()).min(chunk.len());
-        let length = reader.read(&mut chunk[..remaining]).ok()?;
+        let length = match reader.read(&mut chunk[..remaining]) {
+            Ok(length) => length,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
         if length == 0 {
             return None;
         }
@@ -4596,6 +4600,36 @@ mod tests {
             assert!(callback(request, "right").is_err());
         }
     }
+    #[test]
+    fn callback_retries_interrupted_reads_without_losing_partial_headers() {
+        struct Interrupted<'a> {
+            bytes: &'a [u8],
+            interrupt: bool,
+        }
+        impl Read for Interrupted<'_> {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                self.interrupt = !self.interrupt;
+                if self.interrupt {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let length = self.bytes.len().min(target.len()).min(3);
+                target[..length].copy_from_slice(&self.bytes[..length]);
+                self.bytes = &self.bytes[length..];
+                Ok(length)
+            }
+        }
+        let request =
+            b"GET /github/callback?state=right&code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let mut reader = Interrupted {
+            bytes: request,
+            interrupt: false,
+        };
+        assert_eq!(
+            read_callback_request(&mut reader).as_deref(),
+            Some(std::str::from_utf8(request).unwrap())
+        );
+    }
+
     #[test]
     fn callback_requires_complete_bounded_headers_across_fragments() {
         let _test_state = crate::test_support::global_state();
