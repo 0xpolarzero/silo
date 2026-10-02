@@ -93,10 +93,18 @@ fn load(app_data: &Path) -> Saved {
         return Saved::Unreadable;
     };
     match OffsetDateTime::parse(&record.started_at, &Rfc3339) {
-        Ok(started) if record.version == VERSION => Saved::Valid {
-            started,
-            acknowledged: record.notice_acknowledged,
-        },
+        Ok(started)
+            if record.version == VERSION
+                && started
+                    .checked_add(RETENTION)
+                    .and_then(|deadline| deadline.checked_to_offset(UtcOffset::UTC))
+                    .is_some() =>
+        {
+            Saved::Valid {
+                started,
+                acknowledged: record.notice_acknowledged,
+            }
+        }
         _ => Saved::Unreadable,
     }
 }
@@ -601,6 +609,7 @@ mod tests {
             ("2026-12-25T00:00:00Z", "2027-01-08T00:00:00Z"),
             ("2028-02-20T12:00:00Z", "2028-03-05T12:00:00Z"),
             ("2027-02-20T12:00:00Z", "2027-03-06T12:00:00Z"),
+            ("9999-12-17T23:59:59Z", "9999-12-31T23:59:59Z"),
             // A local start is stored and compared as the same instant in UTC.
             ("2026-10-01T23:30:00-07:00", "2026-10-16T06:30:00Z"),
         ] {
@@ -618,6 +627,28 @@ mod tests {
         assert!(is_due(start, at("2027-01-01T00:00:00Z")));
         // A clock set back never makes it due.
         assert!(!is_due(start, at("2026-09-01T00:00:00Z")));
+    }
+
+    #[test]
+    fn an_overflowing_retention_date_keeps_the_backup_and_saved_record() {
+        for started in ["9999-12-31T23:59:59Z", "9999-12-17T23:59:59-23:59"] {
+            let dir = complete();
+            let record =
+                format!(r#"{{"version":1,"startedAt":"{started}","noticeAcknowledged":false}}"#);
+            fs::write(dir.path().join(FILE), &record).unwrap();
+            let now = at("2026-10-01T10:00:00Z");
+            assert_eq!(
+                status(dir.path(), now).unwrap(),
+                Some(Status {
+                    delete_at: None,
+                    notice_pending: false,
+                })
+            );
+            assert!(!delete_if_due(dir.path(), None, now).unwrap());
+            acknowledge(dir.path(), now).unwrap();
+            assert!(dir.path().join("runtime").is_dir());
+            assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), record.as_bytes());
+        }
     }
 
     #[test]
