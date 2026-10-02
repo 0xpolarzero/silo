@@ -168,4 +168,16 @@ describe("Settings, General: Storage", () => {
     await act(async () => register())
     await waitFor(() => expect(screen.queryByRole("region", { name: "Storage" })).not.toBeInTheDocument())
   })
+
+  it("reports a failed backup listener and reconnects it through Retry", async () => {
+    const { backend, user } = setup({}, backend => {
+      vi.spyOn(backend, "subscribe").mockRejectedValueOnce(new Error("event registration failed"))
+    })
+    await screen.findByRole("region", { name: "Storage" })
+    expect(await screen.findByRole("alert")).toHaveTextContent("Silo could not listen for backup changes. Try again.")
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
+    await act(async () => { await backend.remove() })
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Storage" })).not.toBeInTheDocument())
+  })
 })
