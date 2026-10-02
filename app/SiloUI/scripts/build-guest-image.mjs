@@ -1,6 +1,6 @@
 import { execFileSync, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { createReadStream, createWriteStream, readFileSync } from "node:fs"
+import { createReadStream, createWriteStream, existsSync, readFileSync, realpathSync } from "node:fs"
 import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { pipeline } from "node:stream/promises"
@@ -118,7 +118,7 @@ export async function buildGuestImage(architecture) {
   console.log(`Built ${imageReference}: ${manifest.archiveBytes} compressed bytes, config ${manifest.imageDigest}`)
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (process.argv[2] === "metadata") {
     // key=value lines for $GITHUB_OUTPUT.
     for (const [key, value] of Object.entries(guestImageMetadata())) console.log(`${key}=${value}`)
