@@ -3,6 +3,13 @@
 Validated against MicroSandbox 0.6.17, source commit
 [`5eca4de8bf233e57f114140f8c076ea8c96f21ab`](https://github.com/superradcompany/microsandbox/tree/5eca4de8bf233e57f114140f8c076ea8c96f21ab).
 
+This is a historical decision and verification record. Version numbers,
+Backup-page behavior and build details below describe that snapshot unless a
+section states a later date. For current runtime pins and qualification limits,
+see [runtime packaging](SiloUI-RUNTIME-PACKAGING.md) and
+[`runtime-inputs.json`](../app/SiloUI/runtime-inputs.json). The current UI uses
+per-sandbox Export and Import; see [bundled help](../app/SiloUI/docs/silo-help.html).
+
 ## Bundled runtime
 
 Silo bundles MicroSandbox, libkrunfw, Git and Git LFS. Backup compression and
