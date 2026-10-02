@@ -794,6 +794,18 @@ fn authorize_controller(
     Ok(serde_json::json!({"port":config.port,"address":config.bind_address,"user":user}))
 }
 
+fn available_port(
+    configs: &[Configuration],
+    bind_address: &str,
+    mut can_bind: impl FnMut(&str, u16) -> bool,
+) -> Option<u16> {
+    (2222..=65535).find(|candidate| {
+        !configs.iter().any(|c| c.enabled && c.port == *candidate)
+            && can_bind("127.0.0.1", *candidate)
+            && (bind_address == "127.0.0.1" || can_bind(bind_address, *candidate))
+    })
+}
+
 fn save_with(
     paths: &RuntimePaths,
     target: Target<'_>,
@@ -874,12 +886,10 @@ fn save_with(
             .any(|m| m.is_vm() && m.name() == c.workspace && m.id() == c.machine_id)
     });
     if enabled && port == 2222 && !configs.iter().any(|c| c.machine_id == machine.id()) {
-        config.port = (2222..=65535)
-            .find(|candidate| {
-                !configs.iter().any(|c| c.enabled && c.port == *candidate)
-                    && std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, *candidate)).is_ok()
-            })
-            .ok_or("No SSH port is available.")?;
+        config.port = available_port(&configs, &config.bind_address, |address, port| {
+            std::net::TcpListener::bind((address, port)).is_ok()
+        })
+        .ok_or("No SSH port is available.")?;
     }
     if enabled
         && configs
@@ -1414,6 +1424,24 @@ sys.stdin.buffer.read()
             );
         }
         assert_eq!(read(&p).unwrap()[0].keys, keys);
+    }
+
+    #[test]
+    fn initial_port_skips_an_occupied_network_binding() {
+        assert_eq!(
+            available_port(&[], "192.0.2.1", |address, port| {
+                address != "192.0.2.1" || port != 2222
+            }),
+            Some(2223)
+        );
+        let mut reserved = config();
+        reserved.port = 2223;
+        assert_eq!(
+            available_port(&[reserved], "192.0.2.1", |address, port| {
+                address != "192.0.2.1" || port != 2222
+            }),
+            Some(2224)
+        );
     }
 
     #[test]
