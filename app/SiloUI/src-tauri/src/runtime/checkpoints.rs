@@ -858,7 +858,7 @@ fn is_checkpoint_native_id(id: &str) -> bool {
 /// Resolve a stored checkpoint into the MicroSandbox lineage selector a portable
 /// export needs. The checkpoint is addressed by its public Silo id in this
 /// workspace's record; the returned member is MicroSandbox's immutable name.
-/// Returns `(snapshot_group, native_member, scope, display_name)`.
+/// Reads `(snapshot_group, native_member, scope, display_name)` without changing history.
 pub(crate) fn export_source(
     paths: &RuntimePaths,
     workspace_id: &str,
@@ -886,11 +886,23 @@ pub(crate) fn export_source(
         .find(|checkpoint| checkpoint.id == checkpoint_id)
         .ok_or_else(|| RuntimeError::Invalid("The selected checkpoint no longer exists.".into()))?
         .clone();
-    // Resolve (and migrate, for original-format records) the immutable native
-    // lineage group that holds this checkpoint's member.
-    let snapshot_group = ensure_snapshot_group(paths, workspace_id, machine.name())?;
+    let snapshot_group = record
+        .snapshot_group
+        .as_deref()
+        .or_else(|| {
+            record
+                .pending_checkpoint_restore
+                .as_ref()
+                .map(|pending| pending.source_workspace.as_str())
+        })
+        .unwrap_or(machine.name());
+    if !valid_snapshot_group(snapshot_group) {
+        return Err(error(
+            "Silo could not identify this sandbox's checkpoints. No checkpoint action was started. Refresh its history and retry.",
+        ));
+    }
     Ok((
-        snapshot_group,
+        snapshot_group.to_owned(),
         checkpoint.native_id().to_owned(),
         checkpoint.scope.clone(),
         checkpoint.name.clone(),
@@ -3153,6 +3165,70 @@ mod tests {
         );
         // A bare word that is neither a backup member nor a checkpoint id is rejected.
         assert!(import_pending_restore(&paths, ID, group, "imported-member").is_err());
+    }
+
+    #[test]
+    fn export_preflight_does_not_migrate_lineage_while_checkpoint_work_holds_gate() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(
+            &paths.metadata,
+            &MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine()],
+            },
+        )
+        .unwrap();
+        let checkpoint_id = "c000000000000000000000000000001";
+        let mut record = Record::default();
+        record.checkpoints.push(Checkpoint {
+            id: checkpoint_id.into(),
+            native_id: None,
+            name: "Legacy milestone".into(),
+            created_at: 1,
+            scope: "disk".into(),
+            reason: "manual".into(),
+        });
+        save(&paths, ID, &record).unwrap();
+        let before = fs::read(path(&paths, ID)).unwrap();
+        let checkpoint_guard = super::super::OPERATIONS
+            .kind(super::super::operation_gate::OperationKind::CheckpointCapture)
+            .vm(ID, "dev", "Creating checkpoint")
+            .unwrap();
+        let (result, during_preflight) = std::thread::scope(|scope| {
+            let (send, receive) = std::sync::mpsc::channel();
+            let preflight_paths = &paths;
+            let worker = scope.spawn(move || {
+                send.send(export_source(preflight_paths, ID, checkpoint_id))
+                    .unwrap();
+            });
+            let result = receive.recv_timeout(Duration::from_secs(5));
+            let during_preflight = fs::read(path(&paths, ID)).unwrap();
+            drop(checkpoint_guard);
+            worker.join().unwrap();
+            (result, during_preflight)
+        });
+        let (group, member, scope, name) = result.unwrap().unwrap();
+        assert_eq!(group, "dev");
+        assert_eq!(member, checkpoint_id);
+        assert_eq!(scope, "disk");
+        assert_eq!(name, "Legacy milestone");
+        assert!(
+            during_preflight == before,
+            "Export preflight rewrote checkpoint history while checkpoint work held the gate."
+        );
+        assert_eq!(load(&paths, ID).unwrap().snapshot_group, None);
+
+        let _export_guard = super::super::OPERATIONS
+            .kind(super::super::operation_gate::OperationKind::Export)
+            .computer("Exporting sandbox")
+            .unwrap();
+        assert_eq!(ensure_snapshot_group(&paths, ID, "dev").unwrap(), "dev");
+        assert_eq!(
+            load(&paths, ID).unwrap().snapshot_group.as_deref(),
+            Some("dev")
+        );
     }
 
     #[test]
