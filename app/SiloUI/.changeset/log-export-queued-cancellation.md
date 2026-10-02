@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Honor log export cancellation while its worker is queued, without opening a save dialog or replacing an existing export.
+Cancel log exports that have not started yet without opening a save dialog or replacing an existing export.
