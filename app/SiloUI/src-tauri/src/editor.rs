@@ -419,7 +419,18 @@ fn prepare(
 
 /// The `Include` that makes the entries in `root` visible to the user's `ssh`.
 fn include_line(root: &Path) -> Result<String, String> {
-    Ok(format!("Include {}", ssh_quote(&root.join("*.conf"))?))
+    let escaped = root
+        .to_str()
+        .ok_or(FAILED)?
+        .replace('\\', "\\\\")
+        .replace('*', "\\*")
+        .replace('?', "\\?")
+        .replace('[', "\\[")
+        .replace(']', "\\]");
+    Ok(format!(
+        "Include {}",
+        ssh_quote(&Path::new(&escaped).join("*.conf"))?
+    ))
 }
 
 fn owned(metadata: &fs::Metadata) -> bool {
@@ -1288,6 +1299,43 @@ mod tests {
                     format!("{prefix}{encoded}")
                 );
             }
+        }
+    }
+
+    #[test]
+    fn ssh_includes_keep_wildcard_characters_in_directory_names_literal() {
+        let home = tempfile::tempdir().unwrap();
+        for (index, name) in ["home[1]", "home?", "home*", "home\\folder"]
+            .into_iter()
+            .enumerate()
+        {
+            let root = home.path().join(name).join("ssh");
+            fs::create_dir_all(&root).unwrap();
+            let hostname = format!("selected-vm-{index}");
+            fs::write(
+                root.join("dev.conf"),
+                format!("Host silo-test-dev\n  HostName {hostname}\n"),
+            )
+            .unwrap();
+            let config = home.path().join("config");
+            fs::write(&config, format!("{}\n", include_line(&root).unwrap())).unwrap();
+            let output = Command::new("/usr/bin/ssh")
+                .args(["-G", "-F"])
+                .arg(&config)
+                .arg("silo-test-dev")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains(&format!("hostname {hostname}\n")),
+                "{name}: the Include must read the exact directory"
+            );
         }
     }
 
