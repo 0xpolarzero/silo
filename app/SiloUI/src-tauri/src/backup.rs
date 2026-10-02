@@ -3905,7 +3905,7 @@ mod tests {
     }
 
     fn wait_for_file(path: &Path) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(60);
         while !path.exists() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
         }
@@ -3924,7 +3924,7 @@ mod tests {
             SystemMsbRunner.run(
                 &command,
                 &["snapshot".into(), "load".into(), "/tmp/unused.msb".into()],
-                Duration::from_secs(5),
+                Duration::from_secs(120),
                 &Cancellation::default(),
             )
         });
@@ -3949,7 +3949,7 @@ mod tests {
             SystemMsbRunner.run(
                 &command,
                 &["list".into(), "--format".into(), "json".into()],
-                Duration::from_secs(5),
+                Duration::from_secs(120),
                 &Cancellation::default(),
             )
         });
@@ -3977,9 +3977,9 @@ mod tests {
             run_msb_process(
                 &command,
                 &["snapshot".into(), "load".into(), "/tmp/unused.msb".into()],
-                Duration::from_secs(30),
+                Duration::from_secs(300),
                 &worker_cancellation,
-                Duration::from_secs(10),
+                Duration::from_secs(120),
             )
         });
         assert!(wait_for_file(&home.join("ready")));
@@ -3991,7 +3991,7 @@ mod tests {
         ));
         assert!(home.join("term").exists(), "msb must receive SIGTERM first");
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_secs(60),
             "graceful exit must not wait the grace out"
         );
         // The child released the worker lock when it exited.

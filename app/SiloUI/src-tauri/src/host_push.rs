@@ -1340,8 +1340,9 @@ mod tests {
         assert_eq!(rows[0]["head"], head.trim());
     }
 
-    /// A runtime whose guest takes `delay` seconds per discovery and counts them.
-    fn slow_discovery_runtime(root: &Path, delay: &str) -> (RuntimePaths, PathBuf) {
+    /// A runtime whose guest runs the shell command `wait` during each discovery and
+    /// counts them.
+    fn slow_discovery_runtime(root: &Path, wait: &str) -> (RuntimePaths, PathBuf) {
         use std::os::unix::fs::PermissionsExt;
         let paths = RuntimePaths {
             executable: root.join("msb"),
@@ -1359,7 +1360,7 @@ mod tests {
         fs::write(
             &paths.executable,
             format!(
-                "#!/bin/sh\ncase \"$1\" in\n--silo-working-account-protocol) printf '1\\n' ;;\ninspect) printf '%s\\n' '{inspected}' ;;\nexec) echo run >>'{}'; sleep {delay}; printf '/workspace/repo\\0main\\0001 0\\0\\0{}\\0https://github.com/owner/repo.git\\0' ;;\n*) exit 2 ;;\nesac\n",
+                "#!/bin/sh\ncase \"$1\" in\n--silo-working-account-protocol) printf '1\\n' ;;\ninspect) printf '%s\\n' '{inspected}' ;;\nexec) echo run >>'{}'; {wait}; printf '/workspace/repo\\0main\\0001 0\\0\\0{}\\0https://github.com/owner/repo.git\\0' ;;\n*) exit 2 ;;\nesac\n",
                 count.display(),
                 "e".repeat(40),
             ),
@@ -1375,7 +1376,17 @@ mod tests {
     #[test]
     fn discovery_reads_each_vm_once_in_the_background_and_serves_known_rows() {
         let root = tempfile::tempdir().unwrap();
-        let (paths, count) = slow_discovery_runtime(root.path(), "1");
+        // The guest read blocks until the test opens the gate, so no step depends on timing.
+        let gate = root.path().join("gate");
+        let wait = format!("while [ ! -e '{}' ]; do sleep 0.02; done", gate.display());
+        let (paths, count) = slow_discovery_runtime(root.path(), &wait);
+        let wait_until = |what: &str, done: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while !done() {
+                assert!(Instant::now() < deadline, "{what}");
+                thread::sleep(Duration::from_millis(10));
+            }
+        };
         // Concurrent state refreshes share one guest read.
         let readers: Vec<_> = (0..3)
             .map(|_| {
@@ -1383,6 +1394,8 @@ mod tests {
                 thread::spawn(move || discover(&paths, "dev", false))
             })
             .collect();
+        wait_until("the guest read never started", &|| runs(&count) >= 1);
+        fs::write(&gate, b"open").unwrap();
         for reader in readers {
             let rows = reader.join().unwrap().unwrap();
             assert_eq!(rows[0]["repository"], "owner/repo");
@@ -1400,17 +1413,16 @@ mod tests {
             .as_mut()
             .unwrap()
             .0 = Instant::now() - Duration::from_secs(60);
-        let started = Instant::now();
+        fs::remove_file(&gate).unwrap();
         assert_eq!(discover(&paths, "dev", false).unwrap().len(), 1);
-        assert!(started.elapsed() < Duration::from_millis(500));
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while discoveries().0.lock().unwrap()[&key].running || runs(&count) < 2 {
-            assert!(
-                Instant::now() < deadline,
-                "background discovery did not finish"
-            );
-            thread::sleep(Duration::from_millis(20));
-        }
+        // The call returned while the new read is still blocked in the guest: it served
+        // the known rows instead of waiting for it.
+        wait_until("background discovery never started", &|| runs(&count) >= 2);
+        assert!(discoveries().0.lock().unwrap()[&key].running);
+        fs::write(&gate, b"open").unwrap();
+        wait_until("background discovery did not finish", &|| {
+            !discoveries().0.lock().unwrap()[&key].running
+        });
         assert_eq!(runs(&count), 2);
         discoveries().0.lock().unwrap().remove(&key);
     }
@@ -1418,7 +1430,7 @@ mod tests {
     #[test]
     fn a_slow_guest_does_not_stall_state_refreshes() {
         let root = tempfile::tempdir().unwrap();
-        let (paths, count) = slow_discovery_runtime(root.path(), "6");
+        let (paths, count) = slow_discovery_runtime(root.path(), "sleep 6");
         let started = Instant::now();
         assert!(discover(&paths, "dev", false).unwrap().is_empty());
         assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
