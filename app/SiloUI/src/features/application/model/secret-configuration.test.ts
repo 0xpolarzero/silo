@@ -6,6 +6,38 @@ import { secretConfiguration, type SecretDraft } from "./secret-configuration"
 const draft: SecretDraft = { name: "SERVICE_TOKEN", value: "fixture-token", workspaces: ["dev"], domains: "api.example.test", allowAnyDomain: false }
 
 describe("secret configuration", () => {
+  it.each([
+    { label: "oversized ASCII", value: "a".repeat(65537) },
+    { label: "oversized UTF-8", value: "é".repeat(32769) },
+    { label: "null-containing", value: "token\0value" },
+  ])("rejects $label values for new secrets and replacements", ({ value }) => {
+    const original = applicationSourceForScenario("running").secrets[0]
+    expect(secretConfiguration({ ...draft, value }, [], ["dev"]).errors?.value).toBeDefined()
+    expect(secretConfiguration({ ...draft, value }, [original], ["dev"], original).errors?.value).toBeDefined()
+  })
+
+  it.each([
+    { label: "ASCII", value: "a".repeat(65536) },
+    { label: "UTF-8", value: "é".repeat(32768) },
+  ])("accepts a $label value at the native UTF-8 byte limit", ({ value }) => {
+    const result = secretConfiguration({ ...draft, value }, [], ["dev"])
+    expect(result.request?.value).toHaveLength(value.length)
+  })
+
+  it.each([100, 101])("checks the native limit for %i sandbox assignments", count => {
+    const workspaces = Array.from({ length: count }, (_, index) => `vm-${index}`)
+    const result = secretConfiguration({ ...draft, workspaces }, [], workspaces)
+    if (count === 100) expect(result.request?.workspaces).toHaveLength(count)
+    else expect(result.errors?.workspaces).toBeDefined()
+  })
+
+  it.each([100, 101])("checks the native limit for %i allowed domains", count => {
+    const domains = Array.from({ length: count }, (_, index) => `api-${index}.example.test`).join(", ")
+    const result = secretConfiguration({ ...draft, domains }, [], ["dev"])
+    if (count === 100) expect(result.request?.allowedDomains).toHaveLength(count)
+    else expect(result.errors?.domains).toBeDefined()
+  })
+
   it.each(["localhost", "127.0.0.1", "*.co.uk", "*.github.io", "xn--bcher-kva.example"])("allows the host policy's supported destination %s", domains => {
     expect(secretConfiguration({ ...draft, domains }, [], ["dev"]).request?.allowedDomains).toEqual([domains])
   })
