@@ -6,11 +6,13 @@ import subprocess
 import time
 
 from selenium.webdriver.common.by import By
+from channel_names import channel_names
 
 
 def verify(browser, wait, environment, evidence):
-    identifier = environment.get("SILO_LINUX_APPLICATION_ID", "org.silo.preview")
-    product_name = "Silo" if identifier == "org.silo.preview" else "Silo Dev"
+    names = channel_names()
+    identifier = environment.get("SILO_LINUX_APPLICATION_ID", names["production"]["identifier"])
+    product_name = names["production" if identifier == names["production"]["identifier"] else "development"]["productName"]
     import gi
     gi.require_version("Gio", "2.0")
     from gi.repository import Gio, GLib

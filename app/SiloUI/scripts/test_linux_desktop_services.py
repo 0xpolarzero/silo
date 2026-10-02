@@ -1,15 +1,14 @@
 """Exercise GNOME fixture selectors without Selenium or a desktop service."""
 import ast
-import json
 from pathlib import Path
-import re
 import unittest
+
+from channel_names import channel_names
 
 
 SOURCE = Path(__file__).with_name('linux_desktop_services.py')
 VERIFY = next(node for node in ast.parse(SOURCE.read_text()).body
               if isinstance(node, ast.FunctionDef) and node.name == 'verify')
-TRAY = (SOURCE.parents[1] / 'src-tauri/src/tray.rs').read_text()
 
 
 def expression(name):
@@ -20,20 +19,16 @@ def expression(name):
 
 class DesktopServiceFixtureTests(unittest.TestCase):
     def test_open_and_quit_selectors_accept_the_native_tray_menu(self):
-        labels = re.findall(r'label: ("[^"]+")\.into\(\)', TRAY)
-        named_labels = re.findall(r'label: format!\("([^"]+)", crate::channel::current\(\)\.product_name\(\)\)', TRAY)
         menu_nodes = next(node for node in VERIFY.body
                           if isinstance(node, ast.FunctionDef) and node.name == 'menu_nodes')
-        for name in ('Silo', 'Silo Dev'):
-            with self.subTest(product_name=name):
-                native_labels = [json.loads(label) for label in labels]
-                native_labels.extend(label.replace('{}', name) for label in named_labels)
-                layout = (0, {}, [(index + 1, {'label': label}, []) for index, label in enumerate(native_labels)])
-                namespace = {'layout': layout, 'product_name': name}
-                exec(compile(ast.Module(body=[menu_nodes], type_ignores=[]), str(SOURCE), 'exec'), namespace)
-                namespace['open_item'] = eval(expression('open_item'), namespace)
-                self.assertEqual(namespace['open_item'][1]['label'], f'Open {name}')
-                self.assertEqual(eval(expression('quit_item'), namespace)[1]['label'], f'Quit {name}')
+        for channel in channel_names().values():
+            name = channel['productName']
+            layout = (0, {}, [(1, {'label': f'Open {name}'}, []),
+                              (2, {'label': f'Quit {name}'}, [])])
+            namespace = {'layout': layout, 'product_name': name}
+            exec(compile(ast.Module(body=[menu_nodes], type_ignores=[]), str(SOURCE), 'exec'), namespace)
+            self.assertEqual(eval(expression('open_item'), namespace)[0], 1)
+            self.assertEqual(eval(expression('quit_item'), namespace)[0], 2)
 
     def test_tray_title_and_health_metadata_match_each_channel(self):
         title = next(node.test for node in ast.walk(VERIFY)
@@ -47,6 +42,7 @@ class DesktopServiceFixtureTests(unittest.TestCase):
                                              'SILO_LINUX_APPLICATION_ID': identifier},
                              'Path': Path,
                              'prop': lambda *args: name, 'destination': 'fixture', 'path': '/fixture'}
+                namespace['names'] = channel_names()
                 namespace['identifier'] = eval(expression('identifier'), namespace)
                 namespace['product_name'] = eval(expression('product_name'), namespace)
                 self.assertTrue(eval(compile(ast.Expression(title), str(SOURCE), 'eval'), namespace))
