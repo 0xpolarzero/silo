@@ -620,6 +620,22 @@ pub(crate) struct HttpDownloader {
     plain_http: bool,
 }
 
+/// What an unexpected HTTP status for the pinned package means. Only a confirmed removal
+/// (404 or 410) is final; a refusal (401 or 403, typically a proxy, a filtering network
+/// or a regional block that another network does not have) and every other answer are
+/// retried with the usual backoff.
+fn refusal(code: u16) -> Error {
+    match code {
+        404 | 410 => Error::fatal(format!(
+            "OpenAI no longer serves the pinned ChatGPT app (HTTP {code})."
+        )),
+        401 | 403 => Error::retry(format!(
+            "OpenAI's server refused the ChatGPT download (HTTP {code}). A proxy, firewall or network filter may be blocking it. Silo tries again, including after you switch networks."
+        )),
+        code => Error::retry(format!("OpenAI's server answered HTTP {code}.")),
+    }
+}
+
 impl Default for HttpDownloader {
     fn default() -> Self {
         Self {
@@ -675,16 +691,7 @@ impl HttpDownloader {
                 let _ = fs::remove_file(part);
                 return Err(Error::retry("The ChatGPT download restarted."));
             }
-            code if (400..500).contains(&code) && code != 408 && code != 429 => {
-                return Err(Error::fatal(format!(
-                    "OpenAI no longer serves the pinned ChatGPT app (HTTP {code})."
-                )))
-            }
-            code => {
-                return Err(Error::retry(format!(
-                    "OpenAI's server answered HTTP {code}."
-                )))
-            }
+            code => return Err(refusal(code)),
         };
         let mut file = open_part(part, append).map_err(|_| disk())?;
         let mut written = if append { have } else { 0 };
@@ -1758,6 +1765,18 @@ pub(crate) fn ensure_published_dir(root: &Path) -> Result<PathBuf, Error> {
     fs::canonicalize(published_path(root)).map_err(|_| failed())
 }
 
+/// `ensure_published_dir` for callers that must not wait: when a download or extraction
+/// holds the storage lock the folders already exist (it prepared them first), so the
+/// published folder is only resolved.
+pub(crate) fn ensure_published_dir_nowait(root: &Path) -> Result<PathBuf, Error> {
+    let failed = || Error::retry("Silo could not prepare its ChatGPT app folder.");
+    Dir::open_root(root, true).map_err(|_| failed())?;
+    if let Some(_lock) = RootLock::try_take(root)? {
+        open_storage(root, true).map_err(|_| failed())?;
+    }
+    fs::canonicalize(published_path(root)).map_err(|_| failed())
+}
+
 impl Dir {
     /// Whether `name` does not exist (without following it).
     fn absent_entry(&self, name: &str) -> bool {
@@ -2096,6 +2115,9 @@ fn run_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
     let root = storage_root(app)?;
     let lock = Lock::bundled().map_err(|e| e.message)?;
     let arch = DebArch::host().map_err(|e| e.message)?;
+    // The folder VMs mount: prepared again here in case the start-up attempt failed.
+    // Preparation itself reports a real storage problem.
+    let _ = crate::computer_use::register_published(&root);
     if PREPARING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -2239,6 +2261,26 @@ fn to_value(status: Status) -> Result<serde_json::Value, String> {
     serde_json::to_value(status).map_err(|_| "Could not encode the ChatGPT app status.".into())
 }
 
+/// Whether an owner serves the current integration. A consent-era Silo (it still answers
+/// `chatgpt.accept` and `chatgpt.prepare`) has no `chatgpt.retry`, and its `idle` means
+/// "consent given, nothing downloaded" with nothing that would start the download, so
+/// its statuses must not be shown as if the new automatic worker produced them.
+fn owner_is_current(capabilities: &[String]) -> bool {
+    capabilities.iter().any(|name| name == "chatgpt.retry")
+}
+
+/// A remote owner's status: `unknown` for an owner that is not current, else what it
+/// reports. Capabilities that cannot be read are a real failure (offline, disconnected).
+fn owner_status(
+    capabilities: Result<Vec<String>, String>,
+    status: impl FnOnce() -> Result<serde_json::Value, String>,
+) -> Result<serde_json::Value, String> {
+    if !owner_is_current(&capabilities?) {
+        return Ok(serde_json::json!({"state": "unknown"}));
+    }
+    remote_status(status())
+}
+
 /// A remote computer's status as the UI shows it: one running a Silo without computer use
 /// has no status to report, which is `unknown`, not an error. Real failures (offline,
 /// disconnected) stay errors.
@@ -2257,12 +2299,10 @@ pub(crate) async fn chatgpt_app_status(
     computer: Option<String>,
 ) -> Result<serde_json::Value, String> {
     blocking(move || match remote_host(computer.as_deref())? {
-        Some(host) => remote_status(call_owner(
-            &app,
-            &host,
-            "chatgpt.status",
-            serde_json::json!({}),
-        )),
+        Some(host) => owner_status(
+            crate::remote::host_capabilities(&app, &host).map_err(owner_error),
+            || call_owner(&app, &host, "chatgpt.status", serde_json::json!({})),
+        ),
         None => to_value(local_status(&app)?),
     })
     .await

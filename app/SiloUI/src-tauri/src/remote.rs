@@ -983,6 +983,37 @@ pub(crate) fn call_remote(
 ) -> Result<Value, String> {
     call_remote_typed(app, host_id, method, params).map_err(|error| error.message)
 }
+/// The methods the connected computer `host_id` serves (its handshake), remembered for a
+/// minute so frequent callers (status polling) do not add a round trip each time.
+/// Failures are not remembered.
+pub(crate) fn host_capabilities(
+    app: &AppHandle,
+    host_id: &str,
+) -> Result<Vec<String>, BridgeError> {
+    static KNOWN: Mutex<Vec<(String, Instant, Vec<String>)>> = Mutex::new(Vec::new());
+    const FRESH: Duration = Duration::from_secs(60);
+    if let Some((_, _, known)) = crate::sync::lock_or_recover(&KNOWN, "remote capabilities")
+        .iter()
+        .find(|(id, at, _)| id == host_id && at.elapsed() < FRESH)
+    {
+        return Ok(known.clone());
+    }
+    let reply = call_remote_typed(app, host_id, "handshake", json!({}))?;
+    let names: Vec<String> = reply["capabilities"]
+        .as_array()
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(|name| name.as_str().map(str::to_owned))
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut known = crate::sync::lock_or_recover(&KNOWN, "remote capabilities");
+    known.retain(|(id, ..)| id != host_id);
+    known.push((host_id.to_owned(), Instant::now(), names.clone()));
+    Ok(names)
+}
+
 pub(crate) fn call_remote_typed(
     _app: &AppHandle,
     host_id: &str,

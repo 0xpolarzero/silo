@@ -318,6 +318,9 @@ fn apply_failed(id: &str, revision: u64) -> bool {
 // ---------------------------------------------------------------- mount
 
 static PUBLISHED: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// The ChatGPT storage root, remembered so the published folder can be prepared again
+/// whenever it is missing (see `register_published`).
+static STORAGE_ROOT: Mutex<Option<PathBuf>> = Mutex::new(None);
 #[cfg(test)]
 thread_local! {
     static TEST_PUBLISHED: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
@@ -326,6 +329,36 @@ thread_local! {
 /// Records the canonical published folder VMs mount (see `install`).
 fn set_published_dir(dir: PathBuf) {
     *PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()) = Some(dir);
+}
+
+/// Prepares the published folder under `root` and registers its canonical path for
+/// `mount_args`. Safe to repeat: the app start does it, every preparation attempt does it
+/// again, and `mount_args` does it when no folder is registered, so a start-up that
+/// failed (disk space, permissions) never leaves new VMs without the mount for the rest of
+/// the session once the cause is gone.
+pub(crate) fn register_published(root: &Path) -> Result<PathBuf, chatgpt_app::Error> {
+    *STORAGE_ROOT.lock().unwrap_or_else(|p| p.into_inner()) = Some(root.to_path_buf());
+    let dir = chatgpt_app::ensure_published_dir(root)?;
+    set_published_dir(dir.clone());
+    Ok(dir)
+}
+
+/// Registers the folder again from the remembered root without waiting for a download
+/// that holds the storage lock (this runs while a VM is being created).
+fn register_published_now() -> Option<PathBuf> {
+    let root = STORAGE_ROOT
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()?;
+    let dir = chatgpt_app::ensure_published_dir_nowait(&root).ok()?;
+    set_published_dir(dir.clone());
+    Some(dir)
+}
+
+#[cfg(test)]
+fn reset_published_for_test() {
+    *PUBLISHED.lock().unwrap_or_else(|p| p.into_inner()) = None;
+    *STORAGE_ROOT.lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 
 /// The canonical `<app data>/chatgpt/published` folder, once Silo prepared it.
@@ -369,6 +402,7 @@ pub(crate) fn mount_args(machine: &MachineConfiguration) -> Result<Vec<String>, 
     };
     let dir = published_dir()
         .filter(|dir| dir.is_dir())
+        .or_else(register_published_now)
         .ok_or_else(unavailable)?;
     Ok(vec!["-v".into(), mount_spec(&dir)])
 }
@@ -991,10 +1025,10 @@ pub(crate) fn install(app: &AppHandle) {
     let Ok(root) = chatgpt_app::storage_root(app) else {
         return;
     };
-    // Cheap (two directories), and a VM created right after launch needs it.
-    match chatgpt_app::ensure_published_dir(&root) {
-        Ok(dir) => set_published_dir(dir),
-        Err(error) => eprintln!("ChatGPT app folder unavailable: {}", error.message),
+    // Cheap (two directories), and a VM created right after launch needs it. A failure
+    // here is retried before every preparation attempt and when a VM needs the folder.
+    if let Err(error) = register_published(&root) {
+        eprintln!("ChatGPT app folder unavailable: {}", error.message);
     }
     // Verifying the app tree the first time reads every byte (seconds): off the main thread.
     let app = app.clone();

@@ -207,8 +207,8 @@ Backend (Rust, guest scripts) and frontend implement this together.
   download in one background worker (never two at once: an in-process slot plus
   the storage lock). A retryable failure (network, firewall, disk space) is
   retried after 30 s, 1, 2, 5, 10, 30 min, then hourly, until it succeeds or the
-  app quits; a failure retrying cannot fix (checksum mismatch, a pinned version
-  OpenAI no longer serves) stops the worker until Retry. Offline or metered
+  app quits; a failure retrying cannot fix (checksum mismatch, or HTTP 404/410 for the pinned
+  version; a 401/403 refusal by a proxy or filter is retried) stops the worker until Retry. Offline or metered
   connections only mean later attempts: nothing waits for the download, and VM
   creation, start and restore never depend on it (the mount folder exists,
   possibly empty). When the app becomes ready the worker syncs running built-in
@@ -228,8 +228,9 @@ Backend (Rust, guest scripts) and frontend implement this together.
   `computer.approval`. Removed: `chatgpt.accept`, `chatgpt.prepare` and the
   placeholder `silo-remote:<host>:<nil-uuid>` routing. An owner on an older Silo
   answers `chatgpt.retry` as unsupported and `chatgpt.status` with its own
-  consent-era states; the controller shows such a computer as `unknown`, not as
-  an error (`chatgpt_app_status` maps "unsupported" to `{"state":"unknown"}`,
+  consent-era states; the controller reads the owner's handshake capabilities
+  (cached for a minute) and shows a computer without `chatgpt.retry` as `unknown`
+  without asking its status, not as an error (`chatgpt_app_status` maps "unsupported" to `{"state":"unknown"}`,
   and the frontend maps any state it does not know to `unknown`).
 - `desktop.builtIn: boolean` in a VM's saved/reported `desktop` object marks a VM
   created from a v4 image. Silo decides it; a written value is ignored.

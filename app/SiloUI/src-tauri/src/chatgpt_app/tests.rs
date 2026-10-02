@@ -1,6 +1,7 @@
 //! Synthetic packages only: no network and no process-wide Silo state, so these
 //! run in parallel without the shared isolation guard.
 use super::*;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 enum Item<'a> {
@@ -921,5 +922,98 @@ fn skipped_maintenance_stays_pending_and_is_retried_until_it_ran() {
     assert!(
         maintenance.note(false),
         "the finished loop released its claim"
+    );
+}
+
+#[test]
+fn only_a_confirmed_removal_stops_the_automatic_retries() {
+    for code in [404, 410] {
+        let error = refusal(code);
+        assert!(!error.retryable, "{code}");
+        assert!(error.message.contains("no longer serves"), "{code}");
+    }
+    // A refusal by a proxy, a firewall or a regional filter may not repeat on another
+    // network, and any other answer is the server's trouble: all are retried.
+    for code in [401, 403, 400, 408, 429, 451, 500, 502, 503] {
+        assert!(refusal(code).retryable, "{code}");
+    }
+    let denied = refusal(403).message;
+    assert!(
+        denied.contains("HTTP 403") && denied.contains("network"),
+        "{denied}"
+    );
+    assert!(!denied.contains("no longer serves"));
+}
+
+#[test]
+fn an_access_denial_keeps_the_worker_retrying_until_another_network_works() {
+    let denials = Cell::new(0);
+    let waits = Cell::new(0);
+    let status = auto::settle(
+        || {
+            denials.set(denials.get() + 1);
+            if denials.get() < 4 {
+                refusal(403).status()
+            } else {
+                Status::Ready {
+                    path: "/chatgpt/1.2.3-arm64".into(),
+                    version: "1.2.3".into(),
+                }
+            }
+        },
+        |_| {
+            waits.set(waits.get() + 1);
+            false
+        },
+        || {},
+    );
+    assert!(matches!(status, Status::Ready { .. }));
+    assert_eq!((denials.get(), waits.get()), (4, 3));
+    // A removed package ends the worker at once.
+    let ended = auto::settle(|| refusal(404).status(), |_| panic!("no retry"), || {});
+    assert!(matches!(
+        ended,
+        Status::Failed {
+            retryable: false,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn consent_era_owners_report_unknown_not_a_status_that_never_progresses() {
+    let consent_era: Vec<String> = [
+        "handshake",
+        "chatgpt.status",
+        "chatgpt.accept",
+        "chatgpt.prepare",
+    ]
+    .map(String::from)
+    .into();
+    let current: Vec<String> = ["handshake", "chatgpt.status", "chatgpt.retry"]
+        .map(String::from)
+        .into();
+    assert!(!owner_is_current(&consent_era));
+    assert!(owner_is_current(&current));
+    // The old owner answers `idle` (consent accepted, no app): never passed through.
+    let idle = || Ok(serde_json::json!({"state": "idle"}));
+    let unreached = || -> Result<serde_json::Value, String> { panic!("not asked") };
+    assert_eq!(
+        owner_status(Ok(consent_era), unreached).unwrap(),
+        serde_json::json!({"state": "unknown"})
+    );
+    // A current owner's status passes through, including the automatic `idle`.
+    assert_eq!(
+        owner_status(Ok(current.clone()), idle).unwrap(),
+        serde_json::json!({"state": "idle"})
+    );
+    // A current owner without the status method is still `unknown`; real failures stay errors.
+    assert_eq!(
+        owner_status(Ok(current), || Err(UPDATE_OWNER.to_owned())).unwrap(),
+        serde_json::json!({"state": "unknown"})
+    );
+    assert_eq!(
+        owner_status(Err("This computer is offline.".into()), unreached).unwrap_err(),
+        "This computer is offline."
     );
 }

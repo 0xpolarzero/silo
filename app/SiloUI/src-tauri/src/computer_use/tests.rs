@@ -136,6 +136,8 @@ fn a_missing_or_unusable_shared_folder_blocks_the_mount() {
 
 #[test]
 fn a_built_in_vm_without_a_shared_folder_is_an_error_not_a_silent_omission() {
+    let _state = crate::test_support::global_state();
+    reset_published_for_test();
     set_test_published_dir(None);
     let error = mount_args(&machine(true)).unwrap_err().to_string();
     assert!(error.contains("shared ChatGPT folder"), "{error}");
@@ -1389,4 +1391,33 @@ fn an_older_launchers_success_never_clears_a_newer_failure() {
     record_apply(id, 13, true);
     assert!(!apply_failed(id, 12));
     forget_failure(id);
+}
+
+#[test]
+fn the_shared_folder_is_prepared_again_when_the_start_up_attempt_failed() {
+    let _state = crate::test_support::global_state();
+    reset_published_for_test();
+    set_test_published_dir(None);
+    let directory = tempfile::tempdir().unwrap();
+    // Start-up could not create the folders (a plain file is in the way).
+    let blocker = directory.path().join("blocked");
+    fs::write(&blocker, b"x").unwrap();
+    let root = blocker.join("chatgpt");
+    assert!(register_published(&root).is_err());
+    assert!(mount_args(&machine(true)).is_err());
+    // The cause goes away; neither a restart nor a preparation attempt has run yet:
+    // the next VM that needs the folder prepares it itself.
+    fs::remove_file(&blocker).unwrap();
+    let args = mount_args(&machine(true)).unwrap();
+    let dir = published_dir().expect("the folder is registered");
+    assert!(
+        dir.ends_with("chatgpt/published") && dir.is_dir(),
+        "{dir:?}"
+    );
+    assert_eq!(args, ["-v", &format!("{}:{GUEST_MOUNT}:ro", dir.display())]);
+    // A preparation attempt registers it as well (the worker calls this every time).
+    reset_published_for_test();
+    let dir = register_published(&directory.path().join("chatgpt")).unwrap();
+    assert_eq!(published_dir(), Some(dir));
+    reset_published_for_test();
 }
