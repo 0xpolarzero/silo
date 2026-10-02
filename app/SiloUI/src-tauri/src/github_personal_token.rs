@@ -314,7 +314,7 @@ pub async fn save_github_personal_token(
         let _update = crate::updates::operation_guard()?;
         let _network = serialize(&TOKEN_OPERATION);
         // Saving a token is an explicit retry; never leave validation blocked by earlier failures.
-        crate::github_http::reset_retries();
+        crate::github_http::reset_bearer_retries(token.trim());
         let token = validated(token.trim())?;
         SECRET.retry();
         SECRET.write(Some(token.clone()), || {
