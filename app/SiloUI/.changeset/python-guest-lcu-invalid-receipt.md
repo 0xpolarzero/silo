@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Allow desktop computer-use setup to repair an LCU receipt containing an invalid JSON value.
+Allow computer-use setup to repair invalid saved setup status instead of failing to load it.

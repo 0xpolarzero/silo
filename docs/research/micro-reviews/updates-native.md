@@ -69,3 +69,15 @@ Closed-progress fix verification: the rejecting fixture failed before the change
 - **Status:** Fixed.
 
 Repaired-preference verification: the rejecting test failed before the fix, then all 9 extracted helper/scheduler tests passed. Formatting, typecheck, lint, and diff whitespace checks passed. Clearing is restricted to the identified preference read error in the error phase, so a preference save cannot reopen admission during an in-flight check or erase a download/install failure.
+
+## Final verification and fold record
+
+- UPDATES-NATIVE-1: fixed and folded, `6082fb69`.
+- UPDATES-NATIVE-2: skipped for the ownership/recovery design and Linux qualification described above.
+- UPDATES-NATIVE-3: fixed and folded, `f0512950`.
+- UPDATES-NATIVE-4: fixed and folded, `a0af439c`.
+- UPDATES-NATIVE-5: fixed and folded, `366470f7`.
+- 9 extracted preference/scheduler tests and 8 complete Debian module tests passed; every added behavior regression failed before its fix. These used cached dependencies, temporary files, and synthetic subprocesses.
+- Typecheck, lint, Rust formatting, and diff whitespace checks passed before each fix commit.
+- Full native Cargo validation remained blocked on the shared artifact lock and was stopped after checking the exact executable command, user, and worktree. It did not compile or run tests. Earlier superseded queued requests were also stopped. No other agent process was interrupted.
+- No application, real VM, package manager, production data, or credentials were exercised. The final scope pass confirmed the remaining post-go-ahead stall finding and found no further evidence-backed defect.

@@ -195,6 +195,7 @@ describe("remote computer refresh", () => {
   })
 
   it("does not let a read that started before a remote edit revert it (H-06)", async () => {
+    vi.useFakeTimers()
     const stale = deferred<unknown>()
     let reads = 0
     let current = remoteSource({ purpose: "Before" })
@@ -208,16 +209,17 @@ describe("remote computer refresh", () => {
     try {
       await store.initialize()
       void store.refresh()
-      await vi.waitFor(() => expect(reads).toBe(2))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reads).toBe(2)
       const machine = { ...source.workspaces[0].machine, id: remoteTarget("office") }
       await store.applicationActions.saveRemoteMachine!("office", machine, machine)
       expect(purpose()).toBe("Edited")
       const shown: Array<string | undefined> = []
       const unsubscribe = store.subscribe(() => shown.push(purpose()))
       stale.resolve(remoteSource({ purpose: "Before" }))
-      // The overlapping read is dropped and the computer is read again.
-      await vi.waitFor(() => expect(reads).toBeGreaterThanOrEqual(3))
-      await new Promise(resolve => setTimeout(resolve, 10))
+      // Drain the overlapping read and its follow-up before checking every published value.
+      await vi.advanceTimersByTimeAsync(0)
+      expect(reads).toBeGreaterThanOrEqual(3)
       unsubscribe()
       expect(shown).not.toContain("Before")
       expect(purpose()).toBe("Edited")
@@ -225,6 +227,7 @@ describe("remote computer refresh", () => {
   })
 
   it("does not bring back a computer removed while the list was being read (H-06)", async () => {
+    vi.useFakeTimers()
     const list = deferred<unknown>()
     let lists = 0
     let hosts = [office]
@@ -237,12 +240,13 @@ describe("remote computer refresh", () => {
     try {
       await store.initialize()
       const refreshing = store.refresh()
-      await vi.waitFor(() => expect(lists).toBe(2))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(lists).toBe(2)
       await store.applicationActions.removeComputer!("office")
       list.resolve([office])
       await refreshing
-      await vi.waitFor(() => expect(lists).toBe(3))
-      await new Promise(resolve => setTimeout(resolve, 0))
+      await vi.advanceTimersByTimeAsync(0)
+      expect(lists).toBe(3)
       expect(store.getSnapshot().source?.remoteComputers).toEqual([])
       expect(store.getSnapshot().source?.workspaces.some(workspace => workspace.computer)).toBe(false)
     } finally { store.dispose() }
@@ -522,6 +526,43 @@ describe("overlapping lifecycle responses", () => {
       restarted.resolve(result("running", "running"))
       await vi.waitFor(() => { expect(row(b)?.state).toBe("running"); expect(row(b)?.lifecycleAction).toBeUndefined() })
       expect(row(a)?.state).toBe("stopped")
+    } finally { store.dispose() }
+  })
+})
+
+describe("checkpoint response ordering", () => {
+  it.each(["capture", "fork"] as const)("preserves a newer sibling lifecycle result after a late %s response", async kind => {
+    const initial = structuredClone(source)
+    initial.workspaces = initial.workspaces.filter(row => row.machine.kind === "vm").slice(0, 2).map(row => ({ ...row, state: "running" }))
+    const [a, b] = initial.workspaces
+    const pending = deferred<unknown>()
+    let reads = 0
+    const newer = { ...initial, workspaces: [{ ...a }, { ...b, state: "stopped" }] }
+    const mock = bridge(command => {
+      if (command === "read_application_state") return ++reads === 1 ? initial : new Promise(() => {})
+      if (command === "workspace_action") return newer
+      if (command === "create_checkpoint" || command === "fork_checkpoint") return pending.promise
+    })
+    const store = createProductionSource(mock.native)
+    const row = (id: string) => store.getSnapshot().source?.workspaces.find(item => item.machine.id === id)
+    try {
+      await store.initialize()
+      const checkpoint = { id: "captured", name: "Saved", createdAt: "2026-10-02T12:00:00Z", scope: "full" as const, reason: "manual" as const }
+      const action = kind === "capture" ? store.applicationActions.createCheckpoint!(a.machine.name, "Saved")
+        : store.applicationActions.forkCheckpoint!(a.machine.name, "point-1", "new-fork")
+      store.applicationActions.stopWorkspace(b.machine.name)
+      await vi.waitFor(() => {
+        expect(row(b.machine.id)?.state).toBe("stopped")
+        expect(row(b.machine.id)?.lifecycleAction).toBeUndefined()
+      })
+      const older = structuredClone(initial)
+      older.workspaces[0].checkpoints = [checkpoint]
+      if (kind === "fork") older.workspaces.push({ ...a, machine: { ...a.machine, id: "fork-id", name: "new-fork" }, state: "stopped" })
+      pending.resolve(older)
+      await action
+      expect(row(b.machine.id)?.state).toBe("stopped")
+      expect(row(a.machine.id)?.checkpoints).toEqual([checkpoint])
+      if (kind === "fork") expect(row("fork-id")).toMatchObject({ state: "stopped", machine: { name: "new-fork" } })
     } finally { store.dispose() }
   })
 })

@@ -33,3 +33,22 @@ and committed tests verbatim; its disposable harness and failing/passing output
 are under `src-tauri/target/verification/unbounded-io/`. Native Cargo tests use
 only the release guide's synthetic GitHub values and the shared target. Rust
 format, TypeScript, lint and diff checks are run before folding each change.
+
+## Computer-use settings and observations
+
+**Trigger:** A local policy or saved guest-observation file contains more than
+1 MiB, including otherwise valid JSON followed by whitespace.
+
+**Evidence:** Both `read_policy_checked` and `read_json` used unbounded `fs::read`.
+The two regressions accepted oversized policy/observation fixtures before the
+fix. They now accept exactly 1 MiB and reject one additional byte.
+
+**Correction:** Both readers use one bounded file helper, consuming at most
+1 MiB plus one byte before parsing. An oversized policy retains the existing
+unreadable, unknown-choice state; an oversized observation is omitted without
+changing the policy. Both saved files remain untouched.
+
+**Checks:** Source-extracted Rust regressions passed 2/2. The harness uses the
+production data types and reader/settings functions verbatim, with a disposable
+runtime-path fixture. Rust formatting, typecheck, lint and diff checks passed.
+The full native test command remains queued on the shared Cargo artifact lock.

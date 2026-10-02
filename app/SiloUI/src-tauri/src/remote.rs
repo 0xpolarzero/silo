@@ -261,10 +261,20 @@ fn record_start_error(error: Option<String>) {
     }
     *crate::sync::lock_or_recover(&START_ERROR, "remote management status") = error;
 }
+async fn settings_io<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| "Remote management settings are unavailable.".to_string())?
+}
 #[tauri::command]
-pub fn remote_management_status() -> Result<ManagementStatus, String> {
-    let _guard = config_lock();
-    Ok(status(&read_config()?))
+pub async fn remote_management_status() -> Result<ManagementStatus, String> {
+    settings_io(|| {
+        let _guard = config_lock();
+        Ok(status(&read_config()?))
+    })
+    .await
 }
 /// The executable the bridge link should name: the AppImage file itself when running
 /// from one (its mount point changes every launch), else this executable.
@@ -303,9 +313,20 @@ fn link_bridge(home: &Path, target: &Path) -> Result<(), String> {
                     || previous.file_name() == target.file_name()
                     || std::env::current_exe()
                         .is_ok_and(|current| previous.file_name() == current.file_name())
-                    || previous
+                    || (previous
                         .extension()
                         .is_some_and(|extension| extension == "AppImage")
+                        && previous
+                            .file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .is_some_and(|stem| {
+                                let product = crate::channel::current().product_name();
+                                [product.to_owned(), product.replace(' ', "_")].iter().any(
+                                    |product| {
+                                        stem == product || stem.starts_with(&format!("{product}_"))
+                                    },
+                                )
+                            }))
             });
         if !ours {
             return Err(format!("~/.local/bin/{name} already exists. Choose a different name for that file before enabling remote management."));
@@ -327,28 +348,37 @@ fn link_bridge_for_this_account() -> Result<(), String> {
     link_bridge(&home, &bridge_target()?)
 }
 #[tauri::command]
-pub fn set_remote_management(app: AppHandle, enabled: bool) -> Result<ManagementStatus, String> {
-    let _guard = config_lock();
-    if enabled {
-        link_bridge_for_this_account()?;
-    }
-    let mut config = read_config()?;
-    config.enabled = enabled;
-    save_config(&config)?;
-    REMOTE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
-    if enabled {
-        // The link is in place now; a launch that could not serve remote management tries again.
-        let listening = if LISTENING.load(std::sync::atomic::Ordering::Acquire) {
-            Ok(())
-        } else {
-            listen(app)
-        };
-        record_start_error(listening.err());
-    }
-    Ok(status(&config))
+pub async fn set_remote_management(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<ManagementStatus, String> {
+    settings_io(move || {
+        let _guard = config_lock();
+        if enabled {
+            link_bridge_for_this_account()?;
+        }
+        let mut config = read_config()?;
+        config.enabled = enabled;
+        save_config(&config)?;
+        REMOTE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
+        if enabled {
+            // The link is in place now; a launch that could not serve remote management tries again.
+            let listening = if LISTENING.load(std::sync::atomic::Ordering::Acquire) {
+                Ok(())
+            } else {
+                listen(app)
+            };
+            record_start_error(listening.err());
+        }
+        Ok(status(&config))
+    })
+    .await
 }
 #[tauri::command]
-pub fn remote_host_list() -> Result<Vec<RemoteHost>, String> {
+pub async fn remote_host_list() -> Result<Vec<RemoteHost>, String> {
+    settings_io(saved_hosts).await
+}
+pub(crate) fn saved_hosts() -> Result<Vec<RemoteHost>, String> {
     let _guard = config_lock();
     Ok(read_config()?.hosts)
 }
@@ -799,7 +829,19 @@ fn restrict_authorized_keys(contents: &str, blob: &str) -> Option<String> {
 }
 fn restrict_authorized_keys_file(path: &std::path::Path, public: &str) -> Result<bool, String> {
     let blob = silo_key_blob(public)?;
-    rewrite_authorized_keys_file(path, |contents| restrict_authorized_keys(contents, blob))
+    let changed =
+        rewrite_authorized_keys_file(path, |contents| restrict_authorized_keys(contents, blob))?;
+    if !changed {
+        let contents = match fs::read_to_string(path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(error) => return Err(error.to_string()),
+        };
+        if restrict_authorized_keys(&contents, blob).is_some() {
+            return Err("The SSH key file is externally managed and still contains an unrestricted Silo key.".into());
+        }
+    }
+    Ok(changed)
 }
 static AUTHORIZED_KEYS_LOCK: Mutex<()> = Mutex::new(());
 fn rewrite_authorized_keys_file(
@@ -836,9 +878,13 @@ fn rewrite_authorized_keys_file(
     Ok(true)
 }
 /// Owner side: restrict the calling controller's previously installed Silo key.
-fn restrict_installed_key(public: &str) -> Result<bool, String> {
-    let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
-    restrict_authorized_keys_file(&PathBuf::from(home).join(".ssh/authorized_keys"), public)
+fn handshake_key_in(path: &Path, public: Option<&str>) -> Result<Value, BridgeError> {
+    if let Some(public) = public {
+        restrict_authorized_keys_file(path, public).map_err(|error| {
+            BridgeError::from(format!("Silo could not restrict its SSH key on the other computer. Repair ~/.ssh/authorized_keys there and reconnect. {error}"))
+        })?;
+    }
+    Ok(Value::Null)
 }
 fn silo_public_key() -> Option<String> {
     let public = fs::read_to_string(directory().ok()?.join("id_ed25519.pub")).ok()?;
@@ -1801,12 +1847,14 @@ fn execute(app: &AppHandle, method: &str, params: &Value) -> Result<Value, Bridg
     match method {
         "handshake" => {
             // Earlier versions installed Silo's key without restrictions; tighten it over this session.
-            if let Some(public) = params["sshKey"].as_str() {
-                if let Err(error) = restrict_installed_key(public) {
-                    eprintln!("Could not restrict Silo's SSH key: {error}");
-                }
-            }
-            Ok(Value::Null)
+            let Some(public) = params["sshKey"].as_str() else {
+                return Ok(Value::Null);
+            };
+            let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
+            handshake_key_in(
+                &PathBuf::from(home).join(".ssh/authorized_keys"),
+                Some(public),
+            )
         }
         _ if method.starts_with("runtime.") => {
             crate::runtime::remote_ops::dispatch(app, method, params.clone())
@@ -2380,15 +2428,37 @@ mod setup_tests {
         assert!(authorize_command("$(whoami)").is_err());
     }
     #[test]
-    fn commands_that_launch_processes_stay_off_the_main_thread() {
+    fn settings_commands_keep_the_executor_responsive_while_waiting_for_config() {
         let _test_state = crate::test_support::global_state();
-        // Tauri runs a synchronous command on the main thread; only quick settings reads
-        // and writes may be synchronous here.
-        let quick = [
-            "remote_management_status",
-            "set_remote_management",
-            "remote_host_list",
-        ];
+        let (held, acquired) = std::sync::mpsc::channel();
+        let (heartbeat, observed) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = config_lock();
+            held.send(()).unwrap();
+            observed.recv_timeout(Duration::from_secs(2)).is_ok()
+        });
+        acquired.recv().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (result, ()) = runtime.block_on(async {
+            tokio::join!(biased; settings_io(|| {
+                let _guard = config_lock();
+                Ok(())
+            }), async {
+                let _ = heartbeat.send(());
+            })
+        });
+        result.unwrap();
+        assert!(
+            holder.join().unwrap(),
+            "waiting for remote settings blocked the executor"
+        );
+    }
+    #[test]
+    fn commands_that_access_remote_settings_stay_off_the_main_thread() {
+        let _test_state = crate::test_support::global_state();
+        // Remote commands read durable settings or wait on the configuration lock.
         let source = include_str!("remote.rs");
         let mut commands = 0;
         for block in source.split("#[tauri::command]").skip(1) {
@@ -2404,10 +2474,7 @@ mod setup_tests {
                 .next()
                 .unwrap();
             commands += 1;
-            assert!(
-                signature.contains("async fn") || quick.contains(&name),
-                "{name} must be async"
-            );
+            assert!(signature.contains("async fn"), "{name} must be async");
         }
         assert!(commands >= 10);
     }
@@ -2578,6 +2645,41 @@ mod authorized_key_tests {
     const BLOB: &str = "AAAAC3NzaC1lZDI1NTE5AAAAIHk8t0ahm+m4Qf9wTQ2xV1Vv2Qb2QeQ3bE8m0l2a6y5Z";
 
     #[test]
+    fn handshake_reports_failed_key_upgrade_and_preserves_managed_files() {
+        let _test_state = crate::test_support::global_state();
+        let home = tempfile::tempdir().unwrap();
+        let public = format!("ssh-ed25519 {BLOB} {}", silo_key_comment());
+        let path = home.path().join("authorized_keys");
+        let original = format!("{public}\nssh-ed25519 AAAApersonal personal\n");
+        fs::write(&path, &original).unwrap();
+        let link = home.path().join("managed");
+        symlink(&path, &link).unwrap();
+        let error = handshake_key_in(&link, Some(&public)).unwrap_err();
+        assert!(error.message.contains("Repair ~/.ssh/authorized_keys"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o500)).unwrap();
+        let result = handshake_key_in(&path, Some(&public));
+        fs::set_permissions(home.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result
+            .unwrap_err()
+            .message
+            .contains("Repair ~/.ssh/authorized_keys"));
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(handshake_key_in(&path, Some(&public)).is_ok());
+        assert!(fs::read_to_string(&path)
+            .unwrap()
+            .starts_with(&authorized_key_options()));
+        assert!(handshake_key_in(&link, Some(&public)).is_ok());
+        assert!(handshake_key_in(&link, Some("ssh-ed25519 AAAAabsent personal")).is_ok());
+        assert!(handshake_key_in(&link, None).is_ok());
+    }
+
+    #[test]
     fn installed_line_only_allows_the_bridge_and_loopback_tunnels() {
         let _test_state = crate::test_support::global_state();
         let line =
@@ -2691,7 +2793,7 @@ mod authorized_key_tests {
         fs::write(&target, format!("{public}\n")).unwrap();
         let link = home.path().join("linked");
         symlink(&target, &link).unwrap();
-        assert!(!restrict_authorized_keys_file(&link, &public).unwrap());
+        assert!(restrict_authorized_keys_file(&link, &public).is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), format!("{public}\n"));
         assert!(!restrict_authorized_keys_file(&home.path().join("missing"), &public).unwrap());
     }
@@ -2918,6 +3020,25 @@ mod bridge_link_tests {
             .unwrap_err()
             .contains("already exists"));
         assert_eq!(fs::read(&link).unwrap(), b"mine");
+    }
+
+    #[test]
+    fn unrelated_appimage_bridge_link_is_preserved() {
+        let _test_state = crate::test_support::global_state();
+        let home = tempfile::tempdir().unwrap();
+        let apps = tempfile::tempdir().unwrap();
+        let other = apps.path().join("other-tool.AppImage");
+        let target = apps.path().join("Silo_0.6.0_amd64.AppImage");
+        executable(&other);
+        executable(&target);
+        let link = home
+            .path()
+            .join(".local/bin")
+            .join(crate::channel::current().remote_bridge_name());
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(&other, &link).unwrap();
+        assert!(link_bridge(home.path(), &target).is_err());
+        assert_eq!(fs::read_link(&link).unwrap(), other);
     }
 
     #[test]

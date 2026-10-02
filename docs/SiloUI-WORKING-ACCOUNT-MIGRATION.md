@@ -27,6 +27,18 @@ account in NAME". The setup:
    account;
 6. writes the record last.
 
+Generated sudoers, desktop service, configuration claim and account record files
+are published individually through temporary files in their destination
+directories. Setup applies each file's final permissions, flushes and fsyncs
+its bytes, replaces the destination, then fsyncs the directory. This uses
+Python's [standard file operations](https://docs.python.org/3/library/os.html#os.fsync)
+and the existing guest patcher's publication sequence; Linux
+[fsync](https://man7.org/linux/man-pages/man2/fsync.2.html) requires the separate
+directory sync to persist the renamed entry. It does not make account migration
+one transaction. A subprocess fixture with a real file-size limit proves that
+an interrupted service write preserves the installed service and a fresh
+process can retry setup. Separate tests inject file and directory sync errors.
+
 A new VM takes the same path with an empty `/root`. Each step checks what an
 earlier run already did. Start retries interrupted setup; home conflicts require
 resolution first. If setup fails, Silo stops the VM and shows the reason. A record

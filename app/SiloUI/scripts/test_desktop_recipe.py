@@ -23,7 +23,15 @@ args = sys.argv[1:]
 root = pathlib.Path(os.environ['RECIPE_ROOT'])
 with (root / 'calls.jsonl').open('a') as output:
     output.write(json.dumps([name, args]) + '\n')
-if name == 'dconf':
+if name == 'cat':
+    if args and os.environ.get('V4_PACKAGE_READ_FAIL_ONCE') and not (root / 'package-read-failed').exists():
+        (root / 'package-read-failed').touch()
+        sys.exit(23)
+    for argument in args:
+        sys.stdout.write(pathlib.Path(argument).read_text())
+    if not args:
+        sys.stdout.write(sys.stdin.read())
+elif name == 'dconf':
     if args == ['update']:
         database = root / 'etc/dconf/db/local'
         database.parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +132,7 @@ class DesktopRecipe(unittest.TestCase):
         binaries.mkdir()
         stub = '#!' + sys.executable + '\n' + STUB
         for name in ('id', 'dpkg', 'dpkg-query', 'apt-get', 'python3', 'install',
-                     'curl', 'sha256sum', 'usermod', 'chown', 'flock', 'df', 'dconf'):
+                     'curl', 'sha256sum', 'usermod', 'chown', 'flock', 'df', 'dconf', 'cat'):
             path = binaries / name
             path.write_text(stub)
             path.chmod(0o755)
@@ -420,6 +428,10 @@ class PreinstalledImageDesktop(DesktopRecipe):
     def test_v4_missing_package_falls_back_to_the_full_install_with_a_message(self):
         stderr = self.run_fallback({'V4_MISSING_PACKAGE': 'gnome-text-editor'})
         self.assertIn('guest image package gnome-text-editor is missing', stderr)
+
+    def test_v4_unreadable_package_list_cannot_skip_package_verification(self):
+        stderr = self.run_fallback({'V4_PACKAGE_READ_FAIL_ONCE': '1'})
+        self.assertIn('desktop package list is unreadable', stderr)
 
     def test_v4_wrong_streamer_version_falls_back(self):
         stderr = self.run_fallback({'V4_SELKIES_VERSION': '1.6.2-1'})

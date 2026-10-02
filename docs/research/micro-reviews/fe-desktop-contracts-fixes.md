@@ -31,8 +31,18 @@ The initial read-only audit remains in the shared review worktree. These additio
 - **Trigger:** Dispose a notice subscription before native listener registration resolves, then deliver an event before the delayed unsubscribe function becomes available.
 - **Consequence:** The removed application view still forwards a toast. A replacement view can receive the same event through its own active subscription.
 - **Evidence:** The existing expected-failure test, converted to a normal regression, failed because the disposed handler received one notice. Cleanup already unsubscribed after late registration, but the callback did not check the disposed flag.
-- **Fix:** Check the disposed flag before parsing or forwarding an event.
+- **Fix:** Check the disposed flag before parsing or forwarding an event. Fixed and folded in `cf9a38f8`.
 - **Regression:** No callback after disposal, with the delayed native unsubscribe still executed once.
+
+## fe-desktop-contracts-4: Malformed status reads silently preserve cached authority
+
+- **Severity:** P3
+- **Location:** `app/SiloUI/src/desktop/computer-use-bridge.ts:101`.
+- **Trigger:** Read a valid ChatGPT app status, then receive a successful command response that is not a status, such as `null`.
+- **Consequence:** The cached status remains without a load error or Refresh action. The same malformed response is reported as an error only before any status has been cached.
+- **Evidence:** The new status-view regression failed because no alert existed after the second read returned `null`. The Rust remote status command returns the owner's JSON value through `owner_status` and `remote_status`, so the frontend parser owns this boundary. Unknown tagged states already map to `unknown` and remain supported.
+- **Fix:** Report every unreadable status read while retaining the last readable status.
+- **Regression:** Read Ready, return `null`, require the read error and Refresh action, then return Idle and require the error to clear.
 
 ## Rejected menu-lifetime hypothesis
 

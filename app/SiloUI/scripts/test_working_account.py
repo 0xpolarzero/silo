@@ -1,5 +1,9 @@
 import importlib.util
+import json
 import os
+import stat
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -29,6 +33,105 @@ class WorkingAccountTests(unittest.TestCase):
         patched = mock.patch.object(guest.carried, '__defaults__', (self.defaults,))
         patched.start()
         self.addCleanup(patched.stop)
+
+    def test_interrupted_desktop_service_write_preserves_installed_service(self):
+        service = self.root / 'usr/local/bin/silo-desktop'
+        service.parent.mkdir(parents=True)
+        original = b'#!/bin/sh\n# existing service\n'
+        service.write_bytes(original)
+        service.chmod(0o755)
+        (self.root / 'etc/sudoers.d').mkdir(parents=True)
+        state = self.root / 'var/lib/silo-desktop'
+        state.mkdir(parents=True)
+        (state / 'installed.json').write_text('{"version":"1"}\n')
+        script = r'''
+import errno, importlib.util, resource, signal, sys
+from pathlib import Path
+from types import SimpleNamespace
+spec = importlib.util.spec_from_file_location('working_account', sys.argv[1])
+guest = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(guest)
+root = Path(sys.argv[2])
+def path(value):
+    value = str(value)
+    if value.startswith(('/etc/', '/usr/local/', '/var/lib/', '/root', '/home/silo-desktop')):
+        return root / value.lstrip('/')
+    return Path(value)
+guest.Path = path
+guest.HOME = root / 'home/silo'
+guest.HOME.mkdir(parents=True, exist_ok=True)
+guest.RECORD = root / 'var/lib/silo/working-account.json'
+guest.os.geteuid = lambda: 0
+guest.shutil.which = lambda _: '/fixture/tool'
+guest.run = lambda *args: ('ubuntu 24.04' if args[0] == 'sh' else
+                          '/workspace ext4' if args[0] == 'findmnt' else '')
+guest.account = lambda name: SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_dir='/home/silo') if name == 'silo' else None
+guest.group = lambda _: True
+def absent(_):
+    raise KeyError()
+guest.pwd.getpwuid = absent
+guest.grp.getgrgid = absent
+guest.copy_home = lambda *_: None
+guest.copy_shell_setup = lambda *_: None
+if sys.argv[3] == 'retry':
+    guest.set_up('#!/bin/sh\n' + '# replacement service\n' * 1024)
+else:
+    signal.signal(signal.SIGXFSZ, signal.SIG_IGN)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (1024, 1024))
+    try:
+        guest.set_up('#!/bin/sh\n' + '# replacement service\n' * 1024)
+    except OSError as error:
+        assert error.errno == errno.EFBIG, error
+    else:
+        raise AssertionError('the real oversized write must fail')
+'''
+        command = [sys.executable, '-B', '-c', script,
+                   str(HERE.parent / 'src-tauri/guest/working-account.py'), str(self.root)]
+        result = subprocess.run([*command, 'limited'], capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(service.read_bytes(), original)
+        self.assertEqual(service.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(list(service.parent.iterdir()), [service])
+        self.assertFalse((self.root / 'var/lib/silo/working-account.json').exists())
+        result = subprocess.run([*command, 'retry'], capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(service.read_text(), '#!/bin/sh\n' + '# replacement service\n' * 1024)
+        for relative, mode in [('etc/sudoers.d/silo', 0o440), ('usr/local/bin/silo-desktop', 0o755),
+                               ('var/lib/silo-desktop/configuration-managed.json', 0o600),
+                               ('var/lib/silo/working-account.json', 0o644)]:
+            self.assertEqual(stat.S_IMODE((self.root / relative).stat().st_mode), mode)
+        self.assertEqual(json.loads((self.root / 'var/lib/silo/working-account.json').read_text()), guest.POLICY)
+
+    def test_generated_file_sync_failures_are_reported_and_staging_is_removed(self):
+        path = self.root / 'generated'
+        fsync = os.fsync
+        for failing_stage in ('file', 'directory'):
+            with self.subTest(stage=failing_stage):
+                path.write_text('previous')
+                synced = []
+
+                def sync(fd):
+                    info = os.fstat(fd)
+                    stage = 'directory' if stat.S_ISDIR(info.st_mode) else 'file'
+                    synced.append(stage)
+                    if stage == 'file':
+                        self.assertEqual(path.read_text(), 'previous')
+                        self.assertEqual(stat.S_IMODE(info.st_mode), 0o755)
+                        self.assertEqual(os.pread(fd, info.st_size, 0), b'complete')
+                    else:
+                        self.assertEqual(path.read_text(), 'complete')
+                        self.assertEqual(info.st_ino, self.root.stat().st_ino)
+                    if stage == failing_stage:
+                        raise OSError('sync failed')
+                    fsync(fd)
+
+                entries = set(self.root.iterdir())
+                with mock.patch.object(guest.os, 'fsync', side_effect=sync):
+                    with self.assertRaisesRegex(OSError, 'sync failed'):
+                        guest.write_text_atomic(path, 'complete', 0o755)
+                self.assertEqual(path.read_text(), 'previous' if failing_stage == 'file' else 'complete')
+                self.assertEqual(synced, ['file'] if failing_stage == 'file' else ['file', 'directory'])
+                self.assertEqual(set(self.root.iterdir()), entries)
 
     def test_credentials_binary_and_launcher_relocation(self):
         source, destination = self.root / 'root', self.root / 'silo'

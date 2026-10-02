@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Withdraw queued and in-flight system notifications when their sandbox is deleted.
+Remove system notifications when their sandbox is deleted, including notifications still waiting to appear.
