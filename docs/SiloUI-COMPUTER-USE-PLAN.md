@@ -123,7 +123,7 @@ absolute).
   `--skip-system --offline`.
 - Pinned LCU release archive, hash-checked, staged for installation in the VM
   (done: `guest/lcu-lock.json`, `/usr/local/share/silo/lcu/`). The published v4 image
-  stages LCU 0.8.1; Silo now pins LCU 0.8.3 (below), which a VM downloads and
+  stages LCU 0.8.1; Silo now pins LCU 0.8.4 (below), which a VM downloads and
   verifies at setup until a new image stages it.
 - Accessibility: dconf `toolkit-accessibility=true` system default and an
   autostarted AT-SPI attribute poller for Chromium/Electron.
@@ -144,7 +144,7 @@ absolute).
 - Every computer does this itself at its own start, remote ones included; a
   controller never prepares an app for another computer.
 
-Done: lock (`lcuVersion` 0.8.3), download, verification, extraction and
+Done: lock (`lcuVersion` 0.8.4), download, verification, extraction and
 publication under `<app data>/chatgpt/published/`, started automatically at app
 start with retries (2026-10-02, replacing the one-time notice), cached status
 reads and a computer-level Retry. See [ChatGPT app](SiloUI-CHATGPT-APP.md).
@@ -439,6 +439,20 @@ now passes in LCU's default configuration, without the previous `E2E_NO_SANDBOX`
 attempt ended `computer use failed` (`lcu-archive-unavailable`) because the guest's first download over
 the host network returned an empty reply; the retry succeeded. The upgrade of an existing 0.8.1
 install is covered by the guest unit tests only, not live.
+
+### LCU 0.8.4 pin (2026-10-02)
+
+Silo pins LCU 0.8.4 (tag `v0.8.4`, commit 78e75a4; linux-arm64
+`f3ca87eea22a9c1c335bbe3a0c3df5c8b1be46ef96359b80fbd67ef9fc1f6f79`, linux-x64
+`06b481b35073c43b4064f257a0603e7812f53aa3299db16df3f363e0f9f1059d`, verified by
+download). It fixes review findings in 0.8.3's Linux input translation: planning and a
+final focus check run inside the serialized queue (a mismatch is an error, nothing is typed
+elsewhere), translated key holds are owned and always released, pointer input must fall
+inside the target's current client rectangle, modal redirection is keyboard only, a
+caller-supplied `NODE_REPL_TRUSTED_SERVICES` map is kept verbatim, the toolkit cache is keyed
+by process start time, and windows from other machines or PID namespaces are left
+untouched. `scripts/install.py` is unchanged, so the v4 image's packages still suffice. The
+section below describes the 0.8.3 pin it replaces.
 
 ### LCU 0.8.3 pin (2026-10-02)
 
