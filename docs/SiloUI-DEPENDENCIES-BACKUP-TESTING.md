@@ -14,20 +14,23 @@ npm --prefix app/SiloUI run lint
 cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked
 RUSTUP_TOOLCHAIN=1.94.0 npm --prefix app/SiloUI run desktop:build:debug
 codesign --verify --deep --strict \
-  app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app
-open app/SiloUI/src-tauri/target/debug/bundle/macos/Silo.app
+  'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app'
+open 'app/SiloUI/src-tauri/target/debug/bundle/macos/Silo Dev.app'
 ```
 
-Quit an existing instance normally before launching the rebuilt app. Do not
-launch an installed copy with `open -a Silo`. The executable is
-`Silo.app/Contents/MacOS/silo-ui`. The visible name is Silo; the stable internal
-identifier retains existing preferences and OS permissions.
+Before launching, inspect any running instance and verify its executable path
+and ownership. Use the exact rebuilt Dev bundle above; its executable is
+`Silo Dev.app/Contents/MacOS/silo-ui` and its identifier is `org.silo.dev`.
+Do not interrupt the user's app or VMs. Quitting a test-owned Dev instance
+stops its local VMs, so use only disposable state for this walkthrough.
 
 The first build downloads pinned build inputs and compiles the patched runtime.
 It requires Rust 1.94.0. Users of the finished app need none of those build tools.
-For an isolated manual run, build a separate application identity through Tauri's
-`--config` option; this uses the same production code with its own real data.
-Do not add fixture hooks or edit user settings to simulate states.
+The debug build already uses the development channel, with separate app data,
+credentials, runtime aliases and remote bridge names. See
+[build channels](SiloUI-BUILD-CHANNELS.md). Use deterministic frontend fixtures
+for UI-only checks and disposable Dev VMs for native checks. Historical bundle
+paths in the verification records below identify those earlier runs.
 
 ## Dependencies
 
