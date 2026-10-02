@@ -47,3 +47,16 @@ existing launcher relocation tests continue to exercise text scripts. The
 focused suite passed 19 tests on Python 3.12. A disposable Node
 `WebAssembly.validate` check accepted the original fixture and rejected its
 path-expanded bytes.
+
+## Manifest line comments produce false command errors
+
+`check-command-manifest.py` extracted quoted names from line comments in
+`build.rs`, while its handler parser already ignored line comments. A valid
+manifest containing an inline comment naming `"reveal"` and a disabled
+`// "retired",` entry produced false duplicate and unregistered-command errors.
+
+The [Rust reference](https://doc.rust-lang.org/reference/comments.html#non-doc-comments)
+treats ordinary comments as whitespace. Apply the existing line-comment
+handling to the manifest body. The fixture regression failed with both false
+errors before the fix; real repository sources remain covered by the existing
+test. This changes an internal CI checker, so no app changeset is needed.
