@@ -4995,7 +4995,7 @@ fn start_at_launch_with(
     }
     let result = (|| {
         let inspected = inspect_workspace(runner, paths, name)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
             "created" | "stopped" => workspace_action_with(runner, paths, host, "start", name),
@@ -5176,6 +5176,8 @@ fn apply_whole_configuration_with_progress(
             progress("workspace-removal", machine.name(), 0);
             remove_machine_runtime(runner, paths, machine)?;
             changed = true;
+            crate::network::workspace_removed(paths, machine.name())
+                .map_err(RuntimeError::Unavailable)?;
             applied
                 .machines
                 .retain(|existing| existing.id() != machine.id());
@@ -10630,6 +10632,36 @@ exit 9
     }
 
     #[test]
+    fn launch_rejects_a_running_replacement_instead_of_reporting_the_selected_vm_ready() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        for wrong_name in [false, true] {
+            let mut observed = inspect(&paths, "Running");
+            if wrong_name {
+                observed["name"] = json!("replacement");
+            } else {
+                observed["config"]["labels"]["silo.machine-id"] =
+                    json!(uuid::Uuid::new_v4().to_string());
+            }
+            let runner = StubRunner::successful_json(vec![observed]);
+            let error =
+                start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap_err();
+            assert!(error.to_string().contains("identity changed"), "{error}");
+            assert!(
+                runner
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|call| call[0] == "inspect"),
+                "no replacement may be started"
+            );
+        }
+    }
+
+    #[test]
     fn launch_skips_running_and_rejects_missing_ssh_and_unready() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -11521,6 +11553,47 @@ exit 9
         let source = read_application_state_with(&unavailable_runtime, &paths).unwrap();
         assert!(source.workspaces.is_empty());
         assert!(unavailable_runtime.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn network_mappings_are_removed_before_a_deleted_name_can_be_reused() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let network = paths.metadata.with_file_name("network.json");
+        fs::write(
+            &network,
+            json!({"mappings":[
+                {"workspace":"dev","port":3000,"hostPort":43000,"scheme":"http","enabled":true},
+                {"workspace":"other","port":8080,"hostPort":null,"scheme":null,"enabled":true}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(&network).unwrap()).unwrap();
+        assert_eq!(saved["mappings"].as_array().unwrap().len(), 1);
+        assert_eq!(saved["mappings"][0]["workspace"], "other");
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+    }
+
+    #[test]
+    fn network_cleanup_failure_keeps_the_deleted_name_reserved_for_recovery() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = request(vec![vm()]);
+        write_metadata(&paths.metadata, &previous).unwrap();
+        fs::write(paths.metadata.with_file_name("network.json"), "invalid").unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]))
+            .unwrap_err();
+        assert!(error.to_string().contains("Saved ports are invalid"));
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), previous);
     }
 
     /// The runtime's sandbox `dev` as the bundled `msb` treats it: `inspect` reports its

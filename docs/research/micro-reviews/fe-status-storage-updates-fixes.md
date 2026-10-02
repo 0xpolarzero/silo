@@ -57,3 +57,12 @@ The test `keeps a failed update connection visible when focus returns during lis
 - **Evidence:** The new storage test and extended transfer-notice cleanup test each observed one backend read after unmount. Tauri's installed `@tauri-apps/api/event.js` passes `transformCallback(handler)` to the listen invocation before its promise resolves with the unsubscribe handle.
 - **Suggested fix:** Check the subscription effect's lifetime before invoking its refresh handler, rather than guarding only publication after the read.
 - **Regression tests:** Keep registration unresolved, unmount, deliver an event, then finish registration. Assert no backend read occurs and the late unsubscribe handle is released once.
+
+## Finding 8: Native sandbox menus appear after their row disappears (P2)
+
+- Location: `app/SiloUI/src/desktop/native-workspace-menu.tsx`, after `Menu.new`.
+- Trigger: open sandbox actions, remove the row or replace the status panel while asynchronous native menu creation is pending, then finish creation.
+- Consequence: an orphan native popup offers commands for a sandbox no longer shown.
+- Reproduction: `native-workspace-menu.test.tsx` delays `Menu.new`, unmounts the row, resolves creation, and observes `popup` called once. Failing output: `/tmp/fe-status-storage-updates-8-failing.log`.
+- Fix: check the originating button's connection before showing the menu; the existing `finally` releases its native resource.
+- Validation: focused native-menu and status-panel tests, frontend typecheck, touched-file lint, and Rust formatting. Fixture data only; no application launched.

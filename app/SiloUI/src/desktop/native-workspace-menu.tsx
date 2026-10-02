@@ -62,7 +62,7 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
     let tracked = false
     try {
       menu = await Menu.new({ items })
-      if (!current()) return
+      if (!current() || !button.isConnected) return
       activeMenu.current = menu
       tracked = true
       await menu.popup(new LogicalPosition(bounds.left, bounds.bottom))

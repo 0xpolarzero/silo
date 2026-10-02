@@ -11,3 +11,13 @@ Scope: `app/SiloUI/src/components/` and adjacent frontend modules. Findings use 
 - **Fix:** Track outside interaction with Radix's supported `onInteractOutside` callback, restoring the opener only for dismissal within the popover. Reset that tracking when the content opens.
 - **Tests:** `confirm-popover.test.tsx` and `actions-menu.test.tsx` verify outside focus; existing Escape and Cancel tests retain opener restoration.
 - **Primary evidence:** Installed Radix `PopoverContentNonModal` restores its trigger only when `hasInteractedOutsideRef` is false, in `node_modules/@radix-ui/react-popover/dist/index.js:224–233`. Silo's custom external-anchor overrides now follow that policy.
+
+## FE-COMPONENTS-10 — P2 — IME candidate keys change filter selection
+
+- **File:line at discovery:** `app/SiloUI/src/components/filter-combobox.tsx:113–132,145–148`.
+- **Trigger:** Use Arrow keys, Enter, or Escape during an input-method composition in a sandbox, workspace, or log filter.
+- **Evidence:** Four composing-key fixtures fail: Arrow and Enter events are consumed as combobox commands, and Escape removes the active descendant and closes the results.
+- **Consequence:** Choosing an IME candidate can select a sandbox filter instead, clear the query, or dismiss its results.
+- **Fix:** Ignore composing input key events and retain the popup during composing Escape. The Radix Escape callback still prevents its default dismissal.
+- **Tests:** Four composing-key cases preserve the active option and selections, then exercise ordinary ArrowDown and Enter after composition.
+- **Primary evidence:** The [UI Events specification](https://w3c.github.io/uievents/#dom-keyboardevent-iscomposing) defines `isComposing` for keyboard events during a composition session. Installed Radix `DismissableLayer` invokes `onEscapeKeyDown` before its default dismissal (`node_modules/@radix-ui/react-dismissable-layer/dist/index.js:130–140`).

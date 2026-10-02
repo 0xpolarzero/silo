@@ -19,3 +19,9 @@ A reconnect previously called the rotation-oriented `store` after detaching gues
 Explicit reconnect now uses transactional `SessionSecret::replace` before any workspace detachment or grant-cache mutation. Failed writes preserve the old credential and observation and do not queue the rejected connection for a later flush; the existing `Unstored` guard discards the unused exchange. Successful writes proceed with the existing replacement flow. Rotation continues to use `store` and retains newly rotated credentials after write failures.
 
 The production cache and reconnect seam regression failed at the old-credential assertion before the fix, then passed with six existing cache tests. Synthetic fixtures only; no real OAuth exchange, Keychain, app or VM was used.
+
+## Oversized writes cannot replace readable GitHub state
+
+The reader rejects documents larger than 16 MiB, while the writer previously replaced the saved file without checking its encoded size. A 99,900-entry catalog with supported owner/repository name lengths exceeded that limit and was accepted by the writer, making subsequent reads fail.
+
+`save_at` now shares the reader's size limit and checks serialized bytes before creating or replacing files. The temporary-directory regression failed before the fix because the oversized save succeeded; after the fix it verifies byte-for-byte preservation, reload of the old account, and a successful smaller retry. The harness includes the production `Document`, `load_at`, and `save_at`, with only rate-floor collection stubbed. No application data was used.

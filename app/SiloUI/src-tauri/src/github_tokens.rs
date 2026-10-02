@@ -128,6 +128,16 @@ pub(crate) fn execute(
 ) -> Result<Value, String> {
     execute_with(config, operation, body, github_http::send)
 }
+pub(crate) fn execute_for_workspace(
+    config: &Configuration,
+    operation: Operation,
+    body: Value,
+    workspace: &str,
+) -> Result<Value, String> {
+    execute_with(config, operation, body, |request| {
+        github_http::send_for_workspace(request, workspace)
+    })
+}
 fn execute_with(
     config: &Configuration,
     operation: Operation,

@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Show the current running work and cancellation controls when Quit starts during operation-queue listener registration.
+Show current running work and cancellation controls when Quit starts while background updates are still connecting.

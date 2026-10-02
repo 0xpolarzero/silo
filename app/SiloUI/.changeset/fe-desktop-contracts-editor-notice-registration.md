@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Show SSH configuration repair notices created while Silo connects to native updates.
+Show SSH configuration repair notices even when they arrive as Silo starts listening for them.
