@@ -2,7 +2,7 @@
 
 Scope: `app/SiloUI/src-tauri/src/app_menu.rs` and `app/SiloUI/src-tauri/src/notifications.rs`.
 
-Original read-only audit, before the fix loop: no builds, tests, native app launches, or live notification checks were run. Original finding line numbers refer to the audited version. Checked the two earlier review reports and `docs/SiloUI-CODE-REVIEW-PASS-3-*.md`; the previously reported remote notification identity defect is excluded. No additional concrete defect found in `app_menu.rs`.
+Read-only source review. No builds, tests, native app launches, or live notification checks were run. Checked the two earlier review reports and `docs/SiloUI-CODE-REVIEW-PASS-3-*.md`; the previously reported remote notification identity defect is excluded. No additional concrete defect found in `app_menu.rs`.
 
 ## APP-MENU-1 — P2 — Deletion misses in-flight system notifications
 
@@ -21,28 +21,3 @@ Original read-only audit, before the fix loop: no builds, tests, native app laun
 - **Consequence:** An older failure or completion replaces the latest result, contradicting the documented replacement policy. Linux can also show duplicate notifications for one key and retain only one server ID for later withdrawal.
 - **Suggested fix:** Preserve issuance order for each notification key through OS submission and adapter bookkeeping, or discard stale queued notices using a generation check before serialized submission. Keep different keys independent.
 - **Test that would catch it:** Inject an adapter that pauses the first notice before submission. Issue older and newer content for the same lifecycle key, allow the newer task to advance, then release the first. Assert that the final visible content is the newer notice. For Linux replacement bookkeeping, assert that two concurrent first deliveries create only one active notification and that clearing closes it.
-
-## APP-MENU-3 — P3 — Frontend mirrors bypass system notification body bounds
-
-- **File:line:** `app/SiloUI/src-tauri/src/notifications.rs:308–309` (`deliver_notice`), and the native preparation path at line 188.
-- **Trigger:** A frontend operation supplies a multiline or long description. `operation-toast.ts:127–129` copies it into a deserialized `Notice` without calling the backend `failure()` helper.
-- **Consequence:** The OS receives multiline bodies longer than the router's documented 200-character limit, instead of keeping full detail in the app.
-- **Suggested fix:** Apply the existing `bounded_body` formatter to every notice prepared for native delivery, preserving the separate in-app event payload.
-- **Test that catches it:** Submit a frontend-shaped notice containing newlines, tabs, and 500 characters. Assert that the adapter receives one line with exactly 200 characters and a trailing ellipsis. This test failed before the formatter was applied at preparation.
-
-## Fix loop
-
-- APP-MENU-1: fixed and folded in `527ae7a4`; regressions cover queued cancellation, deletion during OS delivery, and a delayed withdrawal following a newer submission.
-- APP-MENU-2: fixed and folded in `4d3e17cb`; regressions force reverse task execution and exercise delivery of a different key while another key's adapter is running.
-- APP-MENU-3: fixed and folded in `17600b26` by bounding every prepared system notice; its regression reproduces the frontend mirror path.
-- The shared worktree report remains the original read-only audit. Implementation and this expanded report live in the isolated `codex/fix-app-menu` worktree.
-- Before each fix, the new behavior regression failed in a standalone Rust harness extracting the production synchronization code and the exact test bodies. All six new regressions pass after the fixes. The harness uses minimal notice structs and fake OS callbacks; it does not prove Tauri integration or live notification behavior.
-- Rust formatting, frontend typecheck, and frontend lint pass. The native Cargo test command uses `/tmp/silo-codex-target` and explicit synthetic GitHub configuration; at this point it is still waiting on the shared artifact-directory lock. No app was launched and no real user data was accessed.
-
-### Scoped native verification
-
-Compiled the actual `notifications.rs`, `app_menu.rs`, and supporting `channel.rs` modules with `rustc +1.94.0 --test`, using matching cached Tauri, Serde, and serde_json artifacts from `/tmp/silo-codex-target/debug/deps`. A temporary root module supplied fake settings, notification, launch, and status-panel boundaries. `/tmp/silo-app-menu-module --nocapture` passed all 31 tests, including all 18 notification tests and the six new regressions. This also compiled the real Tauri command macros and checked the real notice wire serialization. The first standalone-module setup lacked Cargo package metadata and chose incompatible Serde artifact variants; correcting the harness metadata and matching Tauri's dependency fingerprints resolved those setup errors. Neither setup error was a product defect.
-
-The temporary harness, build logs, failing regression outputs, and test logs are under `/tmp/silo-app-menu-*`; they are not committed or distributed. No packaged bundle was built or inspected, no app was launched, and no live OS notifications, VM state, or user settings were accessed. Full application compilation and live OS delivery remain unverified. No additional concrete defect was found in the remaining scoped review.
-
-At the end of the approximately 20-minute loop, the full Cargo test still had not acquired the shared artifact-directory lock. Its waiting process was terminated after verifying its Cargo executable and this worktree's cwd. The scoped native harness passed; the full application Cargo test did not run.
