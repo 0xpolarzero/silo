@@ -14,7 +14,21 @@ No app launch, real VM, credential store, production HOME, runtime preparation, 
 
 ## New findings
 
-No new finding confirmed yet. Pending investigation is not evidence of a vulnerability.
+### SEC-01 Raw search input leaks through log-export coverage metadata
+
+**P2. Fixed; native regression and export suite passed.** Location: [log_export.rs](../app/SiloUI/src-tauri/src/log_export.rs), `write_requests` and `export_workspace_logs`.
+
+**Trigger.** Search logs for a token or private text, then export the filtered logs. The first-page coverage record serializes the complete `Query`, including its raw `query` string. This happens even when the backend returns zero entries. Log-entry redaction never touches that metadata.
+
+**Evidence.** Added `export_hides_search_text_but_preserves_filtering_and_coverage` against the actual export writer with synthetic search text and an empty page. The unchanged writer fails at the no-search-text-in-output assertion: **0 passed, 1 failed**, 1,342 filtered out. The regression also covers arbitrary private search text, verifies the query collaborator receives the original filter, and checks sandbox/source/count coverage. No credential store or real log was read.
+
+**Consequence.** Sharing the JSONL file discloses the typed search input, including credentials the user was checking for, independently of whether any log entry is sensitive. This is separate from R-27: that report concerns record-body PEM redaction, while this defect writes caller input directly into export metadata.
+
+**Correction.** Preserve the original request for querying and replace only the exported search text with an explicit `[Search text hidden]` marker. Hide all search text, since a marker-based token detector would miss arbitrary credentials and personal text. Keep source, sandbox identity, time coverage, match counts, and ordinary log rows.
+
+**Acceptance.** The export contains neither synthetic input, including for zero matches, and the backend still receives the unchanged filter. Existing pagination, cancellation, atomic publication, and failed-page tests must pass. This repair does not establish universal log redaction or resolve R-27.
+
+**Verification.** `cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked log_export::tests` passed **7/7** with synthetic configuration and the shared target. Formatting and frontend typecheck passed; frontend lint passed with 12 existing warnings. An additional extracted-source check ran the same seven export tests successfully; its initial dependency-artifact mismatch was fixture setup, not a product failure. Exact native before/after logs are ignored local evidence in `app/SiloUI/src-tauri/target/verification/pass3-ipc-security/`.
 
 ## Coverage and verification
 
