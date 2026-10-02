@@ -243,20 +243,42 @@ Backend (Rust, guest scripts) and frontend implement this together.
   `failed`; `preparing` covers waiting, downloading and a failure Silo retries
   by itself, with the reason; `failed` is a final failure), `reason`, `compatibility` (`tested`,
   `untested`, `unknown`, from `lcu status --json`), `warning`, `approval`
-  (`ask` or `auto`), `appVersion`, `runtimeVersion`, `lcuVersion`, `agents`.
+  (`ask`, `auto`, or `unknown` when the saved policy file exists but cannot be read:
+  the user's choice, shown by the switch), `appliedApproval` (`ask`, `auto`, or
+  `unknown`: what the guest confirmed applying, `unknown` whenever it has not said;
+  it differs from `approval` while a change is pending or after applying it failed,
+  and the panel then warns that agents "can still act without asking" when the guest
+  still applies `auto`), `appVersion`, `runtimeVersion`, `lcuVersion`, `agents`.
   The legacy `lcu*` fields remain for VMs created before v4.
-- Per-VM approval mode is stored in VM metadata, default `ask`, and applied
-  with `lcu setup --approval`. Approval changes carry a monotonically increasing
-  `revision`, stored in the policy file separately from receipt observations, and
-  the computer's owner id (a random UUID kept in `computer-use/owner`). Every sync
-  passes `--revision` and `--owner`; the guest helper orders revisions only within
-  one owner (`approvalRevision`, `approvalOwner` in its status): it ignores a
-  request older than the revision it applied for that owner, applies a request from
-  a new owner whatever its revision (an imported or transferred VM takes the
-  destination's choice even when the source clock was ahead), and resolves equal
-  revisions with different modes in favour of `ask`. A sync runs in the VM's
-  operation turn after confirming the runtime sandbox's `silo.machine-id` label and
-  instance, and at app start Silo launches the sync for running built-in VMs whose
-  guest lags the saved policy (a crash between saving and launching). `computerUse`
-  reports `installing` with "Applying approval change…" while the guest lags the
-  policy, and `failed` when applying it failed.
+- Per-VM approval mode is stored in Silo's policy file, default `ask`, and applied
+  with `lcu setup --approval`. The host is authoritative over the guest's record,
+  which sits on an untrusted disk. A policy carries a random `generation` (UUID),
+  issued when Silo first stamps a VM's policy (a new, imported, transferred or
+  forked VM, or a lost one) and renewed when the host finds the guest reporting a
+  revision of the current generation that it never issued (a forged or corrupt
+  record would otherwise make the guest ignore later choices). Approval changes
+  carry a monotonically increasing `revision` within a generation, stored in the
+  policy file separately from receipt observations. Every sync passes `--approval`,
+  `--revision` and `--generation`. The helper accepts any request whose generation
+  differs from the one it holds (the host wins whatever revision the disk carries,
+  including an export dated in the future), orders revisions only within one
+  generation, and resolves equal revisions with different modes in favour of `ask`.
+- The helper keeps the *requested* approval apart from the *applied* one in its
+  record, and marks it applied only after `lcu setup` succeeded (a same-mode change
+  is confirmed without rerunning setup). Its status reports the applied values
+  (`approval`, `approvalRevision`, `approvalGeneration`, `approvalConfirmed`), while
+  its receipt and `state` describe the attempt for the requested mode. A failed setup
+  therefore stays pending and failed, is retried by the next sync (Set up computer
+  use, a boot, or app-start reconciliation), and cannot be mistaken for applied.
+- A sync runs in the VM's operation turn after confirming the runtime sandbox's
+  `silo.machine-id` label and instance. The turn is cancellable, and it yields to a
+  stop, delete or quit that queues for the same VM: the host only launches the
+  detached helper, so the launch gets a short timeout (10 s) and an unresponsive
+  guest never holds the turn for long. A cut-short sync is retried at the next boot or
+  app start. At app start Silo reads the status of every running built-in VM and
+  launches the sync when the guest lags the saved policy (a crash between saving and
+  launching, a failed apply, another generation's record); a status read that fails
+  (the guest may still be starting) is retried with backoff (5, 15, 30, 60 and 120
+  seconds) and a fresh identity check before each attempt. `computerUse` reports
+  `installing` with "Applying approval change…" while the guest lags the policy, and
+  `failed` when applying it failed.

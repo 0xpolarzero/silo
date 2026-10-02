@@ -28,6 +28,8 @@ const HELPER: &str = include_str!("../guest/silo-computer-use.py");
 const LCU_LOCK: &str = include_str!("../guest/lcu-lock.json");
 const GUEST_HELPER: &str = "/usr/local/libexec/silo-computer-use";
 const SYNC_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// How long the host waits for the detached helper to be started (about a second).
+const LAUNCH_TIMEOUT: Duration = Duration::from_secs(10);
 
 // ------------------------------------------------------------- approval
 
@@ -81,17 +83,24 @@ pub(crate) struct Known {
 /// sync of an unstamped policy writes it; observations live in another file, so
 /// reading and reporting status can never overwrite a newer choice.
 ///
-/// The revision increases with every change (and starts from the clock, so it also
-/// exceeds whatever an imported VM's guest applied elsewhere). The guest records the
-/// revision it applied and ignores older requests, which keeps a delayed sync that
+/// The host is authoritative: a policy carries a random `generation`, issued when Silo
+/// first creates the VM's policy (a new, imported, transferred or forked VM, or a policy
+/// that was lost) and renewed when the host finds the guest holding a revision it never
+/// issued. The revision increases with every change within a generation. The guest
+/// accepts any request whose generation differs from the one it holds (the host wins
+/// over whatever the guest's untrusted disk carries, including a future-dated revision)
+/// and orders revisions only within one generation, which keeps a delayed sync that
 /// captured an earlier mode from undoing a later change.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Policy {
     #[serde(default)]
     pub(crate) approval: Approval,
     #[serde(default)]
     pub(crate) revision: u64,
+    /// Empty until the policy is stamped by its first sync or change.
+    #[serde(default)]
+    pub(crate) generation: String,
 }
 
 /// Per-VM computer-use settings as read: the policy plus the last observation.
@@ -105,9 +114,13 @@ pub(crate) struct Settings {
     pub(crate) revision: u64,
     #[serde(default)]
     pub(crate) known: Option<Known>,
-    /// This computer's owner id (empty until a sync created it); never serialized.
+    /// The policy's generation (empty until stamped); never serialized.
     #[serde(skip)]
-    pub(crate) owner: String,
+    pub(crate) generation: String,
+    /// The policy file exists but cannot be read, so `approval` is only the fail-closed
+    /// default and the user's choice is unknown; never serialized.
+    #[serde(skip)]
+    pub(crate) unreadable: bool,
 }
 
 /// Serializes every read-modify-write of a policy file.
@@ -134,49 +147,38 @@ fn read_json<T: serde::de::DeserializeOwned>(path: Option<PathBuf>) -> Option<T>
 }
 
 fn read_policy(paths: &RuntimePaths, id: &str) -> Policy {
-    read_json(policy_path(paths, id)).unwrap_or_default()
+    read_policy_checked(paths, id).unwrap_or_default()
+}
+
+/// The stored policy: the default for a VM that has none yet, `None` when a file exists
+/// but cannot be read or parsed (the user's choice is then unknown, not `ask`).
+fn read_policy_checked(paths: &RuntimePaths, id: &str) -> Option<Policy> {
+    let Some(path) = policy_path(paths, id) else {
+        return Some(Policy::default());
+    };
+    match fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).ok(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Some(Policy::default()),
+        Err(_) => None,
+    }
 }
 
 /// The settings of VM `id`; a missing or unreadable file means the defaults (ask).
 pub(crate) fn settings(paths: &RuntimePaths, id: &str) -> Settings {
-    let policy = read_policy(paths, id);
+    let checked = read_policy_checked(paths, id);
+    let unreadable = checked.is_none();
+    let policy = checked.unwrap_or_default();
     Settings {
         approval: policy.approval,
         revision: policy.revision,
         known: read_json(observed_path(paths, id)),
-        owner: read_owner(paths).unwrap_or_default(),
+        generation: policy.generation,
+        unreadable,
     }
 }
 
-fn owner_path(paths: &RuntimePaths) -> PathBuf {
-    directory(paths).join("owner")
-}
-
-fn read_owner(paths: &RuntimePaths) -> Option<String> {
-    let text = fs::read_to_string(owner_path(paths)).ok()?;
-    uuid::Uuid::parse_str(text.trim())
-        .ok()
-        .map(|id| id.to_string())
-}
-
-/// This computer's owner id, created on first use. Every sync carries it. A guest that
-/// last applied an approval for another owner (it was imported or transferred from
-/// another computer) accepts this computer's policy whatever the revision numbers say,
-/// because revisions are clock values that only order changes made by one computer.
-fn owner(paths: &RuntimePaths) -> Result<String, RuntimeError> {
-    let _lock = lock_policies();
-    if let Some(owner) = read_owner(paths) {
-        return Ok(owner);
-    }
-    let owner = uuid::Uuid::new_v4().to_string();
-    let fail = || RuntimeError::Unavailable("Silo could not save the computer-use setting.".into());
-    let directory = directory(paths);
-    runtime::prepare_private_directory(&directory).map_err(|_| fail())?;
-    let mut temporary = tempfile::NamedTempFile::new_in(&directory).map_err(|_| fail())?;
-    std::io::Write::write_all(&mut temporary, owner.as_bytes()).map_err(|_| fail())?;
-    temporary.as_file().sync_all().map_err(|_| fail())?;
-    temporary.persist(owner_path(paths)).map_err(|_| fail())?;
-    Ok(owner)
+fn new_generation() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 fn write_atomic<T: Serialize>(
@@ -218,44 +220,83 @@ pub(crate) fn set_approval(
     id: &str,
     approval: Approval,
 ) -> Result<u64, RuntimeError> {
+    set_approval_policy(paths, id, approval).map(|policy| policy.revision)
+}
+
+/// Stores a new approval choice and returns the stored policy.
+fn set_approval_policy(
+    paths: &RuntimePaths,
+    id: &str,
+    approval: Approval,
+) -> Result<Policy, RuntimeError> {
     let _lock = lock_policies();
-    let revision = next_revision(read_policy(paths, id).revision);
-    write_atomic(
-        paths,
-        policy_path(paths, id),
-        &Policy { approval, revision },
-    )?;
-    Ok(revision)
+    let previous = read_policy(paths, id);
+    let policy = Policy {
+        approval,
+        revision: next_revision(previous.revision),
+        generation: if previous.generation.is_empty() {
+            new_generation()
+        } else {
+            previous.generation
+        },
+    };
+    write_atomic(paths, policy_path(paths, id), &policy)?;
+    Ok(policy)
 }
 
-/// What a sync carries: the VM's policy and this computer's owner id. The guest orders
-/// revisions only within one owner and accepts a new owner's policy outright, so an
-/// imported or transferred VM takes this computer's choice (ask by default) even when the
-/// source computer's clock, and so its revisions, were ahead.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SyncPolicy {
-    policy: Policy,
-    owner: String,
-}
-
-/// The policy a sync carries. A policy that was never stamped (a new, imported or
-/// restored VM) gets a revision first, so the revision is meaningful for this owner.
-fn sync_policy(paths: &RuntimePaths, id: &str) -> Result<SyncPolicy, RuntimeError> {
-    let owner = owner(paths)?;
+/// The policy a sync carries. A policy that was never stamped (a new, imported,
+/// transferred, forked or lost one) gets a fresh generation and a revision first, so the
+/// guest takes it whatever its disk carries.
+fn sync_policy(paths: &RuntimePaths, id: &str) -> Result<Policy, RuntimeError> {
     let _lock = lock_policies();
     let mut policy = read_policy(paths, id);
-    if policy.revision == 0 {
-        policy.revision = next_revision(0);
+    if policy.revision == 0 || policy.generation.is_empty() {
+        policy.revision = next_revision(policy.revision);
+        policy.generation = new_generation();
         let _ = write_atomic(paths, policy_path(paths, id), &policy);
     }
-    Ok(SyncPolicy { policy, owner })
+    Ok(policy)
+}
+
+/// Starts a new generation of the VM's policy: the guest holds a revision this computer
+/// never issued, so its record cannot be trusted to order anything.
+fn renew_generation(paths: &RuntimePaths, id: &str) -> Result<Policy, RuntimeError> {
+    let _lock = lock_policies();
+    let mut policy = read_policy(paths, id);
+    policy.generation = new_generation();
+    policy.revision = policy.revision.max(1);
+    write_atomic(paths, policy_path(paths, id), &policy)?;
+    Ok(policy)
+}
+
+/// Whether the guest reports an applied revision of the VM's current generation that is
+/// above anything this computer issued (forged or corrupt: it would make the guest
+/// ignore the host's later choices). Compared with the policy read now, never the one
+/// a sync carried, because newer changes may have been issued meanwhile.
+fn guest_forged(status: &Value, policy: &Policy) -> bool {
+    !policy.generation.is_empty()
+        && status.get("approvalGeneration").and_then(Value::as_str)
+            == Some(policy.generation.as_str())
+        && status
+            .get("approvalRevision")
+            .and_then(Value::as_u64)
+            .is_some_and(|applied| applied > policy.revision)
 }
 
 /// A fork starts with its source's approval mode and nothing else.
 pub(crate) fn inherit_settings(paths: &RuntimePaths, from: &str, to: &str) {
     let _lock = lock_policies();
-    let source = read_policy(paths, from);
-    let _ = write_atomic(paths, policy_path(paths, to), &source);
+    // Only the mode: the fork's guest disk carries the source's record, so the fork is
+    // stamped with a generation of its own by its first sync.
+    let approval = read_policy(paths, from).approval;
+    let _ = write_atomic(
+        paths,
+        policy_path(paths, to),
+        &Policy {
+            approval,
+            ..Policy::default()
+        },
+    );
 }
 
 /// Removes the settings of a deleted VM.
@@ -492,16 +533,16 @@ install -m 0644 -o root -g root \"$cu_stage/pinned.json\" /var/lib/silo-computer
     )
 }
 
-fn policy_arguments(sync: &SyncPolicy) -> String {
+fn policy_arguments(policy: &Policy) -> String {
     format!(
-        " --approval {} --revision {} --owner {}",
-        sync.policy.approval.as_str(),
-        sync.policy.revision,
-        sync.owner
+        " --approval {} --revision {} --generation {}",
+        policy.approval.as_str(),
+        policy.revision,
+        policy.generation
     )
 }
 
-fn sync_command(policy: Option<&SyncPolicy>, force: bool) -> String {
+fn sync_command(policy: Option<&Policy>, force: bool) -> String {
     let mut command = format!("{GUEST_HELPER} sync");
     if force {
         command.push_str(" --force");
@@ -521,7 +562,7 @@ fn sync_now(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
-    policy: &SyncPolicy,
+    policy: &Policy,
     force: bool,
 ) -> Result<Value, RuntimeError> {
     let pinned = pinned(DebArch::host().map_err(|e| RuntimeError::Unavailable(e.message))?)
@@ -544,7 +585,7 @@ fn sync_detached(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
-    policy: &SyncPolicy,
+    policy: &Policy,
 ) -> Result<(), RuntimeError> {
     let pinned = pinned(DebArch::host().map_err(|e| RuntimeError::Unavailable(e.message))?)
         .map_err(RuntimeError::Unavailable)?;
@@ -552,12 +593,15 @@ fn sync_detached(
         "( setsid {GUEST_HELPER} sync --boot{} >/dev/null 2>&1 </dev/null & )",
         policy_arguments(policy)
     );
-    desktop::guest(
+    // The helper runs detached in the guest: the host only starts it, so an unresponsive
+    // guest is given up on quickly instead of holding the VM's operation turn.
+    desktop::guest_within(
         runner,
         paths,
         name,
         &guest_script(&pinned, &command),
-        Duration::from_secs(60),
+        LAUNCH_TIMEOUT,
+        LAUNCH_TIMEOUT,
         false,
     )
     .map(drop)
@@ -623,6 +667,61 @@ pub(crate) fn after_boot(
     after_boot_with(&runtime::OPERATIONS, runner, paths, name)
 }
 
+/// Label of the sync's queue entry; other work is never preempted by an identical one.
+const SYNC_LABEL: &str = "Setting up computer use in";
+
+/// Ends the sync's turn quickly when work that must not wait queues for the same VM
+/// (stop, delete, quit): sets the running operation's cancel flag, which the runtime's
+/// polling loops observe by killing the child. The sync is retried at the next boot or
+/// app start, and a stopped VM has nothing to sync.
+struct Preempt {
+    done: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Preempt {
+    fn watch(
+        gate: &'static runtime::operation_gate::OperationGate,
+        id: &str,
+        token: Arc<std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        use std::sync::atomic::Ordering;
+        let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (flag, id) = (done.clone(), id.to_owned());
+        let thread = std::thread::Builder::new()
+            .name("computer-use-preempt".into())
+            .spawn(move || {
+                while !flag.load(Ordering::SeqCst) {
+                    let blocked = gate.snapshot().waiting.iter().any(|entry| {
+                        entry.vm_id.as_deref() == Some(id.as_str())
+                            && !entry.label.starts_with(SYNC_LABEL)
+                            && matches!(
+                                entry.kind,
+                                runtime::operation_gate::OperationKind::Lifecycle
+                                    | runtime::operation_gate::OperationKind::Shutdown
+                            )
+                    });
+                    if blocked {
+                        token.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+            })
+            .ok();
+        Self { done, thread }
+    }
+}
+
+impl Drop for Preempt {
+    fn drop(&mut self) {
+        self.done.store(true, std::sync::atomic::Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
 fn after_boot_with(
     gate: &'static runtime::operation_gate::OperationGate,
     runner: SharedRunner,
@@ -637,17 +736,21 @@ fn after_boot_with(
         .name("computer-use-sync".into())
         .spawn(move || {
             let deadline = std::time::Instant::now() + GATE_WAIT;
-            let Ok(_turn) = gate
+            let Ok(turn) = gate
                 .kind(runtime::operation_gate::OperationKind::Other)
                 .acquire_while(
                     runtime::operation_gate::Scope::Vm { id: id.clone() },
                     Some(name.clone()),
-                    &format!("Setting up computer use in {name}"),
+                    &format!("{SYNC_LABEL} {name}"),
                     &|| std::time::Instant::now() < deadline,
                 )
             else {
                 return;
             };
+            // The turn is cancellable and yields to a queued stop or delete, so an
+            // unresponsive guest never holds either up.
+            turn.allow_cancel();
+            let _preempt = Preempt::watch(gate, &id, turn.cancel_token());
             let same_vm = built_in_machine(&paths, &name).is_some_and(|m| m.id() == id)
                 && running_identity(runner.as_ref(), &paths, &name, &id).as_deref()
                     == Some(instance.as_str());
@@ -662,7 +765,11 @@ fn after_boot_with(
                 }
             };
             let result = sync_detached(runner.as_ref(), &paths, &name, &policy);
-            record_apply(&id, policy.policy.revision, result.is_ok());
+            // A launch that was cut short says nothing about the guest.
+            if matches!(result, Err(RuntimeError::Cancelled { .. })) {
+                return;
+            }
+            record_apply(&id, policy.revision, result.is_ok());
             if let Err(error) = result {
                 eprintln!("Computer use could not be started in {name}: {error}");
             }
@@ -670,10 +777,19 @@ fn after_boot_with(
         .ok()
 }
 
-/// Whether a running guest still lacks the VM's saved approval policy: it applied an
-/// older revision or another computer's choice, or it has no helper at all. Reads the
-/// helper's status; a guest that cannot be asked is left to its next boot.
-fn guest_behind(runner: &dyn RuntimeRunner, paths: &RuntimePaths, name: &str, id: &str) -> bool {
+/// How a running guest compares with the VM's saved approval policy.
+#[derive(Debug, PartialEq, Eq)]
+enum Lag {
+    Current,
+    /// It applied an older revision, another generation's choice or another mode, or
+    /// has no helper at all: a sync installs and applies.
+    Behind,
+    /// The helper's status could not be read (the guest may still be starting).
+    Unknown,
+}
+
+/// Reads the helper's status and compares what the guest *applied* with the policy.
+fn guest_lag(runner: &dyn RuntimeRunner, paths: &RuntimePaths, name: &str, id: &str) -> Lag {
     let Ok(output) = desktop::guest(
         runner,
         paths,
@@ -682,42 +798,112 @@ fn guest_behind(runner: &dyn RuntimeRunner, paths: &RuntimePaths, name: &str, id
         Duration::from_secs(60),
         false,
     ) else {
-        return false;
+        return Lag::Unknown;
     };
     let Ok(status) = serde_json::from_str::<Value>(output.lines().last().unwrap_or("").trim())
     else {
-        return false;
+        return Lag::Unknown;
     };
+    // The policy is read after the status, so it is never older than what the guest
+    // reports applying.
     let current = settings(paths, id);
+    let policy = Policy {
+        approval: current.approval,
+        revision: current.revision,
+        generation: current.generation.clone(),
+    };
+    if guest_forged(&status, &policy) {
+        let _ = renew_generation(paths, id);
+        return Lag::Behind;
+    }
     let applied = status.get("approvalRevision").and_then(Value::as_u64);
-    let owner = status.get("approvalOwner").and_then(Value::as_str);
+    let generation = status.get("approvalGeneration").and_then(Value::as_str);
     match applied {
-        // No helper, or an older one: a sync installs and applies.
-        None => true,
+        None => Lag::Behind,
         Some(applied) => {
-            applied < current.revision
+            let behind = applied < current.revision
                 || status.get("approval").and_then(Value::as_str) != Some(current.approval.as_str())
-                || owner != read_owner(paths).as_deref()
+                // An unstamped policy was never issued to this guest.
+                || current.generation.is_empty()
+                || generation != Some(current.generation.as_str());
+            if behind {
+                Lag::Behind
+            } else {
+                Lag::Current
+            }
+        }
+    }
+}
+
+/// Waits between attempts to read a guest's status at app start, doubling: the guest
+/// may still be booting, or the runtime busy.
+const RECONCILE_RETRY: [Duration; 5] = [
+    Duration::from_secs(5),
+    Duration::from_secs(15),
+    Duration::from_secs(30),
+    Duration::from_secs(60),
+    Duration::from_secs(120),
+];
+
+/// One VM's reconciliation: reads the guest, launches a sync when it lags, and while the
+/// status cannot be read tries again after each of `retry`'s delays. Every attempt
+/// first confirms again that the VM is still the same recorded built-in machine and
+/// still runs, so a VM stopped, replaced or deleted meanwhile is left alone.
+fn reconcile_vm(
+    gate: &'static runtime::operation_gate::OperationGate,
+    runner: &SharedRunner,
+    paths: &RuntimePaths,
+    name: &str,
+    id: &str,
+    retry: &[Duration],
+) {
+    let mut attempt = 0;
+    loop {
+        let same_vm = built_in_machine(paths, name).is_some_and(|machine| machine.id() == id)
+            && running_identity(runner.as_ref(), paths, name, id).is_some();
+        if !same_vm {
+            return;
+        }
+        match guest_lag(runner.as_ref(), paths, name, id) {
+            Lag::Current => return,
+            Lag::Behind => {
+                if let Some(handle) = after_boot_with(gate, runner.clone(), paths, name) {
+                    let _ = handle.join();
+                }
+                return;
+            }
+            Lag::Unknown => {
+                let Some(delay) = retry.get(attempt) else {
+                    return;
+                };
+                attempt += 1;
+                std::thread::sleep(*delay);
+            }
         }
     }
 }
 
 /// At app start, after the runtime is ready: finishes approval changes that were saved
 /// but never launched (the app quit or crashed between saving a policy and starting
-/// its sync), so a running guest does not keep the old mode with "Applying approval
-/// change…" shown forever. Returns the threads started (for tests).
+/// its sync), or never applied (the guest's setup failed), so a running guest does not
+/// keep the old mode with "Applying approval change…" shown forever. Returns the
+/// threads started, one per VM (for tests).
 fn reconcile_in(
     gate: &'static runtime::operation_gate::OperationGate,
     runner: &SharedRunner,
     paths: &RuntimePaths,
     running: &[String],
+    retry: &'static [Duration],
 ) -> Vec<std::thread::JoinHandle<()>> {
     running
         .iter()
         .filter_map(|name| {
-            let machine = built_in_machine(paths, name)?;
-            guest_behind(runner.as_ref(), paths, name, machine.id()).then_some(())?;
-            after_boot_with(gate, runner.clone(), paths, name)
+            let id = built_in_machine(paths, name)?.id().to_owned();
+            let (runner, paths, name) = (runner.clone(), paths.clone(), name.clone());
+            std::thread::Builder::new()
+                .name("computer-use-reconcile".into())
+                .spawn(move || reconcile_vm(gate, &runner, &paths, &name, &id, retry))
+                .ok()
         })
         .collect()
 }
@@ -731,7 +917,13 @@ pub(crate) fn reconcile(app: &AppHandle) {
         return;
     };
     let runner: SharedRunner = Arc::new(runtime::ProcessRunner);
-    for handle in reconcile_in(&runtime::OPERATIONS, &runner, &paths, &running) {
+    for handle in reconcile_in(
+        &runtime::OPERATIONS,
+        &runner,
+        &paths,
+        &running,
+        &RECONCILE_RETRY,
+    ) {
         let _ = handle.join();
     }
     let _ = app.emit("silo://application-state-changed", ());
@@ -804,7 +996,11 @@ fn state_object(
         "reason": reason,
         "compatibility": compat(known.compatibility.as_deref()),
         "warning": known.warning,
-        "approval": settings.approval.as_str(),
+        // `approval` is what the user chose (unknown when the saved choice cannot be
+        // read); `appliedApproval` is what the guest confirmed applying, `unknown`
+        // whenever the guest has not said.
+        "approval": if settings.unreadable { "unknown" } else { settings.approval.as_str() },
+        "appliedApproval": "unknown",
         "appVersion": known.app_version,
         "runtimeVersion": known.runtime_version,
         "lcuVersion": known.lcu_version,
@@ -920,11 +1116,13 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let applied = text("approval").as_deref().and_then(Approval::parse);
-    let applied_owner = text("approvalOwner");
+    let applied_generation = text("approvalGeneration");
     let approval_pending = applied_revision < settings.revision
         || applied.is_some_and(|applied| applied != settings.approval)
-        // The guest still holds another computer's choice (an import or transfer).
-        || (!settings.owner.is_empty() && applied_owner.as_deref() != Some(&settings.owner));
+        // The guest still holds a choice of another generation (an import, a transfer or
+        // a fork) or one the host never issued.
+        || (!settings.generation.is_empty()
+            && applied_generation.as_deref() != Some(&settings.generation));
     let (state, reason): (&str, Option<String>) = match details.state.as_str() {
         "ready" if approval_pending && inputs.approval_failed => {
             ("failed", Some(reason_text("approval-failed").into()))
@@ -949,10 +1147,12 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
         state: state.into(),
         ..details.clone()
     });
-    (
-        state_object(state, reason.as_deref(), settings, Some(&details)),
-        remembered,
-    )
+    let confirmed = guest.get("approvalConfirmed").and_then(Value::as_bool) == Some(true);
+    let mut object = state_object(state, reason.as_deref(), settings, Some(&details));
+    if let (true, Some(applied)) = (confirmed, applied) {
+        object["appliedApproval"] = json!(applied.as_str());
+    }
+    (object, remembered)
 }
 
 /// The `computerUse` object for `machine`, or `None` for a VM without built-in
@@ -983,6 +1183,33 @@ pub(crate) fn desktop_state(
 
 // -------------------------------------------------------- commands
 
+/// Syncs `policy` to completion. When the guest answers with a revision of this
+/// policy's generation that the host never issued, the generation is renewed and the sync
+/// repeated once, so the guest's untrusted record cannot hold the host's choice back.
+/// Returns the policy that was last sent and the outcome.
+fn sync_authoritative(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+    policy: Policy,
+    force: bool,
+) -> (Policy, Result<Value, RuntimeError>) {
+    let result = sync_now(runner, paths, machine.name(), &policy, force);
+    let Ok(status) = &result else {
+        return (policy, result);
+    };
+    if !guest_forged(status, &read_policy(paths, machine.id())) {
+        return (policy, result);
+    }
+    match renew_generation(paths, machine.id()) {
+        Ok(renewed) => {
+            let result = sync_now(runner, paths, machine.name(), &renewed, force);
+            (renewed, result)
+        }
+        Err(_) => (policy, result),
+    }
+}
+
 /// Runs setup (or re-runs it for agents installed later) in a running VM and returns
 /// the helper's status.
 pub(crate) fn setup_with(
@@ -992,8 +1219,8 @@ pub(crate) fn setup_with(
     force: bool,
 ) -> Result<Value, RuntimeError> {
     let policy = sync_policy(paths, machine.id())?;
-    let result = sync_now(runner, paths, machine.name(), &policy, force);
-    record_apply(machine.id(), policy.policy.revision, result.is_ok());
+    let (policy, result) = sync_authoritative(runner, paths, machine, policy, force);
+    record_apply(machine.id(), policy.revision, result.is_ok());
     result
 }
 
@@ -1006,14 +1233,10 @@ pub(crate) fn apply_approval_with(
     approval: Approval,
     running: bool,
 ) -> Result<(), RuntimeError> {
-    let revision = set_approval(paths, machine.id(), approval)?;
+    let policy = set_approval_policy(paths, machine.id(), approval)?;
     if running {
-        let policy = SyncPolicy {
-            policy: Policy { approval, revision },
-            owner: owner(paths)?,
-        };
-        let result = sync_now(runner, paths, machine.name(), &policy, false);
-        record_apply(machine.id(), revision, result.is_ok());
+        let (policy, result) = sync_authoritative(runner, paths, machine, policy, false);
+        record_apply(machine.id(), policy.revision, result.is_ok());
         result?;
     }
     Ok(())

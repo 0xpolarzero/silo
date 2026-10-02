@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 
 const VM_ID: &str = "00000000-0000-4000-8000-000000000001";
-const OWNER: &str = "22222222-2222-4222-8222-222222222222";
+const GENERATION: &str = "22222222-2222-4222-8222-222222222222";
 
 fn machine(built_in: bool) -> MachineConfiguration {
     MachineConfiguration::Vm {
@@ -251,11 +251,12 @@ fn settings_serialize_with_camel_case_names() {
             app_version: Some("26.928.31416".into()),
             ..Known::default()
         }),
-        owner: OWNER.into(),
+        generation: GENERATION.into(),
+        unreadable: false,
     })
     .unwrap();
     assert_eq!(value["approval"], "auto");
-    assert!(value.get("owner").is_none());
+    assert!(value.get("generation").is_none());
     assert_eq!(value["known"]["appVersion"], "26.928.31416");
 }
 
@@ -293,12 +294,10 @@ fn the_guest_script_installs_the_helper_and_pair_before_running_the_command() {
     let script = guest_script(
         &pair,
         &sync_command(
-            Some(&SyncPolicy {
-                policy: Policy {
-                    approval: Approval::Auto,
-                    revision: 7,
-                },
-                owner: OWNER.into(),
+            Some(&Policy {
+                approval: Approval::Auto,
+                revision: 7,
+                generation: GENERATION.into(),
             }),
             true,
         ),
@@ -307,7 +306,7 @@ fn the_guest_script_installs_the_helper_and_pair_before_running_the_command() {
     let pinned_at = script.find("SILO_CU_PINNED_EOF").unwrap();
     let run_at = script
         .find(&format!(
-            "/usr/local/libexec/silo-computer-use sync --force --approval auto --revision 7 --owner {OWNER}"
+            "/usr/local/libexec/silo-computer-use sync --force --approval auto --revision 7 --generation {GENERATION}"
         ))
         .unwrap();
     assert!(helper_at < pinned_at && pinned_at < run_at);
@@ -380,8 +379,8 @@ fn after_boot_pushes_and_detaches_the_sync_with_the_vms_approval() {
     assert_eq!(calls.len(), 1);
     assert_eq!(&calls[0][..3], ["exec", "dev", "--no-start"]);
     let script = calls[0].last().unwrap();
-    let owner = read_owner(&paths).unwrap();
-    assert!(script.contains(&format!("( setsid /usr/local/libexec/silo-computer-use sync --boot --approval auto --revision {revision} --owner {owner} >/dev/null 2>&1 </dev/null & )")));
+    let owner = read_policy(&paths, VM_ID).generation;
+    assert!(script.contains(&format!("( setsid /usr/local/libexec/silo-computer-use sync --boot --approval auto --revision {revision} --generation {owner} >/dev/null 2>&1 </dev/null & )")));
 }
 
 #[test]
@@ -456,7 +455,10 @@ fn a_boot_that_cannot_start_computer_use_still_succeeds() {
 struct SimulatedGuest {
     /// Inspections answered so far, and after how many the VM becomes another instance.
     inspects: StdMutex<(usize, Option<usize>)>,
+    /// What `lcu setup` last confirmed, as the helper reports it in its status.
     applied: StdMutex<(String, u64, Option<String>)>,
+    /// While set, `lcu setup` fails after the request was recorded (nothing is applied).
+    setup_fails: std::sync::atomic::AtomicBool,
     launches: StdMutex<Vec<String>>,
     /// Set while the detached launcher must stall; it signals `entered` first.
     stall: StdMutex<Option<(std::sync::mpsc::Sender<()>, Arc<std::sync::Barrier>)>>,
@@ -467,9 +469,19 @@ impl SimulatedGuest {
         Self {
             inspects: StdMutex::new((0, None)),
             applied: StdMutex::new(("ask".into(), 0, None)),
+            setup_fails: std::sync::atomic::AtomicBool::new(false),
             launches: StdMutex::new(Vec::new()),
             stall: StdMutex::new(None),
         }
+    }
+
+    /// The helper's status: what it applied, and `failed` while setup fails.
+    fn status(&self) -> Value {
+        let applied = self.applied.lock().unwrap().clone();
+        let failing = self.setup_fails.load(std::sync::atomic::Ordering::SeqCst);
+        json!({"state": if failing { "failed" } else { "ready" },
+            "reason": if failing { json!("command-failed") } else { Value::Null },
+            "approval":applied.0,"approvalRevision":applied.1,"approvalGeneration":applied.2})
     }
 
     fn applied_mode(&self) -> (String, u64) {
@@ -490,13 +502,15 @@ impl SimulatedGuest {
             return;
         };
         let revision: u64 = revision.parse().unwrap();
-        let owner = value("--owner");
+        let owner = value("--generation");
         let mut applied = self.applied.lock().unwrap();
-        // The helper's rule: a new owner replaces the record; one owner's revisions order.
+        // The helper's rule: a new generation replaces the record; one generation's
+        // revisions order.
         let accepted = owner != applied.2
             || revision > applied.1
             || (revision == applied.1 && (mode == applied.0 || mode == "ask"));
-        if accepted {
+        // A failing `lcu setup` leaves what was applied before untouched.
+        if accepted && !self.setup_fails.load(std::sync::atomic::Ordering::SeqCst) {
             *applied = (mode, revision, owner);
         }
     }
@@ -520,11 +534,8 @@ impl RuntimeRunner for SimulatedGuest {
         } else {
             let script = args.last().unwrap();
             if script == STATUS_COMMAND {
-                let applied = self.applied.lock().unwrap().clone();
                 return Ok(CommandOutput {
-                    stdout: json!({"state":"ready","approval":applied.0,
-                        "approvalRevision":applied.1,"approvalOwner":applied.2})
-                    .to_string(),
+                    stdout: self.status().to_string(),
                     stderr: String::new(),
                 });
             }
@@ -537,7 +548,7 @@ impl RuntimeRunner for SimulatedGuest {
                 self.launches.lock().unwrap().push(script.clone());
             }
             self.apply(script);
-            "{\"state\":\"ready\"}".into()
+            self.status().to_string()
         };
         Ok(CommandOutput {
             stdout,
@@ -745,7 +756,8 @@ fn guest_status_maps_to_the_contract_fields() {
         approval: Approval::Auto,
         revision: 0,
         known: None,
-        owner: String::new(),
+        generation: String::new(),
+        unreadable: false,
     };
     let app = ready();
     let map = |mut guest: Value| {
@@ -763,7 +775,7 @@ fn guest_status_maps_to_the_contract_fields() {
         value,
         json!({
             "state": "ready", "reason": null, "compatibility": "tested", "warning": null,
-            "approval": "auto", "appVersion": "26.928.31416",
+            "approval": "auto", "appliedApproval": "unknown", "appVersion": "26.928.31416",
             "runtimeVersion": "0.0.27/20260927214556-b77d38801cca",
             "lcuVersion": "0.8.0", "agents": ["claude-code"],
         })
@@ -831,7 +843,8 @@ fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
             lcu_version: Some("0.8.0".into()),
             agents: Some(vec!["codex".into()]),
         }),
-        owner: String::new(),
+        generation: String::new(),
+        unreadable: false,
     };
     let (value, remembered) = computer_use_state(&Inputs {
         app: Some(&app),
@@ -856,7 +869,8 @@ fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
             approval: Approval::Auto,
             revision: 0,
             known: None,
-            owner: String::new(),
+            generation: String::new(),
+            unreadable: false,
         },
         approval_failed: false,
     });
@@ -916,6 +930,7 @@ fn observations_never_rewrite_the_approval_policy() {
     let first = set_approval(&paths, VM_ID, Approval::Auto).unwrap();
     // A status read took its snapshot while the policy said `auto`...
     let stale = settings(&paths, VM_ID);
+    let stale_generation = stale.generation.clone();
     assert_eq!((stale.approval, stale.revision), (Approval::Auto, first));
     // ...the user switched to `ask` before the read could save what it saw...
     let second = set_approval(&paths, VM_ID, Approval::Ask).unwrap();
@@ -938,6 +953,7 @@ fn observations_never_rewrite_the_approval_policy() {
     report["approvalRevision"] = json!(second);
     let app = ready();
     let current = settings(&paths, VM_ID);
+    report["approvalGeneration"] = json!(current.generation);
     let (_, remembered) = computer_use_state(&Inputs {
         app: Some(&app),
         vm_running: true,
@@ -951,7 +967,8 @@ fn observations_never_rewrite_the_approval_policy() {
         read_policy(&paths, VM_ID),
         Policy {
             approval: Approval::Ask,
-            revision: second
+            revision: second,
+            generation: stale_generation,
         }
     );
 }
@@ -1034,7 +1051,8 @@ fn a_guest_behind_the_policy_is_reported_as_applying_then_failed() {
         approval: Approval::Ask,
         revision: 9,
         known: None,
-        owner: String::new(),
+        generation: String::new(),
+        unreadable: false,
     };
     let report = |approval: &str, revision: u64, failed: bool| {
         let mut guest = guest("ready", None);
@@ -1098,11 +1116,11 @@ fn a_failed_apply_is_remembered_until_a_later_one_succeeds() {
 
 /// A computer whose clock is far ahead of the destination's applied this revision.
 const SOURCE_REVISION: u64 = 9_000_000_000_000_000;
-const SOURCE_OWNER: &str = "11111111-1111-4111-8111-111111111111";
+const SOURCE_GENERATION: &str = "11111111-1111-4111-8111-111111111111";
 
 fn imported_guest(mode: &str) -> Arc<SimulatedGuest> {
     let guest = Arc::new(SimulatedGuest::new());
-    *guest.applied.lock().unwrap() = (mode.into(), SOURCE_REVISION, Some(SOURCE_OWNER.into()));
+    *guest.applied.lock().unwrap() = (mode.into(), SOURCE_REVISION, Some(SOURCE_GENERATION.into()));
     guest
 }
 
@@ -1121,7 +1139,10 @@ fn an_imported_guest_with_a_source_clock_ahead_takes_the_destinations_default_as
     assert_eq!(stamped.approval, Approval::Ask);
     let applied = guest.applied.lock().unwrap().clone();
     assert_eq!(applied.0, "ask", "the destination's default won");
-    assert_eq!(applied.2.as_deref(), read_owner(&paths).as_deref());
+    assert_eq!(
+        applied.2.as_deref(),
+        Some(read_policy(&paths, VM_ID).generation.as_str())
+    );
     // Retrying (a second boot, an app-ready sync) keeps it.
     boot(guest.clone(), &paths, "dev").unwrap().join().unwrap();
     assert_eq!(guest.applied_mode().0, "ask");
@@ -1147,13 +1168,14 @@ fn a_guest_holding_another_computers_choice_is_reported_as_applying() {
         approval: Approval::Ask,
         revision: 9,
         known: None,
-        owner: OWNER.into(),
+        generation: GENERATION.into(),
+        unreadable: false,
     };
     let report = |owner: Option<&str>| {
         let mut guest = guest("ready", None);
         guest["approval"] = json!("ask");
         guest["approvalRevision"] = json!(SOURCE_REVISION);
-        guest["approvalOwner"] = json!(owner);
+        guest["approvalGeneration"] = json!(owner);
         state(Inputs {
             app: Some(&app),
             vm_running: true,
@@ -1162,8 +1184,8 @@ fn a_guest_holding_another_computers_choice_is_reported_as_applying() {
             approval_failed: false,
         })
     };
-    assert_eq!(report(Some(OWNER))["state"], "ready");
-    for other in [Some(SOURCE_OWNER), None] {
+    assert_eq!(report(Some(GENERATION))["state"], "ready");
+    for other in [Some(SOURCE_GENERATION), None] {
         let value = report(other);
         assert_eq!(value["state"], "installing", "{other:?}");
         assert_eq!(value["reason"], "Applying approval change…");
@@ -1171,15 +1193,42 @@ fn a_guest_holding_another_computers_choice_is_reported_as_applying() {
 }
 
 #[test]
-fn the_owner_is_stable_per_computer_and_never_a_policy_file() {
+fn the_generation_is_issued_by_the_host_per_policy_and_never_reused() {
     let directory = tempfile::tempdir().unwrap();
     let paths = paths(&directory);
-    assert_eq!(read_owner(&paths), None);
-    let first = owner(&paths).unwrap();
-    assert_eq!(owner(&paths).unwrap(), first);
-    assert_eq!(settings(&paths, VM_ID).owner, first);
+    assert_eq!(settings(&paths, VM_ID).generation, "");
+    let first = sync_policy(&paths, VM_ID).unwrap();
+    assert!(uuid::Uuid::parse_str(&first.generation).is_ok());
+    // Syncing and changing the mode keep the generation; the revision grows within it.
+    assert_eq!(sync_policy(&paths, VM_ID).unwrap(), first);
+    let changed = set_approval_policy(&paths, VM_ID, Approval::Auto).unwrap();
+    assert_eq!(changed.generation, first.generation);
+    assert!(changed.revision > first.revision);
+    assert_eq!(settings(&paths, VM_ID).generation, first.generation);
+    // A forged guest revision renews it, keeping the mode.
+    let renewed = renew_generation(&paths, VM_ID).unwrap();
+    assert_ne!(renewed.generation, first.generation);
+    assert_eq!(renewed.approval, Approval::Auto);
+    // Another policy (a new, imported or transferred VM; a reset) gets its own.
     let other = tempfile::tempdir().unwrap();
-    assert_ne!(owner(&self::paths(&other)).unwrap(), first);
+    assert_ne!(
+        sync_policy(&self::paths(&other), VM_ID).unwrap().generation,
+        first.generation
+    );
+    forget(&paths, VM_ID);
+    let reset = sync_policy(&paths, VM_ID).unwrap();
+    assert_ne!(reset.generation, first.generation);
+    assert_ne!(reset.generation, renewed.generation);
+    // A fork inherits the mode only and is stamped with a generation of its own.
+    let child = "00000000-0000-4000-8000-0000000000c1";
+    set_approval(&paths, VM_ID, Approval::Auto).unwrap();
+    inherit_settings(&paths, VM_ID, child);
+    assert_eq!(settings(&paths, child).approval, Approval::Auto);
+    assert_eq!(settings(&paths, child).generation, "");
+    assert_ne!(
+        sync_policy(&paths, child).unwrap().generation,
+        settings(&paths, VM_ID).generation
+    );
 }
 
 /// A VM that Silo replaced (deleted and created again under the same name) while the
@@ -1334,7 +1383,7 @@ fn a_saved_approval_change_whose_sync_never_launched_is_finished_at_app_start() 
     let saved = set_approval(&paths, VM_ID, Approval::Auto).unwrap();
     let launched = guest.launches.lock().unwrap().len();
     let shared: SharedRunner = guest.clone();
-    let started = reconcile_in(test_gate(), &shared, &paths, &["dev".to_owned()]);
+    let started = reconcile_in(test_gate(), &shared, &paths, &["dev".to_owned()], &[]);
     assert_eq!(started.len(), 1);
     for handle in started {
         handle.join().unwrap();
@@ -1342,7 +1391,9 @@ fn a_saved_approval_change_whose_sync_never_launched_is_finished_at_app_start() 
     assert_eq!(guest.launches.lock().unwrap().len(), launched + 1);
     assert_eq!(guest.applied_mode(), ("auto".into(), saved));
     // Nothing behind: nothing launched.
-    assert!(reconcile_in(test_gate(), &shared, &paths, &["dev".to_owned()]).is_empty());
+    for handle in reconcile_in(test_gate(), &shared, &paths, &["dev".to_owned()], &[]) {
+        handle.join().unwrap();
+    }
     assert_eq!(guest.launches.lock().unwrap().len(), launched + 1);
 }
 
@@ -1353,7 +1404,7 @@ fn app_start_also_resyncs_a_guest_holding_another_computers_choice_or_no_helper(
     write_machines(&paths, true);
     let guest = imported_guest("auto");
     let shared: SharedRunner = guest.clone();
-    for handle in reconcile_in(test_gate(), &shared, &paths, &["dev".to_owned()]) {
+    for handle in reconcile_in(test_gate(), &shared, &paths, &["dev".to_owned()], &[]) {
         handle.join().unwrap();
     }
     assert_eq!(guest.applied_mode().0, "ask");
@@ -1364,7 +1415,7 @@ fn app_start_also_resyncs_a_guest_holding_another_computers_choice_or_no_helper(
     });
     let shared: SharedRunner = bare.clone();
     let names = ["dev".to_owned(), "other".to_owned()];
-    let started = reconcile_in(test_gate(), &shared, &paths, &names);
+    let started = reconcile_in(test_gate(), &shared, &paths, &names, &[]);
     assert_eq!(started.len(), 1, "the unknown VM is skipped");
     for handle in started {
         handle.join().unwrap();
@@ -1420,4 +1471,418 @@ fn the_shared_folder_is_prepared_again_when_the_start_up_attempt_failed() {
     let dir = register_published(&directory.path().join("chatgpt")).unwrap();
     assert_eq!(published_dir(), Some(dir));
     reset_published_for_test();
+}
+
+// ------------------------------- host-authoritative policy, requested vs applied
+
+#[test]
+fn an_export_with_a_future_revision_cannot_keep_auto_against_a_fresh_default_on_import() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    // The VM was stamped here, the user chose auto, and its guest disk (exported while
+    // this computer's clock was ahead) holds auto at a far-future revision under the
+    // same generation. The import is a new VM policy: no policy file exists for it.
+    let source = sync_policy(&paths, VM_ID).unwrap();
+    forget(&paths, VM_ID);
+    let guest = Arc::new(SimulatedGuest::new());
+    *guest.applied.lock().unwrap() = (
+        "auto".into(),
+        SOURCE_REVISION,
+        Some(source.generation.clone()),
+    );
+    boot(guest.clone(), &paths, "dev").unwrap().join().unwrap();
+    let applied = guest.applied.lock().unwrap().clone();
+    assert_eq!(applied.0, "ask", "the host's fresh default won");
+    let policy = read_policy(&paths, VM_ID);
+    assert_ne!(policy.generation, source.generation);
+    assert_eq!(applied.2.as_deref(), Some(policy.generation.as_str()));
+}
+
+#[test]
+fn a_guest_record_forged_with_the_current_generation_and_a_huge_revision_cannot_block_the_host() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    let policy = sync_policy(&paths, VM_ID).unwrap();
+    let guest = Arc::new(SimulatedGuest::new());
+    *guest.applied.lock().unwrap() = (
+        "auto".into(),
+        SOURCE_REVISION,
+        Some(policy.generation.clone()),
+    );
+    // The guest rejects the change (same generation, lower revision); the host notices
+    // the revision it never issued, renews the generation and syncs again.
+    apply_approval_with(guest.as_ref(), &paths, &machine(true), Approval::Ask, true).unwrap();
+    let applied = guest.applied.lock().unwrap().clone();
+    assert_eq!(applied.0, "ask");
+    let renewed = read_policy(&paths, VM_ID);
+    assert_ne!(renewed.generation, policy.generation);
+    assert_eq!(applied.2.as_deref(), Some(renewed.generation.as_str()));
+    assert!(renewed.revision < SOURCE_REVISION);
+    // Reconciliation at app start renews it too.
+    *guest.applied.lock().unwrap() = (
+        "auto".into(),
+        SOURCE_REVISION,
+        Some(renewed.generation.clone()),
+    );
+    let shared: SharedRunner = guest.clone();
+    for handle in reconcile_in(test_gate(), &shared, &paths, &["dev".to_owned()], &[]) {
+        handle.join().unwrap();
+    }
+    assert_eq!(guest.applied_mode().0, "ask");
+    assert_ne!(read_policy(&paths, VM_ID).generation, renewed.generation);
+}
+
+#[test]
+fn a_failed_apply_stays_pending_and_failed_until_a_retry_applies_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    let guest = Arc::new(SimulatedGuest::new());
+    apply_approval_with(guest.as_ref(), &paths, &machine(true), Approval::Auto, true).unwrap();
+    assert_eq!(guest.applied_mode().0, "auto");
+    // `lcu setup` fails before it removed the auto-approval entries.
+    guest
+        .setup_fails
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    apply_approval_with(guest.as_ref(), &paths, &machine(true), Approval::Ask, true).unwrap();
+    let wanted = settings(&paths, VM_ID);
+    assert_eq!(wanted.approval, Approval::Ask);
+    // The guest still reports what is applied, so the host sees the lag and the failure.
+    let report = guest.status();
+    assert_eq!(report["approval"], "auto");
+    let app = ready();
+    let value = state(Inputs {
+        app: Some(&app),
+        vm_running: true,
+        guest: Some(&report),
+        settings: &wanted,
+        approval_failed: false,
+    });
+    assert_eq!(value["state"], "failed");
+    // Setup recovers; the app-start reconciliation sees the lag and retries.
+    guest
+        .setup_fails
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let shared: SharedRunner = guest.clone();
+    for handle in reconcile_in(test_gate(), &shared, &paths, &["dev".to_owned()], &[]) {
+        handle.join().unwrap();
+    }
+    assert_eq!(guest.applied_mode(), ("ask".into(), wanted.revision));
+    let report = guest.status();
+    let value = state(Inputs {
+        app: Some(&app),
+        vm_running: true,
+        guest: Some(&report),
+        settings: &wanted,
+        approval_failed: false,
+    });
+    assert_eq!(value["state"], "ready");
+}
+
+/// Fails the first `failures` status reads, then answers like the inner guest. When
+/// `stop_after_failure` is set the VM also stops once a read failed.
+struct FlakyStatus {
+    inner: Arc<SimulatedGuest>,
+    failures: std::sync::atomic::AtomicUsize,
+    stop_after_failure: bool,
+    stopped: std::sync::atomic::AtomicBool,
+    reads: std::sync::atomic::AtomicUsize,
+}
+
+impl FlakyStatus {
+    fn new(inner: Arc<SimulatedGuest>, failures: usize, stop_after_failure: bool) -> Self {
+        Self {
+            inner,
+            failures: std::sync::atomic::AtomicUsize::new(failures),
+            stop_after_failure,
+            stopped: std::sync::atomic::AtomicBool::new(false),
+            reads: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl RuntimeRunner for FlakyStatus {
+    fn run(
+        &self,
+        paths: &RuntimePaths,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<CommandOutput, RuntimeError> {
+        use std::sync::atomic::Ordering;
+        if args.first().is_some_and(|a| a == "inspect") && self.stopped.load(Ordering::SeqCst) {
+            return Ok(CommandOutput {
+                stdout: json!({"name":"dev","status":"Stopped","config":{}}).to_string(),
+                stderr: String::new(),
+            });
+        }
+        if args.last().is_some_and(|script| script == STATUS_COMMAND) {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            if self
+                .failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                    left.checked_sub(1)
+                })
+                .is_ok()
+            {
+                self.stopped
+                    .store(self.stop_after_failure, Ordering::SeqCst);
+                return Err(RuntimeError::Unavailable("guest still starting".into()));
+            }
+        }
+        self.inner.run(paths, args, timeout)
+    }
+}
+
+static FAST_RETRY: [Duration; 3] = [Duration::from_millis(10); 3];
+
+fn behind_guest(paths: &RuntimePaths) -> Arc<SimulatedGuest> {
+    let guest = Arc::new(SimulatedGuest::new());
+    boot(guest.clone(), paths, "dev").unwrap().join().unwrap();
+    set_approval(paths, VM_ID, Approval::Auto).unwrap();
+    guest
+}
+
+#[test]
+fn a_failed_first_status_read_at_app_start_is_retried_until_the_guest_answers() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    let guest = behind_guest(&paths);
+    let flaky = Arc::new(FlakyStatus::new(guest.clone(), 2, false));
+    let shared: SharedRunner = flaky.clone();
+    for handle in reconcile_in(
+        test_gate(),
+        &shared,
+        &paths,
+        &["dev".to_owned()],
+        &FAST_RETRY,
+    ) {
+        handle.join().unwrap();
+    }
+    assert_eq!(flaky.reads.load(std::sync::atomic::Ordering::SeqCst), 3);
+    assert_eq!(
+        guest.applied_mode().0,
+        "auto",
+        "the lagging guest was synced"
+    );
+}
+
+#[test]
+fn status_reads_that_keep_failing_stop_after_the_backoff_and_never_sync() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    let guest = behind_guest(&paths);
+    let launches = guest.launches.lock().unwrap().len();
+    let flaky = Arc::new(FlakyStatus::new(guest.clone(), usize::MAX, false));
+    let shared: SharedRunner = flaky.clone();
+    for handle in reconcile_in(
+        test_gate(),
+        &shared,
+        &paths,
+        &["dev".to_owned()],
+        &FAST_RETRY,
+    ) {
+        handle.join().unwrap();
+    }
+    assert_eq!(flaky.reads.load(std::sync::atomic::Ordering::SeqCst), 4);
+    assert_eq!(guest.launches.lock().unwrap().len(), launches);
+}
+
+#[test]
+fn a_retry_confirms_the_vm_still_runs_and_never_syncs_one_that_stopped() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    let guest = behind_guest(&paths);
+    let launches = guest.launches.lock().unwrap().len();
+    // The first read fails and the VM stops before the retry.
+    let flaky = Arc::new(FlakyStatus::new(guest.clone(), 1, true));
+    let shared: SharedRunner = flaky.clone();
+    for handle in reconcile_in(
+        test_gate(),
+        &shared,
+        &paths,
+        &["dev".to_owned()],
+        &FAST_RETRY,
+    ) {
+        handle.join().unwrap();
+    }
+    assert_eq!(flaky.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(guest.launches.lock().unwrap().len(), launches);
+    assert_eq!(guest.applied_mode().0, "ask");
+}
+
+/// A guest whose launcher hangs like an unresponsive one: it returns only once the
+/// operation is cancelled (what the runtime does to its child) or after `give_up`.
+struct Hanging {
+    inner: Booting,
+    entered: StdMutex<Option<std::sync::mpsc::Sender<()>>>,
+    give_up: Duration,
+}
+
+impl RuntimeRunner for Hanging {
+    fn run(
+        &self,
+        paths: &RuntimePaths,
+        args: &[String],
+        timeout: Duration,
+    ) -> Result<CommandOutput, RuntimeError> {
+        if args.last().is_some_and(|script| script.contains("setsid")) {
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                entered.send(()).unwrap();
+            }
+            let deadline = std::time::Instant::now() + self.give_up;
+            while std::time::Instant::now() < deadline {
+                if runtime::operation_gate::cancel_requested() {
+                    return Err(RuntimeError::Cancelled {
+                        operation: "exec".into(),
+                    });
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            return Err(RuntimeError::Unavailable("guest never answered".into()));
+        }
+        self.inner.run(paths, args, timeout)
+    }
+}
+
+#[test]
+fn a_stalled_launcher_yields_the_turn_to_a_queued_stop_promptly() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    let (entered, entered_receiver) = std::sync::mpsc::channel();
+    let guest = Arc::new(Hanging {
+        inner: Booting::new("one"),
+        entered: StdMutex::new(Some(entered)),
+        give_up: Duration::from_secs(60),
+    });
+    let gate = test_gate();
+    let handle = after_boot_with(gate, guest, &paths, "dev").unwrap();
+    entered_receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the launcher reached the guest");
+    // Stop queues behind the sync's turn and must get it long before the guest answers.
+    let started = std::time::Instant::now();
+    let stop = gate
+        .kind(runtime::operation_gate::OperationKind::Lifecycle)
+        .vm(VM_ID, "dev", "Stopping dev")
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "stop waited {:?}",
+        started.elapsed()
+    );
+    drop(stop);
+    handle.join().unwrap();
+    // A cut-short launch says nothing about the guest.
+    assert!(!apply_failed(VM_ID, u64::MAX));
+}
+
+#[test]
+fn the_launcher_is_given_only_a_short_time_to_start_the_detached_helper() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    struct Timed(StdMutex<Vec<(String, Duration)>>);
+    impl RuntimeRunner for Timed {
+        fn run(
+            &self,
+            _: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            let script = args.last().unwrap().clone();
+            if args[0] == "inspect" {
+                return Ok(CommandOutput {
+                    stdout: json!({"name":"dev","status":"Running",
+                        "config":{"labels":{"silo.machine-id":VM_ID}},
+                        "runtime_instance_id":"one"})
+                    .to_string(),
+                    stderr: String::new(),
+                });
+            }
+            self.0.lock().unwrap().push((script, timeout));
+            Ok(CommandOutput {
+                stdout: String::new(),
+                stderr: String::new(),
+            })
+        }
+    }
+    let runner = Arc::new(Timed(StdMutex::new(Vec::new())));
+    boot(runner.clone(), &paths, "dev").unwrap().join().unwrap();
+    let calls = runner.0.lock().unwrap().clone();
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].0.contains("setsid"));
+    assert!(calls[0].1 <= Duration::from_secs(30), "{:?}", calls[0].1);
+}
+
+#[test]
+fn the_state_reports_the_chosen_and_the_applied_approval_separately() {
+    let app = ready();
+    let settings = Settings {
+        approval: Approval::Ask,
+        revision: 9,
+        generation: GENERATION.into(),
+        unreadable: false,
+        ..Settings::default()
+    };
+    let report = |applied: &str, confirmed: bool| {
+        let mut guest = guest("ready", None);
+        guest["approval"] = json!(applied);
+        guest["approvalRevision"] = json!(if applied == "auto" { 8 } else { 9 });
+        guest["approvalGeneration"] = json!(GENERATION);
+        guest["approvalConfirmed"] = json!(confirmed);
+        state(Inputs {
+            app: Some(&app),
+            vm_running: true,
+            guest: Some(&guest),
+            settings: &settings,
+            approval_failed: false,
+        })
+    };
+    // The user chose ask; the guest still applies auto (a change pending or failed).
+    let pending = report("auto", true);
+    assert_eq!(pending["approval"], "ask");
+    assert_eq!(pending["appliedApproval"], "auto");
+    assert_eq!(pending["state"], "installing");
+    // Agreement.
+    let current = report("ask", true);
+    assert_eq!(current["approval"], "ask");
+    assert_eq!(current["appliedApproval"], "ask");
+    // A guest that confirmed nothing says nothing: unknown, never the helper's default.
+    assert_eq!(report("ask", false)["appliedApproval"], "unknown");
+    // No guest information at all (stopped, preparing, no helper): unknown.
+    let stopped = state(Inputs {
+        app: Some(&app),
+        vm_running: false,
+        guest: None,
+        settings: &settings,
+        approval_failed: false,
+    });
+    assert_eq!(stopped["appliedApproval"], "unknown");
+}
+
+#[test]
+fn an_unreadable_policy_is_unknown_not_ask() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    // No policy yet: the default ask is the real choice.
+    assert!(!settings(&paths, VM_ID).unreadable);
+    let value = desktop_state(&paths, &machine(true), false, None).unwrap();
+    assert_eq!(value["approval"], "ask");
+    // A policy file that exists but cannot be parsed is not a choice of ask.
+    set_approval(&paths, VM_ID, Approval::Auto).unwrap();
+    fs::write(policy_path(&paths, VM_ID).unwrap(), b"{not json").unwrap();
+    assert!(settings(&paths, VM_ID).unreadable);
+    let value = desktop_state(&paths, &machine(true), false, None).unwrap();
+    assert_eq!(value["approval"], "unknown");
+    assert_eq!(value["appliedApproval"], "unknown");
+    // Fail closed: the next sync restamps the VM with the default ask and a new generation.
+    let stamped = sync_policy(&paths, VM_ID).unwrap();
+    assert_eq!(stamped.approval, Approval::Ask);
+    assert!(!settings(&paths, VM_ID).unreadable);
 }
