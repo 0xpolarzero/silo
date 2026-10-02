@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useEffectEvent, useRef, useState } from "react"
 
 import { showActionFailure, showOperationNotice } from "@/lib/operation-toast"
 
@@ -99,12 +99,13 @@ export function useMachineEditing({
   const [editorReview, setEditorReview] = useState<MachineReview | null>(null)
   const [editorResetToken, setEditorResetToken] = useState(0)
 
+  const completeRestoredSave = useEffectEvent(() => { setEditor(null); setCommitting(false) })
   // A restored editor observes the same save instead of starting another one.
   useEffect(() => {
     if (!stored?.pendingSave) return
     let current = true
     void stored.pendingSave.then(() => {
-      if (current) { setEditor(null); setCommitting(false) }
+      if (current) completeRestoredSave()
     }, cause => {
       if (current) {
         if (isStaleConfigurationError(cause)) setEditorConflict(true)
