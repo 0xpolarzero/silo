@@ -21,3 +21,13 @@ Scope: `app/SiloUI/src-tauri/src/runtime.rs` and adjacent runtime helpers. Synth
 - **Consequence:** Configuration clears boot identity overrides and writes Git/jj defaults into B. Verification can report B as satisfying A's identity setup.
 - **Fix:** Compare the runtime name and ID at preflight, revalidate current metadata after admission, and inspect the runtime again inside the configuration lane. Verification performs the same identity checks before guest execution.
 - **Regression coverage:** Three native regressions cover mismatched runtime IDs, replacements committed during admission, and a runtime replacement after preflight. Existing matching-ID fixtures retain successful configuration, verification, stopped-VM handling, and one-VM-at-a-time admission. All six extracted cases pass after the fix; Rust formatting and whitespace checks passed. Full native verification remains queued on the shared Cargo lock.
+
+## RUNTIME-CORE-4: Secret application continues under a removed VM's lane
+
+- **Priority:** P2.
+- **Location:** `app/SiloUI/src-tauri/src/runtime.rs`, `apply_secrets` admission and the guest-policy application closure.
+- **Trigger:** Saved A is replaced by same-named B while secret application waits for A's gate, or runtime B already disagrees with saved A.
+- **Evidence:** The application retained A's gate ID but read desired secrets and called `secrets_runtime::apply` by name afterward. That helper validates ownership, status, and HTTPS handling but does not compare the stable ID. An extracted, unchanged application closure accepted both replacement cases and read material/applied policy; both rejection assertions failed while the matching-ID control passed.
+- **Consequence:** A stale update can send secret material to a different runtime VM and perform work on B under A's admission lane.
+- **Fix:** After acquiring runtime access, require current metadata to retain the originally admitted ID and require the inspected runtime to match it. Reject identity failures as final before reading secret material. A path-based seam keeps the public AppHandle wrapper unchanged in behavior and permits isolated unit coverage.
+- **Regression coverage:** Native fixtures cover a runtime mismatch, a saved replacement while admission is blocked, and successful matching-ID application using an explicitly synthetic secret document/vault. The three extracted cases pass after the fix, including the resumed run. Rust formatting, TypeScript typecheck, lint, and whitespace checks pass. The resumed focused Cargo run (`secret_apply_`) waited on the shared artifact lock and was interrupted after verifying its PID and worktree; native fixtures remain unverified. The earlier native attempt failed on unrelated settings test compilation.
