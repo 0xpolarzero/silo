@@ -1146,7 +1146,15 @@ pub(crate) async fn push_repository(
     target: PushTarget,
 ) -> Result<Value, String> {
     let key = format!("{workspace}\0{repository_path}");
-    let planned_count = planned_count(&app, &workspace, &repository_path);
+    let planned_count = {
+        let (app, workspace, repository_path) =
+            (app.clone(), workspace.clone(), repository_path.clone());
+        runtime::operation_gate::spawn_blocking(move || {
+            planned_count(&app, &workspace, &repository_path)
+        })
+        .await
+        .map_err(|_| "Host push task failed.".to_string())?
+    };
     {
         let mut r = results().lock().map_err(|_| "Push state unavailable.")?;
         if r.get(&key).is_some_and(|(v, _)| v["status"] == "pushing") {
