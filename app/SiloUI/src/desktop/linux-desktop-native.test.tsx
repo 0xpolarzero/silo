@@ -278,3 +278,26 @@ it("runs explicit LCU setup in a live session even when its display stream faile
   expect(invoke.mock.calls.some(([command, action]) => command === "desktop_action" &&
     ["restart", "restart-streamer", "start"].includes(action?.action))).toBe(false)
 })
+
+it("pauses viewer health polling when hidden and refreshes once on return", async () => {
+  vi.useFakeTimers()
+  const visible = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
+  invoke.mockImplementation(async command => command === "read_desktop_state" ? { installed: true, autoStart: true, state: "vm-stopped" } : undefined)
+  const view = render(<NativeLinuxDesktopViewer workspace="dev" name="dev" />)
+  const reads = () => invoke.mock.calls.filter(([command]) => command === "read_desktop_state")
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(reads()).toHaveLength(0)
+    visible.mockReturnValue("visible")
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); await vi.advanceTimersByTimeAsync(0) })
+    expect(reads()).toHaveLength(1)
+    visible.mockReturnValue("hidden")
+    act(() => { document.dispatchEvent(new Event("visibilitychange")) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(reads()).toHaveLength(1)
+    view.unmount()
+    visible.mockReturnValue("visible")
+    act(() => { document.dispatchEvent(new Event("visibilitychange")) })
+    expect(reads()).toHaveLength(1)
+  } finally { view.unmount(); vi.useRealTimers() }
+})

@@ -56,10 +56,10 @@ function ManagementAddresses({ management }: { management: RemoteManagement }) {
 }
 
 /** One computer's ChatGPT for Linux status. Every computer downloads it by itself; a failure can be retried here. */
-function ChatGptAppRow({ name, computer, connected = true }: { name: string; computer?: string; connected?: boolean }) {
+function ChatGptAppRow({ name, computer, connected = true, active }: { name: string; computer?: string; connected?: boolean; active: boolean }) {
   const bridge = useComputerUseBridge()
   const store = connected ? bridge?.chatGptFor(computer) : undefined
-  const { status, busy, error, loadError } = useChatGptApp(store)
+  const { status, busy, error, loadError } = useChatGptApp(store, active)
   const stale = Boolean(status) && Boolean(loadError)
   // An offline computer, or one whose Silo is older, simply has no status to show: unknown, never an error.
   const known = connected && status !== null && status.state !== "unknown"
@@ -83,24 +83,24 @@ function ChatGptAppRow({ name, computer, connected = true }: { name: string; com
   </li>
 }
 
-function ChatGptAppSettings({ source }: { source: ApplicationSource }) {
+function ChatGptAppSettings({ source, active }: { source: ApplicationSource; active: boolean }) {
   if (!useComputerUseBridge()) return null
   return <section aria-label="ChatGPT for Linux" className="grid gap-3">
     <h2 className="text-xs font-medium">ChatGPT for Linux</h2>
     <div className="grid gap-3 rounded-lg border p-3">
       <p className="text-xs text-muted-foreground">{CHATGPT_DOWNLOAD_NOTE}</p>
       <ul aria-label="ChatGPT for Linux on each computer" className="grid gap-3">
-        <ChatGptAppRow name="This computer" />
-        {source.remoteComputers?.map(computer => <ChatGptAppRow key={computer.id} name={computer.name} computer={computer.id} connected={computer.connected} />)}
+        <ChatGptAppRow name="This computer" active={active} />
+        {source.remoteComputers?.map(computer => <ChatGptAppRow active={active} key={computer.id} name={computer.name} computer={computer.id} connected={computer.connected} />)}
       </ul>
     </div>
   </section>
 }
 
-export function RemoteComputersSettings({ source, actions }: { source: ApplicationSource; actions: ApplicationActions }) {
+export function RemoteComputersSettings({ source, actions, active = true }: { source: ApplicationSource; actions: ApplicationActions; active?: boolean }) {
   return <div className="grid gap-6">
     {actions.connectComputer && <ComputersSection source={source} actions={actions} />}
-    <ChatGptAppSettings source={source} />
+    <ChatGptAppSettings source={source} active={active} />
   </div>
 }
 
