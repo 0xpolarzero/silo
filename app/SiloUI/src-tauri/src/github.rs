@@ -324,6 +324,30 @@ impl<T: Clone + PartialEq> SessionSecret<T> {
             .0
             .lock()
             .map_err(|_| "Credential state is unavailable.")?;
+        self.write_locked(&mut state, value, write)
+    }
+    fn update(
+        &self,
+        read: impl FnOnce() -> Result<T, String>,
+        update: impl FnOnce(&mut T),
+        write: impl FnOnce(&T) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut state = self
+            .0
+            .lock()
+            .map_err(|_| "Credential state is unavailable.")?;
+        let value = state.value.get_or_insert_with(read).clone();
+        self.publish(&state.value);
+        let mut value = value?;
+        update(&mut value);
+        self.write_locked(&mut state, value.clone(), || write(&value))
+    }
+    fn write_locked(
+        &self,
+        state: &mut SecretSlot<T>,
+        value: T,
+        write: impl FnOnce() -> Result<(), String>,
+    ) -> Result<(), String> {
         if let Some(Err(error)) = state.value.as_ref() {
             return Err(error.clone());
         }
@@ -1127,12 +1151,7 @@ fn save_ledger(entry: &keyring::Entry, ledger: &TokenLedger) -> Result<(), Strin
 // later partial failure must not lose the only copy needed for revocation.
 fn remember_token(app: &tauri::AppHandle, workspace: &str, token: &str) -> Result<(), String> {
     let entry = ledger_entry()?;
-    let mut ledger = LEDGER_SECRET.read(|| read_ledger(&entry))?;
-    let tokens = ledger.entry(workspace.into()).or_default();
-    if !tokens.iter().any(|previous| previous == token) {
-        tokens.push(token.into());
-    }
-    LEDGER_SECRET.write(ledger.clone(), || save_ledger(&entry, &ledger))?;
+    append_ledger_token(&LEDGER_SECRET, &entry, workspace, token)?;
     let _state = serialize(&STATE);
     let mut document = load(app)?;
     document.grants_issued = true;
@@ -1174,31 +1193,68 @@ fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> 
         live.extend(tokens.iter().map(|token| token.token.clone()));
     }
     let entry = ledger_entry()?;
-    let mut ledger = LEDGER_SECRET.read(|| read_ledger(&entry))?;
+    retire_ledger_tokens(
+        &LEDGER_SECRET,
+        &entry,
+        workspace,
+        |token| live.contains(token),
+        |token| token_operation(Operation::RevokeToken, json!({"accessToken":token})).map(|_| ()),
+    )
+}
+fn append_ledger_token(
+    secret: &SessionSecret<TokenLedger>,
+    entry: &keyring::Entry,
+    workspace: &str,
+    token: &str,
+) -> Result<(), String> {
+    secret.update(
+        || read_ledger(entry),
+        |ledger| {
+            let tokens = ledger.entry(workspace.into()).or_default();
+            if !tokens.iter().any(|previous| previous == token) {
+                tokens.push(token.into());
+            }
+        },
+        |ledger| save_ledger(entry, ledger),
+    )
+}
+fn retire_ledger_tokens(
+    secret: &SessionSecret<TokenLedger>,
+    entry: &keyring::Entry,
+    workspace: &str,
+    live: impl Fn(&str) -> bool,
+    mut revoke: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    let ledger = secret.read(|| read_ledger(entry))?;
     let tokens = ledger.get(workspace).cloned().unwrap_or_default();
     let mut failure = None;
-    let mut remaining = Vec::new();
+    let mut revoked = Vec::new();
     for token in tokens {
-        if live.contains(&token) {
-            remaining.push(token);
+        if live(&token) {
             continue;
         }
-        match token_operation(Operation::RevokeToken, json!({"accessToken":token})) {
-            Ok(_) => {}
+        match revoke(&token) {
+            Ok(()) => revoked.push(token),
             Err(message) => {
                 failure = Some(message);
-                remaining.push(token);
             }
         }
     }
-    if remaining.is_empty() {
-        ledger.remove(workspace);
-    } else {
-        ledger.insert(workspace.into(), remaining);
-    }
-    LEDGER_SECRET.write(ledger.clone(), || save_ledger(&entry, &ledger))?;
+    secret.update(
+        || read_ledger(entry),
+        |ledger| {
+            if let Some(tokens) = ledger.get_mut(workspace) {
+                tokens.retain(|token| !revoked.contains(token));
+                if tokens.is_empty() {
+                    ledger.remove(workspace);
+                }
+            }
+        },
+        |ledger| save_ledger(entry, ledger),
+    )?;
     failure.map_or(Ok(()), Err)
 }
+
 fn finish_application(
     grants: Result<(), String>,
     explicit: bool,
@@ -4098,6 +4154,61 @@ mod tests {
         assert_eq!(state["state"], "disconnected");
         assert_eq!(state["repositoryCatalogStatus"]["status"], "unavailable");
         assert_eq!(state["workspaceOperations"][0]["status"], "succeeded");
+    }
+    #[test]
+    fn retirement_preserves_ledger_tokens_appended_during_revocation() {
+        let secret = SessionSecret::new();
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        append_ledger_token(&secret, &entry, "dev", "old").unwrap();
+        retire_ledger_tokens(
+            &secret,
+            &entry,
+            "dev",
+            |_| false,
+            |_| {
+                append_ledger_token(&secret, &entry, "dev", "new").unwrap();
+                append_ledger_token(&secret, &entry, "other", "unrelated").unwrap();
+                Ok(())
+            },
+        )
+        .unwrap();
+        let ledger = secret.read(|| panic!("unexpected store read")).unwrap();
+        assert_eq!(ledger["dev"], ["new"]);
+        assert_eq!(ledger["other"], ["unrelated"]);
+        assert_eq!(read_ledger(&entry).unwrap(), ledger);
+    }
+    #[test]
+    fn concurrent_ledger_appends_survive_failed_storage() {
+        let secret = SessionSecret::new();
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        secret.read(|| Ok(TokenLedger::new())).unwrap();
+        entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .unwrap()
+            .set_error(keyring::Error::NoStorageAccess(Box::new(
+                std::io::Error::other("denied"),
+            )));
+        let barrier = std::sync::Barrier::new(3);
+        std::thread::scope(|scope| {
+            for token in ["one", "two"] {
+                let secret = &secret;
+                let entry = &entry;
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    let _ = append_ledger_token(secret, entry, "dev", token);
+                });
+            }
+            barrier.wait();
+        });
+        let mut tokens = secret.read(|| panic!("unexpected store read")).unwrap()["dev"].clone();
+        tokens.sort();
+        assert_eq!(tokens, ["one", "two"]);
+        secret.flush(|ledger| save_ledger(&entry, ledger)).unwrap();
+        assert_eq!(read_ledger(&entry).unwrap()["dev"].len(), 2);
     }
     #[test]
     fn runtime_token_ledger_survives_reload_only_in_secure_store() {

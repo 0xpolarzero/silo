@@ -10,7 +10,12 @@ records exact results and remaining limits.
 This plan
 supersedes implementation suggestions in the [viewer direction](SiloUI-DESKTOP-VIEWER-DIRECTION.md)
 where they conflict. The earlier [optional-desktop plan](archive/SiloUI-DESKTOP-IMPLEMENTATION-PLAN.md)
-records the existing KasmVNC implementation, not this migration.
+records the preceding KasmVNC implementation, not this migration.
+
+The evidence table and delivery steps below retain the September design
+snapshot, including the former Kasm/Luda recipe. For current built-in desktop
+and agent behavior, follow [Linux desktop](SiloUI-DESKTOP.md) and the later
+[computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
 
 ## Outcome and boundaries
 

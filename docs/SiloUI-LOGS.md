@@ -80,8 +80,9 @@ record is read again once complete), reads new files in full, drops records of
 expired files, and replaces its predecessor in the cache. It skips the runtime
 inspection and retention cleanup that a new search performs. A file that shrank
 in place (retention truncation), a changed boot failure record, or an expired
-snapshot rebuilds the index from scratch. Carried records keep the estimated
-time they were indexed with. Refresh, pagination and export always use a new
+snapshot rebuilds the index from scratch. Rotation and a previously unfinished
+record also rebuild the index so PEM state follows the retained record order.
+Carried records keep the estimated time they were indexed with. Refresh, pagination and export always use a new
 search. Hosts running an older Silo ignore the follow token and run a full query.
 
 A malformed execution record, an unreadable boot failure, or any record over
@@ -104,8 +105,21 @@ Lines. It includes coverage metadata and complete record identities. Export
 queries each sandbox as a separate snapshot. Cancellation or a failed page leaves
 the selected destination untouched and removes partial output.
 
-The display and export use marker-based sensitive-output filtering. Raw runtime
-files can contain private application output; this filter is not a guarantee
+The display and export use marker-based sensitive-output filtering. PEM block
+state crosses records within each stream and execution session. Search scans
+rotated segments oldest first, and stores each matching record's initial PEM
+state beside its offset; paging, context, Follow and export therefore hide body
+lines even when the requested page starts inside a block. An unterminated block
+remains hidden through the retained end of that session. Other execution
+sessions keep their ordinary multiline output.
+
+The pinned runtime's [retention patch](../app/SiloUI/patches/microsandbox-log-retention-desktop-start-0.7.6.patch)
+renames older segments to increasing numeric suffixes. Silo uses numeric suffix
+order rather than directory enumeration or guest timestamps for classification.
+Tests generate disposable RSA keys with OpenSSL and exercise the production
+query and JSON Lines export functions against temporary files.
+
+Raw runtime files can contain private application output; this filter is not a guarantee
 that arbitrary secrets are removed. Review exports before sharing them.
 
 ## Implementation

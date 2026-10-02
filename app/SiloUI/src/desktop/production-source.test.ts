@@ -605,7 +605,7 @@ describe("production application bridge", () => {
     await store.initialize(); await store.applicationActions.refreshNetwork?.()
     failed = true
     await store.applicationActions.refreshNetwork?.()
-    expect(store.getSnapshot().source?.network).toEqual(state)
+    expect(store.getSnapshot().source?.network?.workspaces.find(row => row.workspace === "dev")).toEqual({ ...state.workspaces[0], error: "Could not check network services." })
     expect(store.getSnapshot().source?.networkError).toBe("Could not check network services.")
     expect(store.getSnapshot().source?.workspaces[0].ports[0].listening).toBe(false)
     store.dispose()

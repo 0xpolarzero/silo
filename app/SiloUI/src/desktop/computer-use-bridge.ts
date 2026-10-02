@@ -106,14 +106,19 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
   }
   const schedule = (mine: number) => {
     if (computer === undefined) return
+    window.clearTimeout(timer)
+    if (document.visibilityState === "hidden") return
     timer = window.setTimeout(() => {
-      if (mine !== generation) return
+      if (mine !== generation || document.visibilityState === "hidden") return
       void refresh().finally(() => { if (mine === generation) schedule(mine) })
     }, working(snapshot.status) ? pollMs.busy : pollMs.idle)
   }
   const start = () => {
     const mine = ++generation
-    const begin = () => { void refresh().finally(() => { if (mine === generation) schedule(mine) }) }
+    const begin = () => {
+      if (mine !== generation || (computer !== undefined && document.visibilityState === "hidden")) return
+      void refresh().finally(() => { if (mine === generation) schedule(mine) })
+    }
     let retryDelay = 1000
     let registering = false
     const register = () => {
@@ -140,13 +145,13 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
           begin()
         })
     }
-    if (computer === undefined) {
-      onVisibilityChange = () => {
-        window.clearTimeout(timer)
-        if (document.visibilityState !== "hidden" && snapshot.subscriptionError) register()
-      }
-      document.addEventListener("visibilitychange", onVisibilityChange)
+    onVisibilityChange = () => {
+      window.clearTimeout(timer)
+      if (document.visibilityState === "hidden") return
+      if (computer !== undefined) begin()
+      else if (snapshot.subscriptionError) register()
     }
+    document.addEventListener("visibilitychange", onVisibilityChange)
     register()
   }
   return {

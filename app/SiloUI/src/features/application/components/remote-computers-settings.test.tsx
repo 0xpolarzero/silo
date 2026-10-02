@@ -1,5 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import { toast } from "sonner"
+import { Toaster } from "@/components/ui/sonner"
 
 import { ConnectComputerForm, RemoteComputersSettings } from "./remote-computers-settings"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -14,8 +16,67 @@ function source(remoteManagement: ApplicationSource["remoteManagement"]): Applic
 function actions(overrides: Partial<ApplicationActions> = {}): ApplicationActions {
   return { connectComputer: vi.fn(), setRemoteManagement: vi.fn(), ...overrides } as unknown as ApplicationActions
 }
+afterEach(() => { toast.dismiss() })
 
 describe("RemoteComputersSettings", () => {
+  it("trims the address and blocks resubmission and cancellation while connecting", async () => {
+    let finish!: () => void
+    const connect = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+    const onClose = vi.fn()
+    render(<ConnectComputerForm connect={connect} onClose={onClose} />)
+    fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: "  owner@office  " } })
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }))
+    fireEvent.submit(screen.getByRole("form", { name: "Connect computer" }))
+    expect(screen.getByRole("textbox", { name: "Computer address" })).toBeDisabled()
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(connect).toHaveBeenCalledExactlyOnceWith("owner@office")
+    expect(onClose).not.toHaveBeenCalled()
+    await act(async () => finish())
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ["authorize", "Authorize SSH in Terminal…"],
+    ["setupKey", "Set up Silo SSH key…"],
+  ] as const)("retries %s repair and requires an explicit reconnect afterwards", async (kind, label) => {
+    let fail!: (error: Error) => void
+    const repair = vi.fn().mockImplementationOnce(() => new Promise<void>((_, reject) => { fail = reject })).mockResolvedValueOnce(undefined)
+    const connect = vi.fn().mockRejectedValueOnce(new Error("SSH authentication failed")).mockResolvedValueOnce(undefined)
+    const onClose = vi.fn()
+    render(<ConnectComputerForm connect={connect} onClose={onClose} {...{ [kind]: repair }} />)
+    fireEvent.change(screen.getByRole("textbox", { name: "Computer address" }), { target: { value: " owner@office " } })
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }))
+    await screen.findByRole("alert")
+    fireEvent.click(screen.getByRole("button", { name: label }))
+    expect(screen.getByRole("button", { name: label })).toBeDisabled()
+    expect(repair).toHaveBeenCalledExactlyOnceWith("owner@office")
+    await act(async () => fail(new Error("Repair unavailable")))
+    expect(screen.getByRole("alert")).toHaveTextContent("Repair unavailable")
+    fireEvent.click(screen.getByRole("button", { name: label }))
+    await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled())
+    expect(repair).toHaveBeenCalledTimes(2)
+    expect(connect).toHaveBeenCalledOnce()
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }))
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
+    expect(connect).toHaveBeenLastCalledWith("owner@office")
+  })
+
+  it("retains a failed removal and retries the same computer after its display name changes", async () => {
+    const removeComputer = vi.fn().mockRejectedValueOnce(new Error("Connection could not be removed")).mockResolvedValueOnce(undefined)
+    const remote = { id: "office-id", name: "Office", address: "owner@office", connected: false }
+    const api = actions({ removeComputer })
+    const view = render(<><Toaster /><RemoteComputersSettings source={{ ...source(undefined), remoteComputers: [remote] }} actions={api} /></>)
+    fireEvent.click(screen.getByRole("button", { name: "Remove connection to Office" }))
+    expect(await screen.findByText("Computer setting not changed")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Remove connection to Office" })).toBeEnabled()
+    view.rerender(<><Toaster /><RemoteComputersSettings source={{ ...source(undefined), remoteComputers: [{ ...remote, name: "Renamed Office" }] }} actions={api} /></>)
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }))
+    await waitFor(() => expect(removeComputer).toHaveBeenCalledTimes(2))
+    expect(removeComputer.mock.calls).toEqual([["office-id"], ["office-id"]])
+    expect(screen.getByRole("button", { name: "Remove connection to Renamed Office" })).toBeVisible()
+  })
+
   it("explains why remote management does not work on this computer", () => {
     const status = remoteManagementSchema.parse({ enabled: true, hostId: "office", name: "Office Mac", address: "owner@office", error: "Another Silo instance owns remote management." })
     render(<RemoteComputersSettings source={source(status)} actions={actions()} />)

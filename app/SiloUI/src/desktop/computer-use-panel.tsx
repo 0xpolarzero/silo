@@ -48,8 +48,8 @@ export function ChatGptAppProgress({ status, busy = false, onRetry }: { status: 
 
 /** The progress of the ChatGPT download of a sandbox's computer. `retry` adds Retry to a failure, which acts on that computer's download.
  * `fallbackReason` is shown with Retry until the status itself is read. */
-export function ChatGptAppStatusView({ store, retry = false, fallbackReason }: { store: ChatGptAppStore | undefined; retry?: boolean; fallbackReason?: string | null }) {
-  const { status, busy, error, loadError, subscriptionError } = useChatGptApp(store)
+export function ChatGptAppStatusView({ store, retry = false, fallbackReason, active = true }: { store: ChatGptAppStore | undefined; retry?: boolean; fallbackReason?: string | null; active?: boolean }) {
+  const { status, busy, error, loadError, subscriptionError } = useChatGptApp(store, active)
   const recovery = subscriptionError ?? loadError
   const refresh = recovery ? <ErrorLine message={recovery} actionLabel="Refresh status" onAction={store ? () => { void store.refresh() } : undefined} /> : null
   const onRetry = retry && store ? () => { void store.retry() } : undefined
@@ -165,7 +165,7 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
 
 /** Reads and changes one sandbox's computer use. Renders nothing for pre-v4 sandboxes or without a bridge.
  * Mount with `key={workspace}`: its reads belong to one sandbox. */
-export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: string; pollMs?: number }) {
+export function ComputerUseSection({ workspace, pollMs = 5000, active = true }: { workspace: string; pollMs?: number; active?: boolean }) {
   const bridge = useComputerUseBridge()
   const [state, setState] = useState<LinuxDesktopState | null>(null)
   const [busy, setBusy] = useState(false)
@@ -187,10 +187,13 @@ export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: st
     finally { reading.current = false }
   }, [bridge, workspace])
   useEffect(() => {
-    const initial = window.setTimeout(() => { void refresh() }, 0)
-    const interval = window.setInterval(() => { void refresh() }, pollMs)
-    return () => { window.clearTimeout(initial); window.clearInterval(interval) }
-  }, [refresh, pollMs])
+    if (!active) return
+    const update = () => { if (document.visibilityState !== "hidden") void refresh() }
+    const initial = window.setTimeout(update, 0)
+    const interval = window.setInterval(update, pollMs)
+    document.addEventListener("visibilitychange", update)
+    return () => { window.clearTimeout(initial); window.clearInterval(interval); document.removeEventListener("visibilitychange", update) }
+  }, [refresh, pollMs, active])
   const run = useCallback(async (work: () => Promise<LinuxDesktopState>, optimistic?: (state: LinuxDesktopState) => LinuxDesktopState, announce?: string) => {
     if (working.current) return
     working.current = true
@@ -224,7 +227,7 @@ export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: st
   const needsApp = computerUse.state === "preparing" || downloadFailed
   return <ComputerUsePanel computerUse={computerUse} running={state.state === "running"} busy={busy} error={error} loadError={loadError} notice={notice}
     onDismissError={() => setError(null)} onReload={() => { void refresh() }}
-    chatGpt={needsApp ? <ChatGptAppStatusView store={bridge.chatGptFor(computerOfWorkspace(workspace))} retry={downloadFailed} fallbackReason={downloadFailed ? computerUse.reason : null} /> : undefined}
+    chatGpt={needsApp ? <ChatGptAppStatusView active={active} store={bridge.chatGptFor(computerOfWorkspace(workspace))} retry={downloadFailed} fallbackReason={downloadFailed ? computerUse.reason : null} /> : undefined}
     onApproval={mode => { void run(() => bridge.setApproval(workspace, mode), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, approval: mode, approvalApply: "pending", approvalApplyReason: null } : current.computerUse })) }}
     onSetup={() => { void run(() => bridge.setup(workspace), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, state: "installing", reason: null } : current.computerUse }), SETUP_DONE) }} />
 }

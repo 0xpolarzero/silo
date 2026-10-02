@@ -2,19 +2,48 @@
 import argparse
 from datetime import datetime, timedelta, timezone
 from email.parser import Parser
-from email.utils import format_datetime
+from email.utils import format_datetime, parsedate_to_datetime
 import gzip
 import hashlib
+import json
 from pathlib import Path
 import re
 import shutil
 import subprocess
 import tempfile
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
 ARCHITECTURES = ('amd64', 'arm64')
 MAX_VERSION_COUNT = 2
+MAX_REPOSITORY_BYTES = 900 * 1024 * 1024
+MAX_METADATA_BYTES = 1024 * 1024
+
+
+def check_budget(output):
+    if sum(p.stat().st_size for p in output.rglob('*') if p.is_file()) > MAX_REPOSITORY_BYTES:
+        raise ValueError('Repository exceeds the GitHub Pages size budget')
+
+
+def retain_release(root, signed):
+    digest = hashlib.sha256(signed).hexdigest()
+    target = root / 'dists/stable/retained' / digest
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(signed)
+    return digest
+
+
+def fetch(url, limit):
+    with urlopen(url, timeout=30) as response:
+        data = response.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError('Previous repository object exceeds size limit')
+    return data
+
+
+def missing(error):
+    return (isinstance(error, HTTPError) and error.code == 404 or
+            isinstance(error, URLError) and isinstance(error.reason, FileNotFoundError))
 
 
 def run(*args):
@@ -82,41 +111,100 @@ def build(packages, output, fingerprint, public_key, now=None):
     for flags, name in [(('--clearsign',), 'InRelease'), (('--armor', '--detach-sign'), 'Release.gpg')]:
         subprocess.run(['gpg', '--batch', '--yes', '--local-user', fingerprint, '--digest-algo', 'SHA256', '--output', str(release_dir / name), *flags, str(release_path)], check=True)
     subprocess.run(['gpgv', '--keyring', str(public_key.resolve()), str(release_dir / 'InRelease')], check=True, stdout=subprocess.DEVNULL)
+    digest = retain_release(root, (release_dir / 'InRelease').read_bytes())
+    (root / 'retained-releases.json').write_text(json.dumps([digest]))
     shutil.copyfile(public_key, root / 'silo-archive-keyring.gpg')
     (output / '.nojekyll').touch()
     (output / 'index.html').write_text('<!doctype html><title>Silo software updates</title><h1>Silo software updates</h1><p>This is the signed software source used by Silo’s Linux installer.</p><p><a href="https://github.com/0xpolarzero/silo/releases/latest">Download Silo</a></p>')
+    check_budget(output)
 
 
 def preserve_previous_indexes(output, public_key, previous_url):
-    """Keep the prior signed indexes available while clients refresh cached metadata."""
+    """Retain all objects referenced by unexpired, verified historical releases."""
+    root = output / 'apt'
+    retained = json.loads((root / 'retained-releases.json').read_text())
+    now = datetime.now(timezone.utc)
+    check_budget(output)
     with tempfile.TemporaryDirectory(prefix='silo-apt-previous-') as directory:
         signed = Path(directory) / 'InRelease'
         try:
-            with urlopen(previous_url + '/dists/stable/InRelease', timeout=30) as response:
-                signed.write_bytes(response.read(1024 * 1024))
-        except HTTPError as error:
-            if error.code == 404:
+            latest = fetch(previous_url + '/dists/stable/InRelease', MAX_METADATA_BYTES)
+        except (HTTPError, URLError) as error:
+            if missing(error):
                 return  # First deployment has no prior repository.
             raise
-        release = Path(directory) / 'Release'
-        subprocess.run(['gpgv', '--keyring', str(public_key.resolve()), '--output', str(release), str(signed)], check=True, capture_output=True)
-        hashes = Parser().parsestr(release.read_text())['SHA256']
-        if not hashes:
-            raise ValueError('Previous signed release has no SHA256 indexes')
-        for line in hashes.strip().splitlines():
-            digest, size, name = line.split()
-            if not re.fullmatch(r'main/binary-(amd64|arm64)/Packages(\.gz)?', name) or not re.fullmatch('[a-f0-9]{64}', digest):
-                raise ValueError('Unexpected previous index')
-            if not 0 < int(size) <= 1024 * 1024:
-                raise ValueError('Previous index exceeds size limit')
-            relative = str(Path(name).parent / 'by-hash/SHA256' / digest)
-            with urlopen(previous_url + '/dists/stable/' + relative, timeout=30) as response:
-                data = response.read(1024 * 1024 + 1)
-            if len(data) != int(size) or hashlib.sha256(data).hexdigest() != digest:
-                raise ValueError('Previous index checksum mismatch')
-            target = output / 'apt/dists/stable' / relative
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
+        try:
+            history = json.loads(fetch(previous_url + '/retained-releases.json', MAX_METADATA_BYTES))
+        except (HTTPError, URLError) as error:
+            if not missing(error):
+                raise
+            history = []  # Bootstrap repositories published before retention tracking.
+        if not isinstance(history, list) or len(history) > 1024 or any(not isinstance(d, str) or not re.fullmatch('[a-f0-9]{64}', d) for d in history):
+            raise ValueError('Invalid previous release history')
+        latest_digest = hashlib.sha256(latest).hexdigest()
+        for digest in dict.fromkeys([latest_digest, *history]):
+            data = latest if digest == latest_digest else fetch(previous_url + '/dists/stable/retained/' + digest, MAX_METADATA_BYTES)
+            if hashlib.sha256(data).hexdigest() != digest:
+                raise ValueError('Previous release checksum mismatch')
+            signed.write_bytes(data)
+            release = Path(directory) / 'Release'
+            subprocess.run(['gpgv', '--keyring', str(public_key.resolve()), '--output', str(release), str(signed)], check=True, capture_output=True)
+            fields = Parser().parsestr(release.read_text())
+            if any(len(fields.get_all(key, [])) != 1 for key in ('Date', 'Valid-Until', 'SHA256')):
+                raise ValueError('Previous signed release has invalid metadata')
+            issued = parsedate_to_datetime(fields['Date'])
+            expires = parsedate_to_datetime(fields['Valid-Until'])
+            if issued.tzinfo is None or expires.tzinfo is None or not issued < expires <= issued + timedelta(days=14):
+                raise ValueError('Previous signed release has invalid validity period')
+            if expires <= now:
+                continue
+            preserve_release_objects(root, previous_url, fields['SHA256'])
+            retained.append(retain_release(root, data))
+            check_budget(output)
+    (root / 'retained-releases.json').write_text(json.dumps(sorted(set(retained))))
+    check_budget(output)
+
+
+def preserve_release_objects(root, previous_url, hashes):
+    if not hashes:
+        raise ValueError('Previous signed release has no SHA256 indexes')
+    names = set()
+    for line in hashes.strip().splitlines():
+        digest, size, name = line.split()
+        if not re.fullmatch(r'main/binary-(amd64|arm64)/Packages(\.gz)?', name) or name in names:
+            raise ValueError('Unexpected previous index')
+        names.add(name)
+        relative = str(Path('dists/stable') / Path(name).parent / 'by-hash/SHA256' / digest)
+        data = preserve_object(root, previous_url, relative, digest, size, MAX_METADATA_BYTES)
+        if not name.endswith('.gz'):
+            for record in data.decode().strip().split('\n\n'):
+                fields = Parser().parsestr(record)
+                if any(len(fields.get_all(key, [])) != 1 for key in ('Filename', 'Size', 'SHA256')):
+                    raise ValueError('Invalid previous package record')
+                filename = fields['Filename']
+                if not re.fullmatch(r'pool/main/s/silo/silo_\d+\.\d+\.\d+_(amd64|arm64)\.deb', filename):
+                    raise ValueError('Unexpected previous package path')
+                preserve_object(root, previous_url, filename, fields['SHA256'], fields['Size'], MAX_REPOSITORY_BYTES)
+    if names != {f'main/binary-{arch}/{name}' for arch in ARCHITECTURES for name in ('Packages', 'Packages.gz')}:
+        raise ValueError('Previous signed release has incomplete indexes')
+
+
+def preserve_object(root, previous_url, relative, digest, size, limit):
+    if not re.fullmatch('[a-f0-9]{64}', digest) or not size.isdecimal() or not 0 < int(size) <= limit:
+        raise ValueError('Invalid previous object checksum or size')
+    target = root / relative
+    if target.exists():
+        data = target.read_bytes()
+    else:
+        remaining = MAX_REPOSITORY_BYTES - sum(p.stat().st_size for p in root.parent.rglob('*') if p.is_file())
+        if int(size) > remaining:
+            raise ValueError('Repository exceeds the GitHub Pages size budget')
+        data = fetch(previous_url + '/' + relative, int(size))
+    if len(data) != int(size) or hashlib.sha256(data).hexdigest() != digest:
+        raise ValueError('Previous object checksum mismatch')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(data)
+    return data
 
 
 if __name__ == '__main__':
@@ -131,5 +219,4 @@ if __name__ == '__main__':
     build(packages, args.output, args.fingerprint, args.public_key)
     if args.previous_url:
         preserve_previous_indexes(args.output, args.public_key, args.previous_url)
-    if sum(p.stat().st_size for p in args.output.rglob('*') if p.is_file()) > 900 * 1024 * 1024:
-        raise ValueError('Repository exceeds the GitHub Pages size budget')
+    check_budget(args.output)

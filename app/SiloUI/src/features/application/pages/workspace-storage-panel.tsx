@@ -35,11 +35,10 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
   const [reclaiming, setReclaiming] = useState(false)
   const [busy, setBusy] = useState(true)
   const requests = useRef({ generation: 0 })
-  const readInitial = useEffectEvent(() => read(workspaceId))
-  useEffect(() => {
+  const readInitial = useEffectEvent(() => {
     const active = requests.current
     const request = ++active.generation
-    void readInitial().then(value => {
+    void read(workspaceId).then(value => {
       if (active.generation === request) setStorage(value)
     }, cause => {
       if (active.generation === request) showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void load(false), native: false })
@@ -47,7 +46,8 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
       if (active.generation === request) setBusy(false)
     })
     return () => { active.generation++ }
-  }, [requests])
+  })
+  useEffect(() => readInitial(), [requests])
 
   async function load(reclaimSpace: boolean) {
     if (busy || disabled || (reclaimSpace && (!running || !reclaim))) return
