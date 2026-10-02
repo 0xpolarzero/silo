@@ -154,7 +154,7 @@ impl Gates {
             .saturating_add(delay)
             .max(floor)
             .saturating_add(jitter % 4);
-        if rate {
+        if rate || floor > at {
             self.restore_floor(class, until);
         }
         // Safe reads (such as token validation) keep retrying with capped backoff;
@@ -533,6 +533,35 @@ mod tests {
                 gates().requests.remove(&key);
             }
         }
+    }
+    #[test]
+    fn service_unavailable_retry_after_survives_explicit_retry_and_relaunch() {
+        let _test_state = crate::test_support::global_state();
+        let key = uuid::Uuid::new_v4().to_string();
+        let class = uuid::Uuid::new_v4().to_string();
+        let at = now();
+        let error = wire_reply(
+            &key,
+            &class,
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 600\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".into(),
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("Retrying"));
+        let until = gates().requests[&key].until.unwrap();
+        assert!(until >= at + 600);
+        reset_retries();
+        assert!(preflight(&key, &class).is_err());
+        let floors = retry_floors();
+        let mut restored = Gates::default();
+        for (class, until) in floors {
+            restored.restore_floor(&class, until);
+        }
+        assert!(restored.check(&key, &class, until - 1).is_err());
+        assert!(restored.check(&key, &class, until).is_ok());
+        assert!(restored.check("unrelated", "other-credential", at).is_ok());
+        gates().rate_until.remove(&class);
     }
     #[test]
     fn real_http_oauth_errors_are_redacted_and_revocation_accepts_empty_responses() {
