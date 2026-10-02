@@ -16,13 +16,14 @@ const alreadySaved = "is already saved at"
 
 export function ConnectComputerForm({ connect, authorize, setupKey, onClose }: { setupKey?: (address: string) => Promise<void>; authorize?: (address: string) => Promise<void>; connect: (address: string, options?: { replaceAddress?: boolean }) => Promise<void>; onClose: () => void }) {
   const [address, setAddress] = useState("")
-  const [busy, setBusy] = useState(false)
+  const [operation, setOperation] = useState<"connect" | "authorize" | "setupKey" | null>(null)
+  const busy = operation !== null
   // Connection failures stay inline: the form is where the user corrects the address, and the
   // SSH recovery actions below only make sense next to the error. Onboarding has no toaster.
   const [error, setError] = useState("")
-  async function attempt(action: () => Promise<void>) {
-    setBusy(true)
-    try { await action() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setBusy(false) }
+  async function attempt(action: () => Promise<void>, kind: "connect" | "authorize" | "setupKey" = "connect") {
+    setOperation(kind)
+    try { await action() } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) } finally { setOperation(null) }
   }
   return <form aria-label="Connect computer" className="grid gap-3 rounded-lg border p-3" onSubmit={async event => {
     event.preventDefault()
@@ -34,9 +35,9 @@ export function ConnectComputerForm({ connect, authorize, setupKey, onClose }: {
     <p className="text-xs text-muted-foreground">Open Silo on that computer and enable remote management. Uses your existing SSH keys and configuration.</p>
     {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
     {error.includes(alreadySaved) && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(async () => { await connect(address.trim(), { replaceAddress: true }); onClose() }) }}>Use this address</Button><p className="text-xs text-muted-foreground">Only if that computer now uses this address. Its sandboxes and connections stay as they are.</p></div>}
-    {error && !error.includes(alreadySaved) && authorize && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => authorize(address.trim())) }}>Authorize SSH in Terminal…</Button><p className="text-xs text-muted-foreground">Confirm the computer’s fingerprint and unlock your SSH key, then connect again.</p></div>}
-    {error && !error.includes(alreadySaved) && setupKey && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => setupKey(address.trim())) }}>Set up Silo SSH key…</Button><p className="text-xs text-muted-foreground">Adds Silo’s public SSH key to your account on the other computer. You may be asked for its password. Then connect again.</p></div>}
-    <div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button><Button size="sm" disabled={busy || !address.trim()}>{busy ? "Connecting…" : "Connect"}</Button></div>
+    {error && !error.includes(alreadySaved) && authorize && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => authorize(address.trim()), "authorize") }}>{operation === "authorize" ? "Opening Terminal…" : "Authorize SSH in Terminal…"}</Button><p className="text-xs text-muted-foreground">Confirm the computer’s fingerprint and unlock your SSH key, then connect again.</p></div>}
+    {error && !error.includes(alreadySaved) && setupKey && <div className="grid justify-items-start gap-1"><Button type="button" variant="outline" size="sm" disabled={busy || !address.trim()} onClick={() => { void attempt(() => setupKey(address.trim()), "setupKey") }}>{operation === "setupKey" ? "Setting up SSH key…" : "Set up Silo SSH key…"}</Button><p className="text-xs text-muted-foreground">Adds Silo’s public SSH key to your account on the other computer. You may be asked for its password. Then connect again.</p></div>}
+    <div className="flex justify-end gap-2"><Button type="button" size="sm" variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button><Button size="sm" disabled={busy || !address.trim()}>{operation === "connect" ? "Connecting…" : "Connect"}</Button></div>
   </form>
 }
 
