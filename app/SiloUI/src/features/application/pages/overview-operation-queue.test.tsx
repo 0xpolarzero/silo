@@ -120,6 +120,31 @@ describe("operation-queue toast", () => {
     expect(screen.getByText("Saving Git identities")).toBeInTheDocument()
   })
 
+  it("keeps a quick replacement silent when it finishes before the debounce", async () => {
+    const previous: OperationQueue = { running: [entry({ id: 1, label: "Checking sandbox", sinceMs: Date.now() - 1000 })], waiting: [] }
+    const view = render(<ToastHarness queue={previous} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("Checking sandbox")).toBeInTheDocument()
+
+    const next: OperationQueue = { running: [entry({ id: 2, label: "Reading sandbox files", sinceMs: Date.now() })], waiting: [] }
+    view.rerender(<ToastHarness queue={next} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(300) })
+    expect(screen.queryByText("Reading sandbox files")).not.toBeInTheDocument()
+    view.rerender(<ToastHarness queue={{ running: [], waiting: [] }} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(screen.queryByText("Reading sandbox files")).not.toBeInTheDocument()
+  })
+
+  it("keeps a replacement visible when it has already waited longer than the debounce", async () => {
+    const previous = entry({ id: 1, label: "Checking sandbox", sinceMs: Date.now() - 1000 })
+    const next = entry({ id: 2, label: "Reading sandbox files", sinceMs: Date.now() - 600 })
+    const view = render(<ToastHarness queue={{ running: [previous], waiting: [next] }} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    view.rerender(<ToastHarness queue={{ running: [next], waiting: [] }} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("Reading sandbox files")).toBeInTheDocument()
+  })
+
   it("flags an operation past its expected duration as taking longer than expected", async () => {
     const queue: OperationQueue = {
       running: [entry({ id: 1, label: "Backing up dev-vm", vmId: "dev", sinceMs: Date.now() - 6 * 60_000, expectedMs: 5 * 60_000 })],
