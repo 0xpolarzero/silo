@@ -25,6 +25,11 @@ function scrollNearEnd() {
   return viewport
 }
 describe("retained logs", () => {
+  it.each([[1, "record"], [2, "records"]])("pluralizes the summary for %i matching %s", async (count, noun) => {
+    const { workspace, actions } = fixture(count)
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    expect(await screen.findByText(`Showing ${count} of ${count} matching ${noun}.`)).toBeVisible()
+  })
   it("formats clipboard text on click and copies the current loaded window", async () => {
     const user = userEvent.setup()
     const { workspace, actions } = fixture(401)
@@ -204,7 +209,7 @@ describe("retained logs", () => {
     expect(details).toHaveTextContent("old diagnostic needle")
     expect(details).toHaveTextContent("The complete diagnostic message remains visible when expanded.")
     expect(screen.getByLabelText("Search logs")).toHaveValue("needle")
-    expect(screen.getByText("Showing 1 of 1 matching records.")).toBeVisible()
+    expect(screen.getByText("Showing 1 of 1 matching record.")).toBeVisible()
     expect(queryLogs).toHaveBeenCalledTimes(1)
     expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ query: "needle", ...window, limit: 200 }))
     fireEvent.click(screen.getByRole("button", { name: `Collapse ${label}` }))
@@ -282,7 +287,7 @@ describe("retained logs", () => {
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.getByText("old diagnostic needle")).toBeVisible()
-    expect(screen.getByText("Showing 1 of 1 matching records.")).toBeVisible()
+    expect(screen.getByText("Showing 1 of 1 matching record.")).toBeVisible()
     expect(screen.getByRole("button", { name: "Refresh logs" })).toBeEnabled()
   })
   it("refreshes only while following and active", async () => {
