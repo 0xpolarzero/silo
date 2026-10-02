@@ -49,3 +49,14 @@ external Go module are bundled under `git-support/lfs-transfer/`. The module
 list comes from `go list -deps` for the actual guest build target; upstream
 `go.sum` and the Go checksum database verify module source. Corresponding
 source and redistribution review remain part of release preparation.
+
+# Bundled LCU release archive
+
+Silo's guest image (v4 and later) stages the unextracted LCU release archive for the sandbox's built-in computer use. LCU is MIT-licensed; the license text is inside the archive. The image holds only the archive, in `/usr/local/share/silo/lcu/`; LCU itself is installed from it in the sandbox when computer use is set up.
+
+- Project: https://github.com/0xpolarzero/lcu
+- Release: https://github.com/0xpolarzero/lcu/releases/tag/v0.8.0
+- Linux ARM64 archive SHA-256: `3f9ddd89745a16e2451a316b3a789f7c2813e4117f6ae61b3a7b27646ce4bd43`
+- Linux x86-64 archive SHA-256: `55833a1eb0d827a370511d6dc49a7ec782bf620e3cb68a3cebb0e2d0d0c7f477`
+
+The pinned URL and hashes are in `app/SiloUI/src-tauri/guest/lcu-lock.json`. The image contains no ChatGPT application.

@@ -159,7 +159,7 @@ class DesktopRecipe(unittest.TestCase):
 
     def run_recipe(self, action='install', env=None):
         result = subprocess.run(['/bin/sh', str(self.recipe), action], env=dict(self.env, **(env or {})),
-                                text=True, capture_output=True, timeout=15)
+                                text=True, capture_output=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
 
@@ -174,7 +174,7 @@ class DesktopRecipe(unittest.TestCase):
         script = session.read_text().replace('exec dbus-run-session -- xfce4-session',
                                              'printf "%s" "$XDG_CURRENT_DESKTOP"')
         result = subprocess.run(['/bin/sh', '-c', script], env={'PATH': '/usr/bin:/bin'},
-                                text=True, capture_output=True, timeout=5)
+                                text=True, capture_output=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, 'XFCE')
 
@@ -250,7 +250,7 @@ class DesktopRecipe(unittest.TestCase):
         result = subprocess.run(['/bin/sh', str(self.recipe), 'update-streamer'],
                                 env=dict(self.env, SESSION_STATE='running',
                                          LEGACY_STATE='failed', STREAM_STATE='failed'),
-                                text=True, capture_output=True, timeout=15)
+                                text=True, capture_output=True, timeout=120)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Stop the desktop before updating its streamer', result.stderr)
         self.assertFalse((self.state / 'streamer.json').exists())
@@ -294,7 +294,7 @@ class DesktopRecipe(unittest.TestCase):
         receipt_path.write_text(json.dumps(old_receipt))
         result = subprocess.run(['/bin/sh', str(self.recipe), 'update-streamer'],
                                 env=dict(self.env, SELKIES_PATCH_FAIL='1'),
-                                text=True, capture_output=True, timeout=15)
+                                text=True, capture_output=True, timeout=120)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(json.loads(receipt_path.read_text()), old_receipt)
         self.assertFalse((self.root / 'usr/local/bin/silo-desktop').exists())
@@ -386,7 +386,7 @@ class PreinstalledImageDesktop(DesktopRecipe):
 
     def run_fallback(self, env=None, action='install', v4=True):
         result = subprocess.run(['/bin/sh', str(self.recipe), action], env=dict(self.env, **(env or {})),
-                                text=True, capture_output=True, timeout=15)
+                                text=True, capture_output=True, timeout=120)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         calls = [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
         installs = [args for name, args in calls

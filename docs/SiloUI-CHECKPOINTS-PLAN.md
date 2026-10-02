@@ -62,7 +62,7 @@ This is Silo lifecycle integration around upstream immutable snapshots, not a
 new snapshot format or memory implementation. The pinned 0.7.2 source has no
 public full-state restore mode that leaves a stopped sandbox. `msb restore`
 calls `RestoreBuilder::restore_with_progress`, awaits the sandbox, and detaches
-it; its options are RAM-preserving `--forked` and disk-only cold boot. The
+it; its options are RAM-preserving `--cow-mem` (`--forked` before 0.7.6) and disk-only cold boot. The
 `RestoreBuilder` API likewise exposes `forked()` and `disk_only()` but no
 deferred-activation or paused-result option. Internally the VM restore starts
 paused during construction, then the relay activates the restored guest before
@@ -82,7 +82,7 @@ and atomically select the requested member. A current-state Fork from a pending
 workspace points its new stopped child at the same immutable member. Neither
 operation starts a VM or allocates guest RAM. For a live source, capture a
 checkpoint first; for a pending source, reuse its saved reference. Only explicit
-Start calls upstream full restore (`--forked`) or disk restore. Apply current
+Start calls upstream full restore (`--cow-mem`) or disk restore. Apply current
 host network and credential policy before that Start activates the guest.
 
 Upstream accepts snapshot group/member selectors and stable backend snapshot
