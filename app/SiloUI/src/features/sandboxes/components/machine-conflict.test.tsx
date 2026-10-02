@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
@@ -91,6 +91,25 @@ it("keeps the edit's original baseline when another row receives a reorder key",
   await user.keyboard("{ArrowDown}")
   await user.click(screen.getByRole("button", { name: "Save" }))
   expect(props.onReorder).not.toHaveBeenCalled()
+  expect(props.onCommitMachine).toHaveBeenCalledExactlyOnceWith({ ...machine, cpus: 4 }, machine, "", [machine, second])
+})
+
+it("keeps the edit's original baseline when another sandbox is deleted", async () => {
+  const second = { ...machine, id: "00000000-0000-4000-8000-000000000002", name: "second" }
+  const props = { onCommitMachine: vi.fn().mockResolvedValue(undefined), onDeleteMachine: vi.fn().mockResolvedValue(undefined), getComputerId: () => "" }
+  const { user, view } = await openEditor([machine, second], props)
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
+  const latest = { ...machine, maxMemoryGiB: 64 }
+  const renderMachines = (machines: SetupVirtualMachineConfiguration[]) => <TooltipProvider><MachineList machines={machines} onMachinesChange={vi.fn()}
+    isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} {...props} /></TooltipProvider>
+  view.rerender(renderMachines([latest, second]))
+  await user.click(screen.getByRole("button", { name: "More actions for second" }))
+  await user.click(screen.getByRole("menuitem", { name: "Delete second" }))
+  const popover = within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!)
+  await user.click(popover.getByRole("button", { name: "Delete permanently" }))
+  await waitFor(() => expect(props.onDeleteMachine).toHaveBeenCalledExactlyOnceWith(second, [latest, second]))
+  view.rerender(renderMachines([latest]))
+  await user.click(screen.getByRole("button", { name: "Save" }))
   expect(props.onCommitMachine).toHaveBeenCalledExactlyOnceWith({ ...machine, cpus: 4 }, machine, "", [machine, second])
 })
 
