@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { createMemorySettingsStore, createSettingsStore, type SettingsBackend, type SettingsSnapshot } from "./settings-store"
 
 const snapshot = (revision = 0, settings = {}): SettingsSnapshot => ({ revision, settings, onboardingDraft: null, saveError: null })
@@ -40,6 +40,106 @@ describe("settings synchronization", () => {
     const store = createSettingsStore(backend)
     await store.initialize()
     expect(store.getSnapshot().settings.theme).toBe("dark")
+  })
+
+  it("joins an in-flight initialization and retries a failed read without subscribing twice", async () => {
+    let reject!: (error: Error) => void
+    const backend: SettingsBackend = {
+      subscribe: vi.fn(async () => () => {}),
+      read: vi.fn().mockImplementationOnce(() => new Promise((_, fail) => { reject = fail }))
+        .mockResolvedValueOnce(snapshot(1, { theme: "dark" })),
+      updateSettings: async () => snapshot(), updateOnboardingDraft: async () => snapshot(), flush: async () => {},
+    }
+    const store = createSettingsStore(backend)
+    try {
+      const initial = store.initialize()
+      expect(store.initialize()).toBe(initial)
+      await Promise.resolve()
+      expect(backend.read).toHaveBeenCalledOnce()
+      reject(new Error("Read unavailable"))
+      await initial
+      expect(store.getSnapshot().saveError).toBe("Read unavailable")
+
+      await store.refresh()
+
+      expect(backend.subscribe).toHaveBeenCalledOnce()
+      expect(backend.read).toHaveBeenCalledTimes(2)
+      expect(store.getSnapshot()).toMatchObject({ revision: 1, settings: { theme: "dark" }, saveError: null })
+    } finally { store.dispose() }
+  })
+
+  it("keeps an optimistic edit over an event and ignores its acknowledgement if the event is newer", async () => {
+    let receive!: (value: SettingsSnapshot) => void
+    let acknowledge!: (value: SettingsSnapshot) => void
+    const store = createSettingsStore({
+      subscribe: async (listener) => { receive = listener; return () => {} }, read: async () => snapshot(),
+      updateSettings: () => new Promise(resolve => { acknowledge = resolve }),
+      updateOnboardingDraft: async () => snapshot(), flush: async () => {},
+    })
+    try {
+      await store.initialize()
+      const writing = store.updateSettings({ terminal: "iTerm" })
+      receive(snapshot(2, { terminal: "Warp", theme: "dark" }))
+      expect(store.getSnapshot().settings).toMatchObject({ terminal: "iTerm", theme: "dark" })
+
+      acknowledge(snapshot(1, { terminal: "iTerm" }))
+      await writing
+
+      expect(store.getSnapshot()).toMatchObject({ revision: 2, settings: { terminal: "Warp", theme: "dark" } })
+    } finally { store.dispose() }
+  })
+
+  it("drains a change enqueued by a subscriber when the first write is acknowledged", async () => {
+    let state = snapshot()
+    let acknowledge!: () => void
+    const writes: unknown[] = []
+    const store = createSettingsStore({
+      subscribe: async () => () => {}, read: async () => state,
+      updateSettings: async (patch) => {
+        writes.push(patch)
+        if (writes.length === 1) await new Promise<void>(resolve => { acknowledge = resolve })
+        state = snapshot(state.revision + 1, { ...state.settings, ...patch })
+        return state
+      },
+      updateOnboardingDraft: async () => state, flush: async () => {},
+    })
+    try {
+      await store.initialize()
+      let later: Promise<void> | undefined
+      let enqueued = false
+      store.subscribe(() => {
+        if (store.getSnapshot().revision === 1 && !enqueued) {
+          enqueued = true
+          later = store.updateSettings({ browser: "Firefox" })
+        }
+      })
+      const first = store.updateSettings({ theme: "dark" })
+      acknowledge()
+      await first
+      await later
+      expect(writes).toEqual([{ theme: "dark" }, { browser: "Firefox" }])
+      expect(state.settings).toEqual({ theme: "dark", browser: "Firefox" })
+      expect(store.getSnapshot().revision).toBe(2)
+    } finally { store.dispose() }
+  })
+
+  it("unsubscribes a registration that completes after disposal without starting a read", async () => {
+    let register!: (stop: () => void) => void
+    const stop = vi.fn()
+    const backend: SettingsBackend = {
+      subscribe: () => new Promise(resolve => { register = resolve }), read: vi.fn(async () => snapshot()),
+      updateSettings: async () => snapshot(), updateOnboardingDraft: async () => snapshot(), flush: async () => {},
+    }
+    const store = createSettingsStore(backend)
+    const listener = vi.fn()
+    store.subscribe(listener)
+    const initial = store.initialize()
+    store.dispose()
+    register(stop)
+    await initial
+    expect(stop).toHaveBeenCalledOnce()
+    expect(backend.read).not.toHaveBeenCalled()
+    expect(listener).not.toHaveBeenCalled()
   })
 
   it("keeps rapid changes visible and writes patches in order", async () => {
