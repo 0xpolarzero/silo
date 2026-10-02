@@ -8,6 +8,20 @@ import * as operationToast from "@/lib/operation-toast"
 
 afterEach(() => { toast.dismiss() })
 
+it.each(["Cancel", "Connect token"])("moves focus into token editing and returns it after %s", async (close) => {
+  const user = userEvent.setup()
+  const save = vi.fn().mockResolvedValue(undefined)
+  render(<PersonalTokenConnection onSave={save} />)
+  const add = screen.getByRole("button", { name: "Add token" })
+  await user.click(add)
+  const input = screen.getByLabelText("GitHub personal access token")
+  expect(input).toHaveFocus()
+  if (close === "Connect token") await user.type(input, "github_pat_synthetic")
+  await user.click(screen.getByRole("button", { name: close }))
+  await waitFor(() => expect(add).toHaveFocus())
+  expect(screen.queryByLabelText("GitHub personal access token")).not.toBeInTheDocument()
+})
+
 it("submits a token once and clears it immediately while native validation runs", async () => {
   const user = userEvent.setup()
   let complete!: () => void

@@ -75,3 +75,19 @@ The existing Quit decision and initial focus behavior are preserved.
 Verification: both dismissal regressions in `quit-request-confirmation.test.tsx`
 failed before the fix. They now restore the search field and still resolve the
 mocked Quit request to false. No native Quit or VM shutdown is exercised.
+
+## Personal-token editing did not manage keyboard position
+
+Trigger: open Add token, then Cancel or complete a successful connection. Opening
+left focus on Add token rather than the password field; closing removed the
+focused form control and left focus on the page body.
+
+The fix focuses the field on mount and restores the opening control after the
+editor closes and the pending operation settles. It uses the same existing
+focus helper and post-render restoration pattern as secret editing, consistent
+with [WCAG focus-order guidance](https://www.w3.org/WAI/WCAG22/Understanding/focus-order.html).
+Credential clearing and retry behavior remain unchanged.
+
+Verification: both new cases in `personal-token-connection.test.tsx` failed on
+opening focus, then failed on return focus after adding field autofocus alone.
+The complete fix passes both paths against synthetic token data and a mock save.
