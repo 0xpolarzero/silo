@@ -18,7 +18,8 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 
 | ID | Priority | Finding | Status |
 | --- | --- | --- | --- |
-| RL-01 | P2 | Wrapper configuration crosses the Cargo argument separator | Confirmed; fix pending |
+| RL-01 | P2 | Wrapper configuration crosses the Cargo argument separator | Fixed and folded: `9baaac4e` |
+| RL-02 | P2 | Linux verification seeds production paths for a Dev binary | Confirmed; fix pending |
 
 ## Detailed findings
 
@@ -36,9 +37,27 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 
 **Rejecting test.** Exercise the real wrapper with debug macOS, debug Linux, and release Linux arguments containing `-- --locked`. Assert the effective Tauri configuration selects Dev for debug and the private Linux tool layout without updater artifacts; the Cargo suffix must contain only the original Cargo arguments. Preserve no-separator behavior and the optimized macOS rejection.
 
+**Status.** Fixed and folded in `9baaac4e`. The regression failed for all three cases before the fix; all eight desktop-wrapper tests now pass. This is internal build routing and needs no application changeset.
+
+### RL-02 Linux verification seeds production paths for a Dev binary
+
+**P2.** Confirmed at `02344c24`. Locations: [linux-verification.yml](../.github/workflows/linux-verification.yml), debug build and WebDriver steps; [test-linux-desktop.py](../app/SiloUI/scripts/test-linux-desktop.py), `run` fixture identity, settings and autostart paths.
+
+**Trigger.** Run the Linux verification workflow. It invokes `desktop:build -- --debug --no-bundle --ci`, which selects `org.silo.dev`, then invokes the smoke harness without `SILO_LINUX_APPLICATION_ID`.
+
+**Evidence.** The actual wrapper selects `tauri.dev.conf.json` for this command. The harness defaults its fixture identifier to `org.silo.preview`, writes `onboardingComplete` under that identifier, relaunches the Dev binary, and waits for the post-onboarding Backup navigation. Dev reads `org.silo.dev` instead. The harness also waits for `autostart/org.silo.preview.desktop`, while `channel.rs` and `system_integrations/linux.rs` select `org.silo.dev.desktop`. These are two separate waits in the same incompatible fixture setup. No native GUI was launched in this review.
+
+**Consequence.** The Linux desktop verification cannot complete its stated workflow: the seeded settings do not advance onboarding, and correcting only the settings path still leaves the autostart wait broken. A failing smoke job provides no claimed settings/relaunch/autostart evidence.
+
+**Correction.** Pass the exact Dev identifier from the workflow and derive the autostart expectation from the selected channel, preserving production-package qualification when explicitly requested. Label the debug build as development.
+
+**Rejecting test.** Run the actual build-wrapper seam with the workflow's build arguments, resolve its configuration identifier, and evaluate the harness's fixture path expressions with the workflow environment. Settings and autostart paths must match that identifier's channel. Then qualify the full WebDriver smoke on Linux; deterministic path checks alone do not prove native GUI behavior.
+
 ## Verification and reproducibility
 
-Review in progress. Focused tests and exact failure/passing results will be recorded with each finding. Native checks use the shared `/tmp/silo-codex-target`; Node dependencies use the existing main-checkout installation. A fixture or source review does not qualify a signed release or installed application.
+RL-01: `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_desktop_release` passed 8 tests. The new regression first failed in 3 subcases. Failure/passing output is retained under ignored `app/SiloUI/src-tauri/target/verification/release-review-2026-10-02/rl01-{before,after}.log`.
+
+Before the fix commit: Node 24.11.1 `typecheck` passed; `lint` passed with 12 existing warnings; `cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check` passed. Native checks use the shared `/tmp/silo-codex-target`; Node dependencies use the existing main-checkout installation. A fixture or source review does not qualify a signed release or installed application.
 
 ## Next action
 
