@@ -372,7 +372,7 @@ pub(crate) async fn open_desktop(
             // Verify the remote identity before creating a shell.
             let state = remote::call_remote(&app, &host, "desktop.status", json!({"vmId":vm}))?;
             let machine = state["name"].as_str().unwrap_or(&vm);
-            let computer = remote::remote_host_list()?
+            let computer = remote::saved_hosts()?
                 .into_iter()
                 .find(|h| h.id == host)
                 .map(|h| h.name);

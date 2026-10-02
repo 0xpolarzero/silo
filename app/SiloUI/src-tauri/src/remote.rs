@@ -247,10 +247,20 @@ fn record_start_error(error: Option<String>) {
     }
     *crate::sync::lock_or_recover(&START_ERROR, "remote management status") = error;
 }
+async fn settings_io<T: Send + 'static>(
+    work: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|_| "Remote management settings are unavailable.".to_string())?
+}
 #[tauri::command]
-pub fn remote_management_status() -> Result<ManagementStatus, String> {
-    let _guard = config_lock();
-    Ok(status(&read_config()?))
+pub async fn remote_management_status() -> Result<ManagementStatus, String> {
+    settings_io(|| {
+        let _guard = config_lock();
+        Ok(status(&read_config()?))
+    })
+    .await
 }
 /// The executable the bridge link should name: the AppImage file itself when running
 /// from one (its mount point changes every launch), else this executable.
@@ -313,28 +323,37 @@ fn link_bridge_for_this_account() -> Result<(), String> {
     link_bridge(&home, &bridge_target()?)
 }
 #[tauri::command]
-pub fn set_remote_management(app: AppHandle, enabled: bool) -> Result<ManagementStatus, String> {
-    let _guard = config_lock();
-    if enabled {
-        link_bridge_for_this_account()?;
-    }
-    let mut config = read_config()?;
-    config.enabled = enabled;
-    save_config(&config)?;
-    REMOTE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
-    if enabled {
-        // The link is in place now; a launch that could not serve remote management tries again.
-        let listening = if LISTENING.load(std::sync::atomic::Ordering::Acquire) {
-            Ok(())
-        } else {
-            listen(app)
-        };
-        record_start_error(listening.err());
-    }
-    Ok(status(&config))
+pub async fn set_remote_management(
+    app: AppHandle,
+    enabled: bool,
+) -> Result<ManagementStatus, String> {
+    settings_io(move || {
+        let _guard = config_lock();
+        if enabled {
+            link_bridge_for_this_account()?;
+        }
+        let mut config = read_config()?;
+        config.enabled = enabled;
+        save_config(&config)?;
+        REMOTE_ENABLED.store(enabled, std::sync::atomic::Ordering::Release);
+        if enabled {
+            // The link is in place now; a launch that could not serve remote management tries again.
+            let listening = if LISTENING.load(std::sync::atomic::Ordering::Acquire) {
+                Ok(())
+            } else {
+                listen(app)
+            };
+            record_start_error(listening.err());
+        }
+        Ok(status(&config))
+    })
+    .await
 }
 #[tauri::command]
-pub fn remote_host_list() -> Result<Vec<RemoteHost>, String> {
+pub async fn remote_host_list() -> Result<Vec<RemoteHost>, String> {
+    settings_io(saved_hosts).await
+}
+pub(crate) fn saved_hosts() -> Result<Vec<RemoteHost>, String> {
     let _guard = config_lock();
     Ok(read_config()?.hosts)
 }
@@ -2358,15 +2377,37 @@ mod setup_tests {
         assert!(authorize_command("$(whoami)").is_err());
     }
     #[test]
-    fn commands_that_launch_processes_stay_off_the_main_thread() {
+    fn settings_commands_keep_the_executor_responsive_while_waiting_for_config() {
         let _test_state = crate::test_support::global_state();
-        // Tauri runs a synchronous command on the main thread; only quick settings reads
-        // and writes may be synchronous here.
-        let quick = [
-            "remote_management_status",
-            "set_remote_management",
-            "remote_host_list",
-        ];
+        let (held, acquired) = std::sync::mpsc::channel();
+        let (heartbeat, observed) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let _guard = config_lock();
+            held.send(()).unwrap();
+            observed.recv_timeout(Duration::from_secs(2)).is_ok()
+        });
+        acquired.recv().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (result, ()) = runtime.block_on(async {
+            tokio::join!(biased; settings_io(|| {
+                let _guard = config_lock();
+                Ok(())
+            }), async {
+                let _ = heartbeat.send(());
+            })
+        });
+        result.unwrap();
+        assert!(
+            holder.join().unwrap(),
+            "waiting for remote settings blocked the executor"
+        );
+    }
+    #[test]
+    fn commands_that_access_remote_settings_stay_off_the_main_thread() {
+        let _test_state = crate::test_support::global_state();
+        // Remote commands read durable settings or wait on the configuration lock.
         let source = include_str!("remote.rs");
         let mut commands = 0;
         for block in source.split("#[tauri::command]").skip(1) {
@@ -2382,10 +2423,7 @@ mod setup_tests {
                 .next()
                 .unwrap();
             commands += 1;
-            assert!(
-                signature.contains("async fn") || quick.contains(&name),
-                "{name} must be async"
-            );
+            assert!(signature.contains("async fn"), "{name} must be async");
         }
         assert!(commands >= 10);
     }
