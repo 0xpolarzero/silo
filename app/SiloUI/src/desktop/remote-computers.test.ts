@@ -109,7 +109,7 @@ it("keeps local state fresh after remote lifecycle failure and launches editors 
   } finally { store.dispose() }
 })
 
-it("uses qualified remote port mappings and revokes reachability after a failed network refresh", async () => {
+it("uses qualified remote port mappings and isolates reachability after a failed local network refresh", async () => {
   const local = applicationSourceForScenario("running")
   const remote = structuredClone(local)
   remote.workspaces = [remote.workspaces[0]]
@@ -144,7 +144,7 @@ it("uses qualified remote port mappings and revokes reachability after a failed 
     expect(invoke).toHaveBeenCalledWith("remote_remove_network_port", { hostId: "office", vmId: remote.workspaces[0].machine.id, port: 3000 })
     networkFailure = true
     await store.applicationActions.refreshNetwork!()
-    expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.computer)?.ports[0].listening).toBe(false)
+    expect(store.getSnapshot().source!.workspaces.find(workspace => workspace.computer)?.ports[0].listening).toBe(true)
   } finally { store.dispose() }
 })
 
