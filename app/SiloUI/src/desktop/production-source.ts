@@ -866,6 +866,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         try { hosts = z.array(remoteComputerSchema).parse(await native.invoke("remote_host_list")) }
         catch (cause) {
           if (disposed) return false
+          if (revision !== remoteListRevision) continue
           // The known computers stay listed; the failure is about the list itself.
           remoteComputersError = `Silo could not read its list of computers: ${errorMessage(cause)}`
           publish({ ...snapshot })

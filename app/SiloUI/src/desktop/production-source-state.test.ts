@@ -274,6 +274,30 @@ describe("remote computer refresh", () => {
     } finally { store.dispose() }
   })
 
+  it("lists a newly connected computer after a superseded computer-list read fails", async () => {
+    const late = deferred<unknown>()
+    let lists = 0
+    let hosts: typeof office[] = []
+    const mock = bridge(command => {
+      if (command === "remote_host_list") return ++lists === 2 ? late.promise.then(() => { throw new Error("Old list unavailable") }) : structuredClone(hosts)
+      if (command === "remote_host_snapshot") return remoteSource()
+      if (command === "connect_remote_host") { hosts = [office]; return office }
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      const refresh = store.applicationActions.refreshRepositories!()
+      await vi.waitFor(() => expect(lists).toBe(2))
+      const connecting = store.applicationActions.connectComputer!("user@office")
+      await vi.waitFor(() => expect(count(mock.invoke, "remote_management_status")).toBeGreaterThan(2))
+      late.resolve(null)
+      await connecting
+      await refresh
+      expect(store.getSnapshot().source?.remoteComputers?.map(computer => computer.id)).toEqual(["office"])
+      expect(store.getSnapshot().source?.remoteComputersError).toBeUndefined()
+    } finally { store.dispose() }
+  })
+
   it("reports a failed computer list separately from remote management (H-22)", async () => {
     let failList = false
     const mock = bridge(command => {
