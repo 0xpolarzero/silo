@@ -46,7 +46,7 @@ pub(crate) async fn remote_save_ssh_access(
     enabled: bool,
     port: u16,
     bind_address: String,
-    keys: Vec<String>,
+    keys: Option<Vec<String>>,
 ) -> Result<Value, BridgeError> {
     tauri::async_runtime::spawn_blocking(move || {
         uuid::Uuid::parse_str(&vm_id).map_err(|_| "Invalid sandbox identity.")?;
