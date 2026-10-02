@@ -10505,6 +10505,41 @@ exit 9
     }
 
     #[test]
+    fn pre_desktop_metadata_keeps_its_persisted_field_names_on_round_trip() {
+        let saved = json!({
+            "schemaVersion": 1,
+            "machines": [
+                {
+                    "kind": "vm",
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "name": "dev",
+                    "cpus": 2,
+                    "maxCPUs": 4,
+                    "memoryGiB": 2,
+                    "maxMemoryGiB": 4,
+                    "workspaceStorageGiB": 10,
+                    "runtimeStorageGiB": 5
+                },
+                {
+                    "kind": "ssh",
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "name": "remote",
+                    "host": "example.test",
+                    "user": "developer",
+                    "port": 2222
+                }
+            ]
+        });
+        let request: MachineConfigurationRequest = serde_json::from_value(saved.clone()).unwrap();
+        validate_request(&request).unwrap();
+        assert!(matches!(
+            request.machines[0],
+            MachineConfiguration::Vm { desktop: None, .. }
+        ));
+        assert_eq!(serde_json::to_value(&request).unwrap(), saved);
+    }
+
+    #[test]
     fn metadata_round_trip_is_atomic_and_preserves_split_storage_settings() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
