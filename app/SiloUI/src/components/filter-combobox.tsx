@@ -101,6 +101,7 @@ export function FilterCombobox<Value extends string>({
                 setOpen(true)
               }}
               onKeyDown={(event) => {
+                if (event.nativeEvent.isComposing) return
                 if (event.key === "ArrowDown") {
                   event.preventDefault()
                   setOpen(true)
@@ -129,7 +130,7 @@ export function FilterCombobox<Value extends string>({
           onOpenAutoFocus={(event) => event.preventDefault()}
           onEscapeKeyDown={(event) => {
             event.preventDefault()
-            setOpen(false)
+            if (!event.isComposing) setOpen(false)
           }}
         >
           {results.length > 0 ? results.map((option, index) => (
