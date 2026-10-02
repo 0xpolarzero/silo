@@ -1541,7 +1541,17 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     try {
       const result = await native.invoke<unknown>(command, { workspaceId: localWorkspace!.machine.id, ...arguments_ })
       ++refreshSequence
-      publish({ ...snapshot, source: parseMutationSource(result), error: null })
+      let source = parseMutationSource(result)
+      if (snapshot.source) {
+        const incoming = new Map(source.workspaces.map(workspace => [workspace.machine.id, workspace]))
+        const workspaces = snapshot.source.workspaces.map(workspace => workspace.machine.id === localWorkspace!.machine.id ? incoming.get(workspace.machine.id) ?? workspace : workspace)
+        if (kind === "fork" && typeof arguments_.newName === "string") {
+          const fork = source.workspaces.find(workspace => workspace.machine.name === arguments_.newName && !workspaces.some(current => current.machine.id === workspace.machine.id))
+          if (fork) workspaces.push(fork)
+        }
+        source = { ...source, workspaces }
+      }
+      publish({ ...snapshot, source, error: null })
       void refresh()
     } catch (cause) {
       void refresh()
