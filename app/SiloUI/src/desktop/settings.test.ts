@@ -60,6 +60,27 @@ describe("native settings transport", () => {
     expect(native.invoke.mock.calls.filter(([command]) => command === "import_legacy_theme")).toHaveLength(1)
   })
 
+  it("retries legacy theme delivery after a transport failure without requiring another launch", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    localStorage.setItem("silo-theme", "dark")
+    let attempts = 0
+    native.invoke.mockImplementation(async (command: string) => {
+      if (command === "import_legacy_theme") {
+        if (++attempts === 1) throw new Error("Theme delivery unavailable")
+        return snapshot(1, { theme: "dark" })
+      }
+      return snapshot()
+    })
+    const settings = store()
+    await settings.initialize()
+    expect(settings.getSnapshot().saveError).toBe("Theme delivery unavailable")
+    await settings.refresh()
+    expect(attempts).toBe(2)
+    expect(settings.getSnapshot().settings.theme).toBe("dark")
+    expect(settings.getSnapshot().saveError).toBeNull()
+    expect(localStorage.getItem("silo-theme")).toBe("dark")
+  })
+
   it.each([
     { main: true, settings: { theme: "light" }, error: null, legacy: "dark" },
     { main: true, settings: { theme: "invalid-saved-value" }, error: null, legacy: "dark" },

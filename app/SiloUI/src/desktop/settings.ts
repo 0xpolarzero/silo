@@ -25,13 +25,13 @@ export function createDesktopSettingsStore(initialSettings: SettingsPatch, main:
     async read() {
       let snapshot = nativeSnapshotSchema.parse(await invoke("read_settings"))
       if (firstRead && main) {
-        firstRead = false
         // Import an actual saved choice only. Retain its old key if migration fails.
         let theme: string | null = null
         try { theme = localStorage.getItem("silo-theme") } catch { /* Browser storage can be unavailable. */ }
         if (!snapshot.saveError && !("theme" in snapshot.settings) && (theme === "system" || theme === "dark" || theme === "light")) {
           snapshot = nativeSnapshotSchema.parse(await invoke("import_legacy_theme", { theme }))
         }
+        firstRead = false
       }
       return snapshot
     },
