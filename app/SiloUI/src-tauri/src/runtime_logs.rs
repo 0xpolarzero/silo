@@ -1278,6 +1278,12 @@ mod tests {
             "git clone 'https://synthetic-url-token@example.test/repo'",
             "connect(postgresql://alice:synthetic-db-password@localhost/db)",
             "remote=https://alice:synthetic%2Dencoded%2Dpassword@example.test/repo",
+            "curl --user alice:synthetic-password https://example.test",
+            "curl -u alice:synthetic-password https://example.test",
+            "login --password synthetic-password",
+            "client --api-key synthetic-key",
+            "client --client-secret synthetic-secret",
+            "client --access_token synthetic-token",
         ]
         .iter()
         .enumerate()
@@ -1307,10 +1313,7 @@ mod tests {
             serde_json::to_string(&context).unwrap(),
             String::from_utf8(exported).unwrap(),
         ] {
-            assert!(
-                !text.contains("synthetic"),
-                "URL credentials escaped: {text}"
-            );
+            assert!(!text.contains("synthetic"), "Credentials escaped: {text}");
         }
         assert!(context
             .entries
