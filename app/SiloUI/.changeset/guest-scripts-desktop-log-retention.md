@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Bound Linux desktop logs during Selkies streaming and retries to prevent continued log output from filling the VM disk.
+Limit sandbox desktop logs during streaming and retries so they cannot fill the sandbox's disk.
