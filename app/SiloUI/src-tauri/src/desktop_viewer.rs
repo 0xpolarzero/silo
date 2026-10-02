@@ -44,7 +44,8 @@ impl Viewer {
         (self.proxy.take(), self.tunnel.take())
     }
     fn healthy(&mut self) -> bool {
-        self.proxy.is_some() && self.tunnel.as_mut().is_some_and(Tunnel::running)
+        self.proxy.as_ref().is_some_and(Proxy::running)
+            && self.tunnel.as_mut().is_some_and(Tunnel::running)
     }
 }
 /// What `desktop_viewer_attach` must do once the registry lock is released.
@@ -937,6 +938,46 @@ mod registry_tests {
     }
     fn live_tunnel() -> Tunnel {
         Tunnel::spawn(Command::new("sleep").arg("30"), None).unwrap()
+    }
+
+    #[test]
+    fn a_failed_proxy_listener_reconnects_despite_a_live_tunnel() {
+        struct ListenerExit(std::sync::mpsc::Sender<()>);
+        impl Drop for ListenerExit {
+            fn drop(&mut self) {
+                let _ = self.0.send(());
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let (ended_tx, ended_rx) = std::sync::mpsc::channel();
+        let notify = ListenerExit(ended_tx);
+        let proxy = Proxy::start_with_accept(
+            directory.path().join("unused.sock"),
+            6901,
+            "silo",
+            "password",
+            move |_| {
+                let _notify = &notify;
+                Err(std::io::ErrorKind::Other.into())
+            },
+        )
+        .unwrap();
+        // The callback's captures drop only when the listener worker has exited.
+        ended_rx.recv_timeout(Duration::from_secs(3)).unwrap();
+        let mut entries = registry();
+        let entry = entries.get_mut("shell").unwrap();
+        entry.proxy = Some(proxy);
+        entry.tunnel = Some(live_tunnel());
+        assert!(
+            matches!(
+                begin_attach(&mut entries, "shell", "dev", true),
+                Ok(AttachPlan::Connect {
+                    stale: (Some(_), Some(_)),
+                    ..
+                })
+            ),
+            "an exited listener must reconnect instead of resizing a dead display"
+        );
     }
 
     #[test]
