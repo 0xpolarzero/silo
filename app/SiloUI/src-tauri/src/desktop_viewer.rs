@@ -23,13 +23,20 @@ use tauri::{
 /// and its ProxyCommand) when Silo's end of stdin closes: on Drop, and also
 /// when Silo crashes or is force-quit, since the kernel closes it then (G-16).
 /// `kill 0` is safe only because the group is the tunnel's own.
-const WATCHDOG: &str = r#"exec 3<&0 </dev/null
+const WATCHDOG: &str = r#"stop_group() {
+  trap '' TERM
+  exec 3<&-
+  kill -s TERM 0
+  /bin/sleep 0.5
+  kill -s KILL 0
+}
+exec 3<&0 </dev/null
 "$@" 3<&- &
 child=$!
-{ read -r _ <&3; kill -s TERM 0; } &
+{ read -r _ <&3; stop_group; } &
 exec 3<&-
 wait "$child"
-kill -s TERM 0
+stop_group
 "#;
 
 /// The ssh forward and the private directory holding its Unix socket (G-04).
@@ -77,10 +84,10 @@ impl Drop for Tunnel {
         if !self.running() {
             return;
         }
-        // The unreaped leader keeps the group id reserved, so this reaches only
-        // the tunnel's own processes. ssh and the shell exit on TERM at once.
+        // Closing stdin asks the watchdog to send TERM, then KILL after 500 ms.
+        // Let its cleanup process survive the leader so stubborn children also
+        // stop after a crash. The unreaped leader reserves the id for our fallback.
         let group = self.child.id() as i32;
-        unsafe { libc::killpg(group, libc::SIGTERM) };
         let deadline = Instant::now() + Duration::from_millis(500);
         while Instant::now() < deadline {
             if !self.running() {
@@ -900,6 +907,43 @@ mod transport_tests {
         while tunnel.running() {
             assert!(Instant::now() < deadline, "the watchdog outlived Silo");
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn closing_or_crashing_reaps_term_ignoring_forward_processes() {
+        for (script, crashed) in [
+            ("trap '' TERM; echo $$ > \"$1\"; exec sleep 30", false),
+            ("trap '' TERM; echo $$ > \"$1\"; exec sleep 30", true),
+            (
+                "sh -c 'trap \"\" TERM; echo $$ > \"$1\"; exec sleep 30' forward \"$1\" & wait",
+                false,
+            ),
+            (
+                "sh -c 'trap \"\" TERM; echo $$ > \"$1\"; exec sleep 30' forward \"$1\" & wait",
+                true,
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let pid_file = directory.path().join("forward.pid");
+            let mut forward = Command::new("/bin/sh");
+            forward.args(["-c", script, "forward"]).arg(&pid_file);
+            let mut tunnel = Tunnel::spawn(&forward, None).unwrap();
+            let group = tunnel.child.id() as i32;
+            let pid = recorded_pid(&pid_file);
+            assert_eq!(unsafe { libc::getpgid(pid) }, group);
+            if crashed {
+                drop(tunnel.stdin.take());
+            } else {
+                drop(tunnel);
+            }
+            let reaped = ended(pid);
+            if !reaped && unsafe { libc::getpgid(pid) } == group {
+                // Clean up only the recorded fixture's still-reserved group.
+                unsafe { libc::killpg(group, libc::SIGKILL) };
+                assert!(ended(pid));
+            }
+            assert!(reaped, "the TERM-ignoring forward outlived its tunnel");
         }
     }
 
