@@ -345,6 +345,7 @@ pub(crate) fn inherit_settings(paths: &RuntimePaths, from: &str, to: &str) {
 /// starts from the destination's default (ask) with no attempt known, so its first boot
 /// applies the default over whatever configuration the imported disk carries.
 pub(crate) fn forget(paths: &RuntimePaths, id: &str) {
+    cancel_retry(id);
     let _lock = lock_policies();
     for path in [policy_path(paths, id), observed_path(paths, id)]
         .into_iter()
@@ -396,6 +397,83 @@ fn is_pending(id: &str) -> bool {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .contains_key(id)
+}
+
+/// The helper's failure code for a download that did not work out; the one failure the
+/// host retries by itself.
+const RETRYABLE_REASON: &str = "lcu-archive-unavailable";
+
+/// Waits before the automatic retries of a sync that failed because the sandbox's network
+/// was unavailable (the helper has already retried the download for about two minutes).
+/// After the last one the failure stays until the next boot or a manual setup.
+const RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_secs(60),
+    Duration::from_secs(5 * 60),
+    Duration::from_secs(15 * 60),
+];
+
+/// VM id -> the cancel token of the retry waiting for it, so the state says `preparing`
+/// while one is scheduled.
+static RETRIES: Mutex<BTreeMap<String, Arc<std::sync::atomic::AtomicBool>>> =
+    Mutex::new(BTreeMap::new());
+
+/// A scheduled retry; dropping it unschedules it (unless another already replaced it).
+struct RetryGuard {
+    id: String,
+    token: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl RetryGuard {
+    fn begin(id: &str) -> Self {
+        let token = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        RETRIES
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .insert(id.to_owned(), token.clone());
+        Self {
+            id: id.to_owned(),
+            token,
+        }
+    }
+}
+
+impl Drop for RetryGuard {
+    fn drop(&mut self) {
+        let mut retries = RETRIES.lock().unwrap_or_else(|p| p.into_inner());
+        if retries
+            .get(&self.id)
+            .is_some_and(|token| Arc::ptr_eq(token, &self.token))
+        {
+            retries.remove(&self.id);
+        }
+    }
+}
+
+/// Cancels the VM's scheduled retry, if any: a new apply, a manual setup or a deletion
+/// takes over.
+fn cancel_retry(id: &str) {
+    if let Some(token) = RETRIES.lock().unwrap_or_else(|p| p.into_inner()).remove(id) {
+        token.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+fn retry_scheduled(id: &str) -> bool {
+    RETRIES
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .contains_key(id)
+}
+
+/// Sleeps for `delay` in short steps; false when `token` was set meanwhile.
+fn wait_unless_cancelled(delay: Duration, token: &std::sync::atomic::AtomicBool) -> bool {
+    let end = std::time::Instant::now() + delay;
+    while std::time::Instant::now() < end {
+        if token.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20).min(delay));
+    }
+    !token.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 // ---------------------------------------------------------------- mount
@@ -892,9 +970,23 @@ fn apply_with(
     name: &str,
     trigger: Trigger,
 ) -> Option<std::thread::JoinHandle<()>> {
+    apply_with_delays(gate, runner, paths, name, trigger, &RETRY_DELAYS)
+}
+
+/// `apply_with` with the waits before each automatic retry (see `RETRY_DELAYS`).
+fn apply_with_delays(
+    gate: &'static runtime::operation_gate::OperationGate,
+    runner: SharedRunner,
+    paths: &RuntimePaths,
+    name: &str,
+    trigger: Trigger,
+    delays: &'static [Duration],
+) -> Option<std::thread::JoinHandle<()>> {
     let machine = built_in_machine(paths, name)?;
     let id = machine.id().to_owned();
     let instance = running_identity(runner.as_ref(), paths, name, &id)?;
+    // A new apply (a boot, a change of the switch) takes over from a retry still waiting.
+    cancel_retry(&id);
     // Registered before the thread starts, so a state read right after a change says
     // `pending` (and a boot that has nothing to change is not shown as applying).
     let pending = read_policy(paths, &id)
@@ -905,67 +997,110 @@ fn apply_with(
         .name("computer-use-apply".into())
         .spawn(move || {
             let _pending = pending;
-            let deadline = std::time::Instant::now() + GATE_WAIT;
-            let Ok(turn) = gate
-                .kind(runtime::operation_gate::OperationKind::Other)
-                .acquire_while(
-                    runtime::operation_gate::Scope::Vm { id: id.clone() },
-                    Some(name.clone()),
-                    &format!("{SYNC_LABEL} {name}"),
-                    &|| std::time::Instant::now() < deadline,
-                )
-            else {
-                return;
-            };
-            turn.allow_cancel();
-            let _preempt = Preempt::watch(gate, &id, turn.cancel_token());
-            let same_vm = built_in_machine(&paths, &name).is_some_and(|m| m.id() == id)
-                && running_identity(runner.as_ref(), &paths, &name, &id).as_deref()
-                    == Some(instance.as_str());
-            if !same_vm {
-                return;
-            }
             let mut trigger = trigger;
-            loop {
-                let policy = policy_for_apply(&paths, &id);
-                let mode = policy.approval;
-                if trigger == Trigger::Change && !policy.needs_apply() {
+            let mut waited = 0;
+            // Held while a retry waits, so the state says `preparing`.
+            let mut _retry: Option<RetryGuard> = None;
+            while apply_once(gate, &runner, &paths, &name, &id, &instance, trigger) {
+                // The network was unavailable: try again after a bounded, growing wait,
+                // outside the VM's turn so other work is never held up by it.
+                let Some(delay) = delays.get(waited).copied() else {
+                    return;
+                };
+                waited += 1;
+                let guard = RetryGuard::begin(&id);
+                let token = guard.token.clone();
+                _retry = Some(guard);
+                if !wait_unless_cancelled(delay, &token) {
                     return;
                 }
-                let run = run_attempt(
-                    runner.as_ref(),
-                    &paths,
-                    &id,
-                    &name,
-                    mode,
-                    false,
-                    trigger == Trigger::Boot,
-                );
-                match &run {
-                    Err(RuntimeError::Cancelled { .. }) | Ok(_) => {}
-                    Err(error) => {
-                        eprintln!("Computer use could not be applied in {name}: {error}")
-                    }
-                }
-                // A cut-short or not-yet-possible apply ends here (the next boot or the
-                // app becoming ready tries again). Otherwise the user may have chosen
-                // another mode while the helper ran, and the change that did it found an
-                // earlier result for that mode and scheduled nothing: converge now, inside
-                // the turn, on whatever is chosen at this moment.
-                if matches!(
-                    run,
-                    Err(RuntimeError::Cancelled { .. }) | Ok((_, Report::NotReady))
-                ) || turn
-                    .cancel_token()
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                    || read_policy(&paths, &id).approval == mode
-                {
+                let same_vm = built_in_machine(&paths, &name).is_some_and(|m| m.id() == id)
+                    && running_identity(runner.as_ref(), &paths, &name, &id).as_deref()
+                        == Some(instance.as_str());
+                if !same_vm || token.load(std::sync::atomic::Ordering::SeqCst) {
                     return;
                 }
                 trigger = Trigger::Change;
             }
         })
         .ok()
+}
+
+/// One turn of an apply: waits for the VM's operation turn, then runs the helper until the
+/// chosen mode is the one applied. Returns whether it ended because the guest could not
+/// download LCU (a failure worth retrying later) and nothing cancelled it.
+fn apply_once(
+    gate: &'static runtime::operation_gate::OperationGate,
+    runner: &SharedRunner,
+    paths: &RuntimePaths,
+    name: &str,
+    id: &str,
+    instance: &str,
+    trigger: Trigger,
+) -> bool {
+    let deadline = std::time::Instant::now() + GATE_WAIT;
+    let Ok(turn) = gate
+        .kind(runtime::operation_gate::OperationKind::Other)
+        .acquire_while(
+            runtime::operation_gate::Scope::Vm { id: id.to_owned() },
+            Some(name.to_owned()),
+            &format!("{SYNC_LABEL} {name}"),
+            &|| std::time::Instant::now() < deadline,
+        )
+    else {
+        return false;
+    };
+    turn.allow_cancel();
+    let _preempt = Preempt::watch(gate, id, turn.cancel_token());
+    let same_vm = built_in_machine(paths, name).is_some_and(|m| m.id() == id)
+        && running_identity(runner.as_ref(), paths, name, id).as_deref() == Some(instance);
+    if !same_vm {
+        return false;
+    }
+    let mut trigger = trigger;
+    loop {
+        let policy = policy_for_apply(paths, id);
+        let mode = policy.approval;
+        if trigger == Trigger::Change && !policy.needs_apply() {
+            return false;
+        }
+        let run = run_attempt(
+            runner.as_ref(),
+            paths,
+            id,
+            name,
+            mode,
+            false,
+            trigger == Trigger::Boot,
+        );
+        match &run {
+            Err(RuntimeError::Cancelled { .. }) | Ok(_) => {}
+            Err(error) => {
+                eprintln!("Computer use could not be applied in {name}: {error}")
+            }
+        }
+        let retryable = matches!(
+            &run,
+            Ok((_, Report::Done(Outcome::Failed, Some(reason)))) if reason == RETRYABLE_REASON
+        );
+        // A cut-short or not-yet-possible apply ends here (the next boot or the
+        // app becoming ready tries again). Otherwise the user may have chosen
+        // another mode while the helper ran, and the change that did it found an
+        // earlier result for that mode and scheduled nothing: converge now, inside
+        // the turn, on whatever is chosen at this moment.
+        let cancelled = turn
+            .cancel_token()
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if matches!(
+            run,
+            Err(RuntimeError::Cancelled { .. }) | Ok((_, Report::NotReady))
+        ) || cancelled
+            || read_policy(paths, id).approval == mode
+        {
+            return retryable && !cancelled;
+        }
+        trigger = Trigger::Change;
+    }
 }
 
 /// At app start, after the runtime is ready: finishes approval changes whose apply never
@@ -1039,7 +1174,7 @@ fn reason_text(code: &str) -> &'static str {
         "doctor-failed" => "LCU's readiness check failed. Details are in /var/log/silo-computer-use.log in the sandbox.",
         "desktop-session-not-running" => "The Linux desktop was not running. Start it, then choose Set up computer use.",
         "timed-out" => "Setup timed out. Choose Set up computer use to retry.",
-        "lcu-archive-unavailable" => "The LCU package is missing from this sandbox and could not be downloaded.",
+        "lcu-archive-unavailable" => "Could not download LCU (network). Silo retries at the next start; check this sandbox's network.",
         "lcu-archive-mismatch" | "lcu-archive-invalid" => "The LCU package did not pass verification.",
         "mount-missing" => "This sandbox has no shared ChatGPT folder. Create a new sandbox to use computer use.",
         "mount-writable" => "The shared ChatGPT folder is mounted writable; Silo refuses to use it.",
@@ -1079,6 +1214,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) settings: &'a Settings,
     /// An apply of the chosen mode is scheduled or running.
     pub(crate) pending: bool,
+    /// A retry of a failed network download is scheduled for this VM.
+    pub(crate) retrying: bool,
 }
 
 /// How applying the chosen mode stands: `applied`, `pending` (scheduled, running, or
@@ -1244,6 +1381,11 @@ pub(crate) fn computer_use_state(inputs: &Inputs) -> (Value, Option<Known>) {
     let (state, reason): (&str, Option<String>) = match details.state.as_str() {
         "ready" => ("ready", None),
         "installing" => ("installing", None),
+        // A network failure Silo is about to retry by itself is not a failure yet.
+        "failed" if inputs.retrying && reason.as_deref() == Some(RETRYABLE_REASON) => (
+            "preparing",
+            Some("Could not download LCU (network). Silo tries again automatically.".into()),
+        ),
         "failed" => (
             "failed",
             Some(reason_text(reason.as_deref().unwrap_or("setup-failed")).into()),
@@ -1286,6 +1428,7 @@ pub(crate) fn desktop_state(
         guest,
         settings: &current,
         pending: is_pending(machine.id()),
+        retrying: retry_scheduled(machine.id()),
     });
     if let Some(known) = remembered {
         remember(paths, machine.id(), known);
@@ -1307,6 +1450,8 @@ pub(crate) fn setup_with(
     cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Value, RuntimeError> {
     // Like an apply, the run yields to a queued stop or delete of this VM and to Quit.
+    // A manual setup takes over from a scheduled retry.
+    cancel_retry(machine.id());
     let _preempt = Preempt::watch(gate, machine.id(), cancel);
     let policy = policy_for_apply(paths, machine.id());
     let mode = policy.approval;
