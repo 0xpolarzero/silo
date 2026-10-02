@@ -56,6 +56,17 @@ References: [Apple Hypervisor](https://developer.apple.com/documentation/hypervi
 [KVM API](https://docs.kernel.org/virt/kvm/api.html#kvm-get-api-version),
 [Tauri sidecars](https://v2.tauri.app/develop/sidecar/).
 
+## Selected export and import paths
+
+The native pickers return paths through a string-based frontend contract. A
+selection must round-trip without changing its filename: spaces, Unicode and
+leading dashes are preserved. Non-UTF-8 names fail before archive inspection or
+remembering an export folder. Rename the affected file or folder and select it
+again. Rust's [`Path::to_str`](https://doc.rust-lang.org/std/path/struct.Path.html#method.to_str)
+reports this boundary; `to_string_lossy` replaces invalid bytes and can name a
+different file. Native path-conversion regressions exercise synthetic Unix
+paths, not a live desktop picker.
+
 ## VM configuration
 
 Use disposable VMs for this walkthrough.
