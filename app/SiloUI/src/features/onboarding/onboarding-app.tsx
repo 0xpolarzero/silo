@@ -167,7 +167,10 @@ export function OnboardingApp({
   // computer's sandboxes once they load (a fallback seed is only a placeholder).
   const machinesInitialized = useRef(onboardingDraft !== null || (draft.machines.length > 0 && source.machinesAuthoritative !== false))
   const currentDraft = useRef(draft)
-  const editedIdentities = useRef(new Set<string>())
+  const editedIdentities = useRef(new Set(Object.keys(onboardingDraft?.workspaceIdentities ?? {})))
+  const editedSelections = useRef(new Set(Object.keys(onboardingDraft?.workspaceSelections ?? {})))
+  const editedRepositoryAccess = useRef(new Set(Object.keys(onboardingDraft?.workspaceRepositoryAccess ?? {})))
+  const policiesInitialized = useRef(new Set(onboardingDraft ? [] : (repositoryPolicies ?? []).map(({ workspace }) => workspace)))
   const recoveryCleared = useRef(false)
   // Existing sandboxes the user deleted with the list's own Delete confirmation.
   const confirmedRemovals = useRef(new Set<string>())
@@ -214,6 +217,39 @@ export function OnboardingApp({
     // A placeholder seed is not saved as the user's draft.
     if (authoritative) void updateOnboardingDraft(next)
   }, [source, updateOnboardingDraft])
+
+  useEffect(() => {
+    if (completed || !repositoryPolicies) return
+    const current = currentDraft.current
+    const names = new Set(current.machines.map(({ name }) => name))
+    const next = { ...current,
+      workspaceRepositoryAccess: { ...current.workspaceRepositoryAccess },
+      workspaceSelections: { ...current.workspaceSelections },
+      workspaceIdentities: { ...current.workspaceIdentities },
+    }
+    let changed = false
+    for (const policy of repositoryPolicies) {
+      const name = policy.workspace
+      if (!names.has(name) || policiesInitialized.current.has(name)) continue
+      policiesInitialized.current.add(name)
+      if (!editedRepositoryAccess.current.has(name)) {
+        next.workspaceRepositoryAccess[name] = { repositoryMode: policy.repositoryMode ?? "selected", allRepositoriesAllowChanges: policy.allRepositoriesAllowChanges ?? false }
+        changed = true
+      }
+      if (!editedSelections.current.has(name)) {
+        next.workspaceSelections[name] = policy.repositories.map((repository) => ({ ...repository }))
+        changed = true
+      }
+      if (!editedIdentities.current.has(name)) {
+        next.workspaceIdentities[name] = { ...policy.identity }
+        changed = true
+      }
+    }
+    if (!changed) return
+    currentDraft.current = next
+    setDraft(next)
+    void updateOnboardingDraft(next)
+  }, [completed, repositoryPolicies, machines, updateOnboardingDraft])
 
   useEffect(() => {
     const host = source.currentHostGitIdentity
@@ -335,6 +371,7 @@ export function OnboardingApp({
   }
 
   function updateWorkspaceSelections(workspace: string, selections: WorkspaceRepositorySelection[]) {
+    editedSelections.current.add(workspace)
     updateDraft({ workspaceSelections: { ...currentDraft.current.workspaceSelections, [workspace]: uniqueWorkspaceSelections(selections) } })
   }
 
@@ -446,7 +483,10 @@ export function OnboardingApp({
           repositoryOptions={availableRepositories}
           workspaceSelections={workspaceSelections}
           workspaceRepositoryAccess={draft.workspaceRepositoryAccess}
-          onWorkspaceRepositoryAccessChange={(workspace, access) => updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })}
+          onWorkspaceRepositoryAccessChange={(workspace, access) => {
+            editedRepositoryAccess.current.add(workspace)
+            updateDraft({ workspaceRepositoryAccess: { ...currentDraft.current.workspaceRepositoryAccess, [workspace]: access } })
+          }}
           workspaceIdentities={workspaceIdentities}
           currentHostGitIdentity={source.currentHostGitIdentity}
           onConnect={actions.connectGitHub}
