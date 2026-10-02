@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Show export and import recovery results recorded while the migration notice is connecting to native updates.
+Show recovered export and import results even when they arrive as the migration notice opens.

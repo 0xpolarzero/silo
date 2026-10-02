@@ -107,6 +107,19 @@ describe("operation-queue toast", () => {
     expect(screen.getByText("Saving Git identities")).toBeInTheDocument()
   })
 
+  it("debounces a fresh operation when it replaces the previous queue without an empty snapshot", async () => {
+    const queue: OperationQueue = { running: [entry({ id: 1, label: "Backing up sandboxes", sinceMs: Date.now() - 1000 })], waiting: [] }
+    const { rerender } = render(<ToastHarness queue={queue} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("Backing up sandboxes")).toBeInTheDocument()
+    rerender(<ToastHarness queue={{ running: [entry({ id: 2, label: "Saving Git identities", sinceMs: Date.now() })], waiting: [] }} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.queryByText("Saving Git identities")).not.toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText("Saving Git identities")).toBeInTheDocument()
+  })
+
   it("flags an operation past its expected duration as taking longer than expected", async () => {
     const queue: OperationQueue = {
       running: [entry({ id: 1, label: "Backing up dev-vm", vmId: "dev", sinceMs: Date.now() - 6 * 60_000, expectedMs: 5 * 60_000 })],

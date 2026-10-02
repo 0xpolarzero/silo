@@ -121,3 +121,47 @@ find a named status group before the fix. They now verify the full sandbox,
 state, and computer name and retain the existing Tab focus target. Existing
 visible-text, shape, and tooltip tests remain applicable. These are semantic DOM
 checks, not a screen-reader session.
+
+## Expanded log messages had no keyboard scroll target
+
+Trigger: expand a long log record and press Tab from its expansion button. The
+message is capped at 20rem and scrolls independently, but its `pre` element was
+not focusable. Keyboard users in browsers without automatic scroll-container
+focus could not reach the clipped portion with scrolling keys.
+
+The fix makes that exact scroll container focusable, names its output group, and
+adds an inset focus ring, following [MDN's overflow accessibility guidance](https://developer.mozilla.org/en-US/docs/Web/CSS/Reference/Properties/overflow#accessibility).
+The enclosing detail region and virtual table layout remain unchanged.
+
+Verification: `logs-table.test.tsx` first failed because Tab skipped the expanded
+message. The regression now reaches the named output and verifies the complete
+message remains present. DOM fixtures verify keyboard focus access; native
+scroll distances and screen-reader speech require a packaged-app check.
+
+## Explicit disclosure labels omitted their status captions
+
+Trigger: focus a dependency group disclosure with a caption such as "2 checks
+failed". Its explicit label replaced the button's content-derived name, including
+the status caption, and no description exposed that caption on focus.
+
+The shared header now associates its caption through a unique description ID
+when an explicit label overrides the content name. Unlabelled disclosures retain
+their content-derived names without duplicating the caption as a description.
+This uses [WAI-ARIA's description relationship](https://www.w3.org/TR/wai-aria-1.2/#aria-describedby).
+
+Verification: `disclosure-header.test.tsx` first failed for the missing caption
+description. The regression verifies separate captions across two instances and
+an updated status after rerender. A second case preserves unlabelled behavior.
+
+## Final focused verification
+
+Node 24.11.1: all 145 tests in the 15 focused component and caller files passed
+with `vitest run --maxWorkers=2 --testTimeout=15000`. The file list and complete
+result are saved locally in `/tmp/silo-a11y-node24-focused.log`. Frontend
+`typecheck`, oxlint on the 20 changed TypeScript files, Cargo 1.94.0 formatting,
+and `git diff --check` passed. Earlier iterations used the shell's Node 26
+default; the final Node 24 run reverified every changed area.
+
+Verification used deterministic DOM fixtures and synthetic backend callbacks.
+No bundle was inspected, no native app was launched, and no live VM, SSH
+connection, credential store, or production data was used.

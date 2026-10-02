@@ -1,6 +1,6 @@
 # Silo third code review pass: release and CI, 2026-10-02
 
-This pass reviews release tooling, workflow gates, updater artifacts, release documentation, and development/production channel separation. The ledger records eleven new findings: ten P2 and one P3. Ten are fixed or corrected and folded; RL-06 remains open because its correction requires a qualified macOS 14 execution environment. These results do not establish release readiness.
+This pass reviews release tooling, workflow gates, updater artifacts, release documentation, and development/production channel separation. The ledger records twelve new findings: eleven P2 and one P3. Eleven are fixed or corrected and folded; RL-06 remains open because its correction requires a qualified macOS 14 execution environment. These results do not establish release readiness.
 
 ## Revision and scope
 
@@ -29,6 +29,7 @@ No release was published or signed, and no repository or remote release tag was 
 | RL-09 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Fixed and folded: `028ce994` |
 | RL-10 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed and folded: `8102c670` |
 | RL-11 | P2 | Lifecycle guest probes use the production alias for Dev | Fixed and folded: `f7cec265`, `b64a60e5` |
+| RL-12 | P2 | Failed Linux tool staging destroys complete prior package inputs | Fixed in accompanying commit |
 
 ## Detailed findings
 
@@ -211,6 +212,22 @@ No release was published or signed, and no repository or remote release tag was 
 **Status.** Fixed and folded in `f7cec265`, then `b64a60e5` adopted the integrated native-name reader from `466b6ae8` instead of duplicating identifiers/private directory names. The first regression failed in three subcases; the follow-up also rejected changed Dev identifiers/private directories before correction. All 23 focused fixture/channel/wrapper/workflow tests pass. No application changeset is needed.
 
 
+### RL-12 Failed Linux tool staging destroys complete prior package inputs
+
+**P2.** Confirmed at `d4ecab4a`. Location: [linux-package-tools.mjs](../app/SiloUI/scripts/linux-package-tools.mjs), `stageLinuxPackageTools`.
+
+**Trigger.** Prepare Linux package tools with a complete prior `runtime/linux-package/tools` directory, then encounter a missing or unreadable later source, such as the bundled `libkrunfw` library.
+
+**Evidence.** The real staging function removes the destination before copying any source. A temporary fixture supplied five replacement executables but omitted the final library. The call rejected with `ENOENT`, and the original library no longer existed; the earlier executable copies had replaced the old bytes. The regression failed before correction. No real runtime preparation, compiler, app or network was used.
+
+**Consequence.** Failed preparation destroys the previously usable package-tool inputs and leaves a partial replacement. Bundling can no longer use the prior complete staging directory. This is a different publication boundary from RL-08's MicroSandbox sidecar/manifest pair.
+
+**Correction.** Copy and preserve modes in an operation-owned sibling directory, replace the published directory only after all six copies succeed, and clean the temporary directory in `finally`.
+
+**Rejecting test.** Seed all six previous tool files and omit the last replacement source. After rejection, every previous byte must remain and no temporary staging directory may remain. Successful preparation must still preserve exact bytes and executable modes. This does not claim crash-atomic publication or protection against final destination removal/rename failures.
+
+**Status.** Fixed in the accompanying commit. All three Linux package-tool tests pass; no application changeset is needed for internal preparation tooling. Failure/passing evidence is retained in `rl12-{before,after}.log` in the existing ignored verification directory.
+
 ## Other reviewed boundaries and limits
 
 [release-platform.yml](../.github/workflows/release-platform.yml) compiles production bundles under `src-tauri/target/release-compile/<target>/release/bundle`. The macOS finalizer receives the app at that path; Linux packaging copies the single expected Debian/AppImage outputs to fixed release asset names. [publish-release.py](../app/SiloUI/scripts/publish-release.py) maps `darwin-aarch64`, `linux-x86_64` and `linux-aarch64` to those updater assets. The inspected producer/consumer paths agree; no bundle was generated or opened in this pass.
@@ -255,7 +272,11 @@ RL-11's original failure log is named `rl10-before.log` because integration assi
 
 The full Node adapter suite passed 27 tests in earlier runs but created unsigned fixture tags. The attempted negative exclusion filter also ran that test; it was not a valid filtered verification. The final positive selection `node --test --test-name-pattern='explicit stable publication passes' app/SiloUI/scripts/release.test.mjs` passed exactly one test without running the real Changesets tag fixture. Messages about pushing/dispatching in this suite come from fake command adapters; no real push or publication occurred.
 
-The eleven-entry ledger includes three independently authored concurrent findings and their integration fixes. Report commits were folded from the initial scaffold onward, including conflict resolutions that preserved both authors' findings. None of these internal tooling/documentation changes needs an application changeset. Versions were not bumped in the task repository, changesets were not consumed there, and no real release operation was performed.
+The ledger includes three independently authored concurrent findings and their integration fixes. Report commits were folded from the initial scaffold onward, including conflict resolutions that preserved both authors' findings. None of these internal tooling/documentation changes needs an application changeset. Versions were not bumped in the task repository, changesets were not consumed there, and no real release operation was performed.
+
+## Continuation review
+
+The requested twenty-minute continuation started at 17:21 UTC. Integration was merged before reviewing. RL-06 was rechecked at `d4ecab4a`: the required job still uses `macos-14`, and no qualified replacement environment is present. It remains open for the same concrete infrastructure dependency; no gate was bypassed. Continuation fixture checks are recorded separately from the original `8e497736` cutoff.
 
 ## Next action
 

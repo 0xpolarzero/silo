@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Confirm remote port forwarding through OpenSSH before showing a local endpoint, so another local listener cannot be reported as the tunnel.
+Confirm remote port forwarding is ready before showing its local address, so an unrelated local service cannot be mistaken for the connection.

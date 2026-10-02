@@ -26,6 +26,9 @@ fn rebind(descriptor: &str, cache: &Path) -> Result<Option<String>, String> {
             continue;
         };
         if Path::new(path).starts_with(&own) {
+            if !Path::new(path).is_file() {
+                return Err("An image file is missing from this runtime's cache.".into());
+            }
             lines.push(line.to_owned());
             continue;
         }
@@ -181,15 +184,43 @@ fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let permissions = fs::metadata(path).map_err(|_| failed())?.permissions();
     let mut file = tempfile::NamedTempFile::new_in(directory).map_err(|_| failed())?;
     file.write_all(bytes).map_err(|_| failed())?;
+    file.as_file()
+        .set_permissions(permissions)
+        .map_err(|_| failed())?;
     file.as_file().sync_all().map_err(|_| failed())?;
-    fs::set_permissions(file.path(), permissions).map_err(|_| failed())?;
     file.persist(path).map_err(|_| failed())?;
+    fs::File::open(directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| failed())?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn descriptor_publication_reports_an_unreadable_parent_after_replacement() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory = tempfile::tempdir().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let path = directory.path().join("image.vmdk");
+        fs::write(&path, b"previous descriptor").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = write_atomically(&path, b"complete replacement");
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"complete replacement");
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o640);
+        assert!(
+            result.is_err(),
+            "an unsynchronized rename must not report success"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
 
     const FSMETA: &str =
         "sha256_c3cfb36ddc3996ea4b2ce930868bad3d0138688ac9bcdd6164a78d1adc43b30a.erofs";
@@ -277,6 +308,23 @@ mod tests {
             assert_eq!(cached_copy(path, &cache), None, "{path}");
         }
         assert_eq!(repair(&cache.join("absent")).unwrap(), 0);
+    }
+
+    #[test]
+    fn missing_files_in_the_current_cache_are_reported_without_rewriting_the_descriptor() {
+        let (_directory, cache) = cache();
+        let current = fs::canonicalize(&cache).unwrap();
+        let fsmeta = current.join("fsmeta").join(FSMETA);
+        let layer = current.join("layers").join(LAYER);
+        let vmdk = cache.join("vmdk/current.vmdk");
+        let text = descriptor(&fsmeta.display().to_string(), &layer.display().to_string());
+        fs::write(&vmdk, &text).unwrap();
+        fs::remove_file(&layer).unwrap();
+
+        assert!(repair(&cache).unwrap_err().contains("missing"));
+        assert_eq!(fs::read_to_string(&vmdk).unwrap(), text);
+        fs::write(&layer, [0; 512]).unwrap();
+        assert_eq!(repair(&cache).unwrap(), 0);
     }
 
     #[test]

@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Report unsupported runtime home and library filenames before opening a terminal instead of silently launching with altered paths.
+Show an error before opening a terminal when required storage or library folders have unsupported names, instead of using a different path.

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     fs,
-    io::Write,
+    io::{Read, Write},
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -127,14 +127,23 @@ struct BackupHistory {
 }
 
 fn load_destination(path: &Path) -> Option<PathBuf> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return None,
         Err(error) => {
             eprintln!("Silo ignored its unreadable export folder setting: {error}");
             return None;
         }
     };
+    let mut bytes = Vec::new();
+    if let Err(error) = file.take(1024 * 1024 + 1).read_to_end(&mut bytes) {
+        eprintln!("Silo ignored its unreadable export folder setting: {error}");
+        return None;
+    }
+    if bytes.len() > 1024 * 1024 {
+        eprintln!("Silo ignored its oversized export folder setting (limit: 1 MiB).");
+        return None;
+    }
     match serde_json::from_slice::<BackupHistory>(&bytes) {
         Ok(history) if history.schema_version == 1 => {
             history.destination.filter(|path| path.is_absolute())
@@ -1919,6 +1928,7 @@ fn unpack_and_save(
         &id,
         &prepared.snapshot_group,
         &prepared.snapshot_member,
+        &prepared.runtime_config,
     )?;
     import_group.keep();
     Ok(())
@@ -1937,13 +1947,20 @@ fn commit_import(
     id: &str,
     group: &str,
     member: &str,
+    runtime_config: &Value,
 ) -> Result<(), String> {
     recovery::save_restore_identity(controller, id, group)?;
     let discard = |error: String| {
         let _ = recovery::discard_uncommitted_import(paths, controller, id, Some(group));
         Err(error)
     };
-    if let Err(error) = runtime::checkpoints::import_pending_restore(paths, id, group, member) {
+    if let Err(error) = runtime::checkpoints::import_pending_restore_with_environment(
+        paths,
+        id,
+        group,
+        member,
+        runtime_config,
+    ) {
         return discard(error.to_string());
     }
     let mut updated = original;
@@ -2736,6 +2753,24 @@ mod tests {
     }
 
     #[test]
+    fn oversized_backup_history_forgets_only_the_advisory_folder_without_rewriting() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("backup-history.json");
+        let mut bytes =
+            br#"{"schemaVersion":1,"destination":"/fixture-exports","archives":[]}"#.to_vec();
+        bytes.resize(1024 * 1024, b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            load_destination(&path),
+            Some(PathBuf::from("/fixture-exports"))
+        );
+        bytes.push(b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(load_destination(&path), None);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
+
+    #[test]
     fn a_destination_that_cannot_be_saved_is_still_used_this_session() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -3486,6 +3521,7 @@ mod tests {
             &id,
             GROUP,
             MEMBER,
+            &serde_json::json!({"env":[{"key":"PROJECT_MODE","value":"portable"}]}),
         )
         .unwrap();
         assert!(runtime::read_metadata(&paths.metadata)
@@ -3493,6 +3529,20 @@ mod tests {
             .machines
             .iter()
             .any(|machine| machine.id() == id));
+        let record: Value = serde_json::from_slice(
+            &fs::read(
+                paths
+                    .metadata
+                    .with_file_name("checkpoints")
+                    .join(format!("{id}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            record["desiredEnvironment"],
+            serde_json::json!([{"key":"PROJECT_MODE","value":"portable"}])
+        );
         let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
         assert!(saved.contains(&id) && saved.contains(GROUP), "{saved}");
     }
@@ -3520,7 +3570,8 @@ mod tests {
             imported_machine(&id),
             &id,
             GROUP,
-            MEMBER
+            MEMBER,
+            &Value::Null,
         )
         .is_err());
         assert!(!paths

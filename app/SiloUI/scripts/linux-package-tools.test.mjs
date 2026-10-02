@@ -32,6 +32,28 @@ test("a missing Linux package input preserves the complete previous tool directo
   }
 })
 
+test("failed Linux tool staging preserves the previous complete package inputs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "silo-linux-package-"))
+  try {
+    const triple = "x86_64-unknown-linux-gnu"
+    const binaries = join(root, "src-tauri", "binaries")
+    const packaged = join(root, "src-tauri", "runtime", "linux-package")
+    const tools = join(packaged, "tools")
+    await mkdir(binaries, { recursive: true })
+    await mkdir(tools, { recursive: true })
+    const names = ["msb", "git", "git-lfs", "git-remote-http", "git-remote-https", "libkrunfw.so.5.6.1"]
+    for (const name of names) await writeFile(join(tools, name), `previous-${name}`)
+    for (const name of names.slice(0, -1)) await writeFile(join(binaries, `${name}-${triple}`), `replacement-${name}`)
+    // The final source is absent after the five executable copies have succeeded.
+    await assert.rejects(stageLinuxPackageTools({ appRoot: root, targetTriple: triple }), { code: "ENOENT" })
+    assert.deepEqual(await Promise.all(names.map(name => readFile(join(tools, name), "utf8"))),
+      names.map(name => `previous-${name}`))
+    assert.deepEqual(await readdir(packaged), ["tools"])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("Linux package tools preserve exact staged bytes and executable modes", async () => {
   const root = await mkdtemp(join(tmpdir(), "silo-linux-package-"))
   try {

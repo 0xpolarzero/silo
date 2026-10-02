@@ -32,3 +32,12 @@ Scope: `app/SiloUI/src/features/github/`. Tests use mocked callbacks and determi
 - **Status:** Fixed; component regressions pass.
 
 Verification: 18 GitHub component tests pass. The token and GitHub-page notification suites pass all 14 tests after the owned-toast cleanup correction. The initial broader run hit a 5-second timeout in the existing interleaved repository/identity test under host contention; that test passes in isolation with one worker and a 15-second timeout. Focused lint, TypeScript checking, Rust formatting, and whitespace checks were run for the fixes. No native build or live-state validation was performed.
+
+## FE-GITHUB-4 — P2 — Disabling an incomplete Git identity is never saved
+
+- **File:line at review base `2df5bc93`:** `app/SiloUI/src/features/application/pages/github-page.tsx:295–296`.
+- **Trigger:** Clear the Git name or email for a sandbox whose identity is applied, then turn off Apply.
+- **Evidence:** Both field variants fail a page-level behavior test because `saveGitHubConfiguration` is never called. `commitIdentity` rejects empty author fields before considering `apply`. Native `github.rs` validation requires nonempty fields only when `identity.apply` is true; `github-failure.ts` also instructs users to turn off Apply instead of supplying an author. Exact failing output: `/tmp/silo-fe-github-identity-off-red.log`.
+- **Consequence:** The checkbox shows Apply off while the saved policy still applies the previous Git identity.
+- **Suggested fix:** Require name and email only when applying an identity, retaining the existing incomplete-edit guard when Apply is on.
+- **Regression:** Two parameterized page tests clear each field, disable Apply, inspect the save, and verify the state survives an authoritative snapshot.

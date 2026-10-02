@@ -31,3 +31,7 @@ Cleanup now clears timers, dismisses owned progress, and clears tracking entries
 ## GitHub setup polling disposal
 
 `dispose` cleared periodic source polling but left an active GitHub setup delay running. After the delay it issued another `read_github_state` before noticing disposal, potentially waiting on a closed bridge. Disposal now wakes and clears setup delays, and verification checks disposal before the next read. The existing Quit-drain regression also covers disposal: accepted work rejects immediately, native read count stays unchanged, and no timer remains.
+
+## Notification reader callbacks after cleanup
+
+Editor include, transfer-result, and pre-upgrade backup readers guarded state publication but still started reads from disposed callbacks. The backup callback additionally used the latest refresh ref, letting an obsolete subscription trigger reads from its replacement backend. Early lifetime checks now reject that work. Seven fixture regressions cover pending registration, queued callbacks after registered cleanup, live refresh, and backend replacement.

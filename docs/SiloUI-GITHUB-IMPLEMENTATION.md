@@ -552,3 +552,11 @@ require `SILO_GITHUB_TEST_CONFIRM=private-test-repositories`. The isolated brows
 regression checks both confirmations before exchanging its authorization code.
 The guest regression runs the already-built test executable with an exact test
 selector; it does not start nested Cargo or share Cargo build locks.
+
+### Repository push preflight execution
+
+The async push task obtains its planned commit count on the blocking pool before
+publishing its pushing state. Although the count is cached, resolving its cache
+key reads the selected runtime generation and takes the migration progress mutex.
+This filesystem and lock boundary follows
+[Tokio's blocking-work guidance](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).

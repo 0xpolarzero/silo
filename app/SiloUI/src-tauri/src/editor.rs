@@ -206,7 +206,7 @@ fn editor_launch(
     Ok(launch)
 }
 
-/// Writes `~/.silo/editor/<alias>/<path hash>/<folder>.code-workspace`, keeping
+/// Writes `<channel home>/editor/<alias>/<path hash>/<folder>.code-workspace`, keeping
 /// any other workspace settings the user added and restoring Silo's own.
 fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
@@ -342,7 +342,16 @@ pub(crate) fn key(path: &Path) -> Result<(), String> {
     }
     let mut command = Command::new("/usr/bin/ssh-keygen");
     command
-        .args(["-q", "-t", "ed25519", "-N", "", "-C", "Silo", "-f"])
+        .args([
+            "-q",
+            "-t",
+            "ed25519",
+            "-N",
+            "",
+            "-C",
+            crate::channel::current().product_name(),
+            "-f",
+        ])
         .arg(path);
     run(&mut command, Duration::from_secs(5))
 }
@@ -847,36 +856,72 @@ fn with_proxy(contents: &str, proxy: &str) -> Option<String> {
 
 /// Rewrites every `*.conf` Silo wrote in `root`, where `rewrite` maps a file stem
 /// and its contents to the new contents, or `None` to leave the file alone.
-fn rewrite_configs(root: &Path, rewrite: &dyn Fn(&str, &str) -> Option<String>) {
-    let Ok(entries) = fs::read_dir(root) else {
-        return;
+fn rewrite_configs(
+    root: &Path,
+    rewrite: &dyn Fn(&str, &str) -> Option<String>,
+) -> Result<(), String> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => {
+            return Err(format!(
+                "Could not read editor configurations in {}.",
+                root.display()
+            ))
+        }
     };
-    for entry in entries.flatten() {
+    let mut failures = Vec::new();
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                failures.push(format!(
+                    "Could not read an editor configuration in {}.",
+                    root.display()
+                ));
+                continue;
+            }
+        };
         let path = entry.path();
         if path.extension().is_none_or(|extension| extension != "conf") {
             continue;
         }
         let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            failures.push(format!(
+                "Invalid editor configuration name in {}.",
+                root.display()
+            ));
             continue;
         };
-        let Ok(bytes) = read_regular(&path) else {
-            continue;
-        };
-        let Ok(contents) = String::from_utf8(bytes) else {
-            continue;
-        };
-        if let Some(updated) = rewrite(stem, &contents).filter(|updated| *updated != contents) {
-            let _ = write_private(&path, updated.as_bytes());
+        let result = (|| {
+            let bytes = read_regular(&path)?;
+            let contents = String::from_utf8(bytes)
+                .map_err(|_| "The SSH configuration is not UTF-8.".to_owned())?;
+            if let Some(updated) = rewrite(stem, &contents).filter(|updated| *updated != contents) {
+                write_private(&path, updated.as_bytes())?;
+            }
+            Ok::<_, String>(())
+        })();
+        if let Err(error) = result {
+            failures.push(format!("{}: {error}", path.display()));
         }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Some editor configurations could not be repaired. {}",
+            failures.join(" ")
+        ))
     }
 }
 
 /// Rewrites the ProxyCommand of every `*.conf` Silo wrote in `root`, where
 /// `proxy_for` maps a file stem to its current command.
-fn refresh_configs(root: &Path, proxy_for: &dyn Fn(&str) -> Option<String>) {
+fn refresh_configs(root: &Path, proxy_for: &dyn Fn(&str) -> Option<String>) -> Result<(), String> {
     rewrite_configs(root, &|stem, contents| {
         with_proxy(contents, &proxy_for(stem)?)
-    });
+    })
 }
 
 /// Points a local entry written for another runtime home at `paths`: the runtime
@@ -919,8 +964,8 @@ fn user_config_has_line(user_home: &Path, line: &str) -> bool {
 /// The previous home is never written. The old `Include` line stays: the new one
 /// goes first and `ssh` keeps the first value it finds, so the repointed entries
 /// win, a glob that matches nothing is harmless, and the user's file keeps
-/// everything but the one prepended line. Safe to repeat. Fails only when the
-/// `Include` could not be added, with the message `install_include` explains.
+/// everything but the one prepended line. Safe to repeat. Reports failed entry
+/// rewrites before adding the `Include`.
 fn repoint_converted_entries(
     paths: &RuntimePaths,
     user_home: &Path,
@@ -930,7 +975,7 @@ fn repoint_converted_entries(
     let _guard = files_lock();
     rewrite_configs(&root, &|name, contents| {
         with_local_entry(contents, paths, name)
-    });
+    })?;
     if !user_config_has_line(user_home, &include_line(&previous_home.join("ssh"))?) {
         return Ok(());
     }
@@ -1067,13 +1112,16 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
             return;
         }
         let _guard = files_lock();
+        let mut failures = Vec::new();
         if let Ok(paths) = runtime::runtime_paths(&app) {
-            refresh_configs(&paths.home.join("ssh"), &|name| {
+            if let Err(error) = refresh_configs(&paths.home.join("ssh"), &|name| {
                 local_proxy(&paths, name).ok()
-            });
+            }) {
+                failures.push(error);
+            }
         }
         if let Ok(home) = app.path().home_dir() {
-            refresh_configs(
+            if let Err(error) = refresh_configs(
                 &crate::channel::current()
                     .state_dir(&home)
                     .join("desktop-remote/ssh"),
@@ -1082,6 +1130,20 @@ pub(crate) fn refresh_transports(app: &AppHandle) {
                     (stem.as_bytes().get(36) == Some(&b'-')).then_some(())?;
                     remote_proxy(host, vm).ok()
                 },
+            ) {
+                failures.push(error);
+            }
+        }
+        drop(_guard);
+        if !failures.is_empty() {
+            crate::notifications::notify(
+                &app,
+                crate::notifications::failure(
+                    "startup:editor-connections",
+                    "Editor connections need attention",
+                    &failures.join(" "),
+                    None,
+                ),
             );
         }
     });
@@ -1153,6 +1215,23 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn generated_key_comment_names_the_channel_and_existing_keys_are_preserved() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("id_ed25519");
+        key(&path).unwrap();
+        let public = fs::read_to_string(dir.path().join("id_ed25519.pub")).unwrap();
+        assert!(public.ends_with(&format!(" {}\n", crate::channel::current().product_name())));
+        let private = fs::read(&path).unwrap();
+        key(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), private);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("id_ed25519.pub")).unwrap(),
+            public
+        );
     }
 
     #[test]
@@ -1264,7 +1343,8 @@ mod tests {
                 "/home/me/.silo/abc",
                 name,
             ]))
-        });
+        })
+        .unwrap();
         let updated = fs::read_to_string(root.path().join("dev.conf")).unwrap();
         assert_eq!(
             updated,
@@ -2109,6 +2189,73 @@ mod tests {
     }
 
     #[test]
+    fn repair_reports_failed_writes_and_retries_all_transport_directives() {
+        // Root can write through directory permission bits.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let computer = migrated();
+        let root = computer.converted.home.join("ssh");
+        let entry = root.join("dev.conf");
+        let original = fs::read(&entry).unwrap();
+        let config = computer.config();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o500)).unwrap();
+        assert!(write_private(&entry, b"cannot replace").is_err());
+        let repair = computer.repair(&computer.converted);
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(matches!(repair, Repair::Failed(_)), "{repair:?}");
+        assert_eq!(fs::read(&entry).unwrap(), original);
+        assert_eq!(computer.config(), config);
+        assert_eq!(computer.repair(&computer.converted), Repair::Done);
+        let updated = computer.entry(&computer.converted);
+        for directive in ["ProxyCommand", "IdentityFile", "UserKnownHostsFile"] {
+            let value = updated
+                .lines()
+                .find(|line| line.starts_with(&format!("  {directive} ")))
+                .unwrap();
+            assert!(
+                value.contains(&computer.converted.home.display().to_string()),
+                "{value}"
+            );
+            assert!(!value.contains(&computer.previous.home.display().to_string()));
+        }
+    }
+
+    #[test]
+    fn repair_reports_unreadable_files_and_finishes_the_writable_batch() {
+        let computer = migrated();
+        let root = computer.converted.home.join("ssh");
+        let outside = computer.directory.path().join("unrelated-config");
+        fs::write(&outside, "keep this file").unwrap();
+        let unreadable = root.join("unreadable.conf");
+        std::os::unix::fs::symlink(&outside, &unreadable).unwrap();
+        let config = computer.config();
+        let repair = computer.repair(&computer.converted);
+        assert!(
+            matches!(&repair, Repair::Failed(error) if error.contains("unreadable.conf")),
+            "{repair:?}"
+        );
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "keep this file");
+        assert!(fs::symlink_metadata(&unreadable)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(computer.config(), config);
+        assert!(computer
+            .entry(&computer.converted)
+            .contains(&format!("MSB_HOME={}", computer.converted.home.display())));
+        fs::remove_file(&unreadable).unwrap();
+        assert_eq!(computer.repair(&computer.converted), Repair::Done);
+    }
+
+    #[test]
+    fn repair_accepts_an_absent_optional_configuration_directory() {
+        let computer = migrated();
+        fs::remove_dir_all(computer.converted.home.join("ssh")).unwrap();
+        assert_eq!(computer.repair(&computer.converted), Repair::Done);
+    }
+
+    #[test]
     fn a_failure_other_than_the_line_to_add_is_not_reported_as_one() {
         let computer = migrated();
         // A runtime home `ssh` can't be told about: the `Include` can't be written at all.
@@ -2157,7 +2304,7 @@ mod tests {
         let target = computer.directory.path().join("target.conf");
         fs::write(&target, computer.entry(&computer.converted)).unwrap();
         std::os::unix::fs::symlink(&target, ssh.join("linked.conf")).unwrap();
-        computer.repoint().unwrap();
+        assert!(computer.repoint().unwrap_err().contains("linked.conf"));
         assert_eq!(fs::read_to_string(ssh.join("mine.conf")).unwrap(), foreign);
         assert_eq!(
             fs::read_to_string(ssh.join("bad name.conf")).unwrap(),

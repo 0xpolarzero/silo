@@ -122,7 +122,7 @@ fn directory() -> Result<PathBuf, String> {
     let home = std::env::var_os("HOME").ok_or("Home directory is unavailable.")?;
     directory_in(Path::new(&home))
 }
-/// `~/.silo/desktop-remote` (`~/.silo-dev/...` for Silo Dev) under `home`, private to this account.
+/// The current channel's `desktop-remote` directory under `home`, private to this account.
 fn directory_in(home: &Path) -> Result<PathBuf, String> {
     let root = crate::channel::current().state_dir(home);
     crate::runtime::prepare_private_directory(&root).map_err(|e| e.to_string())?;
@@ -201,7 +201,7 @@ const METHODS: &[(&str, Access)] = &[
     ("chatgpt.retry", Access::Change),
     ("computer.approval", Access::Change),
     ("ssh.access.state", Access::Read),
-    ("ssh.access.connection", Access::Read),
+    ("ssh.access.connection", Access::Change),
     ("ssh.access.save", Access::Change),
     ("files.list", Access::Read),
     ("guest.prepare", Access::Change),
@@ -298,7 +298,7 @@ fn select_bridge_target(app_image: Option<PathBuf>, current: PathBuf) -> Result<
     }
     Ok(current)
 }
-/// Points `~/.local/bin/silo-remote` under `home` at `target`, replacing only a link
+/// Points the current channel's bridge link under `~/.local/bin` at `target`, replacing only a link
 /// Silo made earlier: one to an executable with the same name, a Silo AppImage, or a
 /// link whose target is gone (an old AppImage mount or a moved app).
 fn link_bridge(home: &Path, target: &Path) -> Result<(), String> {
@@ -531,8 +531,9 @@ fn read_reply(mut reader: impl std::io::BufRead) -> Result<Value, String> {
         if byte == REPLY_PREAMBLE[matched] {
             matched += 1;
         } else {
-            skipped += matched + 1;
-            matched = usize::from(byte == REPLY_PREAMBLE[0]);
+            let restart = usize::from(byte == REPLY_PREAMBLE[0]);
+            skipped += matched + 1 - restart;
+            matched = restart;
             if skipped > REPLY_SEARCH_LIMIT {
                 return Err("The other computer printed unexpected text before Silo's reply. Remove output from its shell startup files, such as echo in .bashrc.".into());
             }
@@ -965,12 +966,17 @@ fn connection_failure(code: Option<i32>, stderr: &str) -> String {
     if has("Silo is not running on this computer.") {
         return "Silo is not running on the other computer. Open Silo there with remote management enabled.".into();
     }
-    if code == Some(127)
-        || has("silo-remote: No such file")
-        || has("silo-remote: not found")
-        || has("silo-remote-dev: No such file")
-        || has("silo-remote-dev: not found")
-    {
+    let missing_bridge = [
+        crate::channel::Channel::Production,
+        crate::channel::Channel::Development,
+    ]
+    .into_iter()
+    .any(|channel| {
+        ["No such file", "not found"]
+            .into_iter()
+            .any(|cause| has(&format!("{}: {cause}", channel.remote_bridge_name())))
+    });
+    if code == Some(127) || missing_bridge {
         return "Silo's remote bridge is missing on the other computer. Turn remote management off and on again there.".into();
     }
     CONNECTION_HELP.into()
@@ -999,6 +1005,18 @@ impl Failure {
         self.error().message
     }
 }
+/// A bridge reply carries either an explicit result or a reported error.
+fn decode_reply(response: &Value) -> Result<Value, Failure> {
+    let invalid = || Failure::Failed("Invalid remote Silo response.".into());
+    match (response.get("result"), response.get("error")) {
+        (Some(result), None) => Ok(result.clone()),
+        (None, Some(_)) => Err(BridgeError::from_remote_reply(response)
+            .map(Failure::Reported)
+            .unwrap_or_else(invalid)),
+        _ => Err(invalid()),
+    }
+}
+
 /// An ssh failure that sending the request again may overcome: the connection dropped or
 /// could not be made, not a host key, authentication, name or refused-connection problem.
 fn lost_connection(code: Option<i32>, stderr: &str) -> bool {
@@ -1113,10 +1131,7 @@ fn run_exchange(
     let mut stdout = stdout;
     stdout.seek(SeekFrom::Start(0)).map_err(failed)?;
     let response = read_reply(std::io::BufReader::new(stdout)).map_err(Failure::Failed)?;
-    if let Some(error) = BridgeError::from_remote_reply(&response) {
-        return Err(Failure::Reported(error));
-    }
-    Ok(response["result"].clone())
+    decode_reply(&response)
 }
 /// Legacy adapter for callers whose command error contract has not migrated yet.
 pub(crate) fn call_remote(
@@ -1319,7 +1334,9 @@ fn save_connected_host(
         return Err(if host.name == local_name {
             "This address points to this computer. Its VMs are already available locally.".into()
         } else {
-            format!("{} uses this computer's Silo identity, probably because its Silo settings were copied from here. On {}, quit Silo, delete ~/.silo/desktop-remote/config.json (~/.silo-dev/desktop-remote/config.json for Silo Dev), and open Silo again.", host.name, host.name)
+            let production = crate::channel::Channel::Production;
+            let development = crate::channel::Channel::Development;
+            format!("{} uses this computer's Silo identity, probably because its Silo settings were copied from here. On {}, quit Silo, delete ~/{}/desktop-remote/config.json (~/{}/desktop-remote/config.json for {}), and open Silo again.", host.name, host.name, production.state_dir_name(), development.state_dir_name(), development.product_name())
         });
     }
     if let Some(saved) = config.hosts.iter().find(|saved| saved.id == host.id) {
@@ -1675,9 +1692,7 @@ pub(crate) fn run_remote_stream(host_id: &str, method: &str, params: Value) -> R
             &json!({"version":VERSION,"hostId":host.id,"method":method,"params":params}),
         )?;
         let reply = read_reply(&mut output)?;
-        if let Some(error) = reply["error"].as_str() {
-            return Err(error.to_owned());
-        }
+        decode_reply(&reply).map_err(Failure::message)?;
         thread::spawn(move || {
             let _ = std::io::copy(&mut std::io::stdin().lock(), &mut input);
         });
@@ -1921,13 +1936,20 @@ fn handle(
         }
         Some(Access::Read) => execute(method, params),
         Some(Access::Change) => {
+            // Earlier controllers treated key authorization as a read and sent no identity.
+            let legacy_key_request = method == "ssh.access.connection"
+                && request.get("operationId").is_none()
+                && request.get("startWithinMs").is_none();
+            let legacy_id = legacy_key_request.then(|| uuid::Uuid::new_v4().to_string());
             let id = request["operationId"]
                 .as_str()
+                .or(legacy_id.as_deref())
                 .filter(|id| uuid::Uuid::parse_str(id).is_ok())
                 .ok_or("Invalid remote request identity.")?;
             let start_within = request["startWithinMs"]
                 .as_u64()
                 .map(Duration::from_millis)
+                .or_else(|| legacy_key_request.then(|| request_timeout(request) / 2))
                 .ok_or("Invalid remote request deadline.")?
                 .min(request_timeout(request));
             let journal = dir.join("operations");
@@ -2658,6 +2680,22 @@ mod setup_tests {
 mod connection_failure_tests {
     use super::*;
     #[test]
+    fn missing_bridge_stderr_recognizes_both_channels_without_exit_127() {
+        for channel in [
+            crate::channel::Channel::Production,
+            crate::channel::Channel::Development,
+        ] {
+            for cause in ["No such file", "not found"] {
+                let stderr = format!(
+                    "sh: /home/u/.local/bin/{}: {cause}\n",
+                    channel.remote_bridge_name()
+                );
+                assert!(connection_failure(Some(1), &stderr).contains("bridge is missing"));
+            }
+        }
+    }
+
+    #[test]
     fn distinguishes_ssh_failures_from_bridge_failures() {
         let _test_state = crate::test_support::global_state();
         let changed = "@@@@@@\n@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\nHost key verification failed.\n";
@@ -3354,6 +3392,66 @@ mod reply_tests {
     }
 
     #[test]
+    fn reply_search_counts_overlapping_prefix_bytes_once() {
+        let value = json!({"result":{"hostId":"office"}});
+        for mut noise in [vec![b'x'; REPLY_SEARCH_LIMIT], vec![0; REPLY_SEARCH_LIMIT]] {
+            *noise.last_mut().unwrap() = 0;
+            let bytes = [noise, reply(&value)].concat();
+            let reader = std::io::BufReader::with_capacity(7, bytes.as_slice());
+            assert_eq!(read_reply(reader).unwrap(), value);
+        }
+        let flood = [vec![0; REPLY_SEARCH_LIMIT + 1], reply(&value)].concat();
+        assert!(read_reply(flood.as_slice())
+            .unwrap_err()
+            .contains("shell startup files"));
+    }
+
+    fn exchange_fixture_reply(response: &Value) -> Result<Value, Failure> {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("reply");
+        fs::write(&path, reply(response)).unwrap();
+        let mut command = Command::new("/bin/cat");
+        command.arg(path);
+        run_exchange(
+            command,
+            &json!({"method":"handshake"}),
+            Instant::now() + Duration::from_secs(2),
+        )
+    }
+
+    #[test]
+    fn exchange_rejects_malformed_reply_envelopes() {
+        for response in [
+            json!({}),
+            json!([]),
+            json!({"error":{"message":"failed"}}),
+            json!({"result":null,"error":"failed"}),
+        ] {
+            assert!(
+                matches!(exchange_fixture_reply(&response), Err(Failure::Failed(message)) if message.contains("Invalid remote Silo response")),
+                "malformed reply was accepted: {response}"
+            );
+        }
+    }
+
+    #[test]
+    fn exchange_preserves_null_results_and_reported_errors() {
+        assert_eq!(
+            exchange_fixture_reply(&json!({"result":null})),
+            Ok(Value::Null)
+        );
+        let error = BridgeError::new(ErrorCode::Cancelled, "Cancelled by owner.");
+        assert_eq!(
+            exchange_fixture_reply(&error_reply(&error)),
+            Err(Failure::Reported(error))
+        );
+        assert!(matches!(
+            exchange_fixture_reply(&json!({"error":"Legacy owner error."})),
+            Err(Failure::Reported(error)) if error.message == "Legacy owner error."
+        ));
+    }
+
+    #[test]
     fn exchange_deadline_covers_a_full_request_pipe() {
         let _test_state = crate::test_support::global_state();
         let home = tempfile::tempdir().unwrap();
@@ -3955,6 +4053,101 @@ mod ssh_authorization_tests {
                 "Silo versions are incompatible. Update Silo on both computers."
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod ssh_connection_admission_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn owner() -> (tempfile::TempDir, Value) {
+        let directory = tempfile::tempdir().unwrap();
+        let config = Config {
+            host_id: uuid::Uuid::new_v4().to_string(),
+            enabled: true,
+            hosts: Vec::new(),
+        };
+        save_config_in(directory.path(), &config).unwrap();
+        let request = json!({
+            "version": VERSION,
+            "hostId": config.host_id,
+            "method": "ssh.access.connection",
+            "operationId": uuid::Uuid::new_v4().to_string(),
+            "startWithinMs": 60_000,
+            "params": {"vmId":uuid::Uuid::new_v4().to_string(),"publicKey":"ssh-ed25519 AAAA"},
+        });
+        (directory, request)
+    }
+
+    #[test]
+    fn remote_ssh_key_authorization_never_executes_after_access_is_revoked() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, request) = owner();
+        let executions = AtomicUsize::new(0);
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| false),
+            |_, _| {
+                executions.fetch_add(1, Ordering::SeqCst);
+                Ok(Value::Null)
+            },
+        );
+        assert!(result.is_err(), "revoked key authorization was accepted");
+        assert_eq!(executions.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn older_controllers_authorize_keys_through_a_bounded_recorded_change() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, mut request) = owner();
+        request.as_object_mut().unwrap().remove("operationId");
+        request.as_object_mut().unwrap().remove("startWithinMs");
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| true),
+            |_, _| Ok(Value::Null),
+        );
+        assert_eq!(result.unwrap(), Value::Null);
+        assert_eq!(
+            fs::read_dir(directory.path().join("operations"))
+                .unwrap()
+                .count(),
+            1
+        );
+        let result = handle(
+            directory.path(),
+            &request,
+            Arc::new(|| true),
+            Arc::new(|| false),
+            |_, _| panic!("revoked legacy key requests must not execute"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn retrying_remote_ssh_key_authorization_reuses_the_recorded_result() {
+        let _test_state = crate::test_support::global_state();
+        let (directory, request) = owner();
+        let executions = AtomicUsize::new(0);
+        for _ in 0..2 {
+            let result = handle(
+                directory.path(),
+                &request,
+                Arc::new(|| true),
+                Arc::new(|| true),
+                |_, _| {
+                    executions.fetch_add(1, Ordering::SeqCst);
+                    Ok(json!({"port":2222,"address":"192.168.1.2"}))
+                },
+            );
+            assert_eq!(result.unwrap()["port"], 2222);
+        }
+        assert_eq!(executions.load(Ordering::SeqCst), 1);
     }
 }
 

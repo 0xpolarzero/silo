@@ -40,12 +40,13 @@ class GuestPublicationTests(unittest.TestCase):
 
     def test_only_confirmed_missing_release_and_manifests_allow_publication(self):
         calls = self.check([error(404, MISSING_RELEASE), Response({'token': 'registry-token'}),
-                            error(404, MISSING_MANIFEST), error(404, MISSING_MANIFEST)])
+                            error(404, MISSING_MANIFEST), error(404, MISSING_MANIFEST), error(404, MISSING_MANIFEST)])
         requests = [call.args[0] for call in calls]
         self.assertEqual(requests[0].full_url, 'https://api.github.com/repos/owner/silo/releases/tags/guest-v5')
         self.assertEqual([request.full_url for request in requests[2:]], [
             'https://ghcr.io/v2/owner/silo-guest/manifests/v5-arm64',
-            'https://ghcr.io/v2/owner/silo-guest/manifests/v5-amd64'])
+            'https://ghcr.io/v2/owner/silo-guest/manifests/v5-amd64',
+            'https://ghcr.io/v2/owner/silo-guest/manifests/v5'])
         self.assertEqual(requests[2].get_header('Authorization'), 'Bearer registry-token')
 
     def test_existing_release_stops_before_registry_access(self):
@@ -55,7 +56,7 @@ class GuestPublicationTests(unittest.TestCase):
     def test_first_publication_allows_confirmed_missing_repository(self):
         missing = {'errors': [{'code': 'NAME_UNKNOWN'}]}
         self.check([error(404, MISSING_RELEASE), Response({'token': 'registry-token'}),
-                    error(404, missing), error(404, missing)])
+                    error(404, missing), error(404, missing), error(404, missing)])
 
     def test_credentials_are_never_redirected(self):
         self.assertIsNone(guard.NoRedirect().redirect_request(
@@ -68,6 +69,11 @@ class GuestPublicationTests(unittest.TestCase):
             with self.subTest(architecture=len(responses)), self.assertRaisesRegex(ValueError, 'image already exists'):
                 self.check([error(404, MISSING_RELEASE), Response({'token': 'registry-token'}), *responses])
 
+    def test_existing_multi_architecture_tag_stops_overwrite(self):
+        with self.assertRaisesRegex(ValueError, 'image already exists'):
+            self.check([error(404, MISSING_RELEASE), Response({'token': 'registry-token'}),
+                        error(404, MISSING_MANIFEST), error(404, MISSING_MANIFEST), Response({})])
+
     def test_lookup_errors_never_authorize_publication(self):
         for status in (401, 403, 429, 500, 503):
             for phase in ('release', 'token', 'manifest'):
@@ -76,6 +82,13 @@ class GuestPublicationTests(unittest.TestCase):
                     if phase == 'manifest':
                         prefix.append(Response({'token': 'registry-token'}))
                     self.check([*prefix, error(status, MISSING_MANIFEST)])
+
+    def test_multi_architecture_lookup_errors_stop_publication(self):
+        for status in (401, 403, 429, 500, 503):
+            with self.subTest(status=status), self.assertRaises(ValueError):
+                self.check([error(404, MISSING_RELEASE), Response({'token': 'registry-token'}),
+                            error(404, MISSING_MANIFEST), error(404, MISSING_MANIFEST),
+                            error(status, MISSING_MANIFEST)])
 
     def test_unclassified_404_and_transport_errors_stop(self):
         for outcome in (error(404, {}), error(404, {'errors': [{'code': 'UNAUTHORIZED'}]}),

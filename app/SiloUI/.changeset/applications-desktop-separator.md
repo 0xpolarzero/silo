@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep sandbox editor options effective when Linux desktop entries separate file arguments with `--`.
+Preserve Linux editor launch options when the launcher separates options from file paths.

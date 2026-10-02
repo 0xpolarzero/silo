@@ -44,3 +44,11 @@
 - Evidence: a fixture cancelled immediately after the production writer completed. The regression failed because the existing file was replaced; after correction it returns the cancelled result and retains only the previous file.
 - Boundary: publication itself is the commit step; cancellation after its final check can still complete successfully.
 - Verification: all eleven extracted log-export tests, Rust formatting, and whitespace checks passed. Full Cargo verification remains queued on the shared artifact lock; the harness does not establish whole-application compilation.
+
+## Final verification
+
+The transfer source, transfer component, and source-cleanup suites passed all 40 tests after integration synchronization. Frontend typecheck, touched-file lint, Rust formatting, and whitespace checks passed; the worktree was clean.
+
+A second harness compiled the complete, unchanged `log_export.rs`, including its command macros and dialog adapters, against the shared cache's Tauri and dialog dependencies. All eleven tests passed. Only the unrelated runtime query and process-wide test isolation support are fixture replacements; native dialogs and runtime queries are not exercised. Sources, scripts, and failing/passing logs remain under `/tmp/silo-codex-target/verification/cancellation/`.
+
+The full Cargo test command used the prescribed shared target and synthetic GitHub configuration. It produced no test result while waiting on the artifact lock and was stopped with SIGINT after its exact command and worktree were reverified. These results establish the changed module's compilation and fixture behavior, not whole-application compilation or live cancellation. No bundle was inspected, no app was launched, and no live VM or production data was used.

@@ -379,6 +379,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let remoteComputers: RemoteComputer[] = []
   let remoteManagement: RemoteManagement | undefined
   let remoteManagementError: string | undefined
+  let remoteManagementSequence = 0
+  let remoteManagementSaveSequence = 0
   let remoteComputersError: string | undefined
   const remoteSnapshots = new Map<string, ApplicationSource>()
   let remoteHosts: RemoteHost[] = []
@@ -413,6 +415,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let refreshRepositoriesOnReturn = false
   let githubMutationSequence = 0
   let githubMutationPending = false
+  let secretMutationSequence = 0
+  let appliedSecretMutation = 0
   const unlisten: Array<() => void> = []
   const listeners = new Set<() => void>()
   const pendingWorkspaceActions = new Set<string>()
@@ -585,9 +589,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function changeSecret(command: string, arguments_: Record<string, unknown>) {
+    const sequence = ++secretMutationSequence
     const secrets = z.array(secretShape).parse(await native.invoke(command, arguments_))
-    ++refreshSequence
-    if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
+    if (disposed) return
+    // An older whole-list reply cannot undo a later successful secret mutation.
+    if (sequence > appliedSecretMutation) {
+      appliedSecretMutation = sequence
+      ++refreshSequence
+      if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
+    }
     void refresh()
   }
 
@@ -879,12 +889,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function readRemoteManagement() {
+    const sequence = ++remoteManagementSequence
     try {
       const management = remoteManagementSchema.parse(await native.invoke("remote_management_status"))
-      if (disposed) return
+      if (disposed || sequence !== remoteManagementSequence) return
       remoteManagement = management
       remoteManagementError = undefined
-    } catch (cause) { remoteManagementError = errorMessage(cause) }
+    } catch (cause) {
+      if (!disposed && sequence === remoteManagementSequence) remoteManagementError = errorMessage(cause)
+    }
   }
 
   async function refreshComputers(refreshRepositories = false) {
@@ -1597,7 +1610,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     exportLogs: async requests => z.boolean().parse(await native.invoke("export_workspace_logs", { requests })),
     cancelLogExport: async () => { await native.invoke("cancel_log_export") },
     setRemoteManagement: async enabled => {
-      remoteManagement = remoteManagementSchema.parse(await native.invoke("set_remote_management", { enabled }))
+      const sequence = ++remoteManagementSaveSequence
+      ++remoteManagementSequence
+      const management = remoteManagementSchema.parse(await native.invoke("set_remote_management", { enabled }))
+      if (disposed || sequence !== remoteManagementSaveSequence) return
+      ++remoteManagementSequence
+      remoteManagement = management
       remoteManagementError = undefined
       publish({ ...snapshot })
     },
