@@ -246,9 +246,16 @@ Backend (Rust, guest scripts) and frontend implement this together.
   The legacy `lcu*` fields remain for VMs created before v4.
 - Per-VM approval mode is stored in VM metadata, default `ask`, and applied
   with `lcu setup --approval`. Approval changes carry a monotonically increasing
-  `revision` (clock-seeded, so it also exceeds what an imported guest applied
-  elsewhere), stored in the policy file separately from receipt observations;
-  every sync passes `--revision` and the guest helper ignores a request older
-  than the revision it applied (`approvalRevision` in its status). `computerUse`
+  `revision`, stored in the policy file separately from receipt observations, and
+  the computer's owner id (a random UUID kept in `computer-use/owner`). Every sync
+  passes `--revision` and `--owner`; the guest helper orders revisions only within
+  one owner (`approvalRevision`, `approvalOwner` in its status): it ignores a
+  request older than the revision it applied for that owner, applies a request from
+  a new owner whatever its revision (an imported or transferred VM takes the
+  destination's choice even when the source clock was ahead), and resolves equal
+  revisions with different modes in favour of `ask`. A sync runs in the VM's
+  operation turn after confirming the runtime sandbox's `silo.machine-id` label and
+  instance, and at app start Silo launches the sync for running built-in VMs whose
+  guest lags the saved policy (a crash between saving and launching). `computerUse`
   reports `installing` with "Applying approval change…" while the guest lags the
   policy, and `failed` when applying it failed.

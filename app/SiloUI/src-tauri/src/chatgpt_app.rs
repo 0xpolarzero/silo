@@ -2067,6 +2067,10 @@ pub(crate) fn start_automatic(app: &tauri::AppHandle) {
     let status = refresh_status_blocking(app);
     collect_unused(app);
     if matches!(status, Status::Ready { .. }) {
+        // Nobody else syncs the running VMs now (the worker that does it when the app
+        // becomes ready has nothing to wait for): finish approval changes that were
+        // saved but never launched before the last quit.
+        crate::computer_use::reconcile(app);
         return;
     }
     // Let the app finish starting first; this is not urgent.

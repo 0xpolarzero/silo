@@ -47,6 +47,7 @@ HOME = '/home/silo'
 SCHEMA = 1
 APP_NAME = re.compile(r'[0-9][0-9A-Za-z.+~-]{0,63}-(arm64|amd64)')
 VERSION = re.compile(r'[0-9][0-9A-Za-z.+~-]{0,63}')
+OWNER = re.compile(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}')
 SHA256 = re.compile(r'[0-9a-f]{64}')
 ARCHIVE_NAME = re.compile(r'lcu-[0-9][0-9A-Za-z.+~-]{0,31}-linux-(arm64|x64)\.tar\.gz')
 APPROVALS = ('ask', 'auto')
@@ -129,20 +130,45 @@ def load_pinned():
 
 def read_approval_record():
     """The applied approval mode and the host's revision of it (0 when never stamped)."""
+    mode, revision, _owner = read_approval_full()
+    return mode, revision
+
+
+def read_approval_full():
+    """The applied mode, its revision and the owner (the computer whose Silo set it, or
+    None for a record written before owners existed)."""
     value = read_json(APPROVAL)
     mode = value.get('approval') if value else None
     revision = value.get('revision') if value else None
+    owner = value.get('owner') if value else None
     if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
         revision = 0
-    return (mode if mode in APPROVALS else 'ask'), revision
+    return (mode if mode in APPROVALS else 'ask'), revision, clean(owner, OWNER)
 
 
 def read_approval():
     return read_approval_record()[0]
 
 
-def write_approval(mode, revision=0):
-    write_json(APPROVAL, {'schemaVersion': SCHEMA, 'approval': mode, 'revision': revision})
+def write_approval(mode, revision=0, owner=None):
+    write_json(APPROVAL, {'schemaVersion': SCHEMA, 'approval': mode, 'revision': revision,
+                          'owner': owner})
+
+
+def accepts_approval(mode, revision, owner, applied):
+    """Whether a request replaces the applied record `(mode, revision, owner)`.
+
+    Revisions are only comparable within one owner: another computer's clock says
+    nothing about this one's, so a request from a new owner (an imported or transferred
+    VM now managed elsewhere) always replaces the record. Within an owner a newer
+    revision wins; an equal revision with a different mode is resolved the same way
+    whatever the arrival order, in favour of `ask`."""
+    applied_mode, applied_revision, applied_owner = applied
+    if owner != applied_owner:
+        return True
+    if revision != applied_revision:
+        return revision > applied_revision
+    return mode == applied_mode or mode == 'ask'
 
 
 def mount_state(mount=MOUNT, mounts=Path('/proc/mounts')):
@@ -213,7 +239,8 @@ def status(pinned=None, receipt=None):
     mount = mount_state()
     result = {'schemaVersion': SCHEMA, 'state': 'not-set-up', 'reason': None, 'mount': mount,
               'compatibility': None, 'warning': None, 'approval': read_approval(),
-              'approvalRevision': read_approval_record()[1], 'appVersion': None, 'runtimeVersion': None, 'lcuVersion': None,
+              'approvalRevision': read_approval_record()[1],
+              'approvalOwner': read_approval_full()[2], 'appVersion': None, 'runtimeVersion': None, 'lcuVersion': None,
               'agents': None, 'readiness': None}
     if pinned is None:
         result['reason'] = 'not-configured'
@@ -440,11 +467,13 @@ def write_receipt(pinned, approval, state, reason=None, **fields):
     return receipt
 
 
-def sync(force=False, boot=False, approval=None, revision=None):
+def sync(force=False, boot=False, approval=None, revision=None, owner=None):
     """Brings computer use up to date for the pinned pair. Returns the public status.
 
-    `revision` orders approval changes: a request older than the applied revision keeps
-    the newer mode (a delayed boot sync must not undo a change made after it was started)."""
+    `revision` orders approval changes made by one `owner` (the computer's Silo): a request
+    older than the applied revision keeps the newer mode (a delayed boot sync must not undo
+    a change made after it was started). A new owner replaces the record whatever its
+    revision, since clocks of different computers do not order anything."""
     pinned = load_pinned()
     if pinned is None:
         return status(None)
@@ -460,11 +489,12 @@ def sync(force=False, boot=False, approval=None, revision=None):
                     raise Failure('busy') from None
                 time.sleep(1)
         if approval is not None:
-            applied_mode, applied_revision = read_approval_record()
+            applied = read_approval_full()
+            applied_mode, applied_revision, applied_owner = applied
             if revision is None:
-                write_approval(approval, applied_revision)
-            elif revision >= applied_revision:
-                write_approval(approval, revision)
+                write_approval(approval, applied_revision, applied_owner)
+            elif accepts_approval(approval, revision, owner, applied):
+                write_approval(approval, revision, owner)
             else:
                 log(f'ignored approval {approval} at revision {revision}: '
                     f'{applied_mode} at {applied_revision} is newer')
@@ -523,12 +553,13 @@ def main(argv=None):
     sync_parser.add_argument('--boot', action='store_true')
     sync_parser.add_argument('--approval', choices=APPROVALS)
     sync_parser.add_argument('--revision', type=int)
+    sync_parser.add_argument('--owner', type=lambda value: value if OWNER.fullmatch(value) else sys.exit(2))
     args = parser.parse_args(argv)
     if os.geteuid() != 0:
         print('Run as root', file=sys.stderr)
         return 1
     try:
-        result = status() if args.command == 'status' else sync(args.force, args.boot, args.approval, args.revision)
+        result = status() if args.command == 'status' else sync(args.force, args.boot, args.approval, args.revision, args.owner)
     except Failure as failure:
         print(json.dumps({'schemaVersion': SCHEMA, 'state': 'failed', 'reason': failure.reason}))
         return 1

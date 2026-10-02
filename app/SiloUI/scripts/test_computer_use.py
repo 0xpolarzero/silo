@@ -287,6 +287,27 @@ class Sync(Guest):
         self.assertEqual(cu.sync(approval='ask', revision=7)['approvalRevision'], 7)
         self.assertEqual(cu.sync(approval='auto', revision=8)['approval'], 'auto')
 
+    def test_a_new_owner_replaces_the_record_whatever_its_revision(self):
+        # A VM imported from a computer whose clock was far ahead: its record carries a
+        # huge revision under the source owner.
+        source = '11111111-1111-4111-8111-111111111111'
+        destination = '22222222-2222-4222-8222-222222222222'
+        cu.sync(approval='auto', revision=9_000_000_000_000, owner=source)
+        result = cu.sync(approval='ask', revision=1_000, owner=destination)
+        self.assertEqual((result['approval'], result['approvalRevision'], result['approvalOwner']),
+                         ('ask', 1_000, destination))
+        # Within the new owner revisions order again, and the old owner is a new owner.
+        cu.sync(approval='auto', revision=1_001, owner=destination)
+        result = cu.sync(approval='ask', revision=1_000, owner=destination)
+        self.assertEqual((result['approval'], result['approvalRevision']), ('auto', 1_001))
+
+    def test_equal_revisions_of_one_owner_converge_on_ask(self):
+        owner = '22222222-2222-4222-8222-222222222222'
+        for revision, (first, second) in ((40, ('auto', 'ask')), (50, ('ask', 'auto'))):
+            cu.sync(approval=first, revision=revision, owner=owner)
+            cu.sync(approval=second, revision=revision, owner=owner)
+            self.assertEqual(cu.status()['approval'], 'ask')
+
     def test_an_unrevised_request_keeps_the_applied_revision(self):
         cu.sync(approval='auto', revision=5)
         self.assertEqual(cu.sync(approval='ask')['approvalRevision'], 5)
