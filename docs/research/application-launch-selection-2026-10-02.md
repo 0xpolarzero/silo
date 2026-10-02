@@ -55,3 +55,9 @@ At the final merged checkout, the isolated `launch.rs` run passed all 13 tests, 
 The resolver recognized `env NAME=value code` and `env -i NAME=value flatpak run ...` entries but launched the resolved program without their prefix. The failing launch regression used a temporary executable that printed the environment value supplied in its entry; it received an empty value instead. Environment settings selecting editor data or runtime behavior therefore did not reach the editor.
 
 The command now retains the original environment launcher and prefix arguments around the resolved editor CLI. Both native and Flatpak adapters use the same prefix seam. [GNU env documentation](https://www.gnu.org/s/coreutils/manual/html_node/env-invocation.html) defines assignments and `-i` as changes to the child environment; Silo delegates those semantics to the original executable rather than implementing a second environment mechanism. The regression executes temporary native and Flatpak launchers, with the marker explicitly removed from the parent command environment.
+
+## APPLICATIONS-7: unset-option operands were mistaken for programs (P2)
+
+`exec_program` treated the operand of `env -u NAME` or `env --unset NAME` as the executable. Ordinary entries were rejected as unsupported editors; when the operand equaled the editor name, the resolver also rebuilt the prefix around the wrong token occurrence. The failing regression executed `env -u code code` under a fixture-only PATH: the child retained the `code` variable instead of removing it.
+
+The parser now consumes the unset operand and returns the actual program index. Editor resolution uses that index rather than searching for the first equal string. The same parser supplies Linux terminal identity. The regression verifies the executed child's environment and workspace argument, both unset option spellings, and rejection of a missing operand. No real editor or terminal is launched.
