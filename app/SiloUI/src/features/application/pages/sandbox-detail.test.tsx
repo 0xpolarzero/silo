@@ -513,3 +513,24 @@ it.each([false, true])("does not claim there are no ports after failed discovery
   expect(screen.queryByRole("alert")).not.toBeInTheDocument()
   expect(screen.getByText("No ports")).toBeVisible()
 })
+
+
+it.each([false, true])("waits for this sandbox's port discovery when another computer has already loaded (cached=%s)", async cached => {
+  const source = localVmSource()
+  const workspace = localVm(source)
+  workspace.state = "running"
+  workspace.freshness = "fresh"
+  workspace.ports = cached ? [{ port: 3000, hostPort: 43000, scheme: "http", listening: true, configured: true }] : []
+  workspace.computer = { id: "office", vmId: workspace.machine.id, name: "Office", address: "office.test", connected: true }
+  source.network = { workspaces: [{ workspace: workspace.machine.name, error: null, ports: [] }] }
+  const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
+  const { rerender } = await openDetail(source, actions, workspace)
+  expect(screen.getByRole("status", { name: "Loading ports" })).toBeVisible()
+  expect(screen.queryByText("No ports")).not.toBeInTheDocument()
+  if (cached) expect(screen.getByText("http://127.0.0.1:43000")).toBeVisible()
+  const refreshed = { ...source, network: { workspaces: [...source.network.workspaces, { workspace: workspaceTarget(workspace), error: null, ports: [] }] } }
+  rerender(<OverviewPage source={refreshed} actions={actions} onMachinesChange={vi.fn()} />)
+  expect(screen.queryByRole("status", { name: "Loading ports" })).not.toBeInTheDocument()
+  expect(screen.getByText("No ports")).toBeVisible()
+  expect(screen.queryByText("http://127.0.0.1:43000")).not.toBeInTheDocument()
+})

@@ -20,6 +20,13 @@ function actions(overrides: Partial<ApplicationActions> = {}): ApplicationAction
 afterEach(() => { toast.dismiss() })
 
 describe("RemoteComputersSettings", () => {
+  it("reveals the complete name of a computer with a long SSH address", () => {
+    const name = "Office workstation ".repeat(20).trim()
+    const remote = { id: "office-id", name, address: `${"account".repeat(30)}@office.example`, connected: false }
+    render(<RemoteComputersSettings source={{ ...source(undefined), remoteComputers: [remote] }} actions={actions()} />)
+    expect(screen.getByText(name)).toHaveAttribute("title", name)
+  })
+
   it.each(["cancel", "connect"])("returns focus to the opening button after %s", async (close) => {
     const user = userEvent.setup()
     const connectComputer = vi.fn().mockResolvedValue(undefined)
@@ -190,6 +197,12 @@ describe("ChatGPT for Linux on each computer", () => {
     return { reads, retry }
   }
   const row = (name: string) => within(screen.getByRole("list", { name: "ChatGPT for Linux on each computer" })).getByText(name).closest("li")!
+
+  it("reveals complete computer names in the download status rows", async () => {
+    settings({ local: { state: "ready", path: "/p", version: "26.928.31416" } })
+    await screen.findByText("Ready 26.928.31416")
+    expect(within(row("Office Mac")).getByText("Office Mac")).toHaveAttribute("title", "Office Mac")
+  })
 
   it("explains the download in one sentence and offers nothing to accept", async () => {
     settings({ local: { state: "ready", path: "/p", version: "26.928.31416" } })

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 
+import { bridgeErrorMessage } from "@/contracts/bridge-error"
 import { errorMessage, showActionFailure, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
 import type { ApplicationActions, ApplicationWorkspace, NetworkPort, NetworkState } from "@/features/application/model/application-source"
@@ -72,7 +73,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
       onSuccess?.()
       return true
     } catch (cause) {
-      const message = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated."
+      const message = bridgeErrorMessage(cause) ?? (typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated.")
       showOperationFailure(id, `${copy.failure} · ${location}`, { description: message, retry: () => void run(id, identity, copy, operation, onSuccess), sandbox, noticeSandbox })
       return false
     } finally { pending.current = false; setBusy(false) }
@@ -89,6 +90,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   }
 
   const localWorkspaces = workspaces.filter(workspace => workspace.machine.kind === "vm")
+  const loading = Boolean(refreshNetwork) && localWorkspaces.some(workspace => !network?.workspaces.some(item => item.workspace === workspaceTarget(workspace)))
   const rows = workspaces.flatMap(workspace => {
     const item = network?.workspaces.find(item => item.workspace === workspaceTarget(workspace))
     return (item?.ports ?? []).map(port => ({ workspace, port, host: item?.host ?? null, error: item?.error ?? (workspace.computer ? null : error) }))
@@ -121,7 +123,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     error: workspaces.some(workspace => !workspace.computer) ? error : null, draft, setDraft, fieldErrors, setFieldErrors, connecting, setConnecting, busy,
     /** Always null: operation failures are shown as notifications, not rendered inline. */
     confirm, setConfirm,
-    run, open, add, startEdit, cancelDraft, localWorkspaces, runningLocalWorkspaces, addDisabledReason, rows, errors, actions,
+    run, open, add, startEdit, cancelDraft, loading, localWorkspaces, runningLocalWorkspaces, addDisabledReason, rows, errors, actions,
   }
 }
 

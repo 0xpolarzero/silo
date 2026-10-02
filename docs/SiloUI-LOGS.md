@@ -134,6 +134,12 @@ Command lines with password, passphrase, token, secret, key, credential, or user
 options are also hidden. The filter recognizes separated long-option words
 and [curl's `-u` credential option](https://curl.se/docs/manpage.html#-u),
 because its username/password value does not need an assignment or URL.
+URL query names are decoded before applying the assignment markers, so
+percent-encoded names such as `%74oken` cannot bypass filtering. Signature
+parameters are hidden too, including
+[Azure SAS `sig`](https://learn.microsoft.com/en-us/rest/api/storageservices/create-service-sas#specifying-the-signature-field),
+[Amazon S3 `X-Amz-Signature`](https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sigv4-query-string-auth.html),
+and [Cloud Storage `X-Goog-Signature`](https://cloud.google.com/storage/docs/authentication/canonical-requests).
 
 The pinned runtime's [retention patch](../app/SiloUI/patches/microsandbox-log-retention-desktop-start-0.7.6.patch)
 renames older segments to increasing numeric suffixes. Silo uses numeric suffix

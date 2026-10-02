@@ -79,7 +79,7 @@ function SelectField({ label, value, values, suffix, max, error, readOnly = fals
     </div>
   )
   return readOnly ? (
-    <TooltipProvider><Tooltip><TooltipTrigger asChild><span tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`}>{field}</span></TooltipTrigger>
+    <TooltipProvider><Tooltip><TooltipTrigger asChild><div role="group" tabIndex={0} aria-label={`${label}: ${value} ${suffix}, read-only`} className="rounded-lg outline-none focus-visible:ring-3 focus-visible:ring-ring/50">{field}</div></TooltipTrigger>
       <TooltipContent>Disk size is read-only.</TooltipContent>
     </Tooltip></TooltipProvider>
   ) : field
