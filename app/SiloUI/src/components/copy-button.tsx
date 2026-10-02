@@ -18,17 +18,22 @@ interface CopyButtonProps extends Omit<ComponentProps<typeof Button>, "aria-labe
 export function CopyButton({ value, labels, text, icon: IdleIcon = Copy, type = "button", onClick, ...props }: CopyButtonProps) {
   const [status, setStatus] = useState<CopyStatus>("idle")
   const resetTimer = useRef<number | undefined>(undefined)
+  const request = useRef(0)
 
-  useEffect(() => () => window.clearTimeout(resetTimer.current), [])
+  useEffect(() => () => { request.current += 1; window.clearTimeout(resetTimer.current) }, [])
 
   async function copy() {
+    const attempt = ++request.current
     window.clearTimeout(resetTimer.current)
+    let nextStatus: CopyStatus
     try {
       await navigator.clipboard.writeText(typeof value === "function" ? value() : value)
-      setStatus("copied")
+      nextStatus = "copied"
     } catch {
-      setStatus("failed")
+      nextStatus = "failed"
     }
+    if (attempt !== request.current) return
+    setStatus(nextStatus)
     resetTimer.current = window.setTimeout(() => setStatus("idle"), 1_200)
   }
 
