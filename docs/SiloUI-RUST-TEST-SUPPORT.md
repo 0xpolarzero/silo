@@ -18,6 +18,13 @@ Update preferences retain unknown JSON fields through load/save using Serde's
 still requires a boolean. Temporary-file regressions exercise both choices,
 additive metadata, save/reload, and explicit repair of malformed preferences.
 
+The migration journal and generation marker were introduced together in
+`d654e4bc`. A completed migration requires that marker at startup and whenever
+normal runtime storage is resolved. Temporary-file regressions remove the marker,
+verify that both generations and the journal remain untouched, and restore it to
+verify recovery. An installation that needs no migration still uses `runtime/`
+without a marker.
+
 ## Process-wide state
 
 `test_support::global_state()` guards tests in modules that reach the global
