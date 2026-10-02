@@ -135,6 +135,24 @@ describe("Settings, General: Storage", () => {
     expect(backend.remove).toHaveBeenCalledTimes(1)
   })
 
+  it("does not report deletion success when an old toast retries an unfinished deletion", async () => {
+    const { backend, user } = setup({ failures: 1 })
+    await user.click(await screen.findByRole("button", { name: "Delete now" }))
+    await user.click(await screen.findByRole("button", { name: "Delete permanently" }))
+    await screen.findByText(fixtureDeleteFailure)
+    let fail!: (cause: Error) => void
+    backend.remove = vi.fn(() => new Promise<void>((_, reject) => { fail = reject }))
+    await user.click(screen.getByRole("button", { name: "Delete now" }))
+    await user.click(await screen.findByRole("button", { name: "Delete permanently" }))
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    expect(screen.queryByText("Pre-upgrade backup deleted")).not.toBeInTheDocument()
+    expect(backend.remove).toHaveBeenCalledTimes(1)
+    await act(async () => fail(new Error("Deletion is still unavailable.")))
+    expect(await screen.findAllByText("Deletion is still unavailable.")).toHaveLength(2)
+    expect(screen.queryByText("Pre-upgrade backup deleted")).not.toBeInTheDocument()
+    expect(screen.getByRole("region", { name: "Storage" })).toBeVisible()
+  })
+
   it("explains a read failure and offers Retry", async () => {
     const user = userEvent.setup()
     const backend = createFixturePreUpgradeBackup()
