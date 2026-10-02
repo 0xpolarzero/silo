@@ -122,6 +122,11 @@ The client-secret value is extractable from a distributed native binary and is
 not treated as a confidential security boundary. Do not commit actual values to
 source or confuse them with users' bearer tokens. There is no service URL setting.
 
+Client IDs can contain dots: GitHub's [App response](https://docs.github.com/en/rest/apps/apps#get-the-authenticated-app)
+documents `Iv1.ab1112223334445c`. Native token operations accept both that format
+and the current alphanumeric format, while rejecting path separators, control
+characters and standalone `.` or `..` URL path segments.
+
 ## Verification
 
 Latest completed checks for the server-free conversion:
