@@ -1,6 +1,6 @@
 import { UpdatesCard } from "@/features/updates/updates"
 import { StorageSection } from "@/features/storage/storage-section"
-import { useLayoutEffect, useState } from "react"
+import { useLayoutEffect } from "react"
 import { Accessibility, Paintbrush, Power } from "lucide-react"
 
 import { ListCard, ListRow, ListRowDetails, ListRowIcon } from "@/components/list-row"
@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import type { ApplicationSource } from "@/features/application/model/application-source"
 import { defaultStartupWorkspaceIds, startupWorkspaceCandidates } from "@/features/application/model/startup-workspaces"
 import { ApplicationPreferenceFields } from "@/features/preferences/components/application-preference-fields"
+import { SettingsSaveNotice } from "@/features/preferences/components/settings-save-notice"
 import type { ApplicationPreferenceSelection } from "@/features/preferences/model/application-preferences"
 import { useTheme } from "@/features/preferences/theme"
 import { useSettings } from "@/features/preferences/settings-store"
@@ -46,8 +47,7 @@ export function GeneralPage({
   onReduceMotionChange,
 }: GeneralPageProps) {
   const { theme, setTheme } = useTheme()
-  const { settings, store, updateSettings, saveError, writeProtected } = useSettings()
-  const [saving, setSaving] = useState(false)
+  const { settings, store, updateSettings } = useSettings()
   const integrations = useSystemIntegrations()
   const { startWorkspacesAtLaunch: startAtLaunch } = settings
   const startupWorkspaces = new Set(settings.startupWorkspaceIds)
@@ -60,14 +60,7 @@ export function GeneralPage({
 
   return (
     <div className="mx-auto grid w-full max-w-4xl gap-4 px-4 py-5 sm:px-6 sm:py-6">
-      {saveError && <div role="alert" className="rounded-md border border-destructive/25 bg-destructive/[.06] p-3 text-xs">
-        <p>{writeProtected ? "Settings are protected from writes. Changes last for this session." : "Settings could not be saved. Keep Silo open and retry."}</p>
-        <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{saveError}</p>
-        {!writeProtected && <Button type="button" size="xs" variant="outline" className="mt-2" disabled={saving} onClick={() => {
-          setSaving(true)
-          void store.flush().finally(() => setSaving(false))
-        }}>{saving ? "Saving settings…" : "Retry saving settings"}</Button>}
-      </div>}
+      <SettingsSaveNotice />
       <UpdatesCard />
       <section className="grid gap-2">
         <h3 className="text-xs font-medium">Appearance</h3>
