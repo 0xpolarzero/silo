@@ -3813,7 +3813,10 @@ mod tests {
         );
         run(&["stop", name]);
         runtime::apply_disposable_test_identity(&paths, name).unwrap();
-        let inspected = inspect(&paths, name).unwrap();
+        let mut inspected = inspect(&paths, name).unwrap();
+        // Prepare the runtime configuration exactly as `backup_work` does.
+        canonicalize_backup_runtime(&mut inspected.config).unwrap();
+        crate::computer_use::strip_mount_for_export(&mut inspected.config).unwrap();
         let second_machine = runtime::create_disposable_test_machine(&paths, second_name).unwrap();
         assert_eq!(inspect(&paths, second_name).unwrap().status, "Stopped");
         run(&["start", second_name]);
@@ -3826,7 +3829,9 @@ mod tests {
             "printf second-root > /root/silo-backup-proof; printf second-workspace > /workspace/silo-backup-proof; sync",
         ]);
         run(&["stop", second_name]);
-        let second_inspected = inspect(&paths, second_name).unwrap();
+        let mut second_inspected = inspect(&paths, second_name).unwrap();
+        canonicalize_backup_runtime(&mut second_inspected.config).unwrap();
+        crate::computer_use::strip_mount_for_export(&mut second_inspected.config).unwrap();
         let make_controller = |paths: &runtime::RuntimePaths| Controller {
             history_path: paths.metadata.with_file_name("backup-history.json"),
             journal: Mutex::new(None),
@@ -4065,9 +4070,16 @@ mod tests {
         assert!(!runtime::is_pending_restore(&paths, restored_name));
         let restored = inspect(&paths, restored_name).unwrap();
         assert_eq!(restored.status, "Running");
-        assert_eq!(
-            restored.config.get("pull_policy").and_then(Value::as_str),
-            Some("Never")
+        // `msb restore` builds the VM from the descriptor with the runtime's default pull
+        // policy (`IfMissing`; no restore code sets `Never` in 0.7.4 or 0.7.6). The import
+        // validation accepts either value (`validate_snapshottable_config`).
+        assert!(
+            matches!(
+                restored.config.get("pull_policy").and_then(Value::as_str),
+                Some("Never" | "IfMissing")
+            ),
+            "{:?}",
+            restored.config.get("pull_policy")
         );
         assert_eq!(
             restored.config["network"]["policy"],
