@@ -593,6 +593,15 @@ fn reconcile_with(
         update(|document| {
             // Exhausted retries and concurrent deletion cannot publish an obsolete result.
             if revision(document, &workspace) != applied_revision {
+                if let Some(secret) = document.secrets.iter_mut().find(|s| s.id == id) {
+                    if secret.affected.contains(&workspace)
+                        && !secret.pending_workspaces.contains(&workspace)
+                    {
+                        secret.errors.entry(workspace.clone()).or_insert_with(|| {
+                            "Secret settings changed during this update. Retry to verify the latest settings.".into()
+                        });
+                    }
+                }
                 return Ok(());
             }
             let Some(secret) = document.secrets.iter_mut().find(|s| s.id == id) else {
@@ -1373,6 +1382,43 @@ mod tests {
         })
         .unwrap();
         assert_eq!(load().unwrap().secrets[0].workspaces, ["dev"]);
+        use_test_store(None);
+    }
+    #[test]
+    fn exhausted_reconcile_keeps_retry_available_for_an_unapplied_revision() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        save(&Document {
+            secrets: vec![secret()],
+            ..Default::default()
+        })
+        .unwrap();
+        let mut operation = Some(lock_unit(&OPERATION));
+        let mut attempts = 0;
+        reconcile_with(
+            "id",
+            &mut operation,
+            &|_| Ok(Vec::new()),
+            &mut |_, _| {
+                attempts += 1;
+                update(|document| {
+                    document.secrets[0].value_id = format!("new-generation-{attempts}");
+                    Ok(())
+                })?;
+                Ok(Vec::new())
+            },
+            &|| {},
+        )
+        .unwrap();
+        drop(operation);
+        let document = load().unwrap();
+        assert_eq!(attempts, 3);
+        assert_eq!(document.secrets[0].affected, ["dev"]);
+        assert!(public(&document.secrets[0])["error"]
+            .as_str()
+            .unwrap()
+            .contains("Retry"));
         use_test_store(None);
     }
     #[test]

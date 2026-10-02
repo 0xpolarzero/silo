@@ -186,3 +186,21 @@ it("keeps running work and cancellation visible when the queue subscription fail
     expect(native.invoke).toHaveBeenCalledWith("cancel_operation", { id: 8 })
   } finally { logged.mockRestore() }
 })
+
+
+it("retries an unread shutdown snapshot on focus without duplicating its subscription", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+  let failed = false
+  native.invoke.mockImplementation(async (command: string) => {
+    if (command === "read_operation_queue") return { running: [], waiting: [] }
+    if (!failed) { failed = true; throw new Error("State bridge not ready") }
+    return true
+  })
+  try {
+    render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+    await vi.waitFor(() => expect(logged).toHaveBeenCalledWith("Silo shutdown status:", expect.any(Error)))
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    expect(await screen.findByRole("dialog", { name: "Quitting Silo" })).toBeVisible()
+    expect(native.listen.mock.calls.filter(([event]) => event === "silo://shutdown-state-changed")).toHaveLength(1)
+  } finally { logged.mockRestore() }
+})

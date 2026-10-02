@@ -103,7 +103,10 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
       if (read !== reads || seenEvents !== events) return
       const status = parseChatGptAppStatus(value)
       if (status) { failureDelay = 0; set({ status, loadError: null }) }
-      else set({ loadError: "Silo could not read the ChatGPT for Linux status." })
+      else {
+        failureDelay = Math.min(Math.max(failureDelay, working(snapshot.status) ? pollMs.busy : pollMs.idle) * 2, REMOTE_FAILURE_POLL_MAX_MS)
+        set({ loadError: "Silo could not read the ChatGPT for Linux status." })
+      }
     } catch (cause) {
       if (read === reads && seenEvents === events) {
         failureDelay = Math.min(Math.max(failureDelay, working(snapshot.status) ? pollMs.busy : pollMs.idle) * 2, REMOTE_FAILURE_POLL_MAX_MS)

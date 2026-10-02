@@ -123,12 +123,16 @@ function ComputersSection({ source, actions }: { source: ApplicationSource; acti
     setConnecting(false)
   }
   const pending = useRef(false)
+  const sequence = useRef(0)
+  useEffect(() => () => { sequence.current++ }, [])
   async function perform(operation: () => Promise<void>) {
     if (pending.current) return
+    const request = ++sequence.current
     pending.current = true
     setBusy(true)
-    try { await operation() } catch (cause) { showActionFailure("Computer setting not changed", cause, () => { void perform(operation) }, { native: false }) }
-    finally { pending.current = false; setBusy(false) }
+    try { await operation() } catch (cause) {
+      if (request === sequence.current) showActionFailure("Computer setting not changed", cause, () => { if (request === sequence.current) void perform(operation) }, { native: false })
+    } finally { if (request === sequence.current) { pending.current = false; setBusy(false) } }
   }
   const removeComputer = actions.removeComputer
   if (!actions.connectComputer) return null

@@ -386,6 +386,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let remoteHosts: RemoteHost[] = []
   let remoteListRevision = 0
   let remoteListRead: Promise<boolean> | undefined
+  let remoteListFailureDelay = 0
+  let remoteListNextRead = 0
   let remotePasses = 0
   const remoteRevisions = new Map<string, number>()
   const remoteReads = new Map<string, { repositories: boolean; promise: Promise<void> }>()
@@ -465,7 +467,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function readSshOwner(owner: string, background = false): Promise<void> {
     if (background && (sshFailures.get(owner)?.nextRead ?? 0) > Date.now()) return Promise.resolve()
     const pending = sshReads.get(owner)
-    if (pending) { pending.dirty = true; return pending.promise }
+    if (pending) { if (!background) pending.dirty = true; return pending.promise }
     const entry = { dirty: false, promise: Promise.resolve() }
     entry.promise = (async () => { do {
       entry.dirty = false
@@ -518,7 +520,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function readNetworkOwner(owner: string, background = false): Promise<void> {
     if (background && (networkFailures.get(owner)?.nextRead ?? 0) > Date.now()) return Promise.resolve()
     const pending = networkReads.get(owner)
-    if (pending) { pending.dirty = true; return pending.promise }
+    if (pending) { if (!background) pending.dirty = true; return pending.promise }
     const entry = { dirty: false, promise: Promise.resolve() }
     entry.promise = (async () => { do {
       entry.dirty = false
@@ -877,7 +879,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   /** The computer list; a list read that overlapped a connect or removal is read again. */
-  function readHostList(): Promise<boolean> {
+  function readHostList(background = false): Promise<boolean> {
+    if (background && remoteListNextRead > Date.now()) return Promise.resolve(false)
     remoteListRead ??= (async () => {
       for (;;) {
         const revision = remoteListRevision
@@ -886,6 +889,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         catch (cause) {
           if (disposed) return false
           if (revision !== remoteListRevision) continue
+          remoteListFailureDelay = Math.min((remoteListFailureDelay || 10_000) * 2, 60_000)
+          remoteListNextRead = Date.now() + remoteListFailureDelay
           // The known computers stay listed; the failure is about the list itself.
           remoteComputersError = `Silo could not read its list of computers: ${errorMessage(cause)}`
           publish({ ...snapshot })
@@ -894,6 +899,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         if (disposed) return false
         if (revision !== remoteListRevision) continue
         remoteComputersError = undefined
+        remoteListFailureDelay = 0
+        remoteListNextRead = 0
         for (const [id] of remoteFailures) {
           const host = hosts.find(host => host.id === id)
           if (!host || host.address !== remoteHosts.find(previous => previous.id === id)?.address) remoteFailures.delete(id)
@@ -931,7 +938,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
 
   async function refreshComputers(refreshRepositories = false, background = false) {
     remotePasses++
-    const [listed] = await Promise.all([readHostList(), readRemoteManagement()])
+    const [listed] = await Promise.all([readHostList(background), readRemoteManagement()])
     if (disposed) return
     if (listed) await Promise.all(remoteHosts
       .filter(host => !background || (remoteFailures.get(host.id)?.nextRead ?? 0) <= Date.now())

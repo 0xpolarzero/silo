@@ -168,3 +168,41 @@ describe("push confirmation", () => {
     expect(onPush).toHaveBeenCalledExactlyOnceWith({ repository: "acme/silo", branch: "feature", commit: row.head })
   })
 })
+
+it.each(["previous-vm", "current-vm"])("push Cancel belongs to the current sandbox ID when the queue entry belongs to %s", async vmId => {
+  const onCancel = vi.fn()
+  const entry = { id: 7, label: "Pushing from dev", kind: "push" as const, vmId, vmName: "dev", sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }
+  function Host() {
+    useRepositoryPushToasts([{ ...base, status: "pushing" }], {
+      onPush: vi.fn(), onDismiss: vi.fn(), onCancel,
+      resolveSandbox: () => ({ id: "current-vm", name: "dev" }),
+      queue: { running: [entry], waiting: [] },
+    })
+    return <Toaster />
+  }
+  render(<Host />)
+  expect(await screen.findByText("Pushing 2 commits")).toBeInTheDocument()
+  if (vmId === "previous-vm") {
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument()
+  } else {
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+    await user.click(screen.getByRole("button", { name: "Stop push" }))
+    expect(onCancel).toHaveBeenCalledExactlyOnceWith(7)
+  }
+})
+
+it("removes push Cancel when its sandbox is replaced without a new queue snapshot", async () => {
+  const onCancel = vi.fn()
+  const operations: RepositoryPushOperation[] = [{ ...base, status: "pushing" }]
+  const queue = { running: [{ id: 7, label: "Pushing from dev", kind: "push" as const, vmId: "original-vm", vmName: "dev", sinceMs: Date.now(), cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  function Host({ owner }: { owner: string }) {
+    useRepositoryPushToasts(operations, { onPush: vi.fn(), onDismiss: vi.fn(), onCancel, queue, resolveSandbox: () => ({ id: owner, name: "dev" }) })
+    return <Toaster />
+  }
+  const { rerender } = render(<Host owner="original-vm" />)
+  expect(await screen.findByRole("button", { name: "Cancel" })).toBeInTheDocument()
+  rerender(<Host owner="replacement-vm" />)
+  await waitFor(() => expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument())
+  expect(onCancel).not.toHaveBeenCalled()
+})

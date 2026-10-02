@@ -568,6 +568,9 @@ the selected Go version, requested toolchain, staging-script recipe digest, and
 effective build flags, experiments, architecture tuning, and FIPS setting. A
 change to any of these rejects both executable caches. Builds and compiler notices
 use the selected compiler's GOROOT with further toolchain switching disabled.
+The LFS manifest also records every bundled license file's SHA256; both caches
+reject missing, changed or unexpected notices instead of packaging an incomplete
+notice tree alongside a valid executable.
 Keys include the runner, target, Rust and selected Go versions, staging scripts, runtime patch,
 and guest lockfile, so app version changes alone do not invalidate the runtime.
 Preparation always verifies and stages restored inputs and regenerates package
@@ -742,3 +745,19 @@ must complete before the command can be released. An exception stops the group
 and reaps its leader before the metadata file closes. Its synthetic regression
 injects a forwarding failure after a fixture command starts, verifies a signal
 exit, and checks that `waitpid` reports no unreaped child.
+
+### Disk-space diagnostic units
+
+Low-space messages for update installation, bundled VM image preparation, and
+ChatGPT app downloads express their existing binary byte calculations as MiB.
+[NIST's binary-prefix definitions](https://physics.nist.gov/cuu/Units/binary.html)
+distinguish one MiB (1,048,576 bytes) from one MB (1,000,000 bytes). The previous MB
+label understated the represented byte amount. Update preflight regressions cover
+an exact 2 MiB shortfall and one extra byte, which must round up to 3 MiB, while
+preserving the installed fixture and cleaning up the staging probe.
+
+Verification: three Rust tests against the extracted production update preflight
+functions passed after the rounding-boundary regression failed with the old MB
+label. Rust formatting, TypeScript typecheck, lint, and whitespace checks passed.
+The full native test compile could not use the cached Tauri dependency because
+new integration tests require its test feature; no packaged app was built or run.

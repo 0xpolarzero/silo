@@ -1263,6 +1263,142 @@ pub async fn read_dependencies(
 mod tests {
     use super::*;
 
+    fn version_probe(script: &str, arguments: &[&str]) -> Result<String, ProbeError> {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("version-probe");
+        crate::test_support::write_shell_script(&executable, script);
+        run_bounded_with_timeout(
+            &executable,
+            arguments,
+            &[("HOME", directory.path())],
+            Duration::from_secs(3),
+        )
+    }
+
+    #[test]
+    fn version_probe_passes_literal_arguments_and_uses_an_isolated_home_and_locale() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("version-probe");
+        crate::test_support::write_shell_script(
+            &executable,
+            "if IFS= read -r line; then exit 1; fi\nprintf ' \\t%s\\n%s\\n%s\\n%s \\n' \"$1\" \"$HOME\" \"$LANG\" \"$LC_ALL\"\nprintf warning >&2",
+        );
+        let value = "literal '$value'; $(false)";
+        assert_eq!(
+            run_bounded_with_timeout(
+                &executable,
+                &[value],
+                &[("HOME", directory.path())],
+                Duration::from_secs(3),
+            )
+            .unwrap(),
+            format!("{value}\n{}\nC\nC", directory.path().display())
+        );
+    }
+
+    #[test]
+    fn version_probe_accepts_the_output_limit_and_rejects_overflow_on_either_stream() {
+        let script = "if [ \"$2\" = stderr ]; then exec 1>&2; fi\ni=0\nwhile [ \"$i\" -lt \"$1\" ]; do printf x; i=$((i+1)); done";
+        for stream in ["stdout", "stderr"] {
+            let at_limit = version_probe(script, &["8192", stream]).unwrap();
+            assert_eq!(
+                at_limit,
+                if stream == "stdout" {
+                    "x".repeat(8192)
+                } else {
+                    String::new()
+                }
+            );
+            match version_probe(script, &["8193", stream]) {
+                Err(ProbeError::Malformed(detail)) => {
+                    assert_eq!(detail, "version output exceeded 8 KiB")
+                }
+                result => panic!("oversized {stream} was not rejected: {result:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn version_probe_rejects_successful_non_utf8_output() {
+        match version_probe("printf '\\377'", &[]) {
+            Err(ProbeError::Malformed(detail)) => {
+                assert_eq!(detail, "version output was not UTF-8")
+            }
+            result => panic!("invalid UTF-8 was not rejected: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_version_probe_reports_stderr_or_exit_status_instead_of_successful_stdout() {
+        match version_probe(
+            "printf 'msb 0.7.6'; printf ' specific failure \\n' >&2; exit 23",
+            &[],
+        ) {
+            Err(ProbeError::Unsupported(detail)) => assert_eq!(detail, "specific failure"),
+            result => panic!("failed probe was not rejected: {result:?}"),
+        }
+        match version_probe("printf 'msb 0.7.6'; exit 7", &[]) {
+            Err(ProbeError::Unsupported(detail)) => {
+                assert_eq!(detail, "version check exited with exit status: 7")
+            }
+            result => panic!("failed probe without stderr was not rejected: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn version_probe_distinguishes_missing_non_regular_and_non_executable_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("version-probe");
+        let probe = |path: &Path| {
+            run_bounded_with_timeout(
+                path,
+                &[],
+                &[("HOME", directory.path())],
+                Duration::from_secs(3),
+            )
+        };
+        assert!(matches!(probe(&executable), Err(ProbeError::Missing(_))));
+        assert!(matches!(
+            probe(directory.path()),
+            Err(ProbeError::Malformed(_))
+        ));
+        fs::write(&executable, "#!/bin/sh\nprintf should-not-run").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(probe(&executable), Err(ProbeError::Unreadable(_))));
+    }
+
+    #[test]
+    fn manifest_read_distinguishes_missing_unreadable_corrupt_and_valid_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = directory.path().join("manifest.json");
+        assert!(matches!(
+            read_json::<serde_json::Value>(&manifest),
+            Err(ProbeError::Missing(_))
+        ));
+        let blocker = directory.path().join("file");
+        fs::write(&blocker, "preserve this file").unwrap();
+        assert!(matches!(
+            read_json::<serde_json::Value>(&blocker.join("manifest.json")),
+            Err(ProbeError::Unreadable(_))
+        ));
+        assert_eq!(fs::read_to_string(&blocker).unwrap(), "preserve this file");
+        for bytes in [b"{broken".as_slice(), b"\xff", b""] {
+            fs::write(&manifest, bytes).unwrap();
+            assert!(matches!(
+                read_json::<serde_json::Value>(&manifest),
+                Err(ProbeError::Malformed(_))
+            ));
+            assert_eq!(fs::read(&manifest).unwrap(), bytes);
+        }
+        fs::write(&manifest, r#"{"schemaVersion":2}"#).unwrap();
+        assert_eq!(
+            read_json::<serde_json::Value>(&manifest).unwrap(),
+            serde_json::json!({"schemaVersion":2})
+        );
+    }
+
     #[test]
     fn missing_guest_image_fails_existing_runtime_check_without_installing() {
         let directory = tempfile::tempdir().unwrap();

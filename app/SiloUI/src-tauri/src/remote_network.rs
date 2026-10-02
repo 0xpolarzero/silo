@@ -25,6 +25,7 @@ type Key = (String, String, u16);
 struct Tunnel {
     child: crate::owned_tunnel::Tunnel,
     local_port: u16,
+    // Owner publication endpoint is retained to detect replacement across VM restarts.
     remote_port: u16,
     _directory: Option<tempfile::TempDir>,
 }
@@ -491,16 +492,32 @@ fn control_ready(
     result
 }
 
+fn open_guest_tunnel(
+    app: &AppHandle,
+    key: &Key,
+    local: Option<u16>,
+    owner_endpoint: u16,
+) -> Result<Tunnel, String> {
+    let (alias, config, address) =
+        crate::editor::prepare_remote_network_private(app, &key.0, &key.1)?;
+    open_tunnel(
+        |local, socket| {
+            remote::guest_tunnel_commands(&config, &alias, local, address, key.2, socket)
+        },
+        local,
+        owner_endpoint,
+        READY_WITHIN,
+    )
+}
+
 fn reconnect_in_background(app: AppHandle, request: Arc<Reconnect>) {
     std::thread::spawn(move || {
         let opened = runtime::shutdown::ensure_accepting_operations().and_then(|()| {
-            open_tunnel(
-                |local, socket| {
-                    remote::ssh_tunnel_commands(&request.key.0, local, request.remote_port, socket)
-                },
+            open_guest_tunnel(
+                &app,
+                &request.key,
                 Some(request.intent.local_port),
                 request.remote_port,
-                READY_WITHIN,
             )
         });
         let unused = finish_reconnect(&request, opened);
@@ -651,14 +668,9 @@ pub async fn remote_save_network_port(
             .and_then(|p| p["hostPort"].as_u64())
             .and_then(|p| u16::try_from(p).ok())
             .ok_or("The remote VM port is not available yet. Check the VM service and retry.")?;
-        let host = host_id.clone();
+        let key = (host_id.clone(), vm_id, port);
         finish_save(pending, host_port, scheme, endpoint, |local| {
-            open_tunnel(
-                |local, socket| remote::ssh_tunnel_commands(&host, local, endpoint, socket),
-                local,
-                endpoint,
-                READY_WITHIN,
-            )
+            open_guest_tunnel(&app, &key, local, endpoint)
         })?;
         read(&app, &host_id)
     })

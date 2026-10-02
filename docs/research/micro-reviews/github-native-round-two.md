@@ -37,3 +37,13 @@ After the integration fixes to personal-token and workspace retries, Repository 
 The new transport regression failed under the old global reset because the ambiguous write became admissible. The real transport module is compiled directly in the synthetic test harness, with only the test-isolation mutex substituted; no external GitHub requests are used.
 
 The integration branch added the safe-request metadata and a safe-only Refresh reset concurrently. The resolved implementation keeps both regressions and additionally scopes Refresh to the active account and excludes workspace-owned reads, replacing the broader helper.
+
+## Verification and remaining boundary
+
+- Fixed and folded this round: personal-token replacement (`6c98045c`, reconciled with the concurrent integration fix in `14af1e3f`), OAuth reconnect (`21301b89`), readable writes (`9f2a8c4d`), bounded reads (`9df50d3a`), and scoped repository Refresh (`028f603a`, resolved in `89fa3aad`). The duplicate personal-token changeset was removed; the integrated `fix-personal-token-replacement.md` remains.
+- Full native `cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked github::`, using the shared target and synthetic GitHub configuration: **84 passed**, including both personal-token regressions, failed reconnect, oversized save preservation, and bounded reads. Output: `/tmp/silo-github-native-round2-native.log`.
+- After the final Refresh merge, direct compilation of the real `github_http.rs` and `github_tokens.rs` modules: **38 passed**. Focused Clippy passed with the existing 10-argument warning in `Gates::fail`. Cache/reconnect harness: **7 passed**; persistence harness: **2 passed**. All red/green evidence remains under `/tmp/silo-codex-target/verification/github-native-round2/`.
+- Rust formatting and diff whitespace checks passed. No frontend source changed. No application bundle, live VM, real OAuth flow, or real credential store was inspected or exercised. Tests use synthetic secrets, mock credential stores, loopback HTTP fixtures, and temporary files.
+- GITHUB-NATIVE-4 remains skipped: moving narrowing outside the global policy lock requires a coordinated cache-publication and revision-ordering refactor. The micro fixes do not establish live GitHub or VM behavior.
+
+The final `cargo ... test --locked github` rerun remained at the shared artifact lock and was stopped with SIGTERM after verifying its Cargo executable and this worktree's cwd. Its output remains at `/tmp/silo-github-native-round2-final-native.log`; no completed native result is claimed for that rerun. Temporary links to existing bundled runtime inputs were removed after native jobs ended.

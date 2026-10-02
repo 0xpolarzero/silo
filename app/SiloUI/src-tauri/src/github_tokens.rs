@@ -193,9 +193,28 @@ fn execute_with(
             {
                 return Err(INVALID.into());
             }
-            session(send(oauth(
+            let response = send(oauth(
                 json!({"client_id":config.client_id,"client_secret":config.client_secret,"code":code,"code_verifier":verifier,"redirect_uri":redirect}),
-            ))?)
+            ))?;
+            let result = session(response.clone());
+            if result.is_err() {
+                // The exchange may issue a non-expiring token that Silo cannot
+                // keep. Discard only this token; a previous login may share its grant.
+                if let Ok(token) = text(&response["access_token"]) {
+                    let _ = send(Request {
+                        method: Method::DELETE,
+                        url: format!(
+                            "https://api.github.com/applications/{}/token",
+                            config.client_id
+                        ),
+                        authentication: app(),
+                        body: json!({"access_token":token}),
+                        safe: true,
+                        revoke: true,
+                    });
+                }
+            }
+            result
         }
         Operation::Refresh => session(send(oauth(
             json!({"client_id":config.client_id,"client_secret":config.client_secret,"grant_type":"refresh_token","refresh_token":text(&input["refreshToken"])?}),
@@ -375,6 +394,49 @@ mod tests {
             assert_eq!(result["accessToken"], "access");
         }
         assert!(session(json!({"access_token":"access"})).is_err());
+    }
+    #[test]
+    fn rejected_exchange_revokes_its_unstored_token_without_revoking_the_grant() {
+        for response in [
+            json!({"access_token":"non-expiring-fixture","token_type":"bearer","scope":""}),
+            json!({"access_token":"invalid-session-fixture","refresh_token":"refresh","expires_in":0,"refresh_token_expires_in":15897600}),
+        ] {
+            let token = response["access_token"].as_str().unwrap().to_owned();
+            let mut calls = 0;
+            let result = execute_with(
+                &config(),
+                Operation::Exchange,
+                json!({"code":"fixture-code","codeVerifier":"a".repeat(43),"redirectUri":"http://127.0.0.1:4321/github/callback"}),
+                |request| {
+                    calls += 1;
+                    if calls == 1 {
+                        assert_eq!(request.method, Method::POST);
+                        return Ok(response.clone());
+                    }
+                    assert_eq!(request.method, Method::DELETE);
+                    assert_eq!(
+                        request.url,
+                        "https://api.github.com/applications/Iv23test/token"
+                    );
+                    assert_eq!(request.body, json!({"access_token":token}));
+                    assert!(matches!(request.authentication, Authentication::App { .. }));
+                    assert!(request.safe && request.revoke);
+                    Ok(json!({"revoked":true}))
+                },
+            );
+            assert!(result.is_err());
+            assert_eq!(
+                calls, 2,
+                "Rejected exchange left its issued token unrevoked"
+            );
+        }
+        let mut calls = 0;
+        assert!(execute_with(
+            &config(), Operation::Exchange,
+            json!({"code":"fixture-code","codeVerifier":"a".repeat(43),"redirectUri":"http://127.0.0.1:4321/github/callback"}),
+            |_| { calls += 1; Ok(json!({})) },
+        ).is_err());
+        assert_eq!(calls, 1);
     }
     #[test]
     fn callback_and_verifier_are_validated_before_network() {

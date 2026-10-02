@@ -45,3 +45,15 @@ After folding, the integration merge changed neither `desktop.rs` nor the operat
 - **Fix:** Carry the request ID through the viewer connection wrapper and check fresh metadata before any runtime query. Keep local name-based connections and `--no-start` behavior.
 - **Regression:** Replace the metadata record under the same name and request credentials with the removed ID. Reject without runtime calls; retain matching-ID and local connection success.
 - **Verification:** Native before/after logs are `/tmp/silo-desktop-3-before.log` and `/tmp/silo-desktop-3-after.log`, using the complete cached-dependency test harness, synthetic GitHub configuration, and temporary fixtures. All 29 desktop, 18 viewer, and one remote-access tests passed, along with Rust formatting, typecheck/lint, and whitespace checks. Viewer transport tests used disposable processes and sockets. No app or live VM was launched.
+
+## DESKTOP-4: Credential reads can outlive the selected VM
+
+- **Priority:** P2.
+- **Location before fix:** `desktop.rs:907`.
+- **Trigger:** The selected VM passes the initial metadata/runtime checks, then a computer operation replaces its metadata while the guest connection command runs.
+- **Evidence:** A native fixture replaces A with B under the same name inside the credential command. The pre-fix implementation returned credentials after the replacement; the regression failed with 29 other desktop tests passing.
+- **Consequence:** Connection credentials can be returned for a selection whose identity no longer exists.
+- **Fix:** Recheck the captured ID against fresh metadata and managed runtime identity before returning credentials. Connection reads remain ungated. This rejects observed replacement and does not promise atomicity after the final check.
+- **Regression:** Replace metadata during the guest credential read and reject the result. Unchanged local and explicit-ID connections still return validated credentials with `--no-start` commands.
+- **Verification:** Native before/after logs are `/tmp/silo-desktop-4-before.log` and `/tmp/silo-desktop-4-after.log`. The latest integration introduced a settings event test requiring the Tauri test feature; cached plugin artifacts do not yet match that feature. The native harness therefore compiles a source copy with only that unrelated settings test removed. All production source and desktop tests are unchanged in that copy. This is focused cached-dependency native verification, not a normal Cargo test run. Synthetic GitHub values and temporary fixtures are used; no app or live VM is launched.
+- **Results:** All 30 desktop tests passed after the fix. Rust formatting, frontend typecheck/lint, and whitespace checks passed.

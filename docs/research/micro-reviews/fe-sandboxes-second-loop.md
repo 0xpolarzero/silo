@@ -56,3 +56,21 @@ Scope: `app/SiloUI/src/features/sandboxes/` and adjacent sandbox configuration a
 - **Evidence:** Both rendered regressions failed because the stop confirmation returned when eligibility recovered.
 - **Fix:** Clear the pending confirmation state as soon as its eligibility disappears.
 - **Regression:** `machine-stop-confirmation.test.tsx` covers stopped/running and locked/unlocked transitions, preserving the unsaved resource edit without saving.
+
+## FE-SANDBOXES-14: New drafts submit to removed computers
+
+- **Priority:** P2.
+- **Trigger:** Select another computer for a new sandbox, remove that computer through another surface, then save the still-open draft.
+- **Consequence:** Eligibility validation falls through to local checks and submits a remote upsert to an owner that is no longer registered. The user receives a native failure instead of a concrete choice to select another computer.
+- **Evidence:** The rendered regression failed because `saveRemoteMachine` received the removed host ID `office`.
+- **Fix:** Reject a nonlocal selection whose computer no longer exists before invoking either save callback.
+- **Regression:** `remote-computers.test.tsx` checks the explanatory notice, retained CPU edit, no stale remote call, and successful recovery by selecting this computer.
+
+## FE-SANDBOXES-15: Offscreen stale saves lose the review affordance
+
+- **Priority:** P2.
+- **Trigger:** Start saving an edit, leave its surface, then receive a stale-baseline rejection before returning.
+- **Consequence:** The error toast reports the failure, but the restored editor cannot offer Review changes until another stale save fails.
+- **Evidence:** The strengthened offscreen rejection regression failed because no conflict alert or Review changes button existed on return.
+- **Fix:** Record stale rejection in the matching cached editor independently of whether its component remains mounted; continue reporting the offscreen failure.
+- **Regression:** `machine-editor-drafts.test.tsx` checks both the offscreen failure notice and immediate restored review controls with the unsaved CPU edit intact.

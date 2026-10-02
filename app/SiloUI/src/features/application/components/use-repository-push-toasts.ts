@@ -40,8 +40,9 @@ export function useRepositoryPushToasts(
     const next = new Map<string, string>()
     for (const operation of operations) {
       const id = pushToastId(operation)
+      const sandbox = callbacks.current.resolveSandbox?.(operation.workspace)
       const cancelId = operation.status === "pushing" && onCancel
-        ? queue?.running.find((entry) => entry.kind === "push" && entry.cancellable && entry.vmName === operation.workspace)?.id
+        ? queue?.running.find((entry) => entry.kind === "push" && entry.cancellable && (resolveSandbox ? entry.vmId === sandbox?.id : entry.vmName === operation.workspace))?.id
         : undefined
       const state = `${operation.status}:${JSON.stringify({
         count: operation.commitCount, message: "message" in operation ? operation.message : undefined, cancelId,
@@ -88,5 +89,5 @@ export function useRepositoryPushToasts(
     }
     for (const [id, state] of previous) if ((state.startsWith("pushing") || state.startsWith("unknown")) && !next.has(id)) dismissOperationToast(id)
     seen.current = next
-  }, [enabled, operations, queue, onCancel])
+  }, [enabled, operations, queue, onCancel, resolveSandbox])
 }

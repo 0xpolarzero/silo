@@ -520,6 +520,8 @@ struct Document {
     /// view. Kept after a policy is removed so a stale save cannot bring it back.
     #[serde(default)]
     policy_stamps: std::collections::BTreeMap<String, PolicyStamp>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1262,7 +1264,14 @@ fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> 
         &LEDGER_SECRET,
         &entry,
         workspace,
-        |token| live.contains(token),
+        |token| {
+            live.contains(token)
+                || retirement()
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .active_pushes
+                    .contains(token)
+        },
         |token| token_operation(Operation::RevokeToken, json!({"accessToken":token})).map(|_| ()),
     )
 }
@@ -1305,6 +1314,16 @@ fn retire_ledger_tokens(
             }
         }
     }
+    forget_ledger_tokens(secret, entry, workspace, &revoked)?;
+    failure.map_or(Ok(()), Err)
+}
+
+fn forget_ledger_tokens(
+    secret: &SessionSecret<TokenLedger>,
+    entry: &keyring::Entry,
+    workspace: &str,
+    revoked: &[String],
+) -> Result<(), String> {
     secret.update(
         || read_ledger(entry),
         |ledger| {
@@ -1316,8 +1335,7 @@ fn retire_ledger_tokens(
             }
         },
         |ledger| save_ledger(entry, ledger),
-    )?;
-    failure.map_or(Ok(()), Err)
+    )
 }
 
 fn finish_application(
@@ -2104,6 +2122,38 @@ fn narrow_checked(
     }
 }
 
+const RETIREMENT_RETRY_AFTER: u64 = 30;
+#[derive(Default)]
+struct TokenRetirement {
+    active_pushes: std::collections::HashSet<String>,
+    retry_at: u64,
+}
+impl TokenRetirement {
+    fn wait(&self, at: u64) -> Duration {
+        Duration::from_secs(self.retry_at.saturating_sub(at))
+    }
+    fn finished(&mut self, token: &str, at: u64) {
+        self.active_pushes.remove(token);
+        self.retry_at = at;
+    }
+}
+fn retirement() -> &'static Mutex<TokenRetirement> {
+    static RETIREMENT: OnceLock<Mutex<TokenRetirement>> = OnceLock::new();
+    RETIREMENT.get_or_init(|| Mutex::new(TokenRetirement::default()))
+}
+fn begin_host_push_token(
+    retirement: &Mutex<TokenRetirement>,
+    token: &str,
+    remember: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    retirement
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .active_pushes
+        .insert(token.into());
+    remember()
+}
+
 /// A credential for one explicit host push. Silo's scoped token is revoked as
 /// soon as the push ends (owner decision 1); a personal token is never revoked.
 pub(crate) struct HostPushCredential {
@@ -2127,31 +2177,37 @@ impl HostPushCredential {
 }
 impl Drop for HostPushCredential {
     fn drop(&mut self) {
-        if let Some((app, workspace)) = self.retire.take() {
-            retire_host_push_token(
+        if let Some((_app, workspace)) = self.retire.take() {
+            let result = retire_host_push_token(
                 &self.token,
                 |token| {
                     token_operation(Operation::RevokeToken, json!({"accessToken":token}))
                         .map(|_| ())
                 },
-                |token| remember_token(&app, &workspace, token),
+                |token| {
+                    let entry = ledger_entry()?;
+                    forget_ledger_tokens(&LEDGER_SECRET, &entry, &workspace, &[token.into()])
+                },
             );
+            if let Err(error) = result {
+                eprintln!("Could not retire the host push credential: {error}");
+            }
+            retirement()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .finished(&self.token, now());
+            wake_worker();
         }
     }
 }
-/// Revoke now. When GitHub cannot be reached, keep the token in the durable
-/// retirement ledger so the GitHub worker revokes it later.
+/// Only a confirmed revocation removes a pre-recorded token from the ledger.
 fn retire_host_push_token(
     token: &str,
     revoke: impl FnOnce(&str) -> Result<(), String>,
-    remember: impl FnOnce(&str) -> Result<(), String>,
-) {
-    if let Err(error) = revoke(token) {
-        eprintln!("Could not revoke the host push credential: {error}");
-        if let Err(error) = remember(token) {
-            eprintln!("Could not record the host push credential for revocation: {error}");
-        }
-    }
+    forget: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    revoke(token)?;
+    forget(token)
 }
 /// Scoped tokens end with the account credential. Renew an account credential
 /// that would expire within this time so a long push keeps a working token.
@@ -2238,6 +2294,8 @@ pub(crate) fn host_push_credential(
             let id = repo["id"]
                 .as_u64()
                 .ok_or("Invalid repository identifier.")?;
+            let ledger = ledger_entry()?;
+            LEDGER_SECRET.read(|| read_ledger(&ledger))?;
             current()?;
             let response = token_operation(
                 Operation::Scope,
@@ -2255,6 +2313,9 @@ pub(crate) fn host_push_credential(
                 expires_at: None,
                 retire: Some((app.clone(), workspace.into())),
             };
+            begin_host_push_token(retirement(), &credential.token, || {
+                remember_token(app, workspace, &credential.token)
+            })?;
             credential.expires_at = Some(token_expiry(&response)?);
             Ok(credential)
         },
@@ -2309,9 +2370,9 @@ mod host_push_authorization_tests {
     }
 
     #[test]
-    fn host_push_tokens_are_revoked_or_kept_for_later_revocation() {
+    fn host_push_tokens_leave_the_ledger_only_after_confirmed_revocation() {
         let _test_state = crate::test_support::global_state();
-        let remembered = std::cell::RefCell::new(Vec::<String>::new());
+        let forgotten = std::cell::RefCell::new(Vec::<String>::new());
         super::retire_host_push_token(
             "revoked",
             |token| {
@@ -2319,20 +2380,22 @@ mod host_push_authorization_tests {
                 Ok(())
             },
             |token| {
-                remembered.borrow_mut().push(token.into());
+                forgotten.borrow_mut().push(token.into());
                 Ok(())
             },
-        );
-        assert!(remembered.borrow().is_empty());
-        super::retire_host_push_token(
+        )
+        .unwrap();
+        assert_eq!(*forgotten.borrow(), ["revoked"]);
+        assert!(super::retire_host_push_token(
             "offline",
             |_| Err("GitHub is unreachable.".into()),
             |token| {
-                remembered.borrow_mut().push(token.into());
+                forgotten.borrow_mut().push(token.into());
                 Ok(())
             },
-        );
-        assert_eq!(*remembered.borrow(), ["offline"]);
+        )
+        .is_err());
+        assert_eq!(*forgotten.borrow(), ["revoked"]);
     }
 
     #[test]
@@ -2738,6 +2801,29 @@ fn catalog_refresh_due(d: &Document, now: u64) -> bool {
     d.access_enabled && d.account.is_some() && !d.disconnect_pending && now >= d.catalog_refresh_at
 }
 
+fn sweep_retirement(
+    retirement: &Mutex<TokenRetirement>,
+    at: u64,
+    read: impl FnOnce() -> Result<TokenLedger, String>,
+    mut retire: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    {
+        let mut state = retirement.lock().unwrap_or_else(PoisonError::into_inner);
+        if at < state.retry_at {
+            return Ok(());
+        }
+        // Advance before network work so a completed push can request an earlier pass.
+        state.retry_at = at + RETIREMENT_RETRY_AFTER;
+    }
+    let mut failure = None;
+    for name in read()?.keys() {
+        if let Err(error) = retire(name) {
+            failure = Some(error);
+        }
+    }
+    failure.map_or(Ok(()), Err)
+}
+
 /// Re-establish host-only grants after relaunch and renew them before expiry.
 pub fn install(app: &tauri::AppHandle) {
     let _ = OBSERVATION_APP.set(app.clone());
@@ -2858,20 +2944,6 @@ pub fn install(app: &tauri::AppHandle) {
                         }
                     }
                     let _ = apply(&app, &mut d, None, false);
-                    // Removed sandboxes still have a durable retirement ledger.
-                    if let Ok(ledger) =
-                        LEDGER_SECRET.read(|| ledger_entry().and_then(|entry| read_ledger(&entry)))
-                    {
-                        for name in ledger.keys() {
-                            if !d
-                                .workspaces
-                                .iter()
-                                .any(|w| w["workspace"].as_str() == Some(name))
-                            {
-                                let _ = retire_unused(&app, name);
-                            }
-                        }
-                    }
                     let account_credential = credential();
                     {
                         let _state = serialize(&STATE);
@@ -2907,10 +2979,24 @@ pub fn install(app: &tauri::AppHandle) {
             } else {
                 wait = Duration::from_secs(5);
             }
+            let _ = sweep_retirement(
+                retirement(),
+                now(),
+                || LEDGER_SECRET.read(|| ledger_entry().and_then(|entry| read_ledger(&entry))),
+                |name| retire_unused(&app, name),
+            );
         }
         // Sleep until the next deadline (not a 100 ms poll that re-read the whole
         // document for the app's lifetime); `schedule` wakes the worker early.
-        worker_sleep(wait.min(personal_token::next_check()).max(WORKER_MIN_SLEEP));
+        let retirement_wait = retirement()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .wait(now());
+        worker_sleep(
+            wait.min(personal_token::next_check())
+                .min(retirement_wait)
+                .max(WORKER_MIN_SLEEP),
+        );
     });
 }
 
@@ -3610,6 +3696,52 @@ mod tests {
         json!({"workspace":name,"repositoryMode":if all {"all"} else {"selected"},"allRepositoriesAllowChanges":all,
             "repositories":[],"identity":{"name":"","email":"","apply":false}})
     }
+    #[test]
+    fn additive_github_preferences_survive_a_known_setting_change() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let saved = json!({
+            "revision": 4,
+            "accessEnabled": false,
+            "account": "fixture-account",
+            "workspaces": [saved_policy("dev", false)],
+            "futurePreference": {"mode": "newer", "enabled": true}
+        });
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut document = load_at(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        document.access_enabled = true;
+        save_at(&path, &document).unwrap();
+        let reloaded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
+        assert_eq!(reloaded["workspaces"], saved["workspaces"]);
+        assert_eq!(reloaded["account"], saved["account"]);
+        assert!(load_at(&path).unwrap().access_enabled);
+    }
+
+    #[test]
+    fn legacy_github_preferences_keep_safe_defaults_after_save_and_reload() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        fs::write(&path, br#"{"revision":0,"accessEnabled":false}"#).unwrap();
+        let document = load_at(&path).unwrap();
+        assert!(!document.access_enabled);
+        assert!(document.account.is_none());
+        assert!(document.workspaces.is_empty());
+        assert!(document.policy_stamps.is_empty());
+        assert!(!document.grants_issued);
+        save_at(&path, &document).unwrap();
+        let reloaded = load_at(&path).unwrap();
+        assert!(!reloaded.access_enabled);
+        assert!(reloaded.account.is_none());
+        assert!(reloaded.workspaces.is_empty());
+        assert!(reloaded.policy_stamps.is_empty());
+        assert!(!reloaded.grants_issued);
+    }
+
     #[test]
     fn unsafe_saved_policy_revisions_are_refused_without_rewriting_the_document() {
         for revision in [9_007_199_254_740_992, u64::MAX] {
@@ -4485,6 +4617,139 @@ mod tests {
         assert_eq!(state["state"], "disconnected");
         assert_eq!(state["repositoryCatalogStatus"]["status"], "unavailable");
         assert_eq!(state["workspaceOperations"][0]["status"], "succeeded");
+    }
+    #[test]
+    fn pending_push_retirement_retries_without_grant_renewal_or_enabled_access() {
+        for enabled in [true, false] {
+            let secret = SessionSecret::new();
+            let entry = keyring::Entry::new_with_credential(Box::new(
+                keyring::mock::MockCredential::default(),
+            ));
+            append_ledger_token(&secret, &entry, "dev", "pending_push").unwrap();
+            let d = Document {
+                session: session().into(),
+                access_enabled: enabled,
+                refresh_at: 3600,
+                catalog_refresh_at: 3600,
+                workspaces: vec![json!({"workspace":"dev"})],
+                ..Document::default()
+            };
+            assert!(!worker_due(&d, None, 30, Instant::now()));
+            let retirement = Mutex::new(TokenRetirement {
+                retry_at: 30,
+                ..Default::default()
+            });
+            sweep_retirement(
+                &retirement,
+                29,
+                || panic!("retirement before deadline"),
+                |_| panic!("early revocation"),
+            )
+            .unwrap();
+            assert!(sweep_retirement(
+                &retirement,
+                30,
+                || secret.read(|| panic!("unexpected store read")),
+                |name| retire_ledger_tokens(
+                    &secret,
+                    &entry,
+                    name,
+                    |_| false,
+                    |_| Err("offline".into())
+                )
+            )
+            .is_err());
+            assert_eq!(retirement.lock().unwrap().wait(30), Duration::from_secs(30));
+            assert!(!worker_due(&d, None, 60, Instant::now()));
+            sweep_retirement(
+                &retirement,
+                59,
+                || panic!("retirement before retry"),
+                |_| panic!("early retry"),
+            )
+            .unwrap();
+            sweep_retirement(
+                &retirement,
+                60,
+                || secret.read(|| panic!("unexpected store read")),
+                |name| retire_ledger_tokens(&secret, &entry, name, |_| false, |_| Ok(())),
+            )
+            .unwrap();
+            assert!(secret
+                .read(|| panic!("unexpected store read"))
+                .unwrap()
+                .is_empty());
+        }
+    }
+    #[test]
+    fn push_token_is_durable_before_use_and_survives_a_crash() {
+        let secret = SessionSecret::new();
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        let retirement = Mutex::new(TokenRetirement::default());
+        begin_host_push_token(&retirement, "push", || {
+            append_ledger_token(&secret, &entry, "dev", "push")
+        })
+        .unwrap();
+        assert_eq!(read_ledger(&entry).unwrap()["dev"], ["push"]);
+        sweep_retirement(
+            &retirement,
+            1,
+            || secret.read(|| panic!("unexpected store read")),
+            |name| {
+                retire_ledger_tokens(
+                    &secret,
+                    &entry,
+                    name,
+                    |token| retirement.lock().unwrap().active_pushes.contains(token),
+                    |_| panic!("active push revoked"),
+                )
+            },
+        )
+        .unwrap();
+        // A new session has no active pushes and reads the durable record left without Drop.
+        let restarted = SessionSecret::new();
+        let restarted_retirement = Mutex::new(TokenRetirement::default());
+        sweep_retirement(
+            &restarted_retirement,
+            2,
+            || restarted.read(|| read_ledger(&entry)),
+            |name| retire_ledger_tokens(&restarted, &entry, name, |_| false, |_| Ok(())),
+        )
+        .unwrap();
+        assert!(read_ledger(&entry).unwrap().is_empty());
+    }
+    #[test]
+    fn failed_push_token_storage_prevents_use_and_keeps_retirement_pending() {
+        let secret = SessionSecret::new();
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        secret.read(|| read_ledger(&entry)).unwrap();
+        entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .unwrap()
+            .set_error(keyring::Error::NoStorageAccess(Box::new(
+                std::io::Error::other("denied"),
+            )));
+        let retirement = Mutex::new(TokenRetirement::default());
+        let used = std::cell::Cell::new(false);
+        let attempt = || -> Result<(), String> {
+            begin_host_push_token(&retirement, "push", || {
+                append_ledger_token(&secret, &entry, "dev", "push")
+            })?;
+            used.set(true);
+            Ok(())
+        };
+        assert!(attempt().is_err());
+        assert!(!used.get());
+        assert_eq!(
+            secret.read(|| panic!("unexpected store read")).unwrap()["dev"],
+            ["push"]
+        );
+        retirement.lock().unwrap().finished("push", 5);
+        assert!(retirement.lock().unwrap().active_pushes.is_empty());
+        assert_eq!(retirement.lock().unwrap().wait(5), Duration::ZERO);
     }
     #[test]
     fn retirement_preserves_ledger_tokens_appended_during_revocation() {

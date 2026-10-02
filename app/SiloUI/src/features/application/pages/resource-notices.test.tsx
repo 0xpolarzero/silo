@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
 import { Toaster } from "@/components/ui/sonner"
@@ -28,11 +29,12 @@ describe("operation-owned resource notices", () => {
   })
 
   it("blocks Create only after the user saves the affected VM", async () => {
+    const user = userEvent.setup()
     render(<><Toaster /><ApplicationPreview source={withResourceFixture(applicationSourceForScenario("running"), "create-storage")} /></>)
     expect(screen.queryByText(/Not enough storage/i)).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole("button", { name: "Add" }))
-    fireEvent.click(screen.getByRole("menuitem", { name: "New sandbox" }))
+    await user.click(screen.getByRole("button", { name: "Add" }))
+    await user.click(screen.getByRole("menuitem", { name: "New sandbox" }))
     fireEvent.change(screen.getByRole("textbox", { name: "Sandbox name" }), { target: { value: "sandbox" } })
     fireEvent.click(screen.getByRole("button", { name: "Save" }))
 
