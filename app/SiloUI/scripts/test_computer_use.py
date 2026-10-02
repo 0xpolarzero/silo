@@ -252,12 +252,56 @@ class Apply(Guest):
         self.assertTrue(str(install_cwd).startswith(str(self.state / 'stage')))
         self.assertFalse((self.state / 'stage').exists())
 
-    def test_an_up_to_date_vm_runs_nothing(self):
+    def test_an_up_to_date_vm_runs_nothing_between_boots(self):
         cu.apply('ask')
         self.commands.clear()
-        result = cu.apply('ask', boot=True)
+        result = cu.apply('ask')
         self.assertEqual(result['state'], 'ready')
         self.assertEqual(self.commands, [])
+
+    def test_a_ready_receipt_is_reverified_on_a_healthy_boot_without_install_or_setup(self):
+        cu.apply('ask')
+        self.commands.clear()
+        with mock.patch.object(cu, 'now', return_value=123456):
+            result = cu.apply('ask', boot=True)
+        self.assertEqual(result['state'], 'ready')
+        self.assertEqual(result['agents'], ['claude-code', 'codex'])
+        self.assertEqual(result['apply']['outcome'], 'applied')
+        self.assertTrue(any(argv[1:3] == ['status', '--json'] for argv, *_ in self.commands))
+        self.assertTrue(any(argv[0].endswith('lcu-session') for argv, *_ in self.commands))
+        self.assertFalse(any(argv[1:2] == ['setup'] or argv[0].endswith('install.sh')
+                             for argv, *_ in self.commands))
+        self.assertEqual(self.receipt()['verifiedAt'], 123456)
+
+    def test_a_ready_receipt_does_not_hide_a_failed_new_boot(self):
+        cu.apply('ask')
+        self.commands.clear()
+        self.session = 'failed'
+        result = cu.apply('ask', boot=True)
+        self.assertEqual((result['state'], result['readiness'], result['reason']),
+                         ('failed', 'failed', 'desktop-session-not-running'))
+        self.assertEqual(len(self.desktop_starts()), cu.SESSION_REPAIR_ATTEMPTS)
+        self.assertEqual(result['apply']['outcome'], 'applied')
+        self.assertEqual(cu.status()['state'], 'failed')
+
+    def test_a_ready_receipt_does_not_hide_a_failed_doctor_on_a_new_boot(self):
+        cu.apply('ask')
+        self.commands.clear()
+        self.failures['lcu-session'] = 'soft'
+        result = cu.apply('ask', boot=True)
+        self.assertEqual((result['state'], result['readiness'], result['reason']),
+                         ('failed', 'failed', 'doctor-failed'))
+        self.assertEqual(result['apply']['outcome'], 'applied')
+
+    def test_a_ready_receipt_can_repair_the_new_boot_before_rechecking_readiness(self):
+        cu.apply('ask')
+        self.commands.clear()
+        self.session = 'failed'
+        self.start_effect = 'running'
+        result = cu.apply('ask', boot=True)
+        self.assertEqual((result['state'], result['readiness']), ('ready', 'ready'))
+        self.assertEqual(len(self.desktop_starts()), 1)
+        self.assertTrue(any(argv[0].endswith('lcu-session') for argv, *_ in self.commands))
 
     def test_a_changed_approval_reruns_setup_only(self):
         cu.apply('ask')
@@ -571,7 +615,7 @@ class Apply(Guest):
         cu.apply('ask')
         self.commands.clear()
         # Another process finished the work while this one waited for the lock.
-        self.assertEqual(cu.apply('ask', boot=True)['state'], 'ready')
+        self.assertEqual(cu.apply('ask')['state'], 'ready')
         self.assertEqual(self.commands, [])
 
     def test_the_digest_reads_the_documented_status_fields(self):
