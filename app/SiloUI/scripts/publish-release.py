@@ -73,9 +73,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("version")
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--allow-stable", action="store_true")
     args = parser.parse_args()
     version = args.version
     current = validate_version(version)
+    if current[0] >= 1 and not args.allow_stable:
+        raise RuntimeError("Silo releases stay below 1.0.0; use --allow-stable only for an approved stable release.")
     repository = os.environ["GH_REPO"]
     tag = f"v{version}"
     releases = json.loads(gh("api", "--paginate", "--slurp", f"repos/{repository}/releases"))

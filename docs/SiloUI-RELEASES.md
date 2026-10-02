@@ -96,6 +96,14 @@ signatures, checksums, version metadata and update feed, then publishes and mark
 the release latest. A successful command means the workflow was requested;
 publication is complete only when that workflow succeeds.
 
+The final publication gate also refuses 1.0.0 or later by default. Only after the
+owner approves a stable release, pass `npm run release:publish -- --allow-stable`
+or explicitly select `allow_stable` in the publication workflow. An ordinary
+publication retry leaves that option off.
+For an approved stable draft, manually dispatch **Build Silo release** on its
+version tag with both `draft` and `allow_stable` enabled. Tag-triggered builds
+have no opt-in and reject 1.0.0 or later before platform builds.
+
 ### Preview, retries, and recovery
 
 - `npm run release:status` is read-only. No pending changes is not a new release;
