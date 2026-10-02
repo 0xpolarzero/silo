@@ -38,3 +38,12 @@ Scope: `app/SiloUI/src/features/sandboxes/` and adjacent sandbox configuration a
 - **Evidence:** Both rendered regressions failed because the restored editor had no conflict alert or review status.
 - **Fix:** Store and restore conflict and review state with the existing in-memory editor draft.
 - **Regression:** `machine-editor-drafts.test.tsx` covers navigation before and after Review changes, including retained draft values and both sides of the CPU conflict.
+
+## FE-SANDBOXES-12: Stale status permits an unconfirmed resource edit
+
+- **Priority:** P2.
+- **Trigger:** The sandbox's last known state is stopped, but its status becomes stale while settings are open. A remote runtime version with an unrecognized status is also mapped to stopped/stale in `desktop/production-source.ts`.
+- **Consequence:** Save remains enabled and skips the stop confirmation. Native `update_machine` inspects actual state and automatically stops a running VM before applying resource settings (`src-tauri/src/runtime.rs`), so an unverified stopped state can authorize interruption without the expected question.
+- **Evidence:** Both rendered editor regressions failed because Save stayed enabled after freshness changed to stale. Lifecycle controls already reject this same status.
+- **Fix:** Reject VM settings mutations on stale status through the shared editing busy reason, preserving the draft until freshness recovers.
+- **Regression:** `overview-availability.test.tsx` covers list/detail editors, accessible blocking text, no save, and intact drafts after recovery.
