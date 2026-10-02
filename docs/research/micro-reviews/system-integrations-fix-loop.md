@@ -61,3 +61,14 @@ native acknowledgment rejected. The fix stops at that boundary and does not
 cancel a different shutdown in response to an acknowledgment it never acquired.
 The accepted-flush save and error/cancellation behavior remain covered by the
 existing settings transport tests. No native app or real VM was used.
+
+## Follow-up: shutdown operation-queue subscription gap
+
+`src/desktop/shutdown-boundary.tsx` read the operation queue while native event
+registration was still pending. A long-running job starting after that read and
+before registration supplied neither a fresh snapshot nor an event. The rendered
+regression held registration, started a cancellable backup in the native fixture,
+then completed registration without emitting another event. Before the fix the
+overlay kept “Stopping local sandboxes…” and omitted Cancel and quit. The fix
+subscribes before its initial read; existing sequence checks still reject stale
+read responses. This uses DOM/native-bridge fixtures, with no app or real VM.
