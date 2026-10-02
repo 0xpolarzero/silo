@@ -360,13 +360,15 @@ Supported packages:
 | Platform | Installer | In-app updates |
 | --- | --- | --- |
 | Apple Silicon macOS | DMG | Signed Tauri app archive |
-| Linux x86-64 | AppImage and Debian package | AppImage only |
-| Linux ARM64 | AppImage and Debian package | AppImage only |
+| Linux x86-64 | AppImage and Debian package | Signed AppImage replacement; Debian through authenticated APT |
+| Linux ARM64 | AppImage and Debian package | Signed AppImage replacement; Debian through authenticated APT |
 
 Linux builds target Ubuntu 24.04-compatible systems and require KVM for VMs.
 AppImage bundles application libraries but does not make glibc or GPU support
-universal. Debian upgrades use the package manager and download flow, never
-replace package-owned binaries in place. Intel macOS and Windows are unsupported.
+universal. Debian upgrades use authenticated APT from Silo or the system package
+manager and never replace package-owned binaries in place. See
+[in-app Debian updates](SiloUI-LINUX-UPDATES.md#in-app-debian-updates-14-september-2026).
+Intel macOS and Windows are unsupported.
 Linux packages keep runtime/Git helpers in `/usr/libexec/silo/tools`; they never
 overwrite system Git in `/usr/bin`. AppImage keeps its helpers inside the image.
 The guest image, native runtime, host Git/LFS tools and notices are packaged with
