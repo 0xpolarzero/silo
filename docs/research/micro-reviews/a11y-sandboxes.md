@@ -35,3 +35,29 @@ Scope: `app/SiloUI/src/features/sandboxes/`. Verification uses deterministic fro
 - Fix: keep an initially empty polite status region mounted and update it with the sandbox name while saving.
 - Coverage: the real MachineList commit path with an unresolved synthetic promise exposes Saving and locks its fields.
 - Primary source: [W3C status messages guidance](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html), including waiting states and non-displayed contextual text.
+
+## Row-menu deletion confirmation lacks accessible context
+
+- Trigger: open Delete from a sandbox row's More actions menu.
+- Evidence: the regression failed to find the confirmation dialog by name. Fixing only its name then failed the destructive button's accessible-description assertion.
+- Consequence: the dialog was unnamed, and its initially focused Delete permanently button did not programmatically describe which sandbox and data would be deleted.
+- Fix: have the shared ActionsMenu host name registered popovers from the selected action's accessible label. Link both destructive choices in DeleteSandboxBody to its existing target title and loss warning using unique ids.
+- Coverage: local deletion; remote computer identity and checkpoint count; both Delete permanently and Export, then delete descriptions.
+- Primary source: [WAI-ARIA dialog role](https://www.w3.org/TR/wai-aria-1.2/#dialog) requires an accessible name.
+
+## Focusable context uses roles that prohibit names
+
+- Trigger: Tab to a computer badge or the read-only disk wrapper in an existing sandbox editor.
+- Evidence: both semantic regressions failed to find the intended named note/group. Each tab stop was a generic span with aria-label, which the generic role prohibits. The disk wrapper also lacked a focus indicator.
+- Consequence: the attempted names have no supported semantic mapping for assistive technology, and keyboard focus on read-only disk information is not visibly indicated.
+- Fix: expose the computer badge as an ancillary note, matching SecretChangesLabel; use a named group for each disk value and a focus-visible ring.
+- Coverage: keyboard access to the offline computer note and its tooltip; normal tab order through resource controls to the two named read-only groups with disabled selects.
+- Primary sources: WAI-ARIA [generic role](https://www.w3.org/TR/wai-aria-1.2/#generic) and [note role](https://www.w3.org/TR/wai-aria-1.2/#note).
+
+## Reorder handle omits its keyboard instructions
+
+- Trigger: focus a sandbox's Reorder control with assistive technology.
+- Evidence: the regression failed because its accessible description was empty. The handle only responds to Up/Down, with no visible text or associated instructions explaining that interaction.
+- Consequence: a keyboard user encounters a button without knowing how to change the order.
+- Fix: associate each handle with shared offscreen arrow-key instructions using a per-list id.
+- Coverage: the described handle submits the expected reordered configuration, retains focus when the source publishes the new order, and updates the existing polite live announcement.

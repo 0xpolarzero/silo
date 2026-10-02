@@ -52,11 +52,12 @@ it.each(["add", "edit", "remove"] as const)("names and links remote port %s prog
   expect(delivered).toHaveBeenCalledWith(expect.objectContaining({ title, sandbox: { id: target, name: local.machine.name } }))
 })
 
-it("keeps remote failure and retry identity even beside same-named sandboxes", async () => {
+it("keeps the remote native failure reason and retry identity beside same-named sandboxes", async () => {
   const local = structuredClone(applicationSourceForScenario("running").workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.computer)!)
   const target = remoteWorkspaceTarget("office", "vm-1")
   const remote = { ...local, machine: { ...local.machine, id: target }, computer: { id: "office", name: "Office Mac", address: "owner@office", connected: true, vmId: "vm-1" } }
-  const work = vi.fn().mockRejectedValueOnce(new Error("Port occupied")).mockResolvedValue(undefined)
+  const message = "Another sandbox operation is still running. Wait for it to finish, then retry."
+  const work = vi.fn().mockRejectedValueOnce({ code: "busy", message }).mockResolvedValue(undefined)
   render(<SettingsProvider initialSettings={{ theme: "light" }}><Toaster /><NetworkPage workspaces={[local, remote]} browser="Firefox" active={false} actions={{ saveNetworkPort: work } as unknown as ApplicationActions} network={{ workspaces: [] }} /></SettingsProvider>)
   const user = userEvent.setup()
   await user.click(screen.getByRole("button", { name: "Add port" }))
@@ -65,7 +66,8 @@ it("keeps remote failure and retry identity even beside same-named sandboxes", a
   await user.click(screen.getByRole("button", { name: "Add" }))
   const title = `Could not add port 9000 · ${local.machine.name} · Office Mac`
   expect(await screen.findByText(title)).toBeVisible()
-  expect(delivered).toHaveBeenCalledWith(expect.objectContaining({ title, body: "Port occupied", sandbox: { id: target, name: local.machine.name } }))
+  expect(screen.getByText(message)).toBeVisible()
+  expect(delivered).toHaveBeenCalledWith(expect.objectContaining({ title, body: message, sandbox: { id: target, name: local.machine.name } }))
   await user.click(screen.getByRole("button", { name: "Retry" }))
   expect(await screen.findByText(`Port 9000 added · ${local.machine.name} · Office Mac`)).toBeInTheDocument()
   expect(work).toHaveBeenNthCalledWith(2, { workspace: target, port: 9000, hostPort: null, scheme: "http" })

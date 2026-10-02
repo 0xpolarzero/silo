@@ -1,8 +1,8 @@
 import type { EditorIncludeBackend } from "@/features/application/model/editor-include"
 
 /** `needed`: after an upgrade Silo could not add its `Include` line to the user's SSH configuration. */
-export const editorIncludeFixtureModes = ["needed"] as const
-export type EditorIncludeFixtureMode = (typeof editorIncludeFixtureModes)[number]
+const editorIncludeFixtureModes = ["needed"] as const
+type EditorIncludeFixtureMode = (typeof editorIncludeFixtureModes)[number]
 
 export function editorIncludeFixtureModeFromSearch(search: string): EditorIncludeFixtureMode | undefined {
   const requested = new URLSearchParams(search).get("editor-include")

@@ -1457,13 +1457,16 @@ mod tests {
         let path = directory.path().join("manifest.json");
         let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
         assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let helper = format!("{module}::fifo_manifest_reader_helper");
         let result = run_bounded_with_timeout(
             &std::env::current_exe().unwrap(),
-            &["--exact", "tests::fifo_manifest_reader_helper"],
+            &["--exact", &helper],
             &[("SILO_TEST_MANIFEST_FIFO", path.as_path())],
             PROCESS_TIMEOUT,
         );
-        assert!(result.is_ok(), "{result:?}");
+        let output = result.expect("FIFO manifest reader must finish without a writer");
+        assert!(output.contains("1 passed"), "{output}");
     }
 
     #[test]

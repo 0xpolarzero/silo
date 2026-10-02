@@ -27,6 +27,33 @@ function bridge(handlers: NativeCommandHandlers = {}) {
 }
 
 describe("production archive inspection", () => {
+  it("rejects an already aborted inspection without starting native work", async () => {
+    const native = bridge({ inspect_backup_archive: () => ({ archive, valid: true }) })
+    const store = createProductionSource(native)
+    const abort = new AbortController()
+    abort.abort()
+    try {
+      await expect(store.backupActions.inspectArchive(archive, abort.signal)).rejects.toMatchObject({ name: "AbortError" })
+      expect(native.invoke).not.toHaveBeenCalled()
+    } finally { store.dispose() }
+  })
+
+  it("honors cancellation from the archive selection callback before inspection starts", async () => {
+    const native = bridge({
+      choose_backup_archive: () => archive.archivePath,
+      inspect_backup_archive: () => ({ archive, valid: true }),
+    })
+    const store = createProductionSource(native)
+    const abort = new AbortController()
+    const reason = new Error("Import review closed")
+    const selected = vi.fn(() => abort.abort(reason))
+    try {
+      await expect(store.backupActions.chooseArchive(selected, abort.signal)).rejects.toBe(reason)
+      expect(selected).toHaveBeenCalledExactlyOnceWith(archive.archivePath)
+      expect(native.invoke.mock.calls).toEqual([["choose_backup_archive"]])
+    } finally { store.dispose() }
+  })
+
   it("does not inspect or announce a cancelled archive picker", async () => {
     const native = bridge({ choose_backup_archive: () => null })
     const store = createProductionSource(native)

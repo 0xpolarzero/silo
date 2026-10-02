@@ -274,3 +274,18 @@ it("shows an empty filter result without waiting for unrelated network discovery
   expect(screen.getByText("No matching sandboxes")).toBeVisible()
   expect(screen.queryByRole("status", { name: "Loading network" })).not.toBeInTheDocument()
 })
+
+
+it("keeps a filtered remote sandbox loading until its own network result arrives", () => {
+  const local = workspaces[0]
+  const remote = { ...local, computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true } }
+  const target = remoteWorkspaceTarget("office", local.machine.id)
+  const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
+  const localOnly = { workspaces: [{ workspace: "dev", error: null, ports: [] }] }
+  const view = render(<NetworkPage workspaces={[remote]} browser="Firefox" network={localOnly} actions={actions} active />)
+  expect(screen.getByRole("status", { name: "Loading network" })).toBeVisible()
+  expect(screen.queryByText("No ports")).not.toBeInTheDocument()
+  view.rerender(<NetworkPage workspaces={[remote]} browser="Firefox" network={{ workspaces: [...localOnly.workspaces, { workspace: target, error: null, ports: [] }] }} actions={actions} active />)
+  expect(screen.queryByRole("status", { name: "Loading network" })).not.toBeInTheDocument()
+  expect(screen.getByText("No ports")).toBeVisible()
+})

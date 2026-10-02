@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep automatic update preferences consistent when native preference changes overlap.
+Keep automatic update preferences consistent when changes are saved at the same time.

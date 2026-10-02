@@ -126,6 +126,7 @@ describe("export notifications", () => {
     expect(screen.getByText("dev.silo-backup · 2 GiB")).toBeInTheDocument()
     fireEvent.click(await screen.findByRole("button", { name: /Show in (Finder|folder)/ }))
     expect(backup.actions.revealArchive).toHaveBeenCalledWith(archive)
+    expect(backup.actions.dismissOperation).toHaveBeenCalledOnce()
   })
 
   it("dismissing a result toast clears the backend operation", async () => {
@@ -361,11 +362,13 @@ describe("import notifications and popover", () => {
   it("shows an Open action on import success that navigates to the new sandbox", async () => {
     const openSandbox = vi.fn()
     const success: BackupOperation = { kind: "result", operation: "restore", archive, runningNames: [], targetName: localVm.machine.name, outcome: "success", title: `${localVm.machine.name} is ready`, message: "ok" }
+    const backup = controller({ operation: success })
     const { rerender } = render(<Harness backup={controller()} openSandbox={openSandbox} />)
-    rerender(<Harness backup={controller({ operation: success })} openSandbox={openSandbox} />)
+    rerender(<Harness backup={backup} openSandbox={openSandbox} />)
     expect(await screen.findByText(`Imported ${localVm.machine.name}`)).toBeInTheDocument()
     fireEvent.click(screen.getByRole("button", { name: "Open" }))
     expect(openSandbox).toHaveBeenCalledWith(localVm.machine.id)
+    expect(backup.actions.dismissOperation).toHaveBeenCalledOnce()
   })
 
   it("finds the imported sandbox when Open is clicked, even if it appeared after the toast", async () => {

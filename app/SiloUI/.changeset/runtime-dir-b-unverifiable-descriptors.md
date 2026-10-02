@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Preserve pre-upgrade backups when image descriptors are redirected or too large to verify safely.
+Keep pre-upgrade backups when sandbox image information is redirected or too large to check safely.

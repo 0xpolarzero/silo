@@ -93,3 +93,6 @@ Repaired-preference verification: the rejecting test failed before the fix, then
 - **Regression:** `missing_metadata_preserves_the_update_resume_journal` requires an error and byte-identical journal preservation when metadata is absent, then installs a valid empty configuration and requires confirmed deleted entries to retire normally.
 
 UPDATES-NATIVE-6 verification: the regression failed on the original recovery decision, then 6 extracted journal/metadata-decision tests passed, covering missing metadata, confirmed deletion, interruption, failed resume, consent, and an empty running set. Journal and metadata-reader functions are production source; runtime path/type/validation collaborators are disposable fixtures. Typecheck, lint, formatting, and whitespace checks passed. Full native `update_recovery::tests::` validation is queued with the shared target and synthetic GitHub configuration.
+
+
+UPDATES-NATIVE-6 merge verification: retained the concurrent metadata reader's 1 MiB-plus-one-byte consumption limit. Seven extracted tests passed, including its child-process peak-memory regression against a sparse 128 MiB file. Formatting, typecheck, lint, and whitespace checks passed after resolving the merge. The complete earlier update audit trail was preserved.

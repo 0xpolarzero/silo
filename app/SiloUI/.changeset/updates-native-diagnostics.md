@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Preserve Debian update error details when a truncated log contains partial or invalid UTF-8.
+Preserve Debian update error details even when the saved log is incomplete or contains invalid text.

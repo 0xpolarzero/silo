@@ -723,7 +723,7 @@ pub async fn create_checkpoint(
     workspace_id: String,
     name: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -1487,14 +1487,25 @@ fn with_context(failure: RuntimeError, context: &str) -> RuntimeError {
 }
 
 /// Phase two of a fork, under the computer-wide lane: add the stopped fork to the shared
-/// inventory. Every failure removes what this phase added and returns the original error;
-/// a failing cleanup is appended as context instead of replacing it (E-17).
+/// inventory. Failures before publication remove what this phase added. A published fork
+/// keeps its dependent state even when the inventory's directory sync fails.
 pub(super) fn fork_commit(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     assignments: &dyn ForkAssignments,
     fork: &ForkSource,
     new_name: &str,
+) -> Result<(), RuntimeError> {
+    fork_commit_with_metadata_writer(runner, paths, assignments, fork, new_name, &write_metadata)
+}
+
+fn fork_commit_with_metadata_writer(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    assignments: &dyn ForkAssignments,
+    fork: &ForkSource,
+    new_name: &str,
+    write: &dyn Fn(&Path, &MachineConfigurationRequest) -> Result<(), RuntimeError>,
 ) -> Result<(), RuntimeError> {
     validate_name(new_name)?;
     let mut metadata = read_metadata(&paths.metadata)?;
@@ -1532,10 +1543,10 @@ pub(super) fn fork_commit(
     });
     child_record.desired_network_policy = Some(fork.desired_policy.clone());
     save(paths, &child_id, &child_record)?;
-    crate::computer_use::inherit_settings(paths, source.id(), &child_id);
     let mut copied_github = false;
     let mut copied_secrets = false;
     let result = (|| {
+        crate::computer_use::inherit_settings(paths, source.id(), &child_id)?;
         assignments
             .copy_github(source.name(), new_name)
             .map_err(RuntimeError::Unavailable)?;
@@ -1545,11 +1556,32 @@ pub(super) fn fork_commit(
             .map_err(RuntimeError::Unavailable)?;
         copied_secrets = true;
         metadata.machines.push(child);
-        write_metadata(&paths.metadata, &metadata)
+        write(&paths.metadata, &metadata)
     })();
     let Err(failure) = result else {
         return Ok(());
     };
+    // A metadata write can fail after replacement, while syncing its parent directory.
+    // Remove dependencies only when the inventory proves the child was not published.
+    match read_metadata(&paths.metadata) {
+        Ok(saved)
+            if !saved
+                .machines
+                .iter()
+                .any(|machine| machine.id() == child_id) => {}
+        Ok(_) => {
+            return Err(with_context(
+                failure,
+                " The fork was saved. Its checkpoint and assignments were preserved; refresh the sandbox list before retrying.",
+            ));
+        }
+        Err(_) => {
+            return Err(with_context(
+                failure,
+                " The sandbox list could not be checked. The fork's checkpoint and assignments were preserved.",
+            ));
+        }
+    }
     // Undo in reverse order; every step runs even if an earlier one fails.
     let mut failed = Vec::new();
     if copied_secrets {
@@ -1611,7 +1643,7 @@ pub async fn fork_checkpoint(
     checkpoint_id: Option<String>,
     new_name: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2014,7 +2046,7 @@ pub async fn restore_checkpoint(
     workspace_id: String,
     checkpoint_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2187,7 +2219,7 @@ pub async fn abandon_restore(
     app: AppHandle,
     workspace_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2457,7 +2489,7 @@ pub async fn delete_checkpoint(
     workspace_id: String,
     checkpoint_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -4744,6 +4776,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let (paths, fork) = fork_fixture(&directory);
+        crate::computer_use::set_approval(&paths, ID, crate::computer_use::Approval::Auto).unwrap();
         let assignments = FakeAssignments::new(&[]);
         fork_commit(
             &journal_runner("Running", ""),
@@ -4759,12 +4792,121 @@ mod tests {
             .iter()
             .find(|machine| machine.name() == "branch")
             .unwrap();
+        assert_eq!(
+            crate::computer_use::settings(&paths, child.id()).approval,
+            crate::computer_use::Approval::Auto
+        );
         let pending = load(&paths, child.id())
             .unwrap()
             .pending_checkpoint_restore
             .unwrap();
         assert_eq!(pending.checkpoint_id, fork.member);
         assert_eq!(pending.source_workspace, "dev");
+        assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
+        assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
+    }
+
+    #[test]
+    fn a_failed_approval_copy_does_not_publish_the_fork_or_leave_its_record() {
+        let _test_state = crate::test_support::global_state();
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        crate::computer_use::set_approval(&paths, ID, crate::computer_use::Approval::Auto).unwrap();
+        let policy_directory = paths.metadata.with_file_name("computer-use");
+        fs::set_permissions(&policy_directory, fs::Permissions::from_mode(0o500)).unwrap();
+        let assignments = FakeAssignments::new(&[]);
+        let result = fork_commit(
+            &journal_runner("Running", ""),
+            &paths,
+            &assignments,
+            &fork,
+            "branch",
+        );
+        fs::set_permissions(&policy_directory, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("computer-use setting"));
+        assert_eq!(record_ids(&paths), [ID]);
+        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+        assert!(assignments.github.lock().unwrap().is_empty());
+        assert!(assignments.secrets.lock().unwrap().is_empty());
+        assert_eq!(
+            crate::computer_use::settings(&paths, ID).approval,
+            crate::computer_use::Approval::Auto
+        );
+        assert_eq!(fs::read_dir(&policy_directory).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_published_fork_keeps_its_checkpoint_and_assignments_after_a_durability_error() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let assignments = FakeAssignments::new(&[]);
+        let failure = fork_commit_with_metadata_writer(
+            &journal_runner("Running", ""),
+            &paths,
+            &assignments,
+            &fork,
+            "branch",
+            &|path, metadata| {
+                write_metadata(path, metadata)?;
+                Err(RuntimeError::Unavailable("Directory sync failed.".into()))
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(failure.starts_with("Directory sync failed."), "{failure}");
+        let metadata = read_metadata(&paths.metadata).unwrap();
+        let child = metadata
+            .machines
+            .iter()
+            .find(|machine| machine.name() == "branch")
+            .unwrap();
+        let record = load(&paths, child.id()).unwrap();
+        assert_eq!(
+            record.pending_checkpoint_restore.unwrap().checkpoint_id,
+            fork.member
+        );
+        assert_eq!(record.desired_network_policy, Some(fork.desired_policy));
+        assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
+        assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
+    }
+
+    #[test]
+    fn an_unreadable_inventory_keeps_fork_dependencies_after_a_write_error() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        let assignments = FakeAssignments::new(&[]);
+        let failure = fork_commit_with_metadata_writer(
+            &journal_runner("Running", ""),
+            &paths,
+            &assignments,
+            &fork,
+            "branch",
+            &|path, _| {
+                fs::write(path, b"{broken").unwrap();
+                Err(RuntimeError::Unavailable("Inventory write failed.".into()))
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(failure.starts_with("Inventory write failed."), "{failure}");
+        assert!(failure.contains("could not be checked"), "{failure}");
+        let ids = record_ids(&paths);
+        assert_eq!(ids.len(), 2);
+        let child_id = ids.iter().find(|id| id.as_str() != ID).unwrap();
+        assert_eq!(
+            load(&paths, child_id)
+                .unwrap()
+                .pending_checkpoint_restore
+                .unwrap()
+                .checkpoint_id,
+            fork.member
+        );
         assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
         assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
     }
@@ -4826,8 +4968,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let (paths, fork) = fork_fixture(&directory);
+        crate::computer_use::set_approval(&paths, ID, crate::computer_use::Approval::Auto).unwrap();
         let parent = paths.metadata.parent().unwrap().to_path_buf();
-        // The checkpoint directory already exists, so only the inventory write fails.
+        // The checkpoint and approval directories exist, so only the inventory write fails.
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
         let assignments = FakeAssignments::new(&[]);
         let result = fork_commit(
@@ -4843,6 +4986,12 @@ mod tests {
         assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
         assert!(assignments.github.lock().unwrap().is_empty());
         assert!(assignments.secrets.lock().unwrap().is_empty());
+        assert_eq!(
+            fs::read_dir(paths.metadata.with_file_name("computer-use"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[test]

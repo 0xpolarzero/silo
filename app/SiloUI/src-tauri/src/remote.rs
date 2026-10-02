@@ -554,6 +554,31 @@ fn copy_raw_stream(mut reader: impl Read, mut writer: impl Write) -> std::io::Re
         }
     }
 }
+/// Bounds the whole frame, including peers that keep sending partial bytes.
+fn read_socket_frame(socket: &mut UnixStream, timeout: Duration) -> Result<Value, String> {
+    struct DeadlineReader<'a> {
+        socket: &'a mut UnixStream,
+        deadline: Instant,
+    }
+    impl Read for DeadlineReader<'_> {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            let remaining = self.deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "Remote operation timed out while receiving its frame.",
+                ));
+            }
+            self.socket.set_read_timeout(Some(remaining))?;
+            self.socket.read(bytes)
+        }
+    }
+    read_frame(DeadlineReader {
+        socket,
+        deadline: Instant::now() + timeout,
+    })
+}
+
 fn read_frame(mut reader: impl Read) -> Result<Value, String> {
     let mut len = [0; 4];
     reader.read_exact(&mut len).map_err(|_|"The remote Silo connection ended. Check that Silo is running and remote management is enabled.".to_string())?;
@@ -1573,21 +1598,19 @@ pub(crate) fn run_bridge() -> Result<(), String> {
     let mut socket = UnixStream::connect(directory()?.join("control.sock"))
         .map_err(|_| "Silo is not running on this computer.".to_string())?;
     let request = read_frame(std::io::stdin().lock())?;
-    socket
-        .set_read_timeout(Some(request_timeout(&request)))
-        .map_err(|e| e.to_string())?;
     let streaming = request["method"] == "guest.ssh";
-    write_frame(&mut socket, &request)?;
+    write_bridge_request(&mut socket, &request, Duration::from_secs(30))?;
     if !streaming {
         watch_controller(
             std::io::stdin(),
             socket.try_clone().map_err(|e| e.to_string())?,
         );
     }
-    let response = read_frame(&mut socket)?;
+    let response = read_socket_frame(&mut socket, request_timeout(&request))?;
     write_reply(std::io::stdout().lock(), &response)?;
     if streaming && response.get("error").is_none() {
         socket.set_read_timeout(None).map_err(|e| e.to_string())?;
+        socket.set_write_timeout(None).map_err(|e| e.to_string())?;
         let mut input = socket.try_clone().map_err(|e| e.to_string())?;
         thread::spawn(move || {
             let _ = std::io::copy(&mut std::io::stdin().lock(), &mut input);
@@ -1597,6 +1620,17 @@ pub(crate) fn run_bridge() -> Result<(), String> {
     }
     Ok(())
 }
+fn write_bridge_request(
+    socket: &mut UnixStream,
+    request: &Value,
+    timeout: Duration,
+) -> Result<(), String> {
+    socket
+        .set_write_timeout(Some(timeout))
+        .map_err(|e| e.to_string())?;
+    write_frame(socket, request)
+}
+
 /// The controller keeps the bridge's input open until it has its reply, so the end of
 /// that input means the controller left. Closing the owner connection's write side then
 /// tells the owner to drop work that has not started; a reply can still arrive.
@@ -1748,36 +1782,32 @@ fn listen(app: AppHandle) -> Result<(), String> {
             let app = app.clone();
             thread::spawn(move || {
                 let _permit = permit;
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(15)));
                 let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
-                let result =
-                    read_frame(&mut stream)
-                        .map_err(BridgeError::from)
-                        .and_then(|request| {
-                            if request["method"] == "guest.ssh" {
-                                authorize(&request)?;
-                                let mut child = crate::remote_access::spawn_stream(
-                                    &app,
-                                    "guest.ssh",
-                                    &request["params"],
-                                )?;
-                                if let Err(error) = write_frame(&mut stream, &json!({"result":{}}))
-                                {
-                                    let _ = child.kill();
-                                    let _ = child.wait();
-                                    return Err(error.into());
-                                }
-                                relay_child(&stream, &mut child, || {
-                                    REMOTE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
-                                        && crate::runtime::shutdown::ensure_accepting_operations()
-                                            .is_ok()
-                                })?;
-                                return Ok(None);
+                let result = read_socket_frame(&mut stream, Duration::from_secs(15))
+                    .map_err(BridgeError::from)
+                    .and_then(|request| {
+                        if request["method"] == "guest.ssh" {
+                            authorize(&request)?;
+                            let mut child = crate::remote_access::spawn_stream(
+                                &app,
+                                "guest.ssh",
+                                &request["params"],
+                            )?;
+                            if let Err(error) = write_frame(&mut stream, &json!({"result":{}})) {
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                return Err(error.into());
                             }
-                            let peer = stream.try_clone().map_err(|e| e.to_string())?;
-                            dispatch(&app, request, Arc::new(move || connection_open(&peer)))
-                                .map(Some)
-                        });
+                            relay_child(&stream, &mut child, || {
+                                REMOTE_ENABLED.load(std::sync::atomic::Ordering::Acquire)
+                                    && crate::runtime::shutdown::ensure_accepting_operations()
+                                        .is_ok()
+                            })?;
+                            return Ok(None);
+                        }
+                        let peer = stream.try_clone().map_err(|e| e.to_string())?;
+                        dispatch(&app, request, Arc::new(move || connection_open(&peer))).map(Some)
+                    });
                 match result {
                     Ok(Some(result)) => {
                         let _ = write_frame(&mut stream, &json!({"result":result}));
@@ -2076,6 +2106,71 @@ mod tests {
             assert!(validate_address(address).is_ok());
         }
     }
+    #[test]
+    fn slow_socket_frames_cannot_reset_read_deadline() {
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        let request = json!({"method":"test", "params":"x".repeat(128)});
+        let mut frame = Vec::new();
+        write_frame(&mut frame, &request).unwrap();
+        let worker =
+            thread::spawn(move || read_socket_frame(&mut receiver, Duration::from_millis(50)));
+        // Every byte arrives inside the socket's per-read timeout, but the
+        // complete frame takes longer than the request's total deadline.
+        for byte in frame {
+            if sender.write_all(&[byte]).is_err() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        drop(sender);
+        assert!(worker.join().unwrap().is_err());
+    }
+
+    #[test]
+    fn socket_frame_completed_before_deadline_still_round_trips() {
+        let (mut sender, mut receiver) = UnixStream::pair().unwrap();
+        let request = json!({"method":"handshake"});
+        write_frame(&mut sender, &request).unwrap();
+        assert_eq!(
+            read_socket_frame(&mut receiver, Duration::from_secs(1)).unwrap(),
+            request
+        );
+    }
+
+    #[test]
+    fn bridge_request_write_times_out_when_owner_stops_reading() {
+        use std::os::fd::AsRawFd;
+        let (mut sender, receiver) = UnixStream::pair().unwrap();
+        let size: libc::c_int = 4096;
+        assert_eq!(
+            unsafe {
+                libc::setsockopt(
+                    sender.as_raw_fd(),
+                    libc::SOL_SOCKET,
+                    libc::SO_SNDBUF,
+                    &size as *const _ as *const libc::c_void,
+                    std::mem::size_of_val(&size) as libc::socklen_t,
+                )
+            },
+            0
+        );
+        let request = json!({"method":"test", "params":"x".repeat(1024 * 1024)});
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let worker = thread::spawn(move || {
+            let result = write_bridge_request(&mut sender, &request, Duration::from_millis(50));
+            done_tx.send(result).unwrap();
+        });
+        let completed = done_rx.recv_timeout(Duration::from_secs(1));
+        // Release the blocked writer even if the timeout regression fails.
+        drop(receiver);
+        assert!(
+            completed.is_ok(),
+            "bridge write retained a stalled connection"
+        );
+        worker.join().unwrap();
+        assert!(completed.unwrap().is_err());
+    }
+
     #[test]
     fn frames_are_bounded_and_round_trip() {
         let _test_state = crate::test_support::global_state();

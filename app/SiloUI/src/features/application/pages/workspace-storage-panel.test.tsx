@@ -39,6 +39,15 @@ it.each([[1, "attempt"], [2, "attempts"]])("pluralizes the reclaim history label
   expect(await screen.findByRole("button", { name: `Reclaim history, ${count} ${noun}` })).toBeVisible()
 })
 
+it("distinguishes reclaim attempts from different years", async () => {
+  const history = ["2026-10-01T12:00:00Z", "2025-10-01T12:00:00Z"].map(at => ({ at: Date.parse(at) / 1000, trigger: "manual", reclaimedBytes: 0, error: null }))
+  render(<Panel workspaceId="vm-id" running read={vi.fn().mockResolvedValue({ ...storage, history })} reclaim={vi.fn()} />)
+  fireEvent.click(await screen.findByRole("button", { name: "Reclaim history, 2 attempts" }))
+  const entries = screen.getByLabelText("Reclaim history entries")
+  expect(entries).toHaveTextContent("2025")
+  expect(entries).toHaveTextContent("2026")
+})
+
 it("distinguishes host allocation from guest usage and reports measured recovery", async () => {
   const read = vi.fn().mockResolvedValue(storage)
   let finish!: (value: WorkspaceStorageState) => void
@@ -86,8 +95,12 @@ it("shows failures without claiming recovery and permits retry", async () => {
   const user = userEvent.setup()
   render(<Panel workspaceId="vm-id" running read={read} reclaim={reclaim} />)
   expect(await screen.findByText("Storage unavailable")).toBeVisible()
+  expect(screen.queryByText(/No checkpoints are saved/)).not.toBeInTheDocument()
+  expect(screen.queryByText("No reclaims yet")).not.toBeInTheDocument()
+  expect(screen.getByText("Refresh storage to check saved checkpoints.")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Retry" }))
   expect(await screen.findByText("36.00 GiB")).toBeVisible()
+  expect(screen.getByText("No reclaims yet")).toBeVisible()
   await user.click(screen.getByRole("button", { name: "Reclaim unused space" }))
   expect(await screen.findByText("Workspace trim failed")).toBeVisible()
   expect(screen.getAllByRole("button", { name: "Retry" }).length).toBeGreaterThan(0)

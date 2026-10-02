@@ -34,6 +34,11 @@ After the storage migration, the entries copied from the previous generation are
 
 AppImage environment cleanup uses [`std::env::split_paths`](https://doc.rust-lang.org/std/env/fn.split_paths.html) and `join_paths` to preserve native path bytes, including non-UTF-8 system directories. [`Path::starts_with`](https://doc.rust-lang.org/std/path/struct.Path.html#method.starts_with) compares components, so repeated and trailing slashes still identify bundled entries while similarly named sibling mounts remain untouched. Pure launch-policy regressions cover these cases; they do not qualify a live Linux desktop launch.
 
+Terminal shell commands require UTF-8 runtime home, executable and library paths.
+Each is checked with `Path::to_str` before the command is written; display text is
+never used for environment assignments. Command-boundary tests preserve literal
+spaces, quotes and shell characters and reject non-UTF-8 bytes in each path.
+
 ## Trust the editor gives the sandbox
 
 An editor's remote mode runs a server inside the sandbox that talks back to the editor on this computer. Treat that server as sandbox code: the working account has `sudo`, so anything in the sandbox can replace or drive it. The measures below narrow what the editor offers it; they do not make the editor a security boundary.

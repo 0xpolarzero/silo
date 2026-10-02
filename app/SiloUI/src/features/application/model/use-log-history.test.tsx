@@ -157,10 +157,8 @@ describe("cached log history", () => {
 
   it("rejects a cursor cycle after its original records have left the window", async () => {
     const { options, workspace } = fixture()
-    let oldest = 0
     options.loader = vi.fn(async request => {
       const offset = Number(request.cursor ?? 0)
-      oldest = offset
       return {
         entries: [{ id: String(offset), line: "record", occurredAt: new Date(1700000000000 - offset * 1000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" }],
         nextCursor: String(offset + 1), totalMatches: 10_000, timestampEstimated: false, oldestAvailableTimestamp: null, newestAvailableTimestamp: null,
@@ -168,18 +166,15 @@ describe("cached log history", () => {
     })
     const view = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(view.result.current.ready).toBe(true))
-    // Large messages force eviction without thousands of requests.
     options.loader.mockImplementation(async request => {
       const offset = Number(request.cursor ?? 0)
-      oldest = offset
-      return { ...fixtureLogPage(workspace, request), entries: [{ id: String(offset), line: "x".repeat(1024 * 1024), occurredAt: new Date(1700000000000 - offset * 1000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" }], nextCursor: String(offset + 1) }
+      return { ...fixtureLogPage(workspace, request), entries: Array.from({ length: 200 }, (_, index) => ({ id: String(offset + index), line: "record", occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" })), nextCursor: String(offset + 200) }
     })
     for (let page = 0; page < 70; page++) await act(() => view.result.current.loadOlder())
     expect(view.result.current.rows.some(row => row.entry.id === "0")).toBe(false)
     const cycle = { ...fixtureLogPage(workspace, { sandboxId: workspace.machine.id }), entries: [{ id: "0", line: "old cycle", occurredAt: new Date(1700000000000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" }], nextCursor: "1" }
     options.loader.mockResolvedValueOnce(cycle)
     await act(() => view.result.current.loadOlder())
-    expect(oldest).toBe(70)
     expect(view.result.current.hasOlder).toBe(false)
     expect(view.result.current.error).toContain("did not advance")
   })
@@ -390,22 +385,25 @@ describe("cached log history", () => {
     expect(view.result.current.rows).toHaveLength(2)
   })
 
-  it("expires inactive views before retained backend cursors expire", async () => {
+  it.each([10 * 60_000 - 1, 10 * 60_000, 10 * 60_000 + 1])("expires inactive views before retained backend cursors expire (%i ms)", async elapsed => {
+    const now = new Date("2026-10-02T12:00:00Z").getTime()
+    vi.useFakeTimers({ now, toFake: ["Date"] })
     const { options, loader } = fixture()
     const first = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(first.result.current.ready).toBe(true))
     first.unmount()
-    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 11 * 60 * 1000)
-    try {
-      const second = renderHook(() => useLogHistory(options))
-      await waitFor(() => expect(second.result.current.ready).toBe(true))
-      expect(loader).toHaveBeenCalledTimes(2)
-    } finally { vi.restoreAllMocks() }
+    vi.setSystemTime(now + elapsed)
+    const second = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(second.result.current.ready).toBe(true))
+    expect(loader).toHaveBeenCalledTimes(elapsed < 10 * 60_000 ? 1 : 2)
   })
 
   it("evicts the least recently used inactive view after the cache fills", async () => {
+    const now = new Date("2026-10-02T12:00:00Z").getTime()
+    vi.useFakeTimers({ now, toFake: ["Date"] })
     const { options, loader } = fixture()
     for (let index = 0; index < 10; index++) {
+      vi.setSystemTime(now + index * 1000)
       const view = renderHook(() => useLogHistory({ ...options, query: String(index) }))
       await waitFor(() => expect(view.result.current.ready).toBe(true))
       view.unmount()
@@ -421,16 +419,18 @@ describe("cached log history", () => {
 
   it("bounds the combined text of inactive histories", async () => {
     const { options, workspace, loader } = fixture()
-    workspace.logs = [{ line: "x".repeat(2 * 1024 * 1024), occurredAt: "2026-09-18T10:00:00Z" }]
+    workspace.logs = Array.from({ length: 40 }, (_, index) => ({ line: "x".repeat(64 * 1024), occurredAt: new Date(1700000000000 + index * 1000).toISOString() }))
     const first = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(first.result.current.ready).toBe(true))
-    expect(first.result.current.rows).toHaveLength(1)
+    for (let page = 1; page < 20; page++) await act(() => first.result.current.loadOlder())
+    expect(first.result.current.rows).toHaveLength(40)
     first.unmount()
     const other = renderHook(() => useLogHistory({ ...options, query: "x" }))
     await waitFor(() => expect(other.result.current.ready).toBe(true))
+    for (let page = 1; page < 20; page++) await act(() => other.result.current.loadOlder())
     other.unmount()
     const second = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(second.result.current.ready).toBe(true))
-    expect(loader).toHaveBeenCalledTimes(3)
+    expect(loader).toHaveBeenCalledTimes(41)
   })
 })

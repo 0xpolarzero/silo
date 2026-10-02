@@ -114,6 +114,7 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
       await backend.remove()
       ++reads.current.sequence
       setBackup(null)
+      setLoadError(null)
     } catch (cause) {
       // A failed deletion may have removed part of it: show what is left.
       void refresh.current()
