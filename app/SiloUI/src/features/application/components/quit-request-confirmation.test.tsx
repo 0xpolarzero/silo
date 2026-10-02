@@ -26,6 +26,26 @@ function fakeConnection() {
   } }
 }
 
+it.each(["Escape", "Cancel"])("restores the previous keyboard position after cancelling Quit with %s", async (dismissal) => {
+  const user = userEvent.setup()
+  const connection = fakeConnection()
+  render(<><button>Workspace action</button><QuitRequestConfirmation connect={connection.connect} /></>)
+  await waitFor(() => expect(connection.connect).toHaveBeenCalled())
+  const previous = screen.getByRole("button", { name: "Workspace action" })
+  await user.click(previous)
+  const reply = connection.ask({ requestId: 1, sandboxes: ["dev"] })
+  const dialog = await screen.findByRole("alertdialog", { name: "Quit Silo?" })
+  expect(within(dialog).getByRole("button", { name: "Quit and stop" })).toHaveFocus()
+  await user.tab()
+  expect(within(dialog).getByRole("button", { name: "Cancel" })).toHaveFocus()
+  await user.tab({ shift: true })
+  expect(within(dialog).getByRole("button", { name: "Quit and stop" })).toHaveFocus()
+  if (dismissal === "Escape") await user.keyboard("{Escape}")
+  else await user.click(within(dialog).getByRole("button", { name: "Cancel" }))
+  await expect(reply).resolves.toBe(false)
+  await waitFor(() => expect(previous).toHaveFocus())
+})
+
 it("asks before Quit stops running sandboxes, with the tray's wording, and answers each request", async () => {
   const user = userEvent.setup()
   const connection = fakeConnection()
