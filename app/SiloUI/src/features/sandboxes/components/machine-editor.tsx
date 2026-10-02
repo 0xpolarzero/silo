@@ -20,7 +20,7 @@ import {
 } from "@/features/onboarding/model/machine-configuration"
 import { divergentMachineFields, sameMachineConfiguration } from "@/features/application/model/machine-change"
 import { ChatGptAppFlow } from "@/desktop/computer-use-panel"
-import { useComputerUseBridge } from "@/desktop/computer-use-bridge"
+import { computerWorkspace, useComputerUseBridge } from "@/desktop/computer-use-bridge"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 import { machineFieldLabel, type MachineReview } from "@/features/sandboxes/model/machine-review"
 import { parseWholeNumber, presetsWithin, resourceFields, resourceMaximums, runtimeLimits, validateMachineResources, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
@@ -103,7 +103,7 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-export function MachineEditor({ saving, blockedReason, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, review, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName }: {
+export function MachineEditor({ saving, blockedReason, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, review, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName, computerId }: {
   saving?: boolean
   /** Why Save is unavailable right now (another change locks editing); the draft is kept. */
   blockedReason?: string
@@ -116,6 +116,8 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   capacity?: HostCapacity
   /** That computer's name for messages; defaults to "This computer". */
   computerName?: string
+  /** The computer the sandbox will run on; empty or omitted is this one. */
+  computerId?: string
   machines: readonly SetupMachineConfiguration[]
   /** The VM's saved configuration when this editor opened, for divergence detection. */
   baselineMachine?: SetupMachineConfiguration
@@ -296,7 +298,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
 
       {draft.kind === "vm" && (builtInDesktop || (!created && computerUse)) && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
         <div className="text-xs">Linux desktop and computer use<p className="mt-1 text-[11px] text-muted-foreground">{builtInDesktop ? "Built in. The desktop starts with the sandbox." : "Built in. Agents in this sandbox can use graphical applications."}</p></div>
-        {!created && <ChatGptAppFlow store={computerUse?.chatGpt} />}
+        {!created && <ChatGptAppFlow store={computerUse?.chatGptFor(computerWorkspace(computerId || undefined))} />}
       </section>}
       {draft.kind === "vm" && !builtInDesktop && !(!created && computerUse) && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
         {desktopInstalled ? <label className="flex items-center justify-between gap-3 text-xs">

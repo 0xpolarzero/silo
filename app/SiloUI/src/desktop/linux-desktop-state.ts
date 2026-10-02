@@ -10,14 +10,16 @@ export const computerUseSchema = z.object({
   reason: z.string().nullish().catch(null),
   compatibility: z.enum(["tested", "untested", "unknown"]).catch("unknown"),
   warning: z.string().nullish().catch(null),
-  approval: z.enum(["ask", "auto"]).catch("ask"),
+  // A missing or unreadable policy is "unknown", never "ask": the guest may still auto-approve.
+  approval: z.enum(["ask", "auto", "unknown"]).catch("unknown"),
   appVersion: z.string().nullish().catch(null),
   runtimeVersion: z.string().nullish().catch(null),
   lcuVersion: z.string().nullish().catch(null),
   agents: z.array(z.string()).nullish().catch(null),
 })
 export type ComputerUseState = z.infer<typeof computerUseSchema>
-export type ComputerUseApproval = ComputerUseState["approval"]
+/** The modes a user can set; `ComputerUseState.approval` adds "unknown" for an unreadable policy. */
+export type ComputerUseApproval = Exclude<ComputerUseState["approval"], "unknown">
 
 // The official ChatGPT Linux app, downloaded once per computer after a notice.
 export const chatGptAppStatusSchema = z.discriminatedUnion("state", [

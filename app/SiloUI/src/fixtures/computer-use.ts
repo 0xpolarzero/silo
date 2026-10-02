@@ -5,7 +5,7 @@ import { computerUseStates } from "@/desktop/linux-desktop-state"
 
 // Deterministic fixtures for built-in computer use. Select with `?computer-use=<name>` and
 // `&chatgpt=<name>` in the browser preview; nothing here reaches Silo services.
-export const computerUseFixtureNames = [...computerUseStates, "untested", "auto", "pre-v4"] as const
+export const computerUseFixtureNames = [...computerUseStates, "untested", "auto", "unknown-approval", "pre-v4"] as const
 export type ComputerUseFixtureName = typeof computerUseFixtureNames[number]
 export const chatGptFixtureNames = ["notConsented", "idle", "downloading", "verifying", "extracting", "ready", "failed", "failed-final"] as const
 export type ChatGptFixtureName = typeof chatGptFixtureNames[number]
@@ -32,6 +32,7 @@ export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseSta
     case "failed": return { ...base, state: "failed", reason: "No supported agent was found. Install one, then choose Set up computer use.", agents: [] }
     case "untested": return { ...base, compatibility: "untested", warning: "ChatGPT for Linux 26.1002.1 has not been tested with this version of Silo. Computer use may not work as expected." }
     case "auto": return { ...base, approval: "auto" }
+    case "unknown-approval": return { ...base, approval: "unknown" }
     default: return base
   }
 }
