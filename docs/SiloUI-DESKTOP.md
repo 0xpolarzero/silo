@@ -96,14 +96,16 @@ in the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
   `/opt/silo/chatgpt` (see the ChatGPT app doc; restores pass it again).
 - **After every boot** (`prepare_booted`, so start and restore) Silo pushes
   `/usr/local/libexec/silo-computer-use`, `/var/lib/silo-computer-use/pinned.json`
-  (the tested app/LCU pair) and starts `silo-computer-use sync --boot --approval
-  <mode>` detached; the boot never waits for it or fails because of it. Pushing
+  (the tested app/LCU pair) and runs `silo-computer-use apply --boot --approval
+  <mode>` to completion on a host background thread, inside the VM's operation turn
+  and within a bound; the boot never waits for it or fails because of it, and a stop,
+  delete or Quit cancels it. Pushing
   the helper each time keeps it current with Silo, which the image cannot. The same
   runs when the app becomes ready while the VM runs (after the automatic
   download), so a VM created before the app was published gains computer use
   without a restart.
-- **`sync`** is idempotent and does nothing when the receipt matches the pinned
-  pair and the approval mode. Otherwise: require the read-only mount and the
+- **`apply`** is idempotent and does nothing when the receipt matches the pinned
+  pair and shows the approval mode applied completely. Otherwise: require the read-only mount and the
   app folder (else `needs-app`); use the staged archive if its hash matches the
   lock, else download the locked URL and verify it; extract it to local disk
   (never the shared folder: its Node symlink dangles there); run
@@ -116,25 +118,32 @@ in the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
   before the setup fails with `desktop-session-not-running`) and run
   `lcu-session --user silo -- lcu doctor
   --non-interactive --require-ready` as `silo`. The result is
-  `/var/lib/silo-computer-use/receipt.json`; the log is
+  `/var/lib/silo-computer-use/receipt.json`; `apply` also reports this run's approval
+  outcome (`applied`, `partial` when `lcu setup` configured some agents and failed for
+  others, else `failed`) from `lcu setup`'s per-agent lines; the log is
   `/var/log/silo-computer-use.log`. A reinstall happens only when LCU's recorded
   app path or version differs from the pinned pair.
-- **Approval.** Per VM in `<storage>/computer-use/<id>.json` (default `ask`),
-  pushed with every sync, so a stopped VM picks a changed mode up at its next
-  boot. `ask` removes only LCU's own harness entries, `auto` adds them
-  (Claude Code `permissions.allow`, Codex `default_tools_approval_mode`); native
-  app permissions and the original runtime's own approvals are unchanged.
-  A fork starts with its source's mode; an import starts with `ask`.
+- **Approval.** Per VM in `<storage>/computer-use/<id>.json`: the mode the user chose
+  (default `ask`), the last mode applied and the last attempt. The host applies changes
+  itself, one at a time per VM, on a background thread (see the
+  [approval design](SiloUI-COMPUTER-USE-PLAN.md#approval-design-2026-10-02)); a stopped
+  VM picks a changed mode up at its next boot. `ask` removes only LCU's own harness
+  entries, `auto` adds them (Claude Code `permissions.allow`, Codex
+  `default_tools_approval_mode`); native app permissions and the original runtime's own
+  approvals are unchanged. The switch configures the agents' approval prompts and is not
+  a security boundary inside the sandbox: agents there have root. A fork starts with its
+  source's mode; an import starts with `ask`.
 - **Desktop state.** `read_desktop_state` adds `computerUse` for built-in VMs,
   also while stopped (`state: "vm-stopped"` keeps the approval and the last
   versions seen): `state` (`unavailable`, `preparing`,
   `installing`, `ready`, `failed`), `reason`, `compatibility` (`tested`,
-  `untested`, `unknown`), `warning`, `approval`, `appVersion`, `runtimeVersion`,
-  `lcuVersion`, `agents`. The running read costs one guest command that also
+  `untested`, `unknown`), `warning`, `approval`, `appliedApproval`, `approvalApply`,
+  `approvalApplyReason`, `appVersion`, `runtimeVersion`, `lcuVersion`, `agents`. The running read costs one guest command that also
   returns the helper's `status`, which only reads the receipt. The legacy `lcu*`
   fields stay for VMs created before v4.
 - **Commands.** `set_computer_use_approval { workspace, mode: "ask" | "auto" }`
-  stores the mode and, when the VM runs, applies it; the `setup-computer-use`
+  stores the mode and, when the VM runs, starts applying it in the background and
+  returns at once (`approvalApply: pending`); the `setup-computer-use`
   desktop action reruns `lcu setup` for agents installed later (and works for
   every v4 VM, whether or not the desktop is reachable). Both route to the owning
   computer. An older Silo there answers "Update Silo on that computer to use
