@@ -40,6 +40,8 @@ describe("unsaved sandbox edits across navigation", () => {
     expect(await screen.findByText(`Could not save ${machine.name}`)).toBeVisible()
     expect(screen.getByText(error.message)).toBeVisible()
     rerender(surface(true))
+    expect(screen.getByRole("alert")).toHaveTextContent("This sandbox changed since you opened it.")
+    expect(screen.getByRole("button", { name: "Review changes" })).toBeVisible()
     expect(screen.getByRole("combobox", { name: "CPUs" })).toHaveValue("4")
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
     expect(props.onCommitMachine).toHaveBeenCalledTimes(1)
