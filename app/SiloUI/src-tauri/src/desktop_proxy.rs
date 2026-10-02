@@ -191,17 +191,26 @@ fn relay(
     mut to: impl Stream,
     stop: Arc<AtomicBool>,
     ended: Arc<AtomicBool>,
+    idle_timeout: Option<Duration>,
 ) {
-    let _ = from.read_timeout(Some(Duration::from_millis(250)));
+    let poll_interval = Duration::from_millis(250);
+    let _ = from.read_timeout(Some(
+        idle_timeout.map_or(poll_interval, |timeout| timeout.min(poll_interval)),
+    ));
     let _ = to.write_timeout(Some(Duration::from_secs(5)));
     let mut bytes = [0; 32 * 1024];
-    while !stop.load(Ordering::Acquire) && !ended.load(Ordering::Acquire) {
+    let mut last_progress = Instant::now();
+    while !stop.load(Ordering::Acquire)
+        && !ended.load(Ordering::Acquire)
+        && idle_timeout.is_none_or(|timeout| last_progress.elapsed() < timeout)
+    {
         match from.read(&mut bytes) {
             Ok(0) => break,
             Ok(n) => {
                 if to.write_all(&bytes[..n]).is_err() {
                     break;
                 }
+                last_progress = Instant::now();
             }
             Err(e)
                 if matches!(
@@ -236,6 +245,7 @@ fn serve(
         token,
         authorization,
         stop,
+        Duration::from_secs(120),
         |_, _| {},
     )
 }
@@ -250,6 +260,7 @@ fn serve_with_header_progress(
     token: &str,
     authorization: &str,
     stop: Arc<AtomicBool>,
+    http_response_idle_timeout: Duration,
     mut header_progress: impl FnMut(&TcpStream, usize),
 ) -> std::io::Result<()> {
     // On macOS, accepted sockets inherit the listener's O_NONBLOCK setting.
@@ -296,14 +307,15 @@ fn serve_with_header_progress(
     let ended = Arc::new(AtomicBool::new(false));
     let peer_end = ended.clone();
     let peer_stop = stop.clone();
+    let idle_timeout = (!header.websocket).then_some(http_response_idle_timeout);
     let writer = thread::spawn(move || {
         if header.websocket {
-            relay(incoming, outgoing, peer_stop, peer_end);
+            relay(incoming, outgoing, peer_stop, peer_end, None);
         } else {
             forward_body(incoming, outgoing, header.body_length, peer_stop, peer_end);
         }
     });
-    relay(server, client, stop, ended.clone());
+    relay(server, client, stop, ended.clone(), idle_timeout);
     ended.store(true, Ordering::Release);
     let _ = writer.join();
     Ok(())
@@ -508,6 +520,7 @@ mod tests {
                 "secret",
                 "c2lsbzpwYXNzd29yZA==",
                 Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(120),
                 |stream, consumed| {
                     if consumed == 0 {
                         // Inspect the descriptor before sending any request bytes.
@@ -623,6 +636,7 @@ mod tests {
             )
             .unwrap();
             client.write_all(body).unwrap();
+            client.shutdown(Shutdown::Write).unwrap();
             let mut response = String::new();
             client.read_to_string(&mut response).unwrap();
             assert!(
@@ -631,6 +645,65 @@ mod tests {
             );
         }
         upstream_worker.join().unwrap();
+    }
+
+    #[test]
+    fn ordinary_http_response_idle_timeout_releases_silent_upstream() {
+        for (method, body) in [("GET", &b""[..]), ("POST", &b"body"[..])] {
+            let (_directory, upstream, socket) = guest();
+            let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let mut client = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            let (accepted, _) = listener.accept().unwrap();
+            let stop = Arc::new(AtomicBool::new(false));
+            let worker_stop = stop.clone();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let worker = thread::spawn(move || {
+                let result = serve_with_header_progress(
+                    accepted,
+                    port,
+                    &socket,
+                    6901,
+                    "session",
+                    "secret",
+                    "real",
+                    worker_stop,
+                    Duration::from_millis(100),
+                    |_, _| {},
+                );
+                done_tx.send(result).unwrap();
+            });
+            write!(
+                client,
+                "{method} / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: session=secret\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            )
+            .unwrap();
+            client.write_all(body).unwrap();
+            let (mut guest, _) = upstream.accept().unwrap();
+            guest
+                .set_read_timeout(Some(Duration::from_secs(3)))
+                .unwrap();
+            let mut header = Vec::new();
+            let mut byte = [0];
+            while !header.ends_with(b"\r\n\r\n") {
+                guest.read_exact(&mut byte).unwrap();
+                header.push(byte[0]);
+            }
+            let mut received_body = vec![0; body.len()];
+            guest.read_exact(&mut received_body).unwrap();
+            assert_eq!(received_body, body);
+            // Keep the guest silent and open after the browser abandons its request.
+            drop(client);
+            let completed = done_rx.recv_timeout(Duration::from_secs(3));
+            // Always release the worker, including when the regression fails.
+            stop.store(true, Ordering::Release);
+            worker.join().unwrap();
+            completed
+                .expect("silent HTTP response retained its handler")
+                .unwrap();
+            assert_eq!(guest.read(&mut byte).unwrap(), 0);
+        }
     }
 
     #[test]
