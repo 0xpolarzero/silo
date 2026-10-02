@@ -339,9 +339,9 @@ export interface ApplicationActions {
   saveRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration, expected?: SetupMachineConfiguration) => Promise<void>
   deleteRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration) => Promise<void>
   sshConnection?: (workspace: string, download: boolean, network?: boolean) => Promise<string | null>
-  refreshSshAccess?: () => Promise<void>
+  refreshSshAccess?: (options?: { background?: boolean }) => Promise<void>
   saveSshAccess?: (request: SshAccessRequest) => Promise<void>
-  refreshNetwork?: () => Promise<void>
+  refreshNetwork?: (options?: { background?: boolean }) => Promise<void>
   saveNetworkPort?: (request: NetworkPortRequest) => Promise<void>
   removeNetworkPort?: (workspace: string, port: number) => Promise<void>
   openNetworkPort?: (workspace: string, port: number) => Promise<void>
