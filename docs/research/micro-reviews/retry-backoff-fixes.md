@@ -49,3 +49,11 @@ The standalone Rust verification extracts the production retry helper, failure c
 - Consequence: background runtime inspections continue every ten seconds through an outage, including while application windows are hidden.
 - Fix: double the active interval after each failed read, cap it at the existing five-minute idle fallback, and reset on a successful reading. Discarded reads leave the failure count unchanged.
 - Verification: all eleven production health-state tests pass in a standalone Rust harness, including delay growth, repeated caps, recovery, and preservation of the idle fallback. Only Tauri installation is omitted and notice data types are supplied locally; no app or VM is launched.
+
+## Update installation-gate reads
+
+- Trigger: a ready update retains its snapshot while repeated updater reads fail.
+- Evidence: `UpdatesProvider` used a three-second interval regardless of read errors. The fake-timer regression observed another call before the first six-second retry deadline.
+- Consequence: updater checks continue at the fastest interval throughout an outage.
+- Fix: schedule each poll after its read, double failed-read delays up to 30 seconds, and reset on a successful read or event. Focus still requests a read immediately.
+- Verification: the regression checks growing and capped delays, recovery, and provider disposal; existing update tests cover subscription repair, installation ordering, and equal-snapshot rendering.
