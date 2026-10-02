@@ -70,3 +70,16 @@ it("keeps remote failure and retry identity even beside same-named sandboxes", a
   expect(await screen.findByText(`Port 9000 added · ${local.machine.name} · Office Mac`)).toBeInTheDocument()
   expect(work).toHaveBeenNthCalledWith(2, { workspace: target, port: 9000, hostPort: null, scheme: "http" })
 })
+
+it("keeps browser-open failures separate for equally named sandboxes and computers", async () => {
+  const local = structuredClone(applicationSourceForScenario("running").workspaces.find(workspace => workspace.machine.kind === "vm" && !workspace.computer)!)
+  const remotes = ["office-a", "office-b"].map(id => ({ ...local, machine: { ...local.machine, id: remoteWorkspaceTarget(id, "vm-1") }, computer: { id, name: "Office", address: `owner@${id}`, connected: true, vmId: "vm-1" } }))
+  const open = vi.fn().mockRejectedValue(new Error("Browser unavailable"))
+  render(<SettingsProvider initialSettings={{ theme: "light" }}><Toaster /><NetworkPage workspaces={remotes} browser="Firefox" active={false} actions={{ openNetworkPort: open } as unknown as ApplicationActions}
+    network={{ workspaces: remotes.map(workspace => ({ workspace: workspaceTarget(workspace), error: null, ports: [{ port: 3000, hostPort: 43000, scheme: "http", state: "reachable", configured: true }] })) }} /></SettingsProvider>)
+  const user = userEvent.setup()
+  for (const button of screen.getAllByRole("button", { name: "Open port 3000 in browser" })) await user.click(button)
+  expect(delivered.mock.calls.map(([notice]) => notice.key)).toEqual(remotes.map(workspace => `network-port-open:${workspace.machine.id}:3000`))
+  expect(delivered.mock.calls.map(([notice]) => notice.sandbox.id)).toEqual(remotes.map(workspace => workspace.machine.id))
+  expect(screen.getAllByText(`Could not open port 3000 · ${local.machine.name} · Office`)).toHaveLength(2)
+})
