@@ -111,6 +111,10 @@ Checks: all 19 repository editor and GitHub-page tests passed. Frontend
 typecheck, touched-file oxlint, Rust formatting, and diff whitespace checks
 passed.
 
+Folding encountered an overlapping test insertion from integration's repository
+scrolling fix. Both independent regressions were preserved; the merged suites
+passed all 20 tests, and typecheck, lint, formatting, and whitespace checks passed.
+
 ## Escape dismisses operation cancellation questions
 
 Integration already fixed focus restoration after Keep going, recorded in

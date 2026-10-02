@@ -47,6 +47,21 @@ class MetadataTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, 'macOS.*identity'):
                         metadata.verify(root, '0.1.0')
 
+    def test_channel_bundle_name_is_used_when_inspecting_an_archive(self):
+        from channel_names import channel_names
+        names = channel_names()
+        names = {**names, 'production': {**names['production'], 'productName': 'Fixture Channel'}}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with tarfile.open(root / 'Fixture Channel-macos-arm64.app.tar.gz', 'w:gz') as archive:
+                data = plistlib.dumps({'CFBundleShortVersionString': '0.1.0'})
+                entry = tarfile.TarInfo('Fixture Channel.app/Contents/Info.plist')
+                entry.size = len(data)
+                archive.addfile(entry, io.BytesIO(data))
+            with patch.object(metadata, 'channel_names', return_value=names):
+                with self.assertRaisesRegex(RuntimeError, 'macOS version mismatch'):
+                    metadata.verify(root, '0.1.1')
+
     @unittest.skipUnless(shutil.which('dpkg-deb'), 'Linux Debian tools required')
     def test_real_debian_identity_accepts_silo_and_rejects_another_package(self):
         with tempfile.TemporaryDirectory() as directory:

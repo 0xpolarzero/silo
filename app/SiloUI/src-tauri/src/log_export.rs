@@ -151,10 +151,11 @@ pub(crate) fn write_requests(
             if cancelled() {
                 return Ok(false);
             }
-            let page = query(request.clone())?;
+            let page = query(request.clone());
             if cancelled() {
                 return Ok(false);
             }
+            let page = page?;
             if request.cursor.is_none() {
                 let mut coverage_request = request.clone();
                 coverage_request.query = request
@@ -365,6 +366,29 @@ mod tests {
         assert!(!result);
         assert_eq!(calls, 1);
         assert_eq!(String::from_utf8(output).unwrap().lines().count(), 1);
+    }
+
+    #[test]
+    fn cancellation_wins_over_a_pending_page_failure_without_hiding_other_errors() {
+        for cancel in [false, true] {
+            let cancelled = std::cell::Cell::new(false);
+            let mut output = Vec::new();
+            let result = write_requests(
+                &mut output,
+                vec![Query::default()],
+                |_| {
+                    cancelled.set(cancel);
+                    Err("Remote computer disconnected.".into())
+                },
+                || cancelled.get(),
+            );
+            if cancel {
+                assert!(!result.unwrap());
+            } else {
+                assert_eq!(result.unwrap_err(), "Remote computer disconnected.");
+            }
+            assert_eq!(String::from_utf8(output).unwrap().lines().count(), 1);
+        }
     }
 
     #[test]

@@ -25,3 +25,12 @@
 - Correction: reject the aborted signal before starting native work.
 - Evidence: both regressions in `production-source-transfer.test.ts` returned successful inspections before the fix. They now reject with `AbortError` without invoking inspection; ordinary in-flight cancellation remains covered.
 - Verification: the transfer source and component suites passed all 37 tests; typecheck, focused lint, and whitespace checks passed.
+
+## Log export query failure after cancellation
+
+- Trigger: cancel while a log page is pending, then receive a query error.
+- Cause: the page query propagated its error before checking cancellation.
+- Consequence: the export shows a failure notification after the user cancelled it.
+- Correction: check cancellation after the query completes, then propagate uncancelled errors.
+- Evidence: the production writer regression failed with the remote query error for the cancelled request. It also checks that an uncancelled query retains the same error and neither path writes page data.
+- Verification: all ten extracted log-export tests, Rust formatting, and whitespace checks passed.

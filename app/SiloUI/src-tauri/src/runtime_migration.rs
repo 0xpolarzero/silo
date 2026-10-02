@@ -898,6 +898,17 @@ pub(crate) fn ensure_ready(app: &AppHandle) -> Result<(), String> {
     check_ready(controller.writable, &status)
 }
 
+pub(crate) async fn ensure_ready_async(app: &AppHandle) -> Result<(), String> {
+    let controller = app
+        .try_state::<Arc<Controller>>()
+        .ok_or(NOT_READY)?
+        .inner()
+        .clone();
+    let writable = controller.writable;
+    let state = migration_snapshot(controller).await?;
+    check_ready(writable, &state.status)
+}
+
 /// The storage behind `runtime::runtime_paths`, the only way to name a runtime.
 pub(crate) fn runtime_storage(app: &AppHandle) -> Result<PathBuf, String> {
     let (controller, status) = readiness(app)?;
@@ -940,13 +951,20 @@ fn update(
 }
 
 #[tauri::command]
-pub(crate) fn read_runtime_migration_state(app: AppHandle) -> Result<MigrationState, String> {
-    let controller = app.state::<Arc<Controller>>();
-    controller
-        .state
-        .lock()
-        .map(|state| state.clone())
-        .map_err(|_| "Migration state is unavailable.".into())
+pub(crate) async fn read_runtime_migration_state(app: AppHandle) -> Result<MigrationState, String> {
+    migration_snapshot(app.state::<Arc<Controller>>().inner().clone()).await
+}
+
+async fn migration_snapshot(controller: Arc<Controller>) -> Result<MigrationState, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        controller
+            .state
+            .lock()
+            .map(|state| state.clone())
+            .map_err(|_| "Migration state is unavailable.".to_string())
+    })
+    .await
+    .map_err(|_| "Migration state is unavailable.".to_string())?
 }
 
 /// Runs file writes and fsyncs off the main thread.
@@ -1096,6 +1114,38 @@ mod interrupted_tests;
 mod tests {
     use super::*;
 
+    #[test]
+    fn migration_state_wait_does_not_block_the_async_executor() {
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(Controller {
+            app_data: directory.path().into(),
+            path: directory.path().join(FILE),
+            state: Mutex::new(fresh("running", 1)),
+            writable: true,
+        });
+        let writing = controller.clone();
+        let (held, acquired) = std::sync::mpsc::channel();
+        let (heartbeat, observed) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let _guard = writing.state.lock().unwrap();
+            held.send(()).unwrap();
+            observed.recv_timeout(Duration::from_secs(2)).is_ok()
+        });
+        acquired.recv().unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (result, ()) = runtime.block_on(async {
+            tokio::join!(biased; migration_snapshot(controller), async {
+                let _ = heartbeat.send(());
+            })
+        });
+        assert_eq!(result.unwrap().status, "running");
+        assert!(
+            writer.join().unwrap(),
+            "waiting for migration state blocked the executor"
+        );
+    }
     #[test]
     fn failure_is_recorded_in_memory_when_saving_it_fails() {
         let directory = tempfile::tempdir().unwrap();

@@ -170,7 +170,7 @@ def worker(fast):
                 del skip_until[key]
         except Exception as error:
             print(f"silo-accessibility: {error}", file=sys.stderr, flush=True)
-            changed = True
+            changed = False
         interval = fast if changed else min(interval * 1.5, SLOW_INTERVAL)
         time.sleep(interval)
 
