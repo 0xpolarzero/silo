@@ -488,6 +488,44 @@ describe("mutation responses", () => {
   })
 })
 
+describe("overlapping lifecycle responses", () => {
+  it.each([false, true])("preserves both completions and newer same-sandbox intent (remote=%s)", async remote => {
+    const initial = structuredClone(source)
+    initial.workspaces = initial.workspaces.slice(0, 2).map(row => ({ ...row, state: "running" }))
+    const [a, b] = initial.workspaces
+    const target = (row: typeof a) => remote ? `silo-remote:office:${row.machine.id}` : row.machine.name
+    const older = deferred<unknown>()
+    const newer = deferred<unknown>()
+    const restarted = deferred<unknown>()
+    let reads = 0
+    const mock = bridge((command, args) => {
+      if (command === "remote_host_list") return remote ? [office] : []
+      if (command === (remote ? "remote_host_snapshot" : "read_application_state")) return ++reads === 1 ? initial : new Promise(() => {})
+      if (command === (remote ? "remote_workspace_action" : "workspace_action")) {
+        if (args?.action === "start") return restarted.promise
+        return (args?.name === a.machine.name ? older : newer).promise
+      }
+    })
+    const store = createProductionSource(mock.native)
+    const row = (workspace: typeof a) => store.getSnapshot().source?.workspaces.find(item => item.machine.id === (remote ? target(workspace) : workspace.machine.id))
+    const result = (aState: "running" | "stopped", bState: "running" | "stopped") => ({ ...initial, workspaces: [{ ...a, state: aState }, { ...b, state: bState }] })
+    try {
+      await store.initialize()
+      store.applicationActions.stopWorkspace(target(a))
+      store.applicationActions.stopWorkspace(target(b))
+      newer.resolve(result("running", "stopped"))
+      await vi.waitFor(() => { expect(row(b)?.state).toBe("stopped"); expect(row(b)?.lifecycleAction).toBeUndefined() })
+      older.resolve(result("stopped", "running"))
+      await vi.waitFor(() => { expect(row(a)?.state).toBe("stopped"); expect(row(a)?.lifecycleAction).toBeUndefined() })
+      expect(row(b)?.state).toBe("stopped")
+      store.applicationActions.startWorkspace(target(b))
+      restarted.resolve(result("running", "running"))
+      await vi.waitFor(() => { expect(row(b)?.state).toBe("running"); expect(row(b)?.lifecycleAction).toBeUndefined() })
+      expect(row(a)?.state).toBe("stopped")
+    } finally { store.dispose() }
+  })
+})
+
 describe("overlapping state reads", () => {
   const withState = (state: "running" | "stopped", detail: string) => ({ ...structuredClone(source), workspaces: source.workspaces.map((workspace, index) => index === 0 ? { ...workspace, state, stateDetail: detail } : workspace) })
 

@@ -1093,7 +1093,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       // not be ignored while a slow remote snapshot settles.
       .then((result) => {
         if (remote && !lifecycle) { void refreshComputers(); return }
-        const source = remote ? parseMutationSource(result, remoteSnapshots.get(remote.hostId) ?? null, parseRemoteApplicationSource) : parseMutationSource(result)
+        const previous = remote ? remoteSnapshots.get(remote.hostId) ?? null : snapshot.source
+        let source = remote ? parseMutationSource(result, previous, parseRemoteApplicationSource) : parseMutationSource(result)
+        if (lifecycle && previous) {
+          // A lifecycle response confirms only its sandbox. Other rows were captured
+          // before this response arrived; the follow-up read refreshes them independently.
+          const target = source.workspaces.find(row => remote ? row.machine.id === remote.vmId : workspaceTarget(row) === name)
+          source = { ...source, workspaces: previous.workspaces.map(row =>
+            (remote ? row.machine.id === remote.vmId : workspaceTarget(row) === name) ? target ?? row : row) }
+        }
         if (lifecycle || workspaceFailures.get(name)?.action === action) workspaceFailures.delete(name)
         if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
         if (remote) {
