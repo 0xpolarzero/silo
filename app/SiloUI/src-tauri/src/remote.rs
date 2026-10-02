@@ -344,16 +344,16 @@ pub async fn remove_remote_host(app: AppHandle, host_id: String) -> Result<(), S
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = config_lock();
         let mut config = read_config()?;
+        // Keep the computer available for retry if its local key cleanup fails.
+        if let Ok(paths) = crate::runtime::runtime_paths(&app) {
+            crate::ssh_connection::forget_host(&paths.home, &host_id)?;
+        }
         config.hosts.retain(|h| h.id != host_id);
         save_config(&config)?;
         drop(_guard);
         poll_succeeded(&host_id);
         crate::remote_network::close_host(&host_id);
         crate::desktop_viewer::close_host(&host_id);
-        // This computer's SSH keys for that computer's sandboxes are no longer needed (C-15).
-        if let Ok(paths) = crate::runtime::runtime_paths(&app) {
-            let _ = crate::ssh_connection::forget_host(&paths.home, &host_id);
-        }
         Ok(())
     })
     .await
