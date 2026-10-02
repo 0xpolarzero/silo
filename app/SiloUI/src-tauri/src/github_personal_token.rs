@@ -303,6 +303,16 @@ pub(super) fn check(app: &tauri::AppHandle) {
     }
 }
 
+fn save_validated_token(
+    secret: &SessionSecret<Option<PersonalToken>>,
+    token: PersonalToken,
+    persist: impl FnOnce() -> Result<(), String>,
+    connected: impl FnOnce(&PersonalToken) -> Result<(), String>,
+) -> Result<(), String> {
+    secret.replace(Some(token.clone()), persist)?;
+    connected(&token)
+}
+
 #[tauri::command]
 pub async fn save_github_personal_token(
     app: tauri::AppHandle,
@@ -317,16 +327,23 @@ pub async fn save_github_personal_token(
         crate::github_http::reset_retries();
         let token = validated(token.trim())?;
         SECRET.retry();
-        SECRET.write(Some(token.clone()), || {
-            entry()?
-                .set_password(
-                    &serde_json::to_string(&token).map_err(|_| "Cannot encode GitHub token.")?,
-                )
-                .map_err(|_| "Cannot save GitHub token in the system credential store.".into())
-        })?;
-        publish(json!({"state":"connected","saved":true,"account":token.account}));
-        CHECK_AT.store(now() + 300, Ordering::SeqCst);
-        changed(&app, Some(false))?;
+        save_validated_token(
+            &SECRET,
+            token.clone(),
+            || {
+                entry()?
+                    .set_password(
+                        &serde_json::to_string(&token)
+                            .map_err(|_| "Cannot encode GitHub token.")?,
+                    )
+                    .map_err(|_| "Cannot save GitHub token in the system credential store.".into())
+            },
+            |token| {
+                publish(json!({"state":"connected","saved":true,"account":token.account}));
+                CHECK_AT.store(now() + 300, Ordering::SeqCst);
+                changed(&app, Some(false))
+            },
+        )?;
         snapshot(&app)
     })
     .await
@@ -361,6 +378,85 @@ pub async fn remove_github_personal_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_personal_token_replacement_preserves_identity_until_retry() {
+        let secret = SessionSecret::new();
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        let a = PersonalToken {
+            token: "token_a".into(),
+            account: "account_a".into(),
+        };
+        let b = PersonalToken {
+            token: "token_b".into(),
+            account: "account_b".into(),
+        };
+        let status =
+            std::cell::RefCell::new(json!({"state":"connected","saved":true,"account":a.account}));
+        let applied = std::cell::RefCell::new(fingerprint(&a.token));
+        let revision = std::cell::Cell::new(0);
+        entry
+            .set_password(&serde_json::to_string(&a).unwrap())
+            .unwrap();
+        secret.read(|| Ok(Some(a.clone()))).unwrap();
+        let persist = || {
+            entry
+                .set_password(&serde_json::to_string(&b).unwrap())
+                .map_err(|_| "denied".into())
+        };
+        let connected = |token: &PersonalToken| {
+            *status.borrow_mut() =
+                json!({"state":"connected","saved":true,"account":token.account});
+            *applied.borrow_mut() = fingerprint(&token.token);
+            revision.set(revision.get() + 1);
+            Ok(())
+        };
+        entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .unwrap()
+            .set_error(keyring::Error::NoStorageAccess(Box::new(
+                std::io::Error::other("denied"),
+            )));
+        assert!(save_validated_token(&secret, b.clone(), persist, connected).is_err());
+        assert_eq!(
+            secret
+                .read(|| panic!("unexpected store read"))
+                .unwrap()
+                .unwrap()
+                .token,
+            a.token
+        );
+        assert_eq!(status.borrow()["account"], a.account);
+        assert_eq!(status.borrow()["saved"], true);
+        assert_eq!(*applied.borrow(), fingerprint(&a.token));
+        assert_eq!(revision.get(), 0);
+        let reloaded: PersonalToken = serde_json::from_str(&entry.get_password().unwrap()).unwrap();
+        assert_eq!(reloaded.token, a.token);
+        secret.retry();
+        save_validated_token(&secret, b.clone(), persist, connected).unwrap();
+        assert_eq!(
+            secret
+                .read(|| panic!("unexpected store read"))
+                .unwrap()
+                .unwrap()
+                .token,
+            b.token
+        );
+        assert_eq!(status.borrow()["account"], b.account);
+        assert_eq!(*applied.borrow(), fingerprint(&b.token));
+        assert_eq!(revision.get(), 1);
+        let restarted = SessionSecret::new();
+        let reloaded = restarted
+            .read(|| {
+                serde_json::from_str::<PersonalToken>(&entry.get_password().unwrap())
+                    .map(Some)
+                    .map_err(|_| "invalid".into())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(reloaded.token, b.token);
+    }
     #[test]
     fn empty_account_connects_without_repository_discovery() {
         let token = validated_with("github_pat_synthetic", |_| {
