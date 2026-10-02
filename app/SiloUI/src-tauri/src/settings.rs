@@ -399,7 +399,7 @@ fn valid_machine(value: &Value, unfinished: bool) -> bool {
         .is_some_and(|port| port.fract() == 0. && (1. ..=65535.).contains(&port))
 }
 
-// This boundary accepts unfinished text, but never accepts auth, runtime state, or arbitrary fields.
+// This boundary accepts unfinished text, but never accepts credentials, runtime state, or arbitrary fields.
 // TypeScript applies the existing domain validation before a draft is used as configuration.
 fn valid_draft(value: &Value) -> bool {
     if value.is_null() {
@@ -466,9 +466,12 @@ fn valid_draft(value: &Value) -> bool {
                         only_fields(
                             policy,
                             &["repositoryMode", "allRepositoriesAllowChanges"],
-                            &[],
+                            &["authenticationMethod"],
                         ) && matches!(policy["repositoryMode"].as_str(), Some("selected" | "all"))
                             && policy["allRepositoriesAllowChanges"].is_boolean()
+                            && policy.get("authenticationMethod").is_none_or(|method| {
+                                matches!(method.as_str(), Some("oauth" | "token"))
+                            })
                     })
                 })
             })
@@ -1588,6 +1591,34 @@ mod tests {
             }, "workspaceSelections":{"dev":[{"repository":"owner/repo", "allowPushes":false}]},
             "workspaceIdentities":{"dev":{"name":"", "email":"unfinished@", "apply":false}}
         })
+    }
+
+    #[test]
+    fn authentication_method_survives_draft_restart_and_rejects_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        let mut store = SettingsStore::load(Some(path.clone()));
+        let mut draft = unfinished_draft();
+        for method in ["token", "oauth"] {
+            draft["workspaceRepositoryAccess"] = json!({"dev":{
+                "repositoryMode":"selected","allRepositoriesAllowChanges":false,
+                "authenticationMethod":method
+            }});
+            store.update_draft(draft.clone()).unwrap();
+            assert_eq!(
+                SettingsStore::load(Some(path.clone()))
+                    .snapshot()
+                    .onboarding_draft,
+                draft
+            );
+        }
+        for invalid in [json!("unknown"), json!(null), json!(true), json!(1)] {
+            draft["workspaceRepositoryAccess"]["dev"]["authenticationMethod"] = invalid;
+            assert!(!valid_draft(&draft));
+        }
+        draft["workspaceRepositoryAccess"]["dev"]["authenticationMethod"] = json!("token");
+        draft["workspaceRepositoryAccess"]["dev"]["token"] = json!("secret");
+        assert!(!valid_draft(&draft));
     }
 
     #[test]
