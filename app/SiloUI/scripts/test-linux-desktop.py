@@ -8,6 +8,7 @@ import json
 import hashlib
 import os
 from pathlib import Path
+from channel_names import channel_for_identifier
 import signal
 import secrets
 import shlex
@@ -472,7 +473,7 @@ def run_lifecycle():
 
             def guest_for(target, command, expected=None):
                 storage_home = app_data / "runtime-checkpoints-converted/microsandbox"
-                runtime_alias = Path(environment["HOME"]) / ".silo" / hashlib.sha256(os.fsencode(storage_home)).hexdigest()[:12]
+                runtime_alias = Path(environment["HOME"]) / channel_for_identifier(identifier)["stateDir"] / hashlib.sha256(os.fsencode(storage_home)).hexdigest()[:12]
                 if not runtime_alias.is_dir():
                     raise AssertionError(f"Converted runtime home alias is missing: {runtime_alias}")
                 completed = subprocess.run([
