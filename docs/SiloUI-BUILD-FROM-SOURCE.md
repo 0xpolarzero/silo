@@ -152,7 +152,13 @@ Open `app/SiloUI/src-tauri/target/release/bundle/appimage/` and launch the gener
 3. Authorize it. If it is not installed yet, Silo opens the installation page; choose **Only select repositories** and select the repositories you want available.
 4. Return to Silo. Choose repositories for each VM, then enable **Allow GitHub changes** only where needed. Clone over HTTPS inside the VM; Silo supplies credentials automatically.
 
-If you previously connected using an official Silo build, disconnect that connection before connecting your own App. Source builds currently share the same application identity and local data locations with official builds; changing the build does not create a separate set of VMs or settings. Quit an existing Silo instance safely before launching another build.
+Development builds (`npm run desktop`, `desktop:build:debug`, or any `--debug`
+build) use **Silo Dev** (`org.silo.dev`) with separate VMs, settings and credentials.
+Optimized production-channel builds use **Silo** (`org.silo.preview`) and share
+data with official builds. If you use that channel and previously connected an
+official build, disconnect that connection before connecting your own App.
+Before launching another production build, quit the existing Silo instance
+safely; Quit stops its local VMs. See [build channels](SiloUI-BUILD-CHANNELS.md).
 
 ## Updating and troubleshooting your build
 
