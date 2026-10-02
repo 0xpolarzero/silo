@@ -87,7 +87,10 @@ fn only_built_in_vms_get_the_mount_and_it_is_read_only() {
         let args = mount_args(&machine(true)).unwrap();
         assert_eq!(
             args,
-            ["-v", &format!("{}:/opt/silo/chatgpt:ro", dir.display())]
+            [
+                "-v",
+                &format!("{}:/opt/silo/chatgpt:ro,uid=0,gid=0", dir.display())
+            ]
         );
         let ssh = MachineConfiguration::Ssh {
             id: "s".into(),
@@ -1870,6 +1873,94 @@ fn an_identity_that_cannot_be_established_at_boot_is_never_applied_later() {
     assert!(runner.1.calls.lock().unwrap().is_empty());
 }
 
+/// Inspect output of a running built-in VM. `instance` is the reported `runtime_instance_id`;
+/// `None` leaves the entry out, as a runtime without Silo's patch does.
+fn inspected_instance(instance: Option<&str>) -> String {
+    let mut value = json!({"name":"dev","status":"Running",
+        "config":{"labels":{"silo.machine-id":VM_ID}}});
+    if let Some(instance) = instance {
+        value["runtime_instance_id"] = json!(instance);
+    }
+    value.to_string()
+}
+
+/// A restart between the boot and the launch (a new runtime instance) is refused; the same
+/// instance still sets computer use up.
+#[test]
+fn a_restart_between_the_boot_and_the_launch_is_refused() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    struct Sequence(StdMutex<Vec<&'static str>>, Recorder);
+    impl RuntimeRunner for Sequence {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            if args.first().is_some_and(|a| a == "inspect") {
+                let mut instances = self.0.lock().unwrap();
+                let instance = if instances.len() > 1 {
+                    instances.remove(0)
+                } else {
+                    instances[0]
+                };
+                return Ok(CommandOutput {
+                    stdout: inspected_instance(Some(instance)),
+                    stderr: String::new(),
+                });
+            }
+            self.1.run(paths, args, timeout)
+        }
+    }
+    let same = Arc::new(Sequence(StdMutex::new(vec!["1:a"]), Recorder::new("")));
+    apply_with(test_gate(), same.clone(), &paths, "dev", Trigger::Boot)
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(!same.1.calls.lock().unwrap().is_empty());
+    let restarted = Arc::new(Sequence(
+        StdMutex::new(vec!["1:a", "2:b"]),
+        Recorder::new(""),
+    ));
+    apply_with(test_gate(), restarted.clone(), &paths, "dev", Trigger::Boot)
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(restarted.1.calls.lock().unwrap().is_empty());
+}
+
+/// A runtime whose inspect output has no `runtime_instance_id` (Silo's patch missing, as on
+/// the 0.7.6 build that shipped without it) cannot establish an identity: computer use
+/// never runs against it and the cause is reported, not skipped silently.
+#[test]
+fn a_runtime_that_reports_no_instance_id_never_runs_the_helper() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    struct Unpatched(Recorder);
+    impl RuntimeRunner for Unpatched {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            if args.first().is_some_and(|a| a == "inspect") {
+                return Ok(CommandOutput {
+                    stdout: inspected_instance(None),
+                    stderr: String::new(),
+                });
+            }
+            self.0.run(paths, args, timeout)
+        }
+    }
+    let runner = Arc::new(Unpatched(Recorder::new("")));
+    assert!(apply_with(test_gate(), runner.clone(), &paths, "dev", Trigger::Boot).is_none());
+    assert!(runner.0.calls.lock().unwrap().is_empty());
+}
+
 #[test]
 fn a_stopped_vm_is_left_alone() {
     let directory = tempfile::tempdir().unwrap();
@@ -1914,7 +2005,13 @@ fn the_shared_folder_is_prepared_again_when_the_start_up_attempt_failed() {
         dir.ends_with("chatgpt/published") && dir.is_dir(),
         "{dir:?}"
     );
-    assert_eq!(args, ["-v", &format!("{}:{GUEST_MOUNT}:ro", dir.display())]);
+    assert_eq!(
+        args,
+        [
+            "-v",
+            &format!("{}:{GUEST_MOUNT}:ro,uid=0,gid=0", dir.display())
+        ]
+    );
     // A preparation attempt registers it as well (the worker calls this every time).
     reset_published_for_test();
     let dir = register_published(&directory.path().join("chatgpt")).unwrap();

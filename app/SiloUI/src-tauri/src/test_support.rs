@@ -1,4 +1,5 @@
 //! Fixtures for native unit tests. Never use product locks to serialize tests.
+pub(crate) mod computer_use_live;
 pub(crate) mod live;
 pub(crate) mod runner;
 

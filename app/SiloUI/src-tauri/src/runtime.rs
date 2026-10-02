@@ -5484,6 +5484,10 @@ pub(crate) fn create_disposable_desktop_machine(
     };
     let mut request = read_metadata(&paths.metadata)?;
     request.machines.push(machine);
+    // Unit tests default to a v3 image; a live run uses the image it was given, so a
+    // v4 image makes the new VM built in exactly as the app does.
+    let _pin = guest_image::bundled_version(&paths.guest_image)
+        .map(|version| guest_image::pin_test_version(&version));
     apply_whole_configuration(&ProcessRunner, paths, &host_resources()?, request)?;
     read_metadata(&paths.metadata)?
         .machines
@@ -5499,6 +5503,16 @@ pub(crate) fn start_disposable_test_machine(
     name: &str,
 ) -> Result<(), RuntimeError> {
     workspace_action_with(&ProcessRunner, paths, &host_resources()?, "start", name)
+}
+
+/// The app's `stop` or `restart` for a disposable sandbox (boot hooks included).
+#[cfg(test)]
+pub(crate) fn disposable_test_action(
+    paths: &RuntimePaths,
+    name: &str,
+    action: &str,
+) -> Result<(), RuntimeError> {
+    workspace_action_with(&ProcessRunner, paths, &host_resources()?, action, name)
 }
 
 /// Exercise the same explicit Start path as the app for an imported sandbox.
@@ -9993,7 +10007,7 @@ exit 9
         create_machine(&runner, &paths, &built_in_vm()).unwrap();
         crate::computer_use::set_test_published_dir(None);
         let calls = runner.calls.lock().unwrap();
-        let mount = format!("{}:/opt/silo/chatgpt:ro", published.display());
+        let mount = format!("{}:/opt/silo/chatgpt:ro,uid=0,gid=0", published.display());
         let create = &calls[3];
         let position = create.iter().position(|arg| arg == "-v").unwrap();
         assert_eq!(create[position + 1], mount);

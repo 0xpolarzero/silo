@@ -140,5 +140,23 @@ embedded in the MicroSandbox patch, so its test-only cleanup change updates that
 patch and its pinned SHA. This changes the runtime preparation cache key, without
 changing production retention policy.
 
+The built-in desktop and computer-use live tests share `test_support::computer_use_live`
+(one disposable `/tmp` home per test, `e2e-*` sandboxes, a registered published ChatGPT
+folder). Inputs: `SILO_LIVE_TEST_CONFIRM`, a signed `msb` and libkrunfw (`SILO_TEST_MSB`,
+`SILO_TEST_LIBKRUNFW`), the v4 image directory (`SILO_TEST_GUEST_IMAGE`: manifest.json and
+image.tar.gz) and a published ChatGPT folder (`SILO_TEST_PUBLISHED`; `SILO_LIVE_CHATGPT_ROOT`
+keeps the folder `chatgpt_app::tests::live_download_of_the_pinned_arm64_package` publishes).
+`SILO_LIVE_KEEP=1` leaves a failed test's stopped home for inspection;
+`SILO_LIVE_EVIDENCE` names a directory for the drive test's screenshots. The tests:
+
+| Test | Proves |
+| --- | --- |
+| `live_lcu_drives_the_desktop_without_a_model` | Create to ready, `lcu status`/`doctor`, read-only mount, LCU's own MCP client drives GNOME Text Editor (typeText, paste, Save As) and a terminal (per-key), with the files verified from outside; also records memory, disk and times |
+| `live_approval_switch_edits_only_the_installed_harnesses` | `auto` adds and `ask` removes exactly LCU's approval entries in Codex and Claude Code (installed from npm; `SILO_LIVE_SKIP_HARNESS_INSTALL=1` skips that phase) |
+| `live_built_in_lifecycle_keeps_the_desktop_and_computer_use` | Restart, stop/start, checkpoint of the running VM, fork and in-place restore each end with the session running, computer use ready, the folder read-only and `lcu doctor` passing |
+| `live_pre_v4_vm_gets_no_mount_no_desktop_and_keeps_its_flows` | A VM from the v3 image (`SILO_TEST_V3_GUEST_IMAGE`) has no mount, no desktop and no helper, and its lifecycle flows work |
+| `live_built_in_computer_use_sets_up_and_survives_export_and_import` | Export and import into a second home with its own folder; the imported VM takes the destination's `ask` |
+| `live_built_in_desktop_boots_repeatedly` | `SILO_BOOT_LOOP_ROUNDS` (default 3) restarts and imports with no desktop failure |
+
 These checks use temporary fixture data. They do not launch the packaged Silo app
 or establish live VM, installed-app or release readiness.

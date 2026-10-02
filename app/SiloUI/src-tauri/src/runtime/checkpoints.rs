@@ -3079,7 +3079,7 @@ mod tests {
         assert!(start_pending(&runner, &paths, &built_in_machine()).is_err());
         let calls = runner.0.lock().unwrap();
         let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
-        let mount = format!("{}:/opt/silo/chatgpt:ro", published.display());
+        let mount = format!("{}:/opt/silo/chatgpt:ro,uid=0,gid=0", published.display());
         assert!(
             restore
                 .windows(2)
@@ -6062,5 +6062,216 @@ mod tests {
         super::super::start_disposable_test_import(&paths, "e2e-ck-source").unwrap();
         assert_eq!(read("e2e-ck-source").trim(), "before:before");
         eprintln!("Verified live checkpoint fork and restore.");
+    }
+
+    /// A built-in VM's whole life against the real runtime: restart, stop and start
+    /// (the app's own actions), then a checkpoint of the running VM, a fork of it and
+    /// an in-place restore. Every boot must end with the desktop session running and
+    /// computer use ready, the ChatGPT folder mounted read-only, and the approval mode
+    /// kept. Needs the same inputs as the other built-in live tests (see
+    /// `test_support::computer_use_live`).
+    #[test]
+    #[ignore = "requires the v4 guest image, a published ChatGPT app and hardware virtualization"]
+    fn live_built_in_lifecycle_keeps_the_desktop_and_computer_use() {
+        use crate::test_support::computer_use_live::Fixture;
+        let _test_state = crate::test_support::global_state();
+        let mut fixture = Fixture::new("silo-life-", None, true);
+        let (source, fork_name) = ("e2e-life-src", "e2e-life-fork");
+        let machine = fixture.create(source);
+        fixture.track(fork_name);
+        crate::computer_use::apply_approval_with(
+            std::sync::Arc::new(ProcessRunner),
+            &fixture.paths,
+            &machine,
+            crate::computer_use::Approval::Auto,
+            false,
+        )
+        .unwrap();
+        super::super::start_disposable_test_machine(&fixture.paths, source).unwrap();
+        let checks = |name: &str, label: &str| {
+            let (status, elapsed) = fixture.wait_ready(name, label);
+            eprintln!("RESULT {label}: ready {}s after start", elapsed.as_secs());
+            assert_eq!(status["computerUse"]["approval"], "auto", "{label}");
+            let mounts = fixture.exec_status(name, "grep ' /opt/silo/chatgpt ' /proc/mounts");
+            assert!(mounts.contains(" ro,"), "{label}: {mounts}");
+            // Not only what Silo reports: LCU lists windows and takes a screenshot.
+            fixture.wait_doctor(name, label);
+        };
+        checks(source, "fresh");
+        super::super::disposable_test_action(&fixture.paths, source, "restart").unwrap();
+        checks(source, "restart");
+        super::super::disposable_test_action(&fixture.paths, source, "stop").unwrap();
+        let stopped = fixture.status(source);
+        assert_eq!(stopped["sessionState"], "stopped", "{stopped}");
+        assert_eq!(stopped["computerUse"]["approval"], "auto", "{stopped}");
+        super::super::start_disposable_test_machine(&fixture.paths, source).unwrap();
+        checks(source, "stop-start");
+
+        let write = |name: &str, value: &str| {
+            fixture
+                .exec(
+                    name,
+                    "root",
+                    &format!("printf {value} > /workspace/e2e-marker; sync"),
+                )
+                .unwrap();
+        };
+        let read = |name: &str| {
+            fixture
+                .exec(name, "root", "cat /workspace/e2e-marker")
+                .unwrap()
+        };
+        write(source, "before");
+        let checkpoint = capture_for_test(&fixture.paths, machine.id(), "Milestone").unwrap();
+        assert_eq!(
+            load(&fixture.paths, machine.id()).unwrap().checkpoints[0].scope,
+            "full"
+        );
+        write(source, "after");
+
+        // Fork the checkpoint into a new VM and boot it from RAM.
+        let fork = fork_source(
+            &ProcessRunner,
+            &fixture.paths,
+            machine.id(),
+            Some(&checkpoint),
+            fork_name,
+        )
+        .unwrap();
+        fork_commit(
+            &ProcessRunner,
+            &fixture.paths,
+            &FakeAssignments::new(&[]),
+            &fork,
+            fork_name,
+        )
+        .unwrap();
+        super::super::start_disposable_test_import(&fixture.paths, fork_name).unwrap();
+        checks(fork_name, "fork");
+        assert_eq!(read(fork_name), "before");
+        assert_eq!(read(source), "after");
+        fixture.stop(fork_name);
+
+        // Restore the checkpoint in place; Start resumes it.
+        fixture.stop(source);
+        restore_with(&ProcessRunner, &fixture.paths, machine.id(), &checkpoint).unwrap();
+        super::super::start_disposable_test_import(&fixture.paths, source).unwrap();
+        checks(source, "restore");
+        assert_eq!(read(source), "before");
+        fixture.stop(source);
+        eprintln!("Verified the built-in desktop through restart, stop, start, fork and restore.");
+    }
+
+    /// A VM created from the previous (v3) guest image is unchanged by the built-in
+    /// desktop: no ChatGPT mount, no automatic desktop, no computer-use helper, and its
+    /// ordinary flows (restart, stop, start, checkpoint, fork, restore) still work.
+    /// `SILO_TEST_V3_GUEST_IMAGE` names a directory with the v3 manifest.json and
+    /// image.tar.gz (from the guest-ubuntu-24.04-v3 release); the other inputs are those of
+    /// the built-in live tests.
+    #[test]
+    #[ignore = "requires the v3 guest image, hardware virtualization and the packaged runtime"]
+    fn live_pre_v4_vm_gets_no_mount_no_desktop_and_keeps_its_flows() {
+        use crate::test_support::computer_use_live::Fixture;
+        let _test_state = crate::test_support::global_state();
+        let image = std::path::PathBuf::from(std::env::var("SILO_TEST_V3_GUEST_IMAGE").unwrap());
+        let mut fixture = Fixture::new("silo-v3-", Some(image), false);
+        let (source, fork_name) = ("e2e-v3-src", "e2e-v3-fork");
+        let machine = fixture.create(source);
+        fixture.track(fork_name);
+        assert!(!crate::computer_use::is_built_in(&machine), "{machine:?}");
+        assert!(machine_desktop_absent(&machine), "{machine:?}");
+        let inspected = inspect_workspace(&ProcessRunner, &fixture.paths, source).unwrap();
+        assert!(!has_chatgpt_mount(&inspected.config));
+        let checks = |label: &str| {
+            let report = fixture.exec_status(
+                source,
+                "ls /usr/local/bin/silo-desktop /usr/local/libexec/silo-computer-use /opt/silo 2>&1; \
+                 ls /var/lib/silo-computer-use 2>&1; pgrep -c Xvfb; grep -c /opt/silo/chatgpt /proc/mounts; \
+                 cat /etc/silo-guest-version 2>/dev/null; true",
+            );
+            eprintln!("{label}: legacy guest state:\n{report}");
+            assert!(
+                !report.contains("/usr/local/libexec/silo-computer-use\n"),
+                "{label}: {report}"
+            );
+            assert!(report.contains("No such file"), "{label}: {report}");
+            let status = fixture.status(source);
+            assert!(status["computerUse"].is_null(), "{label}: {status}");
+            assert_ne!(status["sessionState"], "running", "{label}: {status}");
+        };
+        super::super::start_disposable_test_machine(&fixture.paths, source).unwrap();
+        std::thread::sleep(Duration::from_secs(45));
+        checks("fresh");
+        super::super::disposable_test_action(&fixture.paths, source, "restart").unwrap();
+        std::thread::sleep(Duration::from_secs(30));
+        checks("restart");
+        super::super::disposable_test_action(&fixture.paths, source, "stop").unwrap();
+        super::super::start_disposable_test_machine(&fixture.paths, source).unwrap();
+        std::thread::sleep(Duration::from_secs(30));
+        checks("stop-start");
+
+        let write = |name: &str, value: &str| {
+            fixture
+                .exec(
+                    name,
+                    "root",
+                    &format!("printf {value} > /workspace/e2e-marker; sync"),
+                )
+                .unwrap();
+        };
+        let read = |name: &str| {
+            fixture
+                .exec(name, "root", "cat /workspace/e2e-marker")
+                .unwrap()
+        };
+        write(source, "before");
+        let checkpoint = capture_for_test(&fixture.paths, machine.id(), "Milestone").unwrap();
+        write(source, "after");
+        let fork = fork_source(
+            &ProcessRunner,
+            &fixture.paths,
+            machine.id(),
+            Some(&checkpoint),
+            fork_name,
+        )
+        .unwrap();
+        fork_commit(
+            &ProcessRunner,
+            &fixture.paths,
+            &FakeAssignments::new(&[]),
+            &fork,
+            fork_name,
+        )
+        .unwrap();
+        super::super::start_disposable_test_import(&fixture.paths, fork_name).unwrap();
+        assert_eq!(read(fork_name), "before");
+        assert_eq!(read(source), "after");
+        let fork_machine = fixture.machine(fork_name);
+        assert!(!crate::computer_use::is_built_in(&fork_machine));
+        let inspected = inspect_workspace(&ProcessRunner, &fixture.paths, fork_name).unwrap();
+        assert!(!has_chatgpt_mount(&inspected.config));
+        fixture.stop(fork_name);
+        fixture.stop(source);
+        restore_with(&ProcessRunner, &fixture.paths, machine.id(), &checkpoint).unwrap();
+        super::super::start_disposable_test_import(&fixture.paths, source).unwrap();
+        assert_eq!(read(source), "before");
+        let inspected = inspect_workspace(&ProcessRunner, &fixture.paths, source).unwrap();
+        assert!(!has_chatgpt_mount(&inspected.config));
+        fixture.stop(source);
+        eprintln!(
+            "Verified a pre-v4 VM through restart, stop, start, checkpoint, fork and restore."
+        );
+    }
+
+    fn has_chatgpt_mount(config: &Value) -> bool {
+        config["mounts"].as_array().is_some_and(|mounts| {
+            mounts
+                .iter()
+                .any(|mount| mount["guest"] == "/opt/silo/chatgpt")
+        })
+    }
+
+    fn machine_desktop_absent(machine: &crate::runtime::MachineConfiguration) -> bool {
+        crate::desktop::configuration(machine).is_none()
     }
 }
