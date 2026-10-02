@@ -79,6 +79,7 @@ above for current behavior and build commands.
 - [Workflow performance](SiloUI-WORKFLOW-PERFORMANCE.md): implementation, controlled measurements and hosted comparison.
 - [Native compilation experiment](SiloUI-NATIVE-COMPILATION-EXPERIMENT.md): measured test-target reduction and the compiler-cache acceptance gate.
 - [Frontend test performance](SiloUI-FRONTEND-TEST-PERFORMANCE.md): controlled environment-split measurements.
+- [Frontend startup bundle baseline, 2026-10-02](research/frontend-startup-bundle-2026-10-02.md): O-03 production artifact sizes, heavy modules, and the evidence required before splitting.
 - [Guest image size experiment](SiloUI-GUEST-IMAGE-SIZE.md): measured image-size tradeoffs.
 - [Codex skills and context audit](CODEX-CONTEXT-AUDIT-2026-09-14.md): agent instruction and skill-trigger recommendations for working on this repository.
 - [Jev for natural-language commands](SiloUI-JEV-RESEARCH.md): primary-source findings, command-palette fit, limitations and proposed evaluation.
