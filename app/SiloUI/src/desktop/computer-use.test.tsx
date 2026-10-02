@@ -691,6 +691,24 @@ describe("chosen and applied approval", () => {
     expect(screen.getByRole("note")).toHaveTextContent("Some agents in this sandbox may still ask first.")
     expect(screen.queryByText(/still act without asking/)).toBeNull()
   })
+  it("warns for an older owner that omits approvalApply when the chosen mode differs from the applied one", () => {
+    // Parsed from a payload without `approvalApply`, which reads as `applied`.
+    const older = (approval: string, appliedApproval: string) => parse({ state: "ready", approval, appliedApproval })!
+    expect(older("ask", "auto").approvalApply).toBe("applied")
+    const { unmount } = render_(older("ask", "auto"))
+    expect(screen.getByRole("note")).toHaveTextContent("Some agents in this sandbox may still act without asking.")
+    expect(screen.queryByText("Applying…")).toBeNull()
+    unmount()
+    const second = render_(older("auto", "ask"))
+    expect(screen.getByRole("note")).toHaveTextContent("Some agents in this sandbox may still ask first.")
+    second.unmount()
+    // Matching modes, or an applied mode that is not known, stay quiet.
+    for (const computerUse of [older("ask", "ask"), older("auto", "auto"), older("ask", "unknown")]) {
+      const { unmount: done } = render_(computerUse)
+      expect(screen.queryByRole("note")).toBeNull()
+      done()
+    }
+  })
   it("shows no approval note when applied, or while a first apply waits with nothing known", () => {
     for (const computerUse of [ready, fixtureComputerUse("auto"), { ...ready, approval: "auto" as const, appliedApproval: "unknown" as const },
       { ...ready, appliedApproval: "unknown" as const, approvalApply: "pending" as const }]) {

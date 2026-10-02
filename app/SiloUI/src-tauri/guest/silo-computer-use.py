@@ -340,8 +340,15 @@ def setup(approval):
 
 
 AGENT_LABEL = r'([A-Z][A-Za-z ]{1,24})'
-FAILED_LINE = re.compile(AGENT_LABEL + r': [A-Za-z ]{2,24} failed: ')
+# LCU v0.8.1 `configure` (lcu/setup.py) prints `<label>: <phase> failed: <error>` for each
+# failed phase to stderr (merged into the output here), and `<label>: approval <mode>:
+# <outcome>.` once the approval of an agent whose final registration phase succeeded was
+# applied.
+FAILED_LINE = re.compile(AGENT_LABEL + r': ([A-Za-z ]{2,24}) failed: ')
 APPROVED_LINE = re.compile(AGENT_LABEL + r': approval (?:ask|auto): ')
+# `configure` carries on after this phase fails: the agent's registration and approval
+# still run, so its failure says nothing about the approval.
+UNRELATED_PHASES = {'old skill cleanup'}
 
 
 def agent_name(label):
@@ -351,24 +358,29 @@ def agent_name(label):
 def classify_setup(returncode, output, approval):
     """`(outcome, agents, reason)` of one `lcu setup` run from its exit status and its
     per-agent lines (`Codex: MCP registered.`, `Codex: approval ask: ...`,
-    `Codex: approval failed: ...`).
+    `Codex: approval failed: ...`, `Codex: old skill cleanup failed: ...`).
 
-    `applied`: it exited 0 and no agent reported a failure. `partial`: some agents were
-    configured and others failed, or it failed in a way the lines do not explain after
-    configuring some (when unsure, partial: a guess of `failed` would claim nothing
-    changed). `failed`: nothing was configured."""
-    lines = (output or '').splitlines()
-    failed, approved = set(), set()
-    for line in lines:
+    The outcome is about the approval, tracked per agent and phase. `applied`: no agent
+    failed in a phase that matters (the old skill cleanup does not, nor does a failure
+    after the configuration was saved), and it either exited 0 or every agent it names had
+    its approval applied. `partial`: some agents were configured and others failed, or it
+    failed in a way the lines do not explain after configuring some (when unsure, partial:
+    a guess of `failed` would claim nothing changed). `failed`: nothing was configured."""
+    failed, approved, seen = set(), set(), set()
+    for line in (output or '').splitlines():
         line = line.strip()
         if match := FAILED_LINE.match(line):
-            failed.add(agent_name(match.group(1)))
+            name = agent_name(match.group(1))
+            seen.add(name)
+            if match.group(2).strip() not in UNRELATED_PHASES:
+                failed.add(name)
         elif match := APPROVED_LINE.match(line):
             approved.add(agent_name(match.group(1)))
     agents = registered_agents(output)
-    if returncode == 0 and not failed:
+    seen |= approved | set(agents)
+    if not failed and (returncode == 0 or (approved and seen <= approved)):
+        # An explicit approval success is kept whatever else went wrong around it.
         return 'applied', agents, None
-    # Agents that both registered and had their approval handled, and did not fail anywhere.
     configured = (approved | set(agents)) - failed
     if configured:
         return 'partial', agents, 'setup-partial'

@@ -285,7 +285,10 @@ replaced by a model in which the host drives the guest and the guest cannot veto
 
 - **What the host stores** in `<storage>/computer-use/<id>.json`: the *desired* mode (the
   user's choice, default `ask`), the last mode applied completely (`applied`) and the
-  *last attempt* (`mode`, `outcome` of `applied`, `failed` or `partial`, time, reason code).
+  *last attempt* (`mode`, `outcome` of `applied`, `failed` or `partial`, time, reason code)
+  and an *unfinished* marker: the mode of an attempt, written before the helper runs and
+  replaced by its result, so an attempt cut short by a crash is applied again at the next
+  app start even when the last recorded result matches the choice.
   Old files carry a revision and a generation; both are ignored. Only a user change, a
   fork, an import's reset or an apply writes the file, all under one lock; a status read
   never changes it. A file that cannot be read shows as `unknown` and is replaced by the
@@ -297,11 +300,14 @@ replaced by a model in which the host drives the guest and the guest cannot veto
   synchronously within a bound (15 minutes plus a minute of host allowance), never
   detached. Because the mode is read when the turn arrives, a queued apply can never write
   an older choice over a newer one, and a queued apply that an earlier one made redundant
-  does nothing. A user change returns at once; the state says `pending` until the apply
+  does nothing. After each run the turn compares the choice at that moment with the mode it
+  applied and applies again until they agree, so a choice made while the helper ran is never
+  left pending. A user change returns at once; the state says `pending` until the apply
   ends. The boot sync stays on its own background thread, so Start is never blocked.
-- **Cancellation.** The turn is cancellable. A queued stop or delete of that VM, or a
+- **Cancellation.** The turn is cancellable. A queued stop or delete of that VM (a delete is
+  computer-wide, so the operation gate records which VMs it removes), or a
   computer-wide shutdown (Quit or an update, which has no VM id), cancels the running
-  helper at once. Other work waits for the turn like any other operation on that VM. A
+  helper at once; the manual Set up computer use action has the same watcher. Other work waits for the turn like any other operation on that VM. A
   cancelled or timed-out apply is recorded as a failed attempt (`cancelled`, `timed-out`)
   and nothing is assumed rolled back; the next boot or app start tries again.
 - **When it runs.** After every boot and when the app becomes ready (the helper does the

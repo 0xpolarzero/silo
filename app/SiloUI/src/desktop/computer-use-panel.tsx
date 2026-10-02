@@ -121,9 +121,12 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
   // After choosing ask, agents may still act without asking when the previous applied mode was auto, only
   // some agents were changed, or the change failed and nothing says ask is in place.
   const mayActWithoutAsking = computerUse.approval === "ask" && (applied === "auto" || apply === "partial" || (apply === "failed" && applied !== "ask"))
-  const mayStillAsk = computerUse.approval === "auto" && (apply === "partial" || apply === "failed") || (computerUse.approval === "auto" && apply === "pending" && applied === "ask")
+  const mayStillAsk = computerUse.approval === "auto" && (apply === "partial" || apply === "failed" || applied === "ask")
   const problem = apply === "failed" ? "Silo could not apply the approval change." : apply === "partial" ? "Silo changed the approval setting for only some agents." : null
-  const showApproval = !unknownApproval && (problem || (apply === "pending" && (mayActWithoutAsking || mayStillAsk)))
+  // An older owner does not report `approvalApply` (read as `applied`) but still reports both modes: whatever the
+  // result says, a chosen mode that differs from the applied one is not in place yet.
+  const differs = !unknownApproval && applied !== "unknown" && applied !== computerUse.approval
+  const showApproval = !unknownApproval && (problem || ((apply === "pending" || differs) && (mayActWithoutAsking || mayStillAsk)))
   const downloadFailed = computerUse.state === "failed" && computerUse.cause === "app-download"
   const setupDisabled = busy || !running || downloadFailed || computerUse.state === "installing" || computerUse.state === "preparing"
   const details = [
