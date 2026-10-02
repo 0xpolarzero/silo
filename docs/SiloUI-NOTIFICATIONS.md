@@ -58,3 +58,13 @@ thread grouping, click routing to a sandbox, and clearing on macOS, all of which
 and delegate there. Silo therefore keeps direct UserNotifications (`objc2-user-notifications`)
 and the freedesktop D-Bus interface, and keeps product policy in the router. Revisit if
 the plugin gains desktop click handlers.
+
+### Linux notification server identity
+
+Replacement and withdrawal share a lock with ID publication. Each cached ID
+belongs to the unique D-Bus owner that issued it; a different owner starts a new
+notice instead of reusing that ID. Calls target the captured unique owner, so a
+restart between lookup and delivery cannot redirect the call to a new service.
+This uses the existing GIO connection and the standard
+[notification protocol](https://specifications.freedesktop.org/notification/latest/protocol.html),
+whose replacement and close operations address notices by server-assigned ID.

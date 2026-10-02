@@ -24,7 +24,8 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-04 | P2 | Direct publication bypasses the explicit stable-release opt-in | Fixed and folded: `5b18ec21` |
 | RL-05 | P3 | Release guide omits the implemented in-app Debian update | Corrected and folded: `17edafc6` |
 | RL-06 | P2 | Required minimum-macOS gate uses a runner with imminent brownouts | Open; replacement qualification required |
-| RL-07 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Confirmed; fix pending |
+| RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed and folded: `abae62fe` |
+| RL-08 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Confirmed; fix pending |
 
 ## Detailed findings
 
@@ -122,9 +123,23 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 
 **Status.** Left open because no qualified replacement runner or macOS 14 host was provided, and the shared task instructions prohibit app launches and network-heavy builds. Provisioning and qualifying a runner is not a small obvious source fix. No CI/environment configuration was changed to bypass this gate.
 
-## Verification and reproducibility
+### RL-07 MicroSandbox fallback executable cache ignores compiler flags and build recipe
 
-### RL-07 Optional GNOME verifier uses obsolete tray and channel expectations
+**P2.** The compiled cache key in `microsandbox-runtime.mjs` included source,
+patches, agent bytes, compiler version, target, and features, but omitted the
+staging recipe and inherited Cargo compiler flags. A changed `RUSTFLAGS` could
+therefore reuse a previous executable after fallback cache restoration.
+
+**Evidence.** The real staging/cache orchestration with deterministic external
+tools compiled eight times across the existing capability/source cases. Changing
+`RUSTFLAGS` left that count at eight instead of nine. No native build was run.
+
+**Correction and status.** Fixed: the key includes the staging script digest and
+the four documented Cargo flag environment inputs. The regression checks rebuilds
+for changed plain, encoded, build-wide, and target-specific flags, and reuse when
+those inputs remain unchanged. The focused runtime staging tests pass.
+
+### RL-08 Optional GNOME verifier uses obsolete tray and channel expectations
 
 **P2.** Confirmed at `ac8aaf87`. Locations: [linux_desktop_services.py](../app/SiloUI/scripts/linux_desktop_services.py), tray item selection, Open action and health fixture; [tray.rs](../app/SiloUI/src-tauri/src/tray.rs), Linux `menu` and `title`.
 

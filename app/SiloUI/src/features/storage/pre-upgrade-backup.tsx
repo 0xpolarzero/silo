@@ -58,6 +58,8 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
   const [backup, setBackup] = useState<PreUpgradeBackup | null>(null)
   const [size, setSize] = useState<PreUpgradeBackupSize>("measuring")
   const [loadError, setLoadError] = useState<string | null>(null)
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null)
+  const [connection, setConnection] = useState(0)
   const [removing, setRemoving] = useState(false)
   const removal = useRef(false)
   const refresh = useRef<() => Promise<void>>(async () => {})
@@ -80,12 +82,15 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
       }
     }
     void backend.subscribe(() => { void refresh.current() }).then(stop => {
-      if (live) unsubscribe = stop
+      if (live) { unsubscribe = stop; setSubscriptionError(null) }
       else stop()
-    }).catch((cause: unknown) => console.error("Silo pre-upgrade backup:", message(cause)))
-    void refresh.current()
+    }).catch(() => {
+      if (live) setSubscriptionError("Silo could not listen for backup changes. Try again.")
+    }).then(() => {
+      if (live) void refresh.current()
+    })
     return () => { live = false; unsubscribe?.() }
-  }, [backend])
+  }, [backend, connection])
 
   // Every new read of a present backup is measured again: a failed deletion may have removed part of it.
   const present = backup !== null
@@ -120,9 +125,12 @@ export function usePreUpgradeBackup(backend: PreUpgradeBackupBackend | undefined
     loaded,
     backup,
     size,
-    loadError,
+    loadError: loadError ?? subscriptionError,
     removing,
-    retry: () => { void refresh.current() },
+    retry: () => {
+      if (subscriptionError) setConnection(value => value + 1)
+      else void refresh.current()
+    },
     remove,
     reveal: async () => { await backend?.reveal() },
     acknowledge: async () => { await backend?.acknowledge() },

@@ -12,8 +12,8 @@ export const siloPreflightCheckSchema = z.object({
 
 export const siloBootstrapWorkspaceSchema = z.object({
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
-  cpu: z.number().int().min(1).max(4_294_967_295),
-  cpuCeiling: z.number().int().min(1).max(4_294_967_295),
+  cpu: z.number().int().min(1).max(255),
+  cpuCeiling: z.number().int().min(1).max(255),
   memoryGiB: z.number().int().min(1).max(4_294_967_295),
   memoryCeilingGiB: z.number().int().min(1).max(4_294_967_295),
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),
@@ -41,8 +41,8 @@ export const desktopConfigurationSchema = z.object({
 export const setupWorkspaceConfigurationSchema = z.object({
   id: z.uuid(),
   name: z.string().regex(/^[a-z][a-z0-9-]{0,31}$/),
-  cpus: z.number().int().min(1).max(4_294_967_295),
-  maxCPUs: z.number().int().min(1).max(4_294_967_295),
+  cpus: z.number().int().min(1).max(255),
+  maxCPUs: z.number().int().min(1).max(255),
   memoryGiB: z.number().int().min(1).max(4_294_967_295),
   maxMemoryGiB: z.number().int().min(1).max(4_294_967_295),
   workspaceStorageGiB: z.number().int().min(1).max(4_194_303),

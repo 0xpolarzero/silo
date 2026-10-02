@@ -18,9 +18,52 @@ function mount(initial: Partial<UpdateSnapshot> = {}, adjust: (backend: UpdateBa
   }
   const open = vi.fn()
   adjust(backend)
-  render(<UpdatesProvider backend={backend}><UpdateNotice onOpen={open} /><UpdatesCard /></UpdatesProvider>)
-  return { backend, open, emit: (patch: Partial<UpdateSnapshot>) => act(() => emit({ ...state, ...initial, ...patch })) }
+  const view = render(<UpdatesProvider backend={backend}><UpdateNotice onOpen={open} /><UpdatesCard /></UpdatesProvider>)
+  return { backend, open, view, emit: (patch: Partial<UpdateSnapshot>) => act(() => emit({ ...state, ...initial, ...patch })) }
 }
+
+it("reconnects after a failed initial read without running an update action", async () => {
+  const user = userEvent.setup()
+  const stop = vi.fn()
+  const read = vi.fn().mockRejectedValueOnce(new Error("private native failure")).mockResolvedValueOnce(state)
+  const subscribe = vi.fn(async () => stop)
+  const { backend, view } = mount({}, backend => { backend.read = read; backend.subscribe = subscribe })
+  expect(await screen.findByRole("alert")).toHaveTextContent("Silo could not load updates. Try again.")
+  expect(screen.getByRole("alert")).not.toHaveTextContent("private native failure")
+  await user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(await screen.findByText("Version 0.1.0")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+  expect(read).toHaveBeenCalledTimes(2)
+  expect(subscribe).toHaveBeenCalledTimes(2)
+  expect(stop).toHaveBeenCalledOnce()
+  expect(backend.check).not.toHaveBeenCalled()
+  expect(backend.download).not.toHaveBeenCalled()
+  expect(backend.install).not.toHaveBeenCalled()
+  view.unmount()
+  expect(stop).toHaveBeenCalledTimes(2)
+})
+
+it("cleans up a subscription that registers after the updates view unmounts", async () => {
+  let register!: (stop: () => void) => void
+  const stop = vi.fn()
+  const subscribe = vi.fn(() => new Promise<() => void>(resolve => { register = resolve }))
+  const { backend, view } = mount({}, backend => { backend.subscribe = subscribe })
+  view.unmount()
+  await act(async () => register(stop))
+  expect(stop).toHaveBeenCalledOnce()
+  expect(backend.read).not.toHaveBeenCalled()
+})
+
+it.fails("bug: an obsolete initial read failure shows a connection error after a newer native event", async () => {
+  let reject!: (error: Error) => void
+  const read = vi.fn(() => new Promise<UpdateSnapshot>((_, fail) => { reject = fail }))
+  const { emit } = mount({}, backend => { backend.read = read })
+  await waitFor(() => expect(read).toHaveBeenCalledOnce())
+  emit({ phase: "ready", availableVersion: "0.2.0" })
+  expect(screen.getByRole("button", { name: "Restart and update" })).toBeEnabled()
+  await act(async () => reject(new Error("Obsolete read failed")))
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})
 it("restores update events after returning to a window whose subscription failed", async () => {
   const { backend, emit } = mount({}, backend => {
     vi.mocked(backend.subscribe).mockRejectedValueOnce(new Error("event registration failed"))
@@ -143,6 +186,19 @@ it("reports a failed native action without exposing its raw rejection", async ()
   expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish. Try again.")
   expect(screen.queryByText("unfiltered internal paths")).not.toBeInTheDocument()
 })
+it.each([
+  ["macos", "ready", "Restart and update"],
+  ["debian", "available", "Update"],
+] as const)("retries %s installation after frontend preparation fails without checking again", async (packageKind, phase, label) => {
+  const user = userEvent.setup()
+  const { backend } = mount({ packageKind, phase, availableVersion: "0.2.0" })
+  vi.mocked(backend.install).mockRejectedValueOnce(new Error("Settings delivery failed"))
+  await user.click(await screen.findByRole("button", { name: label }))
+  expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish")
+  await user.click(screen.getByRole("button", { name: "Retry" }))
+  expect(backend.install).toHaveBeenCalledTimes(2)
+  expect(backend.check).not.toHaveBeenCalled()
+})
 
 it("does not overwrite saved automatic-check settings with an older focus refresh", async () => {
   const user = userEvent.setup()
@@ -208,4 +264,22 @@ it("asks for a manual relaunch when an installed update could not restart, witho
   expect(screen.queryByRole("button", { name: /Check for updates|Update|Restart and update/ })).not.toBeInTheDocument()
   expect(backend.check).not.toHaveBeenCalled()
   expect(backend.install).not.toHaveBeenCalled()
+})
+
+it.each(["initial", "focus"] as const)("ignores a failed %s status read superseded by a native update event", async kind => {
+  let reject!: (cause: Error) => void
+  const pending = new Promise<UpdateSnapshot>((_resolve, fail) => { reject = fail })
+  const { backend, emit } = mount({}, backend => {
+    if (kind === "initial") vi.mocked(backend.read).mockReturnValueOnce(pending)
+  })
+  if (kind === "focus") {
+    await screen.findByText("Version 0.1.0")
+    vi.mocked(backend.read).mockReturnValueOnce(pending)
+    fireEvent.focus(window)
+  }
+  await waitFor(() => expect(backend.read).toHaveBeenCalledTimes(kind === "initial" ? 1 : 2))
+  emit({ currentVersion: "0.2.0" })
+  await act(async () => reject(new Error("Old status read failed")))
+  expect(screen.getByText("Version 0.2.0")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
 })

@@ -539,10 +539,21 @@ pub(crate) async fn inspect_backup_archive(
 ) -> Result<ArchiveInspectionResult, String> {
     require_main(&window)?;
     let controller = controller.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let path = PathBuf::from(archive_path);
-        let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let cancellation = register_inspection(&controller, request_id.clone());
+    let path = PathBuf::from(archive_path);
+    let request_id = request_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    tauri::async_runtime::spawn_blocking(inspection_worker(controller, path, request_id))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+fn inspection_worker(
+    controller: Arc<Controller>,
+    path: PathBuf,
+    request_id: String,
+) -> impl FnOnce() -> Result<ArchiveInspectionResult, String> + Send {
+    // Register before dispatch so cancellation and replacement also cover queued work.
+    let cancellation = register_inspection(&controller, request_id.clone());
+    move || {
         let inspected = controller.service.inspect_archive(&path, &cancellation);
         finish_inspection(&controller, &request_id);
         match inspected {
@@ -573,9 +584,7 @@ pub(crate) async fn inspect_backup_archive(
                 reason: Some(error.to_string()),
             }),
         }
-    })
-    .await
-    .map_err(|error| error.to_string())?
+    }
 }
 
 /// Stops the export file check started under `request_id`, if it is still running.
@@ -3524,6 +3533,56 @@ mod tests {
         finish_inspection(&controller, "third");
         assert!(!cancel_inspection(&controller, "third"));
         assert!(!third.cancelled());
+    }
+
+    #[test]
+    fn a_queued_inspection_can_be_cancelled_before_its_worker_starts() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
+        let worker = inspection_worker(
+            controller.clone(),
+            directory.path().join("missing.silo-backup"),
+            "queued".into(),
+        );
+        assert!(cancel_inspection(&controller, "queued"));
+        let result = worker().unwrap();
+        assert!(!result.valid);
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("The operation was cancelled.")
+        );
+    }
+
+    #[test]
+    fn an_older_queued_inspection_cannot_cancel_a_newer_request() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = Arc::new(history_controller(
+            directory.path().join("backup-history.json"),
+        ));
+        let older = inspection_worker(
+            controller.clone(),
+            directory.path().join("older.silo-backup"),
+            "older".into(),
+        );
+        let newer = inspection_worker(
+            controller.clone(),
+            directory.path().join("newer.silo-backup"),
+            "newer".into(),
+        );
+        let result = older().unwrap();
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("The operation was cancelled.")
+        );
+        assert!(cancel_inspection(&controller, "newer"));
+        assert_eq!(
+            newer().unwrap().reason.as_deref(),
+            Some("The operation was cancelled.")
+        );
     }
 
     #[test]

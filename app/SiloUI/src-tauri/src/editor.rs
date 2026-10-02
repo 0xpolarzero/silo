@@ -248,10 +248,21 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
             folder
         }
     ));
-    let mut document = serde_json::from_slice::<serde_json::Value>(&read_regular(&file)?)
-        .ok()
-        .filter(serde_json::Value::is_object)
-        .unwrap_or_else(|| serde_json::json!({}));
+    let old = read_regular(&file)?;
+    let invalid = || {
+        format!(
+            "Silo cannot update the editor workspace {} as a JSON object. The file was left unchanged. Remove comments or repair its JSON, then retry.",
+            file.display()
+        )
+    };
+    let mut document = if old.is_empty() && !file.exists() {
+        serde_json::json!({})
+    } else {
+        serde_json::from_slice::<serde_json::Value>(&old).map_err(|_| invalid())?
+    };
+    if !document.is_object() {
+        return Err(invalid());
+    }
     document["folders"] = serde_json::json!([{ "uri": remote_uri(alias, path, false)? }]);
     document["remoteAuthority"] = serde_json::json!(format!("ssh-remote+{alias}"));
     if !document["settings"].is_object() {
@@ -1314,6 +1325,25 @@ mod tests {
             document["folders"][0]["uri"],
             "vscode-remote://ssh-remote+silo-abc-dev/workspace"
         );
+    }
+
+    #[test]
+    fn an_unparseable_workspace_is_preserved_instead_of_replaced() {
+        let home = tempfile::tempdir().unwrap();
+        let root = crate::channel::current().state_dir(home.path());
+        let file = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap();
+        for contents in [
+            "{\n// keep my workspace settings\n\"settings\": {\"editor.fontSize\": 15}}",
+            "{\"settings\":",
+            "[]",
+            "",
+        ] {
+            fs::write(&file, contents).unwrap();
+            let error = vscode_workspace(&root, "silo-abc-dev", "/workspace").unwrap_err();
+            assert!(error.contains("workspace"));
+            assert!(error.contains("unchanged"));
+            assert_eq!(fs::read_to_string(&file).unwrap(), contents);
+        }
     }
 
     #[test]

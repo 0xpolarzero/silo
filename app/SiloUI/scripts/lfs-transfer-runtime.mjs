@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import { chmod, copyFile, cp, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { promisify } from 'node:util'
+import { fetchVerifiedFile } from './build-input.mjs'
 import { validateArchiveEntries } from './git-runtime.mjs'
 
 const execute = promisify(execFile)
@@ -51,7 +52,7 @@ async function normalizeModes(directory) {
 
 // The server runs inside the Linux guest, including when Silo's host is macOS.
 // There is no stable upstream binary release; build the immutable source pin.
-export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchBytes, run = execute }) {
+export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchStream, run = execute }) {
   const architecture = lfsTransferGuestArchitecture(targetTriple)
   const tauriRoot = resolve(appRoot, 'src-tauri')
   const root = join(tauriRoot, 'runtime', 'lfs-transfer')
@@ -112,11 +113,7 @@ export async function stageLfsTransferRuntime({ appRoot, targetTriple, fetchByte
   const stage = join(tauriRoot, 'runtime', `.lfs-transfer-staging-${process.pid}`)
   const archivePath = join(cache, 'source.tar.gz')
   await mkdir(cache, { recursive: true })
-  let bytes
-  try { bytes = await readFile(archivePath) } catch { /* Download below. */ }
-  if (!bytes || sha256(bytes) !== LFS_TRANSFER_SOURCE_SHA256) bytes = Buffer.from(await fetchBytes(LFS_TRANSFER_SOURCE_URL))
-  if (sha256(bytes) !== LFS_TRANSFER_SOURCE_SHA256) throw new Error('Git LFS transfer source checksum mismatch')
-  await writeFile(archivePath, bytes)
+  await fetchVerifiedFile(fetchStream, LFS_TRANSFER_SOURCE_URL, LFS_TRANSFER_SOURCE_SHA256, 'Git LFS transfer source', archivePath)
   await rm(stage, { recursive: true, force: true })
   await mkdir(stage, { recursive: true })
   try {

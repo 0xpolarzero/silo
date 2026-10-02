@@ -25,6 +25,7 @@ type Vault = BTreeMap<String, String>;
 type Cached = Option<(Result<Vault, String>, Instant)>;
 static VAULT: Mutex<Cached> = Mutex::new(None);
 const STORE_RETRY_AFTER: Duration = Duration::from_secs(10);
+const MAX_DOCUMENT_BYTES: u64 = 2 * 1024 * 1024;
 fn expire_failure(cached: &mut Cached, now: Instant) {
     if matches!(cached, Some((Err(_), at)) if now.saturating_duration_since(*at) >= STORE_RETRY_AFTER)
     {
@@ -190,7 +191,7 @@ fn load() -> Result<Document, String> {
         return Ok(Document::default());
     };
     match File::open(&path) {
-        Ok(file) => serde_json::from_reader(file.take(2 * 1024 * 1024))
+        Ok(file) => serde_json::from_reader(file.take(MAX_DOCUMENT_BYTES))
             .map_err(|_| "Secret settings could not be read. No settings were overwritten.".into()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Document::default()),
         Err(_) => Err("Secret settings could not be read.".into()),
@@ -204,6 +205,15 @@ fn save(document: &Document) -> Result<(), String> {
         .map_err(|_| "Secret settings could not be saved.")?;
     serde_json::to_writer(&mut file, document)
         .map_err(|_| "Secret settings could not be saved.")?;
+    if file
+        .as_file()
+        .metadata()
+        .map_err(|_| "Secret settings could not be saved.")?
+        .len()
+        > MAX_DOCUMENT_BYTES
+    {
+        return Err("Secret settings are too large. Reduce assignments or allowed domains and retry. No settings were overwritten.".into());
+    }
     file.as_file()
         .sync_all()
         .map_err(|_| "Secret settings could not be saved.")?;
@@ -896,6 +906,48 @@ mod tests {
             errors: BTreeMap::new(),
             removing: false,
         }
+    }
+    #[test]
+    fn oversized_save_preserves_readable_settings() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        use_test_store(Some(path.clone()));
+        let domain = format!(
+            "{}.{}.{}.{}",
+            "a".repeat(63),
+            "b".repeat(63),
+            "c".repeat(63),
+            "d".repeat(61)
+        );
+        let mut document = Document::default();
+        for index in 0..90 {
+            let mut request = request();
+            request.name = format!("TOKEN_{index}");
+            request.allowed_domains = vec![domain.clone(); 100];
+            validate(&request, &document).unwrap();
+            let mut entry = secret();
+            entry.id = format!("secret-{index}");
+            entry.name = request.name;
+            entry.allowed_domains = request.allowed_domains;
+            document.secrets.push(entry);
+            if index == 74 {
+                save(&document).unwrap();
+            }
+        }
+        let previous = fs::read(&path).unwrap();
+        assert!(previous.len() < 2 * 1024 * 1024);
+        assert!(serde_json::to_vec(&document).unwrap().len() > 2 * 1024 * 1024);
+        assert!(save(&document).is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(load().unwrap().secrets.len(), 75);
+        update(|document| {
+            document.secrets.pop();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(load().unwrap().secrets.len(), 74);
+        use_test_store(None);
     }
     #[test]
     fn fork_copies_current_assignment_reference_without_copying_value() {

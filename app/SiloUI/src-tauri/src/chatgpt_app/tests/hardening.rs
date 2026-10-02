@@ -46,6 +46,41 @@ fn keep_mtime_write(path: &Path, bytes: &[u8]) {
 }
 
 #[test]
+fn a_fifo_record_is_refused_without_waiting_for_a_writer() {
+    let dir = root();
+    let package = deb(&good_items());
+    let lock = lock_for(&package);
+    let base = chatgpt_root(&dir);
+    let record = base.join("1.2.3-arm64.published.json");
+    let name = c_name_path(&record).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+    let (send, receive) = std::sync::mpsc::channel();
+    let status_root = base.clone();
+    let status_lock = lock.clone();
+    let reader = std::thread::spawn(move || {
+        send.send(current_status(&status_root, &status_lock, DebArch::Arm64))
+            .unwrap();
+    });
+    let result = receive.recv_timeout(Duration::from_secs(1));
+    if result.is_err() {
+        // Release a blocked reader before failing, so the test owns no stray thread.
+        drop(
+            OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&record)
+                .unwrap(),
+        );
+    }
+    reader.join().unwrap();
+    assert_eq!(result.unwrap(), Status::Idle);
+    let (result, calls) = again(&dir, &package, &lock);
+    assert!(result.is_ok());
+    assert_eq!(calls, 1);
+    assert!(fs::symlink_metadata(record).unwrap().is_file());
+}
+
+#[test]
 fn a_planted_part_symlink_is_removed_not_written_through() {
     let dir = root();
     let package = deb(&good_items());

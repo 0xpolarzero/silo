@@ -56,6 +56,36 @@ it("keeps a transport failure visible when subsequent guest health checks succee
   expect(screen.getByRole("alert")).toHaveTextContent("Desktop connection unavailable")
 })
 
+it("reattaches a retired transport when the computer recovers with unchanged guest state", async () => {
+  vi.useFakeTimers()
+  let reachable = true
+  let connected = false
+  invoke.mockImplementation(async command => {
+    if (command === "read_desktop_state") {
+      if (!reachable) throw new Error("Computer disconnected")
+      return { installed: true, autoStart: true, state: "running", sessionState: "running", streamState: "running" }
+    }
+    if (command === "desktop_viewer_attach") connected = true
+    if (command === "desktop_viewer_detach") connected = false
+  })
+  const view = render(<NativeLinuxDesktopViewer workspace="owner/vm-id" name="dev · Remote" />)
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(connected).toBe(true)
+    // The owner poll closes the backend transport without changing guest state.
+    reachable = false
+    connected = false
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.getByRole("alert")).toHaveTextContent("Computer disconnected")
+    expect(connected).toBe(false)
+    reachable = true
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000) })
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    expect(connected).toBe(true)
+    expect(invoke.mock.calls.some(([command]) => command === "desktop_action")).toBe(false)
+  } finally { view.unmount(); vi.useRealTimers() }
+})
+
 
 it("finishes an in-flight attachment before detaching on close", async () => {
   let completeAttachment: (() => void) | undefined

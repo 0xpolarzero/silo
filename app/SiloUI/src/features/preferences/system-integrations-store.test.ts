@@ -140,6 +140,21 @@ describe("verified system integration state", () => {
     expect(settings.getSnapshot().settings.notificationsEnabled).toBe(false)
   })
 
+  it("updates login-item authority from the notification preflight without changing its saved preference", async () => {
+    const settings = createMemorySettingsStore({ launchAtLogin: true, notificationsEnabled: false })
+    const native = service(snapshot("enabled", "authorized"))
+    const store = createSystemIntegrationStore(native.value, settings)
+    await store.initialize()
+    native.set(snapshot("notRegistered", "authorized"))
+
+    await store.setNotificationsEnabled(true)
+
+    expect(store.getSnapshot().loginItem.state).toBe("notRegistered")
+    expect(settings.getSnapshot().settings.launchAtLogin).toBe(true)
+    expect(settings.getSnapshot().settings.notificationsEnabled).toBe(true)
+    expect(native.value.setLoginItem).not.toHaveBeenCalled()
+  })
+
   it("keeps authority unknown and controls disabled when the initial read fails", async () => {
     const settings = createMemorySettingsStore()
     const native = service()

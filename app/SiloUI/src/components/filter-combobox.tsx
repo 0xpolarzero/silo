@@ -1,4 +1,4 @@
-import { useId, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { Search, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -44,11 +44,16 @@ export function FilterCombobox<Value extends string>({
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [activeIndex, setActiveIndex] = useState(0)
+  const activeOption = useRef<HTMLButtonElement>(null)
   const selectedOptions = options.filter(({ value }) => selectedValues.has(value))
   const results = options.filter(({ value, label: optionLabel }) => (
     !selectedValues.has(value)
     && optionLabel.toLowerCase().includes(query.trim().toLowerCase())
   ))
+  const activeValue = results[activeIndex]?.value
+  useEffect(() => {
+    if (open) activeOption.current?.scrollIntoView({ block: "nearest", inline: "nearest" })
+  }, [open, activeIndex, activeValue])
 
   function addValue(value: Value) {
     onChange(new Set([...selectedValues, value]))
@@ -126,6 +131,7 @@ export function FilterCombobox<Value extends string>({
         >
           {results.length > 0 ? results.map((option, index) => (
             <button
+              ref={index === activeIndex ? activeOption : undefined}
               key={option.value}
               id={`${listboxId}-${index}`}
               type="button"
