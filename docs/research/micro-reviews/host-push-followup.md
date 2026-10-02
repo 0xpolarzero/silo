@@ -30,3 +30,12 @@ Verification uses temporary journal fixtures and source-extracted Rust tests. No
 - **Consequence:** A missing file or directory becomes a fatal publishing-cache error in the unrelated push.
 - **Regression:** Hold the first repository lock, discard its directory after the scanner observes it, and assert the second repository's sweep and acquisition succeed while the first lock remains exclusive. The fixture failed before the fix.
 - **Fix:** Take the repository lock before inspection, tolerate a vanished directory, and treat active-cache sizing errors as advisory. Idle caches still undergo strict symlink and size validation.
+
+## HOST-PUSH-6: An older discovery restores stale state after a successful push
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/host_push.rs`, discovery worker completion and post-publication invalidation.
+- **Trigger:** A background repository read starts before publication, captures the old tracking state, and finishes after the push clears cached discovery.
+- **Consequence:** The worker restores pre-push rows as fresh data. The next state refresh can show already-published commits as pending for the discovery freshness interval.
+- **Regression:** Start a discovery, invalidate it at publication, then complete the earlier read. Assert its rows are discarded, a new read can start, and that new read can publish the current counts. The fixture failed before the fix.
+- **Fix:** Capture the entry's invalidation generation when starting each worker and accept its result only while that generation remains current.
