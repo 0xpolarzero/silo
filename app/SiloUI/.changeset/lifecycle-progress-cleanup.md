@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Restore lifecycle progress notifications after development effect checks and clear them when their view stops tracking operations.
+Clear sandbox operation progress notifications when they are disabled or their view closes, and restore them when tracking resumes.

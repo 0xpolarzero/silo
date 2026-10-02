@@ -71,6 +71,23 @@ it("shows a missing recovered Git identity as unapplied, matching the submission
   }))
 })
 
+it("finishes with current application preferences after keeping omitted sandboxes", async () => {
+  const restored: OnboardingDraft = {
+    currentStep: "review", machines: [source.machineConfigurations[0]], unfinishedMachineEditor: null,
+    workspaceSelections: {}, workspaceIdentities: {},
+  }
+  const view = setup({ ...source, existingMachines: source.machineConfigurations }, [], restored)
+  await view.user.click(screen.getByRole("button", { name: "Finish" }))
+  expect(view.actions.finishSetup).not.toHaveBeenCalled()
+
+  await act(async () => { await view.store.updateSettings({ browser: "Firefox", browserPath: "/Applications/Firefox.app", browserUseSystemDefault: false }) })
+  await view.user.click(screen.getByRole("button", { name: "Keep sandboxes" }))
+
+  expect(view.actions.finishSetup).toHaveBeenCalledWith(expect.objectContaining({
+    applications: expect.objectContaining({ browser: "Firefox", browserPath: "/Applications/Firefox.app", browserUseSystemDefault: false }),
+  }))
+})
+
 it.each(["before render", "after equal machines", "after changed machines"])("submits untouched saved policies loaded %s", async (timing) => {
   const initial = timing === "after changed machines"
     ? { ...source, machinesAuthoritative: false, machineConfigurations: [source.machineConfigurations[0]] }

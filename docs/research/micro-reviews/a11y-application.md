@@ -91,3 +91,19 @@ Credential clearing and retry behavior remain unchanged.
 Verification: both new cases in `personal-token-connection.test.tsx` failed on
 opening focus, then failed on return focus after adding field autofocus alone.
 The complete fix passes both paths against synthetic token data and a mock save.
+
+## Repository keyboard navigation did not reveal the active option
+
+Trigger: open a repository catalog longer than its height-limited popup and
+navigate down with arrow keys. The input's active descendant changed but no
+scroll action revealed it, including the authorization action below the results.
+
+The fix reveals the active button with native nearest-edge scrolling while
+keeping DOM focus on the input, matching the established shared filter behavior
+and [WAI-ARIA combobox keyboard guidance](https://www.w3.org/WAI/ARIA/apg/patterns/combobox/).
+Selection identity and callback behavior remain unchanged.
+
+Verification: the new `github-access-editor.test.tsx` regression first failed
+because no scroll call targeted repository 20. It now checks both directions,
+the final authorization action, input focus, and Enter dispatch. This DOM fixture
+verifies the native scrolling request, not rendered pixel distances.

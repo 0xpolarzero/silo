@@ -12,3 +12,12 @@ Scope: `app/SiloUI/src-tauri/src/host_push.rs` and `app/SiloUI/src-tauri/src/hos
 - **Test:** Seed an unknown result from the current session, claim the repository with a new identifier, and assert that no job is created. Mark the unknown result dismissed and assert that the new request can then be claimed.
 
 Verification uses temporary journal fixtures and source-extracted Rust tests. No Silo app, live VM, or GitHub endpoint is used.
+
+## HOST-PUSH-4: A lost Git status response reports failure after publication
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src-tauri/src/host_push.rs`, unsuccessful process status handling in `HostGit::run`.
+- **Trigger:** The receive-pack process updates the branch, then its final status response is lost. A disposable fixture using bundled Git and an SSH adapter that forwards the advertisement but discards the final response reproduced exit code 128 with an empty porcelain response and a remote branch already at the new commit.
+- **Consequence:** The nonzero exit became an ordinary failed operation, allowing a retry without checking the branch.
+- **Fix:** Interpret the existing porcelain response. Preserve explicit local and remote rejections as failures; treat a missing response or remote failure as unknown. [Git's output reference](https://git-scm.com/docs/git-push#_output) distinguishes a refused update from an unreported update and documents the tab-separated porcelain fields.
+- **Regression:** Exercise the process boundary with missing status, remote failure, local rejection, and remote rejection. The first two must be unknown and the latter two must preserve their actionable Git failure.

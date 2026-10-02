@@ -82,7 +82,12 @@ export function OperationToastBody({ title, step, steps, progress, startedAt, ca
 
   if (confirming && cancel?.confirm) {
     const { prompt, confirmLabel, keepLabel = "Keep going" } = cancel.confirm
-    return <div className="grid gap-2 text-xs" role="group" aria-label="Confirm cancel">
+    return <div className="grid gap-2 text-xs" role="group" aria-label="Confirm cancel" onKeyDown={event => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.nativeEvent.isComposing) return
+      event.preventDefault()
+      event.stopPropagation()
+      setConfirming(false)
+    }}>
       <p>{prompt}</p>
       <div className="flex gap-2">
         <Button type="button" variant="ghost" size="sm" autoFocus onClick={() => setConfirming(false)}>{keepLabel}</Button>
@@ -100,7 +105,7 @@ export function OperationToastBody({ title, step, steps, progress, startedAt, ca
     </div>
     {steps && steps.length > 0 && <ul className="grid gap-0.5" aria-label="Steps">
       {steps.map((entry) => <li key={entry.label} data-state={entry.state} aria-current={entry.state === "current" ? "step" : undefined} className={`flex items-center gap-1.5 ${entry.state === "pending" ? "text-muted-foreground" : entry.state === "failed" ? "text-destructive" : ""}`}>
-        {stepIcon[entry.state]}<span className="min-w-0 truncate">{entry.label}<span className="sr-only">: {stepStatus[entry.state]}</span></span>
+        {stepIcon[entry.state]}<span className="min-w-0 truncate" title={entry.label}>{entry.label}<span className="sr-only">: {stepStatus[entry.state]}</span></span>
       </li>)}
     </ul>}
     {cancel && <div className="flex justify-end"><Button ref={cancelButton} type="button" variant="outline" size="xs" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button></div>}

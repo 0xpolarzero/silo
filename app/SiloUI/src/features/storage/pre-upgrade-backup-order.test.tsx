@@ -29,3 +29,20 @@ it.each(["before", "during"] as const)("does not restore a deleted backup from a
   await act(async () => stale.resolve(backup))
   expect(result.current.backup).toBeNull()
 })
+
+it("clears a previous read failure once deletion confirms the backup is gone", async () => {
+  const backup: PreUpgradeBackup = { deleteAt: null, noticePending: true }
+  let refresh!: () => void
+  const backend: PreUpgradeBackupBackend = {
+    read: vi.fn().mockResolvedValueOnce(backup).mockRejectedValueOnce(new Error("Backup read failed")),
+    remove: vi.fn().mockResolvedValue(undefined), measure: vi.fn(), reveal: vi.fn(), acknowledge: vi.fn(),
+    subscribe: async handler => { refresh = handler; return () => {} },
+  }
+  const { result } = renderHook(() => usePreUpgradeBackup(backend, { measure: false }))
+  await waitFor(() => expect(result.current.backup).toEqual(backup))
+  await act(async () => refresh())
+  expect(result.current.loadError).toBe("Backup read failed")
+  await act(async () => result.current.remove())
+  expect(result.current.backup).toBeNull()
+  expect(result.current.loadError).toBeNull()
+})

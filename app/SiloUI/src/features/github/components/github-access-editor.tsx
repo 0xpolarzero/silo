@@ -1,4 +1,4 @@
-import { useId, useMemo, useState, type ReactNode } from "react"
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
 import { Check, ExternalLink, GitBranch, Info, LoaderCircle, RotateCcw, Search, Trash2, X } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
@@ -70,6 +70,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [activeOption, setActiveOption] = useState<string>()
+  const activeElement = useRef<HTMLButtonElement>(null)
   const selectedNames = useMemo(
     () => new Set(selectedRepositories.map(({ repository }) => repository.toLowerCase())),
     [selectedRepositories],
@@ -86,6 +87,9 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
   ]
   const optionNames = [...results, ...searchActions.map(({ label }) => label)]
   const activeIndex = activeOption === undefined ? -1 : optionNames.indexOf(activeOption)
+  useEffect(() => {
+    if (open) activeElement.current?.scrollIntoView({ block: "nearest", inline: "nearest" })
+  }, [open, activeIndex, activeOption])
 
   function openResults() {
     if (!open) setActiveOption(optionNames[0])
@@ -157,6 +161,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
       >
         {results.length > 0 ? results.map((repository, index) => (
           <button
+            ref={index === activeIndex ? activeElement : undefined}
             key={repository}
             id={`${listboxId}-${index}`}
             type="button"
@@ -175,6 +180,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
         )}
         {searchActions.map((action, index) => (
           <button
+            ref={activeIndex === results.length + index ? activeElement : undefined}
             key={action.label}
             id={`${listboxId}-${results.length + index}`}
             type="button"
