@@ -371,9 +371,67 @@ fn periodic_reclaims_due_running_vm_once_without_starting_any_vm() {
         },
     )
     .unwrap();
-    assert!(periodic(&runner, &paths).unwrap());
-    assert!(!periodic(&runner, &paths).unwrap());
+    assert!(periodic(&runner, &paths, &HashMap::new()).unwrap());
+    assert!(!periodic(&runner, &paths, &HashMap::new()).unwrap());
     assert_eq!(*runner.inspections.lock().unwrap(), 1);
+    assert_eq!(runner.guest.calls.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn maintenance_tick_preserves_damaged_checkpoint_and_trims_healthy_owner() {
+    let _test_state = crate::test_support::global_state();
+    struct MaintenanceRunner {
+        guest: Runner,
+        config: Value,
+    }
+    impl RuntimeRunner for MaintenanceRunner {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            if args[0] == "inspect" {
+                assert_eq!(args[1], "dev", "damaged owner must not be trimmed");
+                return Ok(CommandOutput {
+                    stdout: json!({"name":"dev", "status":"Running", "runtime_instance_id":"run-1", "config":self.config}).to_string(),
+                    stderr: String::new(),
+                });
+            }
+            self.guest.run(paths, args, timeout)
+        }
+    }
+    let (_dir, paths, machine, observed) = fixture();
+    let mut damaged = machine.clone();
+    if let MachineConfiguration::Vm { id, name, .. } = &mut damaged {
+        *id = "00000000-0000-4000-8000-000000000002".into();
+        *name = "damaged".into();
+    }
+    write_metadata(
+        &paths.metadata,
+        &MachineConfigurationRequest {
+            schema_version: 1,
+            machines: vec![damaged.clone(), machine.clone()],
+        },
+    )
+    .unwrap();
+    let checkpoint_path = paths
+        .metadata
+        .with_file_name("checkpoints")
+        .join(format!("{}.json", damaged.id()));
+    fs::create_dir_all(checkpoint_path.parent().unwrap()).unwrap();
+    fs::write(&checkpoint_path, b"{broken").unwrap();
+    let runner = MaintenanceRunner {
+        guest: Runner::new(),
+        config: observed.config,
+    };
+    assert!(maintenance_tick(&runner, &paths).unwrap());
+    assert_eq!(fs::read(&checkpoint_path).unwrap(), b"{broken");
+    assert!(load(&paths, machine.id()).unwrap().last_trim_at.is_some());
+    assert!(load(&paths, damaged.id())
+        .unwrap()
+        .last_attempt_at
+        .is_none());
     assert_eq!(runner.guest.calls.lock().unwrap().len(), 1);
 }
 

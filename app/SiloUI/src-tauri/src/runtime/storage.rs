@@ -614,7 +614,11 @@ fn automatic(
     );
 }
 
-fn periodic(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<bool, RuntimeError> {
+fn periodic(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    unresolved: &HashMap<String, RuntimeError>,
+) -> Result<bool, RuntimeError> {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
     let mut machines: Vec<_> = read_metadata(&paths.metadata)?
         .machines
@@ -628,6 +632,9 @@ fn periodic(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<bool, Ru
     machines.rotate_left(offset);
     let deadline = Instant::now() + TRIM_BUDGET;
     for machine in machines {
+        if unresolved.contains_key(machine.id()) {
+            continue;
+        }
         if shutdown::ensure_accepting_operations().is_err() {
             return Ok(false);
         }
@@ -679,10 +686,23 @@ fn periodic(runner: &dyn RuntimeRunner, paths: &RuntimePaths) -> Result<bool, Ru
     }
     Ok(false)
 }
+fn maintenance_tick(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+) -> Result<bool, RuntimeError> {
+    let recovery = checkpoints::recover_interrupted(runner, paths)?;
+    if let Some(failure) = recovery.cleanup_error {
+        eprintln!("Deleted checkpoint data was kept: {failure}");
+    }
+    for (id, failure) in &recovery.unresolved {
+        eprintln!("Interrupted checkpoint data for sandbox {id} was kept: {failure}");
+    }
+    periodic(runner, paths, &recovery.unresolved)
+}
+
 pub(crate) fn start_monitor(app: &AppHandle) {
     let app = app.clone();
     thread::spawn(move || {
-        let mut recovered = false;
         loop {
             // Periodic background work skips whenever any operation is active or waiting.
             if let Ok(_guard) = OPERATIONS.try_computer_hidden("Trimming sandbox storage") {
@@ -690,15 +710,8 @@ pub(crate) fn start_monitor(app: &AppHandle) {
                     // No paths exist while the storage migration is unfinished, so
                     // neither step below can reach the previous generation.
                     if let Ok(paths) = runtime_paths(&app) {
-                        if !recovered {
-                            match checkpoints::recover_interrupted(&ProcessRunner, &paths) {
-                                Ok(()) => recovered = true,
-                                Err(failure) => {
-                                    eprintln!("Interrupted checkpoint data was kept: {failure}")
-                                }
-                            }
-                        } else {
-                            let _ = periodic(&ProcessRunner, &paths);
+                        if let Err(failure) = maintenance_tick(&ProcessRunner, &paths) {
+                            eprintln!("Storage maintenance could not finish: {failure}");
                         }
                     }
                 }
