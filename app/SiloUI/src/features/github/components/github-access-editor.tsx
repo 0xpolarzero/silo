@@ -432,7 +432,7 @@ export function GitHubAccessEditor({
                           <div className="ml-auto flex flex-wrap items-center justify-end gap-x-4 gap-y-2 text-xs">
                             <label className="flex items-center gap-2">
                               <Checkbox aria-label={`All repositories for ${name}`} checked={access.repositoryMode === "all"} disabled={workspaceDisabled || !repositoryControlsAvailable}
-                                onCheckedChange={(checked) => onWorkspaceRepositoryAccessChange(name, { repositoryMode: checked === true ? "all" : "selected", allRepositoriesAllowChanges: false })} />
+                                onCheckedChange={(checked) => onWorkspaceRepositoryAccessChange(name, { ...access, repositoryMode: checked === true ? "all" : "selected", allRepositoriesAllowChanges: false })} />
                               All repositories
                             </label>
                             {access.repositoryMode === "all" && <label className="flex items-center gap-2">
