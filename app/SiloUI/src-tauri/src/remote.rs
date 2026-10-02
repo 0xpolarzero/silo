@@ -531,8 +531,9 @@ fn read_reply(mut reader: impl std::io::BufRead) -> Result<Value, String> {
         if byte == REPLY_PREAMBLE[matched] {
             matched += 1;
         } else {
-            skipped += matched + 1;
-            matched = usize::from(byte == REPLY_PREAMBLE[0]);
+            let restart = usize::from(byte == REPLY_PREAMBLE[0]);
+            skipped += matched + 1 - restart;
+            matched = restart;
             if skipped > REPLY_SEARCH_LIMIT {
                 return Err("The other computer printed unexpected text before Silo's reply. Remove output from its shell startup files, such as echo in .bashrc.".into());
             }
@@ -3302,6 +3303,21 @@ mod reply_tests {
         let mut bare = Vec::new();
         write_frame(&mut bare, &value).unwrap();
         assert!(read_reply(bare.as_slice()).is_err());
+    }
+
+    #[test]
+    fn reply_search_counts_overlapping_prefix_bytes_once() {
+        let value = json!({"result":{"hostId":"office"}});
+        for mut noise in [vec![b'x'; REPLY_SEARCH_LIMIT], vec![0; REPLY_SEARCH_LIMIT]] {
+            *noise.last_mut().unwrap() = 0;
+            let bytes = [noise, reply(&value)].concat();
+            let reader = std::io::BufReader::with_capacity(7, bytes.as_slice());
+            assert_eq!(read_reply(reader).unwrap(), value);
+        }
+        let flood = [vec![0; REPLY_SEARCH_LIMIT + 1], reply(&value)].concat();
+        assert!(read_reply(flood.as_slice())
+            .unwrap_err()
+            .contains("shell startup files"));
     }
 
     #[test]

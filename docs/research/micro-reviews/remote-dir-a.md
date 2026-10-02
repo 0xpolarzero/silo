@@ -31,3 +31,13 @@ Both findings were independently fixed on integration by `6bd7cc69` while this l
 After resolving the overlap, all nine tests in the unchanged `remote/operations.rs` passed in the isolated module harness, including integration's two gate-level regressions. The harness compiles the unchanged synchronous gate implementation and the relevant bridge-error implementation against cached dependencies; it omits the unused Tauri worker adapter, unrelated gate tests, and runtime error conversions. Rust 1.94.0 `clippy-driver` reported no warnings for that harness; Cargo formatting and `git diff --check` passed. These focused checks type-check the reviewed module but do not qualify the full application build or live two-computer behavior.
 
 The full application Cargo test and Cargo Clippy requests never progressed beyond shared-target lock waits. Both requests and their verified worktree-owned Cargo processes were cancelled with SIGTERM after the integration fix superseded the local implementation; no other worktree process was stopped. No full-application Cargo result is claimed. The final scope pass found no additional concrete defect beyond the two admission checks, and still excludes R-25's previously reported checkpoint timeout.
+
+## REMOTE-DIR-A-3: Overlapping reply prefixes double-count shell output
+
+- **Priority:** P3.
+- **Location:** `app/SiloUI/src-tauri/src/remote.rs`, `read_reply`, mismatch branch.
+- **Trigger:** A valid reply follows shell output within the 64 KiB allowance, ending in a NUL byte or containing repeated NUL bytes. The next NUL restarts the preamble match.
+- **Evidence:** The parser added the current byte to `skipped` while also retaining it as the first byte of the next potential preamble. The extracted-source regression `reply_search_counts_overlapping_prefix_bytes_once` rejected an exactly 64 KiB fixture ending in NUL; the existing shell-output regression passed.
+- **Consequence:** The controller reports unexpected shell output and loses a valid remote result despite receiving a reply within the documented allowance. Repeated NULs can reach this false rejection below 64 KiB.
+- **Fix:** Count the mismatched byte as skipped only when it does not begin the next match. Preserve the frame and shell-output limits.
+- **Regression:** Both an ordinary 64 KiB banner ending in NUL and a 64 KiB NUL banner must round-trip through a seven-byte buffer. A NUL banner one byte over the allowance must still fail. Both parser tests pass after correction. The disposable harness copies the source functions and test bodies; it replaces only the unused process-wide test guard. Rust 1.94.0 module Clippy, Cargo formatting, and whitespace checks pass; no live SSH session, app, or VM is involved.
