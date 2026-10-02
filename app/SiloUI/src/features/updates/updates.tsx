@@ -28,6 +28,7 @@ export function UpdatesCard() {
   const requestInstall = updates.requestInstall
   const retry = () => {
     if (!state) updates.reconnect()
+    else if (state.packageKind === "manual" && state.phase === "available") updates.openRelease()
     else if (state.retryAction === "download") updates.download()
     else if (installing) requestInstall()
     else updates.check()
