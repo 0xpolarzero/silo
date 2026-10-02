@@ -344,6 +344,17 @@ fn project_ports(
                 .as_u64()
                 .and_then(|n| u16::try_from(n).ok())
                 .filter(|n| *n != 0);
+            // The owner removed the publication (the guest service may still listen). A row
+            // that failed to observe says nothing about publication, so it keeps its tunnel.
+            let removed = !failed_vms.contains(&vm)
+                && port["configured"] == json!(false)
+                && port["state"] == json!("unpublished")
+                && endpoint.is_none();
+            if removed {
+                closed.extend(tunnels.live.remove(&key));
+                tunnels.intents.remove(&key);
+                tunnels.connecting.remove(&key);
+            }
             // A stopped or restarting VM has no endpoint yet; its tunnel waits for it.
             let current = tunnels.live.get_mut(&key).is_some_and(|tunnel| {
                 tunnel.alive() && endpoint.is_none_or(|endpoint| endpoint == tunnel.remote_port)
@@ -943,6 +954,38 @@ mod tests {
         let result = project_ports(observed(Some(32000)), "office", &mut tunnels).unwrap();
         assert_eq!(port(&result)["hostPort"], 43000);
         assert!(result.reconnect.is_empty());
+    }
+
+    #[test]
+    fn an_explicitly_unpublished_service_closes_its_tunnel_and_forgets_its_intent() {
+        let mut tunnels = Tunnels::default();
+        tunnels.live.insert(key("office"), tunnel(43000, 32000));
+        tunnels.intents.insert(key("office"), intent(43000));
+        // The owner removed the publication while the guest service keeps listening.
+        let mut value = observed(None);
+        value["workspaces"][0]["ports"][0]["configured"] = json!(false);
+        value["workspaces"][0]["ports"][0]["state"] = json!("unpublished");
+        let result = project_ports(value, "office", &mut tunnels).unwrap();
+        assert_eq!(result.closed.len(), 1);
+        assert!(result.reconnect.is_empty());
+        assert!(tunnels.live.is_empty() && tunnels.intents.is_empty());
+        assert!(tunnels.connecting.is_empty());
+        assert_eq!(port(&result)["configured"], false);
+        assert_eq!(port(&result)["state"], "unpublished");
+        assert!(port(&result)["hostPort"].is_null());
+        // An observation error is not a removal.
+        tunnels.live.insert(key("office"), tunnel(43000, 32000));
+        tunnels.intents.insert(key("office"), intent(43000));
+        let mut failed = observed(None);
+        failed["workspaces"][0]["error"] = json!("unreachable");
+        failed["workspaces"][0]["ports"][0]["configured"] = json!(false);
+        failed["workspaces"][0]["ports"][0]["state"] = json!("unpublished");
+        let result = project_ports(failed, "office", &mut tunnels).unwrap();
+        assert!(result.closed.is_empty());
+        assert!(
+            tunnels.live.contains_key(&key("office"))
+                && tunnels.intents.contains_key(&key("office"))
+        );
     }
 
     #[test]
