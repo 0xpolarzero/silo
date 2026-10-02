@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Allow remote checkpoint actions to finish within their supported owner work window, including queueing and transport, and preserve the same operation identity when reconnecting.
+Give remote checkpoint actions their full supported timeout, including time spent waiting and connecting, and keep retries tied to the same action.
