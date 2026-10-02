@@ -82,10 +82,11 @@ jobs:
           lychee=$(find "$RUNNER_TEMP/lychee" -type f -name lychee | head -n 1)
           test -x "$lychee"
           echo "LYCHEE=$lychee" >> "$GITHUB_ENV"
-      - name: Check relative links in Markdown documentation
+      - name: Check relative links in documentation
         run: >-
           "$LYCHEE" --offline --no-progress
           README.md AGENTS.md 'docs/**/*.md' 'app/SiloUI/*.md' 'app/SiloUI/tests/**/*.md'
+          'app/SiloUI/docs/**/*.html'
           'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
 
   rust:
