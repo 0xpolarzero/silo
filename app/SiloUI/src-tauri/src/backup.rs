@@ -3939,6 +3939,8 @@ mod tests {
 
     #[test]
     fn non_snapshot_commands_do_not_take_the_worker_lock() {
+        // Whole-process forks in other tests would keep this test's lock busy; see the file descriptor isolation notes in docs/SiloUI-RUST-TEST-SUPPORT.md.
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let command = script_command(
             directory.path(),
@@ -3968,6 +3970,8 @@ mod tests {
 
     #[test]
     fn cancel_asks_the_runtime_to_stop_before_killing_it() {
+        // Whole-process forks in other tests would keep this test's lock busy; see the file descriptor isolation notes in docs/SiloUI-RUST-TEST-SUPPORT.md.
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let command = script_command(directory.path(), TRAPS_TERM);
         let home = command.home.clone();
@@ -4031,6 +4035,8 @@ mod tests {
 
     #[test]
     fn cancel_stops_waiting_for_an_inherited_worker_lock() {
+        // Whole-process forks in other tests would keep this test's lock busy; see the file descriptor isolation notes in docs/SiloUI-RUST-TEST-SUPPORT.md.
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let command = script_command(directory.path(), "#!/bin/sh\nexit 0\n");
         // A surviving child of an earlier Silo still holds the lock.
@@ -4071,6 +4077,8 @@ mod tests {
 
     #[test]
     fn surviving_child_holds_worker_lock_until_it_exits() {
+        // Whole-process forks in other tests would keep this test's lock busy; see the file descriptor isolation notes in docs/SiloUI-RUST-TEST-SUPPORT.md.
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let lock = wait_for_interrupted_command(directory.path(), Duration::ZERO).unwrap();
         let mut command = Command::new("/bin/sh");
@@ -4087,6 +4095,8 @@ mod tests {
 
     #[test]
     fn checking_for_a_surviving_child_writes_nothing_and_still_waits_for_it() {
+        // Whole-process forks in other tests would keep this test's lock busy; see the file descriptor isolation notes in docs/SiloUI-RUST-TEST-SUPPORT.md.
+        let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let home = directory.path().join("home");
         // No lock file: no child can hold it, and neither it nor its folder is created.

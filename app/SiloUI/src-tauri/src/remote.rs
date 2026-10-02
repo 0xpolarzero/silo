@@ -2314,13 +2314,24 @@ mod setup_tests {
                 shells.push(found);
             }
         }
-        let available: Vec<_> = shells.into_iter().filter(|shell| shell.is_file()).collect();
-        assert!(
-            available.iter().any(|shell| shell.ends_with("csh")
-                || shell.ends_with("tcsh")
-                || shell.ends_with("fish")),
-            "no non-POSIX shell to test"
-        );
+        let (available, missing): (Vec<_>, Vec<_>) =
+            shells.into_iter().partition(|shell| shell.is_file());
+        // Shells that are not installed are skipped, with a note. macOS ships csh, tcsh
+        // and zsh, so the non-POSIX coverage is still required there.
+        for shell in &missing {
+            eprintln!("skipping login shell {}: not installed", shell.display());
+        }
+        assert!(!available.is_empty(), "no login shell to test");
+        let non_posix = available.iter().any(|shell| {
+            shell.ends_with("csh") || shell.ends_with("tcsh") || shell.ends_with("fish")
+        });
+        if cfg!(target_os = "macos") {
+            assert!(non_posix, "no non-POSIX shell to test");
+        } else if !non_posix {
+            eprintln!(
+                "no non-POSIX login shell (csh, tcsh, fish) installed; only POSIX shells tested"
+            );
+        }
         for shell in available {
             install_with(&shell);
         }

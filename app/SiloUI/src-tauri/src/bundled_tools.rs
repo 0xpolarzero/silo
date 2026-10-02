@@ -55,12 +55,12 @@ mod tests {
         std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
         std::fs::write(executable.with_file_name("git"), "unrelated system Git").unwrap();
         for bundle in [BundleType::AppImage, BundleType::Deb, BundleType::Rpm] {
-            let appimage_root = Path::new("/tmp/Silo.AppDir");
+            let appimage_root = root.path().join("Silo.AppDir");
             let directory = resolve(
                 &executable,
                 &resources,
                 Some(bundle.clone()),
-                Some(appimage_root),
+                Some(&appimage_root),
             )
             .unwrap();
             let expected = if bundle == BundleType::AppImage {
@@ -69,7 +69,12 @@ mod tests {
                 PathBuf::from("/usr/libexec/silo/tools")
             };
             assert_eq!(directory, expected);
-            assert!(!directory.join("git").exists());
+            // Never the executable's own directory, whose tool is unrelated. The fixed
+            // package path is not inspected: a machine with Silo installed has files there.
+            assert_ne!(directory, executable.parent().unwrap());
+            if bundle == BundleType::AppImage {
+                assert!(!directory.join("git").exists());
+            }
         }
         assert_eq!(
             std::fs::read(executable.with_file_name("git")).unwrap(),
