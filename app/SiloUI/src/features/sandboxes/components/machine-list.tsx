@@ -169,7 +169,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   useEffect(() => { reorderPending.current = false }, [machines])
 
   function reorder(id: string, targetIndex: number) {
-    if (interactionDisabled || reorderPending.current) return
+    if (interactionDisabled || editor || reorderPending.current) return
     // Reorder against the order captured when the drag/keyboard move began, so the change
     // carries that order as `expectedOrder` and does not fold in concurrent edits. A saved
     // display order has no configuration to conflict with, so it reorders the current rows.
@@ -220,7 +220,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   }
 
   function handleReorderKey(event: KeyboardEvent<HTMLElement>, machine: SetupMachineConfiguration) {
-    if (interactionDisabled) return
+    if (interactionDisabled || editor) return
     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return
     event.preventDefault()
     if (reorderPending.current) return
@@ -271,6 +271,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : busyReason
               const presentation = getRowPresentation?.(machine)
               const rowInteractionsDisabled = interactionDisabled || Boolean(presentation?.suppressInteractions)
+              const reorderDisabled = rowInteractionsDisabled || Boolean(editor)
               const computerName = computers?.find(computer => computer.id === getComputerId?.(machine))?.name
               const deletionName = computerName ? `${machine.name} on ${computerName}` : machine.name
               return (
@@ -300,14 +301,14 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       detailClassName={presentation?.detailClassName}
                       leading={!reorderable(machine) ? <span aria-hidden="true" className="size-7 shrink-0" /> : <span
                         role="button"
-                        tabIndex={rowInteractionsDisabled ? -1 : 0}
-                        draggable={!editor && !rowInteractionsDisabled}
+                        tabIndex={reorderDisabled ? -1 : 0}
+                        draggable={!reorderDisabled}
                         aria-label={`Reorder ${machine.name}`}
-                        aria-disabled={rowInteractionsDisabled || undefined}
+                        aria-disabled={reorderDisabled || undefined}
                         className="grid size-7 shrink-0 cursor-grab place-items-center rounded-md text-muted-foreground outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:cursor-grabbing aria-disabled:cursor-default aria-disabled:opacity-40"
-                        onKeyDown={(event) => { if (!rowInteractionsDisabled) handleReorderKey(event, machine) }}
+                        onKeyDown={(event) => { if (!reorderDisabled) handleReorderKey(event, machine) }}
                         onDragStart={(event) => {
-                          if (rowInteractionsDisabled) { event.preventDefault(); return }
+                          if (reorderDisabled) { event.preventDefault(); return }
                           beginOperation()
                           captureBaseline()
                           setDraggedID(machine.id)

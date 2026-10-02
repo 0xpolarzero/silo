@@ -75,6 +75,25 @@ it("notices when the VM is changed elsewhere while the editor is open", async ()
   expect(screen.getByRole("button", { name: "Save" })).toBeEnabled()
 })
 
+it("keeps the edit's original baseline when another row receives a reorder key", async () => {
+  const second = { ...machine, id: "00000000-0000-4000-8000-000000000002", name: "second" }
+  const props = { onCommitMachine: vi.fn().mockResolvedValue(undefined), onReorder: vi.fn(), getComputerId: () => "" }
+  const { user, view } = await openEditor([machine, second], props)
+  await user.selectOptions(screen.getByRole("combobox", { name: "CPUs" }), "4")
+  const latest = { ...machine, maxMemoryGiB: 64 }
+  view.rerender(<TooltipProvider><MachineList machines={[latest, second]} onMachinesChange={vi.fn()}
+    isMachineCreated={() => true} getRowPresentation={() => ({ menuActions: [] })} {...props} /></TooltipProvider>)
+  const reorder = screen.getByRole("button", { name: "Reorder second" })
+  expect(reorder).toHaveAttribute("aria-disabled", "true")
+  expect(reorder).toHaveAttribute("tabindex", "-1")
+  reorder.focus()
+  // This is a no-op at the end of the list, so the editor stays open.
+  await user.keyboard("{ArrowDown}")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  expect(props.onReorder).not.toHaveBeenCalled()
+  expect(props.onCommitMachine).toHaveBeenCalledExactlyOnceWith({ ...machine, cpus: 4 }, machine, "", [machine, second])
+})
+
 it("reports a stale rejection of Add Linux desktop, which has no editor to show it", async () => {
   const onCommitMachine = vi.fn().mockRejectedValue(staleError)
   render(<TooltipProvider><Toaster /><MachineList machines={[machine]} onMachinesChange={vi.fn()} onCommitMachine={onCommitMachine}
