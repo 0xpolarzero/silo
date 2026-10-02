@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
 import { createReadStream, createWriteStream, readFileSync } from "node:fs"
-import { mkdir, stat, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { pipeline } from "node:stream/promises"
 import { fileURLToPath } from "node:url"
@@ -85,28 +85,35 @@ export function guestImageMetadata(env = process.env) {
   }
 }
 
-export async function buildGuestImage(architecture) {
+export async function buildGuestImage(architecture, { outputDirectory, run = execFileSync, start = spawn } = {}) {
   if (!["arm64", "amd64"].includes(architecture)) throw new Error("Usage: node scripts/build-guest-image.mjs arm64|amd64|metadata")
   const { version, image: imageName } = guestImageMetadata()
   const imageReference = `${imageName}-${architecture}`
-  const revision = process.env.GITHUB_SHA || execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim()
-  const output = resolve(root, "src-tauri/guest-image-artifacts", architecture)
+  const revision = process.env.GITHUB_SHA || run("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim()
+  const output = outputDirectory ?? resolve(root, "src-tauri/guest-image-artifacts", architecture)
   await mkdir(output, { recursive: true })
-  execFileSync("docker", ["build", "--label", `org.opencontainers.image.revision=${revision}`, "--platform", `linux/${architecture}`, "-f", resolve(root, "guest-image/Dockerfile"), "-t", imageReference, root], { stdio: "inherit" })
-  const image = JSON.parse(execFileSync("docker", ["image", "inspect", imageReference], { encoding: "utf8" }))[0]
-  verifyGuestImage(architecture, imageReference)
-  const packages = execFileSync("docker", ["run", "--rm", "--network", "none", "--platform", `linux/${architecture}`, imageReference, "cat", "/usr/local/share/silo-packages.txt"], { encoding: "utf8" })
-  const archive = resolve(output, "image.tar.gz")
-  let unpackedBytes = 0
-  const save = spawn("docker", ["image", "save", imageReference], { stdio: ["ignore", "pipe", "inherit"] })
-  const exited = new Promise((resolve, reject) => { save.on("error", reject); save.on("exit", code => code === 0 ? resolve() : reject(new Error(`docker save exited ${code}`))) })
-  save.stdout.on("data", chunk => { unpackedBytes += chunk.length })
-  await Promise.all([pipeline(save.stdout, createGzip({ level: 9 }), createWriteStream(archive)), exited])
-  const hash = createHash("sha256")
-  for await (const chunk of createReadStream(archive)) hash.update(chunk)
-  const manifest = { schemaVersion: 1, version, ubuntuVersion: "24.04", architecture: architecture === "arm64" ? "aarch64" : "x86_64", imageReference, imageDigest: image.Id, archiveSha256: hash.digest("hex"), archiveBytes: (await stat(archive)).size, unpackedBytes, baseImage: "ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254", packages: Object.fromEntries(packages.trim().split("\n").map(line => line.split("\t"))) }
-  await writeFile(resolve(output, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
-  console.log(`Built ${imageReference}: ${manifest.archiveBytes} compressed bytes, config ${manifest.imageDigest}`)
+  run("docker", ["build", "--label", `org.opencontainers.image.revision=${revision}`, "--platform", `linux/${architecture}`, "-f", resolve(root, "guest-image/Dockerfile"), "-t", imageReference, root], { stdio: "inherit" })
+  const image = JSON.parse(run("docker", ["image", "inspect", imageReference], { encoding: "utf8" }))[0]
+  verifyGuestImage(architecture, imageReference, { run })
+  const packages = run("docker", ["run", "--rm", "--network", "none", "--platform", `linux/${architecture}`, imageReference, "cat", "/usr/local/share/silo-packages.txt"], { encoding: "utf8" })
+  const stage = await mkdtemp(resolve(output, ".export-"))
+  const archive = resolve(stage, "image.tar.gz")
+  try {
+    let unpackedBytes = 0
+    const save = start("docker", ["image", "save", imageReference], { stdio: ["ignore", "pipe", "inherit"] })
+    const exited = new Promise((resolve, reject) => { save.on("error", reject); save.on("exit", code => code === 0 ? resolve() : reject(new Error(`docker save exited ${code}`))) })
+    save.stdout.on("data", chunk => { unpackedBytes += chunk.length })
+    await Promise.all([pipeline(save.stdout, createGzip({ level: 9 }), createWriteStream(archive)), exited])
+    const hash = createHash("sha256")
+    for await (const chunk of createReadStream(archive)) hash.update(chunk)
+    const manifest = { schemaVersion: 1, version, ubuntuVersion: "24.04", architecture: architecture === "arm64" ? "aarch64" : "x86_64", imageReference, imageDigest: image.Id, archiveSha256: hash.digest("hex"), archiveBytes: (await stat(archive)).size, unpackedBytes, baseImage: "ubuntu:24.04@sha256:224a1869083a311ef3f13648a154ba79832fbef6364d31493642ca03082da254", packages: Object.fromEntries(packages.trim().split("\n").map(line => line.split("\t"))) }
+    await writeFile(resolve(stage, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
+    await rename(archive, resolve(output, "image.tar.gz"))
+    await rename(resolve(stage, "manifest.json"), resolve(output, "manifest.json"))
+    console.log(`Built ${imageReference}: ${manifest.archiveBytes} compressed bytes, config ${manifest.imageDigest}`)
+  } finally {
+    await rm(stage, { recursive: true, force: true })
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
