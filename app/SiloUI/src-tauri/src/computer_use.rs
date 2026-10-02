@@ -597,9 +597,19 @@ fn running_identity(
     if inspected.status != "Running" || !labelled {
         return None;
     }
+    // MicroSandbox 0.7.6 does not report a runtime instance id (Silo's 0.7.6 patches do
+    // not add one), so a running sandbox is identified by the time the runtime last
+    // updated it. A stop, restore or start rewrites that time; a changed value only makes
+    // the sync stand down, never run against another instance.
     inspected
         .runtime_instance_id
         .filter(|instance| !instance.is_empty())
+        .or_else(|| {
+            inspected
+                .updated_at
+                .filter(|updated| !updated.is_empty())
+                .map(|updated| format!("updated-at:{updated}"))
+        })
 }
 
 /// How long a queued sync waits for its turn before it gives up (the next boot or app

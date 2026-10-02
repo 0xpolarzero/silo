@@ -1321,6 +1321,56 @@ fn an_identity_that_cannot_be_established_at_boot_is_never_synced_later() {
     assert!(runner.1.calls.lock().unwrap().is_empty());
 }
 
+/// MicroSandbox 0.7.6 reports no `runtime_instance_id`; the runtime's last-update time
+/// identifies the running instance instead, so computer use still sets itself up and a
+/// restart between the boot and the launch (a new update time) is still refused.
+#[test]
+fn the_runtime_update_time_identifies_an_instance_when_no_instance_id_is_reported() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    write_machines(&paths, true);
+    struct Sequence(StdMutex<Vec<&'static str>>, Recorder);
+    impl RuntimeRunner for Sequence {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            if args.first().is_some_and(|a| a == "inspect") {
+                let mut times = self.0.lock().unwrap();
+                let updated = if times.len() > 1 {
+                    times.remove(0)
+                } else {
+                    times[0]
+                };
+                return Ok(CommandOutput {
+                    stdout: json!({"name":"dev","status":"Running","updated_at":updated,
+                        "config":{"labels":{"silo.machine-id":VM_ID}}})
+                    .to_string(),
+                    stderr: String::new(),
+                });
+            }
+            self.1.run(paths, args, timeout)
+        }
+    }
+    let same = Arc::new(Sequence(
+        StdMutex::new(vec!["2026-10-02T13:37:51Z"]),
+        Recorder::new(""),
+    ));
+    boot(same.clone(), &paths, "dev").unwrap().join().unwrap();
+    assert!(!same.1.calls.lock().unwrap().is_empty());
+    let restarted = Arc::new(Sequence(
+        StdMutex::new(vec!["2026-10-02T13:37:51Z", "2026-10-02T13:40:00Z"]),
+        Recorder::new(""),
+    ));
+    boot(restarted.clone(), &paths, "dev")
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(restarted.1.calls.lock().unwrap().is_empty());
+}
+
 #[test]
 fn a_saved_approval_change_whose_sync_never_launched_is_finished_at_app_start() {
     let directory = tempfile::tempdir().unwrap();
