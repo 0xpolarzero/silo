@@ -422,6 +422,34 @@ fn credential_url(line: &str) -> bool {
     })
 }
 
+fn sensitive_option(lower: &str) -> bool {
+    lower.split_whitespace().any(|word| {
+        let word = word.trim_matches(['"', '\'']);
+        if word == "-u" {
+            return true;
+        }
+        let Some(option) = word.strip_prefix("--") else {
+            return false;
+        };
+        if matches!(option, "user" | "proxy-user") {
+            return true;
+        }
+        option.split(['-', '_', '=']).any(|part| {
+            matches!(
+                part,
+                "password"
+                    | "passwd"
+                    | "passphrase"
+                    | "token"
+                    | "secret"
+                    | "key"
+                    | "credential"
+                    | "credentials"
+            )
+        })
+    })
+}
+
 pub(super) fn log_text(body: &str) -> String {
     log_text_with_pem(body, &mut false)
 }
@@ -441,6 +469,7 @@ pub(super) fn log_text_with_pem(body: &str, in_pem: &mut bool) -> String {
             }
             if pem
                 || sensitive_assignment(&lower)
+                || sensitive_option(&lower)
                 || credential_url(line)
                 || [
                     "authorization",
@@ -469,6 +498,51 @@ pub(super) fn log_text_with_pem(body: &str, in_pem: &mut bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn command_line_secret_options_stay_out_of_failure_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        for line in [
+            "curl --user alice:synthetic-password https://example.test",
+            "curl -u alice:synthetic-password https://example.test",
+            "curl --proxy-user alice:synthetic-password https://example.test",
+            "login --password synthetic-password",
+            "client --api-key synthetic-key",
+            "client --client-secret synthetic-secret",
+            "client --access_token synthetic-token",
+            "client --passphrase synthetic-passphrase",
+        ] {
+            let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
+            finish(
+                &paths,
+                &mut event,
+                &Err(RuntimeError::Failed {
+                    operation: "Starting the sandbox".into(),
+                    exit_code: Some(1),
+                    detail: format!("connection failed\n{line}"),
+                }),
+            );
+            for text in [
+                fs::read_to_string(path(&paths)).unwrap(),
+                serde_json::to_string(&read(&paths).unwrap()).unwrap(),
+                serde_json::to_string(&failures(&paths).unwrap()).unwrap(),
+            ] {
+                assert!(
+                    !text.contains("synthetic"),
+                    "Command credentials escaped: {text}"
+                );
+                assert!(text.contains("connection failed"));
+            }
+        }
+        for line in [
+            "client --keyboard-layout us",
+            "client --monkey banana",
+            "client --output result",
+            "curl --user-agent Silo https://example.test",
+        ] {
+            assert_eq!(log_text(line), line);
+        }
+    }
     #[test]
     fn log_text_hides_url_credentials_without_hiding_public_urls() {
         for line in [
