@@ -1,11 +1,13 @@
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).with_name("retry-bundle.py")
 SPEC = importlib.util.spec_from_file_location("retry_bundle", SCRIPT)
@@ -161,6 +163,40 @@ for name, stream in [('stdout', sys.stdout), ('stderr', sys.stderr)]:
             code = MODULE.retry_bundle([sys.executable, '-c', child, str(root)], root / 'bundle.log',
                 AcknowledgingStream(root / 'stdout'), AcknowledgingStream(root / 'stderr'))
             self.assertEqual(code, 0)
+
+    def test_stream_failures_stop_and_reap_the_bundle_child(self):
+        class FailedStream(io.BytesIO):
+            def write(self, _value):
+                raise OSError("fixture output failure")
+
+        for failed in ("stdout", "stderr", "log"):
+            with self.subTest(stream=failed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                completed = root / "completed"
+                child = (
+                    "import pathlib, sys, time; "
+                    "print('ready', flush=True); "
+                    "print('ready', file=sys.stderr, flush=True); "
+                    "time.sleep(1); pathlib.Path(sys.argv[1]).touch()"
+                )
+                streams = {name: io.BytesIO() for name in ("stdout", "stderr", "log")}
+                streams[failed] = FailedStream()
+                popen = subprocess.Popen
+                children = []
+
+                def spawn(*args, **kwargs):
+                    process = popen(*args, **kwargs)
+                    children.append(process)
+                    return process
+
+                with patch.object(MODULE.subprocess, "Popen", side_effect=spawn):
+                    with self.assertRaisesRegex(OSError, "fixture output failure"):
+                        MODULE.run_attempt([sys.executable, "-c", child, str(completed)],
+                                           streams["log"], streams["stdout"], streams["stderr"])
+                self.assertFalse(completed.exists(), "child continued after its output failed")
+                self.assertLess(children[0].returncode, 0)
+                with self.assertRaises(ChildProcessError):
+                    os.waitpid(children[0].pid, os.WNOHANG)
 
     def test_cli_does_not_mask_nonzero_exit_and_appends_to_existing_log(self):
         with tempfile.TemporaryDirectory() as temporary:
