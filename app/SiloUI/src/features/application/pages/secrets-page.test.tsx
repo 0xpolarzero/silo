@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react"
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -13,6 +13,55 @@ function SecretsPreview({ source }: { source: ApplicationSource }) {
 }
 
 describe("SecretsPage", () => {
+  it("requires a new wildcard acknowledgement after the allowed domains change", async () => {
+    const user = userEvent.setup()
+    const save = vi.fn()
+    render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={save} onRemoveSecret={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    const domains = screen.getByRole("textbox", { name: "Allowed domains" })
+    fireEvent.change(domains, { target: { value: "*" } })
+    await user.click(screen.getByRole("checkbox", { name: "Allow any HTTPS destination" }))
+    fireEvent.change(domains, { target: { value: "api.example.test" } })
+    fireEvent.change(domains, { target: { value: "*" } })
+    expect(screen.getByRole("checkbox", { name: "Allow any HTTPS destination" })).not.toBeChecked()
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(save).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert")).toHaveTextContent("Confirm access to any HTTPS destination.")
+    await user.click(screen.getByRole("checkbox", { name: "Allow any HTTPS destination" }))
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(save).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ allowedDomains: ["*"], operation: "edit" }))
+  })
+
+  it("keeps a pending secret save open on Escape and ignores a second submission", async () => {
+    const user = userEvent.setup()
+    let finish!: () => void
+    const save = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+    render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={save} onRemoveSecret={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    await user.type(screen.getByLabelText("Replacement value"), "fixture-replacement")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    const form = screen.getByRole("form", { name: "Edit PACKAGE_TOKEN" })
+    fireEvent.keyDown(form, { key: "Escape" })
+    fireEvent.submit(form)
+    expect(form).toBeVisible()
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled()
+    expect(save).toHaveBeenCalledOnce()
+    await act(async () => finish())
+    expect(screen.queryByRole("form")).not.toBeInTheDocument()
+  })
+
+  it("offers only local virtual machines when assigning a secret", async () => {
+    const user = userEvent.setup()
+    const source = structuredClone(applicationSourceForScenario("running"))
+    const remote = { ...source.workspaces[0], machine: { ...source.workspaces[0].machine, name: "remote-only" }, computer: { id: "office", vmId: "remote-vm", name: "Office", address: "office", connected: true } }
+    source.workspaces.push(remote)
+    render(<SecretsPage source={source} onSaveSecret={vi.fn()} onRemoveSecret={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Add secret" }))
+    await user.click(screen.getByRole("combobox", { name: "Add sandbox" }))
+    expect(screen.getAllByRole("option").map(option => option.textContent)).toEqual(source.workspaces.filter(workspace => !workspace.computer && workspace.machine.kind === "vm").map(workspace => workspace.machine.name))
+    expect(screen.queryByRole("option", { name: "remote-only" })).not.toBeInTheDocument()
+  })
+
   it("keeps Edit and Remove available while sandbox secret application is pending", () => {
     const source = applicationSourceForScenario("running")
     const applying = { ...source, secrets: source.secrets.map((secret) => ({ ...secret, state: "applying" as const })) }
