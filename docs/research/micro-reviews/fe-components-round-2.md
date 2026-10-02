@@ -31,3 +31,13 @@ Scope: `app/SiloUI/src/components/` and adjacent frontend modules. Findings use 
 - **Fix:** Target Radix's `data-state="checked"` in the shared Tailwind state utilities, including dark and grouped focus variants.
 - **Tests:** Compile the real control's classes with the installed Tailwind compiler; check computed background and foreground after toggling, then verify the selected background clears when unchecked.
 - **Primary evidence:** Installed Radix checkbox root emits `data-state` through `getState(checked)` at `node_modules/@radix-ui/react-checkbox/dist/index.js:155`; it emits no `data-checked` attribute.
+
+## FE-COMPONENTS-12 — P2 — Scrollbar orientation styles never match
+
+- **File:line at discovery:** `app/SiloUI/src/components/ui/scroll-area.tsx:42`.
+- **Trigger:** Overflow a sandbox list, file panel, or GitHub access editor; display its shared scrollbar.
+- **Evidence:** `data-horizontal:*` and `data-vertical:*` utilities require boolean attributes absent from Radix's `data-orientation` controls. Both compiled-stylesheet fixtures fail with `auto` thickness instead of 0.625rem.
+- **Consequence:** The custom scrollbar lacks its intended thickness and horizontal thumb layout while Radix hides the native scrollbar.
+- **Fix:** Target `data-orientation="horizontal"` and `data-orientation="vertical"` with Tailwind arbitrary data variants.
+- **Tests:** Real Radix scrollbars in both orientations, with compiled wrapper classes, require the specified thickness and horizontal column layout.
+- **Primary evidence:** Installed Radix `ScrollAreaScrollbarX` and `ScrollAreaScrollbarY` emit `data-orientation` at `node_modules/@radix-ui/react-scroll-area/dist/index.js:404,454`; the viewport stylesheet hides native scrollbars at line 181.
