@@ -23,6 +23,12 @@ All executions use temporary fixtures and synthetic keys. No app or VM was launc
   production regression passes for both export and restore prefixes. The pinned
   [tempfile builder documentation](https://docs.rs/tempfile/3.27.0/tempfile/struct.Builder.html#method.permissions)
   states that temporary files default to `0600` but temporary directories default to `0777`.
+- New workspace disk directories were published by renaming a default-mode temporary
+  directory. The claimed-directory regression failed with `0755` under the ordinary
+  local umask. Explicit `0700` creation protects the raw workspace disk independently
+  of the runtime home's permissions; the extracted claim regression passes and
+  verifies the ownership marker survives publication. Its journal and VM collaborators
+  are synthetic; it exercises the production claim function and filesystem operations.
 
 The extracted Rust checks use the production functions and tests with minimal collaborators
 for channel path construction and process environment sanitation. Full Cargo regressions
