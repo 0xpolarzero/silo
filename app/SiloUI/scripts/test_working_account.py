@@ -180,6 +180,22 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertEqual([call.args[0].name for call in copies.call_args_list], ['z-credential'])
         self.assertEqual((home / 'z-credential').read_bytes(), b'\x00\xff/root/secret')
 
+    def test_partial_file_copy_is_not_published_and_retry_succeeds(self):
+        source, home = self.root / 'source', self.root / 'home'
+        source.mkdir()
+        original = source / 'credential'
+        original.write_bytes(b'complete synthetic credential')
+        def interrupted(original, target):
+            Path(target).write_bytes(b'partial')
+            raise OSError('synthetic interrupted copy')
+        with mock.patch.object(guest.shutil, 'copy2', side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, 'synthetic interrupted copy'):
+                guest.copy_home(source, home)
+        self.assertFalse((home / 'credential').exists())
+        self.assertEqual(list(home.iterdir()), [])
+        guest.copy_home(source, home)
+        self.assertEqual((home / 'credential').read_bytes(), original.read_bytes())
+
     def test_two_home_merge_copies_nonconflicting_files_and_keeps_unrelated_links(self):
         root, desktop, home, external = [self.root / name for name in ('root', 'desktop', 'home', 'external')]
         (root / '.codex').mkdir(parents=True)
