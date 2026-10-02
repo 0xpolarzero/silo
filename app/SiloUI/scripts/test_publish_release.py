@@ -84,6 +84,25 @@ class ReleaseTests(unittest.TestCase):
             with self.subTest(version=version), self.assertRaises(RuntimeError): publish.validate_version(version)
         self.assertEqual(publish.validate_version('1.2.10'), (1,2,10))
 
+    def test_stable_release_requires_explicit_opt_in_before_github_calls(self):
+        for version in ('1.0.0', '2.3.4'):
+            for action in ([], ['--publish']):
+                with self.subTest(version=version, action=action), \
+                        patch.dict(os.environ, GH_REPO='test/repo'), \
+                        patch('sys.argv', ['publish', version, *action]), \
+                        patch.object(publish, 'gh', side_effect=AssertionError('Unexpected GitHub call')) as gh:
+                    with self.assertRaisesRegex(RuntimeError, 'below 1.0.0.*--allow-stable'):
+                        publish.main()
+                    gh.assert_not_called()
+
+    def test_explicit_stable_opt_in_reaches_ordinary_publication_gates(self):
+        with patch.dict(os.environ, GH_REPO='test/repo'), \
+                patch('sys.argv', ['publish', '1.0.0', '--publish', '--allow-stable']), \
+                patch.object(publish, 'gh', return_value='[]') as gh:
+            with self.assertRaisesRegex(RuntimeError, 'verified draft'):
+                publish.main()
+            gh.assert_called_once()
+
     def test_existing_public_version_cannot_be_replaced(self):
         releases=[[{'tag_name':'v0.1.0','draft':False,'prerelease':False}]]
         with patch.dict(os.environ,GH_REPO='test/repo'), patch('sys.argv',['publish','0.1.0']), patch.object(publish,'gh',return_value=json.dumps(releases)) as gh:
