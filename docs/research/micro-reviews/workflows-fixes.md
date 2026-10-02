@@ -54,6 +54,23 @@ before the fix. The guard now requires confirmed absence of all three tags;
 fixtures cover the existing index and failed index lookups as well as successful
 first publication. This retains WORKFLOWS-2's external-writer race limitation.
 
+## WORKFLOWS-6: P2 — Failed guest archive writes wait on the producer indefinitely
+
+When compression or archive output fails, the pipeline destroys its streams but
+the exporter still waits for `docker save` to exit. A client waiting on its daemon
+can keep the build running until the workflow timeout. A synthetic ENOSPC output
+stream and a real disposable producer reproduced the hang: the test exceeded its
+eight-second deadline. The pipeline now terminates its own producer on failure,
+then waits for both results before removing staging files. The regression checks
+prompt failure, the original output error, unchanged prior artifacts, and no
+remaining staging directory, and that the fixture producer has exited. This uses
+Node's supported [stream pipeline](https://nodejs.org/api/stream.html#streampipelinesource-transforms-destination-callback)
+and [child-process signal](https://nodejs.org/api/child_process.html#subprocesskillsignal)
+APIs. SIGTERM targets only the directly spawned client; daemon state is not
+asserted. No Docker daemon or real images were used. Twelve ordinary guest-image
+tests pass; eleven live-image tests are intentionally skipped. Lint, typecheck,
+Rust formatting, and whitespace checks pass.
+
 ## Verification
 
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow`: 22 tests pass after the queue fix.
