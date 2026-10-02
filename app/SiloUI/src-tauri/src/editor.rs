@@ -6,7 +6,7 @@ use crate::{
 };
 use std::{
     fs,
-    io::Write,
+    io::{Read, Seek, SeekFrom, Write},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -343,17 +343,27 @@ pub(crate) fn key(path: &Path) -> Result<(), String> {
 }
 
 pub(crate) fn public_key(path: &Path) -> Result<String, String> {
-    let output = applications::launch::sanitize_child(&mut Command::new("/usr/bin/ssh-keygen"))
-        .args(["-y", "-f"])
-        .arg(path)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
+    let mut command = Command::new("/usr/bin/ssh-keygen");
+    command.args(["-y", "-f"]).arg(path);
+    public_key_from_command(&mut command, Duration::from_secs(5))
+}
+
+fn public_key_from_command(command: &mut Command, timeout: Duration) -> Result<String, String> {
+    let mut output = tempfile::tempfile().map_err(|_| FAILED)?;
+    run_with_stdout(
+        command,
+        timeout,
+        Stdio::from(output.try_clone().map_err(|_| FAILED)?),
+    )?;
+    output.seek(SeekFrom::Start(0)).map_err(|_| FAILED)?;
+    let mut text = String::new();
+    output
+        .take(4097)
+        .read_to_string(&mut text)
         .map_err(|_| FAILED)?;
-    if !output.status.success() {
+    if text.len() > 4096 {
         return Err(FAILED.into());
     }
-    let text = String::from_utf8(output.stdout).map_err(|_| FAILED)?;
     let mut fields = text.split_whitespace();
     let kind = fields.next().ok_or(FAILED)?;
     let value = fields.next().ok_or(FAILED)?;
@@ -566,9 +576,13 @@ fn host_patterns(config: &Path, alias: &str, name: &str) -> String {
 }
 
 fn run(command: &mut Command, timeout: Duration) -> Result<(), String> {
+    run_with_stdout(command, timeout, Stdio::null())
+}
+
+fn run_with_stdout(command: &mut Command, timeout: Duration, stdout: Stdio) -> Result<(), String> {
     let mut child = applications::launch::sanitize_child(command)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
+        .stdout(stdout)
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| FAILED)?;
@@ -1110,6 +1124,30 @@ mod tests {
         assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
         fs::write(&keygen, b"").unwrap();
         assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_ok());
+    }
+
+    #[test]
+    fn public_key_output_from_a_stalled_helper_is_rejected() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf 'ssh-ed25519 test'; exec /bin/sleep 0.2"]);
+        assert!(public_key_from_command(&mut command, Duration::from_millis(20)).is_err());
+    }
+
+    #[test]
+    fn public_key_helper_requires_successful_completion() {
+        for (script, expected) in [
+            ("printf 'ssh-ed25519 test'", Some("ssh-ed25519 test")),
+            ("printf 'ssh-ed25519 test'; exit 1", None),
+        ] {
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", script]);
+            assert_eq!(
+                public_key_from_command(&mut command, Duration::from_secs(1))
+                    .ok()
+                    .as_deref(),
+                expected
+            );
+        }
     }
 
     #[test]
