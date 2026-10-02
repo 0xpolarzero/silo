@@ -20,7 +20,20 @@ root. Its `connection` operation returns sensitive guest viewer credentials and
 must never be logged or exposed in ordinary UI. Guest metadata lives in
 `/var/lib/silo-desktop`; transient process identity is tied to Linux boot ID
 and process start time. The helper allows three startup attempts, then leaves a
-failed state for explicit recovery.
+failed state for explicit recovery. The Selkies backend retries a failed session
+start (Xvfb, PulseAudio, Xfce) the same way: up to three attempts, each tearing
+down what the previous one started, with 1 s and 2 s of backoff; only then is the
+session `failed`, and `silo-desktop start` (or a new boot) starts it again.
+
+`/run` is part of the VM's disk, so a restart, a restore or an imported disk still
+carries the last session's runtime files. The first helper call of a new boot
+(detected by the boot ID marker) empties `/run/silo-desktop/user`, and every
+session start removes a PulseAudio `pid` file and `native` socket whose session is
+not alive in this boot. Without this, a new boot whose PulseAudio got the same pid
+as the previous boot's (boots are nearly deterministic) made PulseAudio exit with
+"Daemon already running", the whole session ended `failed` (nothing retried it) and
+computer use reported "The Linux desktop was not running". Reproduced on the first
+restart of a built-in VM; intermittent on restart and on import.
 
 ## Guest image v4: the desktop is part of the VM
 
@@ -94,7 +107,11 @@ in the [computer use plan](SiloUI-COMPUTER-USE-PLAN.md).
   `scripts/install.sh --user silo --runtime-only --skip-system --offline
   --existing-app <folder> --yes`; run `lcu setup --agent auto --session direct
   --yes --approval ask|auto` as `silo`; read `lcu status --json`; wait for the
-  desktop session and run `lcu-session --user silo -- lcu doctor
+  desktop session (bounded: 300 s after a boot, else 90 s; after a boot a session
+  that is `failed` or `stopped` while the desktop starts with the VM is started
+  again with `silo-desktop start`, up to three times with 2, 4 and 8 s of backoff,
+  before the setup fails with `desktop-session-not-running`) and run
+  `lcu-session --user silo -- lcu doctor
   --non-interactive --require-ready` as `silo`. The result is
   `/var/lib/silo-computer-use/receipt.json`; the log is
   `/var/log/silo-computer-use.log`. A reinstall happens only when LCU's recorded

@@ -58,7 +58,12 @@ class Guest(unittest.TestCase):
                                    'runtime': '0.0.27/20260927214556-b77d38801cca'}}
         self.setup_output = 'Claude Code: MCP registered.\nCodex: MCP registered.\nCodex: hooks registered.\n'
         self.failures = {}
+        # The desktop session: True (running), False (still starting), a state name, or
+        # a list of states reported in turn (the last one repeats).
         self.session = True
+        # What a `silo-desktop start` does to the session (None: nothing).
+        self.start_effect = None
+        self.autostart = True
         self.installed = False
         patches = [
             mock.patch.object(cu, 'STATE', self.state),
@@ -72,7 +77,8 @@ class Guest(unittest.TestCase):
             mock.patch.object(cu, 'MOUNT', self.mount),
             mock.patch.object(cu, 'PREFIX', root / 'opt-lcu'),
             mock.patch.object(cu, 'mount_state', lambda *a, **k: self.mount_state),
-            mock.patch.object(cu, 'session_running', lambda: self.session),
+            mock.patch.object(cu, 'desktop_session', self.fake_session),
+            mock.patch.object(cu, 'DESKTOP_CONFIG', root / 'desktop-config.json'),
             mock.patch.object(cu, 'run', self.fake_run),
             # Files written by the tests are owned by the test user, not root.
             mock.patch.object(cu, 'read_json', self.read_json),
@@ -83,6 +89,15 @@ class Guest(unittest.TestCase):
             self.addCleanup(patch.stop)
         self.mount_state = 'ok'
         self.write_pinned()
+        (root / 'desktop-config.json').write_text(json.dumps({'autoStart': True}))
+
+    def fake_session(self):
+        value = self.session
+        if isinstance(value, list):
+            return value.pop(0) if len(value) > 1 else value[0]
+        if value is True:
+            return 'running'
+        return 'starting' if value is False else value
 
     @staticmethod
     def read_json(path):
@@ -111,6 +126,10 @@ class Guest(unittest.TestCase):
             if check and failure != 'soft':
                 raise cu.Failure('command-failed', name)
             return subprocess.CompletedProcess(argv, 1, stdout='', stderr='')
+        if name == 'silo-desktop':
+            if argv[1:2] == ['start'] and self.start_effect is not None:
+                self.session = self.start_effect
+            return subprocess.CompletedProcess(argv, 0, stdout='', stderr='')
         if name == 'install.sh':
             self.installed = True
             (cu.PREFIX / 'current/bin').mkdir(parents=True, exist_ok=True)
@@ -340,6 +359,54 @@ class Sync(Guest):
         with mock.patch.object(cu.time, 'monotonic', lambda: next(times)):
             result = cu.sync(boot=True)
         self.assertEqual((result['state'], result['reason']), ('failed', 'desktop-session-not-running'))
+
+    def desktop_starts(self):
+        return [argv for argv, *_ in self.commands if argv[:2] == [cu.DESKTOP_COMMAND, 'start']]
+
+    def test_a_session_that_failed_during_boot_is_started_again_before_the_doctor(self):
+        # The boot hook's desktop start failed (a stale PulseAudio pid file in the log):
+        # the session is `failed` when the helper looks, and `start` brings it back.
+        self.session = 'failed'
+        self.start_effect = 'running'
+        result = cu.sync(boot=True)
+        self.assertEqual(result['state'], 'ready')
+        self.assertEqual(len(self.desktop_starts()), 1)
+        self.assertLess(self.commands.index(next(c for c in self.commands if c[0] == self.desktop_starts()[0])),
+                        self.commands.index(next(c for c in self.commands if c[0][0].endswith('lcu-session'))),
+                        'the doctor runs only once the session exists')
+
+    def test_a_session_still_starting_is_waited_for_without_starting_it_again(self):
+        self.session = ['starting', 'starting', 'starting', 'running']
+        result = cu.sync(boot=True)
+        self.assertEqual(result['state'], 'ready')
+        self.assertEqual(self.desktop_starts(), [])
+
+    def test_repair_waits_with_backoff_and_gives_up_after_three_starts(self):
+        self.session = 'failed'
+        slept = []
+        with mock.patch.object(cu.time, 'sleep', slept.append):
+            result = cu.sync(boot=True)
+        self.assertEqual((result['state'], result['reason']), ('failed', 'desktop-session-not-running'))
+        self.assertEqual(len(self.desktop_starts()), cu.SESSION_REPAIR_ATTEMPTS)
+        self.assertEqual([n for n in slept if n >= cu.SESSION_REPAIR_BASE][:3], [2, 4, 8])
+        self.assertFalse(any(c[0][0].endswith('lcu-session') for c in self.commands), 'no doctor without a session')
+
+    def test_a_stopped_session_is_not_restarted_when_the_desktop_is_manual(self):
+        (Path(self.tmp.name) / 'desktop-config.json').write_text(json.dumps({'autoStart': False}))
+        self.session = 'stopped'
+        times = iter(range(0, 10_000, 100))
+        with mock.patch.object(cu.time, 'monotonic', lambda: next(times)):
+            result = cu.sync(boot=True)
+        self.assertEqual((result['state'], result['reason']), ('failed', 'desktop-session-not-running'))
+        self.assertEqual(self.desktop_starts(), [])
+
+    def test_a_later_sync_never_restarts_a_desktop_the_user_stopped(self):
+        self.session = 'stopped'
+        times = iter(range(0, 10_000, 100))
+        with mock.patch.object(cu.time, 'monotonic', lambda: next(times)):
+            result = cu.sync()
+        self.assertEqual((result['state'], result['reason']), ('failed', 'desktop-session-not-running'))
+        self.assertEqual(self.desktop_starts(), [])
 
     def test_a_staged_archive_that_does_not_match_is_downloaded_and_verified(self):
         # The staged file no longer matches the lock, so the pinned URL is used.

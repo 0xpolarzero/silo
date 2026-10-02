@@ -4691,7 +4691,7 @@ mod tests {
                                 paths,
                                 name,
                                 "root",
-                                "/usr/local/bin/silo-desktop status; tail -n 60 /var/log/silo-desktop.log; tail -n 30 /var/log/silo-computer-use.log; ls -la /tmp/.X11-unix /tmp/.X*-lock 2>&1",
+                                "date; uptime; /usr/local/bin/silo-desktop status; echo --- selkies.json; cat /run/silo-desktop/selkies.json; echo; ls -la /run/silo-desktop; echo --- desktop log; tail -n 80 /var/log/silo-desktop.log; echo --- computer-use log; tail -n 40 /var/log/silo-computer-use.log; echo --- receipt; cat /var/lib/silo-computer-use/receipt.json; echo --- X; ls -la /tmp/.X11-unix /tmp/.X*-lock 2>&1; cat /tmp/.X1-lock 2>&1; echo --- ps; ps -eo pid,ppid,etimes,user,args | head -80",
                             )
                             .unwrap_or_default()
                         );
@@ -4869,6 +4869,279 @@ mod tests {
         );
         crate::computer_use::set_test_published_dir(None);
         crate::chatgpt_app::set_test_cache(None);
+    }
+
+    /// Boots one built-in VM repeatedly through the real Start path: a fresh VM, then
+    /// `SILO_BOOT_LOOP_ROUNDS` stop and start cycles, then imports of its export into a
+    /// second computer (default 3 each). Every boot must end with the desktop session
+    /// running and computer use ready, and a failure prints the guest's state. Same
+    /// inputs as the export and import test above.
+    #[test]
+    #[ignore = "requires the v4 guest image, a published ChatGPT app and hardware virtualization"]
+    fn live_built_in_desktop_boots_repeatedly() {
+        crate::test_support::live::require_confirmation();
+        let _test_state = crate::test_support::global_state();
+        let rounds: usize = std::env::var("SILO_BOOT_LOOP_ROUNDS")
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(3);
+        let directory = tempfile::Builder::new()
+            .prefix("silo-boot-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let guest_image = PathBuf::from(std::env::var("SILO_TEST_GUEST_IMAGE").unwrap());
+        let source_published = crate::chatgpt_app::ensure_published_dir(
+            PathBuf::from(std::env::var("SILO_TEST_PUBLISHED").unwrap())
+                .parent()
+                .unwrap(),
+        )
+        .unwrap();
+        let target_root = directory.path().join("target-chatgpt");
+        fs::create_dir_all(&target_root).unwrap();
+        let target_published = crate::chatgpt_app::ensure_published_dir(&target_root).unwrap();
+        let version = crate::chatgpt_app::Lock::bundled()
+            .unwrap()
+            .directory_name(crate::chatgpt_app::DebArch::host().unwrap());
+        assert!(std::process::Command::new("cp")
+            .arg("-cR")
+            .arg(source_published.join(&version))
+            .arg(target_published.join(&version))
+            .status()
+            .unwrap()
+            .success());
+        crate::chatgpt_app::set_test_cache(Some(crate::chatgpt_app::Status::Ready {
+            path: source_published.join(&version),
+            version: "26.928.31416".into(),
+        }));
+        let executable = PathBuf::from(std::env::var("SILO_TEST_MSB").unwrap());
+        let library = PathBuf::from(std::env::var("SILO_TEST_LIBKRUNFW").unwrap());
+        let make = |name: &str| runtime::RuntimePaths {
+            guest_image: guest_image.clone(),
+            executable: executable.clone(),
+            library: library.clone(),
+            home: directory.path().join(name),
+            storage_home: None,
+            metadata: directory.path().join(format!("{name}-machines.json")),
+            volumes: directory.path().join(format!("{name}-volumes")),
+        };
+        let make_controller = |paths: &runtime::RuntimePaths| Controller {
+            history_path: paths.metadata.with_file_name("backup-history.json"),
+            journal: Mutex::new(None),
+            service: backup::BackupService::new(
+                backup::MsbCommand {
+                    executable: paths.executable.clone(),
+                    home: paths.home.clone(),
+                    storage_home: paths.storage_home.clone(),
+                    library: paths.library.clone(),
+                },
+                directory.path().join(format!(
+                    "scratch-{}",
+                    paths.home.file_name().unwrap().to_string_lossy()
+                )),
+            ),
+            view: Mutex::new(ViewState {
+                journal_error: None,
+                destination: None,
+                operation: None,
+                cancellation: None,
+                inspection: None,
+            }),
+            busy: AtomicBool::new(false),
+            revision: AtomicU64::new(0),
+        };
+        let source = make("source");
+        let target = make("target");
+        for paths in [&source, &target] {
+            fs::create_dir_all(&paths.home).unwrap();
+            fs::create_dir_all(&paths.volumes).unwrap();
+        }
+        let controller = make_controller(&source);
+        let target_controller = make_controller(&target);
+        let exec = |paths: &runtime::RuntimePaths, name: &str, script: &str| {
+            runtime::run_msb(
+                paths,
+                &[
+                    "exec",
+                    name,
+                    "--no-start",
+                    "--user",
+                    "root",
+                    "--workdir",
+                    "/",
+                    "--",
+                    "sh",
+                    "-c",
+                    script,
+                ]
+                .map(String::from),
+                Duration::from_secs(120),
+            )
+            .map(|output| output.stdout)
+        };
+        let diagnostics = |paths: &runtime::RuntimePaths, name: &str, label: &str| {
+            eprintln!(
+                "=== guest diagnostics for {label} ({name})\n{}",
+                exec(
+                    paths,
+                    name,
+                    "date; uptime; /usr/local/bin/silo-desktop status; echo --- selkies.json; cat /run/silo-desktop/selkies.json; echo; ls -la /run/silo-desktop; echo --- desktop log; tail -n 80 /var/log/silo-desktop.log; echo --- computer-use log; tail -n 40 /var/log/silo-computer-use.log; echo --- receipt; cat /var/lib/silo-computer-use/receipt.json; echo --- X; ls -la /tmp/.X11-unix /tmp/.X*-lock 2>&1; cat /tmp/.X1-lock 2>&1; echo --- ps; ps -eo pid,ppid,etimes,user,args | head -80",
+                )
+                .unwrap_or_else(|error| format!("diagnostics failed: {error}"))
+            );
+        };
+        // True when the boot ended with the session running and computer use ready.
+        let boot_outcome = |paths: &runtime::RuntimePaths, name: &str, label: &str| -> bool {
+            let started = std::time::Instant::now();
+            let mut last = String::new();
+            let mut session_failed_since = None;
+            loop {
+                let machine = runtime::read_metadata(&paths.metadata)
+                    .unwrap()
+                    .machines
+                    .into_iter()
+                    .find(|machine| machine.name() == name)
+                    .unwrap();
+                if let Ok(status) = crate::desktop::test_status(paths, &machine) {
+                    let state = status["computerUse"]["state"].as_str().unwrap_or("");
+                    let line = format!(
+                        "session {} stream {} computerUse {state} {}",
+                        status["sessionState"],
+                        status["streamState"],
+                        status["computerUse"]["reason"]
+                    );
+                    if line != last {
+                        eprintln!("[{:>4}s] {label}: {line}", started.elapsed().as_secs());
+                        last = line;
+                    }
+                    if state == "ready" && status["sessionState"] == "running" {
+                        eprintln!("RESULT {label}: ok after {}s", started.elapsed().as_secs());
+                        return true;
+                    }
+                    // A failed session never recovers by itself, whatever the receipt says.
+                    let session_failed = status["sessionState"] == "failed";
+                    if !session_failed {
+                        session_failed_since = None;
+                    }
+                    let failed_for = session_failed
+                        .then(|| *session_failed_since.get_or_insert_with(std::time::Instant::now));
+                    if state == "failed"
+                        || failed_for.is_some_and(|since| since.elapsed() > Duration::from_secs(90))
+                    {
+                        eprintln!(
+                            "RESULT {label}: FAILED after {}s: {last}",
+                            started.elapsed().as_secs()
+                        );
+                        diagnostics(paths, name, label);
+                        return false;
+                    }
+                }
+                if started.elapsed() > Duration::from_secs(600) {
+                    eprintln!("RESULT {label}: TIMED OUT: {last}");
+                    diagnostics(paths, name, label);
+                    return false;
+                }
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        };
+        struct Cleanup<'a>(&'a runtime::RuntimePaths, String);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = runtime::run_msb(
+                    self.0,
+                    &["stop".into(), self.1.clone()],
+                    Duration::from_secs(60),
+                );
+            }
+        }
+        let stop = |paths: &runtime::RuntimePaths, name: &str| {
+            runtime::run_msb(
+                paths,
+                &["stop".into(), name.into()],
+                Duration::from_secs(120),
+            )
+            .unwrap();
+        };
+        let mut failures = Vec::new();
+        let mut boots = 0;
+        crate::computer_use::set_test_published_dir(Some(source_published.clone()));
+        let source_name = "e2e-boot-source";
+        let machine = runtime::create_disposable_desktop_machine(&source, source_name).unwrap();
+        assert!(crate::computer_use::is_built_in(&machine));
+        let _a = Cleanup(&source, source_name.into());
+        runtime::start_disposable_test_machine(&source, source_name).unwrap();
+        boots += 1;
+        if !boot_outcome(&source, source_name, "fresh") {
+            failures.push("fresh".to_owned());
+        }
+        for round in 1..=rounds {
+            stop(&source, source_name);
+            runtime::start_disposable_test_machine(&source, source_name).unwrap();
+            boots += 1;
+            let label = format!("restart-{round}");
+            if !boot_outcome(&source, source_name, &label) {
+                failures.push(label);
+            }
+        }
+        stop(&source, source_name);
+        let archive_path = directory.path().join("boot-loop.silo-backup");
+        {
+            let _gate = mutation_guard(
+                &backup::Cancellation::default(),
+                runtime::operation_gate::OperationKind::Export,
+                "Exporting sandbox",
+                true,
+                &|| {},
+            )
+            .unwrap();
+            backup_at_paths(
+                &source,
+                &controller,
+                &archive_path,
+                &[source_name.to_owned()],
+                None,
+                &backup::Cancellation::default(),
+            )
+            .unwrap();
+        }
+        crate::computer_use::set_test_published_dir(Some(target_published.clone()));
+        let mut targets = Vec::new();
+        for round in 1..=rounds {
+            let target_name = format!("e2e-boot-imp{round}");
+            restore_at_paths(
+                &target,
+                &target_controller,
+                &archive_path,
+                source_name,
+                &target_name,
+                &backup::Cancellation::default(),
+                &|_| {},
+            )
+            .unwrap();
+            targets.push(Cleanup(&target, target_name.clone()));
+            runtime::start_disposable_test_import(&target, &target_name).unwrap();
+            boots += 1;
+            let label = format!("import-{round}");
+            if !boot_outcome(&target, &target_name, &label) {
+                failures.push(label);
+            }
+            // The imported VM boots once more from its own disk, like a user's next Start.
+            stop(&target, &target_name);
+            runtime::start_disposable_test_machine(&target, &target_name).unwrap();
+            boots += 1;
+            let label = format!("import-{round}-restart");
+            if !boot_outcome(&target, &target_name, &label) {
+                failures.push(label);
+            }
+            stop(&target, &target_name);
+        }
+        eprintln!(
+            "SUMMARY: {boots} boots, {} failed: {failures:?}",
+            failures.len()
+        );
+        drop(targets);
+        crate::computer_use::set_test_published_dir(None);
+        crate::chatgpt_app::set_test_cache(None);
+        assert!(failures.is_empty(), "boots failed: {failures:?}");
     }
 }
 
