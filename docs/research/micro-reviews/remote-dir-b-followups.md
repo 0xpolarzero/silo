@@ -19,3 +19,21 @@ Scope: `remote/operations.rs` and adjacent remote request modules, continuing th
 **Regressions:** `queued_guest_access_rejects_a_same_named_replacement`, `guest_access_rejects_a_stale_explicit_id_before_admission`, and `guest_access_admits_the_requested_vm` in `remote_access.rs`.
 
 **Verification:** The complete native test harness compiles from this worktree with Rust 1.94.0, cached dependencies and generated Tauri schemas, and explicit synthetic GitHub configuration. Both replacement regressions failed before the fix; all four remote-access fixture tests pass after it. Full native Clippy metadata compilation succeeds with existing warnings outside the changed module; Rust formatting and whitespace checks pass. Only the remote-access fixture tests run; no app, live VM, real credential store, or production HOME is used. Compiler commands and before/after evidence are retained under `/tmp/silo-codex-target/verification/remote-dir-b-round-2/`.
+
+## remote-dir-b-3: Expired remote changes open another SSH connection
+
+**Priority:** P2.
+
+**Original location:** `app/SiloUI/src-tauri/src/remote.rs`, `send_change`, at `af59d352`.
+
+**Trigger:** An SSH attempt consumes the remaining request budget, then reports a lost connection. An already-expired request also enters this path without a deadline check.
+
+**Evidence:** The retry-delay decision reused `remaining` from before the exchange. The native regression recorded two sends when the first attempt exhausted the deadline. A second exact-source regression recorded one send for an already-expired request, instead of zero.
+
+**Consequence:** Silo opens an unnecessary SSH connection and delays failure after its request deadline. A completed change may be attached again after the controller's waiting budget ended.
+
+**Fix:** Reject an expired budget before each send and recompute the remaining budget after a lost connection before deciding to wait and retry. Keep the original operation identity and final connection error.
+
+**Regressions:** `a_lost_change_that_exhausted_its_deadline_is_not_sent_again` and `an_expired_change_never_opens_a_connection`. Existing stable-identity, retry-limit, terminal-error, and shutdown-generation controls remain covered.
+
+**Verification:** Both new regressions fail before correction and pass in an exact-source retry harness with the two existing retry controls. This fixture harness uses production error and shutdown admission code, cached Rust dependencies, and a private isolation mutex. The complete native harness also passes all four focused retry tests. Native Clippy metadata compilation succeeds with existing warnings; Rust formatting and whitespace checks pass. Full native compilation and focused native checks use synthetic GitHub configuration; evidence is retained under `/tmp/silo-codex-target/verification/remote-dir-b-round-2/`. No SSH server, app, live VM, production HOME, or real credentials are used.
