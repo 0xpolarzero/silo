@@ -666,3 +666,10 @@ streams output and remains in the bundle log. Compilation, runtime preparation
 and package validation are outside this retry boundary; other errors fail
 immediately. This handles transient upstream download failures without
 repeating the expensive build phases.
+
+If forwarding stdout/stderr or writing the local log fails, the wrapper kills
+and reaps its bundle command before propagating that error. Python's
+[`Popen` context manager](https://docs.python.org/3/library/subprocess.html#subprocess.Popen)
+waits for the child on exit; it does not stop it on an exception. The synthetic
+stream-failure regression checks all three output destinations and verifies
+that the child is reaped. This does not test a real package build.
