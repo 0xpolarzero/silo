@@ -269,9 +269,11 @@ pub fn install_notifications(app: &tauri::AppHandle) {
     NOTIFICATION_DELEGATE.with(|slot| *slot.borrow_mut() = Some(delegate));
 }
 
-pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(), String> {
+pub fn deliver_notification(
+    notice: &crate::notifications::Notice,
+) -> Result<super::NotificationDelivery, String> {
     if !super::notification_authorized(&notification_status().state) {
-        return Ok(());
+        return Ok(super::NotificationDelivery::Skipped);
     }
     use objc2_user_notifications::{UNMutableNotificationContent, UNNotificationRequest};
     let content = UNMutableNotificationContent::new();
@@ -299,7 +301,7 @@ pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(),
     UNUserNotificationCenter::currentNotificationCenter()
         .addNotificationRequest_withCompletionHandler(&request, Some(&handler));
     match receive.recv_timeout(CALLBACK_TIMEOUT) {
-        Ok(true) => Ok(()),
+        Ok(true) => Ok(super::NotificationDelivery::Delivered),
         _ => Err("macOS could not schedule the notification".into()),
     }
 }

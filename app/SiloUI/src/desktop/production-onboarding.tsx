@@ -155,7 +155,8 @@ export function ProductionOnboarding({ application, dependencies, source, onOpen
         workspaces: onboardingDraft.machines.map(({ name }) => ({
           workspace: name,
           repositories: [],
-          identity: onboardingDraft.workspaceIdentities[name] ?? { name: "", email: "", apply: false },
+          identity: Object.hasOwn(onboardingDraft.workspaceIdentities, name)
+            ? onboardingDraft.workspaceIdentities[name] : { name: "", email: "", apply: false },
         })),
       },
     })

@@ -81,3 +81,37 @@ A broader caller run passed 100 of 101 tests; the existing 6,001-record log-wind
 - Consequence: The retained boolean debounce state immediately displays the new operation, including operations that finish inside the intended 500 ms delay.
 - Fix: Associate the completed delay with the earliest entry's start time, so a fresh queue waits for its own delay without briefly publishing a new toast first.
 - Test: Replace an old running operation with a fresh one, assert no immediate notification, then assert it appears at 500 ms. The rendered fixture failed before the fix; output is saved in `/tmp/fe-lib-hooks-9-red.log`.
+
+## FE-LIB-HOOKS-10: Guest names conceal default-ignorable characters outside the hand-written ranges
+
+- Priority: P2.
+- File: `app/SiloUI/src/lib/visible-text.ts`, `invisible`.
+- Trigger: A guest supplies `con\u034Ffig` or `con\u{E0061}fig` next to `config`. The existing regex leaves combining grapheme joiners and supplementary Unicode tags untouched. Fillers and variation selectors also bypass the marker policy.
+- Consequence: Distinct guest paths can still display identical labels. The rendered folder fixture could not find a marked Unicode tag before the fix.
+- Fix: Use the JavaScript Unicode `Default_Ignorable_Code_Point` property alongside the existing C0/C1 control ranges. Unicode mode matches supplementary characters as complete code points. Ordinary combining accents, visible emoji, and non-Latin names remain unchanged.
+- Test: Six ignored-character cases plus a rendered folder whose Copy path action must retain the exact supplementary character. All seven regressions failed first; output is saved in `/tmp/fe-lib-hooks-10-red.log`.
+- Primary source: [Unicode 17.0 DerivedCoreProperties](https://www.unicode.org/Public/17.0.0/ucd/DerivedCoreProperties.txt), the `Default_Ignorable_Code_Point` section, lists U+034F, U+180E, fillers, variation selectors, and tag characters. The fix uses the engine's maintained Unicode property rather than extending another incomplete local list. This does not address visually similar ordinary characters or whitespace.
+
+## FE-LIB-HOOKS-11: Sidebar preview consumes Escape belonging to another interaction
+
+- Priority: P3.
+- File: `app/SiloUI/src/hooks/use-sidebar-disclosure.ts`, window `onKeyDown`.
+- Trigger: A sidebar hover preview remains open while another control consumes Escape, or an input method sends Escape during composition.
+- Consequence: The preview closes in addition to the interaction that owns the key. The listener ignores neither `defaultPrevented` nor `isComposing`, unlike the operation cancellation question and desktop shortcut handler.
+- Fix: Ignore consumed and composing key events in the existing listener.
+- Test: Open the real sidebar preview and dispatch each event; assert it remains open, then dispatch ordinary Escape and assert it closes. Both cases failed before the fix; output is saved in `/tmp/fe-lib-hooks-11-red.log`.
+
+## FE-LIB-HOOKS-12: Unknown push outcomes silently remove progress
+
+- Priority: P2.
+- File: `app/SiloUI/src/features/application/components/use-repository-push-toasts.ts`, terminal-state handling.
+- Trigger: A watched push becomes `unknown` after repeated lost status responses or an interrupted publication. `desktop/production-source.ts` publishes this state and requires the user to check GitHub before retrying.
+- Consequence: The toast tracker falls through to dismissal, showing neither the outcome nor its required action. A user who navigated away from the repository row loses the background notification precisely when the remote branch may already have changed.
+- Fix: Replace progress with a persistent warning containing the backend's check-GitHub explanation. Offer no Retry and do not clear or acknowledge the backend record when this warning closes. Dismiss the warning once the repository check removes that record.
+- Test: Transition from pushing to unknown, assert the warning and explanation, verify no Retry, close the warning, and assert neither backend dismissal nor push runs. Also verify that the repository acknowledgment removes the warning. Both regressions failed first; output is saved in `/tmp/fe-lib-hooks-12-red.log` and `/tmp/fe-lib-hooks-12-ack-red.log`.
+
+## Follow-up loop verification
+
+The second bounded loop fixed FE-LIB-HOOKS-8 through FE-LIB-HOOKS-12 in five separate commits, each immediately folded into `codex/integration`. Each fix includes a patch changeset and a regression that failed first.
+
+The combined Node 24 fixture run passed **163 tests across 11 suites**: the operation-toast notice and body suites, visible text, shortcuts, relative time, sidebar, file tree, repository push feedback, lifecycle notifications, queue notifications, and sandbox transfer. Exact output is saved in `/tmp/fe-lib-hooks-round-two-check.log`. Frontend typecheck, scoped oxlint, `git diff --check`, and Rust 1.94.0 formatting checks passed. No native application or live VM was launched, and no production data or real credentials were accessed.

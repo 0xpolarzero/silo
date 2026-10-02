@@ -13,7 +13,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::TcpListener,
     path::Path,
-    process::{Child, Command, Stdio},
+    process::{Command, Stdio},
     sync::{Arc, Mutex, MutexGuard, OnceLock},
     time::{Duration, Instant},
 };
@@ -23,16 +23,11 @@ use tauri::{AppHandle, Emitter};
 type Key = (String, String, u16);
 
 struct Tunnel {
-    child: Child,
+    child: crate::owned_tunnel::Tunnel,
     local_port: u16,
+    // Owner publication endpoint is retained to detect replacement across VM restarts.
     remote_port: u16,
     _directory: Option<tempfile::TempDir>,
-}
-impl Drop for Tunnel {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 impl std::fmt::Debug for Tunnel {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -45,7 +40,7 @@ impl std::fmt::Debug for Tunnel {
 }
 impl Tunnel {
     fn alive(&mut self) -> bool {
-        self.child.try_wait().ok() == Some(None)
+        self.child.running()
     }
 }
 /// A port the user opened from this computer, kept while its tunnel is down.
@@ -60,6 +55,10 @@ struct Reconnect {
     intent: Intent,
     remote_port: u16,
 }
+struct Observation {
+    revision: Option<Arc<()>>,
+    token: Arc<()>,
+}
 #[derive(Default)]
 struct Tunnels {
     live: HashMap<Key, Tunnel>,
@@ -68,8 +67,18 @@ struct Tunnels {
     connecting: HashMap<Key, Arc<Reconnect>>,
     saves: HashMap<Key, Arc<()>>,
     revisions: HashMap<String, Arc<()>>,
+    observations: HashMap<String, Arc<()>>,
 }
 impl Tunnels {
+    fn observe(&mut self, host: &str) -> Observation {
+        let observation = Observation {
+            revision: self.revision(host),
+            token: Arc::new(()),
+        };
+        self.observations
+            .insert(host.into(), observation.token.clone());
+        observation
+    }
     fn revision(&self, host: &str) -> Option<Arc<()>> {
         self.revisions.get(host).cloned()
     }
@@ -168,22 +177,42 @@ fn cached(
     *cache = Some((Instant::now(), value.clone()));
     Ok(value)
 }
+fn read_host_vm_ids(metadata: &Path) -> Result<HashMap<String, String>, String> {
+    let config = runtime::read_metadata(metadata).map_err(|e| e.to_string())?;
+    Ok(config
+        .machines
+        .into_iter()
+        .filter(|m| m.is_vm())
+        .map(|m| (m.name().to_owned(), m.id().to_owned()))
+        .collect())
+}
+
 fn read_host_state(app: &AppHandle) -> Result<Value, String> {
-    let state = tauri::async_runtime::block_on(crate::network::read_network_state(app.clone()))?;
-    let mut value = serde_json::to_value(state).map_err(|e| e.to_string())?;
     let paths = runtime::runtime_paths(app)?;
-    let config = runtime::read_metadata(&paths.metadata).map_err(|e| e.to_string())?;
+    let before = read_host_vm_ids(&paths.metadata)?;
+    let state = tauri::async_runtime::block_on(crate::network::read_network_state(app.clone()))?;
+    let value = serde_json::to_value(state).map_err(|e| e.to_string())?;
+    let after = read_host_vm_ids(&paths.metadata)?;
+    project_host_ports(value, &before, &after)
+}
+
+fn project_host_ports(
+    mut value: Value,
+    before: &HashMap<String, String>,
+    after: &HashMap<String, String>,
+) -> Result<Value, String> {
     for row in value["workspaces"]
         .as_array_mut()
         .ok_or("Invalid network state.")?
     {
         let name = row["workspace"].as_str().unwrap_or("");
-        let machine = config
-            .machines
-            .iter()
-            .find(|m| m.is_vm() && m.name() == name)
+        let id = after
+            .get(name)
             .ok_or("VM configuration changed. Refresh network services.")?;
-        row["vmId"] = json!(machine.id());
+        if before.get(name) != Some(id) {
+            return Err("VM configuration changed. Refresh network services.".into());
+        }
+        row["vmId"] = json!(id);
     }
     Ok(value)
 }
@@ -194,7 +223,7 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
     if let Some(error) = remote::offline(host) {
         return Err(error.into());
     }
-    let revision = tunnels().revision(host);
+    let observation = tunnels().observe(host);
     let value = match remote::call_remote_typed(app, host, "network.state", json!({})) {
         Ok(value) => {
             remote::poll_succeeded(host);
@@ -207,7 +236,7 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
             return Err(error);
         }
     };
-    let projection = project_observed(value, host, revision, &mut tunnels())?;
+    let projection = project_observed(value, host, observation, &mut tunnels())?;
     let Projection {
         value,
         closed,
@@ -230,10 +259,19 @@ struct Projection {
 fn project_observed(
     value: Value,
     host: &str,
-    revision: Option<Arc<()>>,
+    observation: Observation,
     tunnels: &mut Tunnels,
 ) -> Result<Projection, String> {
-    let current = match (revision.as_ref(), tunnels.revisions.get(host)) {
+    let latest = tunnels
+        .observations
+        .get(host)
+        .is_some_and(|token| Arc::ptr_eq(token, &observation.token));
+    if !latest {
+        return Err(
+            "A newer network refresh superseded this request. Refresh network services.".into(),
+        );
+    }
+    let current = match (observation.revision.as_ref(), tunnels.revisions.get(host)) {
         (None, None) => true,
         (Some(before), Some(now)) => Arc::ptr_eq(before, now),
         _ => false,
@@ -395,13 +433,9 @@ fn open_tunnel(
         .tempdir_in("/tmp")
         .map_err(|_| "Could not prepare the SSH tunnel.")?;
     let socket = directory.path().join("ssh.sock");
-    let (mut command, mut check) = commands(local, &socket)?;
+    let (command, mut check) = commands(local, &socket)?;
     drop(reservation);
-    let child = command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+    let child = crate::owned_tunnel::Tunnel::spawn(&command, None)
         .map_err(|_| "Could not open the SSH tunnel.")?;
     let mut tunnel = Tunnel {
         child,
@@ -458,16 +492,32 @@ fn control_ready(
     result
 }
 
+fn open_guest_tunnel(
+    app: &AppHandle,
+    key: &Key,
+    local: Option<u16>,
+    owner_endpoint: u16,
+) -> Result<Tunnel, String> {
+    let (alias, config, address) =
+        crate::editor::prepare_remote_network_private(app, &key.0, &key.1)?;
+    open_tunnel(
+        |local, socket| {
+            remote::guest_tunnel_commands(&config, &alias, local, address, key.2, socket)
+        },
+        local,
+        owner_endpoint,
+        READY_WITHIN,
+    )
+}
+
 fn reconnect_in_background(app: AppHandle, request: Arc<Reconnect>) {
     std::thread::spawn(move || {
         let opened = runtime::shutdown::ensure_accepting_operations().and_then(|()| {
-            open_tunnel(
-                |local, socket| {
-                    remote::ssh_tunnel_commands(&request.key.0, local, request.remote_port, socket)
-                },
+            open_guest_tunnel(
+                &app,
+                &request.key,
                 Some(request.intent.local_port),
                 request.remote_port,
-                READY_WITHIN,
             )
         });
         let unused = finish_reconnect(&request, opened);
@@ -618,14 +668,9 @@ pub async fn remote_save_network_port(
             .and_then(|p| p["hostPort"].as_u64())
             .and_then(|p| u16::try_from(p).ok())
             .ok_or("The remote VM port is not available yet. Check the VM service and retry.")?;
-        let host = host_id.clone();
+        let key = (host_id.clone(), vm_id, port);
         finish_save(pending, host_port, scheme, endpoint, |local| {
-            open_tunnel(
-                |local, socket| remote::ssh_tunnel_commands(&host, local, endpoint, socket),
-                local,
-                endpoint,
-                READY_WITHIN,
-            )
+            open_guest_tunnel(&app, &key, local, endpoint)
         })?;
         read(&app, &host_id)
     })
@@ -712,6 +757,7 @@ pub(crate) fn close_all() {
         let mut tunnels = tunnels();
         tunnels.saves.clear();
         tunnels.connecting.clear();
+        tunnels.observations.clear();
         tunnels.live.drain().map(|(_, tunnel)| tunnel).collect()
     };
     drop(closed);
@@ -722,6 +768,7 @@ pub(crate) fn disconnect_host(host: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
         tunnels.connecting.retain(|key, _| key.0 != host);
+        tunnels.observations.remove(host);
         let keys: Vec<Key> = tunnels
             .live
             .keys()
@@ -739,9 +786,11 @@ pub(crate) fn close_host(host: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
         tunnels.revisions.remove(host);
+        tunnels.observations.remove(host);
         tunnels.saves.retain(|key, _| key.0 != host);
         tunnels.intents.retain(|key, _| key.0 != host);
         tunnels.connecting.retain(|key, _| key.0 != host);
+        tunnels.observations.remove(host);
         let keys: Vec<Key> = tunnels
             .live
             .keys()
@@ -758,15 +807,12 @@ pub(crate) fn close_host(host: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Child;
     fn observed(host_port: Option<u16>) -> Value {
         json!({"workspaces":[{"workspace":"dev","vmId":"vm","ports":[{"port":3000,"hostPort":host_port,"configured":true,"state":"reachable","scheme":"http"}]}]})
     }
-    fn child() -> Child {
-        std::process::Command::new("/bin/cat")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap()
+    fn child() -> crate::owned_tunnel::Tunnel {
+        crate::owned_tunnel::Tunnel::spawn(Command::new("/bin/sleep").arg("30"), None).unwrap()
     }
     fn tunnel(local_port: u16, remote_port: u16) -> Tunnel {
         Tunnel {
@@ -867,10 +913,15 @@ mod tests {
             .reconnect
             .is_empty());
         tunnels.connecting.clear();
-        // A tunnel that died (sleep) is reopened too.
+        // A tunnel whose forward exited is reopened too.
         let mut dead = tunnel(43000, 32001);
-        dead.child.kill().unwrap();
-        dead.child.wait().unwrap();
+        dead.child =
+            crate::owned_tunnel::Tunnel::spawn(&Command::new("/usr/bin/false"), None).unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while dead.alive() {
+            assert!(Instant::now() < until, "closed tunnel never exited");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         tunnels.live.insert(key("office"), dead);
         let result = project_ports(observed(Some(32001)), "office", &mut tunnels).unwrap();
         assert_eq!(
@@ -910,6 +961,73 @@ mod tests {
         assert!(
             tunnels.live.contains_key(&key("other")) && tunnels.intents.contains_key(&key("other"))
         );
+    }
+
+    #[test]
+    fn an_older_poll_cannot_replace_a_newer_reconnect_endpoint() {
+        let mut state = Tunnels::default();
+        state.intents.insert(key("office"), intent(43000));
+        let first = state.observe("office");
+        let second = state.observe("office");
+        let latest = project_observed(observed(Some(32001)), "office", second, &mut state).unwrap();
+        assert_eq!(
+            reconnect_targets(&latest),
+            [(key("office"), intent(43000), 32001)]
+        );
+        let older = project_observed(observed(Some(32000)), "office", first, &mut state);
+        assert!(older.is_err(), "the old poll replaced the newer endpoint");
+        assert_eq!(state.connecting[&key("office")].remote_port, 32001);
+    }
+
+    #[test]
+    fn an_older_poll_cannot_delete_a_tunnel_verified_by_a_newer_poll() {
+        let mut state = Tunnels::default();
+        state.intents.insert(key("office"), intent(43000));
+        state.live.insert(key("office"), tunnel(43000, 32001));
+        let first = state.observe("office");
+        let second = state.observe("office");
+        project_observed(observed(Some(32001)), "office", second, &mut state).unwrap();
+        let older = project_observed(json!({"workspaces":[]}), "office", first, &mut state);
+        assert!(
+            older.is_err(),
+            "the old poll deleted the newer verified tunnel"
+        );
+        assert!(state.live.contains_key(&key("office")));
+    }
+
+    #[test]
+    fn a_recreated_vm_cannot_relabel_an_older_network_snapshot() {
+        let before = HashMap::from([("dev".into(), "original-vm".into())]);
+        let after = HashMap::from([("dev".into(), "replacement-vm".into())]);
+        let snapshot =
+            json!({"workspaces":[{"workspace":"dev","ports":[{"port":3000,"hostPort":32000}]}]});
+        assert!(
+            project_host_ports(snapshot, &before, &after).is_err(),
+            "the old endpoint was assigned the replacement VM's identity"
+        );
+    }
+
+    #[test]
+    fn a_vm_created_during_observation_requires_a_fresh_identity_snapshot() {
+        let before = HashMap::new();
+        let after = HashMap::from([("dev".into(), "new-vm".into())]);
+        let snapshot = json!({"workspaces":[{"workspace":"dev","ports":[]}]});
+        assert!(project_host_ports(snapshot, &before, &after).is_err());
+    }
+
+    #[test]
+    fn stable_vm_identity_survives_unrelated_metadata_changes() {
+        let before = HashMap::from([
+            ("dev".into(), "stable-vm".into()),
+            ("other".into(), "old-other".into()),
+        ]);
+        let after = HashMap::from([
+            ("dev".into(), "stable-vm".into()),
+            ("other".into(), "new-other".into()),
+        ]);
+        let snapshot = json!({"workspaces":[{"workspace":"dev","ports":[]}]});
+        let projected = project_host_ports(snapshot, &before, &after).unwrap();
+        assert_eq!(projected["workspaces"][0]["vmId"], "stable-vm");
     }
 
     #[test]
@@ -1134,7 +1252,7 @@ mod tests {
         let _guard = crate::test_support::global_state();
         let host = uuid::Uuid::new_v4().to_string();
         let key = key(&host);
-        let before = tunnels().revision(&host);
+        let before = tunnels().observe(&host);
         save_tunnel(key.clone(), None, Some("http".into()), 32000, |_| {
             Ok(tunnel(43100, 32000))
         })
@@ -1142,7 +1260,7 @@ mod tests {
         let mut state = tunnels();
         let result = project_observed(json!({"workspaces":[]}), &host, before, &mut state);
         let kept = state.live.contains_key(&key) && state.intents.contains_key(&key);
-        let current = state.revision(&host);
+        let current = state.observe(&host);
         let fresh = project_observed(json!({"workspaces":[]}), &host, current, &mut state).unwrap();
         let deleted = !state.live.contains_key(&key) && !state.intents.contains_key(&key);
         drop(state);
@@ -1159,9 +1277,12 @@ mod tests {
         let host = uuid::Uuid::new_v4().to_string();
         let pending = PendingSave::new(key(&host)).unwrap();
         let mut state = tunnels();
-        let revision = state.revision(&host);
-        assert!(project_observed(json!({"workspaces":[]}), &host, revision, &mut state).is_err());
-        assert!(project_observed(json!({"workspaces":[]}), "other", None, &mut state).is_ok());
+        let observation = state.observe(&host);
+        assert!(
+            project_observed(json!({"workspaces":[]}), &host, observation, &mut state).is_err()
+        );
+        let other = state.observe("other");
+        assert!(project_observed(json!({"workspaces":[]}), "other", other, &mut state).is_ok());
         drop(state);
         drop(pending);
         close_host(&host);
@@ -1397,6 +1518,203 @@ time.sleep(30)
             Duration::from_millis(500),
         );
         assert_eq!(result.unwrap_err(), "Timed out opening the SSH tunnel.");
+    }
+
+    const CONTROLLER_FIXTURE: &str = "SILO_TEST_TUNNEL_CONTROLLER";
+
+    fn recorded_forward(directory: &Path, local: u16, socket: &Path) -> Command {
+        let script = directory.join("forward.py");
+        std::fs::write(
+            &script,
+            r#"
+import os, pathlib, socket, subprocess, sys, time
+if sys.argv[1] == 'proxy':
+    time.sleep(30)
+    sys.exit(0)
+proxy = subprocess.Popen([sys.executable, __file__, 'proxy'])
+listener = socket.socket()
+listener.bind(('127.0.0.1', int(sys.argv[1])))
+listener.listen()
+control = socket.socket(socket.AF_UNIX)
+control.bind(sys.argv[2])
+control.listen()
+pathlib.Path(sys.argv[3]).write_text(f'{os.getpid()} {proxy.pid}')
+time.sleep(30)
+"#,
+        )
+        .unwrap();
+        let mut command = Command::new("python3");
+        command
+            .arg(script)
+            .arg(local.to_string())
+            .arg(socket)
+            .arg(directory.join("pids"));
+        command
+    }
+
+    fn recorded_tunnel(directory: &Path) -> Tunnel {
+        open_tunnel(
+            |local, socket| {
+                let mut check = Command::new("/bin/test");
+                check.arg("-S").arg(socket);
+                Ok((recorded_forward(directory, local, socket), check))
+            },
+            None,
+            32000,
+            Duration::from_secs(5),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for controller lifetime tests"]
+    fn published_port_controller_fixture() {
+        let directory = std::path::PathBuf::from(
+            std::env::var_os(CONTROLLER_FIXTURE).expect("fixture directory"),
+        );
+        let tunnel = recorded_tunnel(&directory);
+        let socket_directory = tunnel._directory.as_ref().unwrap().path();
+        std::fs::write(
+            directory.join("ready"),
+            format!(
+                "{} {} {}",
+                std::process::id(),
+                tunnel.local_port,
+                socket_directory.display()
+            ),
+        )
+        .unwrap();
+        std::thread::sleep(Duration::from_secs(30));
+        drop(tunnel);
+    }
+
+    struct FixtureProcess(Child);
+    impl Drop for FixtureProcess {
+        fn drop(&mut self) {
+            if matches!(self.0.try_wait(), Ok(None)) {
+                unsafe { libc::kill(self.0.id() as i32, libc::SIGTERM) };
+            }
+            let _ = self.0.wait();
+        }
+    }
+
+    fn fixture_process_matches(pid: i32, script: &Path) -> bool {
+        Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .is_ok_and(|output| {
+                String::from_utf8_lossy(&output.stdout).contains(script.to_str().unwrap())
+            })
+    }
+
+    struct FixtureForwards {
+        directory: std::path::PathBuf,
+        pids: Vec<i32>,
+    }
+    impl Drop for FixtureForwards {
+        fn drop(&mut self) {
+            for pid in &self.pids {
+                if fixture_process_matches(*pid, &self.directory.join("forward.py")) {
+                    unsafe { libc::kill(*pid, libc::SIGTERM) };
+                }
+            }
+        }
+    }
+
+    fn wait_for_fixture_file(path: &Path, fields: usize, controller: &mut Child) -> String {
+        let until = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if text.split_whitespace().count() == fields {
+                    return text;
+                }
+            }
+            assert!(
+                matches!(controller.try_wait(), Ok(None)),
+                "fixture controller exited before becoming ready"
+            );
+            assert!(
+                Instant::now() < until,
+                "fixture controller never became ready"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn fixture_processes_ended(pids: &[i32]) -> bool {
+        pids.iter().all(|pid| unsafe { libc::kill(*pid, 0) } == -1
+            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH))
+    }
+
+    #[test]
+    fn a_controller_crash_closes_the_published_listener_and_its_descendants() {
+        let directory = tempfile::Builder::new()
+            .prefix("silo-crash-test-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let mut controller = FixtureProcess(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "remote_network::tests::published_port_controller_fixture",
+                    "--ignored",
+                ])
+                .env(CONTROLLER_FIXTURE, directory.path())
+                .env("HOME", directory.path())
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let recorded = wait_for_fixture_file(&directory.path().join("pids"), 2, &mut controller.0);
+        let forwards = FixtureForwards {
+            directory: directory.path().to_owned(),
+            pids: recorded
+                .split_whitespace()
+                .map(|pid| pid.parse().unwrap())
+                .collect(),
+        };
+        let ready = wait_for_fixture_file(&directory.path().join("ready"), 3, &mut controller.0);
+        let mut fields = ready.split_whitespace();
+        assert_eq!(
+            fields.next().unwrap().parse::<u32>().unwrap(),
+            controller.0.id()
+        );
+        let port: u16 = fields.next().unwrap().parse().unwrap();
+        let socket_directory = std::path::PathBuf::from(fields.next().unwrap());
+        assert_eq!(forwards.pids.len(), 2);
+        for pid in &forwards.pids {
+            assert!(fixture_process_matches(
+                *pid,
+                &directory.path().join("forward.py")
+            ));
+        }
+        assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_ok());
+        let mut unrelated = FixtureProcess(Command::new("/bin/sleep").arg("30").spawn().unwrap());
+        assert!(matches!(controller.0.try_wait(), Ok(None)));
+        // SIGTERM ends this verified test controller without running Rust destructors.
+        assert_eq!(
+            unsafe { libc::kill(controller.0.id() as i32, libc::SIGTERM) },
+            0
+        );
+        controller.0.wait().unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !fixture_processes_ended(&forwards.pids) && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let ended = fixture_processes_ended(&forwards.pids);
+        let listener_closed = std::net::TcpStream::connect(("127.0.0.1", port)).is_err();
+        assert!(
+            matches!(unrelated.0.try_wait(), Ok(None)),
+            "an unrelated process was terminated"
+        );
+        drop(forwards);
+        std::fs::remove_dir_all(socket_directory).unwrap();
+        assert!(
+            ended && listener_closed,
+            "published forward or descendant outlived its controller"
+        );
     }
 
     #[test]

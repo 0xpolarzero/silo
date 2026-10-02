@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Ignore expired Quit save requests after native shutdown rejects their acknowledgment.
+Keep expired Quit requests from saving settings after shutdown has already rejected the request.

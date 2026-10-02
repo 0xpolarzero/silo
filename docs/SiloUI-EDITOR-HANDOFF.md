@@ -1,6 +1,16 @@
 # Native editor and browser handoff
 
 Network links use the current browser preference: Launch Services (`open -a`) on macOS and GIO `launch_uris` on Linux. Only HTTP(S) URLs without embedded credentials are accepted. URL contents are positional arguments, never shell programs. Explicit unavailable preferences fail instead of opening a different app.
+Linux Browser choices require a `.desktop` entry, matching the [GIO desktop-file
+constructor](https://docs.gtk.org/gio-unix/ctor.DesktopAppInfo.new_from_filename.html)
+used by the launcher. Both Choose and an existing browser preference report this
+requirement for executable-only paths. GIO still parses and validates the entry
+before use. Terminal and editor executable choices use their existing adapters. The
+Linux-only `browser_desktop_selection_reaches_a_fake_launch_and_rechecks_removed_targets`
+regression launches a disposable script through GIO, verifies literal URL arguments,
+and rejects removed executables and desktop files. Portable preference tests cover
+the system default. This does not qualify an installed browser or an interactive
+Linux desktop.
 
 Folder actions use MicroSandbox's SSH server over standard input/output, not a host `/workspace` path. The app checks the managed VM is running and the requested directory exists before opening it. `msb ssh serve --stdio --no-start` prevents the editor transport from starting a stopped VM, including a stop between checking and connecting.
 

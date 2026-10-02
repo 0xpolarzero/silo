@@ -16,7 +16,7 @@ import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditin
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
 import { CircleAlert, Code, Download, GitFork, HardDrive, History, KeyRound, Loader2, Monitor, Play, RotateCw, Square, Terminal } from "lucide-react"
 import { useEffect, useEffectEvent, useRef, useState, type ReactNode } from "react"
-import { dismissOperationToast, dismissSandboxToasts, showActionFailure } from "@/lib/operation-toast"
+import { dismissOperationToast, dismissSandboxToasts, dismissSandboxToastsById, showActionFailure } from "@/lib/operation-toast"
 
 import type { MenuAction, MenuPopovers } from "@/components/actions-menu"
 import { ConfirmBody } from "@/components/confirm-popover"
@@ -388,6 +388,7 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
   }
   const validateMachineOperation = (machine: SetupMachineConfiguration, isNew: boolean, computerId?: string) => {
     const computer = workspaces.get(machine.id)?.computer ?? source.remoteComputers?.find(computer => computer.id === computerId)
+    if (computerId && !computer) return "The selected computer was removed. Choose another computer before saving."
     if (computer) return computer.busy ? `${computer.name} is updating. Wait before changing ${machine.name}.` : computer.connected ? undefined : `${computer.name} is offline. Reconnect to it before changing ${machine.name}.`
     if (source.vmOperationsUnavailable) return source.vmOperationsUnavailable
     const notice = source.resourceNotice
@@ -500,11 +501,12 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
 
   // A deleted sandbox takes its notifications with it: their actions (Open, Retry…) would
   // otherwise point at something that no longer exists.
-  const knownSandboxes = useRef(new Map<string, { name: string; computerId: string; target: string }>())
+  const knownSandboxes = useRef(new Map<string, { id: string; name: string; computerId: string; target: string }>())
   useEffect(() => {
-    const current = new Map(source.workspaces.map(workspace => [`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, { name: workspace.machine.name, computerId: workspace.computer?.id ?? "", target: workspaceTarget(workspace) }]))
+    const current = new Map(source.workspaces.map(workspace => [`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, { id: workspace.machine.id, name: workspace.machine.name, computerId: workspace.computer?.id ?? "", target: workspaceTarget(workspace) }]))
     for (const [key, known] of knownSandboxes.current) {
       if (current.has(key)) continue
+      dismissSandboxToastsById(known.id)
       if (known.computerId) dismissSandboxToasts(known.target)
       dismissOperationToast(`lifecycle:${key}`)
       // A name shared with a sandbox that still exists (e.g. on another computer) keeps its notifications.

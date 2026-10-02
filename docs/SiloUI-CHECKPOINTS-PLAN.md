@@ -385,6 +385,30 @@ without deleting user state. Preserve current assignments, rotate access session
 and invalidate stale viewer/editor endpoints. Test external mounts explicitly;
 do not claim rollback of shared host files or external API effects.
 
+Failed full captures must settle the source independently of snapshot cleanup.
+At pinned MicroSandbox revision
+`09df3d4b9d832adaede1fb9a198cfc660bfab8cd`, the
+[checkpoint coordinator](https://github.com/superradcompany/microsandbox/blob/09df3d4b9d832adaede1fb9a198cfc660bfab8cd/crates/runtime/lib/checkpoint/coordinator.rs#L950-L1018)
+retains suspension after failed source resume or workload thaw. The
+[executor](https://github.com/superradcompany/microsandbox/blob/09df3d4b9d832adaede1fb9a198cfc660bfab8cd/crates/runtime/lib/runner/control/executor.rs#L254-L270)
+rejects ordinary resume for recovery-owned suspension. Silo therefore inspects
+the source with cancellation masked, attempts resume, verifies the resulting
+state, and uses its existing Restore force-stop policy only if the source remains
+Paused. The
+[CLI force-stop command](https://github.com/superradcompany/microsandbox/blob/09df3d4b9d832adaede1fb9a198cfc660bfab8cd/crates/cli/lib/commands/stop.rs#L76-L88)
+kills the selected runtime; it preserves disks and runtime logs but loses RAM and
+cannot guarantee a clean guest shutdown. Do not release the upstream recovery
+pause directly or delete the VM to recover it.
+
+If inspection, resume and stop cannot establish Running, Stopped, Created or
+Crashed, retain the existing in-flight full-capture journal and report the recovery
+failure alongside the capture failure. Ordinary Start/Stop, capture retry and
+launch recovery can then retry settlement for that journal's managed VM identity.
+Fixture tests cover errors, timeouts, cancellation, verification failure, failed
+resume, a misleading successful resume response, and failed settlement followed
+by ordinary recovery. These tests do not qualify live guest health; disposable
+Silo Dev VM failure/relaunch verification remains a separate live check.
+
 ### 5. Finish retention, portable recovery and lifecycle integration
 
 Qualify upstream reference retention, deletion, compaction and integrity checks.

@@ -29,3 +29,34 @@ Full-crate Cargo regressions were queued with the shared `/tmp/silo-codex-target
 - **Fix:** Use pending-view rules to bypass runtime inspection only for an unattempted restore. After a restore attempt, inspect actual state and propagate errors; a genuinely missing runtime VM remains absent. Keep the original pending selector for explicit recovery.
 - **Regression test:** A pending attempted restore that still exposes a revoked binding must execute the removal callback and retain the pending revocation if post-removal inspection still exposes the binding. Extend the observation/terminal regression to cover a running attempted restore and a missing attempt. An unattempted restore still performs no runtime command.
 - **Focused reproduction:** The exact production observation function and pending-view predicate, extracted into a disposable Rust harness, failed the attempted-restore assertion before the fix while its unattempted no-query check passed. Both checks pass afterward. Full-crate native verification remains subject to the shared Cargo lock.
+
+## runtime-dir-c-5 — P2 — Launch accepts a running replacement by name
+
+- **Location:** `app/SiloUI/src-tauri/src/runtime.rs`, `start_at_launch_with()`.
+- **Trigger:** A launch-selected metadata VM has a managed runtime VM under the same name but a different immutable ID. The replacement is already Running.
+- **Evidence:** Launch inspected the name and checked only the managed label before returning `LaunchStart::Done`. The desired-state path never entered lifecycle recovery, where identity normally gets checked. The extracted production function returned `Ok(Done)` for a replacement ID in the failing regression.
+- **Consequence:** Startup reports the selected sandbox as ready and omits the replacement warning even though that exact sandbox is absent. The running replacement is not started or stopped by this branch.
+- **Fix:** Reuse `ensure_machine_identity()` before accepting any launch observation, including Running.
+- **Regression test:** Both a changed runtime ID under the selected name and an unexpected observed name must report an identity error without mutation. Existing matching-ID Running behavior remains successful and mutation-free. The extracted launch-function checks fail before and pass after the fix; native integration validation remains queued behind the shared Cargo lock.
+
+## runtime-dir-c-6 — P2 — A completed uncommitted stop still fails Quit
+
+- **Location:** `app/SiloUI/src-tauri/src/runtime/shutdown.rs`, `stop_uncommitted_vm()`.
+- **Trigger:** A VM created before metadata publication stops, but the runtime command client reports a timeout or other error after applying the stop.
+- **Evidence:** The Stop branch propagated the command error immediately with `?`, without another inspection. Committed lifecycle shutdown already verifies desired state after command failures. The extracted production helper returned the timeout in a fixture whose exact VM was Stopped after the command.
+- **Consequence:** Quit reports a shutdown failure and leaves the app open even though its owned VM stopped. A second Quit succeeds after inspecting the already-stopped VM.
+- **Fix:** After a command error, re-inspect the exact journal-owned identity. Accept only Stopped, Created, or Crashed; otherwise retain the command error. An unreadable or replaced VM still blocks Quit.
+- **Regression test:** The full uncommitted shutdown transaction must succeed when fake Stop commands set their VMs Stopped before returning timeout errors, and preserve the unfinished configuration journal. The same fixture must fail if the commands leave the VMs Running. Both extracted helper checks pass after the fix; the completed-stop assertion failed before it.
+
+## runtime-dir-c-7 — P2 — Reusing a removed VM's name blocks Quit
+
+- **Location:** `app/SiloUI/src-tauri/src/runtime/shutdown.rs`, `stop_local_vms_with()`.
+- **Trigger:** An unfinished configuration transaction removes a VM and creates another under the same name with a different immutable ID. Its journal retains both identities, whether the replacement metadata has been published or not.
+- **Evidence:** Shutdown selected both identities by name. The removed identity failed verification against the present replacement, so Quit failed even after stopping the replacement. The extracted shutdown function failed with an identity error for both metadata-publication cases.
+- **Consequence:** A successfully stopped replacement leaves the app unable to Quit until configuration recovery clears the journal.
+- **Fix:** Skip an absent journal identity only when an exact-name, managed runtime inspection matches a different known identity under that name. The present identity still follows normal shutdown verification; unknown identities remain errors.
+- **Regression test:** Both committed and uncommitted replacements stop successfully without discarding their recovery journal. The extracted production shutdown function failed before and passes after the fix. Native regressions were added; full-crate execution remains blocked by the shared Cargo lock. Rust formatting, frontend typecheck, lint, and diff checks passed for the fixes in this loop.
+
+## Final native verification result
+
+The queued native test command eventually acquired the shared Cargo lock, then exited 101 before compiling the application tests: Tauri's build script could not find `binaries/msb-aarch64-apple-darwin` in this worktree. The preserved output is `/tmp/runtime-dir-c-4-native.log`. No runtime preparation or app launch was performed. The native regressions require a prepared test environment; their full-crate compilation and execution remain unverified. The failing-before/passing-after source-extracted reproductions and formatting/typecheck/lint checks passed, including the final name-reuse reproduction after merging integration.

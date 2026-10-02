@@ -9,7 +9,7 @@ import { guestArchitecture, stageGuestImage, verifyGuestArchive } from "../../sc
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
 const bytes = Buffer.from("approved archive")
-const manifest = { schemaVersion: 1, imageReference: "silo:test", archiveBytes: bytes.length, archiveSha256: createHash("sha256").update(bytes).digest("hex") }
+const manifest = { schemaVersion: 1, architecture: "aarch64", imageReference: "silo:test", archiveBytes: bytes.length, archiveSha256: createHash("sha256").update(bytes).digest("hex") }
 async function setup() {
   const appRoot = await mkdtemp(join(tmpdir(), "silo-guest-test-"))
   directories.push(appRoot)

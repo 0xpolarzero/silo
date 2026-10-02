@@ -3322,21 +3322,32 @@ fn write_immutable_package(
     )?;
     let size_bytes = verified.size_bytes;
     check_cancelled(cancellation)?;
-    rename_without_replacing(temporary.path(), destination).map_err(|error| {
+    publish_package(temporary.path(), destination, parent, |parent| {
+        File::open(parent).and_then(|directory| directory.sync_all())
+    })?;
+    Ok(size_bytes)
+}
+
+fn publish_package(
+    source: &Path,
+    destination: &Path,
+    parent: &Path,
+    sync_directory: impl FnOnce(&Path) -> io::Result<()>,
+) -> Result<(), BackupError> {
+    rename_without_replacing(source, destination).map_err(|error| {
         if error.kind() == io::ErrorKind::AlreadyExists {
             BackupError::FileConflict(destination.display().to_string())
         } else {
             BackupError::Io(error)
         }
     })?;
-    if let Err(error) = File::open(parent).and_then(|directory| directory.sync_all()) {
-        let _ = fs::remove_file(destination);
-        return Err(BackupError::Io(error));
-    }
-    Ok(size_bytes)
+    // Publication has committed. Keep the verified archive when durability cannot
+    // be confirmed; the destination might already belong to another writer.
+    sync_directory(parent)?;
+    Ok(())
 }
 
-enum OpenRegularError {
+pub(crate) enum OpenRegularError {
     NotRegular,
     Io(io::Error),
 }
@@ -3345,7 +3356,7 @@ enum OpenRegularError {
 /// then check the opened handle itself, so a path swapped after an earlier
 /// check can neither redirect the read nor hang it. The returned metadata
 /// (and its length) belongs to the handle that will be read.
-fn open_regular_file(path: &Path) -> Result<(File, fs::Metadata), OpenRegularError> {
+pub(crate) fn open_regular_file(path: &Path) -> Result<(File, fs::Metadata), OpenRegularError> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = OpenOptions::new()
         .read(true)
@@ -6175,6 +6186,36 @@ mod tests {
             service.data_timeout(500 * 1024 * 1024 * 1024),
             Duration::from_secs(60 + 500 * 1024 / 16)
         );
+    }
+
+    #[test]
+    fn directory_sync_failure_preserves_published_files() {
+        let temp = tempfile::tempdir().unwrap();
+        for replace in [true, false] {
+            let source = temp.path().join(".export.tmp");
+            let destination = temp.path().join(format!("export-{replace}.silo-backup"));
+            fs::write(&source, b"verified export").unwrap();
+            let result = publish_package(&source, &destination, temp.path(), |_| {
+                if replace {
+                    let replacement = temp.path().join("replacement");
+                    fs::write(&replacement, b"another writer's file")?;
+                    fs::rename(&replacement, &destination)?;
+                }
+                Err(io::Error::from_raw_os_error(libc::EIO))
+            });
+            assert!(
+                matches!(result, Err(BackupError::Io(error)) if error.raw_os_error() == Some(libc::EIO))
+            );
+            assert_eq!(
+                fs::read(&destination).unwrap(),
+                if replace {
+                    b"another writer's file".as_slice()
+                } else {
+                    b"verified export".as_slice()
+                }
+            );
+            assert!(!source.exists());
+        }
     }
 
     #[test]

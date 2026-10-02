@@ -223,6 +223,9 @@ fn save(document: &Document) -> Result<(), String> {
         .map_err(|_| "Secret settings could not be saved.")?;
     file.persist(&path)
         .map_err(|_| "Secret settings could not be saved.")?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "Secret settings could not be saved.")?;
     Ok(())
 }
 fn update(f: impl FnOnce(&mut Document) -> Result<(), String>) -> Result<(), String> {
@@ -564,7 +567,7 @@ fn reconcile_with(
         .collect();
     for workspace in targets {
         let mut attempts = 0;
-        let result = loop {
+        let (result, applied_revision) = loop {
             if !load()?.secrets.iter().any(|secret| secret.id == id) {
                 return Ok(());
             }
@@ -581,10 +584,26 @@ fn reconcile_with(
                 let restarted = last_start(&workspace).is_some_and(|start| {
                     Some(&start) != started_before.as_ref() && start.1 == desired_revision
                 });
-                break result.map(|pending| if restarted { Vec::new() } else { pending });
+                break (
+                    result.map(|pending| if restarted { Vec::new() } else { pending }),
+                    desired_revision,
+                );
             }
         };
         update(|document| {
+            // Exhausted retries and concurrent deletion cannot publish an obsolete result.
+            if revision(document, &workspace) != applied_revision {
+                if let Some(secret) = document.secrets.iter_mut().find(|s| s.id == id) {
+                    if secret.affected.contains(&workspace)
+                        && !secret.pending_workspaces.contains(&workspace)
+                    {
+                        secret.errors.entry(workspace.clone()).or_insert_with(|| {
+                            "Secret settings changed during this update. Retry to verify the latest settings.".into()
+                        });
+                    }
+                }
+                return Ok(());
+            }
             let Some(secret) = document.secrets.iter_mut().find(|s| s.id == id) else {
                 return Ok(());
             };
@@ -915,6 +934,38 @@ pub(crate) fn install(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_document_save_reports_an_unreadable_parent_after_publication() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory = tempfile::tempdir().unwrap();
+        if fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let path = directory.path().join("secrets.json");
+        use_test_store(Some(path.clone()));
+        let document = Document {
+            activities: vec![serde_json::json!({"title": "fixture change"})],
+            ..Default::default()
+        };
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+        let result = save(&document);
+        use_test_store(None);
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let published: Document = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(published.activities, document.activities);
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        assert!(
+            result.is_err(),
+            "an unsynchronized rename must not report success"
+        );
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        use_test_store(Some(path));
+        let retry = save(&document);
+        use_test_store(None);
+        assert!(retry.is_ok());
+    }
     fn request() -> Request {
         Request {
             operation: "add".into(),
@@ -1332,6 +1383,98 @@ mod tests {
         .unwrap();
         assert_eq!(load().unwrap().secrets[0].workspaces, ["dev"]);
         use_test_store(None);
+    }
+    #[test]
+    fn exhausted_reconcile_keeps_retry_available_for_an_unapplied_revision() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        save(&Document {
+            secrets: vec![secret()],
+            ..Default::default()
+        })
+        .unwrap();
+        let mut operation = Some(lock_unit(&OPERATION));
+        let mut attempts = 0;
+        reconcile_with(
+            "id",
+            &mut operation,
+            &|_| Ok(Vec::new()),
+            &mut |_, _| {
+                attempts += 1;
+                update(|document| {
+                    document.secrets[0].value_id = format!("new-generation-{attempts}");
+                    Ok(())
+                })?;
+                Ok(Vec::new())
+            },
+            &|| {},
+        )
+        .unwrap();
+        drop(operation);
+        let document = load().unwrap();
+        assert_eq!(attempts, 3);
+        assert_eq!(document.secrets[0].affected, ["dev"]);
+        assert!(public(&document.secrets[0])["error"]
+            .as_str()
+            .unwrap()
+            .contains("Retry"));
+        use_test_store(None);
+    }
+    #[test]
+    fn exhausted_reconcile_does_not_publish_success_for_a_newer_revision() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        use_test_vault(Some(
+            [
+                ("private-reference".into(), "initial-value".into()),
+                ("generation-1".into(), "rotation-1".into()),
+                ("generation-2".into(), "rotation-2".into()),
+                ("generation-3".into(), "rotation-3".into()),
+            ]
+            .into(),
+        ));
+        save(&Document {
+            secrets: vec![secret()],
+            ..Default::default()
+        })
+        .unwrap();
+        let mut operation = Some(lock_unit(&OPERATION));
+        let mut applied = Vec::new();
+        reconcile_with(
+            "id",
+            &mut operation,
+            &runtime_material,
+            &mut |workspace, material| {
+                applied.push(material[0].1.clone());
+                let _newer_save = lock_unit(&OPERATION);
+                update(|document| {
+                    document.secrets[0].value_id = format!("generation-{}", applied.len());
+                    if applied.len() == 3 {
+                        document.secrets[0]
+                            .errors
+                            .insert(workspace.into(), "Newer update failed.".into());
+                    }
+                    Ok(())
+                })?;
+                Ok(Vec::new())
+            },
+            &|| {},
+        )
+        .unwrap();
+        drop(operation);
+        assert_eq!(applied, ["initial-value", "rotation-1", "rotation-2"]);
+        let document = load().unwrap();
+        let secret = &document.secrets[0];
+        assert_eq!(secret.value_id, "generation-3");
+        assert_eq!(secret.affected, ["dev"]);
+        assert_eq!(
+            secret.errors.get("dev").map(String::as_str),
+            Some("Newer update failed.")
+        );
+        use_test_store(None);
+        use_test_vault(None);
     }
     #[test]
     fn reconcile_releases_the_operation_lock_while_a_vm_applies() {

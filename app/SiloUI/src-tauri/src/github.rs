@@ -469,6 +469,16 @@ fn observed_credential() -> CredentialObservation {
         .map(|state| state.clone())
         .unwrap_or_else(|_| Some(Err("GitHub credential state is unavailable.".into())))
 }
+// Policy revisions cross IPC as JavaScript numbers and must remain distinguishable.
+const MAX_POLICY_REVISION: u64 = 9_007_199_254_740_991;
+
+fn next_policy_revision(revision: u64) -> Result<u64, String> {
+    revision
+        .checked_add(1)
+        .filter(|next| *next <= MAX_POLICY_REVISION)
+        .ok_or_else(|| "GitHub settings revision exceeds the supported range.".into())
+}
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Document {
@@ -510,6 +520,8 @@ struct Document {
     /// view. Kept after a policy is removed so a stale save cannot bring it back.
     #[serde(default)]
     policy_stamps: std::collections::BTreeMap<String, PolicyStamp>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -578,7 +590,7 @@ pub(crate) fn fork_assignment(
             .workspaces
             .retain(|value| value["workspace"].as_str() != Some(target));
         document.workspaces.push(assignment);
-        document.revision = document.revision.saturating_add(1);
+        document.revision = next_policy_revision(document.revision)?;
         stamp(&mut document, target, None);
         if !document.access_pending.iter().any(|name| name == target) {
             document.access_pending.push(target.into());
@@ -595,7 +607,7 @@ pub(crate) fn forget_fork_assignment(app: &tauri::AppHandle, target: &str) -> Re
     let _state = serialize(&STATE);
     let mut document = load(app)?;
     forget_workspace(&mut document, target);
-    document.revision = document.revision.saturating_add(1);
+    document.revision = next_policy_revision(document.revision)?;
     stamp(&mut document, target, None);
     save(app, &document)
 }
@@ -632,7 +644,7 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
         let _state = serialize(&STATE);
         let mut d = load_at(&document)?;
         if forget_workspace(&mut d, workspace) {
-            d.revision = d.revision.saturating_add(1);
+            d.revision = next_policy_revision(d.revision)?;
             stamp(&mut d, workspace, None);
             save_at(&document, &d)?;
         }
@@ -717,6 +729,16 @@ fn store(c: &Credential) -> Result<(), String> {
     );
     result
 }
+fn replace_connection_credential(
+    secret: &SessionSecret<Option<Credential>>,
+    credential: &Credential,
+    persist: impl FnOnce() -> Result<(), String>,
+    publish: impl FnOnce(Result<Option<u64>, String>),
+) -> Result<(), String> {
+    secret.replace(Some(credential.clone()), persist)?;
+    publish(Ok(Some(observed_expiry(credential))));
+    Ok(())
+}
 /// Retry storing a credential whose earlier write failed (for example a renewed
 /// credential after a refresh), at most every 15 minutes so a denied Keychain prompt
 /// is not reopened in a loop. Until then the renewed credential is used in memory.
@@ -769,15 +791,29 @@ fn document_path() -> Option<PathBuf> {
 fn load(app: &tauri::AppHandle) -> Result<Document, String> {
     load_at(&path(app)?)
 }
+const MAX_CONFIGURATION_BYTES: usize = 16 * 1024 * 1024;
 fn load_at(path: &std::path::Path) -> Result<Document, String> {
-    match fs::read(path) {
-        Ok(b) if b.len() <= 16 * 1024 * 1024 => {
-            serde_json::from_slice(&b).map_err(|_| "GitHub configuration is invalid.".into())
-        }
-        Ok(_) => Err("GitHub configuration exceeds the supported size.".into()),
+    match fs::File::open(path) {
+        Ok(file) => read_configuration(file),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Document::default()),
         Err(_) => Err("Cannot read GitHub configuration.".into()),
     }
+}
+fn read_configuration(reader: impl Read) -> Result<Document, String> {
+    let mut bytes = Vec::new();
+    reader
+        .take((MAX_CONFIGURATION_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Cannot read GitHub configuration.")?;
+    if bytes.len() > MAX_CONFIGURATION_BYTES {
+        return Err("GitHub configuration exceeds the supported size.".into());
+    }
+    let document: Document =
+        serde_json::from_slice(&bytes).map_err(|_| "GitHub configuration is invalid.")?;
+    if document.revision > MAX_POLICY_REVISION {
+        return Err("GitHub settings revision exceeds the supported range.".into());
+    }
+    Ok(document)
 }
 fn save(app: &tauri::AppHandle, d: &Document) -> Result<(), String> {
     save_at(&path(app)?, d)?;
@@ -792,12 +828,15 @@ fn save_at(p: &std::path::Path, d: &Document) -> Result<(), String> {
     }
     let at = now();
     saved.rate_retry.retain(|_, until| *until > at);
-    let d = &saved;
+    let encoded = serde_json::to_vec(&saved).map_err(|_| "Cannot encode GitHub configuration.")?;
+    if encoded.len() > MAX_CONFIGURATION_BYTES {
+        return Err("GitHub configuration exceeds the supported size.".into());
+    }
     let parent = p.parent().ok_or("Missing configuration directory.")?;
     fs::create_dir_all(parent).map_err(|_| "Cannot create configuration directory.")?;
     let mut f = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| "Cannot write GitHub configuration.")?;
-    f.write_all(&serde_json::to_vec(d).map_err(|_| "Cannot encode GitHub configuration.")?)
+    f.write_all(&encoded)
         .map_err(|_| "Cannot write GitHub configuration.")?;
     f.as_file()
         .sync_all()
@@ -1036,6 +1075,13 @@ fn github(token: &str, path: &str) -> Result<Value, String> {
 fn catalog(c: &Credential) -> Result<Vec<Value>, String> {
     Ok(catalog_installations(c)?.0)
 }
+fn catalog_with_retry(
+    c: &Credential,
+    fetch: impl FnOnce(&Credential) -> Result<Vec<Value>, String>,
+) -> Result<Vec<Value>, String> {
+    crate::github_http::reset_catalog_retries(&c.access_token);
+    fetch(c)
+}
 fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
     let slug = APP_SLUG.ok_or("GitHub App is not configured in this build.")?;
     let mut repos = Vec::new();
@@ -1218,7 +1264,14 @@ fn retire_unused(app: &tauri::AppHandle, workspace: &str) -> Result<(), String> 
         &LEDGER_SECRET,
         &entry,
         workspace,
-        |token| live.contains(token),
+        |token| {
+            live.contains(token)
+                || retirement()
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .active_pushes
+                    .contains(token)
+        },
         |token| token_operation(Operation::RevokeToken, json!({"accessToken":token})).map(|_| ()),
     )
 }
@@ -1261,6 +1314,16 @@ fn retire_ledger_tokens(
             }
         }
     }
+    forget_ledger_tokens(secret, entry, workspace, &revoked)?;
+    failure.map_or(Ok(()), Err)
+}
+
+fn forget_ledger_tokens(
+    secret: &SessionSecret<TokenLedger>,
+    entry: &keyring::Entry,
+    workspace: &str,
+    revoked: &[String],
+) -> Result<(), String> {
     secret.update(
         || read_ledger(entry),
         |ledger| {
@@ -1272,8 +1335,7 @@ fn retire_ledger_tokens(
             }
         },
         |ledger| save_ledger(entry, ledger),
-    )?;
-    failure.map_or(Ok(()), Err)
+    )
 }
 
 fn finish_application(
@@ -1838,9 +1900,11 @@ fn mint(
     {
         return Ok((token.token, token.expires_at));
     }
-    let response = token_operation(
+    let response = crate::github_tokens::execute_for_workspace(
+        &token_configuration()?,
         Operation::Scope,
         json!({"accessToken":c.access_token,"ownerId":s.owner,"repositoryIds":if s.all{vec![]}else if write{s.writes.clone()}else{s.ids.clone()},"allRepositories":s.all,"allowChanges":write}),
+        workspace,
     )?;
     let token = response["accessToken"]
         .as_str()
@@ -2058,6 +2122,38 @@ fn narrow_checked(
     }
 }
 
+const RETIREMENT_RETRY_AFTER: u64 = 30;
+#[derive(Default)]
+struct TokenRetirement {
+    active_pushes: std::collections::HashSet<String>,
+    retry_at: u64,
+}
+impl TokenRetirement {
+    fn wait(&self, at: u64) -> Duration {
+        Duration::from_secs(self.retry_at.saturating_sub(at))
+    }
+    fn finished(&mut self, token: &str, at: u64) {
+        self.active_pushes.remove(token);
+        self.retry_at = at;
+    }
+}
+fn retirement() -> &'static Mutex<TokenRetirement> {
+    static RETIREMENT: OnceLock<Mutex<TokenRetirement>> = OnceLock::new();
+    RETIREMENT.get_or_init(|| Mutex::new(TokenRetirement::default()))
+}
+fn begin_host_push_token(
+    retirement: &Mutex<TokenRetirement>,
+    token: &str,
+    remember: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    retirement
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .active_pushes
+        .insert(token.into());
+    remember()
+}
+
 /// A credential for one explicit host push. Silo's scoped token is revoked as
 /// soon as the push ends (owner decision 1); a personal token is never revoked.
 pub(crate) struct HostPushCredential {
@@ -2081,31 +2177,37 @@ impl HostPushCredential {
 }
 impl Drop for HostPushCredential {
     fn drop(&mut self) {
-        if let Some((app, workspace)) = self.retire.take() {
-            retire_host_push_token(
+        if let Some((_app, workspace)) = self.retire.take() {
+            let result = retire_host_push_token(
                 &self.token,
                 |token| {
                     token_operation(Operation::RevokeToken, json!({"accessToken":token}))
                         .map(|_| ())
                 },
-                |token| remember_token(&app, &workspace, token),
+                |token| {
+                    let entry = ledger_entry()?;
+                    forget_ledger_tokens(&LEDGER_SECRET, &entry, &workspace, &[token.into()])
+                },
             );
+            if let Err(error) = result {
+                eprintln!("Could not retire the host push credential: {error}");
+            }
+            retirement()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .finished(&self.token, now());
+            wake_worker();
         }
     }
 }
-/// Revoke now. When GitHub cannot be reached, keep the token in the durable
-/// retirement ledger so the GitHub worker revokes it later.
+/// Only a confirmed revocation removes a pre-recorded token from the ledger.
 fn retire_host_push_token(
     token: &str,
     revoke: impl FnOnce(&str) -> Result<(), String>,
-    remember: impl FnOnce(&str) -> Result<(), String>,
-) {
-    if let Err(error) = revoke(token) {
-        eprintln!("Could not revoke the host push credential: {error}");
-        if let Err(error) = remember(token) {
-            eprintln!("Could not record the host push credential for revocation: {error}");
-        }
-    }
+    forget: impl FnOnce(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    revoke(token)?;
+    forget(token)
 }
 /// Scoped tokens end with the account credential. Renew an account credential
 /// that would expire within this time so a long push keeps a working token.
@@ -2192,6 +2294,8 @@ pub(crate) fn host_push_credential(
             let id = repo["id"]
                 .as_u64()
                 .ok_or("Invalid repository identifier.")?;
+            let ledger = ledger_entry()?;
+            LEDGER_SECRET.read(|| read_ledger(&ledger))?;
             current()?;
             let response = token_operation(
                 Operation::Scope,
@@ -2209,6 +2313,9 @@ pub(crate) fn host_push_credential(
                 expires_at: None,
                 retire: Some((app.clone(), workspace.into())),
             };
+            begin_host_push_token(retirement(), &credential.token, || {
+                remember_token(app, workspace, &credential.token)
+            })?;
             credential.expires_at = Some(token_expiry(&response)?);
             Ok(credential)
         },
@@ -2263,9 +2370,9 @@ mod host_push_authorization_tests {
     }
 
     #[test]
-    fn host_push_tokens_are_revoked_or_kept_for_later_revocation() {
+    fn host_push_tokens_leave_the_ledger_only_after_confirmed_revocation() {
         let _test_state = crate::test_support::global_state();
-        let remembered = std::cell::RefCell::new(Vec::<String>::new());
+        let forgotten = std::cell::RefCell::new(Vec::<String>::new());
         super::retire_host_push_token(
             "revoked",
             |token| {
@@ -2273,20 +2380,22 @@ mod host_push_authorization_tests {
                 Ok(())
             },
             |token| {
-                remembered.borrow_mut().push(token.into());
+                forgotten.borrow_mut().push(token.into());
                 Ok(())
             },
-        );
-        assert!(remembered.borrow().is_empty());
-        super::retire_host_push_token(
+        )
+        .unwrap();
+        assert_eq!(*forgotten.borrow(), ["revoked"]);
+        assert!(super::retire_host_push_token(
             "offline",
             |_| Err("GitHub is unreachable.".into()),
             |token| {
-                remembered.borrow_mut().push(token.into());
+                forgotten.borrow_mut().push(token.into());
                 Ok(())
             },
-        );
-        assert_eq!(*remembered.borrow(), ["offline"]);
+        )
+        .is_err());
+        assert_eq!(*forgotten.borrow(), ["revoked"]);
     }
 
     #[test]
@@ -2606,6 +2715,15 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             return Err("GitHub connection cancelled.".into());
         }
         let mut d = load(app)?;
+        let revision = next_policy_revision(d.revision)?;
+        // A failed explicit replacement must leave the previous account and its access intact.
+        replace_connection_credential(
+            &ACCOUNT_SECRET,
+            &c,
+            || entry().and_then(|entry| store_entry(&entry, &c)),
+            publish_credential_observation,
+        )?;
+        unstored.kept();
         // Reconnecting creates a new account authorization. Never reuse old
         // grants, even if the account name and repository choices are identical.
         let prefix = format!("{}:", path(app)?.display());
@@ -2624,7 +2742,7 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
                 detach_result(
                     app,
                     name,
-                    crate::runtime::apply_github_policy(app, name, d.revision + 1, &profile(&[])),
+                    crate::runtime::apply_github_policy(app, name, revision, &profile(&[])),
                 )
             },
         );
@@ -2636,17 +2754,10 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             .lock()
             .map_err(|_| "GitHub state is unavailable.")?
             .retain(|key, _| !key.starts_with(&prefix));
-        let stored = store(&c);
-        // A failed store write keeps the new credential in use in memory and stores it
-        // later, so it is kept; only a credential that Silo holds nowhere is revoked.
-        if stored.is_ok() || ACCOUNT_SECRET.peek() == Some(Ok(Some(c.clone()))) {
-            unstored.kept();
-        }
-        stored?;
         let same = account
             .as_deref()
             .is_some_and(|login| same_account(d.account.as_deref(), login));
-        record_connection(&mut d, account, repos);
+        record_connection(&mut d, account, repos)?;
         for (name, error) in detach_errors.workspaces {
             d.access_errors.insert(name, error);
         }
@@ -2669,19 +2780,48 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
     snapshot(app)
 }
 
-fn record_connection(d: &mut Document, account: Option<String>, repositories: Vec<Value>) {
+fn record_connection(
+    d: &mut Document,
+    account: Option<String>,
+    repositories: Vec<Value>,
+) -> Result<(), String> {
+    let revision = next_policy_revision(d.revision)?;
     d.access_enabled = true;
     d.disconnect_pending = false;
     d.account = account;
     d.repositories = repositories;
     d.catalog_error = None;
     d.catalog_refresh_at = now() + 300;
-    d.revision += 1;
+    d.revision = revision;
     mark_pending(d);
+    Ok(())
 }
 
 fn catalog_refresh_due(d: &Document, now: u64) -> bool {
     d.access_enabled && d.account.is_some() && !d.disconnect_pending && now >= d.catalog_refresh_at
+}
+
+fn sweep_retirement(
+    retirement: &Mutex<TokenRetirement>,
+    at: u64,
+    read: impl FnOnce() -> Result<TokenLedger, String>,
+    mut retire: impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    {
+        let mut state = retirement.lock().unwrap_or_else(PoisonError::into_inner);
+        if at < state.retry_at {
+            return Ok(());
+        }
+        // Advance before network work so a completed push can request an earlier pass.
+        state.retry_at = at + RETIREMENT_RETRY_AFTER;
+    }
+    let mut failure = None;
+    for name in read()?.keys() {
+        if let Err(error) = retire(name) {
+            failure = Some(error);
+        }
+    }
+    failure.map_or(Ok(()), Err)
 }
 
 /// Re-establish host-only grants after relaunch and renew them before expiry.
@@ -2804,20 +2944,6 @@ pub fn install(app: &tauri::AppHandle) {
                         }
                     }
                     let _ = apply(&app, &mut d, None, false);
-                    // Removed sandboxes still have a durable retirement ledger.
-                    if let Ok(ledger) =
-                        LEDGER_SECRET.read(|| ledger_entry().and_then(|entry| read_ledger(&entry)))
-                    {
-                        for name in ledger.keys() {
-                            if !d
-                                .workspaces
-                                .iter()
-                                .any(|w| w["workspace"].as_str() == Some(name))
-                            {
-                                let _ = retire_unused(&app, name);
-                            }
-                        }
-                    }
                     let account_credential = credential();
                     {
                         let _state = serialize(&STATE);
@@ -2853,10 +2979,24 @@ pub fn install(app: &tauri::AppHandle) {
             } else {
                 wait = Duration::from_secs(5);
             }
+            let _ = sweep_retirement(
+                retirement(),
+                now(),
+                || LEDGER_SECRET.read(|| ledger_entry().and_then(|entry| read_ledger(&entry))),
+                |name| retire_unused(&app, name),
+            );
         }
         // Sleep until the next deadline (not a 100 ms poll that re-read the whole
         // document for the app's lifetime); `schedule` wakes the worker early.
-        worker_sleep(wait.min(personal_token::next_check()).max(WORKER_MIN_SLEEP));
+        let retirement_wait = retirement()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .wait(now());
+        worker_sleep(
+            wait.min(personal_token::next_check())
+                .min(retirement_wait)
+                .max(WORKER_MIN_SLEEP),
+        );
     });
 }
 
@@ -2963,9 +3103,8 @@ pub async fn refresh_github_repositories(
 ) -> Result<Value, String> {
     require_main(window.label())?;
     retry_credential_access();
-    crate::github_http::reset_retries();
     run(app, |app| {
-        let result = active_credential().and_then(|c| catalog(&c));
+        let result = active_credential().and_then(|c| catalog_with_retry(&c, catalog));
         let _state = serialize(&STATE);
         let mut d = load(app)?;
         match result {
@@ -3004,9 +3143,9 @@ pub async fn disconnect_github(
         let _update = crate::updates::operation_guard()?;
         let _state = serialize(&STATE);
         let mut d = load(&app)?;
+        d.revision = next_policy_revision(d.revision)?;
         d.access_enabled = false;
         d.disconnect_pending = true;
-        d.revision += 1;
         mark_pending(&mut d);
         save(&app, &d)?;
         let result = narrow_now(&app, &mut d);
@@ -3036,8 +3175,8 @@ pub async fn set_github_access_enabled(
         if d.access_enabled == enabled {
             return snapshot(&app);
         }
+        d.revision = next_policy_revision(d.revision)?;
         d.access_enabled = enabled;
-        d.revision += 1;
         mark_pending(&mut d);
         save(&app, &d)?;
         let result = narrow_now(&app, &mut d);
@@ -3152,8 +3291,9 @@ fn apply_patches(
         }
     }
     validate(&workspaces)?;
+    let revision = next_policy_revision(d.revision)?;
     d.workspaces = workspaces;
-    d.revision += 1;
+    d.revision = revision;
     for w in &changed_policies {
         if let Some(name) = w["workspace"].as_str() {
             stamp(d, name, base);
@@ -3262,12 +3402,16 @@ pub async fn retry_github_configuration(
     require_main(window.label())?;
     retry_credential_access();
     let ticket = INTENTS.ticket();
-    crate::github_http::reset_retries();
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = ticket.wait()?;
         let _update = crate::updates::operation_guard()?;
         let _state = serialize(&STATE);
         let mut d = load(&app)?;
+        if let Some(workspace) = workspace.as_deref() {
+            crate::github_http::reset_workspace_retries(workspace);
+        } else {
+            crate::github_http::reset_retries();
+        }
         prepare_retry(&mut d, workspace.as_deref());
         save(&app, &d)?;
         schedule(Duration::ZERO);
@@ -3279,6 +3423,18 @@ pub async fn retry_github_configuration(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn repository_refresh_keeps_unrelated_token_operations_stopped() {
+        crate::github_http::assert_bearer_retry_isolated(|token| {
+            let credential = fixture_credential(token, super::now() + 3600);
+            let result = super::catalog_with_retry(&credential, |credential| {
+                assert_eq!(credential.access_token, token);
+                Ok(vec![serde_json::json!({"fixture": true})])
+            })
+            .unwrap();
+            assert_eq!(result, vec![serde_json::json!({"fixture": true})]);
+        });
+    }
     #[test]
     fn a_panic_under_the_github_locks_does_not_block_updates_or_settings() {
         let _test_state = crate::test_support::global_state();
@@ -3366,6 +3522,41 @@ mod tests {
         cache.retry();
         cache.write(Some(2), || Ok(())).unwrap();
         assert_eq!(cache.read(|| panic!("Read after write")).unwrap(), Some(2));
+    }
+    #[test]
+    fn failed_reconnection_preserves_the_previous_credential_and_observation() {
+        let secret = SessionSecret::new();
+        let old = fixture_credential("previous-account", now() + 600);
+        let new = fixture_credential("new-account", now() + 900);
+        let stored = std::cell::RefCell::new(Some(old.clone()));
+        let observed = std::cell::RefCell::new(Ok(Some(observed_expiry(&old))));
+        secret.read(|| Ok(stored.borrow().clone())).unwrap();
+        assert!(replace_connection_credential(
+            &secret,
+            &new,
+            || Err("store denied".into()),
+            |value| *observed.borrow_mut() = value,
+        )
+        .is_err());
+        assert!(secret.peek() == Some(Ok(Some(old.clone()))));
+        assert!(*observed.borrow() == Ok(Some(observed_expiry(&old))));
+        secret
+            .flush(|_| panic!("failed reconnect must not be retried as a renewal"))
+            .unwrap();
+        assert!(*stored.borrow() == Some(old));
+        replace_connection_credential(
+            &secret,
+            &new,
+            || {
+                *stored.borrow_mut() = Some(new.clone());
+                Ok(())
+            },
+            |value| *observed.borrow_mut() = value,
+        )
+        .unwrap();
+        assert!(secret.peek() == Some(Ok(Some(new.clone()))));
+        assert!(*stored.borrow() == Some(new.clone()));
+        assert!(*observed.borrow() == Ok(Some(observed_expiry(&new))));
     }
     #[test]
     fn expired_credential_with_refresh_token_stays_connected() {
@@ -3504,6 +3695,107 @@ mod tests {
     fn saved_policy(name: &str, all: bool) -> Value {
         json!({"workspace":name,"repositoryMode":if all {"all"} else {"selected"},"allRepositoriesAllowChanges":all,
             "repositories":[],"identity":{"name":"","email":"","apply":false}})
+    }
+    #[test]
+    fn additive_github_preferences_survive_a_known_setting_change() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let saved = json!({
+            "revision": 4,
+            "accessEnabled": false,
+            "account": "fixture-account",
+            "workspaces": [saved_policy("dev", false)],
+            "futurePreference": {"mode": "newer", "enabled": true}
+        });
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut document = load_at(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        document.access_enabled = true;
+        save_at(&path, &document).unwrap();
+        let reloaded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
+        assert_eq!(reloaded["workspaces"], saved["workspaces"]);
+        assert_eq!(reloaded["account"], saved["account"]);
+        assert!(load_at(&path).unwrap().access_enabled);
+    }
+
+    #[test]
+    fn legacy_github_preferences_keep_safe_defaults_after_save_and_reload() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        fs::write(&path, br#"{"revision":0,"accessEnabled":false}"#).unwrap();
+        let document = load_at(&path).unwrap();
+        assert!(!document.access_enabled);
+        assert!(document.account.is_none());
+        assert!(document.workspaces.is_empty());
+        assert!(document.policy_stamps.is_empty());
+        assert!(!document.grants_issued);
+        save_at(&path, &document).unwrap();
+        let reloaded = load_at(&path).unwrap();
+        assert!(!reloaded.access_enabled);
+        assert!(reloaded.account.is_none());
+        assert!(reloaded.workspaces.is_empty());
+        assert!(reloaded.policy_stamps.is_empty());
+        assert!(!reloaded.grants_issued);
+    }
+
+    #[test]
+    fn unsafe_saved_policy_revisions_are_refused_without_rewriting_the_document() {
+        for revision in [9_007_199_254_740_992, u64::MAX] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("github.json");
+            let bytes = serde_json::to_vec(&Document {
+                revision,
+                ..Default::default()
+            })
+            .unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(load_at(&path).is_err(), "revision {revision} was accepted");
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+    #[test]
+    fn policy_revision_exhaustion_refuses_edits_without_changing_saved_choices() {
+        let _test_state = crate::test_support::global_state();
+        for revision in [9_007_199_254_740_991, u64::MAX] {
+            let mut d = Document {
+                revision,
+                workspaces: vec![saved_policy("dev", false)],
+                ..Default::default()
+            };
+            let before = serde_json::to_value(&d).unwrap();
+            assert!(
+                apply_patches(&mut d, &[saved_policy("dev", true)], None, true, false).is_err()
+            );
+            assert_eq!(serde_json::to_value(&d).unwrap(), before);
+        }
+    }
+    #[test]
+    fn the_last_safe_policy_revision_is_saved_and_noop_edits_still_succeed() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let mut d = Document {
+            revision: 9_007_199_254_740_990,
+            workspaces: vec![saved_policy("dev", false)],
+            ..Default::default()
+        };
+        assert!(
+            apply_patches(&mut d, &[saved_policy("dev", true)], None, true, false)
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(d.revision, 9_007_199_254_740_991);
+        assert_eq!(d.policy_stamps["dev"].revision, 9_007_199_254_740_991);
+        save_at(&path, &d).unwrap();
+        assert_eq!(load_at(&path).unwrap().revision, 9_007_199_254_740_991);
+        assert_eq!(
+            apply_patches(&mut d, &[saved_policy("dev", true)], None, true, false).unwrap(),
+            None
+        );
     }
     #[test]
     fn a_save_patches_only_its_sandboxes_and_never_changes_access() {
@@ -4327,6 +4619,139 @@ mod tests {
         assert_eq!(state["workspaceOperations"][0]["status"], "succeeded");
     }
     #[test]
+    fn pending_push_retirement_retries_without_grant_renewal_or_enabled_access() {
+        for enabled in [true, false] {
+            let secret = SessionSecret::new();
+            let entry = keyring::Entry::new_with_credential(Box::new(
+                keyring::mock::MockCredential::default(),
+            ));
+            append_ledger_token(&secret, &entry, "dev", "pending_push").unwrap();
+            let d = Document {
+                session: session().into(),
+                access_enabled: enabled,
+                refresh_at: 3600,
+                catalog_refresh_at: 3600,
+                workspaces: vec![json!({"workspace":"dev"})],
+                ..Document::default()
+            };
+            assert!(!worker_due(&d, None, 30, Instant::now()));
+            let retirement = Mutex::new(TokenRetirement {
+                retry_at: 30,
+                ..Default::default()
+            });
+            sweep_retirement(
+                &retirement,
+                29,
+                || panic!("retirement before deadline"),
+                |_| panic!("early revocation"),
+            )
+            .unwrap();
+            assert!(sweep_retirement(
+                &retirement,
+                30,
+                || secret.read(|| panic!("unexpected store read")),
+                |name| retire_ledger_tokens(
+                    &secret,
+                    &entry,
+                    name,
+                    |_| false,
+                    |_| Err("offline".into())
+                )
+            )
+            .is_err());
+            assert_eq!(retirement.lock().unwrap().wait(30), Duration::from_secs(30));
+            assert!(!worker_due(&d, None, 60, Instant::now()));
+            sweep_retirement(
+                &retirement,
+                59,
+                || panic!("retirement before retry"),
+                |_| panic!("early retry"),
+            )
+            .unwrap();
+            sweep_retirement(
+                &retirement,
+                60,
+                || secret.read(|| panic!("unexpected store read")),
+                |name| retire_ledger_tokens(&secret, &entry, name, |_| false, |_| Ok(())),
+            )
+            .unwrap();
+            assert!(secret
+                .read(|| panic!("unexpected store read"))
+                .unwrap()
+                .is_empty());
+        }
+    }
+    #[test]
+    fn push_token_is_durable_before_use_and_survives_a_crash() {
+        let secret = SessionSecret::new();
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        let retirement = Mutex::new(TokenRetirement::default());
+        begin_host_push_token(&retirement, "push", || {
+            append_ledger_token(&secret, &entry, "dev", "push")
+        })
+        .unwrap();
+        assert_eq!(read_ledger(&entry).unwrap()["dev"], ["push"]);
+        sweep_retirement(
+            &retirement,
+            1,
+            || secret.read(|| panic!("unexpected store read")),
+            |name| {
+                retire_ledger_tokens(
+                    &secret,
+                    &entry,
+                    name,
+                    |token| retirement.lock().unwrap().active_pushes.contains(token),
+                    |_| panic!("active push revoked"),
+                )
+            },
+        )
+        .unwrap();
+        // A new session has no active pushes and reads the durable record left without Drop.
+        let restarted = SessionSecret::new();
+        let restarted_retirement = Mutex::new(TokenRetirement::default());
+        sweep_retirement(
+            &restarted_retirement,
+            2,
+            || restarted.read(|| read_ledger(&entry)),
+            |name| retire_ledger_tokens(&restarted, &entry, name, |_| false, |_| Ok(())),
+        )
+        .unwrap();
+        assert!(read_ledger(&entry).unwrap().is_empty());
+    }
+    #[test]
+    fn failed_push_token_storage_prevents_use_and_keeps_retirement_pending() {
+        let secret = SessionSecret::new();
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        secret.read(|| read_ledger(&entry)).unwrap();
+        entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .unwrap()
+            .set_error(keyring::Error::NoStorageAccess(Box::new(
+                std::io::Error::other("denied"),
+            )));
+        let retirement = Mutex::new(TokenRetirement::default());
+        let used = std::cell::Cell::new(false);
+        let attempt = || -> Result<(), String> {
+            begin_host_push_token(&retirement, "push", || {
+                append_ledger_token(&secret, &entry, "dev", "push")
+            })?;
+            used.set(true);
+            Ok(())
+        };
+        assert!(attempt().is_err());
+        assert!(!used.get());
+        assert_eq!(
+            secret.read(|| panic!("unexpected store read")).unwrap()["dev"],
+            ["push"]
+        );
+        retirement.lock().unwrap().finished("push", 5);
+        assert!(retirement.lock().unwrap().active_pushes.is_empty());
+        assert_eq!(retirement.lock().unwrap().wait(5), Duration::ZERO);
+    }
+    #[test]
     fn retirement_preserves_ledger_tokens_appended_during_revocation() {
         let secret = SessionSecret::new();
         let entry =
@@ -4406,7 +4831,7 @@ mod tests {
     fn connection_enables_access_without_selecting_repositories() {
         let _test_state = crate::test_support::global_state();
         let mut document = Document::default();
-        record_connection(&mut document, Some("account".into()), vec![]);
+        record_connection(&mut document, Some("account".into()), vec![]).unwrap();
         assert!(document.access_enabled);
         assert!(document.workspaces.is_empty());
         assert!(document.access_pending.is_empty());
@@ -4414,7 +4839,7 @@ mod tests {
         document.access_enabled = false;
         document.disconnect_pending = true;
         document.workspaces = vec![json!({"workspace":"dev"})];
-        record_connection(&mut document, Some("account".into()), vec![]);
+        record_connection(&mut document, Some("account".into()), vec![]).unwrap();
         assert!(document.access_enabled);
         assert!(!document.disconnect_pending);
         assert_eq!(document.access_pending, vec!["dev"]);
@@ -4478,6 +4903,62 @@ mod tests {
         )
         .is_err());
         assert!(matches!(entry.get_password(), Err(keyring::Error::NoEntry)));
+    }
+    #[test]
+    fn configuration_reader_stops_at_the_size_limit() {
+        struct CountingReader {
+            remaining: usize,
+            read: usize,
+        }
+        impl Read for CountingReader {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                let length = target.len().min(self.remaining);
+                target[..length].fill(b' ');
+                self.remaining -= length;
+                self.read += length;
+                Ok(length)
+            }
+        }
+        let mut reader = CountingReader {
+            remaining: MAX_CONFIGURATION_BYTES * 2,
+            read: 0,
+        };
+        assert!(read_configuration(&mut reader).is_err());
+        assert_eq!(reader.read, MAX_CONFIGURATION_BYTES + 1);
+        let document = Document::default();
+        let encoded = serde_json::to_vec(&document).unwrap();
+        assert!(read_configuration(encoded.as_slice()).is_ok());
+        assert!(read_configuration(&b"not-json"[..]).is_err());
+    }
+    #[test]
+    fn oversized_configuration_save_preserves_the_last_readable_document() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let mut document = Document {
+            account: Some("previous-account".into()),
+            ..Default::default()
+        };
+        save_at(&path, &document).unwrap();
+        let previous = fs::read(&path).unwrap();
+        document.account = Some("new-account".into());
+        let name = format!("{}/{}", "o".repeat(39), "r".repeat(100));
+        document.repositories = (1..=99_900)
+            .map(|id| json!({"id":id,"ownerId":7,"name":name}))
+            .collect();
+        assert!(serde_json::to_vec(&document).unwrap().len() > 16 * 1024 * 1024);
+        assert!(save_at(&path, &document).is_err());
+        assert_eq!(fs::read(&path).unwrap(), previous);
+        assert_eq!(
+            load_at(&path).unwrap().account.as_deref(),
+            Some("previous-account")
+        );
+        document.repositories.clear();
+        save_at(&path, &document).unwrap();
+        assert_eq!(
+            load_at(&path).unwrap().account.as_deref(),
+            Some("new-account")
+        );
     }
     #[test]
     fn durable_document_contains_no_credentials() {
@@ -4849,6 +5330,33 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         assert!(from_response(json!({})).is_err());
     }
+    #[test]
+    fn nullable_github_authentication_matches_wire_contract() {
+        let _test_state = crate::test_support::global_state();
+        let workspaces = [Value::Null, json!("oauth"), json!("token")]
+            .into_iter()
+            .enumerate()
+            .map(|(index, method)| {
+                json!({
+                    "workspace": format!("dev-{index}"),
+                    "authenticationMethod": method,
+                    "repositoryMode": "selected",
+                    "allRepositoriesAllowChanges": false,
+                    "repositories": [],
+                    "identity": {"name": "", "email": "", "apply": false}
+                })
+            })
+            .collect::<Vec<_>>();
+        validate(&workspaces).unwrap();
+        let document = Document {
+            session: session().into(),
+            workspaces,
+            ..Default::default()
+        };
+        let state = public_snapshot(document, Ok(None), None);
+        crate::runtime::contract_tests::assert_fixture("github-authentication.json", vec![state]);
+    }
+
     #[test]
     fn public_github_state_matches_frontend_contract() {
         let _test_state = crate::test_support::global_state();

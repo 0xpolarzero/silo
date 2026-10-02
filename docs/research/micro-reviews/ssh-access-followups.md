@@ -19,6 +19,31 @@ production implementation in an extracted Rust harness before its fix.
 
 ## Verification boundaries
 
+SSH-ACCESS-4: `remote.rs` classified `ssh.access.connection` as `Access::Read`
+after the method began registering controller keys. Repeating one request ran
+the handler twice and wrote no operation marker. The new
+`ssh_key_registration_is_recorded_once_per_request` handler regression failed
+with two executions, then passed after classifying registration as a change.
+The existing all-method replay/read regression also passed. The dispatcher
+harness uses the production request handler, configuration readers/writer,
+operation journal, and gate; only host-directory selection and shutdown
+admission use fixture adapters.
+
+SSH-ACCESS-5: `SshAccessRow.change` sent the entire cached key list when editing
+an endpoint. Registering a controller between the last refresh and that save
+caused `save_with` to replace the newer authorization with the older list. A
+frontend behavior fixture lost the newly registered key before the fix. A
+backend fixture rejected an endpoint-only save before the fix. Key replacement
+is now optional in both command adapters; omitted keys use the latest owner
+configuration under the operation gate. The fixtures cover endpoint editing,
+managed-key revocation on disable, and deliberate key replacement. Owners that
+require a key list must be updated before accepting endpoint-only saves.
+
+The optional native command argument uses Tauri's supported deserialization:
+`CommandItem::deserialize_option` calls `visit_none` for a missing argument
+(`tauri-2.11.5/src/ipc/command.rs`, lines 134–143 in the locked local source).
+No custom IPC transport or merge service was added.
+
 The disposable Rust harness extracts production save, controller-registration,
 configuration, validation, and editor key helpers directly from this worktree.
 Runtime metadata and operation admission use fixture adapters; reconciliation

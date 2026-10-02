@@ -1,8 +1,10 @@
 use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "linux", test))]
 use sha2::{Digest, Sha256};
+#[cfg(test)]
+use std::fs;
 use std::{
-    fs::{self, File},
+    fs::File,
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -18,7 +20,7 @@ const RETRY_GUIDANCE: &str =
 // Finish native probes before the frontend watchdog abandons the report at 15 seconds.
 const COLLECTION_TIMEOUT: Duration = Duration::from_secs(12);
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(3);
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const MAX_HASH_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_OUTPUT: u64 = 8 * 1024;
 const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
@@ -236,7 +238,7 @@ fn expected_target() -> Option<&'static str> {
     }
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError> {
+fn open_regular_file(path: &Path) -> Result<File, ProbeError> {
     let unreadable = |error: io::Error| match error.kind() {
         io::ErrorKind::NotFound => ProbeError::Missing(format!("{} is missing", path.display())),
         io::ErrorKind::PermissionDenied => {
@@ -255,14 +257,21 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError>
     let file = options.open(path).map_err(unreadable)?;
     if !file.metadata().map_err(unreadable)?.is_file() {
         return Err(ProbeError::Malformed(format!(
-            "{} is not a regular manifest file",
+            "{} is not a regular file",
             path.display()
         )));
     }
+    Ok(file)
+}
+
+fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError> {
+    let file = open_regular_file(path)?;
     let mut bytes = Vec::new();
     file.take(MAX_MANIFEST_BYTES + 1)
         .read_to_end(&mut bytes)
-        .map_err(unreadable)?;
+        .map_err(|error| {
+            ProbeError::Unreadable(format!("{} could not be read: {error}", path.display()))
+        })?;
     if bytes.len() as u64 > MAX_MANIFEST_BYTES {
         return Err(ProbeError::Malformed(format!(
             "{} exceeds the manifest size limit",
@@ -275,36 +284,12 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, ProbeError>
 }
 
 fn readable_file(path: &Path) -> Result<(), ProbeError> {
-    let metadata = fs::metadata(path).map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => ProbeError::Missing(format!("{} is missing", path.display())),
-        io::ErrorKind::PermissionDenied => {
-            ProbeError::Unreadable(format!("{} cannot be read", path.display()))
-        }
-        _ => ProbeError::Unreadable(format!(
-            "{} could not be inspected: {error}",
-            path.display()
-        )),
-    })?;
-    if !metadata.is_file() {
-        return Err(ProbeError::Malformed(format!(
-            "{} is not a regular file",
-            path.display()
-        )));
-    }
-    File::open(path)
-        .map_err(|_| ProbeError::Unreadable(format!("{} cannot be read", path.display())))?;
-    Ok(())
+    open_regular_file(path).map(|_| ())
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn sha256_file(path: &Path, deadline: Instant) -> Result<String, ProbeError> {
-    let mut file = File::open(path).map_err(|error| match error.kind() {
-        io::ErrorKind::NotFound => ProbeError::Missing(format!("{} is missing", path.display())),
-        io::ErrorKind::PermissionDenied => {
-            ProbeError::Unreadable(format!("{} cannot be read", path.display()))
-        }
-        _ => ProbeError::Unreadable(format!("{} could not be read: {error}", path.display())),
-    })?;
+    let mut file = open_regular_file(path)?;
     let length = file
         .metadata()
         .map_err(|error| {
@@ -449,6 +434,30 @@ fn run_bounded_with_timeout(
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
+        // The child writes to regular temporary files; enforce the output bound
+        // while it runs, using only resource-limit syscalls between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                let zero = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                if libc::setrlimit(libc::RLIMIT_CORE, &zero) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut limit = zero;
+                if libc::getrlimit(libc::RLIMIT_FSIZE, &mut limit) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let bound = (MAX_OUTPUT + 1) as libc::rlim_t;
+                limit.rlim_cur = limit.rlim_cur.min(bound);
+                limit.rlim_max = limit.rlim_max.min(bound);
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     for (name, value) in environment {
         command.env(name, value);
@@ -1254,6 +1263,142 @@ pub async fn read_dependencies(
 mod tests {
     use super::*;
 
+    fn version_probe(script: &str, arguments: &[&str]) -> Result<String, ProbeError> {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("version-probe");
+        crate::test_support::write_shell_script(&executable, script);
+        run_bounded_with_timeout(
+            &executable,
+            arguments,
+            &[("HOME", directory.path())],
+            Duration::from_secs(3),
+        )
+    }
+
+    #[test]
+    fn version_probe_passes_literal_arguments_and_uses_an_isolated_home_and_locale() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("version-probe");
+        crate::test_support::write_shell_script(
+            &executable,
+            "if IFS= read -r line; then exit 1; fi\nprintf ' \\t%s\\n%s\\n%s\\n%s \\n' \"$1\" \"$HOME\" \"$LANG\" \"$LC_ALL\"\nprintf warning >&2",
+        );
+        let value = "literal '$value'; $(false)";
+        assert_eq!(
+            run_bounded_with_timeout(
+                &executable,
+                &[value],
+                &[("HOME", directory.path())],
+                Duration::from_secs(3),
+            )
+            .unwrap(),
+            format!("{value}\n{}\nC\nC", directory.path().display())
+        );
+    }
+
+    #[test]
+    fn version_probe_accepts_the_output_limit_and_rejects_overflow_on_either_stream() {
+        let script = "if [ \"$2\" = stderr ]; then exec 1>&2; fi\ni=0\nwhile [ \"$i\" -lt \"$1\" ]; do printf x; i=$((i+1)); done";
+        for stream in ["stdout", "stderr"] {
+            let at_limit = version_probe(script, &["8192", stream]).unwrap();
+            assert_eq!(
+                at_limit,
+                if stream == "stdout" {
+                    "x".repeat(8192)
+                } else {
+                    String::new()
+                }
+            );
+            match version_probe(script, &["8193", stream]) {
+                Err(ProbeError::Malformed(detail)) => {
+                    assert_eq!(detail, "version output exceeded 8 KiB")
+                }
+                result => panic!("oversized {stream} was not rejected: {result:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn version_probe_rejects_successful_non_utf8_output() {
+        match version_probe("printf '\\377'", &[]) {
+            Err(ProbeError::Malformed(detail)) => {
+                assert_eq!(detail, "version output was not UTF-8")
+            }
+            result => panic!("invalid UTF-8 was not rejected: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn failed_version_probe_reports_stderr_or_exit_status_instead_of_successful_stdout() {
+        match version_probe(
+            "printf 'msb 0.7.6'; printf ' specific failure \\n' >&2; exit 23",
+            &[],
+        ) {
+            Err(ProbeError::Unsupported(detail)) => assert_eq!(detail, "specific failure"),
+            result => panic!("failed probe was not rejected: {result:?}"),
+        }
+        match version_probe("printf 'msb 0.7.6'; exit 7", &[]) {
+            Err(ProbeError::Unsupported(detail)) => {
+                assert_eq!(detail, "version check exited with exit status: 7")
+            }
+            result => panic!("failed probe without stderr was not rejected: {result:?}"),
+        }
+    }
+
+    #[test]
+    fn version_probe_distinguishes_missing_non_regular_and_non_executable_files() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("version-probe");
+        let probe = |path: &Path| {
+            run_bounded_with_timeout(
+                path,
+                &[],
+                &[("HOME", directory.path())],
+                Duration::from_secs(3),
+            )
+        };
+        assert!(matches!(probe(&executable), Err(ProbeError::Missing(_))));
+        assert!(matches!(
+            probe(directory.path()),
+            Err(ProbeError::Malformed(_))
+        ));
+        fs::write(&executable, "#!/bin/sh\nprintf should-not-run").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(probe(&executable), Err(ProbeError::Unreadable(_))));
+    }
+
+    #[test]
+    fn manifest_read_distinguishes_missing_unreadable_corrupt_and_valid_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let manifest = directory.path().join("manifest.json");
+        assert!(matches!(
+            read_json::<serde_json::Value>(&manifest),
+            Err(ProbeError::Missing(_))
+        ));
+        let blocker = directory.path().join("file");
+        fs::write(&blocker, "preserve this file").unwrap();
+        assert!(matches!(
+            read_json::<serde_json::Value>(&blocker.join("manifest.json")),
+            Err(ProbeError::Unreadable(_))
+        ));
+        assert_eq!(fs::read_to_string(&blocker).unwrap(), "preserve this file");
+        for bytes in [b"{broken".as_slice(), b"\xff", b""] {
+            fs::write(&manifest, bytes).unwrap();
+            assert!(matches!(
+                read_json::<serde_json::Value>(&manifest),
+                Err(ProbeError::Malformed(_))
+            ));
+            assert_eq!(fs::read(&manifest).unwrap(), bytes);
+        }
+        fs::write(&manifest, r#"{"schemaVersion":2}"#).unwrap();
+        assert_eq!(
+            read_json::<serde_json::Value>(&manifest).unwrap(),
+            serde_json::json!({"schemaVersion":2})
+        );
+    }
+
     #[test]
     fn missing_guest_image_fails_existing_runtime_check_without_installing() {
         let directory = tempfile::tempdir().unwrap();
@@ -1469,6 +1614,114 @@ mod tests {
         assert!(output.contains("1 passed"), "{output}");
     }
 
+    #[cfg(unix)]
+    fn assert_guest_image_fifo_is_rejected(name: &str) {
+        let directory = tempfile::tempdir().unwrap();
+        let image = directory.path().join("guest-image");
+        fs::create_dir(&image).unwrap();
+        fs::write(image.join("image.tar.gz"), b"a").unwrap();
+        fs::write(
+            image.join("manifest.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": 1,
+                "architecture": std::env::consts::ARCH,
+                "imageReference": "ghcr.io/0xpolarzero/silo-guest:test",
+                "imageDigest": format!("sha256:{}", "a".repeat(64)),
+                "archiveSha256": "b".repeat(64),
+                "archiveBytes": 1,
+                "unpackedBytes": 1,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let path = image.join(name);
+        fs::remove_file(&path).unwrap();
+        let path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let helper = format!("{module}::guest_image_fifo_reader_helper");
+        let output = run_bounded_with_timeout(
+            &std::env::current_exe().unwrap(),
+            &["--exact", &helper, "--nocapture"],
+            &[("SILO_TEST_GUEST_IMAGE_FIFO", directory.path())],
+            PROCESS_TIMEOUT,
+        )
+        .expect("guest-image validation must not wait for a FIFO writer");
+        assert!(output.contains("1 passed"), "{output}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_manifest_fifo_is_rejected_before_the_collection_deadline() {
+        assert_guest_image_fifo_is_rejected("manifest.json");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_archive_fifo_is_rejected_before_the_collection_deadline() {
+        assert_guest_image_fifo_is_rejected("image.tar.gz");
+    }
+
+    #[test]
+    fn guest_image_fifo_reader_helper() {
+        let Some(directory) = std::env::var_os("SILO_TEST_GUEST_IMAGE_FIFO") else {
+            return;
+        };
+        let paths = ProbePaths {
+            executable_dir: PathBuf::from(&directory),
+            resource_dir: PathBuf::from(&directory),
+            frameworks_dir: Some(PathBuf::from(&directory)),
+        };
+        let check = microsandbox_check(&paths, Instant::now() + Duration::from_secs(2));
+        assert_eq!(check.status, CheckStatus::Failed, "{check:?}");
+        assert!(check.detail.contains("regular file"), "{check:?}");
+    }
+
+    #[test]
+    fn dependency_hash_rejects_directories_and_hashes_valid_files() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            sha256_file(directory.path(), Instant::now() + PROCESS_TIMEOUT),
+            Err(ProbeError::Malformed(_))
+        ));
+        let path = directory.path().join("binary");
+        fs::write(&path, b"abc").unwrap();
+        assert_eq!(
+            sha256_file(&path, Instant::now() + PROCESS_TIMEOUT).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dependency_hash_fifo_is_rejected_without_waiting_for_a_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("git");
+        let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let module = module_path!().split_once("::").unwrap().1;
+        let helper = format!("{module}::dependency_hash_fifo_reader_helper");
+        let output = run_bounded_with_timeout(
+            &std::env::current_exe().unwrap(),
+            &["--exact", &helper, "--nocapture"],
+            &[("SILO_TEST_DEPENDENCY_HASH_FIFO", path.as_path())],
+            PROCESS_TIMEOUT,
+        )
+        .expect("dependency hashing must not wait for a FIFO writer");
+        assert!(output.contains("1 passed"), "{output}");
+    }
+
+    #[test]
+    fn dependency_hash_fifo_reader_helper() {
+        let Some(path) = std::env::var_os("SILO_TEST_DEPENDENCY_HASH_FIFO") else {
+            return;
+        };
+        assert!(matches!(
+            sha256_file(Path::new(&path), Instant::now() + PROCESS_TIMEOUT),
+            Err(ProbeError::Malformed(_))
+        ));
+    }
+
     #[test]
     fn fifo_manifest_reader_helper() {
         let Some(path) = std::env::var_os("SILO_TEST_MANIFEST_FIFO") else {
@@ -1580,6 +1833,32 @@ mod tests {
         }
         runtime.executable.bundled_name = "../../bin/sh".into();
         assert!(!runtime_manifest_matches(&runtime));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_limit_stops_probes_before_they_continue_after_excessive_writes() {
+        for script in [
+            "printf '%65536s' x; printf finished > \"$1\"",
+            "printf '%65536s' x >&2; printf finished > \"$1\"",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let marker = directory.path().join("finished");
+            let result = run_bounded_with_timeout(
+                Path::new("/bin/sh"),
+                &["-c", script, "probe", marker.to_str().unwrap()],
+                &[],
+                PROCESS_TIMEOUT,
+            );
+            assert!(
+                matches!(result, Err(ProbeError::Malformed(_))),
+                "{result:?}"
+            );
+            assert!(
+                !marker.exists(),
+                "the oversized write completed before its limit was enforced"
+            );
+        }
     }
 
     #[test]

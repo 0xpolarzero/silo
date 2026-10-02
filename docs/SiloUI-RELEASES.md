@@ -292,13 +292,20 @@ runs only the root package, so the updater requires an explicit `-p` command; an
 check of the Markdown documentation with [lychee](https://github.com/lycheeverse/lychee)
 in offline mode. The macOS job also runs `test_macos_release.py` against
 ad hoc signed disposable binaries; the Linux discovery run skips these
-platform-specific cases. The jobs do not run the ignored live VM tests.
-To run the link check locally, install lychee and run from the
-repository root:
+platform-specific cases. CI also explicitly runs Debian package lifecycle
+tests as root on its disposable Ubuntu runner, after ordinary non-root discovery.
+Local discovery keeps the lifecycle opt-in disabled because those tests install
+packages and write system APT paths. The jobs do not run the ignored live VM tests.
+The link check includes first-party source documentation, guest notices and
+changesets. A coverage regression compares its globs with tracked Markdown,
+excluding documentation in the partial upstream vendor tree.
+To run the link check locally, install lychee and run from the repository root:
 
 ```sh
 lychee --offline --no-progress README.md AGENTS.md 'docs/**/*.md' 'app/SiloUI/*.md' \
-  'app/SiloUI/tests/**/*.md' 'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
+  'app/SiloUI/tests/**/*.md' 'app/SiloUI/src/**/*.md' 'app/SiloUI/.changeset/*.md' \
+  'app/SiloUI/src-tauri/guest/**/*.md' 'app/SiloUI/docs/**/*.html' \
+  'artifacts/**/*.md' 'website/*.md' 'demo/*.md'
 ```
 
 `.github/workflows/linux-packaging.yml` builds the Debian package and AppImage
@@ -466,7 +473,9 @@ The `publish-release.py` tests cover missing/empty/unexpected assets, symlinks,
 invalid signature encoding, version bounds, complete checksums and platform URLs.
 `verify-release-metadata.py` also rejects an old signed package advertised under
 a new version. It reads macOS Info.plist/Mach-O headers, Debian control metadata,
-and the signed AppImage release-info resource without executing any package.
+and the signed Debian and AppImage release-info resources without executing any
+package. Debian data is inspected through `dpkg-deb --fsys-tarfile` as a stream;
+control fields and bundled release metadata must both match the release.
 
 ### Linux software source
 
@@ -559,6 +568,9 @@ the selected Go version, requested toolchain, staging-script recipe digest, and
 effective build flags, experiments, architecture tuning, and FIPS setting. A
 change to any of these rejects both executable caches. Builds and compiler notices
 use the selected compiler's GOROOT with further toolchain switching disabled.
+The LFS manifest also records every bundled license file's SHA256; both caches
+reject missing, changed or unexpected notices instead of packaging an incomplete
+notice tree alongside a valid executable.
 Keys include the runner, target, Rust and selected Go versions, staging scripts, runtime patch,
 and guest lockfile, so app version changes alone do not invalidate the runtime.
 Preparation always verifies and stages restored inputs and regenerates package
@@ -566,7 +578,10 @@ metadata. Cache misses follow the normal build path.
 
 The patched MicroSandbox executable key also includes the staging-script recipe
 digest and the requested `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`,
-`CARGO_BUILD_RUSTFLAGS`, and target-specific `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`.
+`CARGO_BUILD_RUSTFLAGS`, target-specific `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, and
+`CARGO_PROFILE_RELEASE_*` overrides, including build-script overrides. Profile
+settings such as debug information and optimization change compiled bytes without
+changing the source pin or the runtime's capability probes.
 [Cargo documents these compiler inputs](https://doc.rust-lang.org/cargo/reference/environment-variables.html).
 Changing them rebuilds the executable even when a fallback public archive restores
 otherwise valid source, patch, compiler, and capability checks.
@@ -730,3 +745,19 @@ must complete before the command can be released. An exception stops the group
 and reaps its leader before the metadata file closes. Its synthetic regression
 injects a forwarding failure after a fixture command starts, verifies a signal
 exit, and checks that `waitpid` reports no unreaped child.
+
+### Disk-space diagnostic units
+
+Low-space messages for update installation, bundled VM image preparation, and
+ChatGPT app downloads express their existing binary byte calculations as MiB.
+[NIST's binary-prefix definitions](https://physics.nist.gov/cuu/Units/binary.html)
+distinguish one MiB (1,048,576 bytes) from one MB (1,000,000 bytes). The previous MB
+label understated the represented byte amount. Update preflight regressions cover
+an exact 2 MiB shortfall and one extra byte, which must round up to 3 MiB, while
+preserving the installed fixture and cleaning up the staging probe.
+
+Verification: three Rust tests against the extracted production update preflight
+functions passed after the rounding-boundary regression failed with the old MB
+label. Rust formatting, TypeScript typecheck, lint, and whitespace checks passed.
+The full native test compile could not use the cached Tauri dependency because
+new integration tests require its test feature; no packaged app was built or run.

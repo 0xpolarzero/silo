@@ -71,6 +71,23 @@ it("shows a missing recovered Git identity as unapplied, matching the submission
   }))
 })
 
+it("skips applying a blank host identity and adopts an identity that loads later", async () => {
+  const view = setup({ ...source, currentHostGitIdentity: null }, [])
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining([
+      expect.objectContaining({ workspace: "dev", identity: { name: "", email: "", apply: false } }),
+    ]) }),
+  }))
+
+  await act(async () => { view.rerender(view.wrap(source, [])) })
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).toBeChecked()
+  expect(screen.getByLabelText("Git name for dev")).toHaveValue(source.currentHostGitIdentity!.name)
+})
+
 it("finishes with current application preferences after keeping omitted sandboxes", async () => {
   const restored: OnboardingDraft = {
     currentStep: "review", machines: [source.machineConfigurations[0]], unfinishedMachineEditor: null,
@@ -198,6 +215,14 @@ it("submits and recovers a deliberate switch from token to OAuth", async () => {
   const resumed = setup(source, [{ ...policies[0], authenticationMethod: "token" }], saved, true)
   await resumed.user.click(screen.getByRole("tab", { name: /GitHub/ }))
   expect(screen.getByRole("radio", { name: "Use GitHub OAuth for dev" })).toBeChecked()
+})
+
+it("summarizes token access separately from OAuth repository restrictions", async () => {
+  const view = setup(source, [{ ...policies[0], authenticationMethod: "token" }], null, true)
+  await view.user.click(screen.getByRole("tab", { name: /Review/ }))
+  const access = screen.getByRole("group", { name: "GitHub access" })
+  expect(access).toHaveTextContent("Personal token in 1 sandbox")
+  expect(access).toHaveTextContent("0 repositories across 0 of 2 sandboxes")
 })
 
 

@@ -39,3 +39,21 @@ The prescribed full-module command, `cargo +1.94.0 test --manifest-path app/Silo
 - **Consequence:** A temporary observation failure kills working controller tunnels and forgets their chosen local ports and schemes, preventing automatic recovery after the owner can inspect the VM again.
 - **Fix:** Exclude VMs with observation errors from missing-port deletion. Successfully observed VMs and genuinely absent VMs retain normal cleanup behavior.
 - **Regression evidence:** `a_workspace_observation_error_does_not_forget_its_connections` and `an_observation_error_preserves_only_that_workspaces_intents` both failed before the fix. All 16 extracted behavior tests pass afterward; the tests also confirm that a later successful deletion removes the intent. Formatting, typecheck, lint, and whitespace checks pass. No live VM or app was used.
+
+## REMOTE-NETWORK-7 — P2 — Recreated sandbox identities are assigned to older port snapshots
+
+- **File:line at discovery:** `app/SiloUI/src-tauri/src/remote_network.rs:164–183`, `read_host_state`.
+- **Trigger:** Network observation captures a sandbox's ports, then that sandbox is deleted and another sandbox with the same name is created before the metadata lookup that assigns `vmId`.
+- **Consequence:** Ports captured for the old sandbox are labeled with the replacement sandbox's immutable ID, so a controller cannot distinguish the old snapshot from the new sandbox's endpoints.
+- **Fix:** Capture name-to-ID mappings before and after network observation and reject any row whose identity changed. Stable rows do not fail for unrelated metadata changes.
+- **Regression evidence:** `a_recreated_vm_cannot_relabel_an_older_network_snapshot` and `a_vm_created_during_observation_requires_a_fresh_identity_snapshot` failed before the identity guard and pass afterward. `stable_vm_identity_survives_unrelated_metadata_changes` verifies the guard is scoped to observed rows. All 19 extracted tests, formatting, typecheck, lint, and whitespace checks pass. No live VM or app was used.
+
+## REMOTE-NETWORK-8 — P2 — Older polls overwrite newer observed endpoints without a mutation
+
+- **File:line at discovery:** `app/SiloUI/src-tauri/src/remote_network.rs`, `read` and `project_observed`.
+- **Trigger:** Two requests for the same computer share an unchanged mutation revision. The newer request projects the current endpoint first; the delayed earlier request then projects an older endpoint or an empty port set.
+- **Consequence:** The old request replaces the newer reconnect endpoint or closes a tunnel just verified by the newer request. Mutation-only ordering does not protect observations from one another.
+- **Fix:** Give each requested observation a per-computer identity and accept only the latest request at reconciliation. Cleanup invalidates outstanding observations. Other computers retain their own independent ordering.
+- **Regression evidence:** `an_older_poll_cannot_replace_a_newer_reconnect_endpoint` and `an_older_poll_cannot_delete_a_tunnel_verified_by_a_newer_poll` failed before the request-identity guard and pass afterward. All 21 extracted behavior tests, formatting, typecheck, lint, and whitespace checks pass.
+
+The second-loop native Cargo attempt acquired the shared target lock but failed in Tauri's permission build because this worktree lacked `binaries/msb-aarch64-apple-darwin`. The original failure is retained in `/tmp/remote-network-round2-native.log`. Existing prepared `binaries` and `runtime` directories from the main checkout are now linked into this worktree for a focused native retry; no runtime preparation, app launch, real VM, or production state access occurred. The retry uses the prescribed shared target and all three synthetic GitHub values. Its log is `/tmp/remote-network-round2-native-resources.log`.

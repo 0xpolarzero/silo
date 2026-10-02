@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Reduce unnecessary runtime scans when reading checkpoint storage usage.
+Use fewer sandbox status checks when calculating checkpoint storage usage.

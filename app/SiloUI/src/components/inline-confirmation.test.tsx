@@ -23,6 +23,18 @@ function ConfirmationHarness({ onDismiss }: { onDismiss: () => void }) {
 }
 
 describe("InlineConfirmation", () => {
+  it("keeps the confirmation when Escape belongs to IME composition", async () => {
+    const user = userEvent.setup()
+    const onDismiss = vi.fn()
+    render(<ConfirmationHarness onDismiss={onDismiss} />)
+    await user.click(screen.getByRole("button", { name: "Arm" }))
+    fireEvent.keyDown(screen.getByRole("button", { name: "Confirm" }), { key: "Escape", isComposing: true })
+    expect(screen.getByRole("button", { name: "Confirm" })).toBeVisible()
+    expect(onDismiss).not.toHaveBeenCalled()
+    await user.keyboard("{Escape}")
+    expect(onDismiss).toHaveBeenCalledOnce()
+  })
+
   it("keeps inside presses and dismisses on Escape or an outside press", async () => {
     const user = userEvent.setup()
     const onDismiss = vi.fn()

@@ -68,6 +68,7 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
   const element = useRef<HTMLElement | null>(null)
   const setElement = (node: HTMLElement | null) => { element.current = node; assignRef(anchorRef, node) }
   const contentElement = useRef<HTMLDivElement | null>(null)
+  const interactedOutside = useRef(false)
   const [tooltipOpen, setTooltipOpen] = useState(false)
   const quietUntil = useRef(0)
   function changeOpen(next: boolean) {
@@ -85,6 +86,7 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
       </Tooltip>
       : trigger}
     <PopoverContent ref={contentElement} aria-labelledby={titleId} aria-describedby={descriptionId} align={align} side={side} collisionPadding={8} className="w-64 p-3 text-xs" onOpenAutoFocus={(event) => {
+      interactedOutside.current = false
       const initialFocus = contentElement.current?.querySelector<HTMLElement>("[data-popover-initial-focus], input, textarea, select")
       if (!initialFocus) return
       // Prefer the form field or confirmation button; Radix handles action-only content.
@@ -93,12 +95,13 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
     }} onCloseAutoFocus={(event) => {
       if (!anchor) return
       event.preventDefault()
+      if (interactedOutside.current) { interactedOutside.current = false; return }
       const target = element.current
       restoreFocus(target)
       if (target && target.ownerDocument.activeElement !== target) {
         restoreFocus(target.querySelector<HTMLElement>("button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1']):not(:disabled)"))
       }
-    }}>
+    }} onInteractOutside={() => { interactedOutside.current = true }} onEscapeKeyDown={event => { if (event.isComposing) event.preventDefault() }}>
       {content}
     </PopoverContent>
   </Popover>

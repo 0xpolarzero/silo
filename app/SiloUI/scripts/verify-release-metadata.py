@@ -1,6 +1,6 @@
 """Inspect signed package identity without running any packaged executable."""
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import plistlib
 import struct
 import subprocess
@@ -14,11 +14,30 @@ def identity(data, version, target):
     if json.loads(data) != {'version': version, 'target': target}:
         raise RuntimeError('Signed package version or architecture does not match the release.')
 
+def debian_resource(package, name):
+    data = None
+    # dpkg-deb streams the data archive; inspect it without extracting package files.
+    with subprocess.Popen(['dpkg-deb', '--fsys-tarfile', str(package)], stdout=subprocess.PIPE) as process:
+        with process.stdout, tarfile.open(fileobj=process.stdout, mode='r|') as archive:
+            for member in archive:
+                if member.name.removeprefix('./') != name:
+                    continue
+                if data is not None or not member.isfile() or member.size > 1024 * 1024:
+                    raise RuntimeError('Invalid Debian release metadata entry.')
+                data = archive.extractfile(member).read()
+        if process.wait() != 0:
+            raise RuntimeError('Could not read Debian package data.')
+    if data is None:
+        raise RuntimeError('Missing Debian release metadata entry.')
+    return data
+
 def appimage_offset(path, machine):
     with path.open('rb') as source:
         header=source.read(64)
         if len(header)!=64 or header[:6]!=b'\x7fELF\x02\x01' or struct.unpack_from('<H',header,18)[0]!=machine:
             raise RuntimeError('AppImage ELF architecture does not match the release.')
+        if header[8:11]!=b'AI\x02':
+            raise RuntimeError('Release package is not a type 2 AppImage.')
         offset=struct.unpack_from('<Q',header,40)[0]+struct.unpack_from('<H',header,58)[0]*struct.unpack_from('<H',header,60)[0]
         if offset<64 or offset>=path.stat().st_size:
             raise RuntimeError('Invalid AppImage filesystem offset.')
@@ -33,6 +52,12 @@ def verify(root, version):
     archive=root/f'{product_name}-macos-arm64.app.tar.gz'
     if archive.exists():
         with tarfile.open(archive,'r:gz') as tar:
+            names=set()
+            for member in tar.getmembers():
+                path=PurePosixPath(member.name)
+                if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0]!=bundle_name or str(path) in names:
+                    raise RuntimeError('Invalid macOS archive layout or duplicate entry.')
+                names.add(str(path))
             def read(name):
                 member=tar.getmember(bundle_name+'/Contents/'+name)
                 if not member.isfile() or member.size>1024*1024:raise RuntimeError('Invalid macOS metadata entry.')
@@ -42,7 +67,7 @@ def verify(root, version):
             if info.get('CFBundleIdentifier')!=production['identifier']:raise RuntimeError('macOS application identity mismatch.')
             identity(read('Resources/release-info.json'),version,'aarch64-apple-darwin')
             binary=tar.getmember(bundle_name+'/Contents/MacOS/'+info['CFBundleExecutable'])
-            if not binary.isfile():raise RuntimeError('Invalid macOS executable.')
+            if not binary.isfile() or not binary.mode & 0o100:raise RuntimeError('Invalid macOS executable.')
             header=tar.extractfile(binary).read(8)
             if header!=b'\xcf\xfa\xed\xfe\x0c\x00\x00\x01':raise RuntimeError('macOS executable is not ARM64.')
     for arch,target in TARGETS.items():
@@ -51,6 +76,7 @@ def verify(root, version):
             fields=subprocess.check_output(['dpkg-deb','-f',str(package),'Package','Version','Architecture'],text=True).splitlines()
             expected=['Package: silo','Version: '+version,'Architecture: '+('amd64' if arch=='x64' else 'arm64')]
             if fields!=expected:raise RuntimeError('Debian package, version or architecture mismatch.')
+            identity(debian_resource(package, f'usr/lib/{product_name}/release-info.json'),version,target)
         image=root/f'{product_name}-linux-{arch}.AppImage'
         if image.exists():
             offset=appimage_offset(image,62 if arch=='x64' else 183)

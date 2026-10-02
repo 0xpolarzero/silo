@@ -26,9 +26,14 @@ fn string<'a>(params: &'a Value, key: &str) -> Result<&'a str, String> {
 fn vm_name(app: &AppHandle, params: &Value) -> Result<String, String> {
     runtime::remote_ops::local_vm_name(app, string(params, "vmId")?)
 }
+
 pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
     match method {
-        "desktop.connect" => crate::desktop_viewer::local_connection(app, &vm_name(app, params)?),
+        "desktop.connect" => crate::desktop_viewer::local_connection(
+            app,
+            &vm_name(app, params)?,
+            Some(string(params, "vmId")?),
+        ),
         "desktop.status" => {
             let mut state = crate::desktop::dispatch(app, method, params)?;
             state["name"] = Value::String(vm_name(app, params)?);
@@ -62,12 +67,9 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
         }
         "guest.prepare" => {
             // Authorizes a remote key inside one VM's guest; wait its turn per VM.
-            let name = vm_name(app, params)?;
             let paths = runtime::runtime_paths(app)?;
-            let vm_id = runtime::resolve_vm_id(&paths, &name).map_err(|e| e.to_string())?;
-            let _guard = runtime::OPERATIONS
-                .vm(&vm_id, &name, &format!("Preparing access to {name}"))
-                .map_err(|e| e.to_string())?;
+            let (_guard, name) =
+                prepare_guest_target(&runtime::OPERATIONS, &paths, string(params, "vmId")?)?;
             let user = crate::working_account::inspect_user(&paths, &name)?;
             crate::working_account::require_client_protocol(params)?;
             let public = crate::editor::authorize_remote(
@@ -76,7 +78,12 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
                 string(params, "publicKey")?,
                 string(params, "path")?,
             )?;
-            Ok(json!({"hostPublicKey": public, "user":user}))
+            let guest_address = if params["forwarding"].as_bool() == Some(true) {
+                Some(guest_forwarding_address(&paths, &name)?)
+            } else {
+                None
+            };
+            Ok(json!({"hostPublicKey": public, "user":user, "guestAddress":guest_address}))
         }
         "network.state" => crate::remote_network::host_state(app),
         "network.publish" => {
@@ -174,6 +181,19 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
     }
 }
 
+fn prepare_guest_target<'a>(
+    gate: &'a runtime::operation_gate::OperationGate,
+    paths: &runtime::RuntimePaths,
+    id: &str,
+) -> Result<(runtime::operation_gate::OperationGuard<'a>, String), String> {
+    let name = runtime::remote_ops::local_vm_name_in(paths, id)?;
+    let guard = gate
+        .vm(id, &name, &format!("Preparing access to {name}"))
+        .map_err(|e| e.to_string())?;
+    let name = runtime::remote_ops::local_vm_name_in(paths, id)?;
+    Ok((guard, name))
+}
+
 pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Result<Child, String> {
     if method != "guest.ssh" {
         return Err("Unsupported guest connection.".into());
@@ -205,27 +225,230 @@ pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Res
         .map_err(|_| "Could not open the remote VM connection.".into())
 }
 
+fn parse_guest_address(value: &str) -> Result<std::net::IpAddr, String> {
+    let address: std::net::IpAddr = value
+        .trim()
+        .parse()
+        .map_err(|_| "Invalid guest forwarding address.")?;
+    if address.is_loopback() || address.is_unspecified() || address.is_multicast() {
+        return Err("Invalid guest forwarding address.".into());
+    }
+    Ok(address)
+}
+const GUEST_FORWARDING_ADDRESS: &str = "import socket\nfor family, destination in [(socket.AF_INET, ('192.0.2.1', 9)), (socket.AF_INET6, ('2001:db8::1', 9))]:\n try:\n  with socket.socket(family, socket.SOCK_DGRAM) as stream:\n   stream.connect(destination)\n   print(stream.getsockname()[0])\n   break\n except OSError:\n  continue\nelse:\n raise SystemExit('Guest network address is unavailable')\n";
+fn guest_forwarding_address(
+    paths: &runtime::RuntimePaths,
+    name: &str,
+) -> Result<std::net::IpAddr, String> {
+    // UDP connect selects the guest's route/source address without sending a packet.
+    let output = runtime::run_msb(
+        paths,
+        &[
+            "exec".into(),
+            name.into(),
+            "--no-start".into(),
+            "--no-tty".into(),
+            "--quiet".into(),
+            "--timeout".into(),
+            "3s".into(),
+            "--".into(),
+            "python3".into(),
+            "-c".into(),
+            GUEST_FORWARDING_ADDRESS.into(),
+        ],
+        std::time::Duration::from_secs(5),
+    )
+    .map_err(|error| error.to_string())?;
+    parse_guest_address(&output.stdout)
+}
+
 pub(crate) fn prepare(
     app: &AppHandle,
     host: &str,
     vm: &str,
     public: &str,
     path: &str,
-) -> Result<(String, &'static str), String> {
+    forwarding: bool,
+) -> Result<(String, &'static str, Option<std::net::IpAddr>), String> {
     let result = remote::call_remote(
         app,
         host,
         "guest.prepare",
-        json!({"vmId":vm,"publicKey":public,"path":path,"accountProtocol":1}),
+        json!({"vmId":vm,"publicKey":public,"path":path,"accountProtocol":1,"forwarding":forwarding}),
     )?;
     let key = string(&result, "hostPublicKey")?;
     crate::editor::validate_public_key(key)?;
-    Ok((key.into(), crate::working_account::response_user(&result)?))
+    let address = if forwarding {
+        Some(parse_guest_address(string(&result, "guestAddress")?)?)
+    } else {
+        None
+    };
+    Ok((
+        key.into(),
+        crate::working_account::response_user(&result)?,
+        address,
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn save_guest_target(paths: &runtime::RuntimePaths, id: &str, name: &str) {
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![runtime::MachineConfiguration::Vm {
+                    id: id.into(),
+                    name: name.into(),
+                    cpus: 1,
+                    max_cpus: 2,
+                    memory_gib: 2,
+                    max_memory_gib: 4,
+                    workspace_storage_gib: 10,
+                    runtime_storage_gib: 10,
+                    desktop: None,
+                }],
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn queued_guest_preparation_preserves_the_requested_vm_identity() {
+        use std::time::{Duration, Instant};
+        let original = "00000000-0000-4000-8000-000000000001";
+        let replacement = "00000000-0000-4000-8000-000000000002";
+        for replace in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = crate::test_support::paths(dir.path());
+            save_guest_target(&paths, original, "dev");
+            let gate = runtime::operation_gate::OperationGate::new();
+            let computer = gate.computer("Change configuration").unwrap();
+            std::thread::scope(|scope| {
+                let prepare = scope.spawn(|| {
+                    prepare_guest_target(&gate, &paths, original).map(|(_guard, name)| name)
+                });
+                let until = Instant::now() + Duration::from_secs(5);
+                while gate.snapshot().waiting.is_empty() {
+                    assert!(Instant::now() < until, "preparation never queued");
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                assert_eq!(gate.snapshot().waiting[0].vm_id.as_deref(), Some(original));
+                if replace {
+                    save_guest_target(&paths, replacement, "dev");
+                } else {
+                    save_guest_target(&paths, original, "renamed");
+                }
+                drop(computer);
+                let result = prepare.join().unwrap();
+                if replace {
+                    assert!(result.is_err(), "preparation accepted the replacement VM");
+                } else {
+                    assert_eq!(result.unwrap(), "renamed");
+                }
+            });
+            assert!(gate.is_idle());
+        }
+    }
+
+    #[test]
+    fn guest_preparation_rejects_a_stale_id_before_admission() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(dir.path());
+        save_guest_target(&paths, "00000000-0000-4000-8000-000000000002", "dev");
+        let gate = runtime::operation_gate::OperationGate::new();
+        assert!(
+            prepare_guest_target(&gate, &paths, "00000000-0000-4000-8000-000000000001").is_err()
+        );
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn guest_preparation_accepts_an_unchanged_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(dir.path());
+        let id = "00000000-0000-4000-8000-000000000001";
+        save_guest_target(&paths, id, "dev");
+        let gate = runtime::operation_gate::OperationGate::new();
+        let (guard, name) = prepare_guest_target(&gate, &paths, id).unwrap();
+        assert_eq!(name, "dev");
+        assert_eq!(gate.snapshot().running[0].vm_id.as_deref(), Some(id));
+        drop(guard);
+        assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn forwarding_preserves_guest_interface_addresses_and_rejects_shell_text() {
+        assert_eq!(
+            parse_guest_address("172.16.0.6\n").unwrap().to_string(),
+            "172.16.0.6"
+        );
+        assert_eq!(
+            parse_guest_address("fd00::2\n").unwrap().to_string(),
+            "fd00::2"
+        );
+        for input in [
+            "127.0.0.1",
+            "::1",
+            "0.0.0.0",
+            "::",
+            "224.0.0.1",
+            "ff02::1",
+            "172.16.0.6:3000",
+            "172.16.0.6; touch /tmp/injected",
+            "172.16.0.6\n172.16.0.10",
+        ] {
+            assert!(parse_guest_address(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn forwarding_probe_uses_ipv4_then_ipv6_without_sending_data() {
+        let fixture = r#"import socket,sys
+mode = sys.argv[1]
+class RouteSocket:
+ def __init__(self, family, kind):
+  assert kind == socket.SOCK_DGRAM
+  self.family = family
+ def __enter__(self): return self
+ def __exit__(self, *args): pass
+ def connect(self, address):
+  if mode == 'none' or (mode == 'ipv6' and self.family == socket.AF_INET):
+   raise OSError('No route')
+ def getsockname(self):
+  return ('172.16.0.6' if self.family == socket.AF_INET else 'fd00::2', 40000)
+socket.socket = RouteSocket
+"#;
+        let script = format!("{fixture}\n{GUEST_FORWARDING_ADDRESS}");
+        for (mode, expected) in [
+            ("ipv4", Some("172.16.0.6")),
+            ("ipv6", Some("fd00::2")),
+            ("none", None),
+        ] {
+            let output = Command::new("python3")
+                .args(["-c", &script, mode])
+                .output()
+                .unwrap();
+            if let Some(expected) = expected {
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(
+                    parse_guest_address(&String::from_utf8(output.stdout).unwrap())
+                        .unwrap()
+                        .to_string(),
+                    expected
+                );
+            } else {
+                assert!(!output.status.success());
+                assert!(output.stdout.is_empty());
+            }
+        }
+    }
+
     #[test]
     fn remote_targets_never_fall_back_to_local_names() {
         let host = uuid::Uuid::new_v4();

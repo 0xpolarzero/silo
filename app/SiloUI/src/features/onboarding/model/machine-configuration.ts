@@ -87,6 +87,13 @@ export function duplicateMachine(
 
 export type MachineValidationErrors = Partial<Record<"form" | "name" | "cpus" | "maxCPUs" | "memoryGiB" | "maxMemoryGiB" | "workspaceStorageGiB" | "runtimeStorageGiB" | "host" | "user" | "port", string>>
 
+function isMachineValidationField(field: unknown): field is Exclude<keyof MachineValidationErrors, "form"> {
+  return field === "name" || field === "cpus" || field === "maxCPUs"
+    || field === "memoryGiB" || field === "maxMemoryGiB"
+    || field === "workspaceStorageGiB" || field === "runtimeStorageGiB"
+    || field === "host" || field === "user" || field === "port"
+}
+
 export function validateSandboxName(name: string): string | undefined {
   if (!/^[a-z][a-z0-9-]{0,31}$/.test(name)) {
     return "Use 1–32 lowercase letters, numbers, or hyphens, starting with a letter."
@@ -102,8 +109,8 @@ export function validateMachine(
   const errors: MachineValidationErrors = {}
   if (!result.success) {
     for (const issue of result.error.issues) {
-      const field = issue.path[0]
-      if (typeof field === "string" && !(field in errors)) errors[field as keyof MachineValidationErrors] = issue.message
+      const field = isMachineValidationField(issue.path[0]) ? issue.path[0] : "form"
+      errors[field] ??= issue.message
     }
   }
   if (machines.some(({ id, name }) => id !== originalID && name.toLowerCase() === machine.name.toLowerCase())) {

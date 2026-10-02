@@ -114,7 +114,7 @@ export interface SshAccessWorkspace {
   user?: string
 }
 export interface SshAccessState { workspaces: SshAccessWorkspace[] }
-export type SshAccessRequest = Pick<SshAccessWorkspace, "workspace" | "enabled" | "port" | "bindAddress" | "keys">
+export type SshAccessRequest = Pick<SshAccessWorkspace, "workspace" | "enabled" | "port" | "bindAddress"> & { keys?: string[] }
 export interface NetworkPortRequest { workspace: string; port: number; hostPort: number | null; scheme: "http" | "https" | null }
 
 export interface ApplicationPort {
@@ -339,9 +339,9 @@ export interface ApplicationActions {
   saveRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration, expected?: SetupMachineConfiguration) => Promise<void>
   deleteRemoteMachine?: (hostId: string, machine: SetupMachineConfiguration) => Promise<void>
   sshConnection?: (workspace: string, download: boolean, network?: boolean) => Promise<string | null>
-  refreshSshAccess?: () => Promise<void>
+  refreshSshAccess?: (options?: { background?: boolean }) => Promise<void>
   saveSshAccess?: (request: SshAccessRequest) => Promise<void>
-  refreshNetwork?: () => Promise<void>
+  refreshNetwork?: (options?: { background?: boolean }) => Promise<void>
   saveNetworkPort?: (request: NetworkPortRequest) => Promise<void>
   removeNetworkPort?: (workspace: string, port: number) => Promise<void>
   openNetworkPort?: (workspace: string, port: number) => Promise<void>

@@ -56,17 +56,19 @@ pub(crate) fn test_version() -> Option<String> {
 /// Pins the image version for the current test thread until the guard drops.
 #[cfg(test)]
 pub(crate) fn pin_test_version(version: &str) -> TestVersionGuard {
-    TEST_VERSION.with(|slot| *slot.borrow_mut() = Some(version.into()));
-    TestVersionGuard
+    let previous = TEST_VERSION.with(|slot| slot.replace(Some(version.into())));
+    TestVersionGuard { previous }
 }
 
 #[cfg(test)]
-pub(crate) struct TestVersionGuard;
+pub(crate) struct TestVersionGuard {
+    previous: Option<String>,
+}
 
 #[cfg(test)]
 impl Drop for TestVersionGuard {
     fn drop(&mut self) {
-        TEST_VERSION.with(|slot| *slot.borrow_mut() = None);
+        TEST_VERSION.with(|slot| *slot.borrow_mut() = self.previous.take());
     }
 }
 
@@ -75,6 +77,29 @@ fn valid_sha256(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn open_bundle_file(path: &Path) -> Result<File, String> {
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| "Silo's bundled VM image is missing. Reinstall Silo and retry.")?;
+    if !file
+        .metadata()
+        .map_err(|_| "Silo's VM image could not be read.")?
+        .is_file()
+    {
+        return Err(
+            "Silo's bundled VM image input is not a regular file. Reinstall Silo and retry.".into(),
+        );
+    }
+    Ok(file)
 }
 
 /// Inspect bundled resources only. This never creates/imports a runtime cache.
@@ -106,8 +131,7 @@ fn validate_directory_until(
         }
     };
     check_deadline()?;
-    let file = File::open(directory.join("manifest.json"))
-        .map_err(|_| "Silo's bundled VM image is missing. Reinstall Silo and retry.")?;
+    let file = open_bundle_file(&directory.join("manifest.json"))?;
     let mut bytes = Vec::new();
     file.take(64 * 1024 + 1)
         .read_to_end(&mut bytes)
@@ -133,8 +157,7 @@ fn validate_directory_until(
     {
         return Err("Silo's VM image information is invalid. Reinstall Silo.".into());
     }
-    let mut archive = File::open(directory.join("image.tar.gz"))
-        .map_err(|_| "Silo's bundled VM image is missing. Reinstall Silo and retry.")?;
+    let mut archive = open_bundle_file(&directory.join("image.tar.gz"))?;
     if archive
         .metadata()
         .map_err(|_| "Silo's VM image could not be read.")?
@@ -201,7 +224,7 @@ fn check_space(directory: &Path, required: u64) -> Result<(), String> {
     let available = (statistics.f_bavail as u64).saturating_mul(statistics.f_frsize as u64);
     if available < required {
         return Err(format!(
-            "Free at least {} MB to prepare Silo's bundled VM image, then retry.",
+            "Free at least {} MiB to prepare Silo's bundled VM image, then retry.",
             required.div_ceil(1024 * 1024)
         ));
     }
@@ -209,7 +232,7 @@ fn check_space(directory: &Path, required: u64) -> Result<(), String> {
 }
 
 fn unpack(archive: &Path, output: &mut File, expected_bytes: u64) -> Result<(), String> {
-    let input = File::open(archive).map_err(|_| "Silo's bundled VM image could not be opened.")?;
+    let input = open_bundle_file(archive)?;
     let mut decoder = GzDecoder::new(input).take(expected_bytes + 1);
     let written = std::io::copy(&mut decoder, output).map_err(|_| {
         "Silo's bundled VM image could not be unpacked. Check disk space and retry."
@@ -339,6 +362,20 @@ mod tests {
         let error = validate_bundle_until(dir.path(), std::time::Instant::now()).unwrap_err();
         assert!(error.contains("timed out"), "{error}");
         assert!(validate_bundle(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn nested_image_version_guards_restore_the_outer_fixture() {
+        let original = test_version();
+        {
+            let _outer = pin_test_version("ubuntu-24.04-v4");
+            {
+                let _inner = pin_test_version("ubuntu-24.04-v3");
+                assert_eq!(test_version().as_deref(), Some("ubuntu-24.04-v3"));
+            }
+            assert_eq!(test_version().as_deref(), Some("ubuntu-24.04-v4"));
+        }
+        assert_eq!(test_version(), original);
     }
 
     #[test]

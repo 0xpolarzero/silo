@@ -664,3 +664,18 @@ fn a_tree_published_at_the_old_location_moves_and_is_still_verified() {
     assert_eq!(result.unwrap(), mounted.join("1.2.3-arm64"));
     assert_eq!(calls, 0);
 }
+
+#[test]
+fn a_busy_storage_lock_does_not_allow_a_symlinked_mount_folder() {
+    let dir = root();
+    let base = chatgpt_root(&dir);
+    let mounted = ensure_published_dir(&base).unwrap();
+    let _held = RootLock::take(&base).unwrap();
+    assert_eq!(ensure_published_dir_nowait(&base).unwrap(), mounted);
+    let outside = dir.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::remove_dir(base.join("published")).unwrap();
+    std::os::unix::fs::symlink(&outside, base.join("published")).unwrap();
+    assert!(ensure_published_dir_nowait(&base).is_err());
+    assert_eq!(fs::read_dir(outside).unwrap().count(), 0);
+}

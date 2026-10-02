@@ -644,7 +644,7 @@ pub(crate) async fn save_ssh_access(
     enabled: bool,
     port: u16,
     bind_address: String,
-    keys: Vec<String>,
+    keys: Option<Vec<String>>,
 ) -> Result<State, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let _operation = crate::updates::operation_guard()?;
@@ -677,7 +677,8 @@ pub(crate) struct Settings {
     pub(crate) enabled: bool,
     pub(crate) port: u16,
     pub(crate) bind_address: String,
-    pub(crate) keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) keys: Option<Vec<String>>,
 }
 enum Target<'a> {
     Name(&'a str),
@@ -735,7 +736,7 @@ pub(crate) fn connection_material(
             enabled: true,
             port: config.port,
             bind_address: config.bind_address.clone(),
-            keys: config.keys,
+            keys: None,
         },
     )?;
     let key = client_key(paths, vm_id)?;
@@ -788,7 +789,7 @@ fn authorize_controller(
             enabled: true,
             port: config.port,
             bind_address: config.bind_address.clone(),
-            keys,
+            keys: Some(keys),
         },
     )?;
     Ok(serde_json::json!({"port":config.port,"address":config.bind_address,"user":user}))
@@ -833,8 +834,9 @@ fn save_with(
         enabled,
         port,
         bind_address,
-        mut keys,
+        keys,
     } = settings;
+    let mut keys = keys.unwrap_or_else(|| previous.map_or_else(Vec::new, |c| c.keys.clone()));
     let managed_key = if enabled {
         let public = editor::public_key(&client_key(paths, machine.id())?)?;
         if let Some(old) = &managed {
@@ -1424,6 +1426,37 @@ sys.stdin.buffer.read()
             );
         }
         assert_eq!(read(&p).unwrap()[0].keys, keys);
+    }
+
+    #[test]
+    fn endpoint_saves_without_keys_preserve_registered_controllers() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let p = paths(&dir);
+        remote_fixture(&p);
+        let mut c = config();
+        c.port = unused_port();
+        remote_with(&p, "ssh.access.save", &remote_request(&c)).unwrap();
+        let (public, controller) = controller_identity(&dir, "laptop");
+        connect(&p, &c, &public, &controller).unwrap();
+        let before = read(&p).unwrap()[0].keys.clone();
+        let mut request = remote_request(&c);
+        request["settings"].as_object_mut().unwrap().remove("keys");
+        request["settings"]["port"] = serde_json::json!(unused_port());
+        remote_with(&p, "ssh.access.save", &request).unwrap();
+        assert_eq!(read(&p).unwrap()[0].keys, before);
+        request["settings"]["enabled"] = serde_json::json!(false);
+        remote_with(&p, "ssh.access.save", &request).unwrap();
+        assert_eq!(read(&p).unwrap()[0].keys, c.keys);
+        request["settings"]["enabled"] = serde_json::json!(true);
+        remote_with(&p, "ssh.access.save", &request).unwrap();
+        connect(&p, &c, &public, &controller).unwrap();
+        request["settings"]["keys"] = serde_json::json!([]);
+        remote_with(&p, "ssh.access.save", &request).unwrap();
+        assert!(!read(&p).unwrap()[0]
+            .keys
+            .iter()
+            .any(|key| key.starts_with(&public)));
     }
 
     #[test]

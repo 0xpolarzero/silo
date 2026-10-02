@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 
 import { bridgeErrorMessage } from "@/contracts/bridge-error"
 import { errorMessage, showActionFailure, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
@@ -29,7 +29,7 @@ export function networkPortState(workspace: ApplicationWorkspace, port: NetworkP
 
 interface PortOperationIdentity { computer?: { id: string; name: string }; sandboxId: string; displayName: string }
 
-interface PortDraft { workspace: string; port: string; hostPort: string; scheme: string; editing: boolean }
+interface PortDraft { workspace: string; sandboxId: string; port: string; hostPort: string; scheme: string; editing: boolean }
 
 /** Shared state and operations for adding, editing, connecting, and removing forwarded ports.
  * Both the full Network page and a sandbox's Ports section drive identical behaviour from it. */
@@ -41,26 +41,42 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   active: boolean
 }) {
   const [draft, setDraft] = useState<PortDraft | null>(null)
-  const [fieldErrors, setFieldErrors] = useState<{ port?: string; hostPort?: string }>({})
+  const [fieldErrors, setFieldErrors] = useState<{ port?: string; hostPort?: string; workspace?: string }>({})
   const [connecting, setConnecting] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const pending = useRef(false)
   const [confirm, setConfirm] = useState<string | null>(null)
   const refreshNetwork = actions.refreshNetwork
+  const currentWorkspaces = useRef<ApplicationWorkspace[] | null>(workspaces)
+  useLayoutEffect(() => {
+    currentWorkspaces.current = workspaces
+    return () => { currentWorkspaces.current = null }
+  }, [workspaces])
+
+  function hasCurrentSandbox(identity: PortOperationIdentity) {
+    return currentWorkspaces.current?.some(workspace => workspace.machine.id === identity.sandboxId
+      && workspace.computer?.id === identity.computer?.id && workspace.machine.name === identity.displayName)
+  }
+  const changedSandbox = "This sandbox changed or is no longer available. Open its current Ports section and try again."
 
   useEffect(() => {
     if (!active || !refreshNetwork) return
-    const refresh = () => { if (document.visibilityState !== "hidden") void refreshNetwork() }
+    const refresh = (background = false) => { if (document.visibilityState !== "hidden") void refreshNetwork({ background }) }
+    const onReturn = () => refresh()
     refresh()
-    const timer = window.setInterval(refresh, 5000)
-    window.addEventListener("focus", refresh)
-    document.addEventListener("visibilitychange", refresh)
-    return () => { clearInterval(timer); window.removeEventListener("focus", refresh); document.removeEventListener("visibilitychange", refresh) }
+    const timer = window.setInterval(() => refresh(true), 5000)
+    window.addEventListener("focus", onReturn)
+    document.addEventListener("visibilitychange", onReturn)
+    return () => { clearInterval(timer); window.removeEventListener("focus", onReturn); document.removeEventListener("visibilitychange", onReturn) }
   }, [active, refreshNetwork])
 
   /** Runs a port operation with the shared loading → success/failure notifications. Failures offer Retry. */
   async function run(id: string, identity: PortOperationIdentity, copy: { loading: string; step?: string; success: string; failure: string }, operation: () => Promise<void>, onSuccess?: () => void): Promise<boolean> {
     if (pending.current) return false
+    if (!hasCurrentSandbox(identity)) {
+      showOperationFailure(id, copy.failure, { description: changedSandbox, native: false })
+      return false
+    }
     pending.current = true
     setBusy(true)
     const sandbox = identity.displayName
@@ -84,6 +100,10 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   async function open(workspace: ApplicationWorkspace, port: number) {
     const location = workspace.computer ? `${workspace.machine.name} · ${workspace.computer.name}` : workspace.machine.name
     const attempt = async () => {
+      if (!hasCurrentSandbox({ computer: workspace.computer, sandboxId: workspace.machine.id, displayName: workspace.machine.name })) {
+        showActionFailure(`Could not open port ${port} · ${location}`, changedSandbox, undefined, { id: `network-port-open:${workspace.machine.id}:${port}`, native: false })
+        return
+      }
       try { await actions.openNetworkPort!(workspaceTarget(workspace), port) }
       catch (cause) { showActionFailure(`Could not open port ${port} · ${location}`, typeof cause === "string" ? cause : errorMessage(cause), () => void attempt(), { id: `network-port-open:${workspace.machine.id}:${port}`, noticeSandbox: { id: workspace.machine.id, name: workspace.machine.name } }) }
     }
@@ -112,11 +132,11 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
     : localWorkspaces.length > 1 ? "Start a sandbox to add ports" : null
 
   function add(workspace = runningLocalWorkspaces[0] ? workspaceTarget(runningLocalWorkspaces[0]) : "", port = "") {
-    setFieldErrors({}); setDraft({ workspace, port, hostPort: "", scheme: "http", editing: false })
+    setFieldErrors({}); setDraft({ workspace, sandboxId: localWorkspaces.find(item => workspaceTarget(item) === workspace)?.machine.id ?? "", port, hostPort: "", scheme: "http", editing: false })
   }
   function startEdit(workspace: ApplicationWorkspace, port: NetworkPort) {
     setFieldErrors({})
-    setDraft({ workspace: workspaceTarget(workspace), port: String(port.port), hostPort: port.configuredHostPort == null ? "" : String(port.configuredHostPort), scheme: port.scheme ?? "tcp", editing: true })
+    setDraft({ workspace: workspaceTarget(workspace), sandboxId: workspace.machine.id, port: String(port.port), hostPort: port.configuredHostPort == null ? "" : String(port.configuredHostPort), scheme: port.scheme ?? "tcp", editing: true })
   }
   function cancelDraft() { setDraft(null) }
 

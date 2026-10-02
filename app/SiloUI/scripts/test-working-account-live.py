@@ -20,6 +20,13 @@ import subprocess
 import tempfile
 import uuid
 
+VERIFY_FETCH_OWNERSHIP = '''fetched_head=$(git rev-parse FETCH_HEAD)
+current_head=$(git rev-parse HEAD)
+test "$fetched_head" = "$current_head"
+wrong_owner=$(find /workspace/git-remote.git ! -user silo -print -quit)
+test -z "$wrong_owner"
+'''
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -61,7 +68,7 @@ def main():
         return run([str(args.msb.resolve()), *command], **options)
 
     def guest(command, user='root', **options):
-        return msb('exec', name, '--no-tty', '--user', user, '--env', f'USER={user}', '--env', f'LOGNAME={user}', '--', '/bin/sh', '-c', command, **options)
+        return msb('exec', name, '--no-tty', '--user', user, '--env', f'USER={user}', '--env', f'LOGNAME={user}', '--', '/bin/sh', '-ec', command, **options)
 
     scripts = Path(__file__).resolve().parents[1] / 'src-tauri/guest'
 
@@ -222,7 +229,7 @@ SENTINEL
         run([*host_git, 'fetch', remote, 'main:refs/heads/main'])
         assert run([*host_git, 'show', 'main:README.txt']).stdout == 'normal account commit\n'
         run([*host_git, 'push', remote, 'main:refs/heads/from-host'])
-        guest('set -eu; cd /workspace/git-project; git fetch origin from-host; test "$(git rev-parse FETCH_HEAD)" = "$(git rev-parse HEAD)"; test -z "$(find /workspace/git-remote.git ! -user silo -print -quit)"', user='silo')
+        guest(f'set -eu; cd /workspace/git-project; git fetch origin from-host; {VERIFY_FETCH_OWNERSHIP}', user='silo')
         record('PASS Git SSH fetch/push as silo keeps repository files owned by silo')
 
         guest('set -eu; test "$(cat /root/legacy-data)" = legacy; test "$(stat -c %a /root/legacy-data)" = 600')

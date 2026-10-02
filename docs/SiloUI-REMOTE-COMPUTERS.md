@@ -38,6 +38,27 @@ This describes graceful Quit, not process crashes or forced OS termination. Silo
 
 Legacy SSH entries remain saved connections. They are not assumed to be Silo hosts or converted into VMs. Operational configuration permits an empty inventory; onboarding retains its explicit initial setup flow.
 
+## Checkpoint request deadlines
+
+Remote checkpoint creation, fork, and restore share a 122-minute complete-request
+window. The controller sends `startWithinMs` as half its remaining request time:
+initial admission must occur within 61 minutes, leaving 60 minutes for all owner
+stages and one minute for framing and transport. The work allowance follows
+[`RESTORE_EXPECTED_DURATION`](../app/SiloUI/src-tauri/src/runtime/checkpoints.rs),
+which also sets Restore's slow-operation threshold. The 900-second capture limit
+fits within that allowance; it does not define a complete restore's deadline.
+
+Both the controller exchange and owner bridge use
+[`request_timeout`](../app/SiloUI/src-tauri/src/remote.rs). Both computers need the
+updated budget. Lost-connection retries retain the operation ID and attach to the
+existing owner registry result. Admission expiration still prevents queued work
+from starting; it does not cancel work that has already started.
+
+Fake-clock regressions cover a 601-second capture, a 900-second fork, an hour of
+restore work admitted just before the queue deadline, and reconnection to one
+retained result without replay. Registry tests cover expiration before admission.
+These fixtures do not qualify a slow live two-computer checkpoint.
+
 ## Published-port readiness
 
 Each published-port tunnel runs the system OpenSSH client as a foreground master
@@ -60,8 +81,45 @@ supply OpenSSH with these options; its BSD-licensed implementation remains the
 OS vendor's maintenance responsibility. The private directory excludes other
 local users; it does not protect against a process already running as the same
 account. Readiness confirms forwarding setup, not guest application health.
-The `-N` transport and remote loopback destination preserve the existing
-`silo-remote` forced-command and `permitopen` contract.
+Published ports use the same pinned guest SSH identity and bridge ProxyCommand as
+remote desktops. Their `-L` destination is the guest port at the guest's current
+interface address, not the owner's publication port. The owner endpoint remains a
+restart/replacement marker. A guest UDP socket selects its route/source address
+without sending application data; IPv4 is preferred, then IPv6. This preserves
+services bound to the guest interface as well as wildcard listeners. The bounded
+probe uses Python already required by Silo guest images and adds no listener or
+relay. Guest transport availability remains necessary, as it is for desktops.
+
+The owner key now uses `restrict,command=...`, without re-enabling any forwarding.
+[OpenSSH key restrictions](https://man.openbsd.org/sshd.8) disable TCP and Unix-socket
+forwarding together. [ProxyCommand](https://man.openbsd.org/ssh_config.5#ProxyCommand)
+provides the guest SSH byte stream, and the guest server's
+[pinned direct-TCP implementation](https://github.com/superradcompany/microsandbox/blob/09df3d4b9d832adaede1fb9a198cfc660bfab8cd/sdk/rust/lib/sandbox/ssh.rs)
+connects inside the guest. Silo retains host-key pinning, private guest keys, and
+normal bridge admission. OpenSSH remains the supported, BSD-licensed OS transport;
+no custom TCP relay or owner sshd Match configuration is required.
+
+Bridge protocol 3 requires both computers to update. Older peers fail the existing
+version check before key migration. The matching handshake rewrites Silo's exact
+old unrestricted or forwarding-enabled lines; personal/custom key lines remain
+untouched. A failed or externally managed upgrade returns a repair error.
+Restrictions affect new authentications; already authenticated SSH sessions must
+end before their old authority is gone.
+
+Published-port and desktop forwards share `owned_tunnel.rs`. Its watchdog shell
+leads a dedicated process group and watches a pipe held by the controller. EOF
+on controller crash or exit terminates the group, including ordinary
+ProxyCommand descendants. Closing a tunnel also closes the pipe and performs
+bounded group cleanup. Explicit group signals are sent only while the owned
+leader is unreaped, preventing a reused process-group ID from being targeted.
+SSH stays in the foreground; user `ControlPersist` or
+`ForkAfterAuthentication` settings cannot detach this tunnel from its owner.
+No process-name sweep or change to the remote bridge is involved. Subprocess
+fixture tests verify controller termination, listener closure, descendant exit,
+and survival of an unrelated process; real OpenSSH/ProxyCommand crash behavior
+still requires separate platform qualification.
+
+## Remote settings
 
 Remote settings commands run on Tauri's blocking pool, including configuration
 lock waits, file reads, fsync writes, bridge-link setup, and control-socket setup.

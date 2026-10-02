@@ -30,6 +30,24 @@ function section(b: ComputerUseBackend, active = true) {
 beforeEach(() => { vi.useFakeTimers(); vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible") })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
+it("reads remote download status without waiting for local event registration", async () => {
+  const listen = vi.fn(() => new Promise<() => void>(() => {}))
+  const read = vi.fn(async () => ({ state: "downloading", receivedBytes: 1, totalBytes: 10 }))
+  const store = createComputerUseBridge(backend({ chatGptStatus: read, listenStatus: listen }), { busy: 1000, idle: 1000 }).chatGptFor("office")
+  const stop = store.subscribe(() => {})
+  try {
+    await advance(0)
+    expect(read).toHaveBeenCalledWith("office")
+    expect(store.getSnapshot().status).toMatchObject({ state: "downloading" })
+    await advance(1000)
+    expect(read).toHaveBeenCalledTimes(2)
+    expect(listen).not.toHaveBeenCalled()
+    stop()
+    await advance(1000)
+    expect(read).toHaveBeenCalledTimes(2)
+  } finally { stop() }
+})
+
 it("does not commit the computer-use panel for equal reads but shows changed approval", async () => {
   let state = fixtureDesktopState("ready")
   const read = vi.fn(async () => structuredClone(state))
@@ -112,6 +130,31 @@ it("backs off failed remote download reads to a cap and restores polling after r
     expect(read).toHaveBeenCalledTimes(calls + 1)
     stop()
     await advance(60000)
+    expect(read).toHaveBeenCalledTimes(calls + 1)
+  } finally { stop() }
+})
+
+it("backs off malformed remote download status and restores polling after recovery", async () => {
+  const read = vi.fn(async (): Promise<unknown> => null)
+  const store = createComputerUseBridge(backend({ chatGptStatus: read }), { busy: 1000, idle: 1000 }).chatGptFor("office")
+  const stop = store.subscribe(() => {})
+  try {
+    await advance(0)
+    expect(store.getSnapshot().loadError).toBe("Silo could not read the ChatGPT for Linux status.")
+    for (const delay of [2000, 4000, 8000, 16000, 30000]) {
+      const calls = read.mock.calls.length
+      await advance(delay - 1)
+      expect(read).toHaveBeenCalledTimes(calls)
+      await advance(1)
+      expect(read).toHaveBeenCalledTimes(calls + 1)
+    }
+    read.mockResolvedValue({ state: "idle" })
+    await advance(30000)
+    expect(store.getSnapshot().loadError).toBeNull()
+    const calls = read.mock.calls.length
+    await advance(999)
+    expect(read).toHaveBeenCalledTimes(calls)
+    await advance(1)
     expect(read).toHaveBeenCalledTimes(calls + 1)
   } finally { stop() }
 })

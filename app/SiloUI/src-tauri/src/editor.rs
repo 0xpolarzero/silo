@@ -142,7 +142,7 @@ pub(crate) fn require_openssh(purpose: &str) -> Result<(), String> {
     )
 }
 fn require_openssh_at(ssh: &Path, keygen: &Path, purpose: &str) -> Result<(), String> {
-    if ssh.is_file() && keygen.is_file() {
+    if applications::launch::executable_file(ssh) && applications::launch::executable_file(keygen) {
         Ok(())
     } else {
         Err(format!(
@@ -320,14 +320,17 @@ pub(crate) fn read_regular(path: &Path) -> Result<Vec<u8>, String> {
 
 pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     read_regular(path)?;
-    let mut file =
-        tempfile::NamedTempFile::new_in(path.parent().ok_or(FAILED)?).map_err(|_| FAILED)?;
+    let parent = path.parent().ok_or(FAILED)?;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|_| FAILED)?;
     file.as_file()
         .set_permissions(fs::Permissions::from_mode(0o600))
         .map_err(|_| FAILED)?;
     file.write_all(bytes).map_err(|_| FAILED)?;
     file.as_file().sync_all().map_err(|_| FAILED)?;
     file.persist(path).map_err(|_| FAILED)?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| FAILED)?;
     Ok(())
 }
 
@@ -419,7 +422,17 @@ fn prepare(
 
 /// The `Include` that makes the entries in `root` visible to the user's `ssh`.
 fn include_line(root: &Path) -> Result<String, String> {
-    Ok(format!("Include {}", ssh_quote(&root.join("*.conf"))?))
+    let mut pattern = String::new();
+    for character in root.to_str().ok_or(FAILED)?.chars() {
+        if matches!(character, '\\' | '[' | ']' | '?' | '*') {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    Ok(format!(
+        "Include {}",
+        ssh_quote(&Path::new(&pattern).join("*.conf"))?
+    ))
 }
 
 fn owned(metadata: &fs::Metadata) -> bool {
@@ -502,6 +515,7 @@ fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     file.write_all(bytes)?;
     file.as_file().sync_all()?;
     file.persist(path).map_err(|error| error.error)?;
+    fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
 
@@ -704,6 +718,27 @@ pub(crate) fn prepare_remote_private(
     vm: &str,
     path: &str,
 ) -> Result<(String, PathBuf), String> {
+    prepare_remote_transport(app, host, vm, path, false).map(|(alias, config, _)| (alias, config))
+}
+pub(crate) fn prepare_remote_network_private(
+    app: &AppHandle,
+    host: &str,
+    vm: &str,
+) -> Result<(String, PathBuf, std::net::IpAddr), String> {
+    let (alias, config, address) = prepare_remote_transport(app, host, vm, "/workspace", true)?;
+    Ok((
+        alias,
+        config,
+        address.ok_or("Guest network address is unavailable.")?,
+    ))
+}
+fn prepare_remote_transport(
+    app: &AppHandle,
+    host: &str,
+    vm: &str,
+    path: &str,
+    forwarding: bool,
+) -> Result<(String, PathBuf, Option<std::net::IpAddr>), String> {
     validate_path(path)?;
     uuid::Uuid::parse_str(host).map_err(|_| "Invalid computer identity.")?;
     uuid::Uuid::parse_str(vm).map_err(|_| "Invalid VM identity.")?;
@@ -719,7 +754,8 @@ pub(crate) fn prepare_remote_private(
         public_key(&client)?
     };
     // The remote call can take minutes; keep the file lock free meanwhile.
-    let (host_public, user) = crate::remote_access::prepare(app, host, vm, &client_public, path)?;
+    let (host_public, user, address) =
+        crate::remote_access::prepare(app, host, vm, &client_public, path, forwarding)?;
     let _guard = files_lock();
     let alias = format!(
         "{}-{host}-{vm}",
@@ -731,7 +767,7 @@ pub(crate) fn prepare_remote_private(
     let config = root.join(format!("{host}-{vm}.conf"));
     let contents = format!("Host {alias}\n  HostName {alias}\n  User {user}\n  IdentityFile {}\n  IdentitiesOnly yes\n  IdentityAgent none\n  ForwardAgent no\n  ForwardX11 no\n  UserKnownHostsFile {}\n  StrictHostKeyChecking yes\n  BatchMode yes\n  ProxyCommand {proxy}\n\nHost *\n", ssh_quote(&client)?, ssh_quote(&known_hosts)?);
     write_private(&config, contents.as_bytes())?;
-    Ok((alias, config))
+    Ok((alias, config, address))
 }
 
 fn proxy_command<S: AsRef<str>>(parts: &[S]) -> String {
@@ -1166,6 +1202,37 @@ pub(crate) fn prepare_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ssh_file_writers_report_an_unreadable_parent_after_replacement() {
+        use std::os::unix::fs::MetadataExt;
+        for private in [true, false] {
+            let directory = tempfile::tempdir().unwrap();
+            if fs::metadata(directory.path()).unwrap().uid() == 0 {
+                return; // Root bypasses the permission boundary exercised here.
+            }
+            let path = directory.path().join("config");
+            fs::write(&path, b"previous SSH configuration").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
+            let result = if private {
+                write_private(&path, b"complete replacement").map_err(std::io::Error::other)
+            } else {
+                replace_file(&path, b"complete replacement")
+            };
+            fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+            assert_eq!(fs::read(&path).unwrap(), b"complete replacement");
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                if private { 0o600 } else { 0o640 }
+            );
+            assert!(
+                result.is_err(),
+                "an unsynchronized rename must not report success"
+            );
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
     #[test]
     fn a_panic_while_writing_ssh_files_does_not_disable_editor_connections() {
         let _ = std::thread::spawn(|| {
@@ -1190,6 +1257,10 @@ mod tests {
         fs::write(&ssh, b"").unwrap();
         assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
         fs::write(&keygen, b"").unwrap();
+        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        fs::set_permissions(&keygen, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_ok());
     }
 
@@ -1251,6 +1322,37 @@ mod tests {
         }
     }
     #[test]
+    fn editor_handoff_keeps_percent_names_and_encoded_dot_segments_literal() {
+        let directory = tempfile::tempdir().unwrap();
+        for (path, encoded) in [
+            ("/workspace/a%2Fb", "/workspace/a%252Fb"),
+            ("/workspace/%2e%2e/outside", "/workspace/%252e%252e/outside"),
+            ("/workspace/%2E./outside", "/workspace/%252E./outside"),
+            ("/workspace/100% done", "/workspace/100%25%20done"),
+        ] {
+            validate_path(path).unwrap();
+            for zed in [false, true] {
+                let uri =
+                    reqwest::Url::parse(&remote_uri("silo-test-dev", path, zed).unwrap()).unwrap();
+                assert_eq!(uri.path(), encoded, "{path:?}, zed={zed}");
+            }
+            let file = vscode_workspace(directory.path(), "silo-test-dev", path).unwrap();
+            let document: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+            assert_eq!(
+                document["folders"][0]["uri"],
+                format!("vscode-remote://ssh-remote+silo-test-dev{encoded}"),
+            );
+        }
+        for path in ["/workspace/a\nb", "/workspace/a\rb", "/workspace/a\tb"] {
+            for zed in [false, true] {
+                assert!(remote_uri("silo-test-dev", path, zed).is_err());
+            }
+            assert!(vscode_workspace(directory.path(), "silo-test-dev", path).is_err());
+        }
+    }
+
+    #[test]
     fn remote_paths_stay_in_uri_and_are_encoded() {
         let uri = remote_uri("silo-test-dev", "/workspace/a b/#test?x", true).unwrap();
         assert_eq!(uri, "ssh://silo-test-dev/workspace/a%20b/%23test%3Fx");
@@ -1292,33 +1394,39 @@ mod tests {
     }
 
     #[test]
-    fn editor_handoff_keeps_percent_names_and_encoded_dot_segments_literal() {
-        let directory = tempfile::tempdir().unwrap();
-        for (path, encoded) in [
-            ("/workspace/a%2Fb", "/workspace/a%252Fb"),
-            ("/workspace/%2e%2e/outside", "/workspace/%252e%252e/outside"),
-            ("/workspace/%2E./outside", "/workspace/%252E./outside"),
-            ("/workspace/100% done", "/workspace/100%25%20done"),
-        ] {
-            validate_path(path).unwrap();
-            for zed in [false, true] {
-                let uri =
-                    reqwest::Url::parse(&remote_uri("silo-test-dev", path, zed).unwrap()).unwrap();
-                assert_eq!(uri.path(), encoded, "{path:?}, zed={zed}");
-            }
-            let file = vscode_workspace(directory.path(), "silo-test-dev", path).unwrap();
-            let document: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
-            assert_eq!(
-                document["folders"][0]["uri"],
-                format!("vscode-remote://ssh-remote+silo-test-dev{encoded}"),
+    fn ssh_includes_keep_wildcard_characters_in_directory_names_literal() {
+        let home = tempfile::tempdir().unwrap();
+        for (index, name) in ["home[1]", "home?", "home*", "home\\folder"]
+            .into_iter()
+            .enumerate()
+        {
+            let root = home.path().join(name).join("ssh");
+            fs::create_dir_all(&root).unwrap();
+            let hostname = format!("selected-vm-{index}");
+            fs::write(
+                root.join("dev.conf"),
+                format!("Host silo-test-dev\n  HostName {hostname}\n"),
+            )
+            .unwrap();
+            let config = home.path().join("config");
+            fs::write(&config, format!("{}\n", include_line(&root).unwrap())).unwrap();
+            let output = Command::new("/usr/bin/ssh")
+                .args(["-G", "-F"])
+                .arg(&config)
+                .arg("silo-test-dev")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: {}",
+                String::from_utf8_lossy(&output.stderr)
             );
-        }
-        for path in ["/workspace/a\nb", "/workspace/a\rb", "/workspace/a\tb"] {
-            for zed in [false, true] {
-                assert!(remote_uri("silo-test-dev", path, zed).is_err());
-            }
-            assert!(vscode_workspace(directory.path(), "silo-test-dev", path).is_err());
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .contains(&format!("hostname {hostname}\n")),
+                "{name}: the Include must read the exact directory"
+            );
         }
     }
 
@@ -1568,6 +1676,40 @@ mod tests {
     }
 
     const INCLUDE: &str = "Include \"/home/user/.silo/abc/ssh/*.conf\"";
+
+    #[test]
+    fn ssh_includes_treat_runtime_directory_names_as_literal_paths() {
+        let home = tempfile::tempdir().unwrap();
+        for name in ["ssh[fixture]", "ssh?fixture", "ssh*fixture", "ssh\\fixture"] {
+            let root = home.path().join(name);
+            fs::create_dir_all(&root).unwrap();
+            fs::write(
+                root.join("dev.conf"),
+                "Host silo-glob-fixture\n  HostName 127.0.0.9\n",
+            )
+            .unwrap();
+            let config = home.path().join("fixture.conf");
+            fs::write(&config, format!("{}\n", include_line(&root).unwrap())).unwrap();
+            let output = Command::new("/usr/bin/ssh")
+                .env("HOME", home.path())
+                .args(["-G", "-F"])
+                .arg(&config)
+                .arg("silo-glob-fixture")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{name}: SSH configuration parsing failed"
+            );
+            assert!(
+                String::from_utf8(output.stdout)
+                    .unwrap()
+                    .lines()
+                    .any(|line| line == "hostname 127.0.0.9"),
+                "{name}: the included host was not found"
+            );
+        }
+    }
 
     #[test]
     fn a_stow_linked_ssh_config_is_updated_through_its_link() {

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, readdirSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { execFileSync } from "node:child_process"
@@ -57,7 +57,7 @@ export function release(action, root = app, run = (command, args) => execFileSyn
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try { release(process.argv[2], app, undefined, { allowStable: process.argv.includes("--allow-stable") }) }
   catch (error) { console.error(error.message); process.exitCode = 1 }
 }

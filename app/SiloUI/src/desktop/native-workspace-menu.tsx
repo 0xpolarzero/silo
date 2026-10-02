@@ -1,4 +1,4 @@
-import { useRef } from "react"
+import { useEffect, useRef } from "react"
 import { Menu, type MenuOptions } from "@tauri-apps/api/menu"
 import { LogicalPosition } from "@tauri-apps/api/dpi"
 import { MoreHorizontal } from "lucide-react"
@@ -11,19 +11,20 @@ import { workspaceMenuItems, type WorkspaceMenuItem } from "@/features/status-ba
 type NativeItems = NonNullable<MenuOptions["items"]>
 
 // The same items as the browser preview's Radix menu, as native menu entries.
-function nativeItems(items: WorkspaceMenuItem[]): NativeItems {
+function nativeItems(items: WorkspaceMenuItem[], current: () => boolean): NativeItems {
   return items.map((item): NativeItems[number] => {
     if (item.kind === "separator") return { item: "Separator" }
-    if (item.kind === "submenu") return { text: item.label, enabled: item.enabled, items: nativeItems(item.items) }
+    if (item.kind === "submenu") return { text: item.label, enabled: item.enabled, items: nativeItems(item.items, current) }
     if (item.kind === "copy") {
       return { text: item.label, action: () => {
+        if (!current()) return
         void navigator.clipboard.writeText(item.value).then(
-          () => showQuickConfirmation(item.copied),
-          (error) => showActionFailure(item.failed, error, undefined, { native: false }),
+          () => { if (current()) showQuickConfirmation(item.copied) },
+          (error) => { if (current()) showActionFailure(item.failed, error, undefined, { native: false }) },
         )
       } }
     }
-    return { text: item.label, enabled: item.enabled, action: item.run }
+    return { text: item.label, enabled: item.enabled, action: () => { if (current()) item.run() } }
   })
 }
 
@@ -31,13 +32,24 @@ function nativeItems(items: WorkspaceMenuItem[]): NativeItems {
 // popup and its submenus, including screen-edge placement and keyboard tracking.
 export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onConfirm }: WorkspaceMenuProps) {
   const opening = useRef(false)
+  const sequence = useRef(0)
+  const activeMenu = useRef<Menu | null>(null)
   const buttonRef = useRef<HTMLButtonElement>(null)
   const { machine } = workspace
   const target = workspaceTarget(workspace)
+  useEffect(() => () => {
+    sequence.current++
+    opening.current = false
+    const menu = activeMenu.current
+    activeMenu.current = null
+    void menu?.close().catch(console.error)
+  }, [target])
 
   async function open(button: HTMLButtonElement) {
     if (opening.current) return
     opening.current = true
+    const request = ++sequence.current
+    const current = () => request === sequence.current && buttonRef.current === button
     const bounds = button.getBoundingClientRect()
     const items = nativeItems(workspaceMenuItems(workspace, source, {
       start: () => actions.startWorkspace(target),
@@ -45,18 +57,26 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
       openTerminal: () => actions.openTerminal(target),
       chooseFolder: onFolders,
       openSite: (port) => actions.openSite(target, port),
-    }))
+    }), current)
     let menu: Menu | undefined
+    let tracked = false
     try {
       menu = await Menu.new({ items })
+      if (!current() || !button.isConnected) return
+      activeMenu.current = menu
+      tracked = true
       await menu.popup(new LogicalPosition(bounds.left, bounds.bottom))
     } catch (error) {
+      if (!current()) return
       console.error("Silo status menu:", error)
-      showActionFailure("Could not open sandbox actions", error, () => { if (buttonRef.current) void open(buttonRef.current) }, { native: false })
+      showActionFailure("Could not open sandbox actions", error, () => { if (current() && buttonRef.current) void open(buttonRef.current) }, { native: false })
     } finally {
-      opening.current = false
+      if (current()) opening.current = false
       // On macOS popup resolves after native menu tracking ends.
-      if (menu) void menu.close().catch(console.error)
+      if (menu && (!tracked || activeMenu.current === menu)) {
+        if (activeMenu.current === menu) activeMenu.current = null
+        void menu.close().catch(console.error)
+      }
     }
   }
 

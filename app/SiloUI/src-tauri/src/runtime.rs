@@ -2025,8 +2025,9 @@ fn verify_workspace_identities_in(
             machine,
             &format!("Checking Git identity for {}", machine.name()),
         )?;
+        ensure_current_machine(paths, machine)?;
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         if !identity.apply {
             continue;
         }
@@ -2123,13 +2124,18 @@ fn configure_workspace_identities_in(
             )));
         };
         let inspected = inspect_workspace(runner, paths, &identity.workspace)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         changed.push((identity, machine));
     }
     for (identity, machine) in changed {
         let _lane = lane(
             machine,
             &format!("Saving Git identity for {}", machine.name()),
+        )?;
+        ensure_current_machine(paths, machine)?;
+        ensure_machine_identity(
+            machine,
+            &inspect_workspace(runner, paths, &identity.workspace)?,
         )?;
         // Remove old boot overrides: normal Git/jj configuration must own defaults.
         let mut args = vec!["modify".into(), identity.workspace.clone()];
@@ -2388,7 +2394,7 @@ fn apply_github_policy_with(
     let _guard = match OPERATIONS
         .kind(operation_gate::OperationKind::GithubApply)
         .acquire_while(
-            operation_gate::Scope::Vm { id: vm_id },
+            operation_gate::Scope::Vm { id: vm_id.clone() },
             Some(workspace.to_owned()),
             &format!("Applying GitHub access to {workspace}"),
             &|| !superseded() && Instant::now() < deadline,
@@ -2415,6 +2421,12 @@ fn apply_github_policy_with(
     if superseded() {
         return Err(GITHUB_UPDATE_REPLACED.into());
     }
+    let machine = read_metadata(&paths.metadata)
+        .map_err(|error| error.to_string())?
+        .machines
+        .into_iter()
+        .find(|machine| machine.is_vm() && machine.id() == vm_id && machine.name() == workspace)
+        .ok_or("The sandbox identity changed. No GitHub access was applied.")?;
     let capability = run_msb(
         paths,
         &[if token_protocol {
@@ -2432,7 +2444,7 @@ fn apply_github_policy_with(
     }
     let inspected =
         inspect_workspace(&ProcessRunner, paths, workspace).map_err(|error| error.to_string())?;
-    ensure_managed(&inspected).map_err(|error| error.to_string())?;
+    ensure_machine_identity(&machine, &inspected).map_err(|error| error.to_string())?;
     if inspected
         .config
         .pointer("/labels/silo.github-protocol")
@@ -2740,8 +2752,10 @@ fn enrich_application_state(
                     && workspace.freshness == Freshness::Fresh
                 {
                     let name = workspace.machine.name();
-                    let key = format!("{}:{name}", paths.home.display());
-                    match single_flight(key, || crate::host_push::discover(paths, name, refresh)) {
+                    let key = format!("{}:{}", paths.home.display(), workspace.machine.id());
+                    match single_flight(key, || {
+                        crate::host_push::discover(paths, name, workspace.machine.id(), refresh)
+                    }) {
                         Ok(repositories) => workspace.repositories = repositories,
                         Err(message) => {
                             if workspace.attention.is_none() {
@@ -3167,16 +3181,20 @@ pub async fn workspace_action(
             _ => Duration::from_secs(600),
         };
         let allow_cancel = matches!(action.as_str(), "start" | "restart");
+        let last_request = std::cell::Cell::new(None);
         let acquire = |label: &str| -> Result<operation_gate::OperationGuard<'static>, RuntimeError> {
-            OPERATIONS
+            let guard = OPERATIONS
                 .kind(operation_gate::OperationKind::Lifecycle)
+                .retry_after(last_request.get())
                 .acquire(
                     operation_gate::Scope::Vm { id: vm_id.clone() },
                     Some(name.clone()),
                     label,
                     Some(key.clone()),
                 )
-                .map_err(RuntimeError::from)
+                .map_err(RuntimeError::from)?;
+            last_request.set(Some(guard.request_id()));
+            Ok(guard)
         };
         let prepare = |guard: &operation_gate::OperationGuard<'static>| {
             if allow_cancel {
@@ -4706,6 +4724,24 @@ pub(crate) fn ensure_managed(inspected: &InspectedSandbox) -> Result<(), Runtime
     Ok(())
 }
 
+fn ensure_current_machine(
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+) -> Result<(), RuntimeError> {
+    if !read_metadata(&paths.metadata)?
+        .machines
+        .iter()
+        .any(|current| {
+            current.is_vm() && current.id() == machine.id() && current.name() == machine.name()
+        })
+    {
+        return Err(RuntimeError::Invalid(
+            "The sandbox identity changed. Its replacement was preserved.".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn ensure_machine_identity(
     machine: &MachineConfiguration,
     inspected: &InspectedSandbox,
@@ -4989,7 +5025,7 @@ fn start_at_launch_with(
     }
     let result = (|| {
         let inspected = inspect_workspace(runner, paths, name)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
             "created" | "stopped" => workspace_action_with(runner, paths, host, "start", name),
@@ -5170,6 +5206,8 @@ fn apply_whole_configuration_with_progress(
             progress("workspace-removal", machine.name(), 0);
             remove_machine_runtime(runner, paths, machine)?;
             changed = true;
+            crate::network::workspace_removed(paths, machine.name())
+                .map_err(RuntimeError::Unavailable)?;
             applied
                 .machines
                 .retain(|existing| existing.id() != machine.id());
@@ -7104,7 +7142,7 @@ esac
         fs::write(&paths.executable, r#"#!/bin/sh
 case "$1" in
   --silo-github-protocol|--silo-github-token-protocol) echo 1 ;;
-  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
+  inspect) printf '{"name":"%s","status":"Running","config":{"labels":{"silo.managed":"true","silo.machine-id":"SILO_TEST_MACHINE_ID","silo.github-protocol":"1"}},"active_config":{}}\n' "$2" ;;
   modify)
     printf '%s\n' "$*" >> "$MSB_HOME/modify-args"
     cat > "$MSB_HOME/modify-values"
@@ -7113,7 +7151,7 @@ case "$1" in
     while [ -f "$MSB_HOME/modify-block" ]; do sleep 0.05; done
     if [ -f "$MSB_HOME/modify-fail" ]; then echo "rejected $(cat "$MSB_HOME/modify-values")" >&2; exit 3; fi ;;
 esac
-"#).unwrap();
+"#.replace("SILO_TEST_MACHINE_ID", vm().id())).unwrap();
         fs::set_permissions(&paths.executable, fs::Permissions::from_mode(0o700)).unwrap();
         write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
     }
@@ -7150,6 +7188,156 @@ esac
             .parse()
             .unwrap();
         unsafe { libc::kill(pid, 0) == 0 }
+    }
+
+    #[test]
+    fn secret_apply_accepts_the_matching_saved_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"secrets":[]}"#).unwrap();
+        crate::secrets::use_test_store(Some(store));
+        crate::secrets::use_test_vault(Some(Default::default()));
+
+        let result = apply_secrets_at_paths(paths.clone(), "dev");
+
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        assert!(result.unwrap().is_empty());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn secret_apply_rejects_a_replaced_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let script = fs::read_to_string(&paths.executable)
+            .unwrap()
+            .replace(vm().id(), "22222222-2222-4222-8222-222222222222");
+        fs::write(&paths.executable, script).unwrap();
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"secrets":[]}"#).unwrap();
+        crate::secrets::use_test_store(Some(store));
+        crate::secrets::use_test_vault(Some(Default::default()));
+
+        let result = apply_secrets_at_paths(paths.clone(), "dev");
+
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        let error = result.unwrap_err();
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn secret_apply_rejects_a_replacement_saved_while_waiting() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"secrets":[]}"#).unwrap();
+        let held = OPERATIONS.computer("Replacing test sandbox").unwrap();
+        let worker_paths = paths.clone();
+        let update = thread::spawn(move || {
+            crate::secrets::use_test_store(Some(store));
+            crate::secrets::use_test_vault(Some(Default::default()));
+            let result = apply_secrets_at_paths(worker_paths, "dev");
+            crate::secrets::use_test_store(None);
+            crate::secrets::use_test_vault(None);
+            result
+        });
+        wait_for_queue(&OPERATIONS, |queue| {
+            queue
+                .waiting
+                .iter()
+                .any(|entry| entry.vm_name.as_deref() == Some("dev"))
+        });
+        let mut replacement = vm();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "22222222-2222-4222-8222-222222222222".into();
+        }
+        write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
+        drop(held);
+
+        let error = update.join().unwrap().unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn github_update_rejects_a_replaced_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let script = fs::read_to_string(&paths.executable)
+            .unwrap()
+            .replace(vm().id(), "22222222-2222-4222-8222-222222222222");
+        fs::write(&paths.executable, script).unwrap();
+
+        let error = apply_github_policy_with(
+            &paths,
+            "dev",
+            1,
+            &github_profile("synthetic-scoped-token"),
+            Duration::from_secs(10),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        assert!(cached_github_profile(&paths).is_none());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn github_update_rejects_a_replacement_saved_while_waiting() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let held = OPERATIONS.computer("Replacing test sandbox").unwrap();
+        let worker_paths = paths.clone();
+        let update = thread::spawn(move || {
+            apply_github_policy_with(
+                &worker_paths,
+                "dev",
+                1,
+                &github_profile("synthetic-scoped-token"),
+                Duration::from_secs(10),
+            )
+        });
+        wait_for_queue(&OPERATIONS, |queue| {
+            queue.waiting.iter().any(|entry| {
+                entry.kind == operation_gate::OperationKind::GithubApply
+                    && entry.vm_name.as_deref() == Some("dev")
+            })
+        });
+        let mut replacement = vm();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "22222222-2222-4222-8222-222222222222".into();
+        }
+        write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
+        drop(held);
+
+        let error = update.join().unwrap().unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        assert!(cached_github_profile(&paths).is_none());
+        forget_github_state(&paths.home, "dev");
     }
 
     #[test]
@@ -10558,6 +10746,36 @@ exit 9
     }
 
     #[test]
+    fn launch_rejects_a_running_replacement_instead_of_reporting_the_selected_vm_ready() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        for wrong_name in [false, true] {
+            let mut observed = inspect(&paths, "Running");
+            if wrong_name {
+                observed["name"] = json!("replacement");
+            } else {
+                observed["config"]["labels"]["silo.machine-id"] =
+                    json!(uuid::Uuid::new_v4().to_string());
+            }
+            let runner = StubRunner::successful_json(vec![observed]);
+            let error =
+                start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap_err();
+            assert!(error.to_string().contains("identity changed"), "{error}");
+            assert!(
+                runner
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|call| call[0] == "inspect"),
+                "no replacement may be started"
+            );
+        }
+    }
+
+    #[test]
     fn launch_skips_running_and_rejects_missing_ssh_and_unready() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10886,6 +11104,106 @@ exit 9
     }
 
     #[test]
+    fn git_identity_rejects_a_replacement_before_writing_or_verifying() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let mut replacement = inspect(&paths, "Running");
+        replacement["config"]["labels"]["silo.machine-id"] =
+            json!("22222222-2222-4222-8222-222222222222");
+        let writer = StubRunner::new(vec![
+            identity_output(&replacement.to_string()),
+            identity_output("{}"),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+        let verifier = StubRunner::new(vec![
+            identity_output(&replacement.to_string()),
+            identity_output("silo-identity-verified"),
+        ]);
+
+        assert!(configure_workspace_identities_with(&writer, &paths, &[test_identity()]).is_err());
+        assert!(verify_workspace_identities_with(&verifier, &paths, &[test_identity()]).is_err());
+        for runner in [writer, verifier] {
+            assert!(runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args[0] == "inspect"));
+        }
+    }
+
+    #[test]
+    fn git_identity_rechecks_runtime_identity_after_preflight() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let mut replacement = inspect(&paths, "Running");
+        replacement["config"]["labels"]["silo.machine-id"] =
+            json!("22222222-2222-4222-8222-222222222222");
+        let runner = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output(&replacement.to_string()),
+            identity_output(""),
+            identity_output("silo-identity-verified"),
+        ]);
+
+        assert!(configure_workspace_identities_with(&runner, &paths, &[test_identity()]).is_err());
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|args| args[0] == "inspect"));
+    }
+
+    #[test]
+    fn git_identity_rechecks_the_machine_after_admission() {
+        let _test_state = crate::test_support::global_state();
+        for verify_only in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+            let lane = |_: &MachineConfiguration, _: &str| {
+                let mut replacement = vm();
+                if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+                    *id = "22222222-2222-4222-8222-222222222222".into();
+                }
+                write_metadata(&paths.metadata, &request(vec![replacement]))?;
+                Ok(None)
+            };
+            let runner = StubRunner::new(if verify_only {
+                vec![
+                    identity_output(&inspect(&paths, "Running").to_string()),
+                    identity_output("silo-identity-verified"),
+                ]
+            } else {
+                vec![
+                    identity_output(&inspect(&paths, "Running").to_string()),
+                    identity_output("{}"),
+                    identity_output(""),
+                    identity_output("silo-identity-verified"),
+                ]
+            });
+
+            let rejected = if verify_only {
+                verify_workspace_identities_in(&runner, &paths, &[test_identity()], &lane).is_err()
+            } else {
+                configure_workspace_identities_in(&runner, &paths, &[test_identity()], &lane)
+                    .is_err()
+            };
+
+            assert!(rejected);
+            assert!(runner
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|args| args[0] == "inspect"));
+        }
+    }
+
+    #[test]
     fn identity_resume_verifies_guest_files_not_boot_environment() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10911,6 +11229,7 @@ exit 9
         let state = inspect(&paths, "Running");
         let runner = StubRunner::new(vec![
             identity_output(&state.to_string()),
+            identity_output(&state.to_string()),
             identity_output("{}"),
             identity_output(""),
             identity_output("silo-identity-verified"),
@@ -10932,15 +11251,16 @@ exit 9
         identity.name = "O'Neil $(touch /tmp/unsafe)".into();
         let runner = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
+            identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("{}"),
             identity_output(""),
             identity_output("silo-identity-verified"),
         ]);
         configure_workspace_identities_with(&runner, &paths, &[identity]).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert!(calls[1].iter().any(|arg| arg == "--env-rm"));
-        assert_eq!(calls[2][0], "exec");
-        assert!(calls[2]
+        assert!(calls[2].iter().any(|arg| arg == "--env-rm"));
+        assert_eq!(calls[3][0], "exec");
+        assert!(calls[3]
             .iter()
             .any(|arg| arg == "O'Neil $(touch /tmp/unsafe)"));
         assert!(!calls
@@ -11010,6 +11330,7 @@ exit 9
         };
         let mut work_inspect = inspect(&paths, "Running");
         work_inspect["name"] = json!("work");
+        work_inspect["config"]["labels"]["silo.machine-id"] = json!(other.id());
         let runner = StubRunner::new(vec![
             identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("silo-identity-verified"),
@@ -11032,6 +11353,7 @@ exit 9
         assert!(OPERATIONS.is_vm_idle(vm().id()) && OPERATIONS.is_vm_idle(other.id()));
         lanes.lock().unwrap().clear();
         let writer = StubRunner::new(vec![
+            identity_output(&inspect(&paths, "Running").to_string()),
             identity_output(&inspect(&paths, "Running").to_string()),
             identity_output("{}"),
             identity_output(""),
@@ -11449,6 +11771,47 @@ exit 9
         let source = read_application_state_with(&unavailable_runtime, &paths).unwrap();
         assert!(source.workspaces.is_empty());
         assert!(unavailable_runtime.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn network_mappings_are_removed_before_a_deleted_name_can_be_reused() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let network = paths.metadata.with_file_name("network.json");
+        fs::write(
+            &network,
+            json!({"mappings":[
+                {"workspace":"dev","port":3000,"hostPort":43000,"scheme":"http","enabled":true},
+                {"workspace":"other","port":8080,"hostPort":null,"scheme":null,"enabled":true}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![])).unwrap();
+        let saved: Value = serde_json::from_slice(&fs::read(&network).unwrap()).unwrap();
+        assert_eq!(saved["mappings"].as_array().unwrap().len(), 1);
+        assert_eq!(saved["mappings"][0]["workspace"], "other");
+        assert!(read_metadata(&paths.metadata).unwrap().machines.is_empty());
+    }
+
+    #[test]
+    fn network_cleanup_failure_keeps_the_deleted_name_reserved_for_recovery() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = request(vec![vm()]);
+        write_metadata(&paths.metadata, &previous).unwrap();
+        fs::write(paths.metadata.with_file_name("network.json"), "invalid").unwrap();
+        let inspected = inspect(&paths, "Stopped");
+        let runner = StubRunner::successful_json(vec![inspected.clone(), inspected, json!(null)]);
+        let error = apply_whole_configuration(&runner, &paths, &generous_host(), request(vec![]))
+            .unwrap_err();
+        assert!(error.to_string().contains("Saved ports are invalid"));
+        assert_eq!(read_metadata(&paths.metadata).unwrap(), previous);
     }
 
     /// The runtime's sandbox `dev` as the bundled `msb` treats it: `inspect` reports its
@@ -12027,8 +12390,10 @@ mod github_integration_tests;
 /// Apply secret policy under the same per-VM lock as GitHub updates and boot.
 pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str) -> Result<Vec<String>, String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
-    // Applies secret policy inside one VM's guest only.
-    let paths = runtime_paths(app)?;
+    apply_secrets_at_paths(runtime_paths(app)?, workspace)
+}
+
+fn apply_secrets_at_paths(paths: RuntimePaths, workspace: &str) -> Result<Vec<String>, String> {
     let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
     let base_label = format!("Saving secrets for {workspace}");
     let acquire =
@@ -12060,6 +12425,21 @@ pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str) -> Result<Vec<Stri
                     ),
                 }
             })?;
+        let machine = read_metadata(&paths.metadata)
+            .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))?
+            .machines
+            .into_iter()
+            .find(|machine| machine.is_vm() && machine.id() == vm_id && machine.name() == workspace)
+            .ok_or_else(|| {
+                secrets_runtime::Attempt::Final(
+                    "The sandbox identity changed. No secrets were applied.".into(),
+                )
+            })?;
+        let inspected = inspect_workspace(&ProcessRunner, &paths, workspace).map_err(|_| {
+            secrets_runtime::Attempt::Final("Could not inspect sandbox secrets.".into())
+        })?;
+        ensure_machine_identity(&machine, &inspected)
+            .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))?;
         // An edit/remove may have committed while this operation waited for the
         // VM gate. Never send the caller's stale values back into the guest.
         let revision = crate::secrets::workspace_revision(workspace)?;

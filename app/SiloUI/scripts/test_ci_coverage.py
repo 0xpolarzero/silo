@@ -86,5 +86,32 @@ class PlatformCoverageTests(unittest.TestCase):
         self.assertIn("if: runner.os == 'macOS'", signing[0])
 
 
+class DebianCoverageTests(unittest.TestCase):
+    def test_ci_opts_into_disposable_root_lifecycle_tests(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        commands = re.findall(r'(?m)^ +(?:- )?run: (sudo env .+)$', workflow)
+        lifecycle = [shlex.split(command) for command in commands if 'test_debian_installation.py' in command]
+        self.assertEqual(len(lifecycle), 1, 'ordinary discovery skips the root-only lifecycle suite')
+        self.assertIn('SILO_APT_LIFECYCLE_TEST=1', lifecycle[0])
+        self.assertEqual(lifecycle[0][:2], ['sudo', 'env'])
+        self.assertIn('pkexec', workflow, 'the lifecycle fixture requires the system authentication helper')
+
+
+class DocumentationCoverageTests(unittest.TestCase):
+    def test_ci_link_check_includes_tracked_first_party_markdown(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        step = workflow.split('      - name: Check relative links in documentation\n', 1)[1].split('\n  rust:', 1)[0]
+        command = ' '.join(step.split('        run: >-\n', 1)[1].splitlines())
+        covered = set()
+        for pattern in shlex.split(command):
+            if pattern.endswith('.md'):
+                covered.update(str(path.relative_to(ROOT)) for path in ROOT.glob(pattern) if path.is_file())
+        tracked = subprocess.check_output(['git', 'ls-files', '*.md'], cwd=ROOT, text=True).splitlines()
+        # The vendor tree contains upstream documentation for an intentionally partial crate copy.
+        expected = {name for name in tracked if '/vendor/' not in name}
+        missing = sorted(expected - covered)
+        self.assertEqual(missing, [], f'{len(missing)} Markdown files omitted: {missing[:12]}')
+
+
 if __name__ == '__main__':
     unittest.main()

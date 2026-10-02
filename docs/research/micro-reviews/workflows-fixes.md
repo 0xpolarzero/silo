@@ -54,7 +54,74 @@ before the fix. The guard now requires confirmed absence of all three tags;
 fixtures cover the existing index and failed index lookups as well as successful
 first publication. This retains WORKFLOWS-2's external-writer race limitation.
 
-## Verification
+## WORKFLOWS-6: P2 — Failed guest archive writes wait on the producer indefinitely
+
+When compression or archive output fails, the pipeline destroys its streams but
+the exporter still waits for `docker save` to exit. A client waiting on its daemon
+can keep the build running until the workflow timeout. A synthetic ENOSPC output
+stream and a real disposable producer reproduced the hang: the test exceeded its
+eight-second deadline. The pipeline now terminates its own producer on failure,
+then waits for both results before removing staging files. The regression checks
+prompt failure, the original output error, unchanged prior artifacts, and no
+remaining staging directory, and that the fixture producer has exited. This uses
+Node's supported [stream pipeline](https://nodejs.org/api/stream.html#streampipelinesource-transforms-destination-callback)
+and [child-process signal](https://nodejs.org/api/child_process.html#subprocesskillsignal)
+APIs. SIGTERM targets only the directly spawned client; daemon state is not
+asserted. No Docker daemon or real images were used. Twelve ordinary guest-image
+tests pass; eleven live-image tests are intentionally skipped. Lint, typecheck,
+Rust formatting, and whitespace checks pass.
+
+## WORKFLOWS-7: P2 — Final publication accepts a non-executable macOS updater
+
+`verify-release-metadata.py` checked the Mach-O header but ignored the archive
+entry's executable mode. An ARM64 archive with the correct production identifier,
+version, target, and binary header passed with mode `0644` or `0654`. The macOS
+updater's [archive installer](../../../app/SiloUI/src-tauri/vendor/tauri-plugin-updater/src/atomic_install.rs) extracts entries with their modes, so the
+installed application's owner cannot execute those files. The final publication
+gate now requires the executable entry's owner-execute bit. Regressions rejected
+both broken modes only after the fix and still accept `0755`; metadata and final
+publication fixture suites pass. These are archive fixtures, not installed-app
+or live updater tests.
+
+## WORKFLOWS-8: P2 — Runtime cache producer emits links rejected by its consumer
+
+The public-cache packer accepted ordinary files sharing an inode, then Python's
+default tar writer encoded the second pathname as a hardlink. The importer
+correctly rejects every link entry, so a cold platform job could successfully
+produce an archive that both downstream jobs refused to import. A fixture with
+two hardlinked, allowlisted public license files reproduced this round-trip
+failure. The producer now uses Python's supported
+[`dereference` option](https://docs.python.org/3.12/library/tarfile.html#tarfile.TarFile.dereference)
+to emit file bytes at both paths. Existing producer symlink checks and consumer
+link rejection remain. The new round-trip regression verifies both contents
+and independent destination inodes; unsafe-path, link, checksum, and workflow
+boundary tests still pass. No native resources were built or downloaded.
+
+## WORKFLOWS-9: P3 — Empty unreviewed draft assets bypass exact membership
+
+Final publication excluded zero-byte assets before comparing the draft against
+its expected asset set. A draft containing an extra empty placeholder therefore
+passed all checks and published that unreviewed attachment, although draft
+creation rejects every extra file. The failing fixture confirmed publication
+was allowed. The final gate now compares every attachment name and separately
+requires every attachment to be nonempty. Regressions reject both an extra empty
+attachment and an empty required package before download or publication. The
+complete reviewed draft still publishes in the fixture.
+
+## WORKFLOWS-10: P2 — Malformed optional feed fields disable update checks
+
+The final gate checked feed versions and platform mappings but accepted an
+invalid `pub_date` or non-string `notes`. The pinned updater's
+[`RemoteRelease` deserializer](../../../app/SiloUI/src-tauri/vendor/tauri-plugin-updater/src/updater.rs)
+requires optional string notes and an RFC3339 timestamp; invalid fields reject
+the whole feed before the release is offered. Five failing subcases retained
+matching draft checksums and still reached publication. The final gate now
+checks those optional fields, including calendar validity through Python's
+standard datetime parser. Valid generated timestamps, UTC `Z`, numeric offsets,
+and null optional fields remain accepted. Publication fixtures cover both
+rejection and acceptance; no live update feed was contacted.
+
+## Initial verification
 
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow`: 22 tests pass after the queue fix.
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow test_release_publication test_publish_release test_linux_verification_release test_debian_release test_macos_release`: 66 tests pass on the integrated source, covering publication, Linux verification, Debian packaging, and macOS packaging fixtures.
@@ -64,6 +131,42 @@ first publication. This retains WORKFLOWS-2's external-writer race limitation.
 - An anonymous, read-only request to the existing public GHCR package confirmed a nonexistent tag returns HTTP 404 with `MANIFEST_UNKNOWN`. No private credentials were used.
 - Failure evidence and release-test output remain under `/tmp/silo-codex-target/verification/workflows/`. No app, bundle, VM, authenticated release, or registry write was exercised.
 
-The follow-up review checked permission declarations, credential-bearing steps,
-artifact paths, source-ref handling, and required-job gates. Previously reported
-defects remain excluded; no additional defect was confirmed in those checks.
+## Continued fix loop, 2026-10-02
+
+Each defect had a failing regression before its fix, an atomic commit, and a
+separate successful fold into integration. All edits stayed in the dedicated
+`codex-fix-workflows` worktree. The continuation found these seven defects:
+
+| Finding | Fixed and folded commit |
+| --- | --- |
+| WORKFLOWS-4: final publication queue | `228f318c` |
+| WORKFLOWS-5: multi-architecture tag guard | `e6dc98a6` |
+| WORKFLOWS-6: failed export producer cleanup | `06a2aaec` |
+| WORKFLOWS-7: macOS executable archive mode | `9aa1c644` |
+| WORKFLOWS-8: public hardlink transfer | `e6ea69b7` |
+| WORKFLOWS-9: extra empty draft attachment | `a39598ab` |
+| WORKFLOWS-10: optional update-feed metadata | `467f8764` |
+
+Final integrated verification at `3cd38f12`:
+
+- The focused Python command ran 104 tests: 102 passed and two Linux-only
+  metadata cases skipped on this macOS host. Modules: `test_guest_publication`,
+  `test_workflow_pins`, `test_release_workflow`, `test_release_publication`,
+  `test_publish_release`, `test_release_runtime_transfer`, `test_release_cache`,
+  `test_release_metadata`, `test_linux_verification_release`,
+  `test_debian_release`, and `test_macos_release`.
+- `npm --prefix app/SiloUI run test:release`: 116 passed, 12 intentional skips.
+  This run preceded the last two Python-only changes, whose publication fixtures
+  were subsequently rerun in the final Python command.
+- Lint, typecheck, Rust formatting, touched Python syntax, audit-relative links,
+  and `git diff --check` passed. Actionlint validated all integrated workflows
+  with only the previously documented supported-queue diagnostic suppressed.
+- Evidence is local under `/tmp/silo-codex-target/verification/workflows/`,
+  including each new failure log and `continuation-python-final.log`.
+
+Permission declarations, credential-bearing steps, artifact paths, source-ref
+handling, and required-job gates were reviewed again. Previously reported
+findings remain excluded. The retired macOS 14 runner finding remains in the
+existing release review; qualifying a replacement needs an external execution
+environment. No application, VM, real credential, authenticated publication,
+or registry write was exercised in this continuation.

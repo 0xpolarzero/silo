@@ -74,6 +74,25 @@ class RetryBundleTests(unittest.TestCase):
         self.assertEqual((code, count, delays), (17, 3, [2, 4]))
         self.assertEqual(log.count(b"status code 504"), 3)
 
+    def test_oversized_output_is_fully_logged_but_cannot_authorize_a_retry(self):
+        diagnostic = 'ordinary build output ' * 1024 + '\n' + FAILURE
+        with patch.object(MODULE, 'MAX_RETRY_DIAGNOSTIC_BYTES', 1024, create=True):
+            code, count, log, _, stderr, delays = self.run_fixture(9, diagnostic)
+        self.assertEqual((code, count, delays), (17, 1, []))
+        self.assertIn(diagnostic.encode(), log)
+        self.assertIn(diagnostic.encode(), stderr)
+
+    def test_diagnostic_buffer_does_not_grow_with_unbounded_command_output(self):
+        with patch.object(MODULE, 'MAX_RETRY_DIAGNOSTIC_BYTES', 1024, create=True):
+            log, stdout, stderr = io.BytesIO(), io.BytesIO(), io.BytesIO()
+            code, diagnostic = MODULE.run_attempt(
+                [sys.executable, '-c', "import sys; sys.stdout.write('x' * 8192); sys.exit(17)"],
+                log, stdout, stderr)
+        self.assertEqual(code, 17)
+        self.assertLessEqual(len(diagnostic), 1024)
+        self.assertEqual(stdout.getvalue(), b'x' * 8192)
+        self.assertEqual(log.getvalue(), b'x' * 8192)
+
     def test_all_approved_transient_http_statuses_retry(self):
         for status in (500, 502, 503, 504):
             with self.subTest(status=status):

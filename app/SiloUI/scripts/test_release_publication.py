@@ -75,6 +75,20 @@ class PublicationGateTests(unittest.TestCase):
         self.assertEqual(self.calls[-1], ('release', 'edit', 'v0.2.0', '--draft=false', '--latest', '--prerelease=false'))
         self.assertEqual(sum(call[:2] == ('release', 'edit') for call in self.calls), 1)
 
+    def test_empty_unexpected_draft_asset_cannot_publish(self):
+        (self.assets / 'unreviewed-placeholder.zip').write_bytes(b'')
+        with self.assertRaisesRegex(RuntimeError, 'Draft is incomplete'):
+            self.run_publish()
+        self.assertFalse(any(call[:2] == ('release', 'download') for call in self.calls))
+        self.assertFalse(any(call[:2] == ('release', 'edit') for call in self.calls))
+
+    def test_empty_required_draft_asset_cannot_publish(self):
+        (self.assets / 'Silo-linux-arm64.AppImage').write_bytes(b'')
+        with self.assertRaisesRegex(RuntimeError, 'Draft is incomplete'):
+            self.run_publish()
+        self.assertFalse(any(call[:2] == ('release', 'download') for call in self.calls))
+        self.assertFalse(any(call[:2] == ('release', 'edit') for call in self.calls))
+
     def test_changed_downloaded_package_cannot_publish(self):
         (self.assets / 'Silo-linux-arm64.AppImage').write_text('changed after checksum creation')
         with self.assertRaisesRegex(RuntimeError, 'checksum mismatch'):
@@ -91,6 +105,37 @@ class PublicationGateTests(unittest.TestCase):
             self.run_publish()
         self.assert_not_published()
         self.assertEqual(self.verifiers, [])
+
+    def test_malformed_optional_feed_metadata_cannot_publish_with_matching_checksum(self):
+        original = (self.assets / 'latest.json').read_text()
+        for field, value in [('pub_date', 'not a date'), ('pub_date', '2026-02-30T12:00:00Z'),
+                             ('pub_date', '2026-10-02T12:00:00'), ('pub_date', 42),
+                             ('notes', {'text': 'invalid shape'})]:
+            with self.subTest(field=field, value=value):
+                self.calls.clear()
+                self.verifiers.clear()
+                feed = json.loads(original)
+                feed[field] = value
+                (self.assets / 'latest.json').write_text(json.dumps(feed))
+                self.checksum('latest.json')
+                with self.assertRaisesRegex(RuntimeError, 'Draft update feed'):
+                    self.run_publish()
+                self.assert_not_published()
+                self.assertEqual(self.verifiers, [])
+
+    def test_supported_optional_feed_metadata_publishes(self):
+        original = (self.assets / 'latest.json').read_text()
+        for date in (None, '2026-10-02T12:00:00Z', '2026-10-02T12:00:00.123456+02:00'):
+            with self.subTest(date=date):
+                self.calls.clear()
+                self.verifiers.clear()
+                feed = json.loads(original)
+                feed['pub_date'] = date
+                feed['notes'] = None
+                (self.assets / 'latest.json').write_text(json.dumps(feed))
+                self.checksum('latest.json')
+                self.run_publish()
+                self.assertEqual(self.calls[-1][:2], ('release', 'edit'))
 
     def test_invalid_signature_cannot_publish_even_with_matching_checksums(self):
         with self.assertRaises(subprocess.CalledProcessError):

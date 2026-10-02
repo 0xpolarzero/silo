@@ -82,3 +82,60 @@ null-valued field. Two concurrent-edit regressions failed after the initial
 rebase fix and passed only after correcting this comparison and distinguishing
 an absent value from `null`. The model tests passed 22 cases; typecheck, focused
 oxlint, and `git diff --check` passed on Node 24.11.1.
+
+## Machine validation error fields
+
+Fixed: `validateMachine` asserted every string issue path was a displayed error
+field and dropped issues whose path was empty. A retained future configuration
+field produces a root `unrecognized_keys` issue under the strict submission
+schema. The editor then called Save despite that invalid configuration. Invalid
+IDs instead produced an `errors.id` value with no corresponding editor control
+or alert, silently blocking submission.
+
+Use a type guard for the fields the editor displays and route every other issue
+to its existing form alert. Zod's [error documentation](https://zod.dev/error-customization)
+defines structured issue paths, including empty paths for root errors. The
+submission contract stays strict and retained configuration fields stay intact.
+Two model regressions and one editor regression failed before the fix. The
+editor regression checks both the visible alert and that Save does not run.
+
+## Empty submission before configuration loads
+
+Fixed: `configureMachines` derived an empty change list from an unloaded source
+and an empty request, then asserted `snapshot.source` was `ApplicationSource`.
+The promised successful result was actually `null`. Removing the last draft
+sandbox in onboarding submits through this method, so the adapter cleared its
+operation error despite never knowing the saved configuration.
+
+Reject that no-op while the source is unavailable and tell the user to refresh
+and retry. A loaded empty configuration still resolves without native changes.
+The two regressions reproduced successful `null` results both before loading and
+after the initial state read failed. The loaded-empty control remains covered.
+
+## Optional connection removal
+
+Fixed: the Computers settings section renders for an adapter with
+`connectComputer`, but its Remove connection button assumed the independently
+optional `removeComputer` callback existed. Its non-null assertion hid the
+missing capability and an enabled button called `undefined`. The browser
+preview explicitly supports partial action adapters.
+
+Capture the removal callback, disable its button when absent, and guard the
+event callback without an assertion. A missing-capability regression failed
+before the fix. Existing tests exercise successful removal and failure/retry
+with the callback present.
+
+## SSH fixture dictionaries
+
+Fixed: the browser preview annotated its SSH settings object as
+`Record<string, SshAccessRequest>`, although an absent key could read an inherited
+function. `constructor` is a valid sandbox name. Its first render read
+`Object.prototype.constructor`, bypassed both the seeded settings and the default,
+and published an SSH row without a workspace key. The sandbox's SSH tab then
+showed no usable connection.
+
+Store fixture settings in a typed map with explicit missing-key semantics, as
+in the storage label fix above. Actual application preview regressions failed
+for both seeded and default SSH settings before the fix and exercise changing
+the displayed SSH switch afterward. This affects deterministic fixtures only;
+no native state or production data is involved.

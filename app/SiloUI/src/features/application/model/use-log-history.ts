@@ -133,7 +133,12 @@ class HistoryStore {
     this.snapshot = { ...this.snapshot, ...change }
     for (const listener of this.listeners) listener()
   }
-  private errorMessage() { return [...this.errors.values()].join("; ") }
+  private errorMessage() {
+    return this.requests.flatMap(({ workspace }) => {
+      const error = this.errors.get(ownerKey(workspace))
+      return error ? [error] : []
+    }).join("; ")
+  }
   private sandboxLabel(workspace: ApplicationWorkspace) {
     const name = workspace.machine.name
     const ambiguous = this.requests.some(request => ownerKey(request.workspace) !== ownerKey(workspace) && request.workspace.machine.name === name)
@@ -180,29 +185,35 @@ class HistoryStore {
   }
   private async fetchFirst(follow: boolean) {
     const previous = new Map(this.snapshot.results.map(result => [ownerKey(result.workspace), result]))
-    const settled = await Promise.allSettled(this.requests.map(async ({ workspace, request }): Promise<CachedResult> => {
-      const snapshot = follow ? previous.get(ownerKey(workspace))?.page.snapshot : undefined
-      // The stored request stays a plain search: pagination and export never follow.
-      const page = await this.loader(snapshot ? { ...request, follow: snapshot } : request)
-      return { workspace, request, page, frontier: pageFrontier(page), cursors: new Set() }
-    }))
-    const results: CachedResult[] = []
+    const completed = new Map(previous)
     this.errors.clear()
     this.failedPaging.clear()
     this.stalled = false
-    for (const [index, value] of settled.entries()) {
-      const { workspace } = this.requests[index]
-      const key = ownerKey(workspace)
-      if (value.status === "fulfilled") results.push(value.value)
-      else if (isUnsupportedRemote(value.reason)) results.push({ workspace, request: this.requests[index].request, cursors: new Set(), page: unsupportedPage() })
-      else {
-        const retained = previous.get(key)
-        if (retained) results.push(retained)
-        this.errors.set(key, `${this.sandboxLabel(workspace)}: ${errorMessage(value.reason)}`)
-      }
+    let succeeded = false
+    const publish = () => {
+      const results = this.requests.flatMap(({ workspace }) => {
+        const result = completed.get(ownerKey(workspace))
+        return result ? [result] : []
+      })
+      const historyLimited = this.snapshot.historyLimited && results.some(result => previous.get(ownerKey(result.workspace)) === result)
+      this.update({ historyLimited, ...this.retain(results, false), ready: true, error: this.errorMessage(), ...(succeeded && { scrollTop: 0 }) })
     }
-    const historyLimited = this.snapshot.historyLimited && results.some(result => previous.get(ownerKey(result.workspace)) === result)
-    this.update({ historyLimited, ...this.retain(results, false), ready: true, error: this.errorMessage(), ...(settled.some(value => value.status === "fulfilled") && { scrollTop: 0 }) })
+    await Promise.allSettled(this.requests.map(async ({ workspace, request }) => {
+      const key = ownerKey(workspace)
+      try {
+        const snapshot = follow ? previous.get(key)?.page.snapshot : undefined
+        // The stored request stays a plain search: pagination and export never follow.
+        const page = await this.loader(snapshot ? { ...request, follow: snapshot } : request)
+        completed.set(key, { workspace, request, page, frontier: pageFrontier(page), cursors: new Set() })
+        succeeded = true
+      } catch (cause) {
+        if (isUnsupportedRemote(cause)) completed.set(key, { workspace, request, cursors: new Set(), page: unsupportedPage() })
+        else this.errors.set(key, `${this.sandboxLabel(workspace)}: ${errorMessage(cause)}`)
+      }
+      // Each computer publishes independently; an unavailable owner cannot hide fresh logs.
+      publish()
+    }))
+    if (!this.requests.length) publish()
   }
   loadOlder = (): Promise<void> => this.pageOlder()
   retry = (): Promise<void> => this.failedPaging.size && !this.stalled ? this.pageOlder(this.failedPaging) : this.refresh()
