@@ -135,15 +135,23 @@ pub(crate) struct Policy {
     pub(crate) applied: Option<Approval>,
     #[serde(default)]
     pub(crate) last: Option<Attempt>,
+    /// The mode of an attempt that started and has no result yet. Written before the
+    /// helper runs and replaced by the result, so an attempt cut short by a crash or a
+    /// power loss is still known afterwards: whatever `last` says, the guest may have
+    /// been left half changed.
+    #[serde(default)]
+    pub(crate) unfinished: Option<Approval>,
 }
 
 impl Policy {
-    /// Whether the guest must be driven toward the chosen mode: no attempt yet, the last
-    /// one was for another mode, or it did not apply completely.
+    /// Whether the guest must be driven toward the chosen mode: an attempt never ended, no
+    /// attempt yet, the last one was for another mode, or it did not apply completely.
     pub(crate) fn needs_apply(&self) -> bool {
-        self.last
-            .as_ref()
-            .is_none_or(|last| last.mode != self.approval || last.outcome != Outcome::Applied)
+        self.unfinished.is_some()
+            || self
+                .last
+                .as_ref()
+                .is_none_or(|last| last.mode != self.approval || last.outcome != Outcome::Applied)
     }
 }
 
@@ -154,6 +162,8 @@ pub(crate) struct Settings {
     pub(crate) approval: Approval,
     pub(crate) applied: Option<Approval>,
     pub(crate) last: Option<Attempt>,
+    /// An attempt started and never recorded a result (see `Policy::unfinished`).
+    pub(crate) unfinished: bool,
     pub(crate) known: Option<Known>,
     /// The policy file exists but cannot be read, so `approval` is only the fail-closed
     /// default and the user's choice is unknown.
@@ -209,6 +219,7 @@ pub(crate) fn settings(paths: &RuntimePaths, id: &str) -> Settings {
         approval: policy.approval,
         applied: policy.applied,
         last: policy.last,
+        unfinished: policy.unfinished.is_some(),
         known: read_json(observed_path(paths, id)),
         unreadable,
     }
@@ -269,6 +280,26 @@ fn record_attempt(paths: &RuntimePaths, id: &str, attempt: Attempt) {
         policy.applied = Some(attempt.mode);
     }
     policy.last = Some(attempt);
+    policy.unfinished = None;
+    let _ = write_atomic(paths, policy_path(paths, id), &policy);
+}
+
+/// Marks an attempt for `mode` as started and returns the marker it replaced, so an run
+/// that turns out not to be an attempt can put it back (`restore_unfinished`).
+fn begin_attempt(paths: &RuntimePaths, id: &str, mode: Approval) -> Option<Approval> {
+    let _lock = lock_policies();
+    let mut policy = read_policy_checked(paths, id)?;
+    let previous = policy.unfinished.replace(mode);
+    let _ = write_atomic(paths, policy_path(paths, id), &policy);
+    previous
+}
+
+fn restore_unfinished(paths: &RuntimePaths, id: &str, previous: Option<Approval>) {
+    let _lock = lock_policies();
+    let Some(mut policy) = read_policy_checked(paths, id) else {
+        return;
+    };
+    policy.unfinished = previous;
     let _ = write_atomic(paths, policy_path(paths, id), &policy);
 }
 
@@ -563,6 +594,28 @@ enum Report {
 
 type Run = Result<(Value, Report), RuntimeError>;
 
+/// The pinned runtime ends an `exec` that outlives its `--timeout` with a plain failure,
+/// `exec timed out after <n>s` (crates/cli/lib/commands/exec.rs, `drive_stream`), after
+/// killing the guest command. That is a timeout, not an unreachable sandbox.
+fn timeout_as_timed_out(error: RuntimeError) -> RuntimeError {
+    match error {
+        RuntimeError::Failed {
+            operation, detail, ..
+        } if detail.lines().any(|line| {
+            line.trim()
+                .trim_start_matches("Error:")
+                .trim()
+                .strip_prefix("exec timed out after ")
+                .and_then(|rest| rest.strip_suffix('s'))
+                .is_some_and(|secs| !secs.is_empty() && secs.bytes().all(|b| b.is_ascii_digit()))
+        }) =>
+        {
+            RuntimeError::TimedOut { operation }
+        }
+        error => error,
+    }
+}
+
 /// Runs the guest helper's `apply` to completion (never detached) within `APPLY_TIMEOUT`
 /// and returns its status and the report of the run.
 fn run_helper(
@@ -583,7 +636,8 @@ fn run_helper(
         APPLY_TIMEOUT,
         APPLY_GRACE,
         false,
-    )?;
+    )
+    .map_err(timeout_as_timed_out)?;
     let malformed = || RuntimeError::Malformed("Computer use returned an invalid status.".into());
     let status: Value = serde_json::from_str(output.lines().last().unwrap_or("").trim())
         .map_err(|_| malformed())?;
@@ -620,6 +674,27 @@ fn attempt_of(mode: Approval, run: &Run) -> Option<Attempt> {
         at: unix_seconds(),
         reason,
     })
+}
+
+/// One attempt to apply `mode`: marks it unfinished on disk, runs the helper and replaces
+/// the marker with the result. A run that was not an attempt (the app is not there yet)
+/// leaves the marker as it was.
+fn run_attempt(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    id: &str,
+    name: &str,
+    mode: Approval,
+    force: bool,
+    boot: bool,
+) -> Run {
+    let previous = begin_attempt(paths, id, mode);
+    let run = run_helper(runner, paths, name, mode, force, boot);
+    match attempt_of(mode, &run) {
+        Some(attempt) => record_attempt(paths, id, attempt),
+        None => restore_unfinished(paths, id, previous),
+    }
+    run
 }
 
 // ---------------------------------------------------------------- hooks
@@ -669,8 +744,9 @@ const GATE_WAIT: Duration = Duration::from_secs(10 * 60);
 /// Label of the apply's queue entry; other work is never preempted by an identical one.
 const SYNC_LABEL: &str = "Setting up computer use in";
 
-/// Ends the apply's turn quickly when work that must not wait queues for it: a stop or
-/// delete of the same VM, or a computer-wide shutdown (Quit, update). Sets the running
+/// Ends the helper's turn quickly when work that must not wait queues for it: a stop or
+/// delete of the same VM (a delete is computer-wide and names its targets, see
+/// `OperationGate::removing`), or a computer-wide shutdown (Quit, update). Sets the running
 /// operation's cancel flag, which the runtime's polling loops observe by killing the
 /// child. The cut-short apply is recorded as such and tried again at the next boot or
 /// app start; a stopped VM has nothing to apply.
@@ -693,17 +769,19 @@ impl Preempt {
             .name("computer-use-preempt".into())
             .spawn(move || {
                 while !flag.load(Ordering::SeqCst) {
-                    let blocked = gate.snapshot().waiting.iter().any(|entry| {
-                        !entry.label.starts_with(SYNC_LABEL)
-                            && match entry.kind {
-                                // Quit or update: computer-wide, whatever VM it names.
-                                OperationKind::Shutdown => true,
-                                OperationKind::Lifecycle => {
-                                    entry.vm_id.as_deref() == Some(id.as_str())
+                    // A queued deletion of this VM names it only in its targets.
+                    let blocked = gate.removal_queued(&id)
+                        || gate.snapshot().waiting.iter().any(|entry| {
+                            !entry.label.starts_with(SYNC_LABEL)
+                                && match entry.kind {
+                                    // Quit or update: computer-wide, whatever VM it names.
+                                    OperationKind::Shutdown => true,
+                                    OperationKind::Lifecycle => {
+                                        entry.vm_id.as_deref() == Some(id.as_str())
+                                    }
+                                    _ => false,
                                 }
-                                _ => false,
-                            }
-                    });
+                        });
                     if blocked {
                         token.store(true, Ordering::SeqCst);
                         return;
@@ -800,25 +878,44 @@ fn apply_with(
             if !same_vm {
                 return;
             }
-            let policy = policy_for_apply(&paths, &id);
-            let mode = policy.approval;
-            if trigger == Trigger::Change && !policy.needs_apply() {
-                return;
-            }
-            let run = run_helper(
-                runner.as_ref(),
-                &paths,
-                &name,
-                mode,
-                false,
-                trigger == Trigger::Boot,
-            );
-            if let Some(attempt) = attempt_of(mode, &run) {
-                record_attempt(&paths, &id, attempt);
-            }
-            match run {
-                Err(RuntimeError::Cancelled { .. }) | Ok(_) => {}
-                Err(error) => eprintln!("Computer use could not be applied in {name}: {error}"),
+            let mut trigger = trigger;
+            loop {
+                let policy = policy_for_apply(&paths, &id);
+                let mode = policy.approval;
+                if trigger == Trigger::Change && !policy.needs_apply() {
+                    return;
+                }
+                let run = run_attempt(
+                    runner.as_ref(),
+                    &paths,
+                    &id,
+                    &name,
+                    mode,
+                    false,
+                    trigger == Trigger::Boot,
+                );
+                match &run {
+                    Err(RuntimeError::Cancelled { .. }) | Ok(_) => {}
+                    Err(error) => {
+                        eprintln!("Computer use could not be applied in {name}: {error}")
+                    }
+                }
+                // A cut-short or not-yet-possible apply ends here (the next boot or the
+                // app becoming ready tries again). Otherwise the user may have chosen
+                // another mode while the helper ran, and the change that did it found an
+                // earlier result for that mode and scheduled nothing: converge now, inside
+                // the turn, on whatever is chosen at this moment.
+                if matches!(
+                    run,
+                    Err(RuntimeError::Cancelled { .. }) | Ok((_, Report::NotReady))
+                ) || turn
+                    .cancel_token()
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    || read_policy(&paths, &id).approval == mode
+                {
+                    return;
+                }
+                trigger = Trigger::Change;
             }
         })
         .ok()
@@ -942,6 +1039,9 @@ pub(crate) struct Inputs<'a> {
 /// applies completely, and an attempt for another mode says nothing about this one.
 fn approval_apply(settings: &Settings, pending: bool) -> &'static str {
     if pending {
+        return "pending";
+    }
+    if settings.unfinished {
         return "pending";
     }
     match &settings.last {
@@ -1148,22 +1248,31 @@ pub(crate) fn desktop_state(
 // -------------------------------------------------------- commands
 
 /// Runs setup (or re-runs it for agents installed later) in a running VM and returns
-/// the helper's status. The caller holds the VM's operation turn, so this cannot overlap
+/// the helper's status. The caller holds the VM's operation turn (`cancel` is its token), so this cannot overlap
 /// a background apply; the run applies the chosen mode and records how that went.
 pub(crate) fn setup_with(
+    gate: &'static runtime::operation_gate::OperationGate,
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     machine: &MachineConfiguration,
     force: bool,
+    cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Value, RuntimeError> {
+    // Like an apply, the run yields to a queued stop or delete of this VM and to Quit.
+    let _preempt = Preempt::watch(gate, machine.id(), cancel);
     let policy = policy_for_apply(paths, machine.id());
     let mode = policy.approval;
     let _pending = policy.needs_apply().then(|| Pending::begin(machine.id()));
-    let run = run_helper(runner, paths, machine.name(), mode, force, false);
-    if let Some(attempt) = attempt_of(mode, &run) {
-        record_attempt(paths, machine.id(), attempt);
-    }
-    run.map(|(status, _)| status)
+    run_attempt(
+        runner,
+        paths,
+        machine.id(),
+        machine.name(),
+        mode,
+        force,
+        false,
+    )
+    .map(|(status, _)| status)
 }
 
 /// Stores the VM's approval mode and, when it runs, applies it on a background thread

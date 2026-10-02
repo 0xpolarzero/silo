@@ -4091,7 +4091,7 @@ pub async fn change_machine_configuration(
         let paths = runtime_paths(&app)?;
         // Changes the shared VM inventory/metadata; computer-wide.
         let _guard = OPERATIONS
-            .computer(&change.label())
+            .removing(&change.deleted_ids(), &change.label())
             .map_err(|e| e.to_string())?;
         shutdown::ensure_accepting_operations()?;
         // Read fresh, then apply the specific change so a queued edit lands on the

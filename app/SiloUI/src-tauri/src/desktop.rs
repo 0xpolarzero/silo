@@ -657,8 +657,19 @@ fn local(app: &AppHandle, workspace: &str, action: Option<&str>) -> Result<Value
             return Err("Start the sandbox before changing its desktop session.".into());
         }
         if action == "setup-computer-use" {
-            crate::computer_use::setup_with(&runtime::ProcessRunner, &paths, &machine, true)
-                .map_err(|e| e.to_string())?;
+            let token = _guard
+                .as_ref()
+                .map(runtime::operation_gate::OperationGuard::cancel_token)
+                .ok_or("Sandbox operation ordering failed.")?;
+            crate::computer_use::setup_with(
+                &runtime::OPERATIONS,
+                &runtime::ProcessRunner,
+                &paths,
+                &machine,
+                true,
+                token,
+            )
+            .map_err(|e| e.to_string())?;
         } else {
             guest(
                 &runtime::ProcessRunner,
