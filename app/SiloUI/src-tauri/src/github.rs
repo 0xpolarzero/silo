@@ -4850,6 +4850,33 @@ mod tests {
         assert!(from_response(json!({})).is_err());
     }
     #[test]
+    fn nullable_github_authentication_matches_wire_contract() {
+        let _test_state = crate::test_support::global_state();
+        let workspaces = [Value::Null, json!("oauth"), json!("token")]
+            .into_iter()
+            .enumerate()
+            .map(|(index, method)| {
+                json!({
+                    "workspace": format!("dev-{index}"),
+                    "authenticationMethod": method,
+                    "repositoryMode": "selected",
+                    "allRepositoriesAllowChanges": false,
+                    "repositories": [],
+                    "identity": {"name": "", "email": "", "apply": false}
+                })
+            })
+            .collect::<Vec<_>>();
+        validate(&workspaces).unwrap();
+        let document = Document {
+            session: session().into(),
+            workspaces,
+            ..Default::default()
+        };
+        let state = public_snapshot(document, Ok(None), None);
+        crate::runtime::contract_tests::assert_fixture("github-authentication.json", vec![state]);
+    }
+
+    #[test]
     fn public_github_state_matches_frontend_contract() {
         let _test_state = crate::test_support::global_state();
         let states: Vec<Value> =

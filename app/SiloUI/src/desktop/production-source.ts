@@ -50,7 +50,7 @@ const githubStateShape = z.object({
   ]).optional(),
   workspaces: z.array(z.object({
     workspace: z.string(), identity: z.object({ name: z.string(), email: z.string(), apply: z.boolean() }),
-    authenticationMethod: z.enum(["oauth", "token"]).optional(),
+    authenticationMethod: z.enum(["oauth", "token"]).nullish().transform(value => value ?? undefined),
     repositoryMode: z.enum(["selected", "all"]).default("selected"), allRepositoriesAllowChanges: z.boolean().default(false),
     repositories: z.array(z.object({ repository: z.string(), allowPushes: z.boolean() })),
   })).optional(),
