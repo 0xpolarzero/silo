@@ -20,7 +20,8 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | --- | --- | --- | --- |
 | RL-01 | P2 | Wrapper configuration crosses the Cargo argument separator | Fixed and folded: `9baaac4e` |
 | RL-02 | P2 | Linux verification seeds production paths for a Dev binary | Fixed and folded: `5a14fe19` |
-| RL-03 | P2 | Desktop smoke isolation leaves HOME-dependent state live | Confirmed; fix pending |
+| RL-03 | P2 | Desktop smoke isolation leaves HOME-dependent state live | Fixed and folded: `024c8268` |
+| RL-04 | P2 | Direct publication bypasses the explicit stable-release opt-in | Confirmed; fix pending |
 
 ## Detailed findings
 
@@ -70,6 +71,22 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 
 **Rejecting test.** Execute the real smoke environment prelude against a synthetic caller HOME containing sentinel channel state. HOME and all three XDG roots passed to the app must be inside the temporary task root, and the sentinel must remain unchanged. Native GUI qualification remains separate.
 
+**Status.** Fixed and folded in `024c8268`. The environment regression failed for HOME before the fix; all 13 focused environment/path/wrapper/pin tests pass. This is internal verification tooling and needs no application changeset.
+
+### RL-04 Direct publication bypasses the explicit stable-release opt-in
+
+**P2.** Confirmed at `1aeac26d`. Locations: [publish-release.py](../app/SiloUI/scripts/publish-release.py), `main` version gate; [publish-release.yml](../.github/workflows/publish-release.yml), dispatch inputs and publication command; [release.mjs](../app/SiloUI/scripts/release.mjs), publication dispatch.
+
+**Trigger.** A maintainer directly dispatches the publication workflow for a prepared `v1.0.0` or later draft, bypassing the local npm wrapper. Manual workflow dispatch is a documented retry path.
+
+**Evidence.** `sync-release.mjs` and `release.mjs` enforce `assertPreStable` unless `--allow-stable` is explicit. The Python backend accepts every nonzero three-part version, including `1.0.0`; its publication path and the workflow read no stable-release opt-in. The early build workflow also accepts synchronized 1.x metadata, as its existing `1.2.3` fixture demonstrates. Given a complete valid newer draft, ordinary signature/checksum/identity gates do not reject its major version. This is source-confirmed policy bypass; no GitHub publication was attempted.
+
+**Consequence.** The final publication boundary does not enforce the repository's requirement to keep Silo below 1.0.0 until explicitly authorized. Environment review alone does not express the promised distinct stable-release decision.
+
+**Correction.** Require an explicit stable-release flag in the final Python publication gate and carry it through the workflow's boolean input and the existing local wrapper option. Keep parsing/comparison of historical public versions independent of this policy so a prior 1.x tag does not cause unrelated parsing failures. The early build gate still needs the same policy before owner-approved 1.x release qualification.
+
+**Rejecting test.** Direct draft creation and publication for `1.0.0` and later must fail before any GitHub call without opt-in; explicit opt-in must reach the ordinary asset gates. The local wrapper must dispatch the workflow opt-in only when explicitly requested. Execute the workflow command with a fake Python verifier and verify its argument list in both modes, without signing or contacting GitHub.
+
 ## Verification and reproducibility
 
 RL-01: `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_desktop_release` passed 8 tests. The new regression first failed in 3 subcases. Failure/passing output is retained under ignored `app/SiloUI/src-tauri/target/verification/release-review-2026-10-02/rl01-{before,after}.log`.
@@ -77,6 +94,8 @@ RL-01: `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_desktop_release` 
 Before the fix commit: Node 24.11.1 `typecheck` passed; `lint` passed with 12 existing warnings; `cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check` passed. Native checks use the shared `/tmp/silo-codex-target`; Node dependencies use the existing main-checkout installation. A fixture or source review does not qualify a signed release or installed application.
 
 RL-02: `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_linux_verification_release test_desktop_release test_workflow_pins` passed 12 tests. Typecheck, lint (5 existing warnings after integration updates), and Rust formatting passed before its fix commit. `rl02-{before,after}.log` retains the failing/passing evidence in the same ignored directory.
+
+RL-03: the same focused command passed 13 tests. Lint (2 existing warnings) and Rust formatting passed. Typecheck at `60c1b862` failed on two stale `ComputerUseProvider` imports introduced by concurrent integration changes; the next integration fold supplied corrected imports. The failure preceded the fix commit and did not involve the changed Python files. Typecheck is rerun after integration. `rl03-{before,after}.log` retains the focused regression evidence.
 
 ## Next action
 
