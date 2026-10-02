@@ -18,6 +18,7 @@ use tauri::{AppHandle, Emitter, Manager, WebviewWindow};
 static PATH: OnceLock<PathBuf> = OnceLock::new();
 static OPERATION: Mutex<()> = Mutex::new(());
 static DOCUMENT: Mutex<()> = Mutex::new(());
+static REMOVALS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 type Vault = BTreeMap<String, String>;
 /// The credential-store result and when it was obtained. A failure is cached only
 /// briefly so a locked or denied store does not fail every later VM start until
@@ -372,10 +373,12 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
     if store_path().is_none() {
         return Ok(());
     }
-    // Finish saves that validated this name before clearing their assignments.
-    // Runtime removal persists the inventory before cleanup and recreates names after it.
-    let _operation = lock_unit(&OPERATION);
     update(|document| {
+        // Invalidate saves that validated the old sandbox, including after name reuse.
+        let mut removals = REMOVALS.lock().unwrap_or_else(PoisonError::into_inner);
+        let revision = removals.entry(workspace.into()).or_default();
+        *revision = revision.wrapping_add(1);
+        drop(removals);
         document
             .pending_revocations
             .retain(|record| record.workspace != workspace);
@@ -387,6 +390,20 @@ pub(crate) fn workspace_removed(workspace: &str) -> Result<(), String> {
         }
         Ok(())
     })
+}
+fn assignment_revision(workspaces: &[String]) -> Vec<u64> {
+    let removals = REMOVALS.lock().unwrap_or_else(PoisonError::into_inner);
+    workspaces
+        .iter()
+        .map(|workspace| removals.get(workspace).copied().unwrap_or_default())
+        .collect()
+}
+/// Called inside the document transaction so deletion cannot overtake the commit.
+fn ensure_assignment_revision(workspaces: &[String], expected: &[u64]) -> Result<(), String> {
+    if assignment_revision(workspaces) != expected {
+        return Err("A selected sandbox was removed while saving this secret. Select sandboxes again and retry.".into());
+    }
+    Ok(())
 }
 #[derive(Deserialize)]
 struct ReservedSecretNames {
@@ -759,6 +776,7 @@ pub async fn save_secret(
         let _update = crate::updates::operation_guard()?;
         let mut operation = Some(lock_unit(&OPERATION));
         retry_store();
+        let validated_assignments = assignment_revision(&request.workspaces);
         let document = load()?;
         validate(&request, &document)?;
         crate::runtime::validate_secret_workspaces(&app, &request.workspaces)?;
@@ -777,6 +795,7 @@ pub async fn save_secret(
             original.ok_or("Enter a secret value.")?.value_id.clone()
         };
         update(|d| {
+            ensure_assignment_revision(&request.workspaces, &validated_assignments)?;
             let affected = original
                 .into_iter()
                 .flat_map(|s| s.affected.iter().chain(s.workspaces.iter()))
@@ -1206,7 +1225,32 @@ mod tests {
         use_test_store(None);
     }
     #[test]
-    fn deletion_cleans_assignments_committed_by_an_already_validated_save() {
+    fn deletion_does_not_wait_for_an_update_secret_guard() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        use_test_store(Some(path.clone()));
+        save(&Document::default()).unwrap();
+        let operation = update_guard().unwrap();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let deletion = std::thread::spawn(move || {
+            use_test_store(Some(path));
+            let result = workspace_removed("dev");
+            finished_tx.send(()).unwrap();
+            use_test_store(None);
+            result
+        });
+        let completed = finished_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        drop(operation);
+        deletion.join().unwrap().unwrap();
+        assert!(
+            completed,
+            "inventory cleanup cannot wait behind an updater's secret lock"
+        );
+        use_test_store(None);
+    }
+    #[test]
+    fn deletion_rejects_an_already_validated_save_even_after_name_reuse() {
         let _test_state = crate::test_support::global_state();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("secrets.json");
@@ -1216,39 +1260,36 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
-        // A save has validated the old sandbox and is waiting on its credential store.
         let save_operation = lock_unit(&OPERATION);
         let original = load().unwrap().secrets.remove(0);
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
-        let deletion = std::thread::spawn(move || {
-            use_test_store(Some(path));
-            started_tx.send(()).unwrap();
-            let result = workspace_removed("dev");
-            finished_tx.send(()).unwrap();
-            use_test_store(None);
-            result
-        });
-        started_rx.recv().unwrap();
-        // Give deletion a chance to reach cleanup before the delayed save commits.
-        let cleaned_before_commit = finished_rx.recv_timeout(Duration::from_secs(1)).is_ok();
+        let validated_assignments = assignment_revision(&original.workspaces);
+        workspace_removed("other").unwrap();
+        ensure_assignment_revision(&original.workspaces, &validated_assignments).unwrap();
+        // The save is waiting on its credential store while the old sandbox is deleted.
+        workspace_removed("dev").unwrap();
         let committed = update(|document| {
+            ensure_assignment_revision(&original.workspaces, &validated_assignments)?;
             document.secrets.clear();
-            document.secrets.push(original);
+            document.secrets.push(original.clone());
             Ok(())
         });
         drop(save_operation);
-        deletion.join().unwrap().unwrap();
-        committed.unwrap();
-        assert!(
-            !cleaned_before_commit,
-            "deletion must wait for an already validated assignment save"
-        );
+        assert!(committed.unwrap_err().contains("was removed"));
         let document = load().unwrap();
         assert!(document.secrets[0].workspaces.is_empty());
         assert!(document.secrets[0].affected.is_empty());
         // A replacement sandbox with this name selects no material or credential values.
         assert!(runtime_material("dev").unwrap().is_empty());
+        // Only a fresh save validated after name reuse can assign to the replacement.
+        let replacement_assignments = assignment_revision(&original.workspaces);
+        update(|document| {
+            ensure_assignment_revision(&original.workspaces, &replacement_assignments)?;
+            document.secrets.clear();
+            document.secrets.push(original);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(load().unwrap().secrets[0].workspaces, ["dev"]);
         use_test_store(None);
     }
     #[test]
