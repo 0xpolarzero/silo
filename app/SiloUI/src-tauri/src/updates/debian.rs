@@ -155,8 +155,12 @@ fn execute(
     errors
         .seek(SeekFrom::Start(end.saturating_sub(16384)))
         .map_err(|_| "The update log could not be read.")?;
-    let mut details = String::new();
-    let _ = errors.read_to_string(&mut details);
+    let mut bytes = Vec::new();
+    errors
+        .take(16384)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "The update log could not be read.")?;
+    let mut details = String::from_utf8_lossy(&bytes).into_owned();
     if details.trim().is_empty() {
         details = "System authentication or package installation failed. Check that a desktop authentication agent is running, then retry.".into();
     }
@@ -233,6 +237,19 @@ mod tests {
         )
         .unwrap_err()
         .contains("Package lock is busy"));
+    }
+    #[test]
+    fn truncated_utf8_log_tail_preserves_package_manager_details() {
+        let sentinel = "E: sentinel package repair failure";
+        let tail = format!("{}{}", "x".repeat(16383 - sentinel.len()), sentinel);
+        let error = execute(
+            &mut shell(&format!("printf '\\303\\251%s' '{tail}' >&2; exit 1")),
+            |_| {},
+            PATIENT,
+            || panic!("a failed helper must not stop sandboxes"),
+        )
+        .unwrap_err();
+        assert!(error.contains(sentinel), "lost diagnostic: {error}");
     }
     #[test]
     fn sandboxes_stop_only_after_authentication_refresh_and_download_succeed() {
