@@ -35,6 +35,17 @@ class ReleaseCacheTests(unittest.TestCase):
         self.assertIn('-go${{ steps.go-compiler.outputs.version }}-', ACTION)
         self.assertIn("'.github/actions/prepare-release-runtime/action.yml'", ACTION)
 
+    def test_jobs_that_prepare_and_build_share_one_go_toolchain_policy(self):
+        for name in ('release-platform', 'linux-packaging', 'warm-release-caches', 'benchmark-dependency-platform'):
+            text = (ROOT / f'.github/workflows/{name}.yml').read_text()
+            jobs = re.split(r'^  [a-z-]+:\n', text.split('\njobs:\n', 1)[1], flags=re.M)
+            for job in jobs:
+                if 'prepare-release-runtime' not in job:
+                    continue
+                env = re.search(r'^    env:\n((?:      .*\n|\n)+)', job, re.M)
+                self.assertIsNotNone(env, name)
+                self.assertIn('      GOTOOLCHAIN: local\n', env.group(1), name)
+
     def test_ci_installs_the_manifest_toolchain(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

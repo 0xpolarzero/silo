@@ -26,6 +26,7 @@ jobs:
         working-directory: app/SiloUI
         shell: bash
     env:
+      GOTOOLCHAIN: local
       RUNTIME_TARGET: ${{ inputs.target }}
       SILO_GITHUB_APP_SLUG: silo-cache-experiment
       SILO_GITHUB_CLIENT_ID: synthetic-cache-client
@@ -114,6 +115,7 @@ jobs:
         working-directory: app/SiloUI
         shell: bash
     env:
+      GOTOOLCHAIN: local
       RUNTIME_TARGET: ${{ inputs.target }}
       SILO_GITHUB_APP_SLUG: silo-cache-experiment
       SILO_GITHUB_CLIENT_ID: synthetic-cache-client
