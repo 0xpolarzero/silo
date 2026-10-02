@@ -45,6 +45,36 @@ function bridge(handler: Handler = () => undefined) {
 const count = (invoke: ReturnType<typeof vi.fn>, name: string) => invoke.mock.calls.filter(([command]) => command === name).length
 
 describe("machine configuration jobs", () => {
+  it("does not report an empty configuration as saved before sandbox state loads", async () => {
+    const mock = bridge()
+    const store = createProductionSource(mock.native)
+    try {
+      await expect(store.configureMachines({ schemaVersion: 1, machines: [] })).rejects.toThrow("configuration has not loaded")
+      expect(count(mock.invoke, "change_machine_configuration")).toBe(0)
+      expect(store.getSnapshot().source).toBeNull()
+    } finally { store.dispose() }
+  })
+
+  it("does not report an empty configuration as saved after the initial state read fails", async () => {
+    const mock = bridge(command => { if (command === "read_application_state") throw new Error("Read unavailable") })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      await expect(store.configureMachines({ schemaVersion: 1, machines: [] })).rejects.toThrow("configuration has not loaded")
+      expect(count(mock.invoke, "change_machine_configuration")).toBe(0)
+    } finally { store.dispose() }
+  })
+
+  it("resolves a loaded empty configuration without submitting native changes", async () => {
+    const mock = bridge(command => command === "read_application_state" ? { ...source, workspaces: [] } : undefined)
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      expect(await store.configureMachines({ schemaVersion: 1, machines: [] })).toMatchObject({ workspaces: [] })
+      expect(count(mock.invoke, "change_machine_configuration")).toBe(0)
+    } finally { store.dispose() }
+  })
+
   it("runs an identical retry again once the earlier one has finished (H-12)", async () => {
     const mock = bridge(command => command === "retry_machine_configuration" ? structuredClone(source) : undefined)
     const store = createProductionSource(mock.native)
