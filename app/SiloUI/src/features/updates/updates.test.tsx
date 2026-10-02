@@ -209,3 +209,21 @@ it("asks for a manual relaunch when an installed update could not restart, witho
   expect(backend.check).not.toHaveBeenCalled()
   expect(backend.install).not.toHaveBeenCalled()
 })
+
+it.each(["initial", "focus"] as const)("ignores a failed %s status read superseded by a native update event", async kind => {
+  let reject!: (cause: Error) => void
+  const pending = new Promise<UpdateSnapshot>((_resolve, fail) => { reject = fail })
+  const { backend, emit } = mount({}, backend => {
+    if (kind === "initial") vi.mocked(backend.read).mockReturnValueOnce(pending)
+  })
+  if (kind === "focus") {
+    await screen.findByText("Version 0.1.0")
+    vi.mocked(backend.read).mockReturnValueOnce(pending)
+    fireEvent.focus(window)
+  }
+  await waitFor(() => expect(backend.read).toHaveBeenCalledTimes(kind === "initial" ? 1 : 2))
+  emit({ currentVersion: "0.2.0" })
+  await act(async () => reject(new Error("Old status read failed")))
+  expect(screen.getByText("Version 0.2.0")).toBeVisible()
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+})

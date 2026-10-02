@@ -59,14 +59,15 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
       if (!disposed) { generation.current++; setSnapshot(next); setConnectionError(null) }
     }
     void (async () => {
+      let before = generation.current
       try {
         stop = await backend.subscribe(receive)
         if (disposed) { stop(); return }
-        const before = generation.current
+        before = generation.current
         const next = await backend.read()
         if (!disposed && generation.current === before) receive(next)
       } catch {
-        if (!disposed) {
+        if (!disposed && (!stop || generation.current === before)) {
           subscriptionFailed.current = !stop
           setConnectionError("Silo could not load updates. Try again.")
         }
@@ -94,7 +95,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
           setConnectionError(null)
         }
       } catch {
-        if (!disposed) setConnectionError("Silo could not refresh updates. Try again.")
+        if (!disposed && !inFlight.current && generation.current === before) setConnectionError("Silo could not refresh updates. Try again.")
       } finally { reading = false }
     }
     const onFocus = () => { void refresh() }
