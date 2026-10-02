@@ -306,6 +306,16 @@ fn snapshot_available(
     checkpoint_id: &str,
     scope: &str,
 ) -> Result<bool, RuntimeError> {
+    Ok(snapshot_scope(runner, paths, source, checkpoint_id, scope)?.is_some())
+}
+
+fn snapshot_scope(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    source: &str,
+    checkpoint_id: &str,
+    desired_scope: &str,
+) -> Result<Option<String>, RuntimeError> {
     let output = runner.run(
         paths,
         &[
@@ -320,14 +330,18 @@ fn snapshot_available(
         .map_err(|_| error("The runtime returned an invalid checkpoint list."))?;
     // A full snapshot contains the disks too, so it also satisfies a disk-only restore
     // (for example an imported checkpoint export, which always restores disks only).
-    let scope_matches =
-        |entry: &Value| entry["scope"] == scope || (scope == "disk" && entry["scope"] == "full");
-    Ok(entries.iter().any(|entry| {
-        entry["group"] == source
-            && entry["name"] == checkpoint_id
-            && scope_matches(entry)
-            && entry["availability"] == "ready"
-    }))
+    let scope_matches = |entry: &Value| {
+        entry["scope"] == desired_scope || (desired_scope == "disk" && entry["scope"] == "full")
+    };
+    Ok(entries
+        .iter()
+        .find(|entry| {
+            entry["group"] == source
+                && entry["name"] == checkpoint_id
+                && scope_matches(entry)
+                && entry["availability"] == "ready"
+        })
+        .and_then(|entry| entry["scope"].as_str().map(str::to_owned)))
 }
 
 fn verify_snapshot(
@@ -1070,13 +1084,18 @@ pub(super) fn start_pending(
     let material =
         crate::secrets::runtime_material(machine.name()).map_err(RuntimeError::Unavailable)?;
     secrets_runtime::validate_material(&material).map_err(RuntimeError::Invalid)?;
-    snapshot_ready(
+    let native_scope = snapshot_scope(
         runner,
         paths,
         &pending.source_workspace,
         &pending.checkpoint_id,
         &pending.state,
-    )?;
+    )?
+    .ok_or_else(|| {
+        error(
+        "The checkpoint is absent or incomplete in the runtime. No workspace state was changed.",
+    )
+    })?;
     let listed = runner.run(
         paths,
         &["list".into(), "--format".into(), "json".into()],
@@ -1171,6 +1190,9 @@ pub(super) fn start_pending(
     ];
     // A disk snapshot cold-boots by default. MicroSandbox's --disk-only
     // selects the disk from a *full* checkpoint and rejects file/disk captures.
+    if pending.state == "disk" && native_scope == "full" {
+        args.push("--disk-only".into());
+    }
     if pending.state == "full" {
         args.push("--cow-mem".into());
     } else if let MachineConfiguration::Vm {
@@ -3012,6 +3034,63 @@ mod tests {
             load(&paths, ID).unwrap().snapshot_group.as_deref(),
             Some("silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9")
         );
+    }
+
+    #[test]
+    fn checkpoint_start_selects_native_scope_and_desired_restore_mode_separately() {
+        let _test_state = crate::test_support::global_state();
+        struct ScopeProbe {
+            scope: &'static str,
+            probe: RestoreProbe,
+        }
+        impl RuntimeRunner for ScopeProbe {
+            fn run(
+                &self,
+                paths: &RuntimePaths,
+                args: &[String],
+                timeout: Duration,
+            ) -> Result<CommandOutput, RuntimeError> {
+                let mut output = self.probe.run(paths, args, timeout)?;
+                if args[0] == "snapshot" {
+                    let mut entries: Value = serde_json::from_str(&output.stdout).unwrap();
+                    entries[0]["scope"] = self.scope.into();
+                    output.stdout = entries.to_string();
+                }
+                Ok(output)
+            }
+        }
+        for (native_scope, desired_mode, disk_only, cow_mem) in [
+            ("full", "disk", true, false),
+            ("disk", "disk", false, false),
+            ("full", "full", false, true),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            pending_import(&paths);
+            let mut record = load(&paths, ID).unwrap();
+            record.pending_checkpoint_restore.as_mut().unwrap().state = desired_mode.into();
+            save(&paths, ID, &record).unwrap();
+            let runner = ScopeProbe {
+                scope: native_scope,
+                probe: RestoreProbe(Mutex::new(Vec::new())),
+            };
+            assert!(start_pending(&runner, &paths, &machine())
+                .unwrap_err()
+                .to_string()
+                .contains("synthetic restore failure"));
+            let calls = runner.probe.0.lock().unwrap();
+            let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
+            assert_eq!(
+                restore.iter().any(|arg| arg == "--disk-only"),
+                disk_only,
+                "native={native_scope}, desired={desired_mode}: {restore:?}"
+            );
+            assert_eq!(restore.iter().any(|arg| arg == "--cow-mem"), cow_mem);
+            assert_eq!(
+                restore.iter().any(|arg| arg == "--cpus"),
+                desired_mode == "disk"
+            );
+        }
     }
 
     /// Records every command, answers like a runtime whose restore fails.
