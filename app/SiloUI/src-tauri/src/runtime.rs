@@ -4995,7 +4995,7 @@ fn start_at_launch_with(
     }
     let result = (|| {
         let inspected = inspect_workspace(runner, paths, name)?;
-        ensure_managed(&inspected)?;
+        ensure_machine_identity(machine, &inspected)?;
         match inspected.status.to_ascii_lowercase().as_str() {
             "running" => Ok(()),
             "created" | "stopped" => workspace_action_with(runner, paths, host, "start", name),
@@ -10626,6 +10626,36 @@ exit 9
             assert_eq!(calls[2], vec!["start", "dev", "--quiet"]);
             assert_eq!(calls[3], vec!["inspect", "dev", "--format", "json"]);
             assert!(!calls.iter().any(|call| call[0] == "create"));
+        }
+    }
+
+    #[test]
+    fn launch_rejects_a_running_replacement_instead_of_reporting_the_selected_vm_ready() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        for wrong_name in [false, true] {
+            let mut observed = inspect(&paths, "Running");
+            if wrong_name {
+                observed["name"] = json!("replacement");
+            } else {
+                observed["config"]["labels"]["silo.machine-id"] =
+                    json!(uuid::Uuid::new_v4().to_string());
+            }
+            let runner = StubRunner::successful_json(vec![observed]);
+            let error =
+                start_at_launch_with(&runner, &paths, &generous_host(), vm().id()).unwrap_err();
+            assert!(error.to_string().contains("identity changed"), "{error}");
+            assert!(
+                runner
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|call| call[0] == "inspect"),
+                "no replacement may be started"
+            );
         }
     }
 
