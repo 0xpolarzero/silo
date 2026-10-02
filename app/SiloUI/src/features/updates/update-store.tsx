@@ -57,7 +57,7 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
   const generation = useRef(0)
   const subscriptionStatus = useRef<"connecting" | "connected" | "failed">("connecting")
   const receiveSnapshot = useCallback((next: UpdateSnapshot) => {
-    setSnapshot(next)
+    setSnapshot(current => JSON.stringify(current) === JSON.stringify(next) ? current : next)
     setConfirmVersion((version) => canRequestInstall(next) && version === next.availableVersion ? version : null)
   }, [])
   useEffect(() => {
