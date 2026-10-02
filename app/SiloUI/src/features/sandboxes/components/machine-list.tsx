@@ -1,11 +1,11 @@
 import { ActionsMenu, type MenuAction, type MenuPopovers } from "@/components/actions-menu"
 import { useEffect, useEffectEvent, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react"
 import { CopyPlus, GripVertical, Pencil, Plus, Trash2 } from "lucide-react"
+import { DropdownMenu } from "radix-ui"
 
 import { ConfirmPopover } from "@/components/confirm-popover"
 import { ListHeader, listHeadingClassName } from "@/components/list-header"
 import { Button } from "@/components/ui/button"
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import type { SetupMachineConfiguration } from "@/contracts/silo"
 import { configurationRequest } from "@/features/onboarding/model/machine-configuration"
 import { MachineEditor } from "@/features/sandboxes/components/machine-editor"
@@ -98,6 +98,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   } = useMachineEditing({ machines, getComputerId, onCommitMachine, onDeleteMachine, onMachinesChange, validateOperation, isMachineRunning, onEditorDraftChange, initialEditorDraft, interactionDisabled: interactionDisabledProp, getHostCapacity, getMachineBusyReason, draftKey: editorDraftKey })
 
   const [addOpen, setAddOpen] = useState(false)
+  const addSelected = useRef<"editor" | "external" | null>(null)
   const [draggedID, setDraggedID] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState("")
 
@@ -169,7 +170,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   useEffect(() => { reorderPending.current = false }, [machines])
 
   function reorder(id: string, targetIndex: number) {
-    if (interactionDisabled || reorderPending.current) return
+    if (interactionDisabled || editor || reorderPending.current) return
     // Reorder against the order captured when the drag/keyboard move began, so the change
     // carries that order as `expectedOrder` and does not fold in concurrent edits. A saved
     // display order has no configuration to conflict with, so it reorders the current rows.
@@ -220,7 +221,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   }
 
   function handleReorderKey(event: KeyboardEvent<HTMLElement>, machine: SetupMachineConfiguration) {
-    if (interactionDisabled) return
+    if (interactionDisabled || editor) return
     if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return
     event.preventDefault()
     if (reorderPending.current) return
@@ -248,18 +249,25 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
         <ListHeader
           heading={<h3 id="machine-list-heading" className={listHeadingClassName}>Sandboxes</h3>}
           subtitle={summary ?? <>{sandboxCount} {sandboxCount === 1 ? "sandbox" : "sandboxes"} · {sandboxCount - remoteCount} on this computer · {remoteCount} on other computers · {sshHostCount} {sshHostCount === 1 ? "SSH host" : "SSH hosts"}</>}
-          actions={(importPopover ?? ((node: ReactNode) => node))(<Popover open={addOpen} onOpenChange={setAddOpen}>
-            <PopoverTrigger asChild>
-              <Button type="button" variant="outline" size="xs" aria-haspopup="menu" disabled={interactionDisabled}>
+          actions={(importPopover ?? ((node: ReactNode) => node))(<DropdownMenu.Root open={addOpen} onOpenChange={setAddOpen}>
+            <DropdownMenu.Trigger asChild>
+              <Button type="button" variant="outline" size="xs" disabled={interactionDisabled}>
                 <Plus aria-hidden="true" data-icon="inline-start" /> Add
               </Button>
-            </PopoverTrigger>
-            <PopoverContent role="menu" aria-label="Add sandbox" align="end" className="grid w-48 gap-1 p-1">
-              <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { setAddOpen(false); startAdd("vm") }}>New sandbox</button>
-              <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { if (onConnectComputer) { setAddOpen(false); onConnectComputer() } else { setAddOpen(false); startAdd("ssh") } }}>{onConnectComputer ? "Connect computer…" : "Connect an SSH host…"}</button>
-              {onImportSandbox && <button type="button" role="menuitem" className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onClick={() => { setAddOpen(false); onImportSandbox() }}>Import sandbox…</button>}
-            </PopoverContent>
-          </Popover>)}
+            </DropdownMenu.Trigger>
+            <DropdownMenu.Portal><DropdownMenu.Content aria-label="Add sandbox" aria-labelledby={undefined} align="end" sideOffset={4} onCloseAutoFocus={event => {
+              // A selection hands focus to the editor or dialog it opens.
+              if (addSelected.current) {
+                event.preventDefault()
+                if (addSelected.current === "editor") setEditorFocusRequest(request => request + 1)
+                addSelected.current = null
+              }
+            }} className="silo-portal z-50 grid w-48 gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
+              <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "editor"; startAdd("vm") }}>New sandbox</DropdownMenu.Item>
+              <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = onConnectComputer ? "external" : "editor"; if (onConnectComputer) onConnectComputer(); else startAdd("ssh") }}>{onConnectComputer ? "Connect computer…" : "Connect an SSH host…"}</DropdownMenu.Item>
+              {onImportSandbox && <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "external"; onImportSandbox() }}>Import sandbox…</DropdownMenu.Item>}
+            </DropdownMenu.Content></DropdownMenu.Portal>
+          </DropdownMenu.Root>)}
         />
 
         <SandboxList label="Configured sandboxes" className="max-h-full min-h-0" data-testid="machine-list">
@@ -271,6 +279,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               const deleteTooltip = runningVM ? "Stop the sandbox before deleting it." : busyReason
               const presentation = getRowPresentation?.(machine)
               const rowInteractionsDisabled = interactionDisabled || Boolean(presentation?.suppressInteractions)
+              const reorderDisabled = rowInteractionsDisabled || Boolean(editor)
               const computerName = computers?.find(computer => computer.id === getComputerId?.(machine))?.name
               const deletionName = computerName ? `${machine.name} on ${computerName}` : machine.name
               return (
@@ -300,14 +309,14 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
                       detailClassName={presentation?.detailClassName}
                       leading={!reorderable(machine) ? <span aria-hidden="true" className="size-7 shrink-0" /> : <span
                         role="button"
-                        tabIndex={rowInteractionsDisabled ? -1 : 0}
-                        draggable={!editor && !rowInteractionsDisabled}
+                        tabIndex={reorderDisabled ? -1 : 0}
+                        draggable={!reorderDisabled}
                         aria-label={`Reorder ${machine.name}`}
-                        aria-disabled={rowInteractionsDisabled || undefined}
+                        aria-disabled={reorderDisabled || undefined}
                         className="grid size-7 shrink-0 cursor-grab place-items-center rounded-md text-muted-foreground outline-none hover:bg-muted focus-visible:ring-3 focus-visible:ring-ring/50 active:cursor-grabbing aria-disabled:cursor-default aria-disabled:opacity-40"
-                        onKeyDown={(event) => { if (!rowInteractionsDisabled) handleReorderKey(event, machine) }}
+                        onKeyDown={(event) => { if (!reorderDisabled) handleReorderKey(event, machine) }}
                         onDragStart={(event) => {
-                          if (rowInteractionsDisabled) { event.preventDefault(); return }
+                          if (reorderDisabled) { event.preventDefault(); return }
                           beginOperation()
                           captureBaseline()
                           setDraggedID(machine.id)

@@ -11,6 +11,21 @@ const page = (name: string, kind: "file" | "folder" | "symlink" = "file"): Direc
 })
 
 describe("live file tree", () => {
+  it("reveals complete sanitized names when tree labels are truncated", async () => {
+    const names = ["folder-".repeat(30), "file-".repeat(30), "link-\u202E".repeat(20)]
+    const kinds = ["folder", "file", "symlink"] as const
+    const store = createDirectoryStore(vi.fn().mockResolvedValue({
+      entries: names.map((name, index) => ({ name, path: `/workspace/${name}`, kind: kinds[index] })),
+      nextOffset: null, snapshotId: "long-names",
+    }))
+    render(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active />)
+    for (const name of names) {
+      const displayed = name.replaceAll("\u202E", "⟨U+202E⟩")
+      expect(await screen.findByText(displayed)).toHaveAttribute("title", displayed)
+    }
+    expect(screen.getByText(workspace.machine.name)).toHaveAttribute("title", workspace.machine.name)
+  })
+
   it("opens and copies exact folder paths without toggling expansion", async () => {
     const user = userEvent.setup()
     const writeText = vi.spyOn(navigator.clipboard, "writeText").mockResolvedValue(undefined)

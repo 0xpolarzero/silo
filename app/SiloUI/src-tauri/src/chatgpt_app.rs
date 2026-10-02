@@ -466,7 +466,9 @@ fn make_tree_deletable(path: &Path) -> std::io::Result<()> {
 
 /// Reads a small regular file below `dir` (never through a symlink).
 fn read_small(dir: &Dir, name: &str) -> Option<Vec<u8>> {
-    let file = dir.open_file(name, libc::O_RDONLY, 0).ok()?;
+    let file = dir
+        .open_file(name, libc::O_RDONLY | libc::O_NONBLOCK, 0)
+        .ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.uid() != effective_uid() || meta.len() > MAX_RECORD_BYTES {
         return None;
@@ -1601,6 +1603,7 @@ fn ensure_inner(
         .and_then(|()| published_dir.remove_entry(&published_path, &name))
         .map_err(prepare)?;
     clean_staging(root, &root_dir);
+    clean_staging(&published_path, &published_dir);
 
     let (downloads, _) = root_dir.subdir("downloads", true).map_err(prepare)?;
     let deb_name = format!("chatgpt_{}_{}.deb", lock.version, arch.name());
@@ -1861,6 +1864,7 @@ fn collect_garbage_locked(
     clean_staging(root, &root_dir);
     let pinned = lock.directory_name(arch);
     let published = published_path(root);
+    clean_staging(&published, &published_dir);
     let mut removed = Vec::new();
     // A record of a version that is going away goes with it (or alone).
     for entry in fs::read_dir(root).map_err(|_| list_failed())?.flatten() {

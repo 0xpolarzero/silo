@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 
 import { errorMessage, showActionFailure, showOperationFailure, showOperationProgress, showOperationSuccess } from "@/lib/operation-toast"
 import { workspaceTarget } from "@/features/application/model/remote-computers"
@@ -41,6 +41,7 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
   const [fieldErrors, setFieldErrors] = useState<{ port?: string; hostPort?: string }>({})
   const [connecting, setConnecting] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const pending = useRef(false)
   const [confirm, setConfirm] = useState<string | null>(null)
   const refreshNetwork = actions.refreshNetwork
 
@@ -56,6 +57,8 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
 
   /** Runs a port operation with the shared loading → success/failure notifications. Failures offer Retry. */
   async function run(id: string, identity: PortOperationIdentity, copy: { loading: string; step?: string; success: string; failure: string }, operation: () => Promise<void>, onSuccess?: () => void): Promise<boolean> {
+    if (pending.current) return false
+    pending.current = true
     setBusy(true)
     const sandbox = identity.displayName
     const location = identity.computer ? `${sandbox} · ${identity.computer.name}` : sandbox
@@ -71,14 +74,15 @@ export function useNetworkPorts({ workspaces, network, error, actions, active }:
       const message = typeof cause === "string" ? cause : cause instanceof Error ? cause.message : "The port could not be updated."
       showOperationFailure(id, `${copy.failure} · ${location}`, { description: message, retry: () => void run(id, identity, copy, operation, onSuccess), sandbox, noticeSandbox })
       return false
-    } finally { setBusy(false) }
+    } finally { pending.current = false; setBusy(false) }
   }
 
   /** Opening is instant, so it has no loading phase: a failure stays until closed, with Retry. */
-  async function open(workspace: string, port: number) {
+  async function open(workspace: ApplicationWorkspace, port: number) {
+    const location = workspace.computer ? `${workspace.machine.name} · ${workspace.computer.name}` : workspace.machine.name
     const attempt = async () => {
-      try { await actions.openNetworkPort!(workspace, port) }
-      catch (cause) { showActionFailure(`Could not open port ${port}`, typeof cause === "string" ? cause : errorMessage(cause), () => void attempt(), { noticeSandbox: (() => { const machine = workspaces.find(item => workspaceTarget(item) === workspace)?.machine; return machine ? { id: machine.id, name: machine.name } : undefined })() }) }
+      try { await actions.openNetworkPort!(workspaceTarget(workspace), port) }
+      catch (cause) { showActionFailure(`Could not open port ${port} · ${location}`, typeof cause === "string" ? cause : errorMessage(cause), () => void attempt(), { id: `network-port-open:${workspace.machine.id}:${port}`, noticeSandbox: { id: workspace.machine.id, name: workspace.machine.name } }) }
     }
     await attempt()
   }

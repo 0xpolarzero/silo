@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { execFileSync } from "node:child_process"
-import { chmod, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { basename, dirname, join, relative, resolve, sep } from "node:path"
 
 import { readFileSync } from "node:fs"
@@ -86,7 +86,7 @@ export function applyRuntimePatch(sourceRoot, patchPath) {
   runBuildTool("/usr/bin/git", ["apply", patchPath], { cwd: sourceRoot })
 }
 
-async function buildPatchedExecutable({
+export async function buildPatchedExecutable({
   targetTriple,
   hostTriple,
   sourceArchive,
@@ -126,55 +126,57 @@ async function buildPatchedExecutable({
     }
   }
 
-  const workRoot = join(buildRoot, "work")
-  const cargoTarget = join(buildRoot, "cargo-target")
-  await rm(workRoot, { recursive: true, force: true })
-  await mkdir(workRoot, { recursive: true })
-  runBuildTool("/usr/bin/tar", ["-xzf", sourceArchive, "-C", workRoot])
-  const entries = await import("node:fs/promises").then(({ readdir }) => readdir(workRoot, { withFileTypes: true }))
-  const source = entries.filter((entry) => entry.isDirectory()).map((entry) => join(workRoot, entry.name))
-  if (source.length !== 1) throw new Error("Pinned MicroSandbox source archive has an unexpected layout")
-  for (let index = 0; index < patches.length; index += 1) {
-    const patchPath = join(buildRoot, `patch-${index}.patch`)
-    await writeFile(patchPath, patches[index])
-    applyRuntimePatch(source[0], patchPath)
-  }
-  runBuildTool("cargo", [`+${MICROSANDBOX_BUILD_TOOLCHAIN}`, "fetch", "--locked", "--target", targetTriple], { cwd: source[0] })
-  const agentdPath = join(source[0], "build", "agentd")
-  await mkdir(dirname(agentdPath), { recursive: true })
-  await writeFile(agentdPath, agentd, { mode: 0o755 })
-  await chmod(agentdPath, 0o755)
-  runBuildTool("cargo", [
-    `+${MICROSANDBOX_BUILD_TOOLCHAIN}`,
-    "build",
-    "--locked",
-    "--release",
-    "--no-default-features",
-    "--features",
-    MICROSANDBOX_BUILD_FEATURES,
-    "--target",
-    targetTriple,
-    "-p",
-    "microsandbox-cli",
-  ], { cwd: source[0], env: { ...process.env, CARGO_TARGET_DIR: cargoTarget } })
-  const built = join(cargoTarget, targetTriple, "release", "msb")
-  const managedSshHelp = runBuildTool(built, ["ssh", "serve", "--help"])
-  if (!managedSshHelp.includes("--authorized-keys") || !managedSshHelp.includes("--exit-on-stdin-close") || !managedSshHelp.includes("--expected-machine-id")) {
-    throw new Error("The built MicroSandbox is missing managed SSH access support")
-  }
-  if (!hasSiloProtocolProbes(built)) {
-    throw new Error("The built MicroSandbox is missing one or more required Silo protocol boundaries")
-  }
-  if (!runBuildTool(built, ["snapshot", "load", "--help"]).includes("--stage-id")) {
-    throw new Error("The built MicroSandbox is missing operation-owned snapshot staging")
-  }
-  const bytes = await readFile(built)
   await mkdir(buildRoot, { recursive: true })
-  await writeFile(`${cachedExecutable}.tmp-${process.pid}`, bytes, { mode: 0o755 })
-  await rename(`${cachedExecutable}.tmp-${process.pid}`, cachedExecutable)
-  await writeFile(cachedDigest, `${sha256(bytes)}\n`)
-  await rm(workRoot, { recursive: true, force: true })
-  return bytes
+  const workRoot = await mkdtemp(join(buildRoot, "work-"))
+  const cargoTarget = join(buildRoot, "cargo-target")
+  try {
+    runBuildTool("/usr/bin/tar", ["-xzf", sourceArchive, "-C", workRoot])
+    const entries = await import("node:fs/promises").then(({ readdir }) => readdir(workRoot, { withFileTypes: true }))
+    const source = entries.filter((entry) => entry.isDirectory()).map((entry) => join(workRoot, entry.name))
+    if (source.length !== 1) throw new Error("Pinned MicroSandbox source archive has an unexpected layout")
+    for (let index = 0; index < patches.length; index += 1) {
+      const patchPath = join(workRoot, `patch-${index}.patch`)
+      await writeFile(patchPath, patches[index])
+      applyRuntimePatch(source[0], patchPath)
+    }
+    runBuildTool("cargo", [`+${MICROSANDBOX_BUILD_TOOLCHAIN}`, "fetch", "--locked", "--target", targetTriple], { cwd: source[0] })
+    const agentdPath = join(source[0], "build", "agentd")
+    await mkdir(dirname(agentdPath), { recursive: true })
+    await writeFile(agentdPath, agentd, { mode: 0o755 })
+    await chmod(agentdPath, 0o755)
+    runBuildTool("cargo", [
+      `+${MICROSANDBOX_BUILD_TOOLCHAIN}`,
+      "build",
+      "--locked",
+      "--release",
+      "--no-default-features",
+      "--features",
+      MICROSANDBOX_BUILD_FEATURES,
+      "--target",
+      targetTriple,
+      "-p",
+      "microsandbox-cli",
+    ], { cwd: source[0], env: { ...process.env, CARGO_TARGET_DIR: cargoTarget } })
+    const built = join(cargoTarget, targetTriple, "release", "msb")
+    const managedSshHelp = runBuildTool(built, ["ssh", "serve", "--help"])
+    if (!managedSshHelp.includes("--authorized-keys") || !managedSshHelp.includes("--exit-on-stdin-close") || !managedSshHelp.includes("--expected-machine-id")) {
+      throw new Error("The built MicroSandbox is missing managed SSH access support")
+    }
+    if (!hasSiloProtocolProbes(built)) {
+      throw new Error("The built MicroSandbox is missing one or more required Silo protocol boundaries")
+    }
+    if (!runBuildTool(built, ["snapshot", "load", "--help"]).includes("--stage-id")) {
+      throw new Error("The built MicroSandbox is missing operation-owned snapshot staging")
+    }
+    const bytes = await readFile(built)
+    await mkdir(buildRoot, { recursive: true })
+    await writeFile(`${cachedExecutable}.tmp-${process.pid}`, bytes, { mode: 0o755 })
+    await rename(`${cachedExecutable}.tmp-${process.pid}`, cachedExecutable)
+    await writeFile(cachedDigest, `${sha256(bytes)}\n`)
+    return bytes
+  } finally {
+    await rm(workRoot, { recursive: true, force: true })
+  }
 }
 
 export async function stageRuntime({
@@ -275,7 +277,6 @@ export async function stageRuntime({
     }
     await rm(isolatedHome, { recursive: true, force: true })
   }
-  await rename(executableTemporary, executablePath)
   await copyFile(library, libraryPath)
   await chmod(libraryPath, 0o644)
 
@@ -319,6 +320,7 @@ export async function stageRuntime({
     },
   }
   await writeFile(join(stagedRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`)
+  await rename(executableTemporary, executablePath)
   await rm(bundledRoot, { recursive: true, force: true })
   await rename(stagedRoot, bundledRoot)
 
