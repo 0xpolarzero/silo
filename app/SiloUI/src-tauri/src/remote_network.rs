@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use std::{
     collections::{HashMap, HashSet},
     net::TcpListener,
+    path::Path,
     process::{Child, Command, Stdio},
     sync::{Mutex, MutexGuard, OnceLock},
     time::{Duration, Instant},
@@ -25,6 +26,7 @@ struct Tunnel {
     child: Child,
     local_port: u16,
     remote_port: u16,
+    _directory: Option<tempfile::TempDir>,
 }
 impl Drop for Tunnel {
     fn drop(&mut self) {
@@ -68,7 +70,7 @@ fn tunnels() -> MutexGuard<'static, Tunnels> {
     )
 }
 const TUNNEL_LIMIT: usize = 128;
-/// How long a new tunnel may take to accept connections.
+/// How long a new tunnel may take to confirm forwarding.
 const READY_WITHIN: Duration = Duration::from_secs(12);
 /// How long the owner reuses its network state for polling controllers.
 const HOST_STATE_MAX_AGE: Duration = Duration::from_secs(2);
@@ -257,9 +259,9 @@ fn project_ports(
 }
 
 /// Starts ssh forwarding `local` (or any free port) to the owner's `remote_port` and waits
-/// until the local port accepts connections. Runs without the tunnels lock.
+/// for its private OpenSSH master to acknowledge readiness. Runs without the tunnels lock.
 fn open_tunnel(
-    command: impl FnOnce(u16) -> Result<Command, String>,
+    commands: impl FnOnce(u16, &Path) -> Result<(Command, Command), String>,
     local: Option<u16>,
     remote_port: u16,
     ready_within: Duration,
@@ -267,7 +269,13 @@ fn open_tunnel(
     let reservation = TcpListener::bind(("127.0.0.1", local.unwrap_or(0)))
         .map_err(|_| "This local port is already in use.")?;
     let local = reservation.local_addr().map_err(|e| e.to_string())?.port();
-    let mut command = command(local)?;
+    // Keep the control path short enough for macOS Unix sockets and private to this tunnel.
+    let directory = tempfile::Builder::new()
+        .prefix("silo-tunnel-")
+        .tempdir_in("/tmp")
+        .map_err(|_| "Could not prepare the SSH tunnel.")?;
+    let socket = directory.path().join("ssh.sock");
+    let (mut command, mut check) = commands(local, &socket)?;
     drop(reservation);
     let child = command
         .stdin(Stdio::null())
@@ -279,8 +287,8 @@ fn open_tunnel(
         child,
         local_port: local,
         remote_port,
+        _directory: Some(directory),
     };
-    // Probe the local listener; process creation alone does not mean forwarding succeeded.
     let until = Instant::now() + ready_within;
     loop {
         if !tunnel.alive() {
@@ -288,12 +296,9 @@ fn open_tunnel(
                 "SSH could not open this port. Check access and local port availability.".into(),
             );
         }
-        if std::net::TcpStream::connect_timeout(
-            &std::net::SocketAddr::from(([127, 0, 0, 1], local)),
-            Duration::from_millis(100),
-        )
-        .is_ok()
-        {
+        // OpenSSH serves control requests after local forwarding setup. With
+        // ExitOnForwardFailure=yes, a bind failure never reaches this acknowledgement.
+        if socket.exists() && control_ready(&mut check, &mut tunnel, until)? {
             return Ok(tunnel);
         }
         if Instant::now() >= until {
@@ -303,11 +308,41 @@ fn open_tunnel(
     }
 }
 
+fn control_ready(
+    command: &mut Command,
+    tunnel: &mut Tunnel,
+    until: Instant,
+) -> Result<bool, String> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "Could not check the SSH tunnel.")?;
+    let result = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status.success() && tunnel.alive()),
+            Ok(None) => (),
+            Err(_) => break Err("Could not check the SSH tunnel.".into()),
+        }
+        if Instant::now() >= until {
+            break Err("Timed out opening the SSH tunnel.".into());
+        }
+        if !tunnel.alive() {
+            break Ok(false);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
 fn reconnect_in_background(app: AppHandle, key: Key, intent: Intent, remote_port: u16) {
     std::thread::spawn(move || {
         let opened = runtime::shutdown::ensure_accepting_operations().and_then(|()| {
             open_tunnel(
-                |local| remote::ssh_tunnel_command(&key.0, local, remote_port),
+                |local, socket| remote::ssh_tunnel_commands(&key.0, local, remote_port, socket),
                 Some(intent.local_port),
                 remote_port,
                 READY_WITHIN,
@@ -442,7 +477,7 @@ pub async fn remote_save_network_port(
             endpoint,
             |local| {
                 open_tunnel(
-                    |local| remote::ssh_tunnel_command(&host, local, endpoint),
+                    |local, socket| remote::ssh_tunnel_commands(&host, local, endpoint, socket),
                     local,
                     endpoint,
                     READY_WITHIN,
@@ -581,6 +616,7 @@ mod tests {
             child: child(),
             local_port,
             remote_port,
+            _directory: None,
         }
     }
     fn intent(local_port: u16) -> Intent {
@@ -756,18 +792,19 @@ mod tests {
     }
 
     #[test]
-    fn opening_a_tunnel_waits_for_the_local_listener() {
+    fn an_unrelated_listener_during_authentication_is_never_ready() {
         let sleeper = || {
             let mut command = Command::new("/bin/sleep");
             command.arg("30");
             command
         };
-        // Stands in for ssh's listener: binds the local port once Silo released its reservation.
+        // Another process takes the selected port while SSH is still authenticating.
         let listener = std::sync::Arc::new(Mutex::new(None));
-        let tunnel = open_tunnel(
-            |local| {
+        let mut worker = None;
+        let result = open_tunnel(
+            |local, _| {
                 let listener = listener.clone();
-                std::thread::spawn(move || {
+                worker = Some(std::thread::spawn(move || {
                     let bound = (0..200).find_map(|_| {
                         TcpListener::bind(("127.0.0.1", local)).ok().or_else(|| {
                             std::thread::sleep(Duration::from_millis(10));
@@ -775,30 +812,42 @@ mod tests {
                         })
                     });
                     *listener.lock().unwrap() = bound;
-                });
-                Ok(sleeper())
+                }));
+                let mut command = Command::new("/bin/sh");
+                command.args(["-c", "sleep 0.3; exit 1"]);
+                Ok((command, Command::new("/usr/bin/false")))
             },
             None,
             32000,
-            Duration::from_secs(10),
-        )
-        .unwrap();
-        assert_ne!(tunnel.local_port, 0);
-        assert_eq!(tunnel.remote_port, 32000);
+            Duration::from_secs(5),
+        );
+        worker.unwrap().join().unwrap();
+        assert!(listener.lock().unwrap().is_some());
+        assert!(result.is_err(), "an unrelated listener was reported Ready");
         let exited = open_tunnel(
-            |_| Ok(Command::new("/usr/bin/false")),
+            |_, _| {
+                Ok((
+                    Command::new("/usr/bin/false"),
+                    Command::new("/usr/bin/false"),
+                ))
+            },
             None,
             32000,
             Duration::from_secs(5),
         );
         assert!(exited.unwrap_err().contains("could not open"));
-        let silent = open_tunnel(|_| Ok(sleeper()), None, 32000, Duration::from_millis(300));
+        let silent = open_tunnel(
+            |_, _| Ok((sleeper(), Command::new("/usr/bin/false"))),
+            None,
+            32000,
+            Duration::from_millis(300),
+        );
         assert_eq!(silent.unwrap_err(), "Timed out opening the SSH tunnel.");
         let taken = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = taken.local_addr().unwrap().port();
         assert_eq!(
             open_tunnel(
-                |_| Ok(sleeper()),
+                |_, _| Ok((sleeper(), Command::new("/usr/bin/false"))),
                 Some(port),
                 32000,
                 Duration::from_millis(300)
@@ -806,6 +855,81 @@ mod tests {
             .unwrap_err(),
             "This local port is already in use."
         );
+    }
+
+    fn fixture_forward(local: u16, socket: &Path) -> Command {
+        let mut command = Command::new("python3");
+        command
+            .args([
+                "-c",
+                r#"
+import socket, sys, time
+# Delayed authentication, then local forwarding, then the control socket.
+time.sleep(0.15)
+listener = socket.socket()
+listener.bind(('127.0.0.1', int(sys.argv[1])))
+listener.listen()
+control = socket.socket(socket.AF_UNIX)
+control.bind(sys.argv[2])
+control.listen()
+time.sleep(30)
+"#,
+            ])
+            .arg(local.to_string())
+            .arg(socket);
+        command
+    }
+
+    #[test]
+    fn delayed_authentication_waits_for_a_successful_control_reply() {
+        let started = Instant::now();
+        let tunnel = open_tunnel(
+            |local, socket| {
+                let mut check = Command::new("/bin/sh");
+                check
+                    .args(["-c", "sleep 0.15; test -S \"$1\"", "check"])
+                    .arg(socket);
+                Ok((fixture_forward(local, socket), check))
+            },
+            None,
+            32000,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert!(std::net::TcpStream::connect(("127.0.0.1", tunnel.local_port)).is_ok());
+        assert_eq!(tunnel.remote_port, 32000);
+    }
+
+    #[test]
+    fn a_listener_and_control_socket_without_an_acknowledgement_are_not_ready() {
+        let result = open_tunnel(
+            |local, socket| {
+                Ok((
+                    fixture_forward(local, socket),
+                    Command::new("/usr/bin/false"),
+                ))
+            },
+            None,
+            32000,
+            Duration::from_millis(500),
+        );
+        assert_eq!(result.unwrap_err(), "Timed out opening the SSH tunnel.");
+    }
+
+    #[test]
+    fn a_stalled_control_reply_is_bounded_by_the_readiness_deadline() {
+        let result = open_tunnel(
+            |local, socket| {
+                let mut check = Command::new("/bin/sleep");
+                check.arg("30");
+                Ok((fixture_forward(local, socket), check))
+            },
+            None,
+            32000,
+            Duration::from_millis(500),
+        );
+        assert_eq!(result.unwrap_err(), "Timed out opening the SSH tunnel.");
     }
 
     #[test]
