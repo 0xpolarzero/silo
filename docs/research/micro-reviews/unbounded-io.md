@@ -52,3 +52,46 @@ changing the policy. Both saved files remain untouched.
 production data types and reader/settings functions verbatim, with a disposable
 runtime-path fixture. Rust formatting, typecheck, lint and diff checks passed.
 The full native test command remains queued on the shared Cargo artifact lock.
+
+## Remote-operation markers
+
+**Trigger:** An operation journal marker, including a legacy full-request/result
+record, grows beyond 16 MiB. The read runs during registry acceptance under its
+mutex.
+
+**Evidence:** `read_marker` used unbounded `fs::read`. A valid legacy finished
+record padded beyond the limit was accepted as finished by the original reader;
+the regression failed before the fix and passed afterwards.
+
+**Correction:** Consume at most 16 MiB plus one byte. Larger files follow the
+existing unreadable-marker path: the operation was accepted but its result is
+uncertain, and registry acceptance refuses to replay it. Missing markers still
+return `None`; exact-limit legacy records still parse and files remain untouched.
+The larger allowance retains compatibility with legacy request/result records.
+
+**Checks:** Source-extracted production reader and committed regression passed
+1/1. Rust formatting, typecheck, lint and diff checks passed. Native Cargo tests
+remain queued on the shared target lock; no running app or VM was accessed.
+
+## Sandbox metadata
+
+**Trigger:** `sandboxes.json` grows above the existing 1 MiB limit.
+
+**Evidence:** `read_metadata` checked size only after `fs::read` allocated the
+whole file. An isolated child-process regression reads a sparse 128 MiB fixture,
+checks the existing oversized-document error and verifies peak-RSS growth below
+32 MiB. It failed before the fix with 134,283,264 bytes of additional peak RSS
+and passed afterwards with 1,179,648 bytes on this Apple Silicon macOS host.
+
+**Correction:** Open the file and consume at most the existing limit plus one
+byte before checking size. Missing-file defaults, read-error classification and
+oversized-document errors retain their existing behavior; no rewrite occurs.
+
+**Checks:** The production reader and committed memory test ran in a disposable
+Rust harness with adapters for unreachable parsing/validation branches. The
+128 MiB rejection occurs before those adapters are invoked. Peak RSS comes from
+`getrusage(RUSAGE_SELF)` in a fresh test process, avoiding the parallel suite's
+prior allocation high-water mark. Exact failing/passing output is retained in
+`src-tauri/target/verification/unbounded-io/`. Formatting, typecheck, lint and diff
+checks passed; the complete Cargo test command is still waiting for the shared
+artifact lock.

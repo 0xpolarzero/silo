@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Ignore malformed optional startup and application preferences in computer snapshots so saved settings remain usable.
+Ignore invalid optional startup and application preferences received from a computer so its other settings remain usable.

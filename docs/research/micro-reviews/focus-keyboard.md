@@ -92,3 +92,43 @@ callbacks documented in the Radix source linked above.
 Checks: all 44 import, shared-popover, and sandbox-transfer tests passed.
 Frontend typecheck, touched-file oxlint, Rust formatting, and diff whitespace
 checks passed.
+
+## Repository picker suggestions stay out of the Tab sequence
+
+The GitHub repository picker has its own combobox implementation, separate from
+the shared filter already fixed in `a11y-application.md`. With no selected
+repositories, Tab from its input entered a popup button instead of leaving the
+picker. Both new regressions failed: one with a repository result and one with
+only the Add more repositories on GitHub action. Output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/repositories-before.log`.
+
+Both kinds of suggestion now have `tabIndex={-1}`, following the WAI-ARIA
+combobox pattern linked above. Arrow keys and Enter continue to select them
+through the focused input; pointer selection remains available. The regressions
+verify Tab leaves the last page control and closes the popup.
+
+Checks: all 19 repository editor and GitHub-page tests passed. Frontend
+typecheck, touched-file oxlint, Rust formatting, and diff whitespace checks
+passed.
+
+Folding encountered an overlapping test insertion from integration's repository
+scrolling fix. Both independent regressions were preserved; the merged suites
+passed all 20 tests, and typecheck, lint, formatting, and whitespace checks passed.
+
+## Escape dismisses operation cancellation questions
+
+Integration already fixed focus restoration after Keep going, recorded in
+`fe-components-fix-loop.md`; that instance was skipped. A separate missing
+Escape handler remained: pressing Escape while focused in the cancellation
+question left it open. The new regression failed because the Confirm cancel
+group remained rendered. Output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/toast-before.log`.
+
+The question now consumes Escape locally and returns to progress through the
+existing Keep going state transition and focus restoration. It respects handled
+and composition events. The regression verifies Cancel regains focus, the
+operation continues, and Enter can reopen the question and activate cancellation.
+
+Checks: all 21 operation-toast body and toast integration tests passed.
+Frontend typecheck, touched-file oxlint, Rust formatting, and diff whitespace
+checks passed.

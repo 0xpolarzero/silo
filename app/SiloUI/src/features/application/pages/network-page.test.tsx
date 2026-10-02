@@ -122,9 +122,9 @@ describe("Network", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Could not check services.")
     expect(screen.queryByText("No ports")).not.toBeInTheDocument()
   })
-  it("does not open cached services when the VM status is stale", () => {
+  it.each(["running", "starting", "stopped", "failed"] as const)("does not present a cached %s VM state as current when its status is stale", state => {
     const actions = {refreshNetwork:vi.fn(async () => {}),openNetworkPort:vi.fn(async () => {})} as unknown as ApplicationActions
-    render(<NetworkPage workspaces={workspaces.map(w => ({...w,freshness:"stale"}))} browser="Firefox" network={network} actions={actions} active />)
+    render(<NetworkPage workspaces={workspaces.map(w => ({...w,state,freshness:"stale"}))} browser="Firefox" network={network} actions={actions} active />)
     expect(screen.queryByRole("button",{name:/^Open /})).not.toBeInTheDocument()
     expect(screen.getAllByText("Unknown")).toHaveLength(3)
   })
@@ -273,4 +273,19 @@ it("shows an empty filter result without waiting for unrelated network discovery
   render(<NetworkPage workspaces={[]} browser="Firefox" actions={actions} active />)
   expect(screen.getByText("No matching sandboxes")).toBeVisible()
   expect(screen.queryByRole("status", { name: "Loading network" })).not.toBeInTheDocument()
+})
+
+
+it("keeps a filtered remote sandbox loading until its own network result arrives", () => {
+  const local = workspaces[0]
+  const remote = { ...local, computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true } }
+  const target = remoteWorkspaceTarget("office", local.machine.id)
+  const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
+  const localOnly = { workspaces: [{ workspace: "dev", error: null, ports: [] }] }
+  const view = render(<NetworkPage workspaces={[remote]} browser="Firefox" network={localOnly} actions={actions} active />)
+  expect(screen.getByRole("status", { name: "Loading network" })).toBeVisible()
+  expect(screen.queryByText("No ports")).not.toBeInTheDocument()
+  view.rerender(<NetworkPage workspaces={[remote]} browser="Firefox" network={{ workspaces: [...localOnly.workspaces, { workspace: target, error: null, ports: [] }] }} actions={actions} active />)
+  expect(screen.queryByRole("status", { name: "Loading network" })).not.toBeInTheDocument()
+  expect(screen.getByText("No ports")).toBeVisible()
 })

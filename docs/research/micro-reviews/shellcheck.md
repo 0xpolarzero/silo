@@ -54,3 +54,13 @@ external tools. Focused ShellCheck, shell syntax, TypeScript typecheck, frontend
 lint, Rust formatting, and whitespace checks passed for the fixes. Initial
 desktop fixture failures exposed incomplete stdin handling in the new `cat`
 test double; the corrected double passed the full recipe suite.
+
+Final verification at `fe209cb3`: a fresh ShellCheck scan checked 343 automatically
+extracted units after integration updates, with generated templates and Docker
+commands reviewed separately. Every npm script also passed ShellCheck. The 21
+desktop recipe tests and 2 GNOME setup tests passed again using `/bin/dash` for
+their shell execution; all nine standalone scripts passed `dash -n`. A combined
+run of GNOME setup, APT shell steps, workflow pins, and Linux verification tests
+passed 18 tests. Typecheck and lint passed again on Node 24.11.1, replacing the
+earlier host Node 26 checks. Final scan evidence is under
+`/tmp/silo-shellcheck-final/`.

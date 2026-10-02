@@ -94,12 +94,15 @@ def build(args):
                '--', '--locked', '--timings', '--message-format=json']
     with (args.state / 'messages.jsonl').open('w') as output:
         with subprocess.Popen(command, cwd=app, env=dict(os.environ, CARGO_TARGET_DIR=str(target_dir), CARGO_HOME=str(cargo_home)),
-                              stdout=subprocess.PIPE, text=True, start_new_session=True) as process:
+                              stdout=subprocess.PIPE, text=True, encoding='utf-8', errors='replace', start_new_session=True) as process:
             try:
                 for line in process.stdout:
                     try:
                         row = json.loads(line)
                     except json.JSONDecodeError:
+                        print(line, end='', flush=True)
+                        continue
+                    if not isinstance(row, dict):
                         print(line, end='', flush=True)
                         continue
                     output.write(json.dumps(row) + '\n')
@@ -109,6 +112,7 @@ def build(args):
                             print(rendered, end='' if rendered.endswith('\n') else '\n', file=sys.stderr, flush=True)
                     if row.get('reason') == 'compiler-artifact' and row.get('package_id') == root and row.get('executable'):
                         artifacts.append(row)
+                process.stdout.close()
                 code = process.wait()
             except BaseException:
                 # Keep the group ID reserved until its compiler children stop.
@@ -119,7 +123,7 @@ def build(args):
                         pass
                 raise
     if code:
-        return code
+        return code if code >= 0 else 128 - code
     if not artifacts or any(row.get('fresh') is not False for row in artifacts):
         raise ValueError('Release application must be freshly compiled')
     print('Release application freshly compiled.')

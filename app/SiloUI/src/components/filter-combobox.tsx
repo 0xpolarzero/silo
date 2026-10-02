@@ -163,7 +163,7 @@ export function FilterCombobox<Value extends string>({
               compact ? "h-7 pl-2" : "h-8 pl-2.5",
             )}
           >
-            <span className="truncate">{option.label}</span>
+            <span className="truncate" title={option.label}>{option.label}</span>
             <button
               type="button"
               aria-label={`Remove ${option.label}`}

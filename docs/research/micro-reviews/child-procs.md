@@ -32,3 +32,8 @@ Formatting, frontend typecheck, and frontend lint passed; the final frontend
 checks used Node 24.11.1. Full-app native verification could not start while the
 shared Cargo target lock was held. The extracted harness does not establish
 full-app compilation or packaging.
+
+After merging concurrent UTF-8 decoding and shell exit-status fixes, the cache,
+cache integration, and bundle retry suites pass 39 tests together. The existing
+integration mocks now implement the `Popen` context-manager boundary; the new
+ownership regressions still use real child processes.

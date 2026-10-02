@@ -45,10 +45,14 @@ export function divergentMachineFields(
   a: SetupMachineConfiguration,
   b: SetupMachineConfiguration,
 ): string[] {
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)])
-  return [...keys].filter((key) =>
-    stableStringify((a as Record<string, unknown>)[key]) !== stableStringify((b as Record<string, unknown>)[key]),
-  )
+  const aValues = new Map<string, unknown>(Object.entries(a))
+  const bValues = new Map<string, unknown>(Object.entries(b))
+  const keys = new Set([...aValues.keys(), ...bValues.keys()])
+  return [...keys].filter((key) => {
+    const aValue = aValues.get(key)
+    const bValue = bValues.get(key)
+    return (aValue === undefined) !== (bValue === undefined) || stableStringify(aValue) !== stableStringify(bValue)
+  })
 }
 
 /**

@@ -59,6 +59,9 @@ if (args[0] === 'image' && args[1] === 'save') {
       const manifest = JSON.parse(await readFile(join(output, "manifest.json"), "utf8"))
       assert.equal(manifest.archiveSha256, createHash("sha256").update(archive).digest("hex"))
       assert.equal(manifest.archiveBytes, archive.length)
+      assert.equal(manifest.unpackedBytes, Buffer.byteLength("saved image fixture"))
+      assert.equal(manifest.architecture, "aarch64")
+      assert.deepEqual(manifest.packages, { "fixture-package": "1" })
     }
     assert.deepEqual((await readdir(output)).sort(), ["image.tar.gz", "manifest.json"])
   })

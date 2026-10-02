@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react"
+import { act, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, it, vi } from "vitest"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -6,24 +6,58 @@ import type { StatusBarActions } from "@/features/status-bar/status-bar-types"
 import { StatusPanel } from "./status-panel"
 import { createMemorySettingsStore, SettingsProvider, type SettingsStore } from "@/features/preferences/settings-store"
 
-const native = vi.hoisted(() => ({ invoke: vi.fn().mockResolvedValue(undefined), opened: () => {}, menu: vi.fn(), popup: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) }))
+const native = vi.hoisted(() => ({ invoke: vi.fn().mockResolvedValue(undefined), listen: vi.fn(), opened: () => {}, menu: vi.fn(), popup: vi.fn().mockResolvedValue(undefined), close: vi.fn().mockResolvedValue(undefined) }))
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }))
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn((name, callback) => { if (name === "desktop:status-opened") native.opened = callback; return Promise.resolve(vi.fn()) }) }))
+vi.mock("@tauri-apps/api/event", () => ({ listen: native.listen }))
 vi.mock("@tauri-apps/api/menu", () => ({ Menu: { new: native.menu } }))
 beforeEach(() => {
   vi.clearAllMocks()
   vi.stubGlobal("matchMedia", () => ({ matches: false, addEventListener: () => {}, removeEventListener: () => {} }))
   native.menu.mockResolvedValue({ popup: native.popup, close: native.close })
+  native.listen.mockImplementation((name, callback) => { if (name === "desktop:status-opened") native.opened = callback; return Promise.resolve(vi.fn()) })
 })
 
-function setup(store?: SettingsStore) {
+function setup(store?: SettingsStore, reactStrictMode = false) {
   const actions: StatusBarActions = {
     openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(), openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
   }
   const panel = <StatusPanel source={applicationSourceForScenario("running")} actions={actions} />
-  render(store ? <SettingsProvider store={store}>{panel}</SettingsProvider> : panel)
-  return { actions, user: userEvent.setup() }
+  const view = render(store ? <SettingsProvider store={store}>{panel}</SettingsProvider> : panel, { reactStrictMode })
+  return { ...view, actions, user: userEvent.setup() }
 }
+
+it("ignores status-open events from disposed listeners during StrictMode registration", async () => {
+  const opened: Array<() => void> = []
+  const register: Array<(stop: () => void) => void> = []
+  native.listen.mockImplementation((name, callback) => {
+    if (name !== "desktop:status-opened") return Promise.resolve(vi.fn())
+    opened.push(callback)
+    return new Promise<() => void>(resolve => { register.push(resolve) })
+  })
+  const view = setup(undefined, true)
+  const focus = vi.spyOn(screen.getByRole("dialog", { name: "Silo" }), "focus")
+  expect(opened).toHaveLength(2)
+  act(() => { opened[0]() })
+  expect(focus).not.toHaveBeenCalled()
+  const staleStop = vi.fn()
+  const liveStop = vi.fn()
+  await act(async () => { register[0](staleStop); register[1](liveStop) })
+  expect(staleStop).toHaveBeenCalledOnce()
+  act(() => { opened[1]() })
+  expect(focus).toHaveBeenCalledOnce()
+  view.unmount()
+  act(() => { opened[1]() })
+  expect(focus).toHaveBeenCalledOnce()
+  expect(liveStop).toHaveBeenCalledOnce()
+})
+
+it("handles a rejected status-open listener registration", async () => {
+  const error = new Error("Listener unavailable")
+  const log = vi.spyOn(console, "error").mockImplementation(() => {})
+  native.listen.mockImplementation(name => name === "desktop:status-opened" ? Promise.reject(error) : Promise.resolve(vi.fn()))
+  setup()
+  await waitFor(() => expect(log).toHaveBeenCalledWith("Silo status events:", error))
+})
 
 it("propagates resolved apps to shortcuts, native menus, and an already-open folder picker", async () => {
   const store = createMemorySettingsStore()
