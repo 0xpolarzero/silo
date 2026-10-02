@@ -323,10 +323,10 @@ pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(),
     use gio::glib::variant::ToVariant;
     let proxy =
         notifications_proxy().map_err(|_| "The desktop notification service is unavailable")?;
-    if proxy.name_owner().is_none() {
+    let Some(owner) = proxy.name_owner() else {
         return Ok(());
-    }
-    SERVER_IDS.deliver(&notice.key, |replaces| {
+    };
+    SERVER_IDS.deliver(&owner, &notice.key, |replaces| {
         // The standard has no permission prompt. The desktop controls suppression/DND.
         let hints = std::collections::HashMap::from([
             (
@@ -346,10 +346,16 @@ pub fn deliver_notification(notice: &crate::notifications::Notice) -> Result<(),
             -1i32,
         )
             .to_variant();
+        // Address the unique owner: a service restart must not redirect an old ID.
         let reply = proxy
+            .connection()
             .call_sync(
+                Some(&owner),
+                "/org/freedesktop/Notifications",
+                NOTIFICATIONS_BUS,
                 "Notify",
                 Some(&parameters),
+                None,
                 gio::DBusCallFlags::NO_AUTO_START,
                 5000,
                 None::<&gio::Cancellable>,
@@ -367,13 +373,17 @@ pub fn clear_notifications(keys: &[String]) {
     let Ok(proxy) = notifications_proxy() else {
         return;
     };
-    if proxy.name_owner().is_none() {
+    let Some(owner) = proxy.name_owner() else {
         return;
-    }
-    SERVER_IDS.clear(keys, |id| {
-        let _ = proxy.call_sync(
+    };
+    SERVER_IDS.clear(&owner, keys, |id| {
+        let _ = proxy.connection().call_sync(
+            Some(&owner),
+            "/org/freedesktop/Notifications",
+            NOTIFICATIONS_BUS,
             "CloseNotification",
             Some(&(id,).to_variant()),
+            None,
             gio::DBusCallFlags::NO_AUTO_START,
             5000,
             None::<&gio::Cancellable>,
