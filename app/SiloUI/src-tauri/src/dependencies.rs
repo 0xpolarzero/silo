@@ -434,6 +434,30 @@ fn run_bounded_with_timeout(
     {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
+        // The child writes to regular temporary files; enforce the output bound
+        // while it runs, using only resource-limit syscalls between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                let zero = libc::rlimit {
+                    rlim_cur: 0,
+                    rlim_max: 0,
+                };
+                if libc::setrlimit(libc::RLIMIT_CORE, &zero) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut limit = zero;
+                if libc::getrlimit(libc::RLIMIT_FSIZE, &mut limit) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let bound = (MAX_OUTPUT + 1) as libc::rlim_t;
+                limit.rlim_cur = limit.rlim_cur.min(bound);
+                limit.rlim_max = limit.rlim_max.min(bound);
+                if libc::setrlimit(libc::RLIMIT_FSIZE, &limit) != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
     }
     for (name, value) in environment {
         command.env(name, value);
@@ -1673,6 +1697,32 @@ mod tests {
         }
         runtime.executable.bundled_name = "../../bin/sh".into();
         assert!(!runtime_manifest_matches(&runtime));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_limit_stops_probes_before_they_continue_after_excessive_writes() {
+        for script in [
+            "printf '%65536s' x; printf finished > \"$1\"",
+            "printf '%65536s' x >&2; printf finished > \"$1\"",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let marker = directory.path().join("finished");
+            let result = run_bounded_with_timeout(
+                Path::new("/bin/sh"),
+                &["-c", script, "probe", marker.to_str().unwrap()],
+                &[],
+                PROCESS_TIMEOUT,
+            );
+            assert!(
+                matches!(result, Err(ProbeError::Malformed(_))),
+                "{result:?}"
+            );
+            assert!(
+                !marker.exists(),
+                "the oversized write completed before its limit was enforced"
+            );
+        }
     }
 
     #[test]
