@@ -58,6 +58,21 @@ it("still asks when the running sandboxes could not be read", async () => {
   expect(await screen.findByRole("alertdialog", { name: "Quit Silo?" })).toHaveAccessibleDescription(/could not check which sandboxes are running/)
 })
 
+it.each(["Cancel", "Escape"])("restores the previous keyboard position after dismissing Quit with %s", async (dismissal) => {
+  const user = userEvent.setup()
+  const connection = fakeConnection()
+  render(<><input aria-label="Sandbox search" /><QuitRequestConfirmation connect={connection.connect} /></>)
+  await waitFor(() => expect(connection.connect).toHaveBeenCalled())
+  const search = screen.getByRole("textbox", { name: "Sandbox search" })
+  await user.click(search)
+  const quit = connection.ask({ requestId: 1, sandboxes: ["dev"] })
+  const dialog = await screen.findByRole("alertdialog", { name: "Quit Silo?" })
+  if (dismissal === "Cancel") await user.click(within(dialog).getByRole("button", { name: "Cancel" }))
+  else await user.keyboard("{Escape}")
+  await expect(quit).resolves.toBe(false)
+  await waitFor(() => expect(search).toHaveFocus())
+})
+
 it("keeps Silo open and stops listening when the window's UI goes away mid-question", async () => {
   const connection = fakeConnection()
   const view = render(<QuitRequestConfirmation connect={connection.connect} />)
