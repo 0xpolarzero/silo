@@ -661,7 +661,9 @@ fn apply_step(state: &mut MigrationState, step: &Step) {
 fn convert(app: &AppHandle) -> Result<(), String> {
     let controller = app.state::<Arc<Controller>>();
     let paths = staged_paths(app, &controller.app_data)?;
-    crate::backup_controller::wait_for_migration_recovery(app)?;
+    if generation(&controller.app_data)?.is_none() {
+        crate::backup_controller::wait_for_migration_recovery(app)?;
+    }
     convert_with(
         &runtime::ProcessRunner,
         &controller.app_data,
@@ -676,7 +678,7 @@ fn convert(app: &AppHandle) -> Result<(), String> {
     )?;
     update(app, |state| {
         state.status = "running".into();
-        state.stage = "Restarting with converted sandboxes".into();
+        state.stage = "Restarting with upgraded sandbox storage".into();
         state.can_continue = false;
         state.error = None;
         Ok(())
@@ -698,6 +700,10 @@ fn convert_with(
     paths: &runtime::RuntimePaths,
     progress: &dyn Fn(Step) -> Result<(), String>,
 ) -> Result<(), String> {
+    // Once selected, this generation is committed storage, never disposable staging.
+    if let Some(selected) = generation(app_data)? {
+        return quarantine_previous_backup_state(app_data, &selected);
+    }
     let old_runtime = app_data.join("runtime");
     let old_metadata = runtime::read_metadata(&old_runtime.join("machines.json"))
         .map_err(|_| "Existing sandbox settings could not be read. No data was changed.")?;
@@ -990,20 +996,31 @@ pub(crate) async fn retry_runtime_migration(app: AppHandle) -> Result<MigrationS
     blocking(app, retry_runtime_migration_blocking).await
 }
 
-fn retry_runtime_migration_blocking(app: AppHandle) -> Result<MigrationState, String> {
-    let result = update(&app, |state| {
-        if !matches!(state.status.as_str(), "scanning" | "failed") {
-            return Err("Migration is already running or complete.".into());
-        }
-        state.status = "running".into();
-        state.stage = "Preparing conversion".into();
-        state.error = None;
-        state.can_continue = false;
+fn prepare_retry(state: &mut MigrationState, app_data: &Path) -> Result<(), String> {
+    if !matches!(state.status.as_str(), "scanning" | "failed") {
+        return Err("Migration is already running or complete.".into());
+    }
+    let committed = generation(app_data)?.is_some();
+    state.status = "running".into();
+    state.stage = if committed {
+        "Finishing runtime migration"
+    } else {
+        "Preparing conversion"
+    }
+    .into();
+    state.error = None;
+    state.can_continue = false;
+    if !committed {
         state.migrated_count = 0;
         state.failed_count = 0;
         state.logs.clear();
-        Ok(())
-    })?;
+    }
+    Ok(())
+}
+
+fn retry_runtime_migration_blocking(app: AppHandle) -> Result<MigrationState, String> {
+    let controller = app.state::<Arc<Controller>>();
+    let result = update(&app, |state| prepare_retry(state, &controller.app_data))?;
     let worker = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         // A panic must still leave a retryable failed state, not "running".
@@ -1831,6 +1848,59 @@ mod tests {
             fs::read(app_data.join("runtime/before-checkpoints-backup-history.json")).unwrap(),
             b"previous backup history"
         );
+    }
+
+    #[test]
+    fn retry_after_commit_preserves_verified_generation_until_quarantine_finishes() {
+        let (dir, paths) = previous_generation();
+        let app_data = dir.path();
+        let history = app_data.join("backup-history.json");
+        let obstruction = app_data.join("runtime/before-checkpoints-backup-history.json");
+        fs::write(&history, b"previous backup history").unwrap();
+        fs::write(&obstruction, b"stale").unwrap();
+        let recorded = Mutex::new(fresh("running", 1));
+        let runner = StagedRuntime::new(app_data, "Stopped");
+        let error = convert_with(&runner, app_data, &paths, &|step| {
+            apply_step(&mut recorded.lock().unwrap(), &step);
+            Ok(())
+        })
+        .unwrap_err();
+        let mut progress = recorded.into_inner().unwrap();
+        record_migration_failure(&mut progress, error);
+        write(&app_data.join(FILE), &progress).unwrap();
+        let committed = tree(&app_data.join(CONVERTED));
+        let calls = runner.calls.lock().unwrap().clone();
+
+        // Retry must finish the commit, even while quarantine remains blocked.
+        prepare_retry(&mut progress, app_data).unwrap();
+        write(&app_data.join(FILE), &progress).unwrap();
+        let error = convert_with(&runner, app_data, &paths, &|_| {
+            Err("Conversion must not run again after selection.".into())
+        })
+        .unwrap_err();
+        assert!(
+            app_data.join(CONVERTED).is_dir(),
+            "Retry deleted committed storage"
+        );
+        assert_eq!(tree(&app_data.join(CONVERTED)), committed);
+        assert_eq!(*runner.calls.lock().unwrap(), calls);
+        assert!(error.contains("could not be isolated"), "{error}");
+        assert_eq!(progress.migrated_count, 1);
+        record_migration_failure(&mut progress, error);
+
+        fs::remove_file(&obstruction).unwrap();
+        prepare_retry(&mut progress, app_data).unwrap();
+        write(&app_data.join(FILE), &progress).unwrap();
+        convert_with(&runner, app_data, &paths, &|_| {
+            Err("Conversion must not run again after selection.".into())
+        })
+        .unwrap();
+        assert_eq!(tree(&app_data.join(CONVERTED)), committed);
+        assert_eq!(*runner.calls.lock().unwrap(), calls);
+        let recovered = initial(&app_data.join(FILE), app_data).unwrap();
+        assert_eq!(recovered.status, "complete");
+        assert_eq!(recovered.migrated_count, 1);
+        assert_eq!(fs::read(obstruction).unwrap(), b"previous backup history");
     }
 
     #[test]
