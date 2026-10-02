@@ -82,7 +82,12 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
   let reads = 0
   let generation = 0
   let failureDelay = 0
-  const set = (next: Partial<ChatGptAppSnapshot>) => { snapshot = { ...snapshot, ...next }; listeners.forEach(listener => listener()) }
+  const set = (next: Partial<ChatGptAppSnapshot>) => {
+    const updated = { ...snapshot, ...next }
+    if (JSON.stringify(updated) === JSON.stringify(snapshot)) return
+    snapshot = updated
+    listeners.forEach(listener => listener())
+  }
   // An event this Silo cannot read leaves the last status in place.
   const receive = (value: unknown) => {
     const parsed = chatGptAppStatusSchema.safeParse(value)
