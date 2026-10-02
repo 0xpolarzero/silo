@@ -8012,7 +8012,7 @@ esac
         crate::test_support::paths(directory.path())
     }
 
-    fn vm() -> MachineConfiguration {
+    pub(super) fn vm() -> MachineConfiguration {
         MachineConfiguration::Vm {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "dev".into(),
@@ -8026,7 +8026,7 @@ esac
         }
     }
 
-    fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
+    pub(super) fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
         MachineConfigurationRequest {
             schema_version: 1,
             machines,
