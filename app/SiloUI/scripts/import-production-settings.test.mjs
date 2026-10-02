@@ -100,6 +100,51 @@ const run = (home, keychain, options = {}) => importProductionSettings({
   home, platform: "darwin", keychain, isDevRunning: () => false, newId: () => "dddddddd-dddd-4ddd-8ddd-dddddddddddd", ...options,
 })
 
+test("import refuses linked Dev destination directories before writing files or credentials", async t => {
+  for (const location of ["channel", "file", "remote", "dangling-remote"]) {
+    await t.test(location, async t => {
+      const { home, source, target } = fixtureHome()
+      t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+      const destination = location === "channel" ? target.config : location === "file"
+        ? path.join(target.config, "settings.json") : path.join(target.state, "desktop-remote")
+      const external = location === "channel" ? source.config : location === "file"
+        ? path.join(source.config, "settings.json") : location === "remote"
+        ? path.join(source.state, "desktop-remote") : path.join(home, "external-missing")
+      fs.mkdirSync(path.dirname(destination), { recursive: true })
+      fs.symlinkSync(external, destination, "dir")
+      const before = [...snapshot(source.config), ...snapshot(source.state)]
+      const keychain = productionKeychain()
+      await assert.rejects(run(home, keychain, { yes: true }), /Refusing to write through a linked/)
+      assert.deepEqual([...snapshot(source.config), ...snapshot(source.state)], before)
+      assert.deepEqual(keychain.writes, [])
+      assert.equal(fs.readlinkSync(destination), external)
+      if (location === "dangling-remote") assert.equal(fs.existsSync(external), false)
+      if (location.includes("remote")) assert.equal(fs.existsSync(target.config), false)
+    })
+  }
+})
+
+test("import rechecks all destination links after confirmation before applying any copy", async t => {
+  const { home, source, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  fs.mkdirSync(target.config, { recursive: true })
+  const settings = path.join(target.config, "settings.json")
+  fs.writeFileSync(settings, "previous Dev settings")
+  const destination = path.join(target.state, "desktop-remote")
+  fs.mkdirSync(destination, { recursive: true })
+  const keychain = productionKeychain()
+  const before = snapshot(source.state)
+  await assert.rejects(run(home, keychain, { confirm: async () => {
+    fs.rmdirSync(destination)
+    fs.symlinkSync(path.join(source.state, "desktop-remote"), destination, "dir")
+    return true
+  } }), /Refusing to write through a linked/)
+  assert.equal(fs.readFileSync(settings, "utf8"), "previous Dev settings")
+  assert.deepEqual(snapshot(source.state), before)
+  assert.deepEqual(keychain.writes, [])
+  assert.deepEqual(fs.readdirSync(target.config), ["settings.json"])
+})
+
 test("file sync failure preserves Dev settings and removes private staging files", async t => {
   const { home, source, target } = fixtureHome()
   t.after(() => fs.rmSync(home, { recursive: true, force: true }))
