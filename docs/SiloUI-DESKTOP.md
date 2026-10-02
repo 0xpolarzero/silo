@@ -170,6 +170,10 @@ error. They use temporary paths without running a VM.
 
 Legacy VMs: `setup-lcu` keeps working for VMs created before v4 with the 0.4.0
 lock (`guest/lcu-legacy-lock.json`); it is refused for built-in VMs.
+Its receipt writer uses the same file-sync, replacement and directory-sync
+sequence as desktop preferences. Failed file synchronization preserves the
+previous receipt, and failed directory synchronization rejects completion.
+Tests inject both failures and verify cleanup and retry using temporary paths.
 
 LCU installation on VMs created before v4 is separate and unchanged.
 

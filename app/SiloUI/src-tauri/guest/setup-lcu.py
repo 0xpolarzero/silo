@@ -144,10 +144,23 @@ def desktop_session_running():
 
 def write_receipt(receipt):
     STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
-    temporary = STATE / 'lcu.tmp'
-    temporary.write_text(json.dumps(receipt, sort_keys=True) + '\n')
-    temporary.chmod(0o600)
-    temporary.replace(RECEIPT)
+    fd, temporary = tempfile.mkstemp(prefix='.lcu-', dir=STATE)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            output.write(json.dumps(receipt, sort_keys=True) + '\n')
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, RECEIPT)
+        directory = os.open(STATE, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def run(arguments, output, *, user=False, extra_env=None):
