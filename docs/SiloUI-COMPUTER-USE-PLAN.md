@@ -475,3 +475,14 @@ What agents get on the Linux desktop with 0.8.3:
 - **GTK 3 paste.** AT-SPI paste into a GTK 3 text view (gedit 46.2) crashes the app: an
   upstream GTK/GNOME bug, filed with GNOME. Silo's image avoids it by shipping GNOME Text
   Editor (GTK 4) and no Mousepad.
+
+Live check (macOS arm64, Silo main plus this pin, MicroSandbox 0.7.6 `msb` ad-hoc signed with
+`Entitlements.plist`, published v4 image `ubuntu-24.04-v4-arm64` staging LCU 0.8.1, ChatGPT 26.928.31416
+published by Silo's own downloader; fixture home under `/private/tmp`, `e2e-lcu` sandbox, no packaged
+app). The VM downloaded and verified the locked 0.8.3 archive and installed it over the staged
+0.8.1: `lcu status --json` reported `lcu_version` 0.8.3 and compatibility `tested`, `lcu doctor
+--require-ready` reported ready, and `live_lcu_drives_the_desktop_without_a_model` passed
+(bare MCP client with no `_meta`, the default-sandbox drive, Save As, per-key terminal). The drive now
+also sends window-targeted `pressKey` to GNOME Text Editor (GTK 4): `ctrl+a`, `BackSpace`, `keys-ok`
+and `ctrl+s`; an independent read of the saved file showed `keys-ok` plus the newline the editor adds
+on save, with the previous text gone. Per LCU's own measurements the same calls under 0.8.2 and earlier succeeded without effect.

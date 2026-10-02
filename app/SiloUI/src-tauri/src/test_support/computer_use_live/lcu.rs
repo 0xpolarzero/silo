@@ -213,11 +213,16 @@ fn live_lcu_drives_the_desktop_without_a_model() {
         "{text:?}"
     );
     // LCU 0.8.3 translates window-targeted keys for GTK 4: ctrl+a, BackSpace, per-key typing
-    // and ctrl+s replaced the saved file's bytes.
+    // and ctrl+s replaced the saved file's bytes (the old text is gone).
     let after_keys = fixture
         .exec(name, "root", "cat /home/silo/e2e-lcu-out*.txt")
         .unwrap();
-    assert_eq!(after_keys, "keys-ok\n", "{after_keys:?}");
+    // GNOME Text Editor appends a final newline when saving, as for the earlier save.
+    assert_eq!(
+        after_keys.trim_end_matches('\n'),
+        "keys-ok",
+        "{after_keys:?}"
+    );
     let perkey = fixture
         .exec(name, "root", "cat /tmp/e2e-perkey.txt")
         .unwrap();
