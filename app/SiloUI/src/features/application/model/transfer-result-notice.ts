@@ -56,6 +56,7 @@ export function useTransferResultNotice(backend: TransferResultNoticeBackend | u
     let sequence = 0
     let unsubscribe: (() => void) | undefined
     const refresh = async () => {
+      if (!live) return
       const mine = ++sequence
       try {
         const next = await backend.read()
