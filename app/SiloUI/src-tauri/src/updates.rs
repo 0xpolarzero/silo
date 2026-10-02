@@ -73,15 +73,15 @@ struct Controller {
 struct Preferences {
     automatic_checks: bool,
 }
+const PREFERENCE_READ_ERROR: &str =
+    "Update preferences could not be read. Save your preference again.";
 fn read_preferences(path: &Path) -> Result<bool, String> {
     match fs::read(path) {
         Ok(bytes) => serde_json::from_slice::<Preferences>(&bytes)
             .map(|p| p.automatic_checks)
-            .map_err(|_| {
-                "Update preferences could not be read. Save your preference again.".into()
-            }),
+            .map_err(|_| PREFERENCE_READ_ERROR.into()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(_) => Err("Update preferences could not be read. Save your preference again.".into()),
+        Err(_) => Err(PREFERENCE_READ_ERROR.into()),
     }
 }
 fn save_preferences(path: &Path, enabled: bool) -> Result<(), String> {
@@ -325,6 +325,14 @@ fn update_automatic_checks(
         state.schedule.enable(SystemTime::now());
     }
     state.snapshot.automatic_checks = enabled;
+    if state.snapshot.phase == "error"
+        && state.snapshot.error.as_deref() == Some(PREFERENCE_READ_ERROR)
+    {
+        state.snapshot.phase = "idle".into();
+        state.snapshot.error = None;
+        state.snapshot.error_details = None;
+        state.snapshot.retry_action = None;
+    }
     let snapshot = state.snapshot.clone();
     publish(&snapshot);
     Ok(snapshot)
@@ -1056,6 +1064,41 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "save failed");
         assert!(controller.state.lock().unwrap().snapshot.automatic_checks);
+    }
+    #[test]
+    fn saving_preferences_clears_the_read_error_but_preserves_update_failures() {
+        let directory = tempfile::tempdir().unwrap();
+        let preferences = directory.path().join("prefs.json");
+        fs::write(&preferences, "broken").unwrap();
+        let read_error = read_preferences(&preferences).unwrap_err();
+        let mut initial = snapshot("error");
+        initial.error = Some(read_error);
+        initial.automatic_checks = false;
+        let controller = Controller {
+            preferences,
+            state: Mutex::new(State {
+                schedule: Schedule::new(SystemTime::now()),
+                snapshot: initial,
+                update: None,
+                bytes: None,
+            }),
+        };
+        let repaired =
+            update_automatic_checks(&controller, false, save_preferences, |_| {}).unwrap();
+        assert!(repaired.error.is_none());
+        assert_eq!(repaired.phase, "idle");
+        assert!(!read_preferences(&controller.preferences).unwrap());
+        {
+            let mut state = controller.state.lock().unwrap();
+            state.snapshot.phase = "error".into();
+            state.snapshot.error = Some("Download failed".into());
+            state.snapshot.retry_action = Some("download".into());
+        }
+        let unrelated =
+            update_automatic_checks(&controller, false, save_preferences, |_| {}).unwrap();
+        assert_eq!(unrelated.error.as_deref(), Some("Download failed"));
+        assert_eq!(unrelated.phase, "error");
+        assert_eq!(unrelated.retry_action.as_deref(), Some("download"));
     }
     #[test]
     fn missing_preferences_enable_checks_but_corrupt_preferences_do_not() {

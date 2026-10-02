@@ -56,3 +56,16 @@ Diagnostic-fix verification: the rejecting test failed before the change and all
 - **Status:** Fixed and checked with the complete Debian module and synthetic subprocesses.
 
 Closed-progress fix verification: the rejecting fixture failed before the change, then all 8 Debian module tests passed. Formatting, typecheck, lint, and diff whitespace checks passed. Earlier queued Cargo requests were stopped after verifying their executable command, owner, and exact worktree; one consolidated `cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked updates::` request remains queued against `/tmp/silo-codex-target` with explicit synthetic GitHub values.
+
+## UPDATES-NATIVE-5: Repairing preferences leaves the startup read error visible
+
+- **Priority:** P3.
+- **Location:** `app/SiloUI/src-tauri/src/updates.rs:295–331` before the fix.
+- **Trigger:** Start with corrupt update preferences, then successfully save automatic checks as disabled.
+- **Evidence:** Startup stores the preference read failure in the error snapshot and disables checks. The save command persists the replacement and changes only the automatic-check flag and schedule, leaving the old error/phase intact. Disabled automatic checks never run a successful check to clear it. The temporary-directory regression repaired a corrupt JSON file but failed because the returned snapshot still contained the read error.
+- **Consequence:** The card continues asking the user to save the preference again after that exact repair succeeded.
+- **Suggested fix:** Clear the identified preference read error after successful persistence; preserve unrelated download/install failures and in-flight phases.
+- **Test that catches it:** `saving_preferences_clears_the_read_error_but_preserves_update_failures` repairs a real corrupt preference file with checks disabled, requires an idle/error-free snapshot, then verifies a download failure survives another preference save.
+- **Status:** Fixed.
+
+Repaired-preference verification: the rejecting test failed before the fix, then all 9 extracted helper/scheduler tests passed. Formatting, typecheck, lint, and diff whitespace checks passed. Clearing is restricted to the identified preference read error in the error phase, so a preference save cannot reopen admission during an in-flight check or erase a download/install failure.
