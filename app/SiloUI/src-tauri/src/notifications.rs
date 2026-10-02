@@ -236,7 +236,10 @@ impl PendingDelivery {
             return;
         }
         // Focus and preferences may change while an earlier OS request owns the gate.
-        if !allowed(&self.notice) {
+        if !allowed(&self.notice)
+            || self.cancelled()
+            || self.revision != self.gate.revision.load(Ordering::SeqCst)
+        {
             return;
         }
         let result = send(&self.notice);
@@ -887,6 +890,29 @@ mod tests {
             *submissions.lock().unwrap(),
             ["older"],
             "queued notice ignored the disabled preference"
+        );
+    }
+
+    #[test]
+    fn deletion_during_policy_evaluation_prevents_os_submission() {
+        let mut index = DeliveredIndex::default();
+        let pending = index.prepare(failure("vm:1:lifecycle", "t", "b", sandbox()));
+        let submitted = std::cell::Cell::new(false);
+        pending.deliver(
+            |_| {
+                // Deletion can finish while the background task queries window/settings state.
+                let _ = index.withdraw("1");
+                true
+            },
+            |_| {
+                submitted.set(true);
+                Ok(NotificationDelivery::Delivered)
+            },
+            |_| {},
+        );
+        assert!(
+            !submitted.get(),
+            "request submitted after policy evaluation observed deletion"
         );
     }
 
