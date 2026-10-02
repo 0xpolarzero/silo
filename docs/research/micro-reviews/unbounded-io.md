@@ -95,3 +95,23 @@ prior allocation high-water mark. Exact failing/passing output is retained in
 `src-tauri/target/verification/unbounded-io/`. Formatting, typecheck, lint and diff
 checks passed; the complete Cargo test command is still waiting for the shared
 artifact lock.
+
+## Saved port settings
+
+**Trigger:** The saved `network.json` input exceeds the existing 128 KiB limit,
+or an input stream supplies that prefix and keeps the descriptor open.
+
+**Evidence:** `read_config` checked size after `fs::read`. The FIFO regression
+keeps its writer open until the reader rejects the oversized prefix. Before the
+fix, the reader waited for the writer's five-second EOF fallback and failed the
+ordering assertion; after the fix it rejects before the writer closes. A second
+test retains exact-limit acceptance and one-extra-byte rejection.
+
+**Correction:** Consume at most 128 KiB plus one byte before the existing size
+and mapping validation. Missing-file defaults and read/validation errors retain
+their previous behavior. The writer's existing size limit stays consistent.
+
+**Checks:** Source-extracted production reader, configuration types, validator
+and two regressions passed 2/2. Formatting, typecheck, lint and diff checks passed.
+The complete native Cargo run has not completed because the shared artifact lock
+remains held by another build; extracted checks do not prove full app compilation.
