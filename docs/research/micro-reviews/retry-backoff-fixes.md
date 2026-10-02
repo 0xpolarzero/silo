@@ -65,3 +65,9 @@ The standalone Rust verification extracts the production retry helper, failure c
 - Consequence: inaccessible folders keep invoking guest directory reads at the normal interval.
 - Fix: retain a capped retry deadline per failing visible path. Healthy paths retain the ten-second interval, success clears that path's delay, and focus/visibility returns bypass the wait. Cleanup prevents completed reads from retaining an inactive schedule.
 - Verification: the regression checks independent healthy-folder reads, growing and repeated sixty-second caps, recovery, and closure. Existing tests preserve immediate focus recovery and one root polling schedule.
+
+## Status-menu folder refreshes
+
+- Evidence: the picker retried failed reads on every ten-second interval. The regression observed an extra read before the first twenty-second failure deadline.
+- Change: grow the failed-read delay from twenty to forty seconds, capped at sixty seconds. Successful reads reset the delay; focus, visibility, and explicit Retry remain immediate.
+- Verification: the fixture regression covers repeated caps, focus recovery, the restored ten-second cadence, and disposal. Existing focus, stale-workspace, StrictMode, pagination, and queued-read cancellation tests remain in place.
