@@ -303,9 +303,9 @@ export function GitHubAccessEditor({
         <div className="divide-y divide-border">
           {workspaces.map((workspace) => {
             const { name } = workspace
-            const selections = workspaceSelections[name] ?? []
-            const access = workspaceRepositoryAccess[name] ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }
-            const identity = workspaceIdentities[name] ?? { name: "", email: "", apply: true }
+            const selections = (Object.hasOwn(workspaceSelections, name) ? workspaceSelections[name] : undefined) ?? []
+            const access = (Object.hasOwn(workspaceRepositoryAccess, name) ? workspaceRepositoryAccess[name] : undefined) ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }
+            const identity = (Object.hasOwn(workspaceIdentities, name) ? workspaceIdentities[name] : undefined) ?? { name: "", email: "", apply: true }
             const workspaceActions = renderWorkspaceActions?.(workspace)
             const workspaceNotice = renderWorkspaceNotice?.(workspace)
             const workspaceDisabled = disabled
