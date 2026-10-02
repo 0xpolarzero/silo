@@ -53,3 +53,23 @@ palette integration tests passed. The shared machine's load exceeded 170 during
 verification; the integration tests initially timed out at five seconds and
 passed with a 30-second command-line timeout. Frontend typecheck, touched-file
 oxlint, Rust formatting, and diff whitespace checks passed.
+
+## Native Quit cancellation restores the previous control
+
+The Quit dialog opens through a native request, without an `AlertDialog.Trigger`.
+Both new regressions first focus a workspace control, receive a fixture Quit
+request, then dismiss with Escape or Cancel. Tab and Shift+Tab remain inside the
+dialog, but dismissal left focus on `body`. Both cases failed before the fix;
+output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/quit-before.log`.
+
+The [WAI-ARIA modal dialog pattern](https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/)
+specifies restoring the invoking element when it still exists. The dialog now
+records the focused control before moving focus inside and restores it using
+Radix's close autofocus callback and Silo's existing `restoreFocus` helper.
+The native request fixture verifies cancellation replies as well as focus;
+no real Quit request, app shutdown, or VM operation was exercised.
+
+Checks: all six Quit confirmation tests passed, including the existing
+main-window integration fixture. Frontend typecheck, touched-file oxlint,
+Rust formatting, and diff whitespace checks passed.
