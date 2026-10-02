@@ -4,6 +4,13 @@ import { expect, it, vi } from "vitest"
 
 import { LogFilters } from "./log-filters"
 
+it("distinguishes the years in a date range covering the same calendar day", () => {
+  render(<LogFilters source="" since="2025-10-01T12:00:00.000Z" until="2026-10-01T12:00:00.000Z" onChange={vi.fn()} />)
+  const summary = screen.getByRole("button", { name: "Edit date filter" })
+  expect(summary).toHaveTextContent("2025")
+  expect(summary).toHaveTextContent("2026")
+})
+
 it.each(["Escape", "Cancel", "Last hour"])("returns focus to the date editor button after %s", async (dismissal) => {
   const user = userEvent.setup()
   render(<LogFilters source="" since="2026-10-01T00:00:00.000Z" until="" onChange={vi.fn()} />)
