@@ -641,6 +641,44 @@ describe("ChatGPT status ordering", () => {
 })
 
 describe("ChatGPT app errors", () => {
+  it("keeps a rejected Retry visible when status cannot be read", async () => {
+    const initial = deferred<unknown>()
+    const read = vi.fn().mockImplementationOnce(() => initial.promise).mockRejectedValue(new Error("Status unavailable."))
+    const store = createComputerUseBridge(backend({
+      chatGptStatus: read,
+      retry: async () => { throw new Error("Update Silo on that computer to use computer use.") },
+    })).chatGptFor(HOST)
+    const view = render(<ChatGptAppStatusView store={store} retry fallbackReason="Download failed." />)
+    try {
+      await waitFor(() => expect(read).toHaveBeenCalledOnce())
+      await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
+      await waitFor(() => expect(store.getSnapshot().loadError).toBe("Status unavailable."))
+      expect(screen.getAllByRole("alert").map(alert => alert.textContent).join(" ")).toContain("Update Silo on that computer to use computer use.")
+      await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss error" }))
+      expect(screen.getByRole("alert")).toHaveTextContent("Status unavailable.")
+    } finally { view.unmount(); initial.resolve({ state: "idle" }) }
+  })
+
+  it.each(["ready", "unknown"] as const)("keeps a rejected Retry visible when the next status is %s", async state => {
+    let attempted = false
+    const retry = vi.fn(async () => {
+      attempted = true
+      throw new Error("Update Silo on that computer to use computer use.")
+    })
+    const read = vi.fn(async () => attempted ? { state } : { state: "failed", reason: "Download failed.", retryable: false })
+    const store = createComputerUseBridge(backend({ chatGptStatus: read, retry })).chatGptFor(HOST)
+    await store.refresh()
+    const view = render(<ChatGptAppStatusView store={store} retry />)
+    try {
+      await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
+      await waitFor(() => expect(store.getSnapshot().status).toMatchObject({ state }))
+      expect(screen.getByRole("alert")).toHaveTextContent("Update Silo on that computer to use computer use.")
+      expect(retry).toHaveBeenCalledOnce()
+      await userEvent.setup().click(screen.getByRole("button", { name: "Dismiss error" }))
+      expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    } finally { view.unmount() }
+  })
+
   it("reports a malformed status after a successful read and recovers on Refresh", async () => {
     const read = vi.fn().mockResolvedValueOnce({ state: "ready", version: "1" })
       .mockResolvedValueOnce(null).mockResolvedValue({ state: "idle" })
