@@ -4424,6 +4424,101 @@ mod tests {
         eprintln!("Verified checkpoint export/import preserves checkpoint-time disk content.");
     }
 
+    /// Imports a checkpoint export written by another Silo/runtime version
+    /// (`SILO_TEST_ARCHIVE`, for example one produced by Silo with MicroSandbox 0.7.4 from
+    /// `real_checkpoint_export_imports_and_cold_boots_checkpoint_time_disk`) into a cold
+    /// disposable home and cold-boots it. Uses the sandbox name of that test.
+    #[test]
+    #[ignore = "requires the packaged runtime, hardware virtualization and SILO_TEST_ARCHIVE"]
+    fn live_older_checkpoint_export_imports_and_cold_boots() {
+        crate::test_support::live::require_confirmation();
+        let _test_state = crate::test_support::global_state();
+        let archive = PathBuf::from(std::env::var("SILO_TEST_ARCHIVE").expect("archive path"));
+        let directory = tempfile::Builder::new()
+            .prefix("silo-old-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let cold = runtime::RuntimePaths {
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
+            executable: PathBuf::from(std::env::var("SILO_TEST_MSB").unwrap()),
+            library: PathBuf::from(std::env::var("SILO_TEST_LIBKRUNFW").unwrap()),
+            home: directory.path().join("cold"),
+            storage_home: None,
+            metadata: directory.path().join("cold-machines.json"),
+            volumes: directory.path().join("cold-volumes"),
+        };
+        let restored_name = "e2e-old-restored";
+        struct Cleanup<'a>(&'a runtime::RuntimePaths, &'static str);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                let _ = runtime::run_msb(
+                    self.0,
+                    &["stop".into(), self.1.into()],
+                    Duration::from_secs(30),
+                );
+            }
+        }
+        let _cleanup = Cleanup(&cold, "e2e-old-restored");
+        fs::create_dir_all(&cold.home).unwrap();
+        fs::create_dir_all(&cold.volumes).unwrap();
+        let controller = Controller {
+            history_path: cold.metadata.with_file_name("backup-history.json"),
+            journal: Mutex::new(None),
+            service: backup::BackupService::new(
+                backup::MsbCommand {
+                    executable: cold.executable.clone(),
+                    home: cold.home.clone(),
+                    storage_home: cold.storage_home.clone(),
+                    library: cold.library.clone(),
+                },
+                directory.path().join("scratch"),
+            ),
+            view: Mutex::new(ViewState {
+                journal_error: None,
+                destination: None,
+                operation: None,
+                cancellation: None,
+                inspection: None,
+            }),
+            busy: AtomicBool::new(false),
+            revision: AtomicU64::new(0),
+        };
+        restore_at_paths(
+            &cold,
+            &controller,
+            &archive,
+            "silo-ckpt-source",
+            restored_name,
+            &backup::Cancellation::default(),
+            &|_| {},
+        )
+        .unwrap();
+        assert!(runtime::is_pending_restore(&cold, restored_name));
+        runtime::start_disposable_test_import(&cold, restored_name).unwrap();
+        let proof = runtime::run_msb(
+            &cold,
+            &[
+                "exec".into(),
+                restored_name.into(),
+                "--".into(),
+                "sh".into(),
+                "-c".into(),
+                "cat /root/silo-ckpt-proof; printf ':'; cat /workspace/silo-ckpt-proof".into(),
+            ],
+            Duration::from_secs(180),
+        )
+        .unwrap();
+        assert!(
+            proof
+                .stdout
+                .contains("checkpoint-root:checkpoint-workspace"),
+            "expected checkpoint-time content, got: {}",
+            proof.stdout
+        );
+        eprintln!("Verified an older checkpoint export imports and cold-boots.");
+    }
+
     /// Built-in computer use against the real runtime: a new VM from the v4 image gets
     /// the read-only ChatGPT folder and sets itself up (LCU installed in place, setup,
     /// doctor), the approval switch applies, and an export imported into a cold home

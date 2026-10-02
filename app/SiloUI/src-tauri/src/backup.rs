@@ -6021,9 +6021,10 @@ mod tests {
     #[test]
     fn descriptor_scope_names_are_the_runtimes_and_the_index_spellings() {
         // Real descriptors written by `msb snapshot create` (see test_support/msb-descriptor).
-        for fixture in [include_str!(
-            "test_support/msb-descriptor/checkpoint-0.7.6.json"
-        )] {
+        for fixture in [
+            include_str!("test_support/msb-descriptor/checkpoint-0.7.4.json"),
+            include_str!("test_support/msb-descriptor/checkpoint-0.7.6.json"),
+        ] {
             let descriptor: Value = serde_json::from_str(fixture).unwrap();
             assert!(descriptor_scope_supported(
                 descriptor["scope"].as_str(),
