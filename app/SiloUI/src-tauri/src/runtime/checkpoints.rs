@@ -28,6 +28,19 @@ impl Checkpoint {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Environment {
+    key: String,
+    value: String,
+}
+
+impl Environment {
+    fn valid(&self) -> bool {
+        !self.key.is_empty() && !self.key.contains(['=', '\0']) && !self.value.contains('\0')
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct PendingRestore {
     pub(super) checkpoint_id: String,
@@ -75,6 +88,8 @@ pub(super) struct Record {
     restore_attempt_ran: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) desired_network_policy: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    desired_environment: Vec<Environment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     restore_journal: Option<RestoreJournal>,
     pub(super) pending_checkpoint_restore: Option<PendingRestore>,
@@ -144,6 +159,15 @@ pub(super) fn load(paths: &RuntimePaths, id: &str) -> Result<Record, RuntimeErro
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_err())
     {
         return Err(error("Checkpoint history is invalid; it was preserved."));
+    }
+    if record
+        .desired_environment
+        .iter()
+        .any(|entry| !entry.valid())
+    {
+        return Err(error(
+            "Checkpoint environment is invalid; it was preserved.",
+        ));
     }
     Ok(record)
 }
@@ -895,11 +919,22 @@ pub(crate) fn export_source(
 /// Record an archive snapshot as a new stopped workspace. Snapshot loading
 /// only installs immutable data; activation is deliberately deferred to the
 /// common explicit-start path.
+#[cfg(test)]
 pub(crate) fn import_pending_restore(
     paths: &RuntimePaths,
     workspace_id: &str,
     source_group: &str,
     member: &str,
+) -> Result<(), RuntimeError> {
+    import_pending_restore_with_environment(paths, workspace_id, source_group, member, &Value::Null)
+}
+
+pub(crate) fn import_pending_restore_with_environment(
+    paths: &RuntimePaths,
+    workspace_id: &str,
+    source_group: &str,
+    member: &str,
+    runtime_config: &Value,
 ) -> Result<(), RuntimeError> {
     // These are MicroSandbox snapshot selectors, not sandbox names. Require
     // the exact forms produced by Silo's v3 export/import before saving intent.
@@ -925,12 +960,28 @@ pub(crate) fn import_pending_restore(
             "Imported snapshot reference is invalid.".into(),
         ));
     }
+    let environment: Vec<Environment> = serde_json::from_value(
+        runtime_config
+            .get("env")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )
+    .map_err(|_| RuntimeError::Invalid("Imported environment is invalid.".into()))?;
+    if environment.iter().any(|entry| !entry.valid()) {
+        return Err(RuntimeError::Invalid(
+            "Imported environment is invalid.".into(),
+        ));
+    }
     // An import (and so a transfer) starts from this computer's default approval (ask) with
     // no attempt known, whatever policy a VM of this id had here: its first boot applies it
     // over the configuration the imported disk carries.
     crate::computer_use::forget(paths, workspace_id);
     let mut record = Record::default();
     record.snapshot_group = Some(source_group.to_owned());
+    record.desired_environment = environment
+        .into_iter()
+        .filter(|entry| entry.key != "GH_TOKEN")
+        .collect();
     record.pending_checkpoint_restore = Some(PendingRestore {
         checkpoint_id: member.to_owned(),
         source_workspace: source_group.to_owned(),
@@ -1216,6 +1267,12 @@ pub(super) fn start_pending(
     ] {
         args.extend(["--label".into(), label]);
     }
+    for entry in &record.desired_environment {
+        if entry.key != "GH_TOKEN" {
+            args.push(format!("--env={}={}", entry.key, entry.value));
+        }
+    }
+    args.extend(["--env".into(), "GH_TOKEN=$MSB_SILO_GITHUB".into()]);
     args.extend([
         "--secret".into(),
         super::secrets_runtime::SILO_GITHUB_SECRET_SPEC.into(),
@@ -1542,6 +1599,7 @@ fn fork_commit_with_metadata_writer(
         state: fork.scope.clone(),
     });
     child_record.desired_network_policy = Some(fork.desired_policy.clone());
+    child_record.desired_environment = load(paths, source.id())?.desired_environment;
     save(paths, &child_id, &child_record)?;
     let mut copied_github = false;
     let mut copied_secrets = false;
@@ -3079,29 +3137,30 @@ mod tests {
         );
     }
 
+    struct ScopeProbe {
+        scope: &'static str,
+        probe: RestoreProbe,
+    }
+    impl RuntimeRunner for ScopeProbe {
+        fn run(
+            &self,
+            paths: &RuntimePaths,
+            args: &[String],
+            timeout: Duration,
+        ) -> Result<CommandOutput, RuntimeError> {
+            let mut output = self.probe.run(paths, args, timeout)?;
+            if args[0] == "snapshot" {
+                let mut entries: Value = serde_json::from_str(&output.stdout).unwrap();
+                entries[0]["scope"] = self.scope.into();
+                output.stdout = entries.to_string();
+            }
+            Ok(output)
+        }
+    }
+
     #[test]
     fn checkpoint_start_selects_native_scope_and_desired_restore_mode_separately() {
         let _test_state = crate::test_support::global_state();
-        struct ScopeProbe {
-            scope: &'static str,
-            probe: RestoreProbe,
-        }
-        impl RuntimeRunner for ScopeProbe {
-            fn run(
-                &self,
-                paths: &RuntimePaths,
-                args: &[String],
-                timeout: Duration,
-            ) -> Result<CommandOutput, RuntimeError> {
-                let mut output = self.probe.run(paths, args, timeout)?;
-                if args[0] == "snapshot" {
-                    let mut entries: Value = serde_json::from_str(&output.stdout).unwrap();
-                    entries[0]["scope"] = self.scope.into();
-                    output.stdout = entries.to_string();
-                }
-                Ok(output)
-            }
-        }
         for (native_scope, desired_mode, disk_only, cow_mem) in [
             ("full", "disk", true, false),
             ("disk", "disk", false, false),
@@ -3133,6 +3192,115 @@ mod tests {
                 restore.iter().any(|arg| arg == "--cpus"),
                 desired_mode == "disk"
             );
+        }
+    }
+
+    #[test]
+    fn checkpoint_start_reapplies_github_environment_for_current_host_profiles() {
+        let _test_state = crate::test_support::global_state();
+        for scope in ["disk", "full"] {
+            for authorized in [false, true] {
+                let directory = tempfile::tempdir().unwrap();
+                let paths = paths(&directory);
+                pending_import(&paths);
+                let mut record = load(&paths, ID).unwrap();
+                record.pending_checkpoint_restore.as_mut().unwrap().state = scope.into();
+                save(&paths, ID, &record).unwrap();
+                let profile = if authorized {
+                    serde_json::json!({"enabled":true,"readToken":"synthetic-current-token"})
+                        .to_string()
+                } else {
+                    DISABLED_GITHUB_PROFILE.into()
+                };
+                GITHUB_PROFILES
+                    .get_or_init(|| Mutex::new(HashMap::new()))
+                    .lock()
+                    .unwrap()
+                    .insert((paths.home.clone(), "dev".into()), profile.clone());
+                let runner = ScopeProbe {
+                    scope,
+                    probe: RestoreProbe(Mutex::new(Vec::new())),
+                };
+                assert!(start_pending(&runner, &paths, &machine())
+                    .unwrap_err()
+                    .to_string()
+                    .contains("synthetic restore failure"));
+                let calls = runner.probe.0.lock().unwrap();
+                let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
+                assert!(
+                    restore
+                        .windows(2)
+                        .any(|pair| pair == ["--env", "GH_TOKEN=$MSB_SILO_GITHUB"]),
+                    "scope={scope}, authorized={authorized}: {restore:?}"
+                );
+                assert_eq!(github_environment(&paths, restore), profile);
+                assert!(!restore
+                    .iter()
+                    .any(|arg| arg.contains("synthetic-current-token")));
+                GITHUB_PROFILES
+                    .get()
+                    .unwrap()
+                    .lock()
+                    .unwrap()
+                    .remove(&(paths.home.clone(), "dev".into()));
+            }
+        }
+    }
+
+    #[test]
+    fn an_import_preserves_environment_on_start_without_old_github_credentials() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let config = serde_json::json!({"env":[
+            {"key":"PROJECT_MODE","value":"portable value=with spaces"},
+            {"key":"-PORTABLE_FLAG","value":"literal"},
+            {"key":"GH_TOKEN","value":"synthetic-old-token"}
+        ]});
+        import_pending_restore_with_environment(
+            &paths,
+            ID,
+            "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
+            "silo-backup-0-330418-1790360984903",
+            &config,
+        )
+        .unwrap();
+        assert_eq!(load(&paths, ID).unwrap().desired_environment.len(), 2);
+        let runner = RestoreProbe(Mutex::new(Vec::new()));
+        assert!(start_pending(&runner, &paths, &machine())
+            .unwrap_err()
+            .to_string()
+            .contains("synthetic restore failure"));
+        let calls = runner.0.lock().unwrap();
+        let restore = calls.iter().find(|args| args[0] == "restore").unwrap();
+        assert!(restore
+            .iter()
+            .any(|arg| arg == "--env=PROJECT_MODE=portable value=with spaces"));
+        assert!(restore
+            .iter()
+            .any(|arg| arg == "--env=-PORTABLE_FLAG=literal"));
+        assert!(restore
+            .windows(2)
+            .any(|pair| pair == ["--env", "GH_TOKEN=$MSB_SILO_GITHUB"]));
+        assert!(!fs::read_to_string(path(&paths, ID))
+            .unwrap()
+            .contains("synthetic-old-token"));
+        assert!(!restore
+            .iter()
+            .any(|arg| arg.contains("synthetic-old-token")));
+        for env in [
+            serde_json::json!([{"key":"BAD=KEY","value":"value"}]),
+            serde_json::json!([{"key":"KEY","value":"bad\u{0000}value"}]),
+            serde_json::json!([{"key":"KEY","value":"value","extra":true}]),
+        ] {
+            assert!(import_pending_restore_with_environment(
+                &paths,
+                ID,
+                "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
+                "silo-backup-0-330418-1790360984903",
+                &serde_json::json!({"env":env})
+            )
+            .is_err());
         }
     }
 

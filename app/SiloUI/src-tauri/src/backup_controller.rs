@@ -1919,6 +1919,7 @@ fn unpack_and_save(
         &id,
         &prepared.snapshot_group,
         &prepared.snapshot_member,
+        &prepared.runtime_config,
     )?;
     import_group.keep();
     Ok(())
@@ -1937,13 +1938,20 @@ fn commit_import(
     id: &str,
     group: &str,
     member: &str,
+    runtime_config: &Value,
 ) -> Result<(), String> {
     recovery::save_restore_identity(controller, id, group)?;
     let discard = |error: String| {
         let _ = recovery::discard_uncommitted_import(paths, controller, id, Some(group));
         Err(error)
     };
-    if let Err(error) = runtime::checkpoints::import_pending_restore(paths, id, group, member) {
+    if let Err(error) = runtime::checkpoints::import_pending_restore_with_environment(
+        paths,
+        id,
+        group,
+        member,
+        runtime_config,
+    ) {
         return discard(error.to_string());
     }
     let mut updated = original;
@@ -3486,6 +3494,7 @@ mod tests {
             &id,
             GROUP,
             MEMBER,
+            &serde_json::json!({"env":[{"key":"PROJECT_MODE","value":"portable"}]}),
         )
         .unwrap();
         assert!(runtime::read_metadata(&paths.metadata)
@@ -3493,6 +3502,20 @@ mod tests {
             .machines
             .iter()
             .any(|machine| machine.id() == id));
+        let record: Value = serde_json::from_slice(
+            &fs::read(
+                paths
+                    .metadata
+                    .with_file_name("checkpoints")
+                    .join(format!("{id}.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            record["desiredEnvironment"],
+            serde_json::json!([{"key":"PROJECT_MODE","value":"portable"}])
+        );
         let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
         assert!(saved.contains(&id) && saved.contains(GROUP), "{saved}");
     }
@@ -3520,7 +3543,8 @@ mod tests {
             imported_machine(&id),
             &id,
             GROUP,
-            MEMBER
+            MEMBER,
+            &Value::Null,
         )
         .is_err());
         assert!(!paths
