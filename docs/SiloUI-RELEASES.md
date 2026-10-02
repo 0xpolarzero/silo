@@ -395,6 +395,15 @@ ephemeral signing key in `release-verification`; these packages are for tests an
 cannot update production installations. The public key override only occurs in
 that isolated workflow checkout. These are not public releases.
 
+Final publication uses one shared concurrency group with `queue: max`, preserving
+up to 100 pending requests instead of replacing the pending request when a third
+arrives. Publications remain serialized, and their version checks still reject
+an obsolete or already published version. GitHub [released the larger queue on
+May 7, 2026](https://github.blog/changelog/2026-05-07-github-actions-concurrency-groups-now-allow-larger-queues/).
+Actionlint 1.7.12's unsupported-key diagnostic is a known
+[upstream validation gap](https://github.com/rhysd/actionlint/issues/680), as
+described in the [workflow fix audit](research/micro-reviews/workflows-fixes.md).
+
 macOS uses ad-hoc signing and no notarization. A downloaded installation can
 require System Settings → Privacy & Security → Open Anyway. Do not instruct users
 to disable Gatekeeper globally. Update signatures are separate and always checked.
