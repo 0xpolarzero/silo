@@ -97,11 +97,15 @@ function initialWorkspaceSelections(source: OnboardingSource): Record<string, Wo
   }))
 }
 
-function initialWorkspaceIdentities(source: OnboardingSource): Record<string, WorkspaceGitIdentity> {
+function defaultWorkspaceIdentity(source: OnboardingSource): WorkspaceGitIdentity {
   const { name = "", email = "" } = source.currentHostGitIdentity ?? {}
+  return { name, email, apply: Boolean(name.trim() && email.trim()) }
+}
+
+function initialWorkspaceIdentities(source: OnboardingSource): Record<string, WorkspaceGitIdentity> {
   return Object.fromEntries(source.machineConfigurations.map((workspace) => [
     workspace.name,
-    { name, email, apply: true },
+    defaultWorkspaceIdentity(source),
   ]))
 }
 
@@ -277,8 +281,8 @@ export function OnboardingApp({
     let changed = false
     for (const { name } of current.machines) {
       const identity = workspaceValue(identities, name)
-      if (editedIdentities.current.has(name) || identity?.apply === false || identity?.name.trim() || identity?.email.trim()) continue
-      identities[name] = { ...host, apply: true }
+      if (editedIdentities.current.has(name) || (identity?.apply === false && policiesInitialized.current.has(name)) || identity?.name.trim() || identity?.email.trim()) continue
+      identities[name] = { ...host, apply: Boolean(host.name.trim() && host.email.trim()) }
       changed = true
     }
     if (!changed) return
@@ -348,7 +352,7 @@ export function OnboardingApp({
     for (const machine of pending.machines) {
       machines.splice(Math.min(existing.findIndex(({ id }) => id === machine.id), machines.length), 0, { ...machine })
     }
-    const host = { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }
+    const host = defaultWorkspaceIdentity(source)
     const savedPolicies = new Map((repositoryPolicies ?? []).map((policy) => [policy.workspace, policy]))
     updateDraft({
       machines,
@@ -389,7 +393,7 @@ export function OnboardingApp({
     const identities = Object.fromEntries(request.machines.map(({ id, name }) => {
       const previousName = previousNameByID.get(id)
       return [name, workspaceValue(current.workspaceIdentities, name) ?? (previousName ? workspaceValue(current.workspaceIdentities, previousName) : undefined)
-        ?? { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }]
+        ?? defaultWorkspaceIdentity(source)]
     }))
     const workspaceRepositoryAccess = Object.fromEntries(request.machines.map(({ id, name }) => [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? workspaceValue(current.workspaceRepositoryAccess, previousNameByID.get(id) ?? "") ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }]))
     updateDraft({ machines: request.machines, workspaceRepositoryAccess, workspaceSelections: selections, workspaceIdentities: identities, unfinishedMachineEditor: null })

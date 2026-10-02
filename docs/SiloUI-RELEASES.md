@@ -292,7 +292,10 @@ runs only the root package, so the updater requires an explicit `-p` command; an
 check of the Markdown documentation with [lychee](https://github.com/lycheeverse/lychee)
 in offline mode. The macOS job also runs `test_macos_release.py` against
 ad hoc signed disposable binaries; the Linux discovery run skips these
-platform-specific cases. The jobs do not run the ignored live VM tests.
+platform-specific cases. CI also explicitly runs Debian package lifecycle
+tests as root on its disposable Ubuntu runner, after ordinary non-root discovery.
+Local discovery keeps the lifecycle opt-in disabled because those tests install
+packages and write system APT paths. The jobs do not run the ignored live VM tests.
 To run the link check locally, install lychee and run from the
 repository root:
 

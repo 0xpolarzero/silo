@@ -11,6 +11,8 @@ Scope: `app/SiloUI/src/features/sandboxes/`. Verification uses deterministic fro
 - Coverage: ArrowDown opens and navigates, Home/End move to the first/last item, Escape restores Add focus, and Enter opens the editor with focus on Sandbox name.
 - Primary source: [Radix Dropdown Menu keyboard interactions and focus management](https://www.radix-ui.com/primitives/docs/components/dropdown-menu#keyboard-interactions).
 
+The native import picker can return no archive (`sandbox-transfer.tsx`); that path opens no review. The cancellation regression caught focus remaining on the body after an Import menu selection. Suppress the menu's normal focus return only for inline editors. External actions retain Add as the return target, while their form popovers manage subsequent field focus.
+
 ## Closing an inline editor loses focus
 
 - Trigger: open a new sandbox or an existing row's editor, then Cancel or finish Save.
@@ -72,3 +74,14 @@ The broader onboarding adapter test caught a regression from deferring all initi
 - Fix: use the group role for the existing containers and a per-instance heading id for each list.
 - Coverage: management and runtime buttons belong to the expected named groups; two list instances each associate their group with their own heading and retain their labeled ordered list.
 - Primary source: [WAI-ARIA generic role](https://www.w3.org/TR/wai-aria-1.2/#generic) recommends group for named containers.
+
+## Final verification
+
+Node 24.11.1 was selected explicitly from its installed NVM directory. The final run passed 308 tests in 24 suites: all sandboxes tests, onboarding machine configuration, overview row navigation/menus/deletion, sandbox transfer, ActionsMenu, sandbox details, and computer use. The earlier default-shell runs used Node 26; the final supported-runtime run supersedes them.
+
+- `npm --prefix app/SiloUI run typecheck`: passed.
+- `npm run lint -- src/features/sandboxes src/components/actions-menu.tsx` from `app/SiloUI`: passed.
+- `cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check`: passed.
+- `git diff --check`: passed.
+
+Failing and passing logs are retained in the ignored `app/SiloUI/src-tauri/target/verification/` directory. These tests establish DOM semantics and focus against fixture data. No packaged bundle, live VM, production data, or manual screen-reader session was inspected.

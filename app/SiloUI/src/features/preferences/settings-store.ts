@@ -55,6 +55,7 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
   }
   let current: SettingsView = { ...confirmed, settings: resolveSettings(readSettingsOverrides(confirmed.settings)) }
   let draining: Promise<void> | null = null
+  let activeChange: Change | null = null
   let initialization: Promise<void> | null = null
   let unsubscribe: (() => void) | undefined
   let disposed = false
@@ -96,6 +97,7 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
     draining = (async () => {
       while (pending.length) {
         const change = pending[0]
+        activeChange = change
         try {
           const snapshot = change.kind === "settings"
             ? await backend.updateSettings(change.patch)
@@ -118,7 +120,7 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
           failed(error)
           // Keep an unsent edit visible and retry it on the next edit or flush.
           return
-        }
+        } finally { activeChange = null }
       }
     })().finally(() => {
       draining = null
@@ -131,7 +133,10 @@ export function createSettingsStore(backend: SettingsBackend, initialSettings: S
 
   function enqueue(change: Change) {
     rejection = null
-    pending.push(change)
+    const previous = pending.at(-1)
+    // Drafts are complete snapshots; only the latest unsent one needs delivery.
+    if (change.kind === "draft" && previous?.kind === "draft" && previous !== activeChange) pending[pending.length - 1] = change
+    else pending.push(change)
     publish()
     return drain()
   }

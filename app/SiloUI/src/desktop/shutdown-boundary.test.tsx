@@ -3,18 +3,19 @@ import userEvent from "@testing-library/user-event"
 import { beforeEach, expect, it, vi } from "vitest"
 import { ShutdownBoundary } from "./shutdown-boundary"
 
-const native = vi.hoisted(() => ({ receive: vi.fn<(event: { payload: boolean }) => void>(), queueChanged: vi.fn<() => void>(), invoke: vi.fn(), stop: vi.fn() }))
+const native = vi.hoisted(() => ({ receive: vi.fn<(event: { payload: boolean }) => void>(), queueChanged: vi.fn<() => void>(), listen: vi.fn(), invoke: vi.fn(), stop: vi.fn() }))
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }))
 // Bind `native.receive` to the shutdown-state listener specifically: the boundary also
 // subscribes to the operation queue while quitting, and that second listener must not
 // steal the handle the tests use to toggle shutdown.
-vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async (event: string, receive: typeof native.receive) => {
-  if (event === "silo://shutdown-state-changed") native.receive = receive
-  if (event === "silo://operation-queue-changed") native.queueChanged = receive as unknown as typeof native.queueChanged
-  return native.stop
-}) }))
+vi.mock("@tauri-apps/api/event", () => ({ listen: native.listen }))
 beforeEach(() => {
   vi.clearAllMocks()
+  native.listen.mockReset().mockImplementation(async (event: string, receive: typeof native.receive) => {
+    if (event === "silo://shutdown-state-changed") native.receive = receive
+    if (event === "silo://operation-queue-changed") native.queueChanged = receive as unknown as typeof native.queueChanged
+    return native.stop
+  })
   native.invoke.mockImplementation(async (command: string) => {
     if (command === "read_shutdown_state") return false
     if (command === "read_operation_queue") return { running: [], waiting: [] }
@@ -125,4 +126,28 @@ it("keeps the newest queue read when an earlier one answers last", async () => {
   await act(async () => reads[0]({ running: [entry(1, "Backing up sandboxes")], waiting: [] }))
   expect(screen.getByText("Waiting for Installing update…")).toBeVisible()
   expect(screen.queryByText("Waiting for Backing up sandboxes…")).not.toBeInTheDocument()
+})
+
+it("observes work that starts while the queue listener is still registering", async () => {
+  let subscribe!: () => void
+  native.listen.mockImplementation(async (event: string, receive: typeof native.receive) => {
+    if (event === "silo://shutdown-state-changed") { native.receive = receive; return native.stop }
+    return new Promise<() => void>((resolve) => {
+      subscribe = () => {
+        native.queueChanged = receive as unknown as typeof native.queueChanged
+        resolve(native.stop)
+      }
+    })
+  })
+  let queue: { running: unknown[]; waiting: unknown[] } = { running: [], waiting: [] }
+  native.invoke.mockImplementation(async (command: string) => command === "read_operation_queue" ? queue : false)
+  render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+  await vi.waitFor(() => expect(native.invoke).toHaveBeenCalledWith("read_shutdown_state"))
+  await act(async () => { native.receive({ payload: true }) })
+  await vi.waitFor(() => expect(subscribe).toBeTypeOf("function"))
+  // This native queue change precedes registration, so it cannot deliver an event.
+  queue = { running: [{ id: 8, label: "Backing up sandboxes", vmId: null, vmName: null, sinceMs: 0, cancellable: true, expectedMs: null, blockedByHidden: false }], waiting: [] }
+  await act(async () => subscribe())
+  expect(await screen.findByText("Waiting for Backing up sandboxes…")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Cancel and quit" })).toBeVisible()
 })

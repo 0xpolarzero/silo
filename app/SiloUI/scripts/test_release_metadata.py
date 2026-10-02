@@ -16,6 +16,29 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('metadata',Path(__file__).with_name('verify-release-metadata.py'))
 metadata=importlib.util.module_from_spec(spec);spec.loader.exec_module(metadata)
 class MetadataTests(unittest.TestCase):
+    def test_macos_archive_rejects_other_roots_traversal_and_duplicate_entries(self):
+        files = {
+            'Info.plist': plistlib.dumps({'CFBundleShortVersionString': '0.1.0',
+                'CFBundleIdentifier': 'org.silo.preview', 'CFBundleExecutable': 'silo-ui'}),
+            'Resources/release-info.json': b'{"version":"0.1.0","target":"aarch64-apple-darwin"}',
+            'MacOS/silo-ui': b'\xcf\xfa\xed\xfe\x0c\x00\x00\x01',
+        }
+        for extra in ('Other.app/Contents/Info.plist', 'Silo.app/Contents/../outside',
+                      '/Silo.app/Contents/extra', 'Silo.app/Contents/Info.plist'):
+            with self.subTest(entry=extra), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with tarfile.open(root / 'Silo-macos-arm64.app.tar.gz', 'w:gz') as archive:
+                    for name, data in files.items():
+                        entry = tarfile.TarInfo('Silo.app/Contents/' + name)
+                        entry.size = len(data)
+                        archive.addfile(entry, io.BytesIO(data))
+                    data = plistlib.dumps({'CFBundleShortVersionString': '0.1.1'}) if extra.startswith('Other') else files['Info.plist']
+                    entry = tarfile.TarInfo(extra)
+                    entry.size = len(data)
+                    archive.addfile(entry, io.BytesIO(data))
+                with self.assertRaisesRegex(RuntimeError, 'macOS archive'):
+                    metadata.verify(root, '0.1.0')
+
     def test_wrong_debian_package_name_is_rejected(self):
         for arch, architecture in [('x64', 'amd64'), ('arm64', 'arm64')]:
             with self.subTest(arch=arch), tempfile.TemporaryDirectory() as directory:

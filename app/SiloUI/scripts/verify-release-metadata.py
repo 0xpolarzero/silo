@@ -1,6 +1,6 @@
 """Inspect signed package identity without running any packaged executable."""
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import plistlib
 import struct
 import subprocess
@@ -50,6 +50,12 @@ def verify(root, version):
     archive=root/f'{product_name}-macos-arm64.app.tar.gz'
     if archive.exists():
         with tarfile.open(archive,'r:gz') as tar:
+            names=set()
+            for member in tar.getmembers():
+                path=PurePosixPath(member.name)
+                if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0]!=bundle_name or str(path) in names:
+                    raise RuntimeError('Invalid macOS archive layout or duplicate entry.')
+                names.add(str(path))
             def read(name):
                 member=tar.getmember(bundle_name+'/Contents/'+name)
                 if not member.isfile() or member.size>1024*1024:raise RuntimeError('Invalid macOS metadata entry.')
