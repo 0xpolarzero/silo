@@ -381,6 +381,12 @@ commit. The private key is stored in protected GitHub environment
 the private key prevents updates to already installed applications. Never upload
 private keys, complete build directories, or local GitHub configuration artifacts.
 
+The macOS packager passes the signing password through Tauri's
+[password environment input](https://v2.tauri.app/reference/cli/#signer-sign),
+which the installed CLI also lists in `tauri signer sign --help`. Keep passwords
+out of command arguments: a failed subprocess reports its arguments in Python's
+exception text. Signing failures report only the exit code.
+
 The `release-signing` and `release-publish` environments require maintainer review
 and restrict execution to version tags. Artifact-only verification uses a fresh
 ephemeral signing key in `release-verification`; these packages are for tests and
