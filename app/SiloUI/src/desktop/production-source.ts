@@ -1599,6 +1599,22 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     }
   }
 
+  function publishRemoteMachineChange(hostId: string, vmId: string, result: unknown, remove = false) {
+    const previous = remoteSnapshots.get(hostId) ?? null
+    let source = parseMutationSource(result, previous, parseRemoteApplicationSource)
+    if (previous) {
+      const target = source.workspaces.find(workspace => workspace.machine.id === vmId)
+      const workspaces = remove ? previous.workspaces.filter(workspace => workspace.machine.id !== vmId)
+        : previous.workspaces.map(workspace => workspace.machine.id === vmId ? target ?? workspace : workspace)
+      if (!remove && target && !workspaces.some(workspace => workspace.machine.id === vmId)) workspaces.push(target)
+      source = { ...source, workspaces }
+    }
+    bumpRemote(hostId)
+    remoteSnapshots.set(hostId, source)
+    publish({ ...snapshot })
+    void refreshComputers()
+  }
+
   const applicationActions: ApplicationActions = {
     createCheckpoint: (workspace, name) => checkpointAction("create_checkpoint", workspace, { name }),
     forkCheckpoint: (workspace, checkpointId, newName) => checkpointAction("fork_checkpoint", workspace, { checkpointId, newName }),
@@ -1642,23 +1658,17 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     },
     saveRemoteMachine: async (hostId, machine, expected) => {
       const target = parseRemoteWorkspaceTarget(machine.id)
-      const source = parseMutationSource(await native.invoke("remote_upsert_machine", {
+      const result = await native.invoke("remote_upsert_machine", {
         hostId, machine: { ...machine, id: target?.vmId ?? machine.id },
         expected: expected ? { ...expected, id: parseRemoteWorkspaceTarget(expected.id)?.vmId ?? expected.id } : null,
-      }), remoteSnapshots.get(hostId) ?? null, parseRemoteApplicationSource)
-      bumpRemote(hostId)
-      remoteSnapshots.set(hostId, source)
-      publish({ ...snapshot })
-      void refreshComputers()
+      })
+      publishRemoteMachineChange(hostId, target?.vmId ?? machine.id, result)
     },
     deleteRemoteMachine: async (hostId, machine) => {
       const vmId = parseRemoteWorkspaceTarget(machine.id)?.vmId
       if (!vmId) throw new Error("Silo could not identify the remote sandbox. Refresh its computer and retry.")
-      const source = parseMutationSource(await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } }), remoteSnapshots.get(hostId) ?? null, parseRemoteApplicationSource)
-      bumpRemote(hostId)
-      remoteSnapshots.set(hostId, source)
-      publish({ ...snapshot })
-      void refreshComputers()
+      const result = await native.invoke("remote_delete_machine", { hostId, vmId, expected: { ...machine, id: vmId } })
+      publishRemoteMachineChange(hostId, vmId, result, true)
     },
     saveSecret: (request: SecretConfigurationRequest) => changeSecret("save_secret", { request }),
     removeSecret: (id: string) => changeSecret("remove_secret", { id }),
