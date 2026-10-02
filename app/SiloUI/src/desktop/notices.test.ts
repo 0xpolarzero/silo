@@ -74,6 +74,7 @@ it("ignores notices after disposal while native registration is still pending", 
   emit({ payload: notice })
   register(stop)
   await Promise.resolve()
+  emit({ payload: notice })
   expect(stop).toHaveBeenCalledOnce()
   expect(handler).not.toHaveBeenCalled()
 })
