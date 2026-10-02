@@ -394,21 +394,21 @@ fn attempt(mode: Approval, outcome: Outcome, reason: Option<&str>) -> Attempt {
 #[test]
 fn the_pinned_pair_comes_from_the_two_locks_and_agrees() {
     let lcu: Value = serde_json::from_str(LCU_LOCK).unwrap();
-    assert_eq!(lcu["version"], "0.8.2");
+    assert_eq!(lcu["version"], "0.8.6");
     assert_eq!(
         lcu["assets"]["arm64"]["sha256"],
-        "c20d0fd66d8beca9540144ec888d8edc8a30fabdfcaee4d2d7dfe4466dbdd014"
+        "7ff9d94589b72d9f4896c3f7ab1fad36282974d59aba66df66003f6445431254"
     );
     assert_eq!(
         lcu["assets"]["amd64"]["sha256"],
-        "d1e9961fcaf1df0ae25817b538d4e12949b83c2586533e5b72d6535bbdd18c0c"
+        "47b23234a82cb9fd09431b65f51476f05fec93e4e10e949c2ae474e78c7d1c5f"
     );
     for (arch, archive) in [
-        (DebArch::Arm64, "lcu-0.8.2-linux-arm64.tar.gz"),
-        (DebArch::Amd64, "lcu-0.8.2-linux-x64.tar.gz"),
+        (DebArch::Arm64, "lcu-0.8.6-linux-arm64.tar.gz"),
+        (DebArch::Amd64, "lcu-0.8.6-linux-x64.tar.gz"),
     ] {
         let pair = pinned(arch).unwrap();
-        assert_eq!(pair["lcu"]["version"], "0.8.2");
+        assert_eq!(pair["lcu"]["version"], "0.8.6");
         assert_eq!(pair["lcu"]["archive"], archive);
         assert!(pair["lcu"]["url"].as_str().unwrap().ends_with(archive));
         let app = chatgpt_app::Lock::bundled().unwrap();
@@ -1391,6 +1391,7 @@ fn app_status_maps_to_the_computer_use_state() {
             guest: None,
             settings: &settings,
             pending: false,
+            retrying: false,
         })
     };
     assert_eq!(map(None)["state"], "preparing");
@@ -1474,6 +1475,7 @@ fn the_confirmed_approval_is_reported_whatever_the_download_state() {
                 guest: None,
                 settings: &settings,
                 pending: false,
+                retrying: false,
             });
             assert_eq!(value["approval"], "ask", "{app:?} {running}");
             assert_eq!(value["appliedApproval"], "auto", "{app:?} {running}");
@@ -1498,6 +1500,7 @@ fn guest_status_maps_to_the_contract_fields() {
             guest: Some(&guest),
             settings: &settings,
             pending: false,
+            retrying: false,
         })
     };
     let (value, remembered) = map(guest_status("ready", None));
@@ -1561,6 +1564,7 @@ fn what_the_guest_reports_about_approval_never_changes_what_the_host_reports() {
         guest: Some(&guest),
         settings: &settings,
         pending: false,
+        retrying: false,
     });
     assert_eq!(value["state"], "ready");
     assert_eq!(
@@ -1667,6 +1671,7 @@ fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
         guest: None,
         settings: &settings,
         pending: false,
+        retrying: false,
     });
     assert_eq!(value["state"], "ready");
     assert_eq!(value["approval"], "auto");
@@ -1685,6 +1690,7 @@ fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
             ..Settings::default()
         },
         pending: false,
+        retrying: false,
     });
     assert_eq!(fresh["state"], "unavailable");
     assert_eq!(fresh["approval"], "auto");
@@ -1698,6 +1704,7 @@ fn a_stopped_vm_keeps_its_approval_and_last_known_versions() {
         guest: None,
         settings: &settings,
         pending: false,
+        retrying: false,
     });
     assert_eq!(download["state"], "failed");
     assert_eq!(download["approval"], "auto");
@@ -1726,6 +1733,7 @@ fn a_ready_report_is_remembered_for_the_stopped_vm() {
         guest: Some(&report),
         settings: &current,
         pending: false,
+        retrying: false,
     });
     remember(&paths, VM_ID, remembered.unwrap());
     let known = settings(&paths, VM_ID).known.unwrap();
@@ -1762,7 +1770,7 @@ fn status_reads_never_rewrite_the_policy() {
         &id,
         Known {
             state: "ready".into(),
-            lcu_version: Some("0.8.2".into()),
+            lcu_version: Some("0.8.3".into()),
             ..Known::default()
         },
     );
@@ -2582,4 +2590,193 @@ fn manual_setup_converges_on_a_choice_saved_while_its_helper_runs() {
     );
     assert!(!stored.needs_apply());
     assert!(!is_pending(&id));
+}
+
+// ------------------------------------------------- network retry
+
+const UNAVAILABLE: Reply = Reply::Report("failed", Some("lcu-archive-unavailable"));
+const SHORT: &[Duration] = &[Duration::from_millis(20), Duration::from_millis(20)];
+const LONG: &[Duration] = &[Duration::from_secs(3600)];
+
+fn boot_with(
+    guest: &Arc<Guest>,
+    paths: &RuntimePaths,
+    delays: &'static [Duration],
+) -> std::thread::JoinHandle<()> {
+    apply_with_delays(
+        test_gate(),
+        guest.clone(),
+        paths,
+        "dev",
+        Trigger::Boot,
+        delays,
+    )
+    .unwrap()
+}
+
+fn wait_for(what: &str, condition: impl Fn() -> bool) {
+    let end = std::time::Instant::now() + Duration::from_secs(10);
+    while !condition() {
+        assert!(
+            std::time::Instant::now() < end,
+            "timed out waiting for {what}"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_network_failure_is_retried_until_the_download_works() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm();
+    write_machines_of(&paths, &id);
+    let guest = Guest::new(&id);
+    guest.plan([UNAVAILABLE, UNAVAILABLE]);
+    boot_with(&guest, &paths, SHORT).join().unwrap();
+    let runs = guest.runs.lock().unwrap().clone();
+    // The boot run and two retries (which are not boots).
+    assert_eq!(
+        runs.iter().map(|run| run.2).collect::<Vec<_>>(),
+        [true, false, false]
+    );
+    let stored = settings(&paths, &id);
+    assert_eq!(stored.applied, Some(Approval::Ask));
+    assert_eq!(stored.last.unwrap().outcome, Outcome::Applied);
+    assert!(!retry_scheduled(&id));
+}
+
+#[test]
+fn retries_are_bounded_and_the_failure_then_stays() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm();
+    write_machines_of(&paths, &id);
+    let guest = Guest::new(&id);
+    guest.plan([UNAVAILABLE, UNAVAILABLE, UNAVAILABLE, UNAVAILABLE]);
+    boot_with(&guest, &paths, SHORT).join().unwrap();
+    assert_eq!(
+        guest.runs.lock().unwrap().len(),
+        3,
+        "one run and two retries"
+    );
+    let last = settings(&paths, &id).last.unwrap();
+    assert_eq!(
+        (last.outcome, last.reason.as_deref()),
+        (Outcome::Failed, Some("lcu-archive-unavailable"))
+    );
+    assert!(!retry_scheduled(&id));
+}
+
+#[test]
+fn other_failures_are_not_retried() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm();
+    write_machines_of(&paths, &id);
+    let guest = Guest::new(&id);
+    guest.plan([
+        Reply::Report("failed", Some("lcu-archive-mismatch")),
+        UNAVAILABLE,
+    ]);
+    boot_with(&guest, &paths, SHORT).join().unwrap();
+    assert_eq!(guest.runs.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_waiting_retry_is_visible_and_can_be_cancelled() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm();
+    write_machines_of(&paths, &id);
+    let guest = Guest::new(&id);
+    guest.plan([UNAVAILABLE]);
+    let handle = boot_with(&guest, &paths, LONG);
+    wait_for("the retry to be scheduled", || retry_scheduled(&id));
+    // While it waits the guest's failure is shown as preparing, with the reason.
+    let settings_now = settings(&paths, &id);
+    let app = ready();
+    let guest_state = guest_status("failed", Some("lcu-archive-unavailable"));
+    let inputs = |retrying| Inputs {
+        app: Some(&app),
+        vm_running: true,
+        guest: Some(&guest_state),
+        settings: &settings_now,
+        pending: false,
+        retrying,
+    };
+    let waiting = state(inputs(retry_scheduled(&id)));
+    assert_eq!(waiting["state"], "preparing");
+    assert!(waiting["reason"].as_str().unwrap().contains("network"));
+    cancel_retry(&id);
+    handle.join().unwrap();
+    assert_eq!(
+        guest.runs.lock().unwrap().len(),
+        1,
+        "no retry after cancelling"
+    );
+    assert!(!retry_scheduled(&id));
+    // Without a scheduled retry the same guest state is a plain failure.
+    let failed = state(inputs(false));
+    assert_eq!(failed["state"], "failed");
+    assert!(failed["reason"]
+        .as_str()
+        .unwrap()
+        .contains("Silo retries at the next start"));
+}
+
+#[test]
+fn a_manual_setup_or_a_deletion_takes_over_from_a_waiting_retry() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm();
+    write_machines_of(&paths, &id);
+    let guest = Guest::new(&id);
+    guest.plan([UNAVAILABLE]);
+    let handle = boot_with(&guest, &paths, LONG);
+    wait_for("the retry to be scheduled", || retry_scheduled(&id));
+    setup_with(
+        test_gate(),
+        guest.as_ref(),
+        &paths,
+        &machine_of(&id, true),
+        false,
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .unwrap();
+    handle.join().unwrap();
+    assert!(!retry_scheduled(&id));
+    assert_eq!(
+        guest.runs.lock().unwrap().len(),
+        2,
+        "the boot and the manual run only"
+    );
+    assert_eq!(
+        settings(&paths, &id).last.unwrap().outcome,
+        Outcome::Applied
+    );
+
+    // A deleted VM drops its retry too.
+    let guest = Guest::new(&id);
+    guest.plan([UNAVAILABLE]);
+    let handle = boot_with(&guest, &paths, LONG);
+    wait_for("the retry to be scheduled", || retry_scheduled(&id));
+    forget(&paths, &id).unwrap();
+    handle.join().unwrap();
+    assert_eq!(guest.runs.lock().unwrap().len(), 1);
+}
+
+#[test]
+fn a_retry_ends_when_the_vm_is_no_longer_the_same_running_instance() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = paths(&directory);
+    let id = vm();
+    write_machines_of(&paths, &id);
+    let guest = Guest::new(&id);
+    guest.plan([UNAVAILABLE]);
+    // The instance is replaced after the checks of the first run (a restart).
+    guest.inspects.lock().unwrap().1 = Some(2);
+    boot_with(&guest, &paths, SHORT).join().unwrap();
+    assert_eq!(guest.runs.lock().unwrap().len(), 1);
+    assert!(!retry_scheduled(&id));
 }

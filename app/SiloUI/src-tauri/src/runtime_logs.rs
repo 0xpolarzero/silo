@@ -1886,8 +1886,12 @@ mod tests {
         fs::write(directory.path().join("exec.log"), unterminated_sessions(5)).unwrap();
         let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
         let token = first.snapshot.unwrap();
-        let previous = cache().lock().unwrap().get(&token).unwrap().1.clone();
+        let (_, snapshot) = cache().lock().unwrap().remove(&token).unwrap();
+        let mut previous = std::sync::Arc::try_unwrap(snapshot).ok().unwrap();
         assert!(previous.redaction.bytes > 0);
+        // A clone of this state alone exceeds the shared budget, so the result does not
+        // depend on what parallel tests hold in the process-wide cache.
+        previous.redaction.bytes = INDEX_BUDGET + 1;
         let available = files(directory.path()).unwrap();
         let filter = Filter {
             since: None,
@@ -1895,21 +1899,7 @@ mod tests {
             needle: String::new(),
             source: None,
         };
-        let mut inflated = Redaction::default();
-        inflated.bytes = INDEX_BUDGET;
-        let big = std::sync::Arc::new(Cached {
-            binding: "big".into(),
-            files: Vec::new(),
-            records: Vec::new(),
-            redaction: inflated,
-            summary: Summary::default(),
-        });
-        cache()
-            .lock()
-            .unwrap()
-            .insert("inflated".into(), (Instant::now(), big));
         let result = follow_index(&previous, &available, &filter);
-        cache().lock().unwrap().remove("inflated");
         assert_eq!(result.err().as_deref(), Some(TOO_MANY_MATCHES));
     }
 

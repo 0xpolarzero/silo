@@ -123,7 +123,7 @@ absolute).
   `--skip-system --offline`.
 - Pinned LCU release archive, hash-checked, staged for installation in the VM
   (done: `guest/lcu-lock.json`, `/usr/local/share/silo/lcu/`). The published v4 image
-  stages LCU 0.8.1; Silo now pins LCU 0.8.2 (below), which a VM downloads and
+  stages LCU 0.8.1; Silo now pins LCU 0.8.6 (below), which a VM downloads and
   verifies at setup until a new image stages it.
 - Accessibility: dconf `toolkit-accessibility=true` system default and an
   autostarted AT-SPI attribute poller for Chromium/Electron.
@@ -144,7 +144,7 @@ absolute).
 - Every computer does this itself at its own start, remote ones included; a
   controller never prepares an app for another computer.
 
-Done: lock (`lcuVersion` 0.8.2), download, verification, extraction and
+Done: lock (`lcuVersion` 0.8.6), download, verification, extraction and
 publication under `<app data>/chatgpt/published/`, started automatically at app
 start with retries (2026-10-02, replacing the one-time notice), cached status
 reads and a computer-level Retry. See [ChatGPT app](SiloUI-CHATGPT-APP.md).
@@ -445,3 +445,109 @@ now passes in LCU's default configuration, without the previous `E2E_NO_SANDBOX`
 attempt ended `computer use failed` (`lcu-archive-unavailable`) because the guest's first download over
 the host network returned an empty reply; the retry succeeded. The upgrade of an existing 0.8.1
 install is covered by the guest unit tests only, not live.
+
+### Network retry for the LCU download (2026-10-02)
+
+The empty reply (and one DNS timeout) seen in two live runs is transient, and real users on
+flaky networks will see the same. The helper (`download` in `guest/silo-computer-use.py`) now
+tries the HTTPS-only download up to five times, waiting 5, 10, 20 and 40 s between attempts
+(never starting one after 420 s), and each curl uses its own `--retry 3 --retry-all-errors
+--retry-connrefused` with `--connect-timeout`/`--max-time`; every attempt is logged to
+`/var/log/silo-computer-use.log`. A hash mismatch is never retried (`lcu-archive-mismatch`).
+When the attempts run out the helper reports `lcu-archive-unavailable`, the one failure code
+the host treats as retryable: `apply_with` in `computer_use.rs` waits 1, 5 and 15 minutes
+(each wait outside the VM's operation turn, then a normal serialized apply) while the same
+running instance is up. During a wait the state is `preparing` ("Could not download LCU
+(network). Silo tries again automatically."); a boot, a switch change, a manual setup, a
+stop/restart or a deletion cancels it. After the last retry the failure stays until the next
+boot or a manual setup.
+
+### LCU 0.8.6 pin (2026-10-03)
+
+Silo pins LCU 0.8.6 (tag `v0.8.6`, commit d6db28d; linux-arm64
+`7ff9d94589b72d9f4896c3f7ab1fad36282974d59aba66df66003f6445431254`, linux-x64
+`47b23234a82cb9fd09431b65f51476f05fec93e4e10e949c2ae474e78c7d1c5f`, verified by
+download). It closes the last review findings in the Linux input translation: before a
+translated pointer action the X server's window chain at the point must contain the target
+(an overlapping overlay refuses the action instead of receiving it), original engine calls
+from the queue are bounded to 30 s with the trusted worker reset on timeout, the X server
+must prove it shares LCU's PID namespace before its client PIDs are trusted, an unreadable
+namespace fails closed, and only translatable requests run the identity helper.
+`SYSTEM_PACKAGES` is unchanged. LCU's own gates ran against ChatGPT 26.915.31945 only; the
+pinned 26.928.31416 is covered by Silo's live tests. The section below describes the 0.8.5
+pin it replaces.
+
+### LCU 0.8.5 pin (2026-10-02)
+
+Silo pins LCU 0.8.5 (tag `v0.8.5`, commit 28a90d0; linux-arm64
+`3a0856210656207a1d80b08077888701a0278407343d5276b1f6607c637c3722`, linux-x64
+`0caa6e8fbbbfef8c6c8b9b7de9b2b5c123869c76023f9f75f2b7e5cbd3410f30`, verified by
+download). A review of 0.8.4 found that translated key holds could stay stuck and that a
+namespaced client's advertised PID could match an unrelated local process, so 0.8.5 narrows
+the feature: `key_down`/`key_up` are never translated (they pass to the original service as
+in Codex), every input and focus-changing call is serialized in one queue, and a window is
+translated only when the X server's own client PID (X-Resource `XResQueryClientIds`) equals
+its `_NET_WM_PID` on this host and PID namespace; anything else fails closed. That check needs
+`libxres1` and `python3`: the published v4 image already contains both, and the Dockerfile now
+lists `libxres1` explicitly. The section below describes the 0.8.4 pin it replaces.
+
+### LCU 0.8.4 pin (2026-10-02)
+
+Silo pins LCU 0.8.4 (tag `v0.8.4`, commit 78e75a4; linux-arm64
+`f3ca87eea22a9c1c335bbe3a0c3df5c8b1be46ef96359b80fbd67ef9fc1f6f79`, linux-x64
+`06b481b35073c43b4064f257a0603e7812f53aa3299db16df3f363e0f9f1059d`, verified by
+download). It fixes review findings in 0.8.3's Linux input translation: planning and a
+final focus check run inside the serialized queue (a mismatch is an error, nothing is typed
+elsewhere), translated key holds are owned and always released, pointer input must fall
+inside the target's current client rectangle, modal redirection is keyboard only, a
+caller-supplied `NODE_REPL_TRUSTED_SERVICES` map is kept verbatim, the toolkit cache is keyed
+by process start time, and windows from other machines or PID namespaces are left
+untouched. `scripts/install.py` is unchanged, so the v4 image's packages still suffice. The
+section below describes the 0.8.3 pin it replaces.
+
+### LCU 0.8.3 pin (2026-10-02)
+
+Silo now pins LCU 0.8.3 (tag `v0.8.3`, commit 93f3978; `guest/lcu-lock.json`,
+`chatgpt-app-lock.json` `lcuVersion`). The archive hashes were re-verified by downloading
+both Linux archives (arm64 `f6ada7fc...b943b9`, x64 `bc4997cd...29add4fa`). The earlier 0.8.2
+section above stays as the record of the 0.8.2 pin; everything it says about the staged
+v4 archive applies unchanged: the published `ubuntu-24.04-v4` image still stages LCU 0.8.1,
+the helper finds that the staged archive does not match the lock, downloads the locked 0.8.3
+URL, verifies it and installs it in place at setup (network needed once per VM).
+
+`scripts/install.py` is byte-identical between v0.8.2 and v0.8.3, so `SYSTEM_PACKAGES` is
+unchanged and the v4 image lacks nothing. 0.8.3's toolkit detection runs `xprop` for
+`_NET_WM_PID`; `xprop` is in `x11-utils`, which is in both the LCU package list and the v4
+image lock (`image-lock.json`, arm64 and amd64). `python3-pyqt5` appears only in LCU's own
+test Dockerfile and verification notes, not in `SYSTEM_PACKAGES` and not at runtime.
+
+What agents get on the Linux desktop with 0.8.3:
+
+- **Input translation.** The original Linux engine sends window-targeted `pressKey`,
+  coordinate `click`, `scroll` and `drag` with `XSendEvent`, which GTK 4 (XInput2 only)
+  ignores, so they used to succeed and change nothing in GNOME Text Editor. A `sky`
+  trusted-service wrapper now detects a GTK 4 process (`_NET_WM_PID` plus
+  `/proc/<pid>/maps`) and activates the window if needed, then issues the desktop-level
+  call with converted coordinates, for keys, click, scroll and drag. Qt gets the same for
+  scroll only. Everything else (GTK 3, browsers, Electron, the terminal) keeps the original
+  path, which already worked. Opt-out: `LCU_LINUX_INPUT_TRANSLATION=off`; Silo does not set it.
+- **No `node_repl` sandbox on Linux by default.** LCU documents that its Linux default is
+  unsandboxed (the macOS sandbox does not exist there). `LCU_NODE_REPL_SANDBOX` is the
+  opt-out and the host value must still never be set by Silo.
+- **`typeText` is AT-SPI only.** It works for GTK 3, GTK 4 and Qt with accessibility on, and
+  is unsupported in browsers, Electron, Java and terminals (VTE), which expose no AT-SPI
+  text provider; there agents fall back to `pressKey` per key (or click and paste).
+- **GTK 3 paste.** AT-SPI paste into a GTK 3 text view (gedit 46.2) crashes the app: an
+  upstream GTK/GNOME bug, filed with GNOME. Silo's image avoids it by shipping GNOME Text
+  Editor (GTK 4) and no Mousepad.
+
+Live check (macOS arm64, Silo main plus this pin, MicroSandbox 0.7.6 `msb` ad-hoc signed with
+`Entitlements.plist`, published v4 image `ubuntu-24.04-v4-arm64` staging LCU 0.8.1, ChatGPT 26.928.31416
+published by Silo's own downloader; fixture home under `/private/tmp`, `e2e-lcu` sandbox, no packaged
+app). The VM downloaded and verified the locked 0.8.3 archive and installed it over the staged
+0.8.1: `lcu status --json` reported `lcu_version` 0.8.3 and compatibility `tested`, `lcu doctor
+--require-ready` reported ready, and `live_lcu_drives_the_desktop_without_a_model` passed
+(bare MCP client with no `_meta`, the default-sandbox drive, Save As, per-key terminal). The drive now
+also sends window-targeted `pressKey` to GNOME Text Editor (GTK 4): `ctrl+a`, `BackSpace`, `keys-ok`
+and `ctrl+s`; an independent read of the saved file showed `keys-ok` plus the newline the editor adds
+on save, with the previous text gone. Per LCU's own measurements the same calls under 0.8.2 and earlier succeeded without effect.

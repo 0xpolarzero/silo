@@ -59,6 +59,9 @@ class Guest(unittest.TestCase):
                                    'runtime': '0.0.27/20260927214556-b77d38801cca'}}
         self.setup_output = 'Claude Code: MCP registered.\nCodex: MCP registered.\nCodex: hooks registered.\n'
         self.failures = {}
+        # The next N curl runs fail (an empty reply), then it works.
+        self.curl_failures_left = 0
+        self.sleeps = []
         # What `lcu setup` exits with (it prints `setup_output` either way).
         self.setup_code = 0
         # The desktop session: True (running), False (still starting), a state name, or
@@ -84,7 +87,7 @@ class Guest(unittest.TestCase):
             mock.patch.object(cu, 'run', self.fake_run),
             # Files written by the tests are owned by the test user, not root.
             mock.patch.object(cu, 'read_json', self.read_json),
-            mock.patch.object(cu.time, 'sleep', lambda *_: None),
+            mock.patch.object(cu.time, 'sleep', lambda seconds: self.sleeps.append(seconds)),
         ]
         for patch in patches:
             patch.start()
@@ -142,6 +145,9 @@ class Guest(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(self.lcu_status), stderr='')
         if name == 'lcu' and argv[1:2] == ['setup']:
             return subprocess.CompletedProcess(argv, self.setup_code, stdout=self.setup_output, stderr='')
+        if name == 'curl' and self.curl_failures_left > 0:
+            self.curl_failures_left -= 1
+            raise cu.Failure('command-failed', 'curl exited 52')
         if name == 'curl':
             Path(argv[argv.index('--output') + 1]).write_bytes(self.served.read_bytes())
         return subprocess.CompletedProcess(argv, 0, stdout='', stderr='')
@@ -611,8 +617,8 @@ class Apply(Guest):
         self.lcu_status['lcu_version'] = '0.8.1'
         cu.apply('ask')
         self.assertEqual(self.receipt()['archiveSha256'], old_sha)
-        # The new lock pins 0.8.2; the staged archive no longer matches it.
-        self.write_pinned(version='0.8.2', sha256=self.sha, url='https://example.invalid/' + ARCHIVE)
+        # The new lock pins 0.8.3; the staged archive no longer matches it.
+        self.write_pinned(version='0.8.3', sha256=self.sha, url='https://example.invalid/' + ARCHIVE)
         self.commands.clear()
         result = cu.apply('ask', boot=True)
         self.assertEqual(result['state'], 'ready')
@@ -629,6 +635,45 @@ class Apply(Guest):
         self.failures['curl'] = True
         result = cu.apply('ask')
         self.assertEqual((result['state'], result['reason']), ('failed', 'lcu-archive-unavailable'))
+
+    def curls(self):
+        return [argv for argv, *_ in self.commands if argv[0] == 'curl']
+
+    def test_a_download_that_fails_a_few_times_is_retried_with_backoff_and_logged(self):
+        (self.image / ARCHIVE).unlink()
+        self.curl_failures_left = 3
+        result = cu.apply('ask')
+        self.assertEqual(result['state'], 'ready')
+        self.assertEqual(len(self.curls()), 4)
+        self.assertEqual(self.sleeps, [5, 10, 20])
+        log = cu.LOG.read_text()
+        self.assertIn('attempt 4 of 5', log)
+        self.assertIn('LCU download attempt 1 failed', log)
+
+    def test_the_download_uses_https_only_and_curls_own_retry_options(self):
+        (self.image / ARCHIVE).unlink()
+        cu.apply('ask')
+        curl, = self.curls()
+        for option in ('--retry-all-errors', '--retry-connrefused', '--connect-timeout', '--max-time'):
+            self.assertIn(option, curl)
+        self.assertEqual(curl[curl.index('--proto') + 1], '=https')
+
+    def test_a_download_that_keeps_failing_gives_up_after_five_attempts(self):
+        (self.image / ARCHIVE).unlink()
+        self.curl_failures_left = 99
+        result = cu.apply('ask')
+        self.assertEqual((result['state'], result['reason']), ('failed', 'lcu-archive-unavailable'))
+        self.assertEqual(len(self.curls()), 5)
+        self.assertEqual(self.sleeps, [5, 10, 20, 40])
+        self.assertFalse(any(argv[0].endswith('install.sh') for argv, *_ in self.commands))
+
+    def test_a_hash_mismatch_is_never_retried(self):
+        (self.image / ARCHIVE).unlink()
+        self.write_pinned(sha256='0' * 64)
+        result = cu.apply('ask')
+        self.assertEqual(result['reason'], 'lcu-archive-mismatch')
+        self.assertEqual(len(self.curls()), 1)
+        self.assertEqual(self.sleeps, [])
 
     def test_a_downloaded_archive_with_the_wrong_hash_is_refused(self):
         (self.image / ARCHIVE).unlink()

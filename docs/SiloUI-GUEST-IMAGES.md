@@ -185,7 +185,7 @@ SFTP server) and adds, in one further layer:
   The runtime pieces of `setup-desktop.sh` (Selkies web-client patch, connection
   credentials, receipts, `silo-desktop`) are not part of the image.
 - **ChatGPT and LCU system libraries.** The LCU `SYSTEM_PACKAGES` (checked against
-  v0.8.1, unchanged in v0.8.2,
+  v0.8.1, unchanged through v0.8.4; v0.8.5 adds libxres1, which the published v4 image already contains,
   [source](https://github.com/0xpolarzero/lcu/blob/v0.8.1/scripts/install.py)),
   a superset of the ChatGPT Linux `.deb` dependencies on Ubuntu 24.04, so LCU
   installs with `--skip-system --offline`. No OpenAI file and no installed LCU
@@ -202,7 +202,7 @@ SFTP server) and adds, in one further layer:
   ([built-in computer use](SiloUI-DESKTOP.md#built-in-computer-use)); if the lock is
   bumped without a new image the VM downloads and verifies the new archive instead
   (needs network once). The published `ubuntu-24.04-v4` image contains LCU 0.8.1 while
-  Silo pins 0.8.2, installed in the VM at setup; images built from the current lock
+  Silo pins 0.8.6, installed in the VM at setup; images built from the current lock
   stage the lock's version.
 - **Accessibility defaults.** `gsettings-desktop-schemas`, the dconf stack,
   `/etc/dconf/profile/user` (`user-db:user`, `system-db:local`) and
