@@ -4328,6 +4328,24 @@ mod tests {
                 "printf checkpoint-workspace > /workspace/silo-ckpt-proof; printf checkpoint-root > /root/silo-ckpt-proof; sync",
             ],
         );
+        let source_boot_id = run(
+            &paths,
+            &[
+                "exec",
+                source_name,
+                "--",
+                "cat",
+                "/proc/sys/kernel/random/boot_id",
+            ],
+        )
+        .stdout
+        .trim()
+        .to_owned();
+        let captured_pid = run(
+            &paths,
+            &["exec", source_name, "--", "sh", "-c",
+                "test -d /dev/shm && printf ram-only > /dev/shm/silo-ckpt-proof; sleep 987654 </dev/null >/dev/null 2>&1 & echo $!"],
+        ).stdout.trim().parse::<u32>().unwrap();
         // Capture a FULL checkpoint of the running guest via the production path.
         let checkpoint_id =
             runtime::checkpoints::capture_for_test(&paths, machine.id(), "Milestone").unwrap();
@@ -4417,6 +4435,26 @@ mod tests {
         // after the runtime verifies the new sandbox's identity and policy.
         runtime::start_disposable_test_import(&cold, restored_name).unwrap();
         assert!(!runtime::is_pending_restore(&cold, restored_name));
+        let restored_boot_id = run(
+            &cold,
+            &[
+                "exec",
+                restored_name,
+                "--",
+                "cat",
+                "/proc/sys/kernel/random/boot_id",
+            ],
+        )
+        .stdout
+        .trim()
+        .to_owned();
+        assert_ne!(restored_boot_id, source_boot_id);
+        run(
+            &cold,
+            &["exec", restored_name, "--", "sh", "-c", &format!(
+                "test ! -e /dev/shm/silo-ckpt-proof && ! grep -azq 987654 /proc/{captured_pid}/cmdline 2>/dev/null"
+            )],
+        );
         let proof = run(
             &cold,
             &[
