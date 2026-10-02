@@ -289,6 +289,49 @@ describe("sandbox settings for v3 and v4", () => {
   })
 })
 
+describe("creating a sandbox on the selected computer", () => {
+  const machine = productionMachineDefaults[0]
+  const computers = [{ id: "11111111-1111-4111-8111-111111111111", name: "Linux box", connected: true }]
+  function creating(status: unknown, draft: typeof machine = machine, onMachinesChange = vi.fn()) {
+    const bridgeBackend = backend({ chatGptStatus: async computer => computer ? status : { state: "ready" } })
+    render(wrap(bridgeBackend, <TooltipProvider><MachineList machines={[]} computers={computers} getComputerId={() => undefined} onMachinesChange={onMachinesChange}
+      isMachineCreated={() => false} isMachineRunning={() => false}
+      initialEditorDraft={{ draft, insertAt: 0 }} /></TooltipProvider>))
+    return onMachinesChange
+  }
+  const choose = (user: ReturnType<typeof userEvent.setup>) => user.selectOptions(screen.getByRole("combobox", { name: "Run on" }), computers[0]!.id)
+
+  it("offers the optional desktop and says to update an older remote owner", async () => {
+    creating({ state: "unknown" })
+    const user = userEvent.setup()
+    expect(screen.queryByRole("checkbox", { name: "Linux desktop" })).not.toBeInTheDocument()
+    await choose(user)
+    expect(await screen.findByText(/Update Silo on Linux box for built-in computer use/)).toBeVisible()
+    expect(screen.getByRole("checkbox", { name: "Linux desktop" })).toBeVisible()
+  })
+  it("promises the built-in desktop for a remote owner that supports it", async () => {
+    creating({ state: "ready" })
+    const user = userEvent.setup()
+    await choose(user)
+    await waitFor(() => expect(screen.getByText("Built in. Agents in this sandbox can use graphical applications.")).toBeVisible())
+    expect(screen.queryByRole("checkbox", { name: "Linux desktop" })).not.toBeInTheDocument()
+  })
+  it("starts the desktop of a new built-in sandbox even when duplicated settings chose to start it by hand", async () => {
+    const onMachinesChange = creating({ state: "ready" }, { ...machine, desktop: { startWithSandbox: false } })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    await waitFor(() => expect(onMachinesChange).toHaveBeenCalled())
+    expect(onMachinesChange.mock.lastCall?.[0]).toEqual([expect.objectContaining({ desktop: { startWithSandbox: true } })])
+  })
+  it("keeps a manual desktop start for a sandbox created before the built-in desktop", () => {
+    const draft = { ...machine, desktop: { startWithSandbox: false } }
+    render(wrap(backend(), <TooltipProvider><MachineList machines={[draft]} onMachinesChange={vi.fn()}
+      isMachineCreated={() => true} isMachineRunning={() => false}
+      initialEditorDraft={{ draft, originalID: draft.id, insertAt: 0 }} /></TooltipProvider>))
+    expect(screen.getByRole("switch", { name: "Start desktop with sandbox" })).not.toBeChecked()
+  })
+})
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   let reject!: (cause: unknown) => void

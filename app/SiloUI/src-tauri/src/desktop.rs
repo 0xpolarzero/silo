@@ -37,7 +37,8 @@ pub(crate) fn image_includes_desktop(image_version: &str) -> bool {
 /// On such an image the desktop is part of every new VM, started with it (computer use
 /// needs a running session). Existing VMs and explicit choices are left alone, except
 /// that `built_in` is Silo's to decide: an existing VM keeps what it had and a new VM
-/// has it exactly when it is created from such an image, whatever a request says.
+/// has it exactly when it is created from such an image, whatever a request says; a new
+/// built-in VM also always starts its desktop with the sandbox.
 pub(crate) fn default_new_vm_desktops(
     machines: &mut [MachineConfiguration],
     previous: &[MachineConfiguration],
@@ -57,12 +58,15 @@ pub(crate) fn default_new_vm_desktops(
                 }
             }
             None if built_in_image => {
-                desktop
-                    .get_or_insert(DesktopConfiguration {
-                        start_with_sandbox: true,
-                        built_in: true,
-                    })
-                    .built_in = true;
+                // Computer use needs the session running, so a new built-in VM always
+                // starts it, including settings duplicated from a legacy VM that chose
+                // to start its desktop by hand.
+                let configuration = desktop.get_or_insert(DesktopConfiguration {
+                    start_with_sandbox: true,
+                    built_in: true,
+                });
+                configuration.built_in = true;
+                configuration.start_with_sandbox = true;
             }
             None => {
                 if let Some(configuration) = desktop {
@@ -276,14 +280,28 @@ fn machine(
 ) -> Result<(RuntimePaths, MachineConfiguration), String> {
     runtime::validate_name(workspace).map_err(|e| e.to_string())?;
     let paths = runtime::runtime_paths(app)?;
+    let machine = machine_at(&runtime::ProcessRunner, &paths, workspace)?;
+    Ok((paths, machine))
+}
+
+fn machine_at(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    workspace: &str,
+) -> Result<MachineConfiguration, String> {
     let machine = runtime::read_metadata(&paths.metadata)
         .map_err(|e| e.to_string())?
         .machines
         .into_iter()
         .find(|m| m.is_vm() && m.name() == workspace)
         .ok_or("This sandbox no longer exists on this computer.")?;
-    let inspected = runtime::inspect_workspace(&runtime::ProcessRunner, &paths, workspace)
-        .map_err(|e| e.to_string())?;
+    // An imported VM waiting for its first Start has no runtime sandbox yet: Silo's own
+    // record is all there is, and the status and approval paths treat it as stopped.
+    if runtime::is_pending_restore(paths, workspace) {
+        return Ok(machine);
+    }
+    let inspected =
+        runtime::inspect_workspace(runner, paths, workspace).map_err(|e| e.to_string())?;
     runtime::ensure_managed(&inspected).map_err(|e| e.to_string())?;
     if inspected.name != workspace
         || inspected
@@ -294,7 +312,7 @@ fn machine(
     {
         return Err("The sandbox changed identity. Refresh before accessing its desktop.".into());
     }
-    Ok((paths, machine))
+    Ok(machine)
 }
 
 /// The desktop state a live regression polls (production code path, real runtime).
@@ -650,28 +668,34 @@ fn local_approval(app: &AppHandle, workspace: &str, mode: &str) -> Result<Value,
         .map_err(|e| e.to_string())?;
     guard.allow_cancel();
     guard.expect_within(action_expected_duration("setup-computer-use"));
-    let (paths, machine) = machine(app, workspace)?;
     runtime::shutdown::ensure_accepting_operations()?;
-    if !crate::computer_use::is_built_in(&machine) {
+    let (paths, machine) = machine(app, workspace)?;
+    let status = approval_at(&runtime::ProcessRunner, &paths, &machine, approval)?;
+    let _ = app.emit("silo://application-state-changed", ());
+    drop(guard);
+    Ok(status)
+}
+
+/// Stores the approval mode and applies it to a running VM. A stopped or pending-restore
+/// VM keeps it for its next boot, without any guest access.
+fn approval_at(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    machine: &MachineConfiguration,
+    approval: crate::computer_use::Approval,
+) -> Result<Value, String> {
+    if !crate::computer_use::is_built_in(machine) {
         return Err(
             "Computer use is built into sandboxes created with the current guest image.".into(),
         );
     }
     let running = matches!(
-        runtime::observe_vm(&runtime::ProcessRunner, &paths, workspace).map_err(|e| e.to_string())?,
+        runtime::observe_vm(runner, paths, machine.name()).map_err(|e| e.to_string())?,
         runtime::VmRuntime::Present(inspected) if inspected.status == "Running"
     );
-    crate::computer_use::apply_approval_with(
-        &runtime::ProcessRunner,
-        &paths,
-        &machine,
-        approval,
-        running,
-    )
-    .map_err(|e| e.to_string())?;
-    let _ = app.emit("silo://application-state-changed", ());
-    drop(guard);
-    status_with(&runtime::ProcessRunner, &paths, &machine)
+    crate::computer_use::apply_approval_with(runner, paths, machine, approval, running)
+        .map_err(|e| e.to_string())?;
+    status_with(runner, paths, machine)
 }
 
 /// A VM's approval mode for computer use: "ask" (the harness asks first) or "auto".
@@ -871,12 +895,85 @@ mod tests {
         assert_eq!(
             configuration(&machines[2]),
             Some(&DesktopConfiguration {
-                start_with_sandbox: false,
+                start_with_sandbox: true,
                 built_in: true,
             }),
-            "an explicit startup choice is preserved; the desktop is built in"
+            "a new built-in VM always starts its desktop, even from duplicated manual settings"
         );
         assert_eq!(configuration(&machines[3]), None);
+    }
+
+    #[test]
+    fn existing_legacy_vms_keep_a_manual_desktop_start() {
+        let manual = DesktopConfiguration {
+            start_with_sandbox: false,
+            built_in: false,
+        };
+        let previous = vec![vm("legacy", Some(manual.clone()))];
+        let mut machines = vec![vm("legacy", Some(manual.clone()))];
+        default_new_vm_desktops(&mut machines, &previous, "ubuntu-24.04-v4");
+        assert_eq!(configuration(&machines[0]), Some(&manual));
+    }
+
+    #[test]
+    fn imported_pending_restore_vms_report_stopped_computer_use_and_save_approval() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let machine = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine.clone()],
+            },
+        )
+        .unwrap();
+        runtime::checkpoints::import_pending_restore(
+            &paths,
+            machine.id(),
+            "silo-import-6b79cf8f70b34f2d93d13eeb3798a8b9",
+            "silo-backup-0-330418-1790360984903",
+        )
+        .unwrap();
+        // No command may reach the runtime: it knows nothing about this VM yet.
+        let runner = ScriptedRunner::new([]);
+        let resolved = machine_at(&runner, &paths, "dev").unwrap();
+        assert_eq!(resolved.id(), machine.id());
+        let status = status_with(&runner, &paths, &resolved).unwrap();
+        assert_eq!(status["state"], "vm-stopped");
+        assert!(status["computerUse"]["state"].is_string());
+        let status = approval_at(
+            &runner,
+            &paths,
+            &resolved,
+            crate::computer_use::Approval::Auto,
+        )
+        .unwrap();
+        assert_eq!(status["computerUse"]["approval"], "auto");
+        runner.assert_finished();
+    }
+
+    #[test]
+    fn a_real_runtime_sandbox_must_still_match_its_identity() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths(dir.path());
+        let machine = built_in_machine();
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![machine.clone()],
+            },
+        )
+        .unwrap();
+        let runner = ScriptedRunner::new([inspect(
+            "Stopped",
+            json!({"silo.managed":"true","silo.machine-id":"someone-else"}),
+        )]);
+        assert!(machine_at(&runner, &paths, "dev").is_err());
+        runner.assert_finished();
     }
 
     #[test]

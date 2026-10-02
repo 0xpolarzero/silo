@@ -19,7 +19,7 @@ import {
   type MachineValidationErrors,
 } from "@/features/onboarding/model/machine-configuration"
 import { divergentMachineFields, sameMachineConfiguration } from "@/features/application/model/machine-change"
-import { useComputerUseBridge } from "@/desktop/computer-use-bridge"
+import { useChatGptApp, useComputerUseBridge } from "@/desktop/computer-use-bridge"
 import type { MachineEditorDraft } from "@/features/onboarding/model/onboarding-draft"
 import { machineFieldLabel, type MachineReview } from "@/features/sandboxes/model/machine-review"
 import { parseWholeNumber, presetsWithin, resourceFields, resourceMaximums, runtimeLimits, validateMachineResources, type HostCapacity } from "@/features/sandboxes/model/machine-limits"
@@ -102,7 +102,7 @@ function TextField({ label, value, error, firstField = false, inputRef, ...props
   )
 }
 
-export function MachineEditor({ saving, blockedReason, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, review, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName }: {
+export function MachineEditor({ saving, blockedReason, editorHeader, editor, focusRequest, machines, baselineMachine, conflict = false, review, onCancel, onSave, onDraftChange, onReview, onDiscard, created, running, capacity, computerName, computerId }: {
   saving?: boolean
   /** Why Save is unavailable right now (another change locks editing); the draft is kept. */
   blockedReason?: string
@@ -115,6 +115,8 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   capacity?: HostCapacity
   /** That computer's name for messages; defaults to "This computer". */
   computerName?: string
+  /** The host id of the other computer a new sandbox will run on; empty or omitted is this one. */
+  computerId?: string
   /** The computer the sandbox will run on; empty or omitted is this one. */
   machines: readonly SetupMachineConfiguration[]
   /** The VM's saved configuration when this editor opened, for divergence detection. */
@@ -147,6 +149,28 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   // A VM whose desktop is built into its image always starts it; only older VMs are configured here.
   const builtInDesktop = created && original?.kind === "vm" && original.desktop?.builtIn === true
   const computerUse = useComputerUseBridge()
+  // A new sandbox gets the built-in desktop only if the computer it runs on can provide it.
+  // This computer follows the build; another computer is asked, because it may run an
+  // older Silo (and guest image) without computer use.
+  const remoteOwner = !created && draft.kind === "vm" && computerId ? computerId : undefined
+  const ownerApp = useChatGptApp(remoteOwner && computerUse ? computerUse.chatGptFor(remoteOwner) : undefined)
+  const ownerName = computerName ?? "that computer"
+  const newVmSupport: "yes" | "no" | "checking" = !computerUse ? "no"
+    : !remoteOwner ? "yes"
+    : ownerApp.status ? (ownerApp.status.state === "unknown" ? "no" : "yes")
+    : ownerApp.loadError ? "no" : "checking"
+  const builtInNewVm = !created && draft.kind === "vm" && newVmSupport === "yes"
+  const startsWithSandbox = draft.kind === "vm" && draft.desktop?.startWithSandbox === false
+  // Computer use needs the session running: a new built-in sandbox always starts it, so a
+  // duplicate or saved draft that chose to start it by hand is corrected.
+  useEffect(() => {
+    if (builtInNewVm && startsWithSandbox) {
+      const next = { ...draft, desktop: { startWithSandbox: true } } as SetupMachineConfiguration
+      setDraft(next)
+      onDraftChange(next)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [builtInNewVm, startsWithSandbox])
   const desktopInstalled = created && original?.kind === "vm" && Boolean(original.desktop)
   const desktopOnlyChange = original?.kind === "vm" && draft.kind === "vm"
     && JSON.stringify(original.desktop) !== JSON.stringify(draft.desktop)
@@ -205,7 +229,7 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
     if (Object.keys(nextErrors).length > 0) setFailedValidation(count => count + 1)
     // Stopping a running sandbox is always confirmed first (decision 8).
     else if (requiresStop) setConfirmingStop(true)
-    else onSave(draft)
+    else onSave(builtInNewVm && startsWithSandbox && draft.kind === "vm" ? { ...draft, desktop: { startWithSandbox: true } } : draft)
   }
 
   return (
@@ -294,10 +318,13 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
         </div>
       )}
 
-      {draft.kind === "vm" && (builtInDesktop || (!created && computerUse)) && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
+      {draft.kind === "vm" && (builtInDesktop || builtInNewVm) && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
         <div className="text-xs">Linux desktop and computer use<p className="mt-1 text-[11px] text-muted-foreground">{builtInDesktop ? "Built in. The desktop starts with the sandbox." : "Built in. Agents in this sandbox can use graphical applications."}</p></div>
       </section>}
-      {draft.kind === "vm" && !builtInDesktop && !(!created && computerUse) && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
+      {draft.kind === "vm" && !builtInDesktop && !builtInNewVm && <section aria-label="Linux desktop" className="grid gap-2 border-t border-border pt-3">
+        {!created && computerUse && remoteOwner && (newVmSupport === "no"
+          ? <p className="text-[11px] text-muted-foreground">Update Silo on {ownerName} for built-in computer use. Until then, this sandbox can have the optional Linux desktop.</p>
+          : newVmSupport === "checking" ? <p role="status" className="text-[11px] text-muted-foreground">Checking whether {ownerName} supports built-in computer use…</p> : null)}
         {desktopInstalled ? <label className="flex items-center justify-between gap-3 text-xs">
           <span>Start desktop with sandbox<span className="mt-1 block text-[11px] text-muted-foreground">When off, start the desktop from its viewer.</span></span>
           <Switch aria-label="Start desktop with sandbox" checked={draft.desktop?.startWithSandbox ?? true} disabled={saving} onCheckedChange={startWithSandbox => update({ desktop: { startWithSandbox } })} />
