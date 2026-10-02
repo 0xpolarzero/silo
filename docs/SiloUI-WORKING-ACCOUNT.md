@@ -35,14 +35,20 @@ setup fails, Silo stops the VM, so a running VM always has the account. A
 record from an unknown policy is never overwritten. The desktop reads the same
 record, and desktop installation does not choose or set up the account.
 
-The v3 guest-image recipe bundles `sudo`, `python3` and
-`openssh-sftp-server`, so a new VM's setup needs no network access or package
-installation. Only older images that lack them install them with apt. The
-setup never substitutes a root working session. Optional desktop installation
-still downloads its existing Ubuntu packages and KasmVNC archive.
+Guest images from v3 on bundle `sudo`, `python3` and
+`openssh-sftp-server`, so a new VM's account setup needs no network access or
+package installation. Only older images that lack them install them with apt.
+The setup never substitutes a root working session. The current
+[desktop installer](../app/SiloUI/src-tauri/guest/setup-desktop.sh) uses Ubuntu
+packages and the pinned Selkies package when installation is needed; a healthy
+v4 built-in desktop needs neither download. See [desktop installation](SiloUI-DESKTOP.md)
+for legacy guests and repairs.
 
-The [v3 image is public](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v3),
-and the checked-in lock records its exact published manifests and hashes.
+### Published v3 account evidence
+
+The [v3 image is public](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v3).
+The [current image lock](../app/SiloUI/guest-image/image-lock.json) now pins v4;
+these v3 results qualify the earlier account-provisioning image.
 [Publication run 35546417121](https://github.com/0xpolarzero/silo/actions/runs/35546417121)
 built source `a9827c263df3daee28959b2c2073d85c6f980e9d`. Earlier offline
 acceptance used local candidates with different hashes. The published ARM64
@@ -164,7 +170,7 @@ Both architecture images passed all seven Docker tests with networking disabled,
 including normal-user SFTP and rejection of missing sudo, Python or SFTP support
 and a preinstalled working account. ARM64 and AMD64 compressed archives are
 85,801,668 and 87,799,791 bytes respectively. These were local candidates;
-the current lock instead records the subsequently published artifacts.
+the v3 lock at publication instead recorded the subsequently published artifacts.
 ARM64 local staging passed with its download function forced to throw.
 
 The ARM64 MicroSandbox test used the candidate image with `--net none`. All eight
