@@ -32,3 +32,37 @@ describe.each([
     }
   })
 })
+
+describe.each([
+  ["local", parseApplicationSource],
+  ["remote", parseRemoteApplicationSource],
+] as const)("%s legacy preference validation", (_owner, parse) => {
+  const source = applicationSourceForScenario("running")
+
+  it.each([
+    ["startupWorkspaceIds", {}],
+    ["startupWorkspaceIds", [123]],
+    ["terminalPath", 123],
+    ["editorPath", { path: "/Applications/Editor.app" }],
+    ["browserPath", "relative/path"],
+    ["terminalUseSystemDefault", "false"],
+    ["editorUseSystemDefault", 1],
+    ["browserUseSystemDefault", null],
+  ])("drops an invalid %s without losing other preferences", (field, value) => {
+    const preferences = parse({ ...source, preferences: { ...source.preferences, [field]: value } }).preferences
+    expect(Reflect.get(preferences, field)).toBeUndefined()
+    expect(preferences.terminal).toBe(source.preferences.terminal)
+    expect(() => new Set(preferences.startupWorkspaceIds)).not.toThrow()
+  })
+
+  it("retains valid optional preferences and fields from newer Silo versions", () => {
+    const preferences = {
+      ...source.preferences,
+      startupWorkspaceIds: [source.workspaces[0].machine.id],
+      terminalPath: "/Applications/Terminal.app", editorPath: null, browserPath: "/usr/bin/firefox",
+      terminalUseSystemDefault: false, editorUseSystemDefault: true, browserUseSystemDefault: false,
+      futurePreference: { enabled: true },
+    }
+    expect(parse({ ...source, preferences }).preferences).toEqual(preferences)
+  })
+})
