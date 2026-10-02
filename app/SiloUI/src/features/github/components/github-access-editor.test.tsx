@@ -8,6 +8,35 @@ import type { ApplicationActions } from "@/features/application/model/applicatio
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 
 describe("GitHubAccessEditor", () => {
+  it("does not rescan an unchanged catalog during unrelated renders and picks from a replacement catalog", async () => {
+    const user = userEvent.setup()
+    let catalogReads = 0
+    const repositoryOptions = new Proxy(Array.from({ length: 1000 }, (_, index) => `acme/repo-${index}`), {
+      get(target, property, receiver) {
+        if (typeof property === "string" && /^\d+$/.test(property)) catalogReads++
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    const onSelections = vi.fn()
+    const props = {
+      workspaces: [{ name: "dev" }], connectionState: "connected" as const,
+      repositoryOptions, workspaceSelections: {}, workspaceIdentities: {},
+      currentHostGitIdentity: null, onConnect: vi.fn(), onWorkspaceSelectionsChange: onSelections,
+      onWorkspaceIdentityChange: vi.fn(), onResetWorkspaceIdentity: vi.fn(),
+    }
+    const view = render(<GitHubAccessEditor {...props} />)
+    catalogReads = 0
+    for (let tick = 0; tick < 10; tick++) {
+      view.rerender(<GitHubAccessEditor {...props} notice={<p>Refresh {tick}</p>} />)
+    }
+    expect(catalogReads).toBe(0)
+
+    view.rerender(<GitHubAccessEditor {...props} repositoryOptions={["acme/new"]} />)
+    await user.click(screen.getByRole("combobox"))
+    await user.keyboard("{Enter}")
+    expect(onSelections).toHaveBeenCalledExactlyOnceWith("dev", [{ repository: "acme/new", allowPushes: false }])
+  })
+
   it.each([{ repositoryOptions: [] }, { repositoryOptions: ["acme/silo"] }])("excludes repository suggestions and GitHub authorization from the page Tab order (%j)", async ({ repositoryOptions }) => {
     const user = userEvent.setup()
     render(<GitHubAccessEditor

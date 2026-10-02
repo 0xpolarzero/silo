@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react"
 import { Check, ExternalLink, GitBranch, Info, LoaderCircle, RotateCcw, Search, Trash2, X } from "lucide-react"
 
 import { ListCard, ListRow, ListRowIcon } from "@/components/list-row"
@@ -18,6 +18,8 @@ export interface GitHubRepositorySelection {
   repository: string
   allowPushes: boolean
 }
+
+const emptySelections: readonly GitHubRepositorySelection[] = []
 
 export interface GitHubRepositoryAccess {
   authenticationMethod?: "oauth" | "token"
@@ -75,12 +77,14 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
     () => new Set(selectedRepositories.map(({ repository }) => repository.toLowerCase())),
     [selectedRepositories],
   )
-  function matchingRepositories(searchQuery: string) {
-    return repositoryOptions.filter((repository) => (
-      !selectedNames.has(repository.toLowerCase()) && repository.toLowerCase().includes(searchQuery.trim().toLowerCase())
-    ))
-  }
-  const results = matchingRepositories(query)
+  const matchingRepositories = useCallback((searchQuery: string) => {
+    const normalizedQuery = searchQuery.trim().toLowerCase()
+    return repositoryOptions.filter((repository) => {
+      const name = repository.toLowerCase()
+      return !selectedNames.has(name) && name.includes(normalizedQuery)
+    })
+  }, [repositoryOptions, selectedNames])
+  const results = useMemo(() => matchingRepositories(query), [matchingRepositories, query])
 
   const searchActions = [
     ...(onManageRepositories ? [{ label: "Add more repositories on GitHub", run: onManageRepositories, icon: ExternalLink }] : []),
@@ -311,7 +315,7 @@ export function GitHubAccessEditor({
         <div className="divide-y divide-border">
           {workspaces.map((workspace) => {
             const { name } = workspace
-            const selections = (Object.hasOwn(workspaceSelections, name) ? workspaceSelections[name] : undefined) ?? []
+            const selections = (Object.hasOwn(workspaceSelections, name) ? workspaceSelections[name] : undefined) ?? emptySelections
             const access = (Object.hasOwn(workspaceRepositoryAccess, name) ? workspaceRepositoryAccess[name] : undefined) ?? { repositoryMode: "selected", allRepositoriesAllowChanges: false }
             const identity = (Object.hasOwn(workspaceIdentities, name) ? workspaceIdentities[name] : undefined) ?? { name: "", email: "", apply: true }
             const workspaceActions = renderWorkspaceActions?.(workspace)
