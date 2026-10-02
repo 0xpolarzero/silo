@@ -39,3 +39,11 @@ The prescribed full-module command, `cargo +1.94.0 test --manifest-path app/Silo
 - **Consequence:** A temporary observation failure kills working controller tunnels and forgets their chosen local ports and schemes, preventing automatic recovery after the owner can inspect the VM again.
 - **Fix:** Exclude VMs with observation errors from missing-port deletion. Successfully observed VMs and genuinely absent VMs retain normal cleanup behavior.
 - **Regression evidence:** `a_workspace_observation_error_does_not_forget_its_connections` and `an_observation_error_preserves_only_that_workspaces_intents` both failed before the fix. All 16 extracted behavior tests pass afterward; the tests also confirm that a later successful deletion removes the intent. Formatting, typecheck, lint, and whitespace checks pass. No live VM or app was used.
+
+## REMOTE-NETWORK-7 — P2 — Recreated sandbox identities are assigned to older port snapshots
+
+- **File:line at discovery:** `app/SiloUI/src-tauri/src/remote_network.rs:164–183`, `read_host_state`.
+- **Trigger:** Network observation captures a sandbox's ports, then that sandbox is deleted and another sandbox with the same name is created before the metadata lookup that assigns `vmId`.
+- **Consequence:** Ports captured for the old sandbox are labeled with the replacement sandbox's immutable ID, so a controller cannot distinguish the old snapshot from the new sandbox's endpoints.
+- **Fix:** Capture name-to-ID mappings before and after network observation and reject any row whose identity changed. Stable rows do not fail for unrelated metadata changes.
+- **Regression evidence:** `a_recreated_vm_cannot_relabel_an_older_network_snapshot` and `a_vm_created_during_observation_requires_a_fresh_identity_snapshot` failed before the identity guard and pass afterward. `stable_vm_identity_survives_unrelated_metadata_changes` verifies the guard is scoped to observed rows. All 19 extracted tests, formatting, typecheck, lint, and whitespace checks pass. No live VM or app was used.
