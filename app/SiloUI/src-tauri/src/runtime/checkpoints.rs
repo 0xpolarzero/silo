@@ -1146,7 +1146,7 @@ pub(super) fn start_pending(
     // A disk snapshot cold-boots by default. MicroSandbox's --disk-only
     // selects the disk from a *full* checkpoint and rejects file/disk captures.
     if pending.state == "full" {
-        args.push("--forked".into());
+        args.push("--cow-mem".into());
     } else if let MachineConfiguration::Vm {
         cpus, memory_gib, ..
     } = machine
@@ -2979,7 +2979,7 @@ mod tests {
         );
         assert!(!restore
             .iter()
-            .any(|arg| arg == "--disk-only" || arg == "--forked"));
+            .any(|arg| arg == "--disk-only" || arg == "--cow-mem"));
         assert!(restore.windows(2).any(|args| args == ["--cpus", "1"]));
         assert!(restore.windows(2).any(|args| args == ["--memory", "1G"]));
         assert_eq!(
@@ -3540,7 +3540,7 @@ mod tests {
         let calls = runner.calls.lock().unwrap();
         let start = calls.iter().find(|args| args[0] == "restore").unwrap();
         assert_eq!(start[1], format!("dev:{}", first.id));
-        assert!(start.iter().any(|arg| arg == "--forked"));
+        assert!(start.iter().any(|arg| arg == "--cow-mem"));
         assert!(!start.iter().any(|arg| arg == "--disk-only"));
         assert!(load(&paths, ID)
             .unwrap()
@@ -5859,5 +5859,111 @@ mod tests {
         let paths = pending_fixture(&directory);
         start_pending(&NeverRan(Mutex::new(Vec::new())), &paths, &machine()).unwrap_err();
         assert!(!load(&paths, ID).unwrap().restore_attempt_ran);
+    }
+
+    /// Real checkpoint Restore and Fork against the bundled runtime: a running VM is
+    /// captured as a full checkpoint, changed, forked (the fork starts from RAM), then
+    /// restored in place. Uses only a disposable /tmp home and `e2e-*` sandboxes. Run
+    /// with `SILO_LIVE_TEST_CONFIRM`, `SILO_TEST_MSB` and `SILO_TEST_LIBKRUNFW`.
+    #[test]
+    #[ignore = "requires the packaged runtime and hardware virtualization"]
+    fn live_checkpoint_restore_and_fork_use_the_runtimes_names() {
+        crate::test_support::live::require_confirmation();
+        let _test_state = crate::test_support::global_state();
+        // The live runtime control socket requires a short root (104 bytes on macOS).
+        let directory = tempfile::Builder::new()
+            .prefix("silo-ck-")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let paths = RuntimePaths {
+            guest_image: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("runtime/guest-image"),
+            executable: std::path::PathBuf::from(std::env::var("SILO_TEST_MSB").unwrap()),
+            library: std::path::PathBuf::from(std::env::var("SILO_TEST_LIBKRUNFW").unwrap()),
+            home: directory.path().join("runtime"),
+            storage_home: None,
+            metadata: directory.path().join("machines.json"),
+            volumes: directory.path().join("volumes"),
+        };
+        struct Cleanup<'a>(&'a RuntimePaths);
+        impl Drop for Cleanup<'_> {
+            fn drop(&mut self) {
+                for name in ["e2e-ck-source", "e2e-ck-fork"] {
+                    let _ = super::super::run_msb(
+                        self.0,
+                        &["stop".into(), name.into()],
+                        Duration::from_secs(60),
+                    );
+                }
+            }
+        }
+        let _cleanup = Cleanup(&paths);
+        let run = |arguments: &[&str]| {
+            super::super::run_msb(
+                &paths,
+                &arguments.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                Duration::from_secs(180),
+            )
+            .unwrap()
+        };
+        let write = |name: &str, value: &str| {
+            run(&[
+                "exec",
+                name,
+                "--",
+                "sh",
+                "-c",
+                &format!(
+                    "printf {value} > /workspace/e2e-marker; printf {value} > /root/e2e-marker; sync"
+                ),
+            ]);
+        };
+        let read = |name: &str| {
+            run(&[
+                "exec",
+                name,
+                "--",
+                "sh",
+                "-c",
+                "cat /workspace/e2e-marker; printf :; cat /root/e2e-marker",
+            ])
+            .stdout
+        };
+
+        let machine =
+            super::super::create_disposable_test_machine(&paths, "e2e-ck-source").unwrap();
+        run(&["start", "e2e-ck-source"]);
+        write("e2e-ck-source", "before");
+        let checkpoint = capture_for_test(&paths, machine.id(), "Milestone").unwrap();
+        let record = load(&paths, machine.id()).unwrap();
+        assert_eq!(record.checkpoints[0].scope, "full");
+        write("e2e-ck-source", "after");
+        assert_eq!(read("e2e-ck-source").trim(), "after:after");
+
+        // Fork the checkpoint into a new, stopped sandbox and start it from RAM.
+        let assignments = FakeAssignments::new(&[]);
+        let fork = fork_source(
+            &ProcessRunner,
+            &paths,
+            machine.id(),
+            Some(&checkpoint),
+            "e2e-ck-fork",
+        )
+        .unwrap();
+        assert_eq!(fork.scope, "full");
+        fork_commit(&ProcessRunner, &paths, &assignments, &fork, "e2e-ck-fork").unwrap();
+        super::super::start_disposable_test_import(&paths, "e2e-ck-fork").unwrap();
+        assert_eq!(read("e2e-ck-fork").trim(), "before:before");
+        // The source kept its later state while the fork ran.
+        assert_eq!(read("e2e-ck-source").trim(), "after:after");
+        run(&["stop", "e2e-ck-fork"]);
+
+        // Restore the checkpoint in place.
+        // Restore leaves the VM stopped with the checkpoint pending; Start resumes it.
+        run(&["stop", "e2e-ck-source"]);
+        restore_with(&ProcessRunner, &paths, machine.id(), &checkpoint).unwrap();
+        super::super::start_disposable_test_import(&paths, "e2e-ck-source").unwrap();
+        assert_eq!(read("e2e-ck-source").trim(), "before:before");
+        eprintln!("Verified live checkpoint fork and restore.");
     }
 }
