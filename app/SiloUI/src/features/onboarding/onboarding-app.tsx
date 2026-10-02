@@ -348,11 +348,19 @@ export function OnboardingApp({
       machines.splice(Math.min(existing.findIndex(({ id }) => id === machine.id), machines.length), 0, { ...machine })
     }
     const host = { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }
+    const savedPolicies = new Map((repositoryPolicies ?? []).map((policy) => [policy.workspace, policy]))
     updateDraft({
       machines,
-      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceSelections, name) ?? []])),
-      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceIdentities, name) ?? host])),
-      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }])),
+      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceSelections, name) ?? savedPolicies.get(name)?.repositories.map((repository) => ({ ...repository })) ?? []])),
+      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceIdentities, name) ?? { ...(savedPolicies.get(name)?.identity ?? host) }])),
+      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => {
+        const policy = savedPolicies.get(name)
+        return [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? {
+          repositoryMode: policy?.repositoryMode ?? "selected" as const,
+          allRepositoriesAllowChanges: policy?.allRepositoriesAllowChanges ?? false,
+          ...(policy?.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}),
+        }]
+      })),
     })
     pending.run()
   }
