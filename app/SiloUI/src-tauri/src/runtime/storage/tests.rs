@@ -748,6 +748,57 @@ fn history_retains_latest_fifty_attempts_including_failures() {
 }
 
 #[test]
+fn additive_maintenance_fields_survive_save_and_reload() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = crate::test_support::paths(directory.path());
+    let id = "00000000-0000-4000-8000-000000000001";
+    let path = record_path(&paths, id);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let saved = json!({
+        "lastTrimAt": 100,
+        "lastAttemptAt": 100,
+        "lastReclaimedBytes": 2048,
+        "lastError": null,
+        "futureMaintenance": {"method": "discard", "enabled": true},
+        "history": [{
+            "at": 100,
+            "trigger": "future-trigger",
+            "reclaimedBytes": 2048,
+            "error": null,
+            "futureMeasurement": {"bytes": 4096}
+        }]
+    });
+    fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+
+    let mut record = load(&paths, id).unwrap();
+    assert_eq!(record.last_trim_at, Some(100));
+    assert_eq!(record.history[0].trigger, "future-trigger");
+    record.last_attempt_at = Some(200);
+    save(&paths, id, &record).unwrap();
+
+    let written: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(written["futureMaintenance"], saved["futureMaintenance"]);
+    assert_eq!(written["history"], saved["history"]);
+    let reloaded = load(&paths, id).unwrap();
+    assert_eq!(reloaded.last_attempt_at, Some(200));
+    assert_eq!(reloaded.last_trim_at, Some(100));
+    assert_eq!(reloaded.history.len(), 1);
+}
+
+#[test]
+fn malformed_known_maintenance_fields_still_preserve_the_file() {
+    let directory = tempfile::tempdir().unwrap();
+    let paths = crate::test_support::paths(directory.path());
+    let id = "00000000-0000-4000-8000-000000000001";
+    let path = record_path(&paths, id);
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let bytes = br#"{"lastTrimAt":"invalid","futureMaintenance":true}"#;
+    fs::write(&path, bytes).unwrap();
+    assert!(load(&paths, id).is_err());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+}
+
+#[test]
 fn legacy_record_keeps_last_success_when_history_is_introduced() {
     let _test_state = crate::test_support::global_state();
     let (_dir, paths, machine, _) = fixture();

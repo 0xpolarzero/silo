@@ -39,10 +39,12 @@ struct ReclaimEntry {
     trigger: String,
     reclaimed_bytes: Option<u64>,
     error: Option<String>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Clone, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 struct Record {
     #[serde(default)]
     history: Vec<ReclaimEntry>,
@@ -50,6 +52,8 @@ struct Record {
     last_attempt_at: Option<u64>,
     last_reclaimed_bytes: Option<u64>,
     last_error: Option<String>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -100,6 +104,7 @@ fn load(paths: &RuntimePaths, id: &str) -> Result<Record, RuntimeError> {
                 trigger: "legacy".into(),
                 reclaimed_bytes: record.last_reclaimed_bytes,
                 error: None,
+                extra: serde_json::Map::new(),
             });
         }
     }
@@ -453,6 +458,7 @@ fn trim_triggered(
             trigger: trigger.into(),
             reclaimed_bytes: None,
             error: record.last_error.clone(),
+            extra: serde_json::Map::new(),
         },
     );
     record.history.truncate(HISTORY_LIMIT);
