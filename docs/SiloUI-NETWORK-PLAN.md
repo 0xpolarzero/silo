@@ -46,6 +46,20 @@ Browser actions use the current browser setting and recheck the endpoint before
 opening it. Status-bar Open site shares this state. The status window can read
 and open ports but cannot change mappings. Fixtures remain in preview/test code.
 
+### Sandbox hostnames and Safari
+
+Published websites use a per-sandbox `.localhost` hostname. Silo passes this
+hostname unchanged to the selected browser. Safari resolves these names
+automatically on macOS 26 onward; Silo also supports macOS 14 and 15, where
+users should select Chrome or Firefox. The existing **Copy 127.0.0.1 address**
+action bypasses hostname resolution, but shares a cookie hostname with other
+services opened at that IP, regardless of port.
+
+Primary evidence: [WebKit bug 160504, comment 19](https://bugs.webkit.org/show_bug.cgi?id=160504#c19)
+reports failure on macOS 15.7 and success on macOS 26.0; [comment 20](https://bugs.webkit.org/show_bug.cgi?id=160504#c20)
+confirms that the fix was implemented in OS frameworks. This review checked
+Silo's URL construction and launch code; it did not launch Safari or a live VM.
+
 ## Verification
 
 Focused frontend tests cover loading, cached refresh, errors, add/remove,

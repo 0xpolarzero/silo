@@ -18,6 +18,7 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
   /** Preselected sandboxes when adding a new secret (e.g. scoped to one sandbox on its page). */
   initialWorkspaces?: string[]
 }) {
+  const [baseline, setBaseline] = useState(secret)
   const [draft, setDraft] = useState<SecretDraft>(() => ({
     name: secret?.name ?? "", value: "", workspaces: secret?.workspaces ?? initialWorkspaces ?? [],
     domains: secret?.allowedDomains.join(", ") ?? "", allowAnyDomain: secret?.allowedDomains.includes("*") ?? false,
@@ -27,6 +28,10 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
   const id = useId()
   const workspaces = source.workspaces.filter(w => !w.computer).filter(({ machine }) => machine.kind === "vm")
   const title = secret ? `Edit ${secret.name}` : "Add secret"
+  const settingsChanged = Boolean(secret && baseline && (
+    secret.workspaces.length !== baseline.workspaces.length || !secret.workspaces.every(name => baseline.workspaces.includes(name))
+    || secret.allowedDomains.length !== baseline.allowedDomains.length || !secret.allowedDomains.every(domain => baseline.allowedDomains.includes(domain))
+  ))
   const anyDomain = draft.domains.split(/[\s,]+/).includes("*")
 
   useEffect(() => {
@@ -47,7 +52,7 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
 
   return <form ref={formRef} aria-label={title} className="grid min-w-0 gap-3 p-3" noValidate onSubmit={(event) => {
     event.preventDefault()
-    if (saving) return
+    if (saving || settingsChanged) return
     const result = secretConfiguration(draft, source.secrets, workspaces.map(({ machine }) => machine.name), secret)
     if (result.errors) {
       setErrors(result.errors)
@@ -67,7 +72,15 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
     }
   }}>
     <h3 className="flex min-w-0 items-center gap-2 text-xs font-semibold"><KeyRound className="size-4 shrink-0" aria-hidden="true" /><span className="break-all">{title}</span></h3>
-    <fieldset disabled={saving} className="grid min-w-0 gap-3">
+    {settingsChanged && <div className="grid gap-2 rounded-md bg-amber-500/10 p-2.5 text-[11px]">
+      <p role="alert">This secret changed while you were editing. Reload its current settings before saving.</p>
+      <Button type="button" variant="outline" size="sm" disabled={saving} onClick={() => {
+        if (!secret) return
+        setBaseline(secret)
+        update({ name: secret.name, workspaces: [...secret.workspaces], domains: secret.allowedDomains.join(", "), allowAnyDomain: secret.allowedDomains.includes("*") })
+      }}>Reload settings</Button>
+    </div>}
+    <fieldset disabled={saving || settingsChanged} className="grid min-w-0 gap-3">
     <div className="grid min-w-0 gap-3 sm:grid-cols-2">
       <div className="grid content-start gap-1">
         <label htmlFor={`${id}-name`} className="text-[11px] font-medium text-muted-foreground">Name</label>
@@ -113,7 +126,7 @@ export function SecretEditor({ secret, source, onSave, onCancel, saving = false,
     {saveError && <p role="alert" className="text-[11px] text-destructive">{saveError}</p>}
     <div className="flex justify-end gap-2">
       <Button type="button" variant="outline" size="sm" disabled={saving} onClick={onCancel}>Cancel</Button>
-      <Button type="submit" size="sm" disabled={saving}>{saving && <LoaderCircle className="animate-spin" aria-hidden="true" />}{saving ? "Saving…" : saveError ? "Retry" : "Save"}</Button>
+      <Button type="submit" size="sm" disabled={saving || settingsChanged}>{saving && <LoaderCircle className="animate-spin" aria-hidden="true" />}{saving ? "Saving…" : saveError ? "Retry" : "Save"}</Button>
     </div>
   </form>
 }

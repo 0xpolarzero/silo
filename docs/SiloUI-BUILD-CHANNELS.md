@@ -26,6 +26,16 @@ production; any other identifier is treated as development, so a stray build can
 never touch production data. Unit tests pin every production name to its released
 value and require every development name to differ.
 
+Development and packaging scripts read this API through the standalone
+`scripts/channel_names.rs` exporter. The Python adapter compiles it in a temporary
+directory, reads its JSON output, and deletes the executable; the Node adapter
+uses the same Python adapter. This requires Rust and Python 3.11 or newer but no
+Tauri build, GitHub configuration, or access to application state. It avoids a
+second registry of names or a parser tied to Rust source formatting. Linux
+verification harnesses use the same adapter for runtime aliases, including
+non-production identifiers, so Dev fixtures look under the Dev private home. Static Tauri
+configuration and documentation examples remain pinned by channel tests.
+
 ## Shared state that is now per channel
 
 | State | Production (unchanged) | Development |
@@ -41,6 +51,7 @@ value and require every development name to differ.
 | SSH aliases for other computers' sandboxes | `silo-remote-<host>-<vm>` | `silo-dev-remote-<host>-<vm>` |
 | SSH config/known_hosts/keys | under the private homes above | under `~/.silo-dev` |
 | `~/.ssh/config` | one `Include` line per private home, so each channel adds its own line | |
+| Native app menus, dialogs, tray labels and shutdown inhibitor | `Silo` | `Silo Dev` |
 | VS Code profile | `Silo` | `Silo Dev` |
 | Linux autostart entry and desktop id | `org.silo.preview.desktop` ("Silo Preview") | `org.silo.dev.desktop` ("Silo Dev") |
 | Linux tray id, notification desktop entry | `org.silo.preview`, `Silo` | `org.silo.dev`, `Silo Dev` |
@@ -83,6 +94,13 @@ One-time and explicit. Production is only read; the command refuses to run while
 Silo Dev is running, lists what it will copy, and asks before replacing anything
 Dev already has (previous files are kept as `*.bak-<time>`). Re-running is safe.
 Values are never printed.
+
+Imported private files and their backups use `0600`, including when the previous
+Dev file had broader permissions. Backups use the same atomic writer as imports:
+[Node's file writer](https://nodejs.org/docs/latest-v24.x/api/fs.html#fswritefilesyncfile-data-options)
+accepts creation permissions, while
+[the copy API's mode](https://nodejs.org/docs/latest-v24.x/api/fs.html#fscopyfilesyncsrc-dest-mode)
+controls copy flags rather than permissions. Public SSH keys use `0644`.
 
 Copied:
 

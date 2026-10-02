@@ -1,9 +1,10 @@
-import { useId, useState } from "react"
+import { useId, useRef, useState } from "react"
 import { CalendarDays } from "lucide-react"
 import { FilterCombobox, type FilterOption } from "@/components/filter-combobox"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
+import { restoreFocus } from "@/lib/focus"
 
 export interface LogFilterValues { source: string; since: string; until: string }
 const sources = ["stdout", "stderr", "output", "system", "runtime", "kernel"] as const
@@ -12,6 +13,8 @@ const dateOption = "date"
 /** Dates are optional absolute bounds; opening the editor never adds a default range. */
 export function LogFilters({ source, since, until, onChange }: LogFilterValues & { onChange: (filters: LogFilterValues) => void }) {
   const [open, setOpen] = useState(false)
+  const opener = useRef<HTMLElement | null>(null)
+  const interactedOutside = useRef(false)
   const [fromDate, setFromDate] = useState("")
   const [fromTime, setFromTime] = useState("")
   const [toDate, setToDate] = useState("")
@@ -73,7 +76,16 @@ export function LogFilters({ source, since, until, onChange }: LogFilterValues &
         </Button>}
       </div>
     </PopoverAnchor>
-    <PopoverContent className="w-[min(22rem,calc(100vw-2rem))] p-3" aria-labelledby={titleId}>
+    <PopoverContent className="w-[min(22rem,calc(100vw-2rem))] p-3" aria-labelledby={titleId}
+      onOpenAutoFocus={() => {
+        opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+        interactedOutside.current = false
+      }}
+      onInteractOutside={() => { interactedOutside.current = true }}
+      onCloseAutoFocus={event => {
+        event.preventDefault()
+        if (!interactedOutside.current) restoreFocus(opener.current)
+      }}>
       <div className="mb-3 flex items-center gap-2"><CalendarDays className="size-4 text-muted-foreground" aria-hidden="true" /><h3 id={titleId} className="text-sm font-medium">Filter by date</h3></div>
       <div className="mb-3 grid grid-cols-2 gap-1.5" aria-label="Date presets">
         <Button type="button" variant="outline" size="xs" onClick={() => applyPreset(1)}>Last hour</Button>
@@ -116,6 +128,6 @@ function boundary(date: string, time: string, end: boolean): string {
   return value.toISOString()
 }
 function rangeLabel(since: string, until: string): string {
-  const format = (value: string) => new Date(value).toLocaleString("en", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
+  const format = (value: string) => new Date(value).toLocaleString("en", { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" })
   return since && until ? `${format(since)} → ${format(until)}` : since ? `Since ${format(since)}` : `Until ${format(until)}`
 }

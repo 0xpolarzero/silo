@@ -44,14 +44,15 @@ export function useSidebarDisclosure() {
 
   useEffect(() => {
     if (!previewing) return
-    function dismiss(event: KeyboardEvent) {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Tab") keyboardNavigation.current = true
       if (event.key !== "Escape") return
       event.preventDefault()
       hoverBlocked.current = overToggle.current
       closePreview()
     }
-    window.addEventListener("keydown", dismiss)
-    return () => window.removeEventListener("keydown", dismiss)
+    window.addEventListener("keydown", onKeyDown)
+    return () => window.removeEventListener("keydown", onKeyDown)
   }, [previewing, closePreview])
 
   return {

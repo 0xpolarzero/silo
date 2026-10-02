@@ -54,7 +54,7 @@ export interface OperationQueue {
   waiting: OperationEntry[]
 }
 
-export const operationEntrySchema = z.object({
+const operationEntrySchema = z.object({
   id: z.number().int().nonnegative(),
   label: z.string(),
   kind: z.enum(operationKinds).catch("other").default("other"),
@@ -90,13 +90,8 @@ const SELF_NOTIFIED_KINDS: ReadonlySet<OperationKind> = new Set([
 ])
 
 /** True when an entry already has its own notification and needs no queue toast. */
-export function hasOwnNotification(entry: OperationEntry): boolean {
+function hasOwnNotification(entry: OperationEntry): boolean {
   return SELF_NOTIFIED_KINDS.has(entry.kind)
-}
-
-/** True when an entry is an export/import operation shown by its own transfer toast. */
-export function isTransferOperation(entry: OperationEntry): boolean {
-  return entry.kind === "export" || entry.kind === "import"
 }
 
 /** The queue with entries that have their own notification removed. */
@@ -112,7 +107,7 @@ export function toastableQueue(queue: OperationQueue): OperationQueue {
  * nothing for the same VM is ahead of it. A computer-wide operation conflicts with
  * everything. This mirrors the backend `Scope::conflicts` rule.
  */
-export function operationsConflict(a: OperationEntry, b: OperationEntry): boolean {
+function operationsConflict(a: OperationEntry, b: OperationEntry): boolean {
   return a.vmId === null || b.vmId === null || a.vmId === b.vmId
 }
 
@@ -197,12 +192,12 @@ export function waitingStatusText(queue: OperationQueue, entry: OperationEntry):
 /** Fallback threshold when an operation carries no expected duration. */
 export const STUCK_OPERATION_MS = 10 * 60 * 1000
 
-export function operationElapsedMs(entry: OperationEntry, now: number): number {
+function operationElapsedMs(entry: OperationEntry, now: number): number {
   return Math.max(0, now - entry.sinceMs)
 }
 
 /** The age past which an operation is flagged as taking longer than expected. */
-export function stuckThresholdMs(entry: OperationEntry): number {
+function stuckThresholdMs(entry: OperationEntry): number {
   return entry.expectedMs ?? STUCK_OPERATION_MS
 }
 

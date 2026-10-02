@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from channel_names import channel_for_identifier
 import secrets
 import shlex
 import signal
@@ -399,7 +400,7 @@ def runtime_context(name):
         directory = record["directory"]
     storage_home = app_data / directory / "microsandbox"
     home = Path(os.environ["HOME"])
-    alias = home / ".silo" / hashlib.sha256(os.fsencode(storage_home)).hexdigest()[:12]
+    alias = home / channel_for_identifier(os.environ["SILO_LINUX_APPLICATION_ID"])["stateDir"] / hashlib.sha256(os.fsencode(storage_home)).hexdigest()[:12]
     return app_data, storage_home, alias
 
 

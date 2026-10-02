@@ -27,7 +27,10 @@ function filterCommand(label: string, search: string, keywords: string[] = []) {
 export function ApplicationCommandMenu({ commands, disabled = false, openRequest, nativeShortcuts = false }: { commands: readonly ApplicationCommand[]; disabled?: boolean; openRequest?: number; nativeShortcuts?: boolean }) {
   const [open, setOpenState] = useState(false)
   // A command with a question asks it here, in place of the list, before it runs.
-  const [confirming, setConfirming] = useState<ApplicationCommand | null>(null)
+  const [confirmingId, setConfirming] = useState<string | null>(null)
+  const confirming = commands.find(command => command.id === confirmingId)
+  // A snapshot can remove the action or its need for confirmation while the question is open.
+  if (confirmingId !== null && !confirming?.confirm) setConfirming(null)
   const setOpen = (next: boolean | ((current: boolean) => boolean)) => {
     setOpenState(next)
     setConfirming(null)
@@ -90,7 +93,7 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
         {confirming?.confirm ? <CommandConfirmationPanel command={confirming} onCancel={() => setConfirming(null)} onConfirm={() => { if (disabled) return; setOpen(false); confirming.run() }} /> : <Command label="Search commands" filter={filterItem} loop vimBindings={false}>
           <div className="flex items-center gap-3 border-b border-border px-4">
             <Search aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
-            <Command.Input aria-label="Search commands" placeholder="Search pages, sandboxes, and actions…" autoComplete="off" spellCheck={false} className="h-12 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground" />
+            <Command.Input aria-label="Search commands" placeholder="Search pages, sandboxes, and actions…" autoFocus autoComplete="off" spellCheck={false} className="h-12 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground" />
             <Dialog.Close aria-label="Close commands" className="rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring">Esc</Dialog.Close>
           </div>
           <Command.List className="max-h-[min(22rem,50dvh)] overflow-y-auto overscroll-contain scroll-py-2 p-1.5" label="Commands">
@@ -98,7 +101,7 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
             {groups.map((group) => <Command.Group key={group} value={group.replaceAll(" ", "-")} heading={group} className="[&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:pb-1.5 [&_[cmdk-group-heading]]:text-[10px] [&_[cmdk-group-heading]]:font-medium [&_[cmdk-group-heading]]:text-muted-foreground">
               {commands.filter((command) => command.group === group).map((command) => <Command.Item key={command.id} value={command.id} keywords={[command.label, ...(command.keywords ?? [])]} onSelect={() => {
                 if (disabled) return
-                if (command.confirm) { setConfirming(command); return }
+                if (command.confirm) { setConfirming(command.id); return }
                 keepFocus.current = Boolean(command.opensPanel)
                 setOpen(false)
                 command.run()

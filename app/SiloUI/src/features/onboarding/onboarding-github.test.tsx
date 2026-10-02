@@ -23,6 +23,15 @@ function expectHiddenPanelHeading(name: string) {
   expect(heading.parentElement?.tagName).toBe("SECTION")
 }
 
+it("uses singular sandbox labels in the review of one sandbox", async () => {
+  const user = userEvent.setup()
+  const source = { ...onboardingScenarios.complete, machineConfigurations: [onboardingScenarios.complete.machineConfigurations[0]], githubPolicies: [] }
+  render(<OnboardingPreview source={source} initialGitHubConnectionState="connected" />)
+  await user.click(screen.getByRole("tab", { name: /Review/ }))
+  expect(screen.getByText(/^Taylor Example/).textContent).toBe("Taylor Example <taylor@example.com> → all 1 sandbox")
+  expect(screen.getByText(/^0 repositories across/).textContent).toBe("0 repositories across 0 of 1 sandbox · 0 repositories allowing GitHub changes")
+})
+
 
 it("continues from disconnected GitHub without marking it complete", async () => {
   const user = userEvent.setup()

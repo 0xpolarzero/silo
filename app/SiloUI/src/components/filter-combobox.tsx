@@ -1,10 +1,11 @@
-import { useId, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { Search, X } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import { cn } from "@/lib/utils"
+import { isRestoringFocus } from "@/lib/focus"
 
 export interface FilterOption<Value extends string> {
   value: Value
@@ -44,11 +45,18 @@ export function FilterCombobox<Value extends string>({
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState("")
   const [activeIndex, setActiveIndex] = useState(0)
+  const activeOption = useRef<HTMLButtonElement>(null)
   const selectedOptions = options.filter(({ value }) => selectedValues.has(value))
   const results = options.filter(({ value, label: optionLabel }) => (
     !selectedValues.has(value)
     && optionLabel.toLowerCase().includes(query.trim().toLowerCase())
   ))
+  const lastIndex = Math.max(0, results.length - 1)
+  if (activeIndex > lastIndex) setActiveIndex(lastIndex)
+  const activeValue = results[activeIndex]?.value
+  useEffect(() => {
+    if (open) activeOption.current?.scrollIntoView({ block: "nearest", inline: "nearest" })
+  }, [open, activeIndex, activeValue])
 
   function addValue(value: Value) {
     onChange(new Set([...selectedValues, value]))
@@ -85,7 +93,7 @@ export function FilterCombobox<Value extends string>({
               className={cn("pl-8 text-xs", compact ? "h-7 w-36" : "h-8 w-48")}
               placeholder={placeholder}
               value={query}
-              onFocus={() => setOpen(true)}
+              onFocus={event => { if (!isRestoringFocus(event.currentTarget)) setOpen(true) }}
               onClick={() => setOpen(true)}
               onChange={(event) => {
                 setQuery(event.target.value)
@@ -126,9 +134,11 @@ export function FilterCombobox<Value extends string>({
         >
           {results.length > 0 ? results.map((option, index) => (
             <button
+              ref={index === activeIndex ? activeOption : undefined}
               key={option.value}
               id={`${listboxId}-${index}`}
               type="button"
+              tabIndex={-1}
               role="option"
               aria-selected={index === activeIndex}
               className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus:bg-accent aria-selected:bg-accent"

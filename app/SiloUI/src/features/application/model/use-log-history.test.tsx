@@ -19,6 +19,180 @@ function deferred<T>() {
 afterEach(() => vi.useRealTimers())
 
 describe("cached log history", () => {
+  it.each([false, true])("names the owning computers for equally named sandbox failures (older page: %s)", async older => {
+    const { options, workspace } = fixture()
+    const remote = { ...workspace, machine: { ...workspace.machine, id: "remote" }, computer: { id: "office", name: "Office Mac", address: "owner@office", connected: true, vmId: "vm-1" } }
+    options.workspaces = [workspace, remote]
+    let fail = !older
+    options.loader = vi.fn(async request => {
+      if (fail) throw new Error("Connection lost")
+      return fixtureLogPage(request.computerId ? remote : workspace, { ...request, limit: 2 })
+    })
+    const view = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    if (older) { fail = true; await act(() => view.result.current.loadOlder()) }
+    expect(view.result.current.error).toBe(`${workspace.machine.name} (This computer): Connection lost; ${workspace.machine.name} (Office Mac): Connection lost`)
+  })
+
+  it.each([false, true])("preserves a structured failure message and retries the failed read (older page: %s)", async older => {
+    const { options, workspace, loader } = fixture()
+    const message = "The connection was lost. Reconnect this computer, then retry."
+    if (!older) loader.mockRejectedValueOnce({ code: "internal", message })
+    const view = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    if (older) {
+      loader.mockRejectedValueOnce({ code: "internal", message })
+      await act(() => view.result.current.loadOlder())
+    }
+    expect(view.result.current.error).toBe(`${workspace.machine.name}: ${message}`)
+    await act(() => view.result.current.retry())
+    expect(view.result.current.error).toBe("")
+    expect(view.result.current.rows).toHaveLength(older ? 4 : 2)
+  })
+
+  it("does not reorder log entries when workspace presentation refreshes", async () => {
+    const { options, workspace } = fixture()
+    const page = fixtureLogPage(workspace, { sandboxId: workspace.machine.id })
+    const reads = vi.fn(() => page.entries[0].occurredAt)
+    const occurredAt = page.entries[0].occurredAt
+    reads.mockImplementation(() => occurredAt)
+    Object.defineProperty(page.entries[0], "occurredAt", { get: reads })
+    options.loader = vi.fn(async () => page)
+    const view = renderHook(({ workspaces }) => useLogHistory({ ...options, workspaces }), { initialProps: { workspaces: [workspace] } })
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    reads.mockClear()
+    const renamed = { ...workspace, machine: { ...workspace.machine, name: "Renamed sandbox" } }
+    view.rerender({ workspaces: [renamed] })
+    expect(view.result.current.rows[0].workspace.machine.name).toBe("Renamed sandbox")
+    expect(reads).not.toHaveBeenCalled()
+    expect(options.loader).toHaveBeenCalledOnce()
+  })
+
+  it("pages through 50,000 records while retaining at most 5,000, including across navigation", async () => {
+    const { options, workspace } = fixture()
+    options.loader = vi.fn(async request => {
+      const offset = Number(request.cursor ?? 0)
+      return {
+        entries: Array.from({ length: Math.min(200, 50_000 - offset) }, (_, index) => ({ id: String(offset + index), line: `record ${offset + index}`, occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" })),
+        nextCursor: offset + 200 < 50_000 ? String(offset + 200) : null,
+        totalMatches: 50_000, timestampEstimated: false, oldestAvailableTimestamp: null, newestAvailableTimestamp: null,
+      }
+    })
+    let view = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    const seen = new Set<string>()
+    for (let page = 0; page < 250; page++) {
+      if (page) await act(() => view.result.current.loadOlder())
+      const retained = view.result.current.results.flatMap(result => result.page.entries)
+      expect(retained.length).toBeLessThanOrEqual(5_000)
+      for (const { entry } of view.result.current.rows) seen.add(entry.id)
+      if (page === 24) {
+        act(() => {
+          view.result.current.setScrollTop(5000 * 52 - 520)
+          view.result.current.setExpandedRows(() => new Map([[JSON.stringify(["local", workspace.machine.id, "0"]), 172]]))
+        })
+      }
+      if (page === 25) {
+        expect(view.result.current.scrollTop).toBe(5000 * 52 - 520 - 200 * 52 - 120)
+        expect(view.result.current.expandedRows.size).toBe(0)
+        view.unmount()
+        view = renderHook(() => useLogHistory(options))
+        expect(options.loader).toHaveBeenCalledTimes(26)
+      }
+    }
+    expect(seen.size).toBe(50_000)
+    expect(view.result.current.hasOlder).toBe(false)
+    expect(view.result.current.results[0].request).not.toHaveProperty("cursor")
+    options.loader.mockRejectedValueOnce(new Error("Disconnected"))
+    await act(() => view.result.current.refresh())
+    expect(view.result.current.historyLimited).toBe(true)
+    expect(view.result.current.rows).toHaveLength(5000)
+    await act(() => view.result.current.refresh())
+    expect(view.result.current.rows[0].entry.id).toBe("0")
+    expect(view.result.current.scrollTop).toBe(0)
+  })
+
+  it("bounds retained log text before reaching the record limit", async () => {
+    const { options, workspace } = fixture()
+    workspace.logs = Array.from({ length: 100 }, (_, index) => ({ line: "x".repeat(64 * 1024), occurredAt: new Date(1700000000000 + index * 1000).toISOString() }))
+    options.loader = vi.fn(async request => fixtureLogPage(workspace, { ...request, limit: 10 }))
+    const view = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    const seen = new Set<string>()
+    for (let page = 0; page < 10; page++) {
+      if (page) await act(() => view.result.current.loadOlder())
+      const retained = view.result.current.results.flatMap(result => result.page.entries)
+      expect(retained.reduce((sum, entry) => sum + 2 * entry.line.length, 0)).toBeLessThanOrEqual(8 * 1024 * 1024)
+      for (const { entry } of view.result.current.rows) seen.add(entry.id)
+    }
+    expect(seen.size).toBe(100)
+  })
+
+  it.each([false, true])("keeps quiet-owner records buffered while a busy owner's bounded window advances (timestamp ties: %s)", async sameTime => {
+    const { options, workspace } = fixture()
+    const quiet = { ...workspace, machine: { ...workspace.machine, id: "quiet" } }
+    options.workspaces = [workspace, quiet]
+    options.loader = vi.fn(async request => {
+      const offset = Number(request.cursor ?? 0)
+      const quietOwner = request.sandboxId === "quiet"
+      const total = quietOwner ? 1000 : 6000
+      return {
+        entries: Array.from({ length: Math.min(200, total - offset) }, (_, index) => ({ id: sameTime ? String(7000 - offset - index - (quietOwner ? 6000 : 0)).padStart(6, "0") : `${request.sandboxId}:${offset + index}`, line: "record", occurredAt: new Date(1700000000000 - (sameTime ? 0 : offset + index + (quietOwner ? 6000 : 0)) * 1000).toISOString(), sandboxId: request.sandboxId, computerId: "local", source: "output" })),
+        nextCursor: offset + 200 < total ? String(offset + 200) : null,
+        totalMatches: total, timestampEstimated: false, oldestAvailableTimestamp: null, newestAvailableTimestamp: null,
+      }
+    })
+    const view = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    const seen = new Set(view.result.current.rows.map(row => row.entry.id))
+    for (let page = 0; page < 33; page++) {
+      await act(() => view.result.current.loadOlder())
+      expect(view.result.current.results.reduce((sum, result) => sum + result.page.entries.length, 0)).toBeLessThanOrEqual(5000)
+      for (const { entry } of view.result.current.rows) seen.add(entry.id)
+      if (page < 28) expect(options.loader.mock.calls.filter(([request]) => request.sandboxId === "quiet")).toHaveLength(1)
+    }
+    expect(view.result.current.hasOlder).toBe(false)
+    expect(seen.size).toBe(7000)
+  })
+
+  it("rejects a cursor cycle after its original records have left the window", async () => {
+    const { options, workspace } = fixture()
+    options.loader = vi.fn(async request => {
+      const offset = Number(request.cursor ?? 0)
+      return {
+        entries: [{ id: String(offset), line: "record", occurredAt: new Date(1700000000000 - offset * 1000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" }],
+        nextCursor: String(offset + 1), totalMatches: 10_000, timestampEstimated: false, oldestAvailableTimestamp: null, newestAvailableTimestamp: null,
+      }
+    })
+    const view = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    options.loader.mockImplementation(async request => {
+      const offset = Number(request.cursor ?? 0)
+      return { ...fixtureLogPage(workspace, request), entries: Array.from({ length: 200 }, (_, index) => ({ id: String(offset + index), line: "record", occurredAt: new Date(1700000000000 - (offset + index) * 1000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" })), nextCursor: String(offset + 200) }
+    })
+    for (let page = 0; page < 70; page++) await act(() => view.result.current.loadOlder())
+    expect(view.result.current.rows.some(row => row.entry.id === "0")).toBe(false)
+    const cycle = { ...fixtureLogPage(workspace, { sandboxId: workspace.machine.id }), entries: [{ id: "0", line: "old cycle", occurredAt: new Date(1700000000000).toISOString(), sandboxId: workspace.machine.id, computerId: "local", source: "output" }], nextCursor: "1" }
+    options.loader.mockResolvedValueOnce(cycle)
+    await act(() => view.result.current.loadOlder())
+    expect(view.result.current.hasOlder).toBe(false)
+    expect(view.result.current.error).toContain("did not advance")
+  })
+
+  it("discards a single oversized record and retains the query and older cursor", async () => {
+    const { options, workspace } = fixture()
+    const page = fixtureLogPage(workspace, { sandboxId: workspace.machine.id, limit: 2 })
+    page.entries[0].line = "x".repeat(4 * 1024 * 1024)
+    options.loader = vi.fn(async () => page)
+    const view = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(view.result.current.ready).toBe(true))
+    expect(view.result.current.rows).toHaveLength(1)
+    expect(view.result.current.historyLimited).toBe(true)
+    expect(view.result.current.hasOlder).toBe(true)
+    expect(view.result.current.results[0].request).not.toHaveProperty("cursor")
+    expect(view.result.current.results[0].page.entries[0].line).toBe("record 09")
+  })
+
   it("restores older pages and scroll position immediately after navigation without fetching", async () => {
     const { options, loader } = fixture()
     const first = renderHook(() => useLogHistory(options))
@@ -100,7 +274,7 @@ describe("cached log history", () => {
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     await act(() => view.result.current.loadOlder())
     expect(view.result.current.results.map(result => result.page.entries.length)).toEqual([4, 2])
-    expect(view.result.current.error).toContain("remote sandbox: Error: Offline")
+    expect(view.result.current.error).toContain("remote sandbox: Offline")
     fail = false
     await act(() => view.result.current.retry())
     expect(options.loader).toHaveBeenCalledTimes(5)
@@ -133,7 +307,7 @@ describe("cached log history", () => {
     await waitFor(() => expect(view.result.current.ready).toBe(true))
     await act(() => view.result.current.loadOlder())
     expect(view.result.current.rows).toHaveLength(4)
-    expect(view.result.current.error).toContain("offline sandbox: Error: Disconnected")
+    expect(view.result.current.error).toContain("offline sandbox: Disconnected")
     act(() => view.result.current.setScrollTop(100))
     options.loader.mockRejectedValue(new Error("All disconnected"))
     await act(() => view.result.current.refresh())
@@ -211,22 +385,25 @@ describe("cached log history", () => {
     expect(view.result.current.rows).toHaveLength(2)
   })
 
-  it("expires inactive views before retained backend cursors expire", async () => {
+  it.each([10 * 60_000 - 1, 10 * 60_000, 10 * 60_000 + 1])("expires inactive views before retained backend cursors expire (%i ms)", async elapsed => {
+    const now = new Date("2026-10-02T12:00:00Z").getTime()
+    vi.useFakeTimers({ now, toFake: ["Date"] })
     const { options, loader } = fixture()
     const first = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(first.result.current.ready).toBe(true))
     first.unmount()
-    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 11 * 60 * 1000)
-    try {
-      const second = renderHook(() => useLogHistory(options))
-      await waitFor(() => expect(second.result.current.ready).toBe(true))
-      expect(loader).toHaveBeenCalledTimes(2)
-    } finally { vi.restoreAllMocks() }
+    vi.setSystemTime(now + elapsed)
+    const second = renderHook(() => useLogHistory(options))
+    await waitFor(() => expect(second.result.current.ready).toBe(true))
+    expect(loader).toHaveBeenCalledTimes(elapsed < 10 * 60_000 ? 1 : 2)
   })
 
   it("evicts the least recently used inactive view after the cache fills", async () => {
+    const now = new Date("2026-10-02T12:00:00Z").getTime()
+    vi.useFakeTimers({ now, toFake: ["Date"] })
     const { options, loader } = fixture()
     for (let index = 0; index < 10; index++) {
+      vi.setSystemTime(now + index * 1000)
       const view = renderHook(() => useLogHistory({ ...options, query: String(index) }))
       await waitFor(() => expect(view.result.current.ready).toBe(true))
       view.unmount()
@@ -240,15 +417,20 @@ describe("cached log history", () => {
     expect(loader).toHaveBeenCalledTimes(11)
   })
 
-  it("releases an oversized inactive history rather than retaining unbounded log text", async () => {
+  it("bounds the combined text of inactive histories", async () => {
     const { options, workspace, loader } = fixture()
-    workspace.logs = [{ line: "x".repeat(4 * 1024 * 1024), occurredAt: "2026-09-18T10:00:00Z" }]
+    workspace.logs = Array.from({ length: 40 }, (_, index) => ({ line: "x".repeat(64 * 1024), occurredAt: new Date(1700000000000 + index * 1000).toISOString() }))
     const first = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(first.result.current.ready).toBe(true))
-    expect(first.result.current.rows).toHaveLength(1)
+    for (let page = 1; page < 20; page++) await act(() => first.result.current.loadOlder())
+    expect(first.result.current.rows).toHaveLength(40)
     first.unmount()
+    const other = renderHook(() => useLogHistory({ ...options, query: "x" }))
+    await waitFor(() => expect(other.result.current.ready).toBe(true))
+    for (let page = 1; page < 20; page++) await act(() => other.result.current.loadOlder())
+    other.unmount()
     const second = renderHook(() => useLogHistory(options))
     await waitFor(() => expect(second.result.current.ready).toBe(true))
-    expect(loader).toHaveBeenCalledTimes(2)
+    expect(loader).toHaveBeenCalledTimes(41)
   })
 })

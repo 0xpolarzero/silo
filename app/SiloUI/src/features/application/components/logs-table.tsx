@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { WorkspaceBadge } from "./application-ui"
 import type { ApplicationWorkspace } from "../model/application-source"
-import { formatLog, type LogEntry } from "../model/logs"
+import { formatLog, LOG_ROW_HEIGHT as ROW_HEIGHT, type LogEntry } from "../model/logs"
 
 export interface LogRow { entry: LogEntry; workspace: ApplicationWorkspace }
 interface LogsTableProps {
@@ -21,7 +21,6 @@ interface LogsTableProps {
   onExpandedRowsChange: (update: (current: ReadonlyMap<string, number>) => ReadonlyMap<string, number>) => void
 }
 
-const ROW_HEIGHT = 52
 const HEADER_HEIGHT = 32
 const OVERSCAN = 8
 const PREFETCH_DISTANCE = ROW_HEIGHT * 6
@@ -67,7 +66,7 @@ function LogRecord({ row, rowIndex, open, onOpenChange, onHeightChange }: {
         <td role="cell" className="px-3 whitespace-nowrap"><WorkspaceBadge name={workspace.machine.name} state={workspace.state} computer={workspace.computer} /></td>
         <td role="cell" className="px-3 whitespace-nowrap text-muted-foreground">{entry.source}</td>
         <td role="cell" className="px-3"><div className="flex w-12 items-center justify-end">
-          <CopyButton size="icon-xs" variant="ghost" className="opacity-0 group-hover/log-row:opacity-100 group-focus-within/log-row:opacity-100" value={formatLog(entry)} labels={{ idle: `Copy log line from ${workspace.machine.name} at ${time}`, copied: "Log line copied", failed: "Copy log line failed" }} />
+          <CopyButton size="icon-xs" variant="ghost" className="opacity-0 group-hover/log-row:opacity-100 group-focus-within/log-row:opacity-100" value={() => formatLog(entry)} labels={{ idle: `Copy log line from ${workspace.machine.name} at ${time}`, copied: "Log line copied", failed: "Copy log line failed" }} />
           <CollapsibleTrigger asChild><Button size="icon-xs" variant="ghost" className={disclosureTriggerStateClass} title={open ? "Collapse log" : "Expand log"} aria-label={`${open ? "Collapse" : "Expand"} ${label}`}><DisclosureIndicator /></Button></CollapsibleTrigger>
         </div></td>
       </tr>

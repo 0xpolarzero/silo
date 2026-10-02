@@ -51,9 +51,7 @@ html.dark .glass-study:not([data-material="original"]) .silo-sidebar button[aria
 @media (max-width:700px) { .glass-study { padding:20px 12px; } .study-heading h1 { font-size:26px; } .study-tag { display:none; } .study-controls { gap:4px; flex-wrap:wrap; justify-content:center; } .study-slider { gap:5px; } .study-controls button { padding:8px; } .glass-study .silo-window { min-height:460px; } }
 @media (prefers-reduced-motion:reduce) { .study-ribbon,.study-orbit { transition:none; } }
 
-/* The shared guide sits behind opaque highlights. Glass highlights need gaps
-   in the guide itself so it cannot show through their translucent fill. */
-.glass-study:not([data-material="original"]) .sidebar-subnav-guide { visibility:hidden; }
+/* Glass highlights need gaps in the guide so it cannot show through their translucent fill. */
 .glass-study:not([data-material="original"]) .silo-sidebar[data-collapsed="false"] .sidebar-secondary { overflow:visible; }
 .glass-study:not([data-material="original"]) .sidebar-secondary::before {
   content:"";
@@ -69,7 +67,6 @@ html.dark .glass-study:not([data-material="original"]) .silo-sidebar button[aria
 .glass-study:not([data-material="original"]) .sidebar-secondary:hover::before,
 .glass-study:not([data-material="original"]) .silo-sidebar[data-collapsed="true"] .sidebar-secondary::before { visibility:hidden; }
 
-.glass-study:not([data-material="original"]) .sidebar-subnav-guide + .sidebar-secondary::before,
 .glass-study:not([data-material="original"]) .sidebar-secondary:is([aria-current="page"], :hover) + .sidebar-secondary::before { top:8px; }
 .glass-study:not([data-material="original"]) .sidebar-secondary:has(+ .sidebar-secondary:is([aria-current="page"], :hover))::before { bottom:8px; }
 

@@ -154,4 +154,30 @@ describe("Settings, General: Storage", () => {
     await act(async () => { await backend.remove() })
     await waitFor(() => expect(screen.queryByRole("region", { name: "Storage" })).not.toBeInTheDocument())
   })
+
+  it("reconciles a deletion missed while its listener was registering", async () => {
+    let register!: () => void
+    const { backend } = setup({}, backend => {
+      const subscribe = backend.subscribe
+      backend.subscribe = refresh => new Promise(resolve => {
+        register = () => { void subscribe(refresh).then(resolve) }
+      })
+    })
+    await act(async () => {})
+    await act(async () => { await backend.remove() })
+    await act(async () => register())
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Storage" })).not.toBeInTheDocument())
+  })
+
+  it("reports a failed backup listener and reconnects it through Retry", async () => {
+    const { backend, user } = setup({}, backend => {
+      vi.spyOn(backend, "subscribe").mockRejectedValueOnce(new Error("event registration failed"))
+    })
+    await screen.findByRole("region", { name: "Storage" })
+    expect(await screen.findByRole("alert")).toHaveTextContent("Silo could not listen for backup changes. Try again.")
+    await user.click(screen.getByRole("button", { name: "Retry" }))
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument())
+    await act(async () => { await backend.remove() })
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Storage" })).not.toBeInTheDocument())
+  })
 })

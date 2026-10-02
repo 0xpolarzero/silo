@@ -1,3 +1,5 @@
+import type { FetchStream } from "./build-input.mjs"
+
 export const LFS_TRANSFER_COMMIT: string
 export const LFS_TRANSFER_SOURCE_SHA256: string
 export const LFS_TRANSFER_SOURCE_URL: string
@@ -5,5 +7,10 @@ export function lfsTransferGuestArchitecture(targetTriple: string): 'arm64' | 'a
 export function stageLfsTransferRuntime(options: {
   appRoot: string
   targetTriple: string
-  fetchBytes: (url: string) => Promise<ArrayBufferView>
+  fetchStream: FetchStream
+  run?: (program: string, args: string[], options?: {
+    cwd?: string
+    env?: NodeJS.ProcessEnv
+    maxBuffer?: number
+  }) => Promise<{ stdout: string }>
 }): Promise<{ root: string; binaryPath: string; manifestPath: string }>

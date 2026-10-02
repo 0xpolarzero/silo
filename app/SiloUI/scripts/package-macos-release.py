@@ -32,8 +32,7 @@ def main():
     with tarfile.open(archive, 'r:gz') as tar:
         if any(member.name.split('/')[0] != 'Silo.app' for member in tar):
             raise RuntimeError('The update archive must contain only Silo.app.')
-    signer = ['npx', 'tauri', 'signer', 'sign', '-p',
-              os.environ.get('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', '')]
+    signer = ['npx', 'tauri', 'signer', 'sign']
     try:
         is_file = Path(key).is_file()
     except OSError:
@@ -45,8 +44,12 @@ def main():
         # Tauri treats this environment variable as --private-key (contents),
         # which conflicts with --private-key-path even when both name one file.
         signer_env.pop('TAURI_SIGNING_PRIVATE_KEY', None)
-    # For key contents, Tauri reads the private key from its environment.
-    subprocess.run(signer + [str(archive)], env=signer_env, check=True, stdout=subprocess.DEVNULL)
+    # Tauri reads key contents and the password from its environment.
+    signer_env.setdefault('TAURI_SIGNING_PRIVATE_KEY_PASSWORD', '')
+    try:
+        subprocess.run(signer + [str(archive)], env=signer_env, check=True, stdout=subprocess.DEVNULL)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f'Updater signing failed with exit code {error.returncode}.') from None
     with tempfile.TemporaryDirectory(prefix='silo-dmg-') as temporary:
         stage = Path(temporary) / 'image'
         stage.mkdir()

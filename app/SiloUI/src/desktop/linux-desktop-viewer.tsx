@@ -103,31 +103,53 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
   const [connectionError, setConnectionError] = useState<string | null>(null)
   const [connection, setConnection] = useState(0)
   const screenRef = useRef<HTMLDivElement>(null)
+  const refreshAttachment = useRef<(() => void) | null>(null)
   const operation = useRef(false)
   const polling = useRef(false)
   const revision = useRef(0)
+  const failureDelay = useRef(0)
   const transportTail = useRef<Promise<void>>(Promise.resolve())
   const transport = useCallback((work: () => Promise<void>) => {
     const next = transportTail.current.catch(() => {}).then(work)
     transportTail.current = next
     return next
   }, [])
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (checkAttachment = true) => {
     if (operation.current || polling.current) return
     polling.current = true
     const currentRevision = revision.current
     try {
       const result = parseLinuxDesktopState(await invoke("read_desktop_state", { workspace }))
-      if (currentRevision === revision.current) { setState(result); setError(null) }
-    } catch (cause) { if (currentRevision === revision.current) setError(String(cause)) }
+      if (currentRevision === revision.current) {
+        failureDelay.current = 0
+        setState(result)
+        setError(null)
+        // A host disconnect can retire the transport while its guest keeps running.
+        if (checkAttachment && result.state === "running" && (result.streamState == null || result.streamState === "running")) refreshAttachment.current?.()
+      }
+    } catch (cause) {
+      if (currentRevision === revision.current) {
+        failureDelay.current = Math.min(Math.max(failureDelay.current, 5000) * 2, 30000)
+        setError(String(cause))
+      }
+    }
     finally { polling.current = false; if (currentRevision === revision.current) setBusy(false) }
   }, [workspace])
   useEffect(() => {
-    const update = () => { if (document.visibilityState !== "hidden") void refresh() }
-    const initial = window.setTimeout(update, 0)
-    const interval = window.setInterval(update, 5000)
+    let disposed = false
+    let timer: number | undefined
+    const update = () => {
+      window.clearTimeout(timer)
+      if (disposed || document.visibilityState === "hidden") return
+      void refresh().finally(() => {
+        if (disposed || document.visibilityState === "hidden") return
+        window.clearTimeout(timer)
+        timer = window.setTimeout(update, Math.max(5000, failureDelay.current))
+      })
+    }
+    timer = window.setTimeout(update, 0)
     document.addEventListener("visibilitychange", update)
-    return () => { window.clearTimeout(initial); window.clearInterval(interval); document.removeEventListener("visibilitychange", update) }
+    return () => { disposed = true; window.clearTimeout(timer); document.removeEventListener("visibilitychange", update) }
   }, [refresh])
   // The backend connects only once the stream runs; legacy guests omit it.
   const streamReady = state?.state === "running" && (state.streamState == null || state.streamState === "running")
@@ -152,11 +174,12 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
       finally { pending = false; if (dirty) { dirty = false; void attach() } }
     }
     const updateBounds = () => { void attach() }
+    refreshAttachment.current = updateBounds
     const observer = new ResizeObserver(updateBounds)
     observer.observe(screen)
     window.addEventListener("resize", updateBounds)
     void attach()
-    return () => { disposed = true; observer.disconnect(); window.removeEventListener("resize", updateBounds); void transport(() => invoke("desktop_viewer_detach")).catch(() => {}) }
+    return () => { disposed = true; refreshAttachment.current = null; observer.disconnect(); window.removeEventListener("resize", updateBounds); void transport(() => invoke("desktop_viewer_detach")).catch(() => {}) }
   }, [workspace, streamReady, connection, transport])
   async function handleAction(action: DesktopAction) {
     if (operation.current) return
@@ -182,6 +205,6 @@ export function NativeLinuxDesktopViewer({ workspace, name }: { workspace: strin
   }
   return <LinuxDesktopViewer name={name} state={state} busy={busy} error={error ?? connectionError} screenRef={screenRef} lcuUpdated={lcuUpdated} MenuComponent={NativeDesktopActionsMenu}
     onAction={action => { void handleAction(action) }}
-    onRetry={() => { setConnection(value => value + 1); void refresh() }}
+    onRetry={() => { setConnection(value => value + 1); void refresh(false) }}
     onFullscreen={() => { const window = getCurrentWindow(); void window.isFullscreen().then(value => window.setFullscreen(!value)).catch(cause => setError(String(cause))) }} />
 }

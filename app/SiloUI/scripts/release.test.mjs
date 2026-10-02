@@ -250,3 +250,17 @@ test("release refuses to tag or publish a 1.0.0 or later version unless explicit
   release("draft", root, fake.run, { allowStable: true })
   assert.deepEqual(fake.calls.filter(([, args]) => args[0] === "push"), [["git", ["push", "origin", "refs/tags/v1.0.0"]]])
 })
+
+test("explicit stable publication passes the opt-in to the final workflow", t => {
+  const root = fixture(t)
+  stable(root)
+  syncRelease(root, { allowStable: true })
+  const fake = runner({
+    "python3 scripts/validate-release-version.py": "1.0.0",
+    "git tag --list v1.0.0": "",
+    "git ls-remote origin refs/tags/v1.0.0 refs/tags/v1.0.0^{}": "head-commit\trefs/tags/v1.0.0",
+    "gh workflow run publish-release.yml --ref v1.0.0 -f version=1.0.0 -f allow_stable=true": "",
+  })
+  release("publish", root, fake.run, { allowStable: true })
+  assert.deepEqual(fake.calls.at(-1), ["gh", ["workflow", "run", "publish-release.yml", "--ref", "v1.0.0", "-f", "version=1.0.0", "-f", "allow_stable=true"]])
+})

@@ -16,7 +16,9 @@ const repositoryName = (path: string) => path.split("/").filter(Boolean).at(-1) 
  */
 export function useRepositoryPushToasts(
   operations: RepositoryPushOperation[],
-  { onPush, onDismiss, resolveSandbox, queue, onCancel }: {
+  { onPush, onDismiss, resolveSandbox, queue, onCancel, enabled = true }: {
+    /** Standalone pages can defer notifications to their application owner. */
+    enabled?: boolean
     /** Retries a failed push of the same confirmed target. */
     onPush: PushRepository
     onDismiss: (workspace: string, repositoryPath: string) => void
@@ -31,6 +33,7 @@ export function useRepositoryPushToasts(
   const callbacks = useRef({ onPush, onDismiss, resolveSandbox, onCancel })
   useLayoutEffect(() => { callbacks.current = { onPush, onDismiss, resolveSandbox, onCancel } }, [onPush, onDismiss, resolveSandbox, onCancel])
   useEffect(() => {
+    if (!enabled) return
     const initial = seen.current === null
     const previous = seen.current ?? new Map<string, string>()
     const next = new Map<string, string>()
@@ -74,6 +77,6 @@ export function useRepositoryPushToasts(
     }
     for (const [id, state] of previous) if (state.startsWith("pushing") && !next.has(id)) dismissOperationToast(id)
     seen.current = next
-  }, [operations, queue, onCancel])
+  }, [enabled, operations, queue, onCancel])
 }
 

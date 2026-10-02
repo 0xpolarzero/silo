@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -659,6 +660,56 @@ class CommandLine(Guest):
         self.assertEqual(json.loads(shown.call_args.args[0])['state'], 'not-set-up')
         with mock.patch.object(cu.os, 'geteuid', return_value=1000):
             self.assertEqual(cu.main(['status']), 1)
+
+
+class ReceiptPersistence(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.path = Path(temporary.name) / 'receipt.json'
+        self.path.write_text('{"state":"installing"}\n')
+        receipt = mock.patch.object(cu, 'RECEIPT', self.path)
+        receipt.start()
+        self.addCleanup(receipt.stop)
+        self.pinned = {'app': {'dir': 'fixture-app'},
+                       'lcu': {'version': 'fixture-version', 'sha256': 'fixture-digest'}}
+
+    def test_ready_receipt_syncs_final_permissions_and_published_directory(self):
+        synced = []
+        fsync = os.fsync
+
+        def sync(fd):
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode):
+                self.assertEqual(json.loads(self.path.read_text())['state'], 'installing')
+                self.assertEqual(json.loads(os.pread(fd, info.st_size, 0))['state'], 'ready')
+                self.assertEqual(stat.S_IMODE(info.st_mode), 0o644)
+                synced.append('file')
+            else:
+                self.assertTrue(stat.S_ISDIR(info.st_mode))
+                self.assertEqual(info.st_ino, self.path.parent.stat().st_ino)
+                self.assertEqual(json.loads(self.path.read_text())['state'], 'ready')
+                synced.append('directory')
+            fsync(fd)
+
+        with mock.patch.object(cu.os, 'fsync', side_effect=sync):
+            cu.write_receipt(self.pinned, 'ask', 'ready')
+        self.assertEqual(synced, ['file', 'directory'])
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+
+    def test_ready_receipt_does_not_acknowledge_directory_sync_failure(self):
+        fsync = os.fsync
+
+        def sync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError('receipt directory sync failed')
+            fsync(fd)
+
+        with mock.patch.object(cu.os, 'fsync', side_effect=sync):
+            with self.assertRaisesRegex(OSError, 'receipt directory sync failed'):
+                cu.write_receipt(self.pinned, 'ask', 'ready')
+        self.assertEqual(json.loads(self.path.read_text())['state'], 'ready')
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
 
 
 if __name__ == '__main__':
