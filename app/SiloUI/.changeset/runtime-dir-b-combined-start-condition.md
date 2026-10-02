@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep remote request deadlines and connection checks active when an operation also has its own queue wait limit.
+Keep timeout and connection checks active for queued remote actions.
