@@ -80,12 +80,17 @@ def launcher_contents(path, relative):
     if not (relative.parent == Path('.') and path.name in SHELL_SETUP or 'bin' in relative.parts):
         return None
     try:
-        data = path.read_text()
-    except (UnicodeError, OSError):
+        data = path.read_bytes()
+    except OSError:
         return None
-    if '\x00' in data:
+    if b'\x00' in data:
         return None
-    updated = relocate(data)
+    if not data.startswith(b'#!'):
+        try:
+            data.decode('utf-8')
+        except UnicodeError:
+            return None
+    updated = data.replace(b'/home/silo-desktop/', b'/home/silo/').replace(b'/root/', b'/home/silo/')
     return updated if updated != data else None
 
 
@@ -140,7 +145,7 @@ def copy_home(source, destination):
                 if path.parent == source and path.name in SHELL_SETUP:
                     return
                 updated = launcher_contents(path, relative)
-                same = target.read_bytes() == updated.encode() if updated is not None else filecmp.cmp(path, target, shallow=False)
+                same = target.read_bytes() == updated if updated is not None else filecmp.cmp(path, target, shallow=False)
                 if same:
                     return
                 conflict(target)

@@ -57,6 +57,20 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertEqual((home / '.local/bin/binary').read_bytes(), binary)
         self.assertEqual((source / '.local/bin/binary').read_bytes(), binary)
 
+    def test_non_utf8_script_launcher_relocates_paths_without_changing_other_bytes(self):
+        source, home = self.root / 'source', self.root / 'home'
+        (source / '.local/bin').mkdir(parents=True)
+        original = source / '.local/bin/tool'
+        contents = b'#!/root/.local/bin/python\r\n# caf\xe9\r\nprint("/home/silo-desktop/data")\r\n'
+        original.write_bytes(contents)
+        original.chmod(0o750)
+        for _ in range(2):
+            guest.copy_home(source, home)
+        expected = b'#!/home/silo/.local/bin/python\r\n# caf\xe9\r\nprint("/home/silo/data")\r\n'
+        self.assertEqual((home / '.local/bin/tool').read_bytes(), expected)
+        self.assertEqual((home / '.local/bin/tool').stat().st_mode & 0o777, 0o750)
+        self.assertEqual(original.read_bytes(), contents)
+
     def test_home_copy_skips_transient_pipes_and_preserves_files(self):
         source, destination = self.root / 'root', self.root / 'silo'
         source.mkdir()
