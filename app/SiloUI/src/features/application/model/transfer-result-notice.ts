@@ -67,8 +67,9 @@ export function useTransferResultNotice(backend: TransferResultNoticeBackend | u
     void backend.subscribe(() => { void refresh() }).then(stop => {
       if (live) unsubscribe = stop
       else stop()
-    }).catch((cause: unknown) => console.error("Silo export and import result:", message(cause)))
-    void refresh()
+    }).catch((cause: unknown) => console.error("Silo export and import result:", message(cause))).then(() => {
+      if (live) void refresh()
+    })
     return () => { live = false; unsubscribe?.() }
   }, [backend, enabled])
 
