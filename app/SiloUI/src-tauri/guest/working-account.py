@@ -83,6 +83,8 @@ def launcher_contents(path, relative):
         data = path.read_text()
     except (UnicodeError, OSError):
         return None
+    if '\x00' in data:
+        return None
     updated = relocate(data)
     return updated if updated != data else None
 
