@@ -953,6 +953,8 @@ fn run_exchange(
 ) -> Result<Value, Failure> {
     use std::io::{Seek, SeekFrom};
     let failed = |error: std::io::Error| Failure::Failed(error.to_string());
+    let mut frame = Vec::new();
+    write_frame(&mut frame, request).map_err(Failure::Failed)?;
     let stdout = tempfile::tempfile().map_err(failed)?;
     let stderr = tempfile::tempfile().map_err(failed)?;
     let mut child = command
@@ -962,27 +964,50 @@ fn run_exchange(
         .spawn()
         .map_err(failed)?;
     // Input stays open until the reply: the bridge takes its end to mean this computer left.
-    // A write error means ssh already failed; its exit status and output say why.
     let mut input = child.stdin.take();
-    if input
-        .as_mut()
-        .is_some_and(|input| write_frame(input, request).is_err())
-    {
-        input = None;
-    }
-    let exit = loop {
-        if let Some(exit) = child.try_wait().map_err(failed)? {
-            break exit;
+    let monitored = (|| {
+        if let Some(input) = &input {
+            nonblocking(input).map_err(Failure::Failed)?;
         }
-        if Instant::now() > deadline
-            || stdout.metadata().map_err(failed)?.len() > LIMIT as u64 + 4
-            || stderr.metadata().map_err(failed)?.len() > 65536
-        {
+        let mut sent = 0;
+        loop {
+            if let Some(exit) = child.try_wait().map_err(failed)? {
+                return Ok(exit);
+            }
+            if Instant::now() > deadline
+                || stdout.metadata().map_err(failed)?.len()
+                    > (LIMIT + 4 + REPLY_PREAMBLE.len() + REPLY_SEARCH_LIMIT) as u64
+                || stderr.metadata().map_err(failed)?.len() > 65536
+            {
+                return Err(Failure::Failed("Remote operation timed out. Its outcome is unknown; reconnect and inspect before issuing another change.".into()));
+            }
+            if sent < frame.len() {
+                if let Some(writer) = &mut input {
+                    match writer.write(&frame[sent..]) {
+                        Ok(count) if count > 0 => {
+                            sent += count;
+                            continue;
+                        }
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                            ) => {}
+                        // SSH's exit status and stderr explain a failed pipe.
+                        _ => input = None,
+                    }
+                }
+            }
+            thread::sleep(Duration::from_millis(40));
+        }
+    })();
+    let exit = match monitored {
+        Ok(exit) => exit,
+        Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(Failure::Failed("Remote operation timed out. Its outcome is unknown; reconnect and inspect before issuing another change.".into()));
+            return Err(error);
         }
-        thread::sleep(Duration::from_millis(40));
     };
     drop(input);
     if !exit.success() {
@@ -3088,6 +3113,107 @@ mod reply_tests {
         let mut bare = Vec::new();
         write_frame(&mut bare, &value).unwrap();
         assert!(read_reply(bare.as_slice()).is_err());
+    }
+
+    #[test]
+    fn exchange_deadline_covers_a_full_request_pipe() {
+        let _test_state = crate::test_support::global_state();
+        let home = tempfile::tempdir().unwrap();
+        let pid_file = home.path().join("child.pid");
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", r#"echo $$ > "$0"; exec sleep 5"#])
+            .arg(&pid_file);
+        let started = Instant::now();
+        let result = run_exchange(
+            command,
+            &json!({"method":"runtime.upsert", "params":{"payload":"x".repeat(1024 * 1024)}}),
+            started + Duration::from_millis(100),
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "blocked request outlived its deadline"
+        );
+        assert!(matches!(result, Err(Failure::Failed(message)) if message.contains("timed out")));
+        let pid: i32 = fs::read_to_string(pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "owned child was not reaped"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[test]
+    fn exchange_transmits_a_large_request_before_reading_the_reply() {
+        let _test_state = crate::test_support::global_state();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), reply(&json!({"result":{"ok":true}}))).unwrap();
+        let mut command = Command::new("python3");
+        command
+            .args([
+                "-c",
+                r#"
+import json, pathlib, struct, sys
+size = struct.unpack(">I", sys.stdin.buffer.read(4))[0]
+request = json.loads(sys.stdin.buffer.read(size))
+assert request["payload"] == "x" * (1024 * 1024)
+sys.stdout.buffer.write(pathlib.Path(sys.argv[1]).read_bytes())
+"#,
+            ])
+            .arg(file.path());
+        let result = run_exchange(
+            command,
+            &json!({"payload":"x".repeat(1024 * 1024)}),
+            Instant::now() + Duration::from_secs(5),
+        );
+        assert_eq!(result, Ok(json!({"ok":true})));
+    }
+
+    #[test]
+    fn oversized_exchange_request_is_rejected_before_spawn() {
+        let _test_state = crate::test_support::global_state();
+        let home = tempfile::tempdir().unwrap();
+        let marker = home.path().join("spawned");
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", r#"touch "$0""#]).arg(&marker);
+        let result = run_exchange(
+            command,
+            &json!({"payload":"x".repeat(LIMIT)}),
+            Instant::now() + Duration::from_secs(1),
+        );
+        assert!(matches!(result, Err(Failure::Failed(message)) if message.contains("size limit")));
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn exchange_accepts_a_near_limit_reply_after_shell_output() {
+        let _test_state = crate::test_support::global_state();
+        let value = json!({"payload":"x".repeat(LIMIT - 64)});
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let output = [vec![b'x'; 1024], reply(&json!({"result":value}))].concat();
+        fs::write(file.path(), output).unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .args(["-c", r#"cat "$0"; exec sleep 0.2"#])
+            .arg(file.path());
+        let result = run_exchange(
+            command,
+            &json!({"method":"runtime.snapshot"}),
+            Instant::now() + Duration::from_secs(5),
+        );
+        assert!(
+            result.as_ref() == Ok(&value),
+            "valid bounded reply was rejected: {:?}",
+            result.as_ref().err()
+        );
     }
 
     #[test]

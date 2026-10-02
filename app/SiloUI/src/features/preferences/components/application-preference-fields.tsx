@@ -1,4 +1,4 @@
-import { useId, useState } from "react"
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react"
 import { Code2, Compass, SquareTerminal } from "lucide-react"
 
 import { ListRow, ListRowIcon } from "@/components/list-row"
@@ -63,20 +63,35 @@ export function ApplicationPreferenceFields({
   // A failed pick keeps the previous choice; say so beside the select rather than only
   // in the console, and clear it on the next change of that application.
   const [failures, setFailures] = useState<Partial<Record<ApplicationKind, string>>>({})
+  const requests = useRef({ terminal: 0, editor: 0, browser: 0 })
+  const latest = useRef({ value, onChange })
+  useLayoutEffect(() => { latest.current = { value, onChange } })
+  useEffect(() => {
+    const active = requests.current
+    return () => { active.terminal++; active.editor++; active.browser++ }
+  }, [])
   const errorId = (kind: ApplicationKind) => `${errorIdPrefix}-${kind}-error`
 
   async function update(kind: ApplicationKind, selection: string) {
+    const request = ++requests.current[kind]
+    const publish = (patch: Partial<ApplicationPreferenceSelection>) => {
+      const next = { ...latest.current.value, ...patch }
+      latest.current.value = next
+      latest.current.onChange(next)
+    }
     setFailures(({ [kind]: _cleared, ...rest }) => rest)
     try {
       if (selection === systemDefaultApplication) {
-        onChange({ ...value, [`${kind}UseSystemDefault`]: true })
+        publish({ [`${kind}UseSystemDefault`]: true })
         return
       }
       const application = selection === chooseApplication
         ? await choose(kind)
         : catalog[kind].find(({ path }) => path === selection)
-      if (application) onChange({ ...value, [kind]: application.name, [`${kind}Path`]: application.path, [`${kind}UseSystemDefault`]: false })
+      if (request !== requests.current[kind]) return
+      if (application) publish({ [kind]: application.name, [`${kind}Path`]: application.path, [`${kind}UseSystemDefault`]: false })
     } catch (error) {
+      if (request !== requests.current[kind]) return
       const detail = errorMessage(error).trim()
       setFailures((current) => ({ ...current, [kind]: `Could not use the chosen ${applicationNoun[kind]}.${detail ? ` ${/[.!?]$/.test(detail) ? detail : `${detail}.`}` : ""}` }))
     }

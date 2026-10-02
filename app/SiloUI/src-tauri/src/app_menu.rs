@@ -162,11 +162,12 @@ mod native {
             items.push((id, entry.clone()));
             Ok(entry)
         };
+        let name = crate::channel::current().product_name();
         let about = Standard::about(
             app,
-            Some("About Silo"),
+            Some(&format!("About {name}")),
             Some(AboutMetadata {
-                name: Some("Silo".into()),
+                name: Some(name.into()),
                 version: Some(app.package_info().version.to_string()),
                 icon: app.default_window_icon().cloned(),
                 ..Default::default()
@@ -175,7 +176,7 @@ mod native {
         #[cfg(target_os = "macos")]
         let app_menu = Submenu::with_items(
             app,
-            "Silo",
+            name,
             true,
             &[
                 &about,
@@ -184,24 +185,24 @@ mod native {
                 &Standard::separator(app)?,
                 &Standard::services(app, None)?,
                 &Standard::separator(app)?,
-                &Standard::hide(app, Some("Hide Silo"))?,
+                &Standard::hide(app, Some(&format!("Hide {name}")))?,
                 &Standard::hide_others(app, None)?,
                 &Standard::show_all(app, None)?,
                 &Standard::separator(app)?,
-                &item("quit", "Quit Silo", Some("CmdOrCtrl+Q"))?,
+                &item("quit", &format!("Quit {name}"), Some("CmdOrCtrl+Q"))?,
             ],
         )?;
         #[cfg(target_os = "linux")]
         let app_menu = Submenu::with_items(
             app,
-            "Silo",
+            name,
             true,
             &[
                 &about,
                 &item("settings", "Settings…", Some("CmdOrCtrl+,"))?,
                 &item("check-updates", "Check for Updates…", None)?,
                 &Standard::separator(app)?,
-                &item("quit", "Quit Silo", Some("CmdOrCtrl+Q"))?,
+                &item("quit", &format!("Quit {name}"), Some("CmdOrCtrl+Q"))?,
             ],
         )?;
         let file = Submenu::with_items(

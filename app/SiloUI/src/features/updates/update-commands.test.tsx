@@ -105,6 +105,20 @@ it("invalidates confirmation when a newer update replaces the requested version"
   expect(backend.install).not.toHaveBeenCalled()
 })
 
+it.each(["version", "admission"] as const)("does not restore a withdrawn stop confirmation when %s returns to its previous state", async (change) => {
+  const user = userEvent.setup()
+  const { emit, backend } = mount({ phase: "ready", availableVersion: "0.3.4", runningSandboxes: ["dev"] })
+  await screen.findByRole("button", { name: "Restart and update" })
+  await selectCommand(user, "Restart and update")
+  expect(screen.getByRole("button", { name: "Stop sandboxes and update" })).toBeVisible()
+  emit(change === "version" ? { availableVersion: "0.3.5" } : { canInstall: false })
+  expect(screen.queryByRole("button", { name: "Stop sandboxes and update" })).not.toBeInTheDocument()
+  emit({ availableVersion: "0.3.4", canInstall: true })
+  expect(screen.queryByRole("button", { name: "Stop sandboxes and update" })).not.toBeInTheDocument()
+  expect(screen.getByRole("button", { name: "Restart and update" })).toBeEnabled()
+  expect(backend.install).not.toHaveBeenCalled()
+})
+
 it.each([
   ["checking", null], ["downloading", null], ["installing", null],
 ] as const)("offers no commands during native %s", (phase, retryAction) => {

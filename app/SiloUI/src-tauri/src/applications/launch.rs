@@ -24,12 +24,18 @@ const UNSUPPORTED_EDITOR: &str =
 /// A desktop entry's `Exec` tokens without field codes (`%U`) or Flatpak's
 /// file-forwarding markers (`@@`, `@@u`).
 pub(crate) fn exec_argv(tokens: impl IntoIterator<Item = String>) -> Vec<String> {
-    tokens
+    let mut argv: Vec<_> = tokens
         .into_iter()
         .filter(|token| {
             !(token.len() == 2 && token.starts_with('%')) && !matches!(token.as_str(), "@@" | "@@u")
         })
-        .collect()
+        .collect();
+    // Field-code removal can leave an empty file-argument section. Silo's
+    // appended options must still be parsed as options by the editor.
+    if argv.last().is_some_and(|argument| argument == "--") {
+        argv.pop();
+    }
+    argv
 }
 
 /// The program an `Exec` line runs, skipping `env [-i] [NAME=value]...` as
@@ -97,6 +103,7 @@ pub(crate) fn linux_editor_command(
         });
     }
     let token = exec_program(argv).ok_or("The selected editor is unavailable.")?;
+    let index = argv.iter().position(|argument| argument == token).unwrap();
     let program = if Path::new(token).is_absolute() {
         PathBuf::from(token)
     } else {
@@ -117,7 +124,7 @@ pub(crate) fn linux_editor_command(
     };
     Ok(EditorCommand {
         program,
-        args: Vec::new(),
+        args: argv[index + 1..].iter().map(OsString::from).collect(),
         zed,
     })
 }
@@ -147,13 +154,6 @@ fn appimage_root() -> Option<PathBuf> {
     (root.is_absolute() && executable.starts_with(&root)).then_some(root)
 }
 
-fn inside(entry: &str, root: &str) -> bool {
-    entry == root
-        || entry
-            .strip_prefix(root)
-            .is_some_and(|rest| rest.starts_with('/'))
-}
-
 /// Environment changes that undo the AppImage's AppRun hooks for a child
 /// (G-24): every variable naming the mount point loses those entries (and is
 /// removed when nothing remains), so children such as gnome-terminal use the
@@ -162,10 +162,7 @@ pub(crate) fn appimage_child_environment(
     variables: impl IntoIterator<Item = (OsString, OsString)>,
     root: &Path,
 ) -> Vec<(OsString, Option<OsString>)> {
-    let Some(root) = root.to_str().map(|root| root.trim_end_matches('/')) else {
-        return Vec::new();
-    };
-    if root.is_empty() {
+    if root.as_os_str().is_empty() || root == Path::new("/") {
         return Vec::new();
     }
     let mut changes = Vec::new();
@@ -174,21 +171,24 @@ pub(crate) fn appimage_child_environment(
             changes.push((name, None));
             continue;
         }
-        let Some(text) = value.to_str() else { continue };
-        if !text.contains(root) {
-            continue;
-        }
-        let entries: Vec<_> = text.split(':').collect();
+        let entries: Vec<_> = std::env::split_paths(&value).collect();
         let kept: Vec<_> = entries
             .iter()
-            .copied()
-            .filter(|entry| !inside(&entry.replace("//", "/"), root))
+            .filter(|entry| !entry.starts_with(root))
             .collect();
         if kept.len() == entries.len() {
             continue;
         }
-        let kept: Vec<_> = kept.into_iter().filter(|entry| !entry.is_empty()).collect();
-        changes.push((name, (!kept.is_empty()).then(|| kept.join(":").into())));
+        let kept: Vec<_> = kept
+            .into_iter()
+            .filter(|entry| !entry.as_os_str().is_empty())
+            .collect();
+        changes.push((
+            name,
+            (!kept.is_empty()).then(|| {
+                std::env::join_paths(kept).expect("Paths from split_paths contain no separator")
+            }),
+        ));
     }
     changes
 }
@@ -314,12 +314,59 @@ mod tests {
     }
 
     #[test]
+    fn desktop_file_separators_do_not_hide_silos_editor_options() {
+        let find = |name: &str| Some(PathBuf::from("/usr/bin").join(name));
+        let native = linux_editor_command(&tokens("code -- %F"), None, &find).unwrap();
+        assert!(native.args.is_empty());
+        let flatpak = linux_editor_command(
+            &tokens("flatpak run --command=code com.visualstudio.code -- @@ %F @@"),
+            Some("com.visualstudio.code"),
+            &find,
+        )
+        .unwrap();
+        assert_eq!(
+            flatpak.args,
+            ["run", "--command=code", "com.visualstudio.code"].map(OsString::from)
+        );
+    }
+
+    #[test]
+    fn native_editor_entries_keep_their_isolated_data_and_extensions() {
+        let directory = tempfile::tempdir().unwrap();
+        let electron = directory.path().join("code/code");
+        executable(&electron);
+        let cli = directory.path().join("code/bin/code");
+        executable(&cli);
+        std::fs::write(&cli, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        let argv = vec![
+            electron.to_str().unwrap().to_owned(),
+            "--user-data-dir=/tmp/isolated data".into(),
+            "--extensions-dir=/tmp/isolated extensions".into(),
+        ];
+        let command = linux_editor_command(&argv, None, &nowhere).unwrap();
+        let output = Command::new(command.program)
+            .args(command.args)
+            .args(["--profile", "Silo test", "fixture.code-workspace"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "--user-data-dir=/tmp/isolated data\n--extensions-dir=/tmp/isolated extensions\n--profile\nSilo test\nfixture.code-workspace\n"
+        );
+    }
+
+    #[test]
     fn snap_flatpak_and_zed_tarball_entries_are_launchable() {
         let snap = tokens("env BAMF_DESKTOP_FILE_HINT=x /snap/bin/code --force-user-env %F");
         let command = linux_editor_command(&snap, None, &nowhere).unwrap();
         assert_eq!(
-            (command.program, command.zed),
-            (PathBuf::from("/snap/bin/code"), false)
+            (command.program, command.args, command.zed),
+            (
+                PathBuf::from("/snap/bin/code"),
+                vec!["--force-user-env".into()],
+                false
+            )
         );
 
         let flatpak = |_: &str| Some(PathBuf::from("/usr/bin/flatpak"));
@@ -399,6 +446,47 @@ mod tests {
             Some(listed[0].as_str())
         );
         assert_eq!(linux_terminal_default(&nowhere, &[]), None);
+    }
+
+    #[test]
+    fn appimage_cleanup_preserves_non_utf8_system_paths() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = Path::new("/tmp/.mount_Silo");
+        let system = OsString::from_vec(b"/opt/editor \xff/lib".to_vec());
+        let mut libraries = OsString::from("/tmp/.mount_Silo/usr/lib:");
+        libraries.push(&system);
+        libraries.push(":/tmp/.mount_Silo-other/lib");
+        let changes =
+            appimage_child_environment([(OsString::from("LD_LIBRARY_PATH"), libraries)], root);
+        let mut expected = system;
+        expected.push(":/tmp/.mount_Silo-other/lib");
+        assert_eq!(
+            changes,
+            [(OsString::from("LD_LIBRARY_PATH"), Some(expected))]
+        );
+    }
+
+    #[test]
+    fn appimage_cleanup_accepts_non_utf8_mounts_and_repeated_slashes() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = PathBuf::from(OsString::from_vec(b"/tmp/.mount_Silo \xff///".to_vec()));
+        let bundled = OsString::from_vec(b"/tmp//.mount_Silo \xff////usr/lib".to_vec());
+        let changes = appimage_child_environment(
+            [
+                (OsString::from("APPDIR"), root.as_os_str().to_owned()),
+                (OsString::from("LD_LIBRARY_PATH"), bundled),
+            ],
+            &root,
+        );
+        assert_eq!(
+            changes,
+            [
+                (OsString::from("APPDIR"), None),
+                (OsString::from("LD_LIBRARY_PATH"), None),
+            ]
+        );
     }
 
     #[test]

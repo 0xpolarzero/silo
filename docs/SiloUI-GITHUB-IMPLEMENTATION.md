@@ -127,6 +127,12 @@ documents `Iv1.ab1112223334445c`. Native token operations accept both that forma
 and the current alphanumeric format, while rejecting path separators, control
 characters and standalone `.` or `..` URL path segments.
 
+The [user installation endpoint](https://docs.github.com/en/rest/apps/installations#list-app-installations-accessible-to-the-user-access-token)
+lists installations of the authenticated token's App. Its installation `client_id`
+is optional in GitHub's [OpenAPI installation schema](https://github.com/github/rest-api-description/blob/main/descriptions/api.github.com/api.github.com.json).
+Scoping accepts an omitted ID and rejects a mismatched or malformed ID when present;
+owner, suspension and repository permission checks still apply.
+
 ## Verification
 
 Latest completed checks for the server-free conversion:

@@ -153,14 +153,14 @@ fn require_openssh_at(ssh: &Path, keygen: &Path, purpose: &str) -> Result<(), St
 
 fn validate_path(path: &str) -> Result<(), String> {
     if path.len() > 4096
-        || path.contains('\0')
+        || path.bytes().any(|byte| byte.is_ascii_control())
         || !(path == "/workspace"
             || path.strip_prefix("/workspace/").is_some_and(|tail| {
                 tail.split('/')
                     .all(|part| !part.is_empty() && part != "." && part != "..")
             }))
     {
-        return Err("Choose a folder inside /workspace.".into());
+        return Err("Choose a folder inside /workspace with no control characters.".into());
     }
     Ok(())
 }
@@ -277,13 +277,17 @@ fn vscode_workspace(silo_root: &Path, alias: &str, path: &str) -> Result<PathBuf
 }
 
 fn remote_uri(alias: &str, path: &str, zed: bool) -> Result<String, String> {
+    validate_path(path)?;
     let mut uri = reqwest::Url::parse(&if zed {
         format!("ssh://{alias}/")
     } else {
         format!("vscode-remote://ssh-remote+{alias}/")
     })
     .map_err(|_| FAILED)?;
-    uri.set_path(path);
+    uri.path_segments_mut()
+        .map_err(|_| FAILED)?
+        .clear()
+        .extend(path.split('/').skip(1));
     Ok(uri.into())
 }
 
@@ -1135,6 +1139,36 @@ mod tests {
             assert!(validate_path(invalid).is_err());
         }
     }
+    #[test]
+    fn control_characters_cannot_change_the_requested_editor_folder() {
+        for path in ["/workspace/a\tb", "/workspace/a\nb", "/workspace/a\rb"] {
+            assert!(validate_path(path).is_err());
+            assert!(remote_uri("silo-test-dev", path, true).is_err());
+            assert!(remote_uri("silo-test-dev", path, false).is_err());
+        }
+    }
+
+    #[test]
+    fn literal_percent_sequences_keep_the_guest_folder_identity() {
+        for (path, encoded) in [
+            ("/workspace/some%20comments", "/workspace/some%2520comments"),
+            ("/workspace/a%2Fb", "/workspace/a%252Fb"),
+            ("/workspace/%2e%2e/secret", "/workspace/%252e%252e/secret"),
+            ("/workspace/100%", "/workspace/100%25"),
+        ] {
+            validate_path(path).unwrap();
+            for (zed, prefix) in [
+                (true, "ssh://silo-test-dev"),
+                (false, "vscode-remote://ssh-remote+silo-test-dev"),
+            ] {
+                assert_eq!(
+                    remote_uri("silo-test-dev", path, zed).unwrap(),
+                    format!("{prefix}{encoded}")
+                );
+            }
+        }
+    }
+
     #[test]
     fn shell_and_ssh_paths_are_escaped() {
         assert_eq!(quote("a'b $()"), "'a'\\''b $()'");
