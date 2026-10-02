@@ -207,6 +207,11 @@ impl PushTarget {
 }
 const TARGET_CHANGED: &str =
     "The repository changed after you confirmed the push. Review it and push again.";
+const UPDATE_TRACKING_REF: &str = r#"set -eu
+origin=$(git -C "$1" remote get-url origin) || exit 0
+[ "$origin" = "$5" ] || exit 0
+git -C "$1" update-ref "$2" "$3" "$4"
+"#;
 /// Rows at most this old are served without reading the guest again.
 const DISCOVERY_FRESH: Duration = Duration::from_secs(15);
 /// A state refresh waits this long for a VM's first discovery; later refreshes
@@ -1072,6 +1077,8 @@ fn push_target(
             r#"set -eu
 commit=$(git -C "$1" rev-parse --verify --quiet "refs/heads/$4^{commit}") || commit=
 if [ "$commit" != "$5" ]; then printf 'changed\n'; exit 0; fi
+tracking=$(git -C "$1" rev-parse --verify --quiet "refs/remotes/origin/$4") || tracking=
+origin=$(git -C "$1" remote get-url origin)
 git -C "$1" update-ref "$3" "$commit"
 # Use Git LFS's own storage resolution, including linked worktrees and lfs.storage.
 media=$(git -C "$1" lfs env | sed -n 's/^LocalMediaDir=//p')
@@ -1082,11 +1089,19 @@ if [ -d "$media" ]; then
 else
     mkdir "$2/source.git/lfs/objects"
 fi
-printf '%s\n' "$commit"
+printf '%s\n%s\n%s\n' "$commit" "$tracking" "$origin"
 "#,
             &[path, &export, &export_ref, branch, commit],
         )?;
-        if data.lines().next() != Some(commit) {
+        let mut data = data.lines();
+        if data.next() != Some(commit) {
+            return Err(TARGET_CHANGED.into());
+        }
+        let expected_tracking = data.next().unwrap_or_default();
+        let expected_origin = data.next().unwrap_or_default();
+        if !repository(expected_origin)
+            .is_ok_and(|repository| repository.eq_ignore_ascii_case(&target.repository))
+        {
             return Err(TARGET_CHANGED.into());
         }
         let git = HostGit {
@@ -1121,14 +1136,20 @@ printf '%s\n' "$commit"
             cache.discard();
         }
         let count = publication?;
-        // Tracking metadata describes the commit actually published, even if
-        // the sandbox branch advanced while this operation was running.
+        // Record the published commit only if the guest has not fetched newer
+        // tracking data or repointed origin while publication was running.
         let _ = runtime::operation_gate::uncancellable(|| {
             guest(
                 paths,
                 workspace,
-                "git -C \"$1\" update-ref \"$2\" \"$3\"",
-                &[path, &format!("refs/remotes/origin/{branch}"), commit],
+                UPDATE_TRACKING_REF,
+                &[
+                    path,
+                    &format!("refs/remotes/origin/{branch}"),
+                    commit,
+                    expected_tracking,
+                    expected_origin,
+                ],
             )
         });
         // The next state refresh reads the repository again.
@@ -1618,6 +1639,74 @@ mod tests {
         let rows = discovered_rows(&row("not-a-commit", "https://gitlab.com/owner/repo.git"));
         assert!(rows[0]["repository"].is_null());
         assert!(rows[0]["head"].is_null());
+    }
+
+    #[test]
+    fn tracking_metadata_preserves_concurrent_fetches_and_origin_changes() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repo");
+        fs::create_dir(&repository).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                ])
+                .args(args)
+                .env("HOME", root.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .current_dir(&repository)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}");
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        let commits: Vec<_> = ["before", "published", "fetched"]
+            .into_iter()
+            .map(|message| {
+                git(&["commit", "--quiet", "--allow-empty", "-m", message]);
+                git(&["rev-parse", "HEAD"])
+            })
+            .collect();
+        let origin = "https://github.com/owner/repo.git";
+        let tracking = "refs/remotes/origin/main";
+        git(&["remote", "add", "origin", origin]);
+        let update = |expected: &str| {
+            Command::new("sh")
+                .args(["-c", UPDATE_TRACKING_REF, "silo-host-push"])
+                .arg(&repository)
+                .args([tracking, &commits[1], expected, origin])
+                .env("HOME", root.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+                .status
+        };
+        git(&["update-ref", tracking, &commits[2]]);
+        let _ = update(&commits[0]);
+        assert_eq!(git(&["rev-parse", tracking]), commits[2]);
+        git(&["update-ref", tracking, &commits[0]]);
+        git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/another/repo.git",
+        ]);
+        assert!(update(&commits[0]).success());
+        assert_eq!(git(&["rev-parse", tracking]), commits[0]);
+        git(&["remote", "set-url", "origin", origin]);
+        assert!(update(&commits[0]).success());
+        assert_eq!(git(&["rev-parse", tracking]), commits[1]);
+        git(&["update-ref", "-d", tracking]);
+        assert!(update("").success());
+        assert_eq!(git(&["rev-parse", tracking]), commits[1]);
     }
 
     #[test]
