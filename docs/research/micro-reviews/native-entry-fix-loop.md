@@ -25,3 +25,13 @@ Fixed and folded in `10fd55ff`. Snapshots retain their metadata VM UUID, and pag
 - **Evidence:** The handle was initially `None`; `update` skipped it and returned success. The UI effect only resends when tone or label changes. The tray therefore retained its neutral startup icon and product-name tooltip even after a health update. The readiness regression failed when the extracted production seam retained the original immediate-success behavior.
 - **Fix:** Publish tray startup completion through Tokio's existing watch channel and await it before updating the handle. Propagate startup failure, abandoned startup, and a terminated tray service instead of reporting successful delivery. The maintained `ksni` 0.3.6 source documents `Handle::update` returning `None` after service shutdown.
 - **Validation:** Five extracted-source tray tests pass, including pending startup, startup failure, abandoned startup, existing watcher grace, and panel anchoring. Tests poll the actual readiness future deterministically without a desktop or D-Bus service. Full native Cargo tests use the shared target; their result is recorded separately. No application was launched.
+
+## NATIVE-ENTRY-4: Unsupported remote logs overwrite a complete export
+
+- **Priority:** P3.
+- **Location:** `app/SiloUI/src-tauri/src/log_export.rs::write_requests`, with the structured compatibility response in `runtime_logs.rs::remote_page`.
+- **Trigger:** Save logs while at least one selected computer runs an older Silo that does not implement `runtime.logs`. The history model retains unsupported pages, and `logs-page.tsx` forwards all their requests to the export command.
+- **Evidence:** The runtime maps an unsupported remote operation to an empty page with `unsupported: true`. The export writer ignored that flag, wrote zero-match coverage, and returned success. The regression exported a supported page followed by an unsupported page and returned `Ok(true)` before the fix.
+- **Consequence:** A selected destination containing a previous complete export is replaced by an incomplete artifact that describes unavailable remote records as zero matches, followed by a "Logs saved" toast.
+- **Fix:** Reject an unsupported page with an update instruction before writing its coverage. Existing atomic export cleanup preserves the destination and removes partial output.
+- **Regression:** `unsupported_remote_logs_do_not_replace_an_existing_export` checks a mixed supported/unsupported export, the returned update instruction, the existing file contents, and removal of the temporary output. All 12 extracted-source export tests pass against actual request/page types and production writer/file-publication functions. Fixtures use temporary files only.
