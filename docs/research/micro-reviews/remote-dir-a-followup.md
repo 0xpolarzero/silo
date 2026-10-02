@@ -57,3 +57,9 @@ The envelope regressions pass after correction (2 passed), including modern and 
 Both guest-target regressions pass after correction. Focused Rust 1.94.0 Clippy reports no warnings; Cargo formatting and whitespace checks pass. These fixture checks validate queue admission and identity selection; they do not establish live guest access.
 
 Integration independently rejected same-name replacements in `37810b8b` during this loop. The fold keeps that identity protection and extends it to use a renamed VM's fresh name, with an additional stale-ID regression before admission. One changeset and one guest-target helper remain.
+
+## Native verification after the follow-up fixes
+
+The complete native unit-test executable compiled at integration `d7ecc9ef` using Rust 1.94.0, the coherent cached Tauri test dependency graph, copied generated ACL schemas, and explicit synthetic GitHub App configuration. Compilation emitted three unrelated existing warnings (unused runtime and migration variables, and the macOS-unused Linux bundle helper). The executable and evidence remain under the ignored verification directories and are not distribution artifacts.
+
+Exact affected-module filters pass: `remote::` (84 tests), `remote_access::` (4 tests), and `runtime::remote_ops::` (6 tests). This includes every new follow-up regression and the latest registry tests. The earlier broader `remote` substring run passed 146 tests, ignored one, and failed `host_push::protocol_tests::truly_missing_lfs_data_never_advances_remote_branch` solely because the worktree has no prepared bundled Git runtime. Runtime preparation was not run. Source-extracted merged guest-target checks pass all three regressions, focused Clippy remains clean, Cargo formatting and whitespace checks pass. No app, live SSH session, production data, or real VM was used; these results prove native fixture behavior, not live two-computer health.
