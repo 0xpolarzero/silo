@@ -33,3 +33,12 @@ Focused verification imports the unchanged token and HTTP modules into a tempora
 - **Consequence:** Disconnect could report completion and forget a valid refresh credential without revoking its authorization.
 - **Fix:** Reserve the unusable-refresh classification for `bad_refresh_token`. Other OAuth errors remain failures and retain the pending revocation and credential. Continue redacting provider descriptions.
 - **Regression:** Local HTTP responses for incorrect client credentials, unsupported grant type, unverified email and an unavailable provider do not classify the credential as unusable. An explicit bad refresh token does. The focused token/HTTP run passed 34 tests after the change; no live account was used.
+
+## GITHUB-TOKENS-4 — P2: Repository Refresh replays unrelated ambiguous token requests
+
+- **Trigger:** A workspace token mint or rotating OAuth refresh fails after sending; the user clicks Refresh repositories.
+- **Evidence:** `refresh_github_repositories` called the global `reset_retries` before acquiring the GitHub operation lock. That erased the stopped request's refusal, permitting the worker to attempt it again. The existing adjacent GITHUB-HTTP-4 report identified this remaining caller; this loop reproduced it.
+- **Consequence:** A catalog refresh silently authorizes another unsafe token request whose first outcome is unknown.
+- **Fix:** Retain the existing safe-operation flag in each failure and reset only safe requests for catalog refresh. Reset inside `run`, after its operation lock and update guard are acquired. Explicit configuration Retry keeps its existing scope and behavior.
+- **Regression:** `repository_refresh_preserves_ambiguous_writes_and_server_floors` failed because Repository Refresh reopened an ambiguous mint. The fixed test permits a failed safe read, retains both stopped mint and rotating-refresh refusals, and proves the server deadline still blocks early requests.
+- **Verification:** Actual HTTP/token source modules in the synthetic Rust harness; no application, live credentials or VM used. All 36 focused tests, focused Clippy, Rust formatting, frontend typecheck/lint and whitespace checks passed. Red/green output is under the ignored shared verification directory.

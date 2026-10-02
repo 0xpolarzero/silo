@@ -37,7 +37,7 @@ export function InlineConfirmation({ active, onDismiss, children }: {
     }
 
     function dismissOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape" && !event.defaultPrevented && isTopmost()) {
+      if (event.key === "Escape" && !event.defaultPrevented && !event.isComposing && isTopmost()) {
         event.preventDefault()
         dismiss.current()
       }

@@ -4,6 +4,8 @@ import importlib.util
 import os
 from pathlib import Path
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -90,6 +92,29 @@ class SystemUpdateTests(unittest.TestCase):
                         source.write_text(content)
                     with self.assertRaisesRegex(RuntimeError, 'Software & Updates'):
                         helper.upgrade('0.5.1', run=lambda _: self.fail('must not run apt'), stage=lambda _: None)
+
+    def test_partial_confirmation_cannot_outlive_the_install_deadline(self):
+        read, write = os.pipe()
+        os.write(write, b'install')
+
+        def finish_after_deadline():
+            try:
+                time.sleep(0.3)
+                os.write(write, b'\n')
+            except BrokenPipeError:
+                pass
+            finally:
+                os.close(write)
+
+        sender = threading.Thread(target=finish_after_deadline)
+        sender.start()
+        try:
+            with os.fdopen(read) as stream:
+                with self.assertRaisesRegex(RuntimeError, 'Nothing was installed'):
+                    helper.confirm(stream, timeout=0.02)
+        finally:
+            sender.join(timeout=2)
+            self.assertFalse(sender.is_alive())
 
     def test_running_process_exception_requires_exact_live_processes_and_root_owned_marker(self):
         with tempfile.TemporaryDirectory() as tmp:

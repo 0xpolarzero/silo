@@ -51,3 +51,13 @@ Verification: 18 GitHub component tests pass. The token and GitHub-page notifica
 - **Consequence:** Token users cannot enable sandbox token access after disconnecting OAuth or use the global kill switch while OAuth is unavailable.
 - **Suggested fix:** Show the same global access control whenever a personal token is connected, independent of OAuth's connection state.
 - **Regression:** Four page tests toggle access with token authentication, verify no OAuth connection is initiated, and check the button updates from an authoritative snapshot.
+- **Status:** Fixed and folded in `99cfa59d`; 13 relevant page tests, typecheck, focused lint, and formatting checks pass.
+
+## FE-GITHUB-6 — P2 — Rejected edits and retries survive sandbox replacement
+
+- **File:line at review base `360bbc49`:** `app/SiloUI/src/features/application/pages/github-page.tsx:157–178`, `:230`, `:315–325`.
+- **Trigger:** Reject an All repositories edit for `dev`, then delete/recreate or directly replace it with a new immutable machine ID under the same name. Also replace a sandbox while its author text is unfinished, with no change to the policy values.
+- **Evidence:** The original page retains name-keyed save intents and overlays them onto the replacement's authoritative policy. Its source-draft key ignores machine IDs. Retained failure callbacks invoke the latest retry function using only the old name. Three behavior tests fail against the original code: both replacement variants submit a second native save through the old retry, and unfinished author text survives an ID change. Exact output: `/tmp/silo-fe-github-owner-retry-red.log`.
+- **Consequence:** A replacement sandbox displays and can receive the old sandbox's rejected repository permissions and author edits.
+- **Suggested fix:** Include immutable sandbox ownership in draft synchronization; discard pending, rejected, and unfinished state for removed/replaced owners; dismiss their owned notifications and bind retry callbacks to the original ID.
+- **Regression:** Two deferred-intent tests cover direct replacement and deletion before recreation, retain the original retry callback, and assert it makes no native call. A third test changes the immutable ID without changing the policy and checks that old unfinished author text is discarded.

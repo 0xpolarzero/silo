@@ -25,6 +25,16 @@ verify that both generations and the journal remain untouched, and restore it to
 verify recovery. An installation that needs no migration still uses `runtime/`
 without a marker.
 
+Export-folder preferences also preserve additive JSON fields through an explicit
+folder change using a flattened map. Their reader retains the 1 MiB limit and
+schema-version check; malformed destinations or archive arrays remain unreadable.
+The temporary-file tests verify that reads leave the saved bytes untouched.
+
+Remote-management settings retain unknown top-level preferences when their known
+fields change. Temporary-file round trips verify the saved identity and host list,
+while malformed or absent required fields still fail to load. Existing read/write
+size-limit and directory-sync regressions exercise the same reader and writer.
+
 ## Process-wide state
 
 `test_support::global_state()` guards tests in modules that reach the global
@@ -33,10 +43,10 @@ It releases shutdown admission on drop, including assertion unwind. Join all
 workers before dropping the guard. A worker must not acquire the test lock itself.
 Tests with independent gates and state instances run in parallel. Keep the guard
 when their helpers still reach global shutdown admission or caches. The remaining
-serial group consists of guarded runtime, GitHub, SSH, network, secrets, desktop,
-backup and remote tests: 531 guard sites across 19 source files. This conservative
-module isolation permits concurrency within each owning test and serializes this
-group inside the full parallel suite. Ordinary checks use `cargo test --locked`
+serial group consists of tests whose helpers reach that process-wide state;
+`test_support::global_state()` call sites identify its current membership.
+This conservative isolation permits concurrency within each owning test and
+serializes the guarded tests inside the full parallel suite. Ordinary checks use `cargo test --locked`
 with Cargo's default test thread count. Opt-in live checks retain their documented
 serial commands and require separate authorization.
 
@@ -113,9 +123,11 @@ before the file descriptor isolation fix and qualification restarted.
 Logs and timing JSON remain under the ignored
 `app/SiloUI/src-tauri/target/verification/k18/` directory (`parallel-11.log` for
 the failure, `qualified-01.log` through `qualified-10.log`, and `final-*.log`).
-Linux CI now uses the same default-thread command; Linux execution was outside
-this local qualification. These fixture checks do not establish live VM or
-packaged-app behavior.
+The [ordinary CI workflow](../.github/workflows/ci.yml) uses the same default-thread
+command. The [Linux verification workflow](../.github/workflows/linux-verification.yml)
+and [release platform workflow](../.github/workflows/release-platform.yml) explicitly
+use `--test-threads=1`. Linux execution was outside this local qualification.
+These fixture checks do not establish live VM or packaged-app behavior.
 
 ## Runtime fixtures
 
@@ -180,5 +192,38 @@ keeps the folder `chatgpt_app::tests::live_download_of_the_pinned_arm64_package`
 | `live_built_in_computer_use_sets_up_and_survives_export_and_import` | Export and import into a second home with its own folder; the imported VM takes the destination's `ask` |
 | `live_built_in_desktop_boots_repeatedly` | `SILO_BOOT_LOOP_ROUNDS` (default 3) restarts and imports with no desktop failure |
 
-These checks use temporary fixture data. They do not launch the packaged Silo app
-or establish live VM, installed-app or release readiness.
+These opt-in tests exercise real disposable VMs with temporary data when run
+with the required live inputs. Their source and fixture checks alone do not prove
+those workflows passed. A successful live run qualifies only the tested runtime,
+image and scenario; it does not launch the packaged Silo app or establish
+installed-app or release readiness.
+
+## Blocked test-speed experiment (2026-10-02)
+
+The two SSH listener-startup regressions still use 2.5/1-second child delays
+and 600/500 ms parent sleeps. A disposable prototype replaced those delays
+with a loopback TCP readiness handshake and scoped reconcile workers, keeping
+the existing assertions. Three standalone fixture-child checks verified held
+readiness, release, TCP echo and owner-EOF exit. Those checks do not exercise
+the Rust reconciliation regressions. The prototype was reverted; no Rust
+before/after timing or speedup is claimed.
+
+The first `cargo +1.94.0 test --locked --no-run --message-format=json` used
+`CARGO_TARGET_DIR=/tmp/silo-codex-target` and synthetic GitHub values. It waited
+roughly 24 minutes for the shared lock, then exited 101 because
+`binaries/msb-aarch64-apple-darwin` was absent. The documented test-only override
+from the [computer-use review](SiloUI-CODE-REVIEW-PASS-3-COMPUTER-USE-2026-10-02.md)
+clears generated inputs without preparing the runtime:
+
+```sh
+TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[],"macOS":{"frameworks":[]}}}'
+```
+
+The retry stayed queued and was cancelled after verifying its owned Cargo
+process, worktree, redirected files and absence of compiler children. Do not
+interrupt other builds or time an unidentified shared test executable. Resume
+native measurement after the shared build queue clears, with that unit-test
+override and synthetic GitHub configuration. Ignored evidence under
+`app/SiloUI/src-tauri/target/verification/test-speed/` includes
+`rust-build.{jsonl,log}`, `rust-unit-build.{jsonl,log}`,
+`handshake-prototype.log`, and the unverified `ssh-readiness-candidate.patch`.

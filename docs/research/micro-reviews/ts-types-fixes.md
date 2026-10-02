@@ -111,3 +111,16 @@ Reject that no-op while the source is unavailable and tell the user to refresh
 and retry. A loaded empty configuration still resolves without native changes.
 The two regressions reproduced successful `null` results both before loading and
 after the initial state read failed. The loaded-empty control remains covered.
+
+## Optional connection removal
+
+Fixed: the Computers settings section renders for an adapter with
+`connectComputer`, but its Remove connection button assumed the independently
+optional `removeComputer` callback existed. Its non-null assertion hid the
+missing capability and an enabled button called `undefined`. The browser
+preview explicitly supports partial action adapters.
+
+Capture the removal callback, disable its button when absent, and guard the
+event callback without an assertion. A missing-capability regression failed
+before the fix. Existing tests exercise successful removal and failure/retry
+with the callback present.

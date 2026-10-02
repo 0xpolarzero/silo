@@ -59,6 +59,8 @@ struct Config {
     host_id: String,
     enabled: bool,
     hosts: Vec<RemoteHost>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,6 +154,7 @@ fn read_config_in(dir: &Path) -> Result<Config, String> {
                 host_id: uuid::Uuid::new_v4().to_string(),
                 enabled: false,
                 hosts: vec![],
+                extra: serde_json::Map::new(),
             };
             save_config_in(dir, &config)?;
             Ok(config)
@@ -921,6 +924,15 @@ fn silo_public_key() -> Option<String> {
     Some(public.trim().to_owned())
 }
 fn request_timeout(request: &Value) -> Duration {
+    if matches!(
+        request["method"].as_str(),
+        Some("checkpoint.create" | "checkpoint.fork" | "checkpoint.restore")
+    ) {
+        // Admission uses half the request window. Reserve the other half for every
+        // owner stage within the restore window plus framing and transport.
+        return 2
+            * (crate::runtime::checkpoints::RESTORE_EXPECTED_DURATION + Duration::from_secs(60));
+    }
     // A new VM may get a desktop from the owner (it defaults one on v4 images), so
     // creation needs the desktop-capable time even when the request names none.
     if (request["method"] == "runtime.upsert"
@@ -1208,7 +1220,17 @@ fn send_change(
     request: &mut Value,
     deadline: Instant,
     delays: &[Duration],
+    send: impl FnMut(&Value) -> Result<Value, Failure>,
+) -> Result<Value, BridgeError> {
+    send_change_with_clock(request, deadline, delays, send, Instant::now)
+}
+
+fn send_change_with_clock(
+    request: &mut Value,
+    deadline: Instant,
+    delays: &[Duration],
     mut send: impl FnMut(&Value) -> Result<Value, Failure>,
+    mut now: impl FnMut() -> Instant,
 ) -> Result<Value, BridgeError> {
     let mut delays = delays.iter();
     let quit = crate::runtime::shutdown::generation();
@@ -1220,7 +1242,7 @@ fn send_change(
             ));
         }
         crate::runtime::shutdown::ensure_accepting_operations()?;
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(now());
         // Queued work must start early enough to finish while this computer still waits.
         request["startWithinMs"] = json!((remaining / 2).as_millis() as u64);
         match send(request) {
@@ -2053,6 +2075,95 @@ mod tests {
         assert!(
             checkpoint_remote_request("not-an-id", "create", Some("Point"), None, None).is_err()
         );
+    }
+
+    #[test]
+    fn checkpoint_requests_cover_queueing_and_complete_owner_work() {
+        for method in ["checkpoint.create", "checkpoint.fork", "checkpoint.restore"] {
+            let budget = request_timeout(&json!({"method":method}));
+            let queue = budget / 2;
+            assert!(
+                budget - queue >= Duration::from_secs(3600 + 60),
+                "{method} leaves only {:?} after admission for owner work and transport",
+                budget - queue,
+            );
+        }
+        assert_eq!(
+            request_timeout(&json!({"method":"runtime.snapshot"})),
+            Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn checkpoint_requests_keep_long_results_observable_and_reconnect_without_replay() {
+        use std::cell::Cell;
+        for (method, work, queued) in [
+            ("checkpoint.create", 601, false),
+            ("checkpoint.fork", 900, true),
+            ("checkpoint.restore", 3600, true),
+        ] {
+            let _test_state = crate::test_support::global_state();
+            let journal = tempfile::tempdir().unwrap();
+            let registry: &'static operations::Registry =
+                Box::leak(Box::new(operations::Registry::new()));
+            let mut request = json!({"method":method,"operationId":uuid::Uuid::new_v4().to_string(),"params":{"vmId":uuid::Uuid::new_v4().to_string()}});
+            let budget = request_timeout(&request);
+            let start = Instant::now();
+            let deadline = start + budget;
+            let clock = Cell::new(start);
+            let runs = Cell::new(0);
+            let attempts = Cell::new(0);
+            let result = send_change_with_clock(
+                &mut request,
+                deadline,
+                &[Duration::ZERO],
+                |request| {
+                    attempts.set(attempts.get() + 1);
+                    let start_within =
+                        Duration::from_millis(request["startWithinMs"].as_u64().unwrap());
+                    let result = registry
+                        .submit(
+                            operations::Submission {
+                                journal: journal.path(),
+                                id: request["operationId"].as_str().unwrap(),
+                                method,
+                                params: &request["params"],
+                                start_within,
+                                connection: std::sync::Arc::new(|| true),
+                                allowed: std::sync::Arc::new(|| true),
+                                wait: budget,
+                                reconnect_grace: operations::RECONNECT_GRACE,
+                            },
+                            || {
+                                runs.set(runs.get() + 1);
+                                let queue = if queued {
+                                    start_within - Duration::from_millis(1)
+                                } else {
+                                    Duration::ZERO
+                                };
+                                clock.set(start + queue + Duration::from_secs(work));
+                                Ok(json!({"checkpoint":"complete"}))
+                            },
+                        )
+                        .map_err(Failure::Reported)?;
+                    clock.set(clock.get() + Duration::from_secs(15));
+                    if clock.get() >= deadline {
+                        return Err(Failure::Failed("Remote operation timed out.".into()));
+                    }
+                    // Lose the first reply, then attach to the owner's retained result.
+                    if attempts.get() == 1 {
+                        Err(Failure::Lost("connection lost".into()))
+                    } else {
+                        Ok(result)
+                    }
+                },
+                || clock.get(),
+            );
+            assert_eq!(result, Ok(json!({"checkpoint":"complete"})), "{method}");
+            assert_eq!(runs.get(), 1);
+            assert_eq!(attempts.get(), 2);
+            assert!(clock.get() < deadline);
+        }
     }
 
     #[test]
@@ -3231,6 +3342,7 @@ mod bridge_link_tests {
             host_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         record_start_error(Some("Another Silo instance owns remote management.".into()));
         assert_eq!(
@@ -4049,6 +4161,7 @@ mod ssh_authorization_tests {
             host_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         for method in [
             "ssh.access.state",
@@ -4090,6 +4203,7 @@ mod ssh_connection_admission_tests {
             host_id: uuid::Uuid::new_v4().to_string(),
             enabled: true,
             hosts: Vec::new(),
+            extra: serde_json::Map::new(),
         };
         save_config_in(directory.path(), &config).unwrap();
         let request = json!({
@@ -4186,6 +4300,46 @@ mod config_io_limit_tests {
     const LIMIT_BYTES: usize = 1024 * 1024;
 
     #[test]
+    fn remote_config_preserves_additive_preferences_when_management_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let saved = serde_json::json!({
+            "hostId": "fixture-owner",
+            "enabled": false,
+            "hosts": [{"id": "peer", "name": "Peer", "address": "fixture.test"}],
+            "futurePreference": {"mode": "newer", "ids": [1, 2]}
+        });
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut config = read_config_in(directory.path()).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        config.enabled = true;
+        save_config_in(directory.path(), &config).unwrap();
+        let reloaded: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
+        assert_eq!(reloaded["hostId"], saved["hostId"]);
+        assert_eq!(reloaded["hosts"], saved["hosts"]);
+        assert!(read_config_in(directory.path()).unwrap().enabled);
+    }
+
+    #[test]
+    fn remote_config_additive_preferences_do_not_replace_required_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        for saved in [
+            serde_json::json!({"enabled": false, "hosts": [], "future": true}),
+            serde_json::json!({"hostId": "fixture-owner", "enabled": "false", "hosts": [], "future": true}),
+            serde_json::json!({"hostId": "fixture-owner", "enabled": false, "hosts": {}, "future": true}),
+        ] {
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert!(read_config_in(directory.path()).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
     fn remote_config_save_reports_an_unreadable_parent_after_publication() {
         use std::os::unix::fs::MetadataExt;
         let directory = tempfile::tempdir().unwrap();
@@ -4196,6 +4350,7 @@ mod config_io_limit_tests {
             host_id: "fixture-owner".into(),
             enabled: false,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o300)).unwrap();
         let result = save_config_in(directory.path(), &config);
@@ -4239,6 +4394,7 @@ mod config_io_limit_tests {
             host_id: "fixture-owner".into(),
             enabled: true,
             hosts: vec![],
+            extra: serde_json::Map::new(),
         };
         save_config_in(directory.path(), &config).unwrap();
         let previous = fs::read(&path).unwrap();

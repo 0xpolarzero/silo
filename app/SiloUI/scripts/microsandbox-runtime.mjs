@@ -102,6 +102,7 @@ export async function buildPatchedExecutable({
   const compilerFlags = Object.fromEntries([
     "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_BUILD_RUSTFLAGS",
     `CARGO_TARGET_${targetEnvironment}_RUSTFLAGS`,
+    ...Object.keys(process.env).filter(name => name.startsWith("CARGO_PROFILE_RELEASE_")).sort(),
   ].map(name => [name, process.env[name] ?? null]))
   const cacheKey = sha256(Buffer.from([
     MICROSANDBOX_SOURCE_SHA256,

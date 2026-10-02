@@ -11,3 +11,13 @@ Scope: `app/SiloUI/src-tauri/src/runtime.rs` and adjacent runtime helpers. Synth
 - **Consequence:** GitHub credentials and general secret material intended for A can be sent to B, with the update reported as successful.
 - **Fix:** Retain the original stable ID, revalidate fresh metadata after admission, and require the inspected runtime name and ID to match before reading secret material or launching `modify`.
 - **Regression coverage:** Native tests cover a mismatched runtime ID and a same-named metadata replacement while admission is blocked. Existing fake-runtime successful-update cases now supply their saved machine ID. The extracted fixture passes all three cases after the fix; Rust formatting, frontend typecheck, lint, and whitespace checks passed. The focused native Cargo run was queued on the shared artifact-directory lock when this record was written; no native compilation result is claimed.
+
+## RUNTIME-CORE-3: Git identity work accepts a same-named replacement
+
+- **Priority:** P2.
+- **Location:** `app/SiloUI/src-tauri/src/runtime.rs`, `configure_workspace_identities_in` and `verify_workspace_identities_in`.
+- **Trigger:** Runtime B has the same name as saved A, or a configuration operation replaces A while identity work waits for its VM lane. The runtime can also change between configuration preflight and admission while metadata still names A.
+- **Evidence:** Configuration inspected before admission and checked only the managed label; it never inspected again inside the lane. Verification likewise checked ownership without comparing the stable ID. The unchanged production functions failed five rejection cases in the extracted fixture while the matching-ID control passed.
+- **Consequence:** Configuration clears boot identity overrides and writes Git/jj defaults into B. Verification can report B as satisfying A's identity setup.
+- **Fix:** Compare the runtime name and ID at preflight, revalidate current metadata after admission, and inspect the runtime again inside the configuration lane. Verification performs the same identity checks before guest execution.
+- **Regression coverage:** Three native regressions cover mismatched runtime IDs, replacements committed during admission, and a runtime replacement after preflight. Existing matching-ID fixtures retain successful configuration, verification, stopped-VM handling, and one-VM-at-a-time admission. All six extracted cases pass after the fix; Rust formatting and whitespace checks passed. Full native verification remains queued on the shared Cargo lock.

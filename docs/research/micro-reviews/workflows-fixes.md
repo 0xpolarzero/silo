@@ -97,6 +97,30 @@ link rejection remain. The new round-trip regression verifies both contents
 and independent destination inodes; unsafe-path, link, checksum, and workflow
 boundary tests still pass. No native resources were built or downloaded.
 
+## WORKFLOWS-9: P3 — Empty unreviewed draft assets bypass exact membership
+
+Final publication excluded zero-byte assets before comparing the draft against
+its expected asset set. A draft containing an extra empty placeholder therefore
+passed all checks and published that unreviewed attachment, although draft
+creation rejects every extra file. The failing fixture confirmed publication
+was allowed. The final gate now compares every attachment name and separately
+requires every attachment to be nonempty. Regressions reject both an extra empty
+attachment and an empty required package before download or publication. The
+complete reviewed draft still publishes in the fixture.
+
+## WORKFLOWS-10: P2 — Malformed optional feed fields disable update checks
+
+The final gate checked feed versions and platform mappings but accepted an
+invalid `pub_date` or non-string `notes`. The pinned updater's
+[`RemoteRelease` deserializer](../../../app/SiloUI/src-tauri/vendor/tauri-plugin-updater/src/updater.rs)
+requires optional string notes and an RFC3339 timestamp; invalid fields reject
+the whole feed before the release is offered. Five failing subcases retained
+matching draft checksums and still reached publication. The final gate now
+checks those optional fields, including calendar validity through Python's
+standard datetime parser. Valid generated timestamps, UTC `Z`, numeric offsets,
+and null optional fields remain accepted. Publication fixtures cover both
+rejection and acceptance; no live update feed was contacted.
+
 ## Verification
 
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow`: 22 tests pass after the queue fix.

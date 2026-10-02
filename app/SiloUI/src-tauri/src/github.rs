@@ -1077,7 +1077,7 @@ fn catalog_with_retry(
     c: &Credential,
     fetch: impl FnOnce(&Credential) -> Result<Vec<Value>, String>,
 ) -> Result<Vec<Value>, String> {
-    crate::github_http::reset_bearer_retries(&c.access_token);
+    crate::github_http::reset_catalog_retries(&c.access_token);
     fetch(c)
 }
 fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {

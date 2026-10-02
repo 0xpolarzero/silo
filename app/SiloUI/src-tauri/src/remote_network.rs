@@ -54,6 +54,10 @@ struct Reconnect {
     intent: Intent,
     remote_port: u16,
 }
+struct Observation {
+    revision: Option<Arc<()>>,
+    token: Arc<()>,
+}
 #[derive(Default)]
 struct Tunnels {
     live: HashMap<Key, Tunnel>,
@@ -62,8 +66,18 @@ struct Tunnels {
     connecting: HashMap<Key, Arc<Reconnect>>,
     saves: HashMap<Key, Arc<()>>,
     revisions: HashMap<String, Arc<()>>,
+    observations: HashMap<String, Arc<()>>,
 }
 impl Tunnels {
+    fn observe(&mut self, host: &str) -> Observation {
+        let observation = Observation {
+            revision: self.revision(host),
+            token: Arc::new(()),
+        };
+        self.observations
+            .insert(host.into(), observation.token.clone());
+        observation
+    }
     fn revision(&self, host: &str) -> Option<Arc<()>> {
         self.revisions.get(host).cloned()
     }
@@ -208,7 +222,7 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
     if let Some(error) = remote::offline(host) {
         return Err(error.into());
     }
-    let revision = tunnels().revision(host);
+    let observation = tunnels().observe(host);
     let value = match remote::call_remote_typed(app, host, "network.state", json!({})) {
         Ok(value) => {
             remote::poll_succeeded(host);
@@ -221,7 +235,7 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
             return Err(error);
         }
     };
-    let projection = project_observed(value, host, revision, &mut tunnels())?;
+    let projection = project_observed(value, host, observation, &mut tunnels())?;
     let Projection {
         value,
         closed,
@@ -244,10 +258,19 @@ struct Projection {
 fn project_observed(
     value: Value,
     host: &str,
-    revision: Option<Arc<()>>,
+    observation: Observation,
     tunnels: &mut Tunnels,
 ) -> Result<Projection, String> {
-    let current = match (revision.as_ref(), tunnels.revisions.get(host)) {
+    let latest = tunnels
+        .observations
+        .get(host)
+        .is_some_and(|token| Arc::ptr_eq(token, &observation.token));
+    if !latest {
+        return Err(
+            "A newer network refresh superseded this request. Refresh network services.".into(),
+        );
+    }
+    let current = match (observation.revision.as_ref(), tunnels.revisions.get(host)) {
         (None, None) => true,
         (Some(before), Some(now)) => Arc::ptr_eq(before, now),
         _ => false,
@@ -722,6 +745,7 @@ pub(crate) fn close_all() {
         let mut tunnels = tunnels();
         tunnels.saves.clear();
         tunnels.connecting.clear();
+        tunnels.observations.clear();
         tunnels.live.drain().map(|(_, tunnel)| tunnel).collect()
     };
     drop(closed);
@@ -732,6 +756,7 @@ pub(crate) fn disconnect_host(host: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
         tunnels.connecting.retain(|key, _| key.0 != host);
+        tunnels.observations.remove(host);
         let keys: Vec<Key> = tunnels
             .live
             .keys()
@@ -749,9 +774,11 @@ pub(crate) fn close_host(host: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
         tunnels.revisions.remove(host);
+        tunnels.observations.remove(host);
         tunnels.saves.retain(|key, _| key.0 != host);
         tunnels.intents.retain(|key, _| key.0 != host);
         tunnels.connecting.retain(|key, _| key.0 != host);
+        tunnels.observations.remove(host);
         let keys: Vec<Key> = tunnels
             .live
             .keys()
@@ -922,6 +949,38 @@ mod tests {
         assert!(
             tunnels.live.contains_key(&key("other")) && tunnels.intents.contains_key(&key("other"))
         );
+    }
+
+    #[test]
+    fn an_older_poll_cannot_replace_a_newer_reconnect_endpoint() {
+        let mut state = Tunnels::default();
+        state.intents.insert(key("office"), intent(43000));
+        let first = state.observe("office");
+        let second = state.observe("office");
+        let latest = project_observed(observed(Some(32001)), "office", second, &mut state).unwrap();
+        assert_eq!(
+            reconnect_targets(&latest),
+            [(key("office"), intent(43000), 32001)]
+        );
+        let older = project_observed(observed(Some(32000)), "office", first, &mut state);
+        assert!(older.is_err(), "the old poll replaced the newer endpoint");
+        assert_eq!(state.connecting[&key("office")].remote_port, 32001);
+    }
+
+    #[test]
+    fn an_older_poll_cannot_delete_a_tunnel_verified_by_a_newer_poll() {
+        let mut state = Tunnels::default();
+        state.intents.insert(key("office"), intent(43000));
+        state.live.insert(key("office"), tunnel(43000, 32001));
+        let first = state.observe("office");
+        let second = state.observe("office");
+        project_observed(observed(Some(32001)), "office", second, &mut state).unwrap();
+        let older = project_observed(json!({"workspaces":[]}), "office", first, &mut state);
+        assert!(
+            older.is_err(),
+            "the old poll deleted the newer verified tunnel"
+        );
+        assert!(state.live.contains_key(&key("office")));
     }
 
     #[test]
@@ -1181,7 +1240,7 @@ mod tests {
         let _guard = crate::test_support::global_state();
         let host = uuid::Uuid::new_v4().to_string();
         let key = key(&host);
-        let before = tunnels().revision(&host);
+        let before = tunnels().observe(&host);
         save_tunnel(key.clone(), None, Some("http".into()), 32000, |_| {
             Ok(tunnel(43100, 32000))
         })
@@ -1189,7 +1248,7 @@ mod tests {
         let mut state = tunnels();
         let result = project_observed(json!({"workspaces":[]}), &host, before, &mut state);
         let kept = state.live.contains_key(&key) && state.intents.contains_key(&key);
-        let current = state.revision(&host);
+        let current = state.observe(&host);
         let fresh = project_observed(json!({"workspaces":[]}), &host, current, &mut state).unwrap();
         let deleted = !state.live.contains_key(&key) && !state.intents.contains_key(&key);
         drop(state);
@@ -1206,9 +1265,12 @@ mod tests {
         let host = uuid::Uuid::new_v4().to_string();
         let pending = PendingSave::new(key(&host)).unwrap();
         let mut state = tunnels();
-        let revision = state.revision(&host);
-        assert!(project_observed(json!({"workspaces":[]}), &host, revision, &mut state).is_err());
-        assert!(project_observed(json!({"workspaces":[]}), "other", None, &mut state).is_ok());
+        let observation = state.observe(&host);
+        assert!(
+            project_observed(json!({"workspaces":[]}), &host, observation, &mut state).is_err()
+        );
+        let other = state.observe("other");
+        assert!(project_observed(json!({"workspaces":[]}), "other", other, &mut state).is_ok());
         drop(state);
         drop(pending);
         close_host(&host);
