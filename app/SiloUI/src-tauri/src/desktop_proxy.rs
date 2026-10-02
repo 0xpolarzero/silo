@@ -100,7 +100,7 @@ fn request_header(
         {
             return Err(());
         }
-        let value = value.trim();
+        let value = value.trim_matches([' ', '\t']);
         match name.to_ascii_lowercase().as_str() {
             "host" => {
                 if host.replace(value).is_some() {
@@ -110,7 +110,7 @@ fn request_header(
             "cookie" => {
                 authenticated |= value
                     .split(';')
-                    .any(|part| part.trim() == format!("{cookie_name}={token}"));
+                    .any(|part| part.trim_matches([' ', '\t']) == format!("{cookie_name}={token}"));
             }
             "origin" => {
                 if value != format!("http://{expected_host}") {
@@ -569,6 +569,50 @@ mod tests {
             "real",
         )
         .is_ok());
+    }
+
+    #[test]
+    fn unicode_whitespace_cannot_disguise_typed_header_values() {
+        let base = "POST / HTTP/1.1\r\nHost: 127.0.0.1:8000\r\nCookie: session=secret\r\n";
+        for field in [
+            "Content-Length: \u{00a0}1",
+            "Content-Length: 1\u{2003}",
+            "Upgrade: websocket\u{2003}",
+        ] {
+            assert!(
+                request_header(
+                    &format!("{base}{field}\r\n\r\n"),
+                    8000,
+                    "session",
+                    "secret",
+                    9000,
+                    "real",
+                )
+                .is_err(),
+                "accepted non-HTTP whitespace: {field:?}"
+            );
+        }
+        for field in [
+            "Host: 127.0.0.1:8000\u{00a0}\r\nCookie: session=secret",
+            "Host: 127.0.0.1:8000\r\nCookie: \u{2003}session=secret",
+            "Host: 127.0.0.1:8000\r\nCookie: session=secret\r\nOrigin: http://127.0.0.1:8000\u{3000}",
+        ] {
+            assert!(request_header(
+                &format!("GET / HTTP/1.1\r\n{field}\r\n\r\n"),
+                8000, "session", "secret", 9000, "real",
+            ).is_err());
+        }
+        let valid = request_header(
+            &format!("{base}Content-Length: \t1\t \r\n\r\n"),
+            8000,
+            "session",
+            "secret",
+            9000,
+            "real",
+        )
+        .unwrap();
+        assert_eq!(valid.body_length, 1);
+        assert!(valid.header.contains("Content-Length: \t1\t \r\n"));
     }
 
     #[test]
