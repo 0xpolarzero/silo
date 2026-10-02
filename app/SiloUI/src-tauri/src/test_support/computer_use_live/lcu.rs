@@ -134,7 +134,7 @@ fn live_lcu_drives_the_desktop_without_a_model() {
     eprintln!("lcu status: {report}");
     let report: Value = serde_json::from_str(report.split("\nEXIT:").next().unwrap()).unwrap();
     assert_eq!(report["compatibility"]["status"], "tested");
-    assert_eq!(report["lcu_version"], "0.8.1");
+    assert_eq!(report["lcu_version"], "0.8.2");
     let doctor = fixture.exec_in_session(
         name,
         "/opt/lcu/current/bin/lcu doctor --non-interactive --require-ready",
@@ -163,17 +163,19 @@ fn live_lcu_drives_the_desktop_without_a_model() {
     );
     assert!(!accessibility.contains("\n0\n"), "{accessibility}");
 
-    // LCU's server in its default configuration keeps the node_repl sandbox on, which
-    // is what Claude Code and Codex leave on too. Reported, not asserted: see the
-    // computer-use plan for the finding.
+    // LCU 0.8.2 supplies Codex's disabled sandbox-state meta by default, so even a bare
+    // MCP client (no `_meta` at all) reaches the X server through the `js` tool. Silo must
+    // not set `LCU_NODE_REPL_SANDBOX=host`.
+    let bare = run_driver(&fixture, name, "DRIVE_MODE=bare");
+    eprintln!("{bare}");
+    assert_eq!(mark(&bare, "bare-denied"), Some("no"), "{bare}");
+    assert_eq!(mark(&bare, "bare-windows"), Some("yes"), "{bare}");
+    assert_eq!(mark(&bare, "bare-screenshot"), Some("yes"), "{bare}");
     let probe = run_driver(&fixture, name, "DRIVE_MODE=probe");
-    eprintln!(
-        "default configuration reaches the X server: {:?}",
-        mark(&probe, "x11-reachable")
-    );
+    assert_eq!(mark(&probe, "x11-reachable"), Some("yes"), "{probe}");
 
-    // The drive itself, with the node_repl sandbox off so the X server is reachable.
-    let output = run_driver(&fixture, name, "E2E_NO_SANDBOX=1");
+    // The drive itself, in LCU's default configuration (node_repl sandbox untouched).
+    let output = run_driver(&fixture, name, "DRIVE=default");
     eprintln!("{output}");
     assert_eq!(mark(&output, "x11-reachable"), Some("yes"), "{output}");
     assert_eq!(mark(&output, "editor-window"), Some("found"), "{output}");

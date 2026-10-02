@@ -523,6 +523,27 @@ class Apply(Guest):
         self.assertEqual(result['state'], 'ready')
         self.assertTrue(any(argv[0] == 'curl' for argv, *_ in self.commands))
 
+    def test_an_existing_install_of_the_previous_release_is_upgraded_in_place_from_the_locked_url(self):
+        # A v4 VM: LCU 0.8.1 installed from the image's staged archive (0.8.1), a receipt for it.
+        old_sha = hashlib.sha256(b'previous release archive').hexdigest()
+        (self.image / ARCHIVE).write_bytes(b'previous release archive')
+        self.write_pinned(version='0.8.1', sha256=old_sha)
+        self.lcu_status['lcu_version'] = '0.8.1'
+        cu.apply('ask')
+        self.assertEqual(self.receipt()['archiveSha256'], old_sha)
+        # The new lock pins 0.8.2; the staged archive no longer matches it.
+        self.write_pinned(version='0.8.2', sha256=self.sha, url='https://example.invalid/' + ARCHIVE)
+        self.commands.clear()
+        result = cu.apply('ask', boot=True)
+        self.assertEqual(result['state'], 'ready')
+        curl, = [argv for argv, *_ in self.commands if argv[0] == 'curl']
+        self.assertIn('https://example.invalid/' + ARCHIVE, curl)
+        install = [argv for argv, *_ in self.commands if argv[0].endswith('install.sh')]
+        self.assertEqual(len(install), 1, 'the install replaces the old one at the same prefix')
+        self.assertIn('--runtime-only', install[0])
+        self.assertEqual(self.receipt()['archiveSha256'], self.sha)
+        self.assertFalse((self.state / 'stage').exists())
+
     def test_an_archive_that_cannot_be_obtained_fails_clearly(self):
         (self.image / ARCHIVE).unlink()
         self.failures['curl'] = True
