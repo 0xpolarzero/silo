@@ -42,7 +42,7 @@ def verify(root, version):
             if info.get('CFBundleIdentifier')!=production['identifier']:raise RuntimeError('macOS application identity mismatch.')
             identity(read('Resources/release-info.json'),version,'aarch64-apple-darwin')
             binary=tar.getmember(bundle_name+'/Contents/MacOS/'+info['CFBundleExecutable'])
-            if not binary.isfile():raise RuntimeError('Invalid macOS executable.')
+            if not binary.isfile() or not binary.mode & 0o100:raise RuntimeError('Invalid macOS executable.')
             header=tar.extractfile(binary).read(8)
             if header!=b'\xcf\xfa\xed\xfe\x0c\x00\x00\x01':raise RuntimeError('macOS executable is not ARM64.')
     for arch,target in TARGETS.items():

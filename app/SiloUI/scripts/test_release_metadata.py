@@ -40,11 +40,35 @@ class MetadataTests(unittest.TestCase):
                     }
                     for name, data in files.items():
                         entry = tarfile.TarInfo('Silo.app/Contents/' + name)
+                        entry.mode = 0o755 if name.startswith('MacOS/') else 0o644
                         entry.size = len(data)
                         archive.addfile(entry, io.BytesIO(data))
                 if identifier == production: metadata.verify(root, '0.1.0')
                 else:
                     with self.assertRaisesRegex(RuntimeError, 'macOS.*identity'):
+                        metadata.verify(root, '0.1.0')
+
+    def test_macos_archive_without_owner_execute_permission_is_rejected(self):
+        production = metadata.channel_names()['production']['identifier']
+        for mode in (0o644, 0o654, 0o755):
+            with self.subTest(mode=oct(mode)), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                with tarfile.open(root / 'Silo-macos-arm64.app.tar.gz', 'w:gz') as archive:
+                    files = {
+                        'Info.plist': plistlib.dumps({'CFBundleShortVersionString': '0.1.0',
+                            'CFBundleIdentifier': production, 'CFBundleExecutable': 'silo-ui'}),
+                        'Resources/release-info.json': b'{"version":"0.1.0","target":"aarch64-apple-darwin"}',
+                        'MacOS/silo-ui': b'\xcf\xfa\xed\xfe\x0c\x00\x00\x01',
+                    }
+                    for name, data in files.items():
+                        entry = tarfile.TarInfo('Silo.app/Contents/' + name)
+                        entry.size = len(data)
+                        entry.mode = mode if name.startswith('MacOS/') else 0o644
+                        archive.addfile(entry, io.BytesIO(data))
+                if mode & 0o100:
+                    metadata.verify(root, '0.1.0')
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'macOS executable'):
                         metadata.verify(root, '0.1.0')
 
     def test_channel_bundle_name_is_used_when_inspecting_an_archive(self):
