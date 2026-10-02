@@ -74,13 +74,19 @@ function tagSandbox(id: string, sandbox: string | string[] | undefined) {
 
 function resultCallbacks(id: string, sandbox: string | string[] | undefined, onDismiss?: () => void, action?: OperationAction) {
   const untag = tagSandbox(id, sandbox)
-  const close = () => { untag(); onDismiss?.() }
+  let closed = false
+  const close = () => {
+    if (closed) return
+    closed = true
+    untag()
+    onDismiss?.()
+  }
   return {
     onDismiss: close,
     onAutoClose: close,
     action: action ? { ...action, onClick: (event: MouseEvent<HTMLButtonElement>) => {
       action.onClick(event)
-      if (!event.defaultPrevented) untag()
+      if (!event.defaultPrevented) close()
     } } : undefined,
   }
 }

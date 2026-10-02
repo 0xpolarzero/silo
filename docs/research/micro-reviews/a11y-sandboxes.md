@@ -35,3 +35,12 @@ Scope: `app/SiloUI/src/features/sandboxes/`. Verification uses deterministic fro
 - Fix: keep an initially empty polite status region mounted and update it with the sandbox name while saving.
 - Coverage: the real MachineList commit path with an unresolved synthetic promise exposes Saving and locks its fields.
 - Primary source: [W3C status messages guidance](https://www.w3.org/WAI/WCAG22/Understanding/status-messages.html), including waiting states and non-displayed contextual text.
+
+## Row-menu deletion confirmation lacks accessible context
+
+- Trigger: open Delete from a sandbox row's More actions menu.
+- Evidence: the regression failed to find the confirmation dialog by name. Fixing only its name then failed the destructive button's accessible-description assertion.
+- Consequence: the dialog was unnamed, and its initially focused Delete permanently button did not programmatically describe which sandbox and data would be deleted.
+- Fix: have the shared ActionsMenu host name registered popovers from the selected action's accessible label. Link both destructive choices in DeleteSandboxBody to its existing target title and loss warning using unique ids.
+- Coverage: local deletion; remote computer identity and checkpoint count; both Delete permanently and Export, then delete descriptions.
+- Primary source: [WAI-ARIA dialog role](https://www.w3.org/TR/wai-aria-1.2/#dialog) requires an accessible name.

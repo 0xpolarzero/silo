@@ -23,6 +23,25 @@ describe("OperationToastBody step accessibility", () => {
 })
 
 describe("OperationToastBody cancel confirmation", () => {
+  it("dismisses the cancellation question with Escape without cancelling the operation", async () => {
+    const user = userEvent.setup()
+    const onCancel = vi.fn()
+    render(<OperationToastBody title="Importing sandbox" cancel={{
+      confirm: { prompt: "Stop importing?", confirmLabel: "Stop" }, onCancel,
+    }} />)
+    await user.click(screen.getByRole("button", { name: "Cancel" }))
+    expect(screen.getByRole("button", { name: "Keep going" })).toHaveFocus()
+    await user.keyboard("{Escape}")
+    expect(screen.queryByRole("group", { name: "Confirm cancel" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "Cancel" })).toHaveFocus()
+    expect(onCancel).not.toHaveBeenCalled()
+    await user.keyboard("{Enter}")
+    expect(screen.getByRole("button", { name: "Keep going" })).toHaveFocus()
+    await user.tab()
+    await user.keyboard("{Enter}")
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
+
   it("returns focus to Cancel when keeping the operation running", async () => {
     const user = userEvent.setup()
     const onCancel = vi.fn()
