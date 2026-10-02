@@ -73,5 +73,18 @@ class CargoCoverageTests(unittest.TestCase):
                     self.assertIn(name, selected, 'dependency unit tests are not run by root cargo test')
 
 
+class PlatformCoverageTests(unittest.TestCase):
+    def test_ci_exercises_macos_native_and_signing_suites(self):
+        workflow = (ROOT / '.github/workflows/ci.yml').read_text()
+        rust = re.search(r'(?ms)^  rust:\n(.*?)(?=^  [\w-]+:\n|\Z)', workflow)[1]
+        runners = re.search(r'(?m)^ +runner: \[([^\]]+)\]', rust)
+        self.assertIsNotNone(runners, 'macOS cfg(test) modules cannot run on a Linux-only job')
+        self.assertIn('macos-15', [item.strip() for item in runners[1].split(',')])
+        self.assertIn('runs-on: ${{ matrix.runner }}', rust)
+        signing = [step for step in re.split(r'(?m)^ {6}- ', rust) if "-p 'test_macos_release.py'" in step]
+        self.assertEqual(len(signing), 1, 'the macOS signing suite must execute on macOS')
+        self.assertIn("if: runner.os == 'macOS'", signing[0])
+
+
 if __name__ == '__main__':
     unittest.main()

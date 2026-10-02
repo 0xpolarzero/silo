@@ -286,11 +286,14 @@ Continuous integration runs the same checks. `.github/workflows/ci.yml` runs on
 every push to `main` and every pull request: frontend, script, website and demo
 checks; a blocking [Rust formatting check](https://github.com/rust-lang/rustfmt#verifying-code-is-formatted)
 using the pinned toolchain; the Rust
-suite with synthetic GitHub configuration and the patched updater library tests;
+suites on Linux and macOS with synthetic GitHub configuration and the patched updater library tests;
 [Cargo's default package selection](https://doc.rust-lang.org/cargo/commands/cargo-test.html#package-selection)
 runs only the root package, so the updater requires an explicit `-p` command; and a relative-link
 check of the Markdown documentation with [lychee](https://github.com/lycheeverse/lychee)
-in offline mode. To run that check locally, install lychee and run from the
+in offline mode. The macOS job also runs `test_macos_release.py` against
+ad hoc signed disposable binaries; the Linux discovery run skips these
+platform-specific cases. The jobs do not run the ignored live VM tests.
+To run the link check locally, install lychee and run from the
 repository root:
 
 ```sh
