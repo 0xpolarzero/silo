@@ -160,3 +160,33 @@ keeps the folder `chatgpt_app::tests::live_download_of_the_pinned_arm64_package`
 
 These checks use temporary fixture data. They do not launch the packaged Silo app
 or establish live VM, installed-app or release readiness.
+
+## Blocked test-speed experiment (2026-10-02)
+
+The two SSH listener-startup regressions still use 2.5/1-second child delays
+and 600/500 ms parent sleeps. A disposable prototype replaced those delays
+with a loopback TCP readiness handshake and scoped reconcile workers, keeping
+the existing assertions. Three standalone fixture-child checks verified held
+readiness, release, TCP echo and owner-EOF exit. Those checks do not exercise
+the Rust reconciliation regressions. The prototype was reverted; no Rust
+before/after timing or speedup is claimed.
+
+The first `cargo +1.94.0 test --locked --no-run --message-format=json` used
+`CARGO_TARGET_DIR=/tmp/silo-codex-target` and synthetic GitHub values. It waited
+roughly 24 minutes for the shared lock, then exited 101 because
+`binaries/msb-aarch64-apple-darwin` was absent. The documented test-only override
+from the [computer-use review](SiloUI-CODE-REVIEW-PASS-3-COMPUTER-USE-2026-10-02.md)
+clears generated inputs without preparing the runtime:
+
+```sh
+TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[],"macOS":{"frameworks":[]}}}'
+```
+
+The retry stayed queued and was cancelled after verifying its owned Cargo
+process, worktree, redirected files and absence of compiler children. Do not
+interrupt other builds or time an unidentified shared test executable. Resume
+native measurement after the shared build queue clears, with that unit-test
+override and synthetic GitHub configuration. Ignored evidence under
+`app/SiloUI/src-tauri/target/verification/test-speed/` includes
+`rust-build.{jsonl,log}`, `rust-unit-build.{jsonl,log}`,
+`handshake-prototype.log`, and the unverified `ssh-readiness-candidate.patch`.
