@@ -96,6 +96,31 @@ fn only_built_in_vms_get_the_mount_and_it_is_read_only() {
 }
 
 #[test]
+fn an_existing_but_empty_shared_folder_never_blocks_the_mount() {
+    with_published(|dir| {
+        assert_eq!(std::fs::read_dir(dir).unwrap().count(), 0);
+        assert_eq!(mount_args(&machine(true)).unwrap().len(), 2);
+        // Still mounted unchanged once the app (or anything else) is published into it.
+        std::fs::create_dir(dir.join("1.0-arm64")).unwrap();
+        assert_eq!(mount_args(&machine(true)).unwrap().len(), 2);
+    });
+}
+
+#[test]
+fn a_missing_or_unusable_shared_folder_blocks_the_mount() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("file");
+    std::fs::write(&file, b"x").unwrap();
+    for bad in [directory.path().join("gone"), file] {
+        set_test_published_dir(Some(bad));
+        let error = mount_args(&machine(true)).unwrap_err().to_string();
+        assert!(error.contains("shared ChatGPT folder"), "{error}");
+        assert!(mount_args(&machine(false)).unwrap().is_empty());
+    }
+    set_test_published_dir(None);
+}
+
+#[test]
 fn a_built_in_vm_without_a_shared_folder_is_an_error_not_a_silent_omission() {
     set_test_published_dir(None);
     let error = mount_args(&machine(true)).unwrap_err().to_string();

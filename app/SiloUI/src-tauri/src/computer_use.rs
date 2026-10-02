@@ -300,11 +300,17 @@ pub(crate) fn mount_args(machine: &MachineConfiguration) -> Result<Vec<String>, 
     if !is_built_in(machine) {
         return Ok(Vec::new());
     }
-    let dir = published_dir().ok_or_else(|| {
+    // Only a missing or unusable folder blocks. An existing folder is mounted whatever it
+    // holds: the ChatGPT app downloads in the background and a VM must not wait for it
+    // (the guest reports the app as not ready until it appears).
+    let unavailable = || {
         RuntimeError::Unavailable(
             "Silo could not prepare the shared ChatGPT folder for computer use. Restart Silo and try again.".into(),
         )
-    })?;
+    };
+    let dir = published_dir()
+        .filter(|dir| dir.is_dir())
+        .ok_or_else(unavailable)?;
     Ok(vec!["-v".into(), mount_spec(&dir)])
 }
 
