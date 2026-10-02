@@ -78,7 +78,12 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
                 string(params, "publicKey")?,
                 string(params, "path")?,
             )?;
-            Ok(json!({"hostPublicKey": public, "user":user}))
+            let guest_address = if params["forwarding"].as_bool() == Some(true) {
+                Some(guest_forwarding_address(&paths, &name)?)
+            } else {
+                None
+            };
+            Ok(json!({"hostPublicKey": public, "user":user, "guestAddress":guest_address}))
         }
         "network.state" => crate::remote_network::host_state(app),
         "network.publish" => {
@@ -220,22 +225,69 @@ pub(crate) fn spawn_stream(app: &AppHandle, method: &str, params: &Value) -> Res
         .map_err(|_| "Could not open the remote VM connection.".into())
 }
 
+fn parse_guest_address(value: &str) -> Result<std::net::IpAddr, String> {
+    let address: std::net::IpAddr = value
+        .trim()
+        .parse()
+        .map_err(|_| "Invalid guest forwarding address.")?;
+    if address.is_loopback() || address.is_unspecified() || address.is_multicast() {
+        return Err("Invalid guest forwarding address.".into());
+    }
+    Ok(address)
+}
+const GUEST_FORWARDING_ADDRESS: &str = "import socket\nfor family, destination in [(socket.AF_INET, ('192.0.2.1', 9)), (socket.AF_INET6, ('2001:db8::1', 9))]:\n try:\n  with socket.socket(family, socket.SOCK_DGRAM) as stream:\n   stream.connect(destination)\n   print(stream.getsockname()[0])\n   break\n except OSError:\n  continue\nelse:\n raise SystemExit('Guest network address is unavailable')\n";
+fn guest_forwarding_address(
+    paths: &runtime::RuntimePaths,
+    name: &str,
+) -> Result<std::net::IpAddr, String> {
+    // UDP connect selects the guest's route/source address without sending a packet.
+    let output = runtime::run_msb(
+        paths,
+        &[
+            "exec".into(),
+            name.into(),
+            "--no-start".into(),
+            "--no-tty".into(),
+            "--quiet".into(),
+            "--timeout".into(),
+            "3s".into(),
+            "--".into(),
+            "python3".into(),
+            "-c".into(),
+            GUEST_FORWARDING_ADDRESS.into(),
+        ],
+        std::time::Duration::from_secs(5),
+    )
+    .map_err(|error| error.to_string())?;
+    parse_guest_address(&output.stdout)
+}
+
 pub(crate) fn prepare(
     app: &AppHandle,
     host: &str,
     vm: &str,
     public: &str,
     path: &str,
-) -> Result<(String, &'static str), String> {
+    forwarding: bool,
+) -> Result<(String, &'static str, Option<std::net::IpAddr>), String> {
     let result = remote::call_remote(
         app,
         host,
         "guest.prepare",
-        json!({"vmId":vm,"publicKey":public,"path":path,"accountProtocol":1}),
+        json!({"vmId":vm,"publicKey":public,"path":path,"accountProtocol":1,"forwarding":forwarding}),
     )?;
     let key = string(&result, "hostPublicKey")?;
     crate::editor::validate_public_key(key)?;
-    Ok((key.into(), crate::working_account::response_user(&result)?))
+    let address = if forwarding {
+        Some(parse_guest_address(string(&result, "guestAddress")?)?)
+    } else {
+        None
+    };
+    Ok((
+        key.into(),
+        crate::working_account::response_user(&result)?,
+        address,
+    ))
 }
 
 #[cfg(test)]
@@ -324,6 +376,77 @@ mod tests {
         assert_eq!(gate.snapshot().running[0].vm_id.as_deref(), Some(id));
         drop(guard);
         assert!(gate.is_idle());
+    }
+
+    #[test]
+    fn forwarding_preserves_guest_interface_addresses_and_rejects_shell_text() {
+        assert_eq!(
+            parse_guest_address("172.16.0.6\n").unwrap().to_string(),
+            "172.16.0.6"
+        );
+        assert_eq!(
+            parse_guest_address("fd00::2\n").unwrap().to_string(),
+            "fd00::2"
+        );
+        for input in [
+            "127.0.0.1",
+            "::1",
+            "0.0.0.0",
+            "::",
+            "224.0.0.1",
+            "ff02::1",
+            "172.16.0.6:3000",
+            "172.16.0.6; touch /tmp/injected",
+            "172.16.0.6\n172.16.0.10",
+        ] {
+            assert!(parse_guest_address(input).is_err(), "{input}");
+        }
+    }
+
+    #[test]
+    fn forwarding_probe_uses_ipv4_then_ipv6_without_sending_data() {
+        let fixture = r#"import socket,sys
+mode = sys.argv[1]
+class RouteSocket:
+ def __init__(self, family, kind):
+  assert kind == socket.SOCK_DGRAM
+  self.family = family
+ def __enter__(self): return self
+ def __exit__(self, *args): pass
+ def connect(self, address):
+  if mode == 'none' or (mode == 'ipv6' and self.family == socket.AF_INET):
+   raise OSError('No route')
+ def getsockname(self):
+  return ('172.16.0.6' if self.family == socket.AF_INET else 'fd00::2', 40000)
+socket.socket = RouteSocket
+"#;
+        let script = format!("{fixture}\n{GUEST_FORWARDING_ADDRESS}");
+        for (mode, expected) in [
+            ("ipv4", Some("172.16.0.6")),
+            ("ipv6", Some("fd00::2")),
+            ("none", None),
+        ] {
+            let output = Command::new("python3")
+                .args(["-c", &script, mode])
+                .output()
+                .unwrap();
+            if let Some(expected) = expected {
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(
+                    parse_guest_address(&String::from_utf8(output.stdout).unwrap())
+                        .unwrap()
+                        .to_string(),
+                    expected
+                );
+            } else {
+                assert!(!output.status.success());
+                assert!(output.stdout.is_empty());
+            }
+        }
     }
 
     #[test]
