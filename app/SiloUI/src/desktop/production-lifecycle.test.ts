@@ -67,7 +67,7 @@ describe("production setup drain", () => {
     }
   })
 
-  it("wakes a GitHub access poll that is already waiting", async () => {
+  it.each(["quit", "dispose"])("wakes a GitHub access poll that is already waiting on %s", async reason => {
     vi.useFakeTimers()
     const workspace = source.workspaces[0].machine.name
     const applying = { ...source.github, policyRevision: 3, workspaceOperations: [{ workspace, status: "applying", message: "Applying access" }] }
@@ -87,16 +87,21 @@ describe("production setup drain", () => {
         applications: source.preferences,
         github: { connectionState: "connected", workspaces: machines.map((machine) => ({ workspace: machine.name, repositories: [], identity: { name: "Test", email: "test@example.invalid", apply: true } })) },
       })
-      const outcome = expect(step).rejects.toThrow(/Silo is quitting/)
+      const outcome = expect(step).rejects.toThrow(reason === "quit" ? /Silo is quitting/ : /Silo closed/)
       await vi.advanceTimersByTimeAsync(1_200)
       const polls = mock.count("read_github_state")
       expect(polls).toBeGreaterThan(0)
       let drained = false
-      void store.drainSetup().then(() => { drained = true })
+      if (reason === "quit") void store.drainSetup().then(() => { drained = true })
+      else {
+        store.dispose()
+        void step.catch(() => { drained = true })
+      }
       await vi.advanceTimersByTimeAsync(0)
       expect(drained).toBe(true)
       await outcome
       expect(mock.count("read_github_state")).toBe(polls)
+      if (reason === "dispose") expect(vi.getTimerCount()).toBe(0)
     } finally {
       store.dispose()
       vi.useRealTimers()
