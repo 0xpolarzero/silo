@@ -83,3 +83,9 @@ The standalone Rust verification extracts the production retry helper, failure c
 - Evidence: five-second UI polling and ten-second application polling repeated failed native service reads. Both production service actions consume failures and publish unavailable rows, so a rejection-based UI timer would never observe the defect. Regressions against both production actions observed an extra request before the ten-second first failure deadline.
 - Change: distinguish background polling from explicit refresh and enforce separate per-computer deadlines for network and SSH read failures. Delays double to a sixty-second cap and reset after valid replies or host address changes. Focus, opening a panel, native events, mutation reconciliation, and Retry bypass the wait.
 - Verification: deterministic production-source tests cover healthy-owner independence, growing and repeated caps, explicit recovery, and the restored five-second caller cadence. Polling-hook fixtures verify background requests and focus overrides.
+
+## Saved computer-list polling
+
+- Evidence: failures reading `remote_host_list` were consumed and displayed, but the ten-second application timer repeated the read. The regression observed another read before the first twenty-second deadline.
+- Change: grow the background list-read delay to a sixty-second cap while retaining known rows and the existing list-error behavior. Explicit refresh, focus, and connect/remove reconciliation bypass the deadline. A valid list resets the delay.
+- Verification: a production-source fixture checks repeated caps, continuing local reads, immediate focus recovery, and the restored ten-second cadence.
