@@ -7185,6 +7185,90 @@ esac
     }
 
     #[test]
+    fn secret_apply_accepts_the_matching_saved_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"secrets":[]}"#).unwrap();
+        crate::secrets::use_test_store(Some(store));
+        crate::secrets::use_test_vault(Some(Default::default()));
+
+        let result = apply_secrets_at_paths(paths.clone(), "dev");
+
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        assert!(result.unwrap().is_empty());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn secret_apply_rejects_a_replaced_runtime_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let script = fs::read_to_string(&paths.executable)
+            .unwrap()
+            .replace(vm().id(), "22222222-2222-4222-8222-222222222222");
+        fs::write(&paths.executable, script).unwrap();
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"secrets":[]}"#).unwrap();
+        crate::secrets::use_test_store(Some(store));
+        crate::secrets::use_test_vault(Some(Default::default()));
+
+        let result = apply_secrets_at_paths(paths.clone(), "dev");
+
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        let error = result.unwrap_err();
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
+    fn secret_apply_rejects_a_replacement_saved_while_waiting() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        fake_github_msb(&paths);
+        let store = directory.path().join("secrets.json");
+        fs::write(&store, r#"{"secrets":[]}"#).unwrap();
+        let held = OPERATIONS.computer("Replacing test sandbox").unwrap();
+        let worker_paths = paths.clone();
+        let update = thread::spawn(move || {
+            crate::secrets::use_test_store(Some(store));
+            crate::secrets::use_test_vault(Some(Default::default()));
+            let result = apply_secrets_at_paths(worker_paths, "dev");
+            crate::secrets::use_test_store(None);
+            crate::secrets::use_test_vault(None);
+            result
+        });
+        wait_for_queue(&OPERATIONS, |queue| {
+            queue
+                .waiting
+                .iter()
+                .any(|entry| entry.vm_name.as_deref() == Some("dev"))
+        });
+        let mut replacement = vm();
+        if let MachineConfiguration::Vm { id, .. } = &mut replacement {
+            *id = "22222222-2222-4222-8222-222222222222".into();
+        }
+        write_metadata(&paths.metadata, &request(vec![replacement])).unwrap();
+        drop(held);
+
+        let error = update.join().unwrap().unwrap_err();
+
+        assert!(error.contains("identity"), "{error}");
+        assert!(!paths.home.join("modify-args").exists());
+        assert!(!paths.home.join("modify-values").exists());
+        forget_github_state(&paths.home, "dev");
+    }
+
+    #[test]
     fn github_update_rejects_a_replaced_runtime_identity() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -12300,8 +12384,10 @@ mod github_integration_tests;
 /// Apply secret policy under the same per-VM lock as GitHub updates and boot.
 pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str) -> Result<Vec<String>, String> {
     validate_name(workspace).map_err(|error| error.to_string())?;
-    // Applies secret policy inside one VM's guest only.
-    let paths = runtime_paths(app)?;
+    apply_secrets_at_paths(runtime_paths(app)?, workspace)
+}
+
+fn apply_secrets_at_paths(paths: RuntimePaths, workspace: &str) -> Result<Vec<String>, String> {
     let vm_id = resolve_vm_id(&paths, workspace).map_err(|error| error.to_string())?;
     let base_label = format!("Saving secrets for {workspace}");
     let acquire =
@@ -12333,6 +12419,21 @@ pub(crate) fn apply_secrets(app: &AppHandle, workspace: &str) -> Result<Vec<Stri
                     ),
                 }
             })?;
+        let machine = read_metadata(&paths.metadata)
+            .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))?
+            .machines
+            .into_iter()
+            .find(|machine| machine.is_vm() && machine.id() == vm_id && machine.name() == workspace)
+            .ok_or_else(|| {
+                secrets_runtime::Attempt::Final(
+                    "The sandbox identity changed. No secrets were applied.".into(),
+                )
+            })?;
+        let inspected = inspect_workspace(&ProcessRunner, &paths, workspace).map_err(|_| {
+            secrets_runtime::Attempt::Final("Could not inspect sandbox secrets.".into())
+        })?;
+        ensure_machine_identity(&machine, &inspected)
+            .map_err(|error| secrets_runtime::Attempt::Final(error.to_string()))?;
         // An edit/remove may have committed while this operation waited for the
         // VM gate. Never send the caller's stale values back into the guest.
         let revision = crate::secrets::workspace_revision(workspace)?;
