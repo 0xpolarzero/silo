@@ -1,6 +1,8 @@
 import importlib.util
 import io
 import json
+import os
+import sys
 from pathlib import Path
 import plistlib
 import shutil
@@ -49,6 +51,31 @@ class MetadataTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, 'Debian.*mismatch'):
                         metadata.verify(root, '0.1.0')
 
+    def test_debian_resource_identity_matches_control_fields(self):
+        for arch, architecture, target in [('x64', 'amd64', 'x86_64-unknown-linux-gnu'),
+                                            ('arm64', 'arm64', 'aarch64-unknown-linux-gnu')]:
+            for version in ('0.1.0', '0.0.9'):
+                with self.subTest(arch=arch, version=version), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    (root / f'Silo-linux-{arch}.deb').write_bytes(b'package fixture')
+                    payload = root / 'payload.tar'
+                    with tarfile.open(payload, 'w') as archive:
+                        data = json.dumps({'version': version, 'target': target}).encode()
+                        entry = tarfile.TarInfo('./usr/lib/Silo/release-info.json')
+                        entry.size = len(data)
+                        archive.addfile(entry, io.BytesIO(data))
+                    dpkg = root / 'dpkg-deb'
+                    dpkg.write_text(f'#!{sys.executable}\nimport sys\nfrom pathlib import Path\n'
+                        f'if sys.argv[1] == "-f": print("Package: silo\\nVersion: 0.1.0\\nArchitecture: {architecture}")\n'
+                        f'elif sys.argv[1] == "--fsys-tarfile": sys.stdout.buffer.write(Path({str(payload)!r}).read_bytes())\n'
+                        'else: sys.exit(21)\n')
+                    dpkg.chmod(0o755)
+                    with patch.dict(os.environ, {'PATH': str(root) + os.pathsep + os.environ['PATH']}):
+                        if version == '0.1.0': metadata.verify(root, '0.1.0')
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, 'Signed package version'):
+                                metadata.verify(root, '0.1.0')
+
     def test_macos_development_identifier_is_rejected(self):
         production = json.loads((Path(__file__).resolve().parent.parent / 'src-tauri/tauri.conf.json').read_text())['identifier']
         for identifier in (production, 'org.silo.dev', 'org.example.other'):
@@ -91,12 +118,33 @@ class MetadataTests(unittest.TestCase):
             root = Path(directory)
             tree = root / 'tree'
             (tree / 'DEBIAN').mkdir(parents=True)
+            resources = tree / 'usr/lib/Silo'
+            resources.mkdir(parents=True)
+            (resources / 'release-info.json').write_text(json.dumps({'version': '0.1.0', 'target': 'x86_64-unknown-linux-gnu'}))
             for package in ('silo', 'unrelated'):
                 (tree / 'DEBIAN/control').write_text(f'Package: {package}\nVersion: 0.1.0\nArchitecture: amd64\nMaintainer: Test\nDescription: Disposable identity fixture\n')
                 subprocess.run(['dpkg-deb', '--build', str(tree), str(root / 'Silo-linux-x64.deb')], check=True, capture_output=True)
                 if package == 'silo': metadata.verify(root, '0.1.0')
                 else:
                     with self.assertRaisesRegex(RuntimeError, 'Debian.*mismatch'):
+                        metadata.verify(root, '0.1.0')
+
+    @unittest.skipUnless(shutil.which('dpkg-deb'), 'Linux Debian tools required')
+    def test_real_debian_resources_reject_stale_wrong_target_and_missing_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tree = root / 'tree'
+            (tree / 'DEBIAN').mkdir(parents=True)
+            (tree / 'DEBIAN/control').write_text('Package: silo\nVersion: 0.1.0\nArchitecture: amd64\nMaintainer: Test\nDescription: Disposable metadata fixture\n')
+            resource = tree / 'usr/lib/Silo/release-info.json'
+            resource.parent.mkdir(parents=True)
+            for data in ({'version': '0.0.9', 'target': 'x86_64-unknown-linux-gnu'},
+                         {'version': '0.1.0', 'target': 'aarch64-unknown-linux-gnu'}, None):
+                with self.subTest(data=data):
+                    if data is None: resource.unlink()
+                    else: resource.write_text(json.dumps(data))
+                    subprocess.run(['dpkg-deb', '--build', str(tree), str(root / 'Silo-linux-x64.deb')], check=True, capture_output=True)
+                    with self.assertRaisesRegex(RuntimeError, 'Signed package version|Missing Debian release metadata'):
                         metadata.verify(root, '0.1.0')
 
     def test_signed_old_version_rejected(self):

@@ -14,6 +14,23 @@ def identity(data, version, target):
     if json.loads(data) != {'version': version, 'target': target}:
         raise RuntimeError('Signed package version or architecture does not match the release.')
 
+def debian_resource(package, name):
+    data = None
+    # dpkg-deb streams the data archive; inspect it without extracting package files.
+    with subprocess.Popen(['dpkg-deb', '--fsys-tarfile', str(package)], stdout=subprocess.PIPE) as process:
+        with process.stdout, tarfile.open(fileobj=process.stdout, mode='r|') as archive:
+            for member in archive:
+                if member.name.removeprefix('./') != name:
+                    continue
+                if data is not None or not member.isfile() or member.size > 1024 * 1024:
+                    raise RuntimeError('Invalid Debian release metadata entry.')
+                data = archive.extractfile(member).read()
+        if process.wait() != 0:
+            raise RuntimeError('Could not read Debian package data.')
+    if data is None:
+        raise RuntimeError('Missing Debian release metadata entry.')
+    return data
+
 def appimage_offset(path, machine):
     with path.open('rb') as source:
         header=source.read(64)
@@ -57,6 +74,7 @@ def verify(root, version):
             fields=subprocess.check_output(['dpkg-deb','-f',str(package),'Package','Version','Architecture'],text=True).splitlines()
             expected=['Package: silo','Version: '+version,'Architecture: '+('amd64' if arch=='x64' else 'arm64')]
             if fields!=expected:raise RuntimeError('Debian package, version or architecture mismatch.')
+            identity(debian_resource(package, f'usr/lib/{product_name}/release-info.json'),version,target)
         image=root/f'{product_name}-linux-{arch}.AppImage'
         if image.exists():
             offset=appimage_offset(image,62 if arch=='x64' else 183)

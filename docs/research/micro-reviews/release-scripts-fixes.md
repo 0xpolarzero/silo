@@ -55,6 +55,29 @@ any artifact; approved ARM64 and x86_64 downloads and warm-cache reuse still
 pass. These synthetic archives establish the preparation policy, not the
 architecture of bytes supplied by an incorrectly authored trusted lock.
 
+
+## Debian bundled release identity
+
+The final Debian metadata gate accepted stale bundled `release-info.json` when
+its control version and architecture were current. Two architecture regressions
+failed before the fix. The gate now requires the production resource path and
+matching version/target, using the upstream
+[`dpkg-deb --fsys-tarfile`](https://manpages.debian.org/bookworm/dpkg/dpkg-deb.1.en.html)
+data stream and Python's streaming tar reader without extracting package files.
+A metadata entry must be unique, regular and at most 1 MiB. Correct control
+identity remains required. Real disposable Debian packages cover the accepted
+production resource, stale version, wrong target, missing metadata and wrong
+package name; portable fake-dpkg child processes cover both target architectures.
+No package is installed or executed by these tests.
+
+Verification: 49 focused Python release/workflow tests passed with the two Linux
+package tests skipped on macOS. Both real-package tests then passed in the cached
+Linux container with networking disabled and a read-only source mount. That
+container lacks Rust, so its channel-name collaborator received public names
+read from the native source on the host. Typecheck, lint and Rust formatting
+passed. The initial all-tests container attempt failed on missing `rustc`, before
+any package verification; it is not reported as a passing native-name check.
+
 ## RELEASE-SCRIPTS-5 — P2: Missing Linux inputs destroy the previous package tools
 
 - **Trigger and evidence:** `stageLinuxPackageTools` removes the published directory before copying its inputs. A temporary-directory fixture supplies the first new executable and omits the second; it reproduced a directory containing only the replacement `msb`, with all six prior tools lost. Failing output is preserved in ignored `target/verification/release-scripts/linux-package-before.log`.
