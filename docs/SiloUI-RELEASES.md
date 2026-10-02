@@ -435,6 +435,17 @@ succeeds before announcing availability through Software Updater. Initial
 setup, key rotation, migration, and installer tests are documented in
 [Linux system updates](SiloUI-LINUX-UPDATES.md).
 
+Candidate indexes advertise the latest two complete releases. Historical signed
+metadata, its by-hash indexes, and every referenced package remain available
+until that metadata's 14-day `Valid-Until` expires, across successive deployments.
+The publisher verifies historical signatures and object digests before copying
+them; expired metadata and objects without a current reference are omitted from
+the new site. This follows APT's signed Release-to-index-to-package chain described
+in [apt-ftparchive](https://manpages.debian.org/bookworm/apt-utils/apt-ftparchive.1.en.html).
+The existing GitHub Pages publisher rejects a site above 900 MiB, including retained
+objects, before deployment. If release volume reaches that limit, choose storage
+that can hold the full validity window; do not shorten retention silently.
+
 ### Required release acceptance evidence
 
 - Clean install from actual downloaded DMG, AppImage and Debian package.
