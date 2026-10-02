@@ -61,6 +61,15 @@ struct Tunnels {
     /// Keys a background reconnect is opening right now.
     connecting: HashSet<Key>,
     saves: HashMap<Key, Arc<()>>,
+    revisions: HashMap<String, Arc<()>>,
+}
+impl Tunnels {
+    fn revision(&self, host: &str) -> Option<Arc<()>> {
+        self.revisions.get(host).cloned()
+    }
+    fn changed(&mut self, host: &str) {
+        self.revisions.insert(host.into(), Arc::new(()));
+    }
 }
 static TUNNELS: OnceLock<Mutex<Tunnels>> = OnceLock::new();
 /// A short data lock: never held while ssh starts or a port is probed.
@@ -79,7 +88,9 @@ impl PendingSave {
     fn new(key: Key) -> Result<Self, String> {
         runtime::shutdown::ensure_accepting_operations()?;
         let token = Arc::new(());
-        tunnels().saves.insert(key.clone(), token.clone());
+        let mut tunnels = tunnels();
+        tunnels.changed(&key.0);
+        tunnels.saves.insert(key.clone(), token.clone());
         Ok(Self { key, token })
     }
     fn current(&self, tunnels: &Tunnels) -> bool {
@@ -158,6 +169,7 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
     if let Some(error) = remote::offline(host) {
         return Err(error.into());
     }
+    let revision = tunnels().revision(host);
     let value = match remote::call_remote_typed(app, host, "network.state", json!({})) {
         Ok(value) => {
             remote::poll_succeeded(host);
@@ -170,7 +182,7 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
             return Err(error);
         }
     };
-    let projection = project_ports(value, host, &mut tunnels())?;
+    let projection = project_observed(value, host, revision, &mut tunnels())?;
     let Projection {
         value,
         closed,
@@ -190,6 +202,23 @@ struct Projection {
     /// Intended tunnels to open again: key, intent, the owner's current endpoint.
     reconnect: Vec<(Key, Intent, u16)>,
 }
+fn project_observed(
+    value: Value,
+    host: &str,
+    revision: Option<Arc<()>>,
+    tunnels: &mut Tunnels,
+) -> Result<Projection, String> {
+    let current = match (revision.as_ref(), tunnels.revisions.get(host)) {
+        (None, None) => true,
+        (Some(before), Some(now)) => Arc::ptr_eq(before, now),
+        _ => false,
+    };
+    if !current || tunnels.saves.keys().any(|key| key.0 == host) {
+        return Err("Network settings changed while refreshing. Refresh network services.".into());
+    }
+    project_ports(value, host, tunnels)
+}
+
 /// Rewrites the owner's rows for this computer: rows become remote targets, ports show this
 /// computer's tunnel (never the owner's loopback endpoint). Each sandbox gets the host
 /// name its websites open at here (C-24; the owner's own host choice is ignored).
@@ -441,6 +470,7 @@ fn finish_save(
         if unchanged {
             let local_port = tunnels.live[&key].local_port;
             tunnels.intents.insert(key, Intent { local_port, scheme });
+            tunnels.changed(&pending.key.0);
             return Ok(());
         }
         let occupies = tunnels
@@ -474,6 +504,7 @@ fn finish_save(
             },
         );
         tunnels.connecting.remove(&key);
+        tunnels.changed(&pending.key.0);
         tunnels.live.insert(key, tunnel)
     };
     drop(replaced);
@@ -534,6 +565,7 @@ pub async fn remote_save_network_port(
 fn forget_port(key: &Key) {
     let closed = {
         let mut tunnels = tunnels();
+        tunnels.changed(&key.0);
         tunnels.saves.remove(key);
         tunnels.connecting.remove(key);
         tunnels.intents.remove(key);
@@ -630,6 +662,7 @@ pub(crate) fn disconnect_host(host: &str) {
 pub(crate) fn close_host(host: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
+        tunnels.revisions.remove(host);
         tunnels.saves.retain(|key, _| key.0 != host);
         tunnels.intents.retain(|key, _| key.0 != host);
         tunnels.connecting.retain(|key| key.0 != host);
@@ -781,6 +814,44 @@ mod tests {
         assert!(
             tunnels.live.contains_key(&key("other")) && tunnels.intents.contains_key(&key("other"))
         );
+    }
+
+    #[test]
+    fn an_older_poll_cannot_forget_a_newly_saved_tunnel() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        let key = key(&host);
+        let before = tunnels().revision(&host);
+        save_tunnel(key.clone(), None, Some("http".into()), 32000, |_| {
+            Ok(tunnel(43100, 32000))
+        })
+        .unwrap();
+        let mut state = tunnels();
+        let result = project_observed(json!({"workspaces":[]}), &host, before, &mut state);
+        let kept = state.live.contains_key(&key) && state.intents.contains_key(&key);
+        let current = state.revision(&host);
+        let fresh = project_observed(json!({"workspaces":[]}), &host, current, &mut state).unwrap();
+        let deleted = !state.live.contains_key(&key) && !state.intents.contains_key(&key);
+        drop(state);
+        drop(fresh);
+        close_host(&host);
+        assert!(result.is_err(), "an obsolete poll was applied");
+        assert!(kept, "an obsolete poll deleted the saved connection");
+        assert!(deleted, "a current deletion must still close the tunnel");
+    }
+
+    #[test]
+    fn polls_wait_for_their_own_hosts_pending_save() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        let pending = PendingSave::new(key(&host)).unwrap();
+        let mut state = tunnels();
+        let revision = state.revision(&host);
+        assert!(project_observed(json!({"workspaces":[]}), &host, revision, &mut state).is_err());
+        assert!(project_observed(json!({"workspaces":[]}), "other", None, &mut state).is_ok());
+        drop(state);
+        drop(pending);
+        close_host(&host);
     }
 
     #[test]
