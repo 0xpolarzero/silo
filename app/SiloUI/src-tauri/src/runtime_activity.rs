@@ -46,7 +46,16 @@ fn events(paths: &RuntimePaths) -> Result<Vec<Event>, RuntimeError> {
             ))
         }
     };
-    let mut events: Vec<Event> = serde_json::from_reader(file.take(MAX_OUTPUT_BYTES))
+    let mut bytes = Vec::new();
+    file.take(MAX_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| RuntimeError::Unavailable("Sandbox activity could not be read.".into()))?;
+    if bytes.len() as u64 > MAX_OUTPUT_BYTES {
+        return Err(RuntimeError::Malformed(
+            "Sandbox activity is too large.".into(),
+        ));
+    }
+    let mut events: Vec<Event> = serde_json::from_slice(&bytes)
         .map_err(|_| RuntimeError::Malformed("Sandbox activity could not be decoded.".into()))?;
     // Entries from another build (a newer action, an over-long journal) only
     // cost history; they must not stop start/stop from journaling.
@@ -796,6 +805,31 @@ mod tests {
         let values = read(&paths).unwrap();
         assert_eq!(values[0]["tone"], "warning");
         assert_eq!(values[0]["status"], "completed");
+    }
+
+    #[test]
+    fn oversized_history_is_preserved_when_its_bounded_prefix_is_valid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let history = path(&paths);
+        let mut original = b"[]".to_vec();
+        original.resize(MAX_OUTPUT_BYTES as usize, b' ');
+        original.extend_from_slice(b"unfinished trailing history");
+        fs::write(&history, &original).unwrap();
+
+        let mut event = begin(&paths, "stop", "dev", "vm-1").unwrap();
+        finish(&paths, &mut event, &Ok(()));
+        assert!(fs::read(&history).unwrap() == original);
+        assert!(read(&paths).unwrap().iter().any(|entry| {
+            entry["id"] == "sandbox-history-unavailable" && entry["tone"] == "warning"
+        }));
+        // A complete valid file exactly at the limit remains writable.
+        fs::write(&history, &original[..MAX_OUTPUT_BYTES as usize]).unwrap();
+        let next = begin(&paths, "start", "dev", "vm-1").unwrap();
+        assert!(events(&paths)
+            .unwrap()
+            .iter()
+            .any(|event| event.id == next.id));
     }
 
     #[test]
