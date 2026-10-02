@@ -671,6 +671,7 @@ fn status_serializes_for_the_ui() {
 }
 
 mod hardening;
+mod http;
 
 /// Opt-in: downloads the real pinned arm64 package from OpenAI (453 MB) into a
 /// temporary directory and checks the extracted layout. Run with

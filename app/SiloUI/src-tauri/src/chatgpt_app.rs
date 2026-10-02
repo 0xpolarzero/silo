@@ -635,6 +635,9 @@ pub(crate) trait Downloader {
 pub(crate) struct HttpDownloader {
     attempts: u32,
     backoff: Duration,
+    /// Tests only: serve from a loopback HTTP server instead of HTTPS.
+    #[cfg(test)]
+    plain_http: bool,
 }
 
 impl Default for HttpDownloader {
@@ -642,6 +645,8 @@ impl Default for HttpDownloader {
         Self {
             attempts: 5,
             backoff: Duration::from_secs(2),
+            #[cfg(test)]
+            plain_http: false,
         }
     }
 }
@@ -673,8 +678,14 @@ impl HttpDownloader {
         if have > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
         }
-        let mut response = request.send().map_err(|_| {
-            Error::retry("Silo could not reach OpenAI to download the ChatGPT app.")
+        let mut response = request.send().map_err(|error| {
+            if error.is_timeout() || error.is_connect() {
+                Error::retry(
+                    "Silo could not connect to OpenAI to download the ChatGPT app. A firewall or network filter may be holding Silo's connection.",
+                )
+            } else {
+                Error::retry("Silo could not reach OpenAI to download the ChatGPT app.")
+            }
         })?;
         let status = response.status();
         let append = match status.as_u16() {
@@ -733,19 +744,26 @@ impl Downloader for HttpDownloader {
         total: u64,
         progress: &mut dyn FnMut(u64),
     ) -> Result<(), Error> {
+        #[cfg(test)]
+        let plain_http = self.plain_http;
+        #[cfg(not(test))]
+        let plain_http = false;
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(20))
             // The blocking client has no stall timeout; this bounds one attempt
             // (a 450 MB package at 250 KB/s) and a retry resumes where it stopped.
             .timeout(Duration::from_secs(30 * 60))
-            .redirect(reqwest::redirect::Policy::custom(|attempt| {
-                if attempt.previous().len() < 5 && attempt.url().scheme() == "https" {
+            .redirect(reqwest::redirect::Policy::custom(move |attempt| {
+                if attempt.previous().len() < 5
+                    && (attempt.url().scheme() == "https"
+                        || (plain_http && attempt.url().scheme() == "http"))
+                {
                     attempt.follow()
                 } else {
                     attempt.stop()
                 }
             }))
-            .https_only(true)
+            .https_only(!plain_http)
             .user_agent(concat!("Silo/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|_| Error::fatal("Silo could not start a secure download."))?;
