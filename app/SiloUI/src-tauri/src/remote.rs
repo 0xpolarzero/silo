@@ -3645,6 +3645,7 @@ mod dispatch_tests {
                 "desktop.action",
                 "chatgpt.retry",
                 "computer.approval",
+                "ssh.access.connection",
                 "ssh.access.save",
                 "guest.prepare",
                 "network.publish",
@@ -3725,6 +3726,25 @@ mod dispatch_tests {
             );
             assert_eq!(outcome, Err(expected.clone()));
         }
+    }
+
+    #[test]
+    fn ssh_key_registration_is_recorded_once_per_request() {
+        let _test_state = crate::test_support::global_state();
+        let (_home, dir, config) = owner();
+        let registration = request(&config, "ssh.access.connection");
+        let runs = AtomicUsize::new(0);
+        for _ in 0..2 {
+            let result = run(&dir, &registration, |_, _| {
+                runs.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"port":2222,"address":"127.0.0.1","user":"silo"}))
+            })
+            .unwrap();
+            assert_eq!(result["port"], 2222);
+        }
+        assert_eq!(runs.load(Ordering::SeqCst), 1);
+        let id = registration["operationId"].as_str().unwrap();
+        assert!(dir.join("operations").join(format!("{id}.json")).is_file());
     }
 
     #[test]
