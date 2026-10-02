@@ -142,7 +142,7 @@ pub(crate) fn require_openssh(purpose: &str) -> Result<(), String> {
     )
 }
 fn require_openssh_at(ssh: &Path, keygen: &Path, purpose: &str) -> Result<(), String> {
-    if ssh.is_file() && keygen.is_file() {
+    if applications::launch::executable_file(ssh) && applications::launch::executable_file(keygen) {
         Ok(())
     } else {
         Err(format!(
@@ -1235,6 +1235,10 @@ mod tests {
         fs::write(&ssh, b"").unwrap();
         assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
         fs::write(&keygen, b"").unwrap();
+        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        fs::set_permissions(&ssh, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_err());
+        fs::set_permissions(&keygen, fs::Permissions::from_mode(0o755)).unwrap();
         assert!(require_openssh_at(&ssh, &keygen, "view VM desktops").is_ok());
     }
 

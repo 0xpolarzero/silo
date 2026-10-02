@@ -67,7 +67,7 @@ fn file_name(path: &Path) -> &str {
     path.file_name().and_then(OsStr::to_str).unwrap_or("")
 }
 
-pub(super) fn executable_file(path: &Path) -> bool {
+pub(crate) fn executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
