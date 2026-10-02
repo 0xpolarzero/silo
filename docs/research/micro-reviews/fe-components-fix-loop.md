@@ -42,3 +42,13 @@ Scope: `app/SiloUI/src/components/`, correctness and accessibility defects found
 - **Suggested fix:** Retain the Cancel button ref and restore it after leaving the confirmation, using the existing focus helper.
 - **Regression:** `operation-toast-body.test.tsx` enters the prompt, keeps going with Enter, checks Cancel focus, and reopens the prompt with Enter without invoking cancellation.
 - **Verification:** The new case failed before the fix; focused tests and the required checks are run before commit.
+
+## FE-COMPONENTS-8 — P2 — The actions-menu popover host has no accessible name
+
+- **File:line at discovery:** `app/SiloUI/src/components/actions-menu.tsx:74`.
+- **Trigger:** Open a registered confirmation, such as sandbox deletion, from an actions menu or a command-palette panel request.
+- **Evidence:** This host directly renders `PopoverContent` without a name and receives bare `ConfirmBody` or `FormBody` content, bypassing the named `ConfirmPopover`/`FormPopover` shell. Both new accessible-name regressions fail with an unnamed dialog.
+- **Consequence:** Screen reader users enter a dialog without receiving the selected action or its target as its name.
+- **Suggested fix:** Name the host from the registered action's accessible label, then its visible label, with the menu's target-specific label as a fallback.
+- **Regression:** `actions-menu.test.tsx` asserts a named deletion dialog after both menu selection and a command-palette panel request.
+- **Verification:** Both new cases failed before the fix; focused tests and the required checks are run before commit.
