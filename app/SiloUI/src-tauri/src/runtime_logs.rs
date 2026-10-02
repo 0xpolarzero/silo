@@ -95,21 +95,48 @@ fn cache() -> &'static std::sync::Mutex<HashMap<String, (Instant, std::sync::Arc
 }
 
 /// PEM state belongs to a stream and execution session, independent of search filters.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Redaction {
     sessions: HashSet<(String, Option<String>)>,
+    /// Estimated memory held by `sessions`.
+    bytes: usize,
+    limit: usize,
+}
+impl Default for Redaction {
+    fn default() -> Self {
+        Self {
+            sessions: HashSet::new(),
+            bytes: 0,
+            limit: INDEX_BUDGET,
+        }
+    }
 }
 impl Redaction {
-    fn apply(&mut self, stream: &str, decoded: &mut Decoded) {
+    /// Twice the owned size covers the table's spare capacity and control bytes.
+    fn session_cost(key: &(String, Option<String>)) -> usize {
+        2 * (std::mem::size_of::<(String, Option<String>)>()
+            + key.0.len()
+            + key.1.as_ref().map_or(0, String::len))
+    }
+    fn apply(&mut self, stream: &str, decoded: &mut Decoded) -> Result<(), String> {
         let key = (stream.to_owned(), decoded.session.clone());
         decoded.in_pem = self.sessions.contains(&key);
         let mut in_pem = decoded.in_pem;
         decoded.body = runtime_activity::log_text_with_pem(&decoded.body, &mut in_pem);
         if in_pem {
-            self.sessions.insert(key);
-        } else {
-            self.sessions.remove(&key);
+            if !decoded.in_pem {
+                let cost = Self::session_cost(&key);
+                // Dropping an open session would expose the rest of its block.
+                if self.bytes + cost > self.limit {
+                    return Err(TOO_MANY_MATCHES.into());
+                }
+                self.bytes += cost;
+                self.sessions.insert(key);
+            }
+        } else if self.sessions.remove(&key) {
+            self.bytes -= Self::session_cost(&key);
         }
+        Ok(())
     }
 }
 
@@ -334,7 +361,7 @@ fn scan(
         }
         let id = record_id(segment.inode, offset, &bytes);
         let mut decoded = decode(segment, &bytes, oversized);
-        redaction.apply(&segment.stream, &mut decoded);
+        redaction.apply(&segment.stream, &mut decoded)?;
         visit(offset, id, decoded, terminated)?;
         offset += length;
         if terminated {
@@ -885,11 +912,12 @@ fn location_cost(time: &str, id: &str) -> usize {
     std::mem::size_of::<Location>() + time.len() + id.len()
 }
 fn cached_cost(cached: &Cached) -> usize {
-    cached
-        .records
-        .iter()
-        .map(|record| location_cost(&record.time, &record.id))
-        .sum()
+    cached.redaction.bytes
+        + cached
+            .records
+            .iter()
+            .map(|record| location_cost(&record.time, &record.id))
+            .sum::<usize>()
 }
 /// Keep a snapshot for its cursors, replacing the snapshot it follows and evicting
 /// the least recently used over budget.
@@ -943,6 +971,16 @@ fn follow_index(
         })
     {
         return Ok(None);
+    }
+    // The clone coexists with every cached snapshot until the refresh replaces its predecessor.
+    let retained: usize = cache()
+        .lock()
+        .map_err(|_| "Log query unavailable.")?
+        .values()
+        .map(|(_, cached)| cached_cost(cached))
+        .sum();
+    if retained + previous.redaction.bytes > INDEX_BUDGET {
+        return Err(TOO_MANY_MATCHES.into());
     }
     let mut redaction = previous.redaction.clone();
     let mut summary = Summary::default();
@@ -1795,6 +1833,86 @@ mod tests {
             .unwrap()
             .contains("expired"));
     }
+    fn unterminated_sessions(count: usize) -> String {
+        (0..count)
+            .map(|id| line(id, "-----BEGIN PRIVATE KEY-----"))
+            .collect()
+    }
+
+    #[test]
+    fn open_pem_sessions_count_toward_snapshot_cost_and_the_scan_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut text = unterminated_sessions(40);
+        text.push_str(&line(40, "secret-body-line"));
+        fs::write(directory.path().join("exec.log"), &text).unwrap();
+        let mut query = request();
+        query.query = Some("absent-text".into());
+        let page = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
+        assert_eq!(page.total_matches, 0);
+        let cost = cached_cost(
+            &cache()
+                .lock()
+                .unwrap()
+                .get(page.snapshot.as_deref().unwrap())
+                .unwrap()
+                .1,
+        );
+        assert!(cost > 0);
+
+        let (path, segment) = files(directory.path()).unwrap().remove(0);
+        let mut limited = Redaction {
+            limit: cost / 2,
+            ..Default::default()
+        };
+        let err = scan(&path, &segment, 0, &mut limited, |_, _, _, _| Ok(())).unwrap_err();
+        assert_eq!(err, TOO_MANY_MATCHES);
+        assert!(limited.bytes <= limited.limit);
+
+        // Within the limit, later lines of an open block stay hidden.
+        let mut roomy = Redaction::default();
+        let mut bodies = Vec::new();
+        scan(&path, &segment, 0, &mut roomy, |_, _, decoded, _| {
+            bodies.push(decoded.body);
+            Ok(())
+        })
+        .unwrap();
+        assert!(bodies.iter().all(|body| !body.contains("secret-body-line")));
+        assert_eq!(roomy.bytes, cost);
+    }
+
+    #[test]
+    fn follow_refuses_to_clone_redaction_state_beyond_the_shared_budget() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(directory.path().join("exec.log"), unterminated_sessions(5)).unwrap();
+        let first = read(directory.path(), request(), "dev", "pc", "Desktop").unwrap();
+        let token = first.snapshot.unwrap();
+        let previous = cache().lock().unwrap().get(&token).unwrap().1.clone();
+        assert!(previous.redaction.bytes > 0);
+        let available = files(directory.path()).unwrap();
+        let filter = Filter {
+            since: None,
+            until: None,
+            needle: String::new(),
+            source: None,
+        };
+        let mut inflated = Redaction::default();
+        inflated.bytes = INDEX_BUDGET;
+        let big = std::sync::Arc::new(Cached {
+            binding: "big".into(),
+            files: Vec::new(),
+            records: Vec::new(),
+            redaction: inflated,
+            summary: Summary::default(),
+        });
+        cache()
+            .lock()
+            .unwrap()
+            .insert("inflated".into(), (Instant::now(), big));
+        let result = follow_index(&previous, &available, &filter);
+        cache().lock().unwrap().remove("inflated");
+        assert_eq!(result.err().as_deref(), Some(TOO_MANY_MATCHES));
+    }
+
     #[test]
     fn follow_does_not_reread_records_it_already_indexed() {
         let directory = tempfile::tempdir().unwrap();
