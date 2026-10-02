@@ -188,7 +188,7 @@ describe("computer use section", () => {
     await waitFor(() => expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeChecked())
     expect(setApproval).toHaveBeenCalledWith("office/vm-1", "auto")
   })
-  it("reverts and reports a failed approval change", async () => {
+  it("reports a failed approval change and shows the state read afterwards", async () => {
     section(backend({ readDesktopState: async () => fixtureDesktopState("ready"), setApproval: async () => { throw new Error("office-mac is offline") } }))
     await userEvent.setup().click(await screen.findByRole("switch", { name: /Allow without asking/ }))
     expect(await screen.findByRole("alert")).toHaveTextContent("office-mac is offline")
@@ -267,6 +267,21 @@ describe("v3 and v4 desktop viewer", () => {
     expect(screen.queryByRole("button", { name: "Set up LCU" })).not.toBeInTheDocument()
     await userEvent.setup().click(screen.getByRole("button", { name: "Set up computer use" }))
     expect(onAction).toHaveBeenCalledWith("setup-computer-use")
+  })
+  it("names a failed ChatGPT download and keeps Set up computer use off until it is retried", async () => {
+    const onAction = viewer(fixtureDesktopState("app-failed"))
+    expect(screen.getByText("Computer use: Download failed")).toBeVisible()
+    const setup = screen.getByRole("button", { name: "Set up computer use" })
+    expect(setup).toBeDisabled()
+    expect(screen.getByText(/use Retry in Settings, Computers/)).toBeVisible()
+    await userEvent.setup().click(setup)
+    expect(onAction).not.toHaveBeenCalled()
+  })
+  it("keeps Set up computer use for a failed setup of the sandbox itself", () => {
+    viewer(fixtureDesktopState("failed"))
+    expect(screen.getByText("Computer use: Setup failed")).toBeVisible()
+    expect(screen.getByRole("button", { name: "Set up computer use" })).toBeEnabled()
+    expect(screen.queryByText(/use Retry in Settings/)).toBeNull()
   })
   it("hides setup while computer use is installing", () => {
     viewer(fixtureDesktopState("installing"))
@@ -606,47 +621,134 @@ describe("unreadable approval policy", () => {
   })
 })
 
-describe("saved and applied approval", () => {
+describe("chosen and applied approval", () => {
   const desktop = { installed: true, autoStart: true, state: "running" }
-  it("parses appliedApproval tolerantly: unknown when missing or malformed", () => {
-    const parse = (computerUse: object) => parseLinuxDesktopState({ ...desktop, computerUse }).computerUse
+  const parse = (computerUse: object) => parseLinuxDesktopState({ ...desktop, computerUse }).computerUse
+  const render_ = (computerUse: ComputerUseState, extra: Partial<Parameters<typeof ComputerUsePanel>[0]> = {}) =>
+    render(<ComputerUsePanel computerUse={computerUse} running busy={false} error={null} onApproval={vi.fn()} onSetup={vi.fn()} {...extra} />)
+  it("parses appliedApproval and approvalApply tolerantly", () => {
     expect(parse({ state: "ready", approval: "ask" })?.appliedApproval).toBe("unknown")
     expect(parse({ state: "ready", approval: "ask", appliedApproval: 3 })?.appliedApproval).toBe("unknown")
     expect(parse({ state: "ready", approval: "ask", appliedApproval: "auto" })).toMatchObject({ approval: "ask", appliedApproval: "auto" })
+    // An older Silo does not report how applying stands: it reads as applied, never as pending forever.
+    expect(parse({ state: "ready", approval: "ask" })?.approvalApply).toBe("applied")
+    expect(parse({ state: "ready", approval: "ask", approvalApply: "sometime" })?.approvalApply).toBe("applied")
+    for (const value of ["applied", "pending", "failed", "partial"]) expect(parse({ state: "ready", approval: "ask", approvalApply: value, approvalApplyReason: "why" })).toMatchObject({ approvalApply: value, approvalApplyReason: "why" })
+    expect(parse({ state: "ready", approvalApplyReason: 4 })?.approvalApplyReason).toBeNull()
   })
-  it("shows the chosen mode in the switch and warns while the guest still auto-approves", () => {
-    render(<ComputerUsePanel computerUse={fixtureComputerUse("unapplied-ask")} running busy={false} error={null} onApproval={vi.fn()} onSetup={vi.fn()} />)
+  it("shows the chosen mode, says Applying… while it is pending and warns that agents may still act without asking", () => {
+    render_(fixtureComputerUse("approval-pending"))
     expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
-    expect(screen.getByRole("note")).toHaveTextContent("Agents in this sandbox can still act without asking until this change is applied.")
+    expect(screen.getByRole("status")).toHaveTextContent("Applying…")
+    expect(screen.getByRole("note")).toHaveTextContent("Some agents in this sandbox may still act without asking until this change is applied.")
   })
   it("says agents still ask while a switch to auto is pending", () => {
-    render(<ComputerUsePanel computerUse={{ ...ready, approval: "auto", appliedApproval: "ask" }} running busy={false} error={null} onApproval={vi.fn()} onSetup={vi.fn()} />)
+    render_({ ...ready, approval: "auto", appliedApproval: "ask", approvalApply: "pending" })
     expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeChecked()
-    expect(screen.getByRole("note")).toHaveTextContent("still ask first until this change is applied")
-    expect(screen.queryByText(/can still act without asking/)).toBeNull()
+    expect(screen.getByRole("status")).toHaveTextContent("Applying…")
+    expect(screen.getByRole("note")).toHaveTextContent("may still ask first until this change is applied")
+    expect(screen.queryByText(/still act without asking/)).toBeNull()
   })
-  it("shows no warning when both agree or the applied mode is not known", () => {
-    for (const computerUse of [ready, fixtureComputerUse("auto"), { ...ready, approval: "auto" as const, appliedApproval: "unknown" as const }, { ...ready, appliedApproval: "unknown" as const }]) {
-      const { unmount } = render(<ComputerUsePanel computerUse={computerUse} running busy={false} error={null} onApproval={vi.fn()} onSetup={vi.fn()} />)
+  it("does not say Applying… for a stopped sandbox: the change applies when it starts", () => {
+    render_(fixtureComputerUse("approval-pending"), { running: false })
+    expect(screen.queryByText("Applying…")).toBeNull()
+    expect(screen.getByText("Applied when the sandbox starts.")).toBeVisible()
+    // A sandbox that never applied anything has nothing to wait for.
+    const { unmount } = render_({ ...ready, appliedApproval: "unknown", approvalApply: "pending" }, { running: false })
+    expect(screen.getAllByText("Applied when the sandbox starts.")).toHaveLength(1)
+    unmount()
+  })
+  it("reports a failed apply with its reason and the warning, and keeps the choice", () => {
+    render_(fixtureComputerUse("approval-failed"))
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
+    const note = screen.getByRole("note")
+    expect(note).toHaveTextContent("Silo could not apply the approval change.")
+    expect(note).toHaveTextContent("Applying took too long. Silo tries again when the sandbox starts.")
+    expect(note).toHaveTextContent("Some agents in this sandbox may still act without asking.")
+    expect(screen.queryByText("Applying…")).toBeNull()
+  })
+  it("reports a partial apply and warns that some agents may still act without asking", () => {
+    render_(fixtureComputerUse("approval-partial"))
+    const note = screen.getByRole("note")
+    expect(note).toHaveTextContent("only some agents")
+    expect(note).toHaveTextContent("Some agents could not be configured")
+    expect(note).toHaveTextContent("Some agents in this sandbox may still act without asking.")
+    // Partial is a warning whatever the previous mode was.
+    const { unmount } = render_({ ...ready, appliedApproval: "unknown", approvalApply: "partial" })
+    expect(screen.getAllByRole("note").at(-1)).toHaveTextContent("may still act without asking")
+    unmount()
+  })
+  it("warns after a failure to apply ask when nothing says ask is in place, and not when it is", () => {
+    const { unmount } = render_({ ...ready, appliedApproval: "unknown", approvalApply: "failed", approvalApplyReason: "Silo could not reach the sandbox to apply it." })
+    expect(screen.getByRole("note")).toHaveTextContent("may still act without asking")
+    unmount()
+    render_({ ...ready, appliedApproval: "ask", approvalApply: "failed" })
+    expect(screen.getByRole("note")).toHaveTextContent("Silo could not apply the approval change.")
+    expect(screen.getByRole("note")).not.toHaveTextContent("may still act without asking")
+  })
+  it("says some agents may still ask when a switch to auto failed", () => {
+    render_({ ...ready, approval: "auto", appliedApproval: "ask", approvalApply: "failed" })
+    expect(screen.getByRole("note")).toHaveTextContent("Some agents in this sandbox may still ask first.")
+    expect(screen.queryByText(/still act without asking/)).toBeNull()
+  })
+  it("shows no approval note when applied, or while a first apply waits with nothing known", () => {
+    for (const computerUse of [ready, fixtureComputerUse("auto"), { ...ready, approval: "auto" as const, appliedApproval: "unknown" as const },
+      { ...ready, appliedApproval: "unknown" as const, approvalApply: "pending" as const }]) {
+      const { unmount } = render_(computerUse)
       expect(screen.queryByRole("note")).toBeNull()
       unmount()
     }
   })
   it("keeps the unreadable-policy diagnostic alone, never a second warning", () => {
-    render(<ComputerUsePanel computerUse={{ ...ready, approval: "unknown", appliedApproval: "auto" }} running busy={false} error={null} onApproval={vi.fn()} onSetup={vi.fn()} />)
+    render_({ ...ready, approval: "unknown", appliedApproval: "auto", approvalApply: "failed" })
     expect(screen.getAllByRole("note")).toHaveLength(1)
     expect(screen.getByRole("note")).toHaveTextContent("could not read this sandbox's approval setting")
   })
-  it("keeps the warning after a failed change reverts the optimistic switch", async () => {
+  it("shows Applying… as soon as the switch is used, then the result the sandbox reports", async () => {
     const user = userEvent.setup()
+    const change = deferred<unknown>()
+    const reads = vi.fn(async () => ({ ...fixtureDesktopState("ready"), computerUse: fixtureComputerUse("auto") }))
+    render(wrap(backend({ readDesktopState: reads, setApproval: () => change.promise }), <ComputerUseSection workspace="office/vm-1" pollMs={60_000} />))
+    await user.click(await screen.findByRole("switch", { name: /Allow without asking/ }))
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
+    expect(screen.getByText("Applying…")).toBeVisible()
+    await act(async () => { change.resolve({ ...fixtureDesktopState("ready"), computerUse: fixtureComputerUse("approval-failed") }) })
+    expect(await screen.findByText(/Silo could not apply the approval change/)).toBeVisible()
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
+    expect(screen.queryByText("Applying…")).toBeNull()
+  })
+  it("reads the sandbox's state again after a command error instead of restoring the old snapshot", async () => {
+    const user = userEvent.setup()
+    // The command stored the choice and started applying it, then the answer was lost.
+    const states = [fixtureComputerUse("auto"), { ...fixtureComputerUse("approval-pending"), approval: "ask" as const }]
+    const readDesktopState = vi.fn(async () => ({ ...fixtureDesktopState("ready"), computerUse: states.length > 1 ? states.shift()! : states[0] }))
+    render(wrap(backend({ readDesktopState, setApproval: async () => { throw new Error("The connection to office-mac was lost.") } }), <ComputerUseSection workspace="office/vm-1" pollMs={60_000} />))
+    expect(await screen.findByRole("switch", { name: /Allow without asking/ })).toBeChecked()
+    await user.click(screen.getByRole("switch", { name: /Allow without asking/ }))
+    expect(await screen.findByRole("alert")).toHaveTextContent("The connection to office-mac was lost.")
+    // Not restored to the snapshot from before the change (auto): the authoritative state is ask, still applying.
+    await waitFor(() => expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked())
+    expect(screen.getByText("Applying…")).toBeVisible()
+    expect(screen.getByRole("note")).toHaveTextContent("may still act without asking")
+    expect(readDesktopState).toHaveBeenCalledTimes(2)
+  })
+  it("keeps the old snapshot and says the read failed when the re-read fails too", async () => {
+    const user = userEvent.setup()
+    let reads = 0
     render(wrap(backend({
-      readDesktopState: async () => ({ ...fixtureDesktopState("ready"), computerUse: fixtureComputerUse("auto") }),
-      // Saved as ask, but the guest could not apply it: the state keeps reporting auto as applied.
-      setApproval: async () => ({ ...fixtureDesktopState("ready"), computerUse: { ...fixtureComputerUse("unapplied-ask"), state: "failed" as const, reason: "Silo could not apply the approval change." } }),
+      readDesktopState: async () => { reads += 1; if (reads > 1) throw new Error("office-mac is offline"); return { ...fixtureDesktopState("ready"), computerUse: fixtureComputerUse("auto") } },
+      setApproval: async () => { throw new Error("office-mac is offline") },
     }), <ComputerUseSection workspace="office/vm-1" pollMs={60_000} />))
     await user.click(await screen.findByRole("switch", { name: /Allow without asking/ }))
-    expect(await screen.findByText(/can still act without asking until this change is applied/)).toBeVisible()
-    expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
+    await waitFor(() => expect(screen.getAllByRole("alert").length).toBe(2))
+    expect(screen.getByRole("button", { name: "Try again" })).toBeVisible()
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeChecked()
+  })
+  it("applies in the fixture backend like the native one: stored at once, applied shortly after", async () => {
+    const fixture = createFixtureComputerUseBackend("auto", "ready")
+    const answered = parseLinuxDesktopState(await fixture.setApproval("w", "ask")).computerUse
+    expect(answered).toMatchObject({ approval: "ask", appliedApproval: "auto", approvalApply: "pending" })
+    await waitFor(async () => expect(parseLinuxDesktopState(await fixture.readDesktopState("w")).computerUse).toMatchObject({ appliedApproval: "ask", approvalApply: "applied" }), { timeout: 3000 })
   })
 })
 
@@ -656,6 +758,7 @@ describe("approval copy", () => {
     const text = screen.getByRole("region", { name: "Computer use" }).textContent ?? ""
     expect(text).toMatch(/Claude Code and Codex/)
     expect(text).toMatch(/signed in to inside this sandbox/)
+    expect(text).toMatch(/not a security boundary inside the sandbox/)
     expect(text).not.toMatch(/stay out of reach/)
   })
 })

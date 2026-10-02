@@ -6,7 +6,7 @@ import { computerUseStates } from "@/desktop/linux-desktop-state"
 // Deterministic fixtures for built-in computer use. Select with `?computer-use=<name>`,
 // `&chatgpt=<name>` (this computer's ChatGPT app) and `&chatgpt-remote=<name>` (every remote
 // computer's) in the browser preview; nothing here reaches Silo services.
-export const computerUseFixtureNames = [...computerUseStates, "untested", "auto", "unknown-approval", "unapplied-ask", "app-failed", "pre-v4"] as const
+export const computerUseFixtureNames = [...computerUseStates, "untested", "auto", "unknown-approval", "approval-pending", "approval-failed", "approval-partial", "app-failed", "pre-v4"] as const
 export type ComputerUseFixtureName = typeof computerUseFixtureNames[number]
 export const chatGptFixtureNames = ["idle", "downloading", "verifying", "extracting", "ready", "failed", "failed-final", "unknown", "ready-then-unreadable"] as const
 export type ChatGptFixtureName = typeof chatGptFixtureNames[number]
@@ -22,7 +22,7 @@ export function chatGptFixtureFromSearch(search: string, parameter = "chatgpt"):
 
 export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseState {
   const base: ComputerUseState = {
-    state: "ready", reason: null, compatibility: "tested", warning: null, approval: "ask", appliedApproval: "ask",
+    state: "ready", reason: null, compatibility: "tested", warning: null, approval: "ask", appliedApproval: "ask", approvalApply: "applied", approvalApplyReason: null,
     appVersion: "26.928.31416", runtimeVersion: "0.0.14", lcuVersion: "0.8.0", agents: ["Claude Code", "Codex"],
   }
   switch (name) {
@@ -34,8 +34,11 @@ export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseSta
     case "untested": return { ...base, compatibility: "untested", warning: "ChatGPT for Linux 26.1002.1 has not been tested with this version of Silo. Computer use may not work as expected." }
     case "auto": return { ...base, approval: "auto", appliedApproval: "auto" }
     case "unknown-approval": return { ...base, approval: "unknown", appliedApproval: "unknown" }
-    // The user turned it off, but the guest still auto-approves.
-    case "unapplied-ask": return { ...base, approval: "ask", appliedApproval: "auto", state: "installing", reason: "Applying approval change…" }
+    // The user turned it off; Silo is applying it and the agents still have the old setting.
+    case "approval-pending": return { ...base, approval: "ask", appliedApproval: "auto", approvalApply: "pending" }
+    // Silo could not apply it: nothing is assumed rolled back.
+    case "approval-failed": return { ...base, approval: "ask", appliedApproval: "auto", approvalApply: "failed", approvalApplyReason: "Applying took too long. Silo tries again when the sandbox starts." }
+    case "approval-partial": return { ...base, approval: "ask", appliedApproval: "auto", approvalApply: "partial", approvalApplyReason: "Some agents could not be configured. Details are in /var/log/silo-computer-use.log in the sandbox." }
     default: return base
   }
 }
@@ -94,7 +97,12 @@ export function createFixtureComputerUseBackend(name: ComputerUseFixtureName, ch
   const setUse = (patch: Partial<ComputerUseState>) => { if (desktop.computerUse) desktop = { ...desktop, computerUse: { ...desktop.computerUse, ...patch } } }
   return {
     readDesktopState: async () => structuredClone(desktop),
-    setApproval: async (_workspace, mode) => { setUse({ approval: mode, appliedApproval: mode }); return structuredClone(desktop) },
+    // Like the native one: the choice is stored at once and applied in the background.
+    setApproval: async (_workspace, mode) => {
+      setUse({ approval: mode, approvalApply: "pending", approvalApplyReason: null })
+      window.setTimeout(() => setUse({ appliedApproval: mode, approvalApply: "applied" }), 900)
+      return structuredClone(desktop)
+    },
     setup: async () => { await delay(900); setUse({ state: "ready", reason: null, cause: null }); return structuredClone(desktop) },
     chatGptStatus: async computer => {
       if (computer && remote === "ready-then-unreadable" && reads.get(computer)) throw new Error("The SSH connection to this computer was lost.")
