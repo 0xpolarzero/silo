@@ -49,16 +49,18 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gnupg dpkg-dev
       - name: Run every release and packaging script test
         run: python3 -m unittest discover -s scripts -p 'test_*.py'
-      - name: Typecheck the website demo
+      - name: Check the website demo
         working-directory: website
         run: |
           npm ci
           npm run typecheck
-      - name: Typecheck the demo films
+          npm test -- --maxWorkers=2
+      - name: Check the demo films
         working-directory: demo
         run: |
           npm ci
           npm run typecheck
+          npm test
 
   docs:
     name: Documentation links
