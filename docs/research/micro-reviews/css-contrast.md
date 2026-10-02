@@ -83,3 +83,10 @@ renders `SecretsPage` with a restart-required secret, reads the actual notice
 class and installed Tailwind palette, and reproduces 3.19:1 on white. Change the
 light class to the existing warning-text shade `amber-700`; retain `amber-400`
 in dark mode. Both shades now pass AA on every neutral theme surface.
+
+## Operation checklist labels
+
+The current-step line already exposed its full text through a title, but the
+checklist below it truncated each label without one. Add titles to checklist
+labels in all four states. The regression renders long completed, current,
+pending, and failed steps through the real toast and requires each full title.
