@@ -1322,6 +1322,37 @@ mod tests {
         }
     }
     #[test]
+    fn editor_handoff_keeps_percent_names_and_encoded_dot_segments_literal() {
+        let directory = tempfile::tempdir().unwrap();
+        for (path, encoded) in [
+            ("/workspace/a%2Fb", "/workspace/a%252Fb"),
+            ("/workspace/%2e%2e/outside", "/workspace/%252e%252e/outside"),
+            ("/workspace/%2E./outside", "/workspace/%252E./outside"),
+            ("/workspace/100% done", "/workspace/100%25%20done"),
+        ] {
+            validate_path(path).unwrap();
+            for zed in [false, true] {
+                let uri =
+                    reqwest::Url::parse(&remote_uri("silo-test-dev", path, zed).unwrap()).unwrap();
+                assert_eq!(uri.path(), encoded, "{path:?}, zed={zed}");
+            }
+            let file = vscode_workspace(directory.path(), "silo-test-dev", path).unwrap();
+            let document: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(file).unwrap()).unwrap();
+            assert_eq!(
+                document["folders"][0]["uri"],
+                format!("vscode-remote://ssh-remote+silo-test-dev{encoded}"),
+            );
+        }
+        for path in ["/workspace/a\nb", "/workspace/a\rb", "/workspace/a\tb"] {
+            for zed in [false, true] {
+                assert!(remote_uri("silo-test-dev", path, zed).is_err());
+            }
+            assert!(vscode_workspace(directory.path(), "silo-test-dev", path).is_err());
+        }
+    }
+
+    #[test]
     fn remote_paths_stay_in_uri_and_are_encoded() {
         let uri = remote_uri("silo-test-dev", "/workspace/a b/#test?x", true).unwrap();
         assert_eq!(uri, "ssh://silo-test-dev/workspace/a%20b/%23test%3Fx");
