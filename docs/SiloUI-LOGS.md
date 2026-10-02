@@ -104,6 +104,11 @@ has its own 125 MiB retention budget. Execution floods cannot evict console
 records either. Retention runs in the pinned runtime patch, whose
 `logging_retention.rs` matches Silo's `log_retention.rs` byte for byte, including
 regressions for floods in both directions and shared runtime/kernel eviction.
+Age-marker filenames append `.started` to the native
+[`Path::as_os_str`](https://doc.rust-lang.org/std/path/struct.Path.html#method.as_os_str)
+bytes, preserving non-UTF-8 runtime directories instead of replacing bytes through
+display text. The shared module tests this boundary on Unix and actual expiry in
+such a directory on Linux.
 
 Copy copies the records currently fetched, with identifying context.
 Export… saves all matching pages through the native save dialog as JSON
