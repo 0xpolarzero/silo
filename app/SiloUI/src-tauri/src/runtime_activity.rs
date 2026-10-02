@@ -23,6 +23,13 @@ pub(super) struct Event {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     cancelled: bool,
     process: u32,
+    #[serde(default)]
+    process_session: String,
+}
+
+fn process_session() -> &'static str {
+    static SESSION: OnceLock<String> = OnceLock::new();
+    SESSION.get_or_init(|| uuid::Uuid::new_v4().to_string())
 }
 
 fn path(paths: &RuntimePaths) -> PathBuf {
@@ -147,6 +154,7 @@ pub(super) fn begin(
         dismissed: false,
         cancelled: false,
         process: std::process::id(),
+        process_session: process_session().into(),
     };
     record(paths, &event);
     Ok(event)
@@ -159,6 +167,7 @@ pub(super) fn matches(event: &Event, action: &str, workspace: &str) -> bool {
 pub(super) fn resume(paths: &RuntimePaths, event: &mut Event, machine_id: &str) {
     event.machine_id = machine_id.into();
     event.process = std::process::id();
+    event.process_session = process_session().into();
     event.completed = false;
     event.failure = None;
     event.diagnostic = None;
@@ -309,7 +318,7 @@ pub(super) fn read(paths: &RuntimePaths) -> Result<Vec<Value>, RuntimeError> {
         entry
     }).collect();
     result.extend(events(paths).unwrap_or_else(|_| { warnings.push(history_warning("sandbox")); Vec::new() }).into_iter().map(|event| {
-        let interrupted = !event.completed && event.process != std::process::id();
+        let interrupted = !event.completed && (event.process != std::process::id() || event.process_session != process_session());
         let failed = event.failure.is_some();
         if event.cancelled {
             let title = match event.action.as_str() { "start" => "Start cancelled", "stop" => "Stop cancelled", _ => "Restart cancelled" };
@@ -744,6 +753,35 @@ mod tests {
             .contains("private-value"));
         assert_eq!(values[0]["status"], "completed");
     }
+    #[test]
+    fn unfinished_activity_from_a_reused_pid_is_interrupted_until_resumed() {
+        for legacy in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = super::super::tests::paths(&dir);
+            let mut event = begin(&paths, "start", "dev", "vm-1").unwrap();
+            assert_eq!(read(&paths).unwrap()[0]["status"], "running");
+            let mut saved = serde_json::to_value(&event).unwrap();
+            if legacy {
+                saved.as_object_mut().unwrap().remove("processSession");
+            } else {
+                saved["processSession"] = uuid::Uuid::nil().to_string().into();
+            }
+            fs::write(
+                path(&paths),
+                serde_json::to_vec(&vec![saved.clone()]).unwrap(),
+            )
+            .unwrap();
+            let interrupted = read(&paths).unwrap();
+            assert_eq!(interrupted[0]["status"], "completed");
+            assert_eq!(interrupted[0]["tone"], "warning");
+            event = serde_json::from_value(saved).unwrap();
+            resume(&paths, &mut event, "vm-1");
+            assert_eq!(read(&paths).unwrap()[0]["status"], "running");
+            finish(&paths, &mut event, &Ok(()));
+            assert_eq!(read(&paths).unwrap()[0]["tone"], "success");
+        }
+    }
+
     #[test]
     fn unfinished_previous_process_is_not_reported_running_or_successful() {
         let dir = tempfile::tempdir().unwrap();
