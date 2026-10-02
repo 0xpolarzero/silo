@@ -217,6 +217,14 @@ it("submits and recovers a deliberate switch from token to OAuth", async () => {
   expect(screen.getByRole("radio", { name: "Use GitHub OAuth for dev" })).toBeChecked()
 })
 
+it("summarizes token access separately from OAuth repository restrictions", async () => {
+  const view = setup(source, [{ ...policies[0], authenticationMethod: "token" }], null, true)
+  await view.user.click(screen.getByRole("tab", { name: /Review/ }))
+  const access = screen.getByRole("group", { name: "GitHub access" })
+  expect(access).toHaveTextContent("Personal token in 1 sandbox")
+  expect(access).toHaveTextContent("0 repositories across 0 of 2 sandboxes")
+})
+
 
 it("fills a missing authentication method in older recovered drafts without changing their repository choices", async () => {
   const restored: OnboardingDraft = {

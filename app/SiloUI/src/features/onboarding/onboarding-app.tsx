@@ -461,23 +461,26 @@ export function OnboardingApp({
   }
 
   const machineNames = machines.map(({ name }) => name)
-  const tokenWorkspaceCount = machineNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.authenticationMethod === "token").length
-  const allWorkspaceCount = machineNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.repositoryMode === "all").length
-  const allWriteWorkspaceCount = machineNames.filter((name) => {
+  const oauthWorkspaceNames = machineNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.authenticationMethod !== "token")
+  const tokenWorkspaceCount = machineNames.length - oauthWorkspaceNames.length
+  const allWorkspaceCount = oauthWorkspaceNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.repositoryMode === "all").length
+  const allWriteWorkspaceCount = oauthWorkspaceNames.filter((name) => {
     const access = workspaceValue(draft.workspaceRepositoryAccess, name)
     return access?.repositoryMode === "all" && access.allRepositoriesAllowChanges
   }).length
-  const configuredWorkspaceCount = machineNames.filter((name) => (workspaceValue(workspaceSelections, name) ?? []).length > 0).length
-  const repositoryCount = machineNames.reduce((total, name) => total + (workspaceValue(workspaceSelections, name) ?? []).length, 0)
-  const pushEnabledRepositoryCount = machineNames.reduce(
+  const configuredWorkspaceCount = oauthWorkspaceNames.filter((name) => (workspaceValue(workspaceSelections, name) ?? []).length > 0).length
+  const repositoryCount = oauthWorkspaceNames.reduce((total, name) => total + (workspaceValue(workspaceSelections, name) ?? []).length, 0)
+  const pushEnabledRepositoryCount = oauthWorkspaceNames.reduce(
     (total, name) => total + (workspaceValue(workspaceSelections, name) ?? []).filter(({ allowPushes }) => allowPushes).length,
     0,
   )
   const repositoryLabel = repositoryCount === 1 ? "repository" : "repositories"
   const pushRepositoryLabel = pushEnabledRepositoryCount === 1 ? "repository" : "repositories"
-  const githubSummary = githubConnectionState === "connected"
-    ? allWorkspaceCount > 0 ? `All authorized repositories in ${allWorkspaceCount} ${allWorkspaceCount === 1 ? "sandbox" : "sandboxes"} · ${allWriteWorkspaceCount} allowing GitHub changes` : `${repositoryCount} ${repositoryLabel} across ${configuredWorkspaceCount} of ${machines.length} ${machines.length === 1 ? "sandbox" : "sandboxes"} · ${pushEnabledRepositoryCount} ${pushRepositoryLabel} allowing GitHub changes`
-    : tokenWorkspaceCount > 0 ? `Personal token in ${tokenWorkspaceCount} ${tokenWorkspaceCount === 1 ? "sandbox" : "sandboxes"}` : "GitHub not connected"
+  const oauthSummary = githubConnectionState === "connected" && (oauthWorkspaceNames.length > 0 || tokenWorkspaceCount === 0)
+    ? allWorkspaceCount > 0 ? `All authorized repositories in ${allWorkspaceCount} ${allWorkspaceCount === 1 ? "sandbox" : "sandboxes"} · ${allWriteWorkspaceCount} allowing GitHub changes` : `${repositoryCount} ${repositoryLabel} across ${configuredWorkspaceCount} of ${oauthWorkspaceNames.length} ${oauthWorkspaceNames.length === 1 ? "sandbox" : "sandboxes"} · ${pushEnabledRepositoryCount} ${pushRepositoryLabel} allowing GitHub changes`
+    : null
+  const tokenSummary = tokenWorkspaceCount > 0 ? `Personal token in ${tokenWorkspaceCount} ${tokenWorkspaceCount === 1 ? "sandbox" : "sandboxes"}` : null
+  const githubSummary = [oauthSummary, tokenSummary].filter(Boolean).join(" · ") || "GitHub not connected"
   const identitySummary = workspaceIdentitySummary(
     workspaceIdentities,
     machineNames,
