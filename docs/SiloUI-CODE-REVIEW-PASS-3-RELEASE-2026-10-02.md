@@ -1,6 +1,6 @@
 # Silo third code review pass: release and CI, 2026-10-02
 
-This pass reviews release tooling, workflow gates, updater artifacts, release documentation, and development/production channel separation. The ledger records twelve new findings: eleven P2 and one P3. Eleven are fixed or corrected and folded; RL-06 remains open because its correction requires a qualified macOS 14 execution environment. These results do not establish release readiness.
+This pass reviews release tooling, workflow gates, updater artifacts, release documentation, and development/production channel separation. The ledger records thirteen new findings: twelve P2 and one P3. Twelve are fixed or corrected and folded; RL-06 remains open because its correction requires a qualified macOS 14 execution environment. These results do not establish release readiness.
 
 ## Revision and scope
 
@@ -29,7 +29,8 @@ No release was published or signed, and no repository or remote release tag was 
 | RL-09 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Fixed and folded: `028ce994` |
 | RL-10 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed and folded: `8102c670` |
 | RL-11 | P2 | Lifecycle guest probes use the production alias for Dev | Fixed and folded: `f7cec265`, `b64a60e5` |
-| RL-12 | P2 | Failed Linux tool staging destroys complete prior package inputs | Fixed in accompanying commit |
+| RL-12 | P2 | Failed Linux tool staging destroys complete prior package inputs | Fixed and folded: `a173affb` |
+| RL-13 | P2 | macOS archive verification ignores conflicting archive roots | Fixed in accompanying commit |
 
 ## Detailed findings
 
@@ -226,7 +227,23 @@ No release was published or signed, and no repository or remote release tag was 
 
 **Rejecting test.** Seed all six previous tool files and omit the last replacement source. After rejection, every previous byte must remain and no temporary staging directory may remain. Successful preparation must still preserve exact bytes and executable modes. This does not claim crash-atomic publication or protection against final destination removal/rename failures.
 
-**Status.** Fixed in the accompanying commit. All three Linux package-tool tests pass; no application changeset is needed for internal preparation tooling. Failure/passing evidence is retained in `rl12-{before,after}.log` in the existing ignored verification directory.
+**Status.** Fixed and folded in `a173affb`. All three Linux package-tool tests pass; no application changeset is needed for internal preparation tooling. Failure/passing evidence is retained in `rl12-{before,after}.log` in the existing ignored verification directory.
+
+### RL-13 macOS archive verification ignores conflicting archive roots
+
+**P2.** Confirmed at `9707624f`. Location: [verify-release-metadata.py](../app/SiloUI/scripts/verify-release-metadata.py), macOS archive validation.
+
+**Trigger.** Supply an updater archive containing valid `Silo.app` metadata followed by a second app root with conflicting `Contents/Info.plist`, or ambiguous/traversing archive entries.
+
+**Evidence.** The verifier reads only the expected root's metadata and accepts the additional root. The [pinned `tauri-plugin-updater` 2.11.0 source](https://github.com/tauri-apps/plugins-workspace/blob/updater-v2.11.0/plugins/updater/src/updater.rs#L1306-L1322), inspected in the local Cargo registry at `src/updater.rs:1306–1322`, drops the first path component from every member and unpacks all of them into the same replacement tree. The second root therefore maps to the same installed `Contents/Info.plist`, although that entry was never verified. Four temporary archive subcases (second root, parent traversal, absolute path, duplicate entry) were accepted before correction. No signature or application installation was performed.
+
+**Consequence.** The final publication gate can approve package identity for one member tree while the updater installs another member's conflicting contents. Cryptographic signing authenticates bytes but does not resolve that semantic mismatch. This differs from RL-10's missing identity fields and O-11's independent asset provenance concern.
+
+**Correction.** Validate every archive member before inspecting metadata: one expected app root, no absolute or parent-traversing paths, and no duplicate normalized paths. Keep valid production archives accepted.
+
+**Rejecting test.** Start with the ordinary valid production fixture, append each conflicting/unsafe entry, and require rejection before publication. Preserve successful identity verification for the single-root archive. Link-target safety and complete application execution remain separate qualification boundaries.
+
+**Status.** Fixed in the accompanying commit. The four subcases failed before correction; 31 metadata/publication tests complete: 30 pass and one Linux-only Debian test is skipped. Logs are `rl13-{before,after}.log`; no application changeset is needed for release validation tooling.
 
 ## Other reviewed boundaries and limits
 
