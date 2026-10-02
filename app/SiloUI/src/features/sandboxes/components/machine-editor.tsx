@@ -194,8 +194,8 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   }
   // Offer only what the computer can run; the runtime rejects ceilings above it.
   const maximums = resourceMaximums(capacity)
-  const cpuPresets = presetsWithin(supportedCPUs, capacity?.logicalCPUs)
-  const memoryPresets = presetsWithin(supportedMemoryGiB, capacity?.memoryGiB)
+  const cpuPresets = presetsWithin(supportedCPUs, capacity ? maximums.cpus : undefined)
+  const memoryPresets = presetsWithin(supportedMemoryGiB, capacity ? maximums.memoryGiB : undefined)
 
   useEffect(() => {
     // Let the opening menu finish its focus restoration before entering the editor.
