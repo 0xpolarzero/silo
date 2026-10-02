@@ -198,10 +198,15 @@ export function MachineEditor({ saving, blockedReason, editorHeader, editor, foc
   const memoryPresets = presetsWithin(supportedMemoryGiB, capacity ? maximums.memoryGiB : undefined)
 
   useEffect(() => {
-    // Let the opening menu finish its focus restoration before entering the editor.
-    const frame = requestAnimationFrame(() => {
+    function focusFirstField() {
       firstField.current?.focus()
       firstField.current?.scrollIntoView?.({ block: "nearest" })
+    }
+    focusFirstField()
+    // A closing menu can restore focus after the editor mounts.
+    const frame = requestAnimationFrame(() => {
+      const active = document.activeElement
+      if (active === document.body || active?.getAttribute("aria-haspopup") === "menu") focusFirstField()
     })
     return () => cancelAnimationFrame(frame)
   }, [focusRequest])
