@@ -36,7 +36,13 @@ export function InlineConfirmation({ active, onDismiss, children }: {
       dismiss.current()
     }
 
+    function inForeignDialog(target: EventTarget | null) {
+      const dialog = target instanceof Element ? target.closest('[role="dialog"], [role="alertdialog"]') : null
+      return dialog !== null && !dialog.contains(boundary.current) && !boundary.current?.contains(dialog)
+    }
+
     function dismissOnEscape(event: KeyboardEvent) {
+      if (inForeignDialog(event.target)) return
       if (event.key === "Escape" && !event.defaultPrevented && !event.isComposing && isTopmost()) {
         event.preventDefault()
         dismiss.current()
