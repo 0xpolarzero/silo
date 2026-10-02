@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep native commands responsive while repository push reads its runtime settings.
+Keep Silo commands responsive while preparing a repository push.
