@@ -103,6 +103,7 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
   const [draggedID, setDraggedID] = useState<string | null>(null)
   const [announcement, setAnnouncement] = useState("")
   const reorderHelpId = useId()
+  const headingId = useId()
   const addButton = useRef<HTMLButtonElement>(null)
   const editorTriggers = useRef(new Map<string, HTMLButtonElement>())
   const previousEditor = useRef(editor)
@@ -258,9 +259,9 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
 
   return (
     <>
-      <div aria-labelledby="machine-list-heading" className="flex h-full min-h-0 flex-col">
+      <div role="group" aria-labelledby={headingId} className="flex h-full min-h-0 flex-col">
         <ListHeader
-          heading={<h3 id="machine-list-heading" className={listHeadingClassName}>Sandboxes</h3>}
+          heading={<h3 id={headingId} className={listHeadingClassName}>Sandboxes</h3>}
           subtitle={summary ?? <>{sandboxCount} {sandboxCount === 1 ? "sandbox" : "sandboxes"} · {sandboxCount - remoteCount} on this computer · {remoteCount} on other computers · {sshHostCount} {sshHostCount === 1 ? "SSH host" : "SSH hosts"}</>}
           actions={(importPopover ?? ((node: ReactNode) => node))(<DropdownMenu.Root open={addOpen} onOpenChange={setAddOpen}>
             <DropdownMenu.Trigger asChild>
@@ -269,12 +270,12 @@ export function MachineList({ computers, getComputerId, onCommitMachine, onDelet
               </Button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Portal><DropdownMenu.Content aria-label="Add sandbox" aria-labelledby={undefined} align="end" sideOffset={4} onCloseAutoFocus={event => {
-              // A selection hands focus to the editor or dialog it opens.
-              if (addSelected.current) {
+              // Inline editors take focus; external actions retain the menu's normal return target.
+              if (addSelected.current === "editor") {
                 event.preventDefault()
-                if (addSelected.current === "editor") setEditorFocusRequest(request => request + 1)
-                addSelected.current = null
+                setEditorFocusRequest(request => request + 1)
               }
+              addSelected.current = null
             }} className="silo-portal z-50 grid w-48 gap-1 rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md">
               <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = "editor"; startAdd("vm") }}>New sandbox</DropdownMenu.Item>
               <DropdownMenu.Item className="rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus:bg-accent focus:outline-none" onSelect={() => { addSelected.current = onConnectComputer ? "external" : "editor"; if (onConnectComputer) onConnectComputer(); else startAdd("ssh") }}>{onConnectComputer ? "Connect computer…" : "Connect an SSH host…"}</DropdownMenu.Item>

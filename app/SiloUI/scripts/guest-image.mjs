@@ -15,7 +15,7 @@ export async function stageGuestImage({ appRoot, targetTriple, fetchStream }) {
   const architecture = guestArchitecture(targetTriple)
   const lock = JSON.parse(await readFile(join(appRoot, "guest-image/image-lock.json"), "utf8"))
   const manifest = lock.images[architecture]
-  if (!manifest || manifest.schemaVersion !== 1 || !Number.isSafeInteger(manifest.archiveBytes) || manifest.archiveBytes < 1) {
+  if (!manifest || manifest.schemaVersion !== 1 || manifest.architecture !== (architecture === "arm64" ? "aarch64" : "x86_64") || !Number.isSafeInteger(manifest.archiveBytes) || manifest.archiveBytes < 1) {
     throw new Error(`Missing or invalid locked guest image for ${architecture}`)
   }
   const destination = join(appRoot, "src-tauri/runtime/guest-image")

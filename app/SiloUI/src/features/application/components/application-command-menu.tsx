@@ -6,6 +6,7 @@ import { Dialog } from "radix-ui"
 import { ShortcutBadge } from "@/components/shortcut-badge"
 import { shortcutFor } from "@/lib/shortcuts"
 import { Button } from "@/components/ui/button"
+import { restoreFocus } from "@/lib/focus"
 import type { ApplicationCommand } from "./application-commands"
 
 const groups = ["Go to", "Sandboxes", "Actions"] as const
@@ -26,12 +27,16 @@ function filterCommand(label: string, search: string, keywords: string[] = []) {
 
 export function ApplicationCommandMenu({ commands, disabled = false, openRequest, nativeShortcuts = false }: { commands: readonly ApplicationCommand[]; disabled?: boolean; openRequest?: number; nativeShortcuts?: boolean }) {
   const [open, setOpenState] = useState(false)
+  const previousFocus = useRef<HTMLElement | null>(null)
   // A command with a question asks it here, in place of the list, before it runs.
   const [confirmingId, setConfirming] = useState<string | null>(null)
   const confirming = commands.find(command => command.id === confirmingId)
   // A snapshot can remove the action or its need for confirmation while the question is open.
   if (confirmingId !== null && !confirming?.confirm) setConfirming(null)
   const setOpen = (next: boolean | ((current: boolean) => boolean)) => {
+    if (next !== false && !contentRef.current) {
+      previousFocus.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
+    }
     setOpenState(next)
     setConfirming(null)
   }
@@ -82,6 +87,10 @@ export function ApplicationCommandMenu({ commands, disabled = false, openRequest
       <Dialog.Overlay className="fixed inset-0 z-50 bg-black/20" />
       <Dialog.Content ref={contentRef} aria-describedby={undefined} onCloseAutoFocus={(event) => {
         if (keepFocus.current) event.preventDefault()
+        else if (previousFocus.current?.isConnected && !previousFocus.current.matches(":disabled")) {
+          event.preventDefault()
+          restoreFocus(previousFocus.current)
+        }
         keepFocus.current = false
       }} onEscapeKeyDown={(event) => {
         // Escape leaves the question for the list first, then closes the palette.

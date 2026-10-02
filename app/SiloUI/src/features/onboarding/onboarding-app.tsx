@@ -23,6 +23,7 @@ import { ReviewStep } from "@/features/onboarding/steps/review-step"
 import { WorkspacesStep } from "@/features/onboarding/steps/workspaces-step"
 import type { OnboardingDraft } from "@/features/onboarding/model/onboarding-draft"
 import { useSettings } from "@/features/preferences/settings-store"
+import { SettingsSaveNotice } from "@/features/preferences/components/settings-save-notice"
 import { applicationPreferenceChanges } from "@/features/preferences/model/application-preferences"
 
 export interface OnboardingAppProps {
@@ -52,7 +53,7 @@ function OnboardingPanel({ step, activeStep, notice, children }: { step: Onboard
     style={{ visibility: active ? "visible" : "hidden" }}
     className="absolute inset-0 mt-0 flex h-full min-h-0 flex-col overflow-y-auto outline-none"
   >
-    <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-5 sm:px-6 sm:py-6">{active && notice}{children}</div>
+    <div className="mx-auto w-full max-w-4xl flex-1 px-4 py-5 sm:px-6 sm:py-6">{active && <SettingsSaveNotice />}{active && notice}{children}</div>
   </TabsContent>
 }
 
@@ -348,11 +349,19 @@ export function OnboardingApp({
       machines.splice(Math.min(existing.findIndex(({ id }) => id === machine.id), machines.length), 0, { ...machine })
     }
     const host = { ...(source.currentHostGitIdentity ?? { name: "", email: "" }), apply: true }
+    const savedPolicies = new Map((repositoryPolicies ?? []).map((policy) => [policy.workspace, policy]))
     updateDraft({
       machines,
-      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceSelections, name) ?? []])),
-      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceIdentities, name) ?? host])),
-      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? { repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }])),
+      workspaceSelections: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceSelections, name) ?? savedPolicies.get(name)?.repositories.map((repository) => ({ ...repository })) ?? []])),
+      workspaceIdentities: Object.fromEntries(machines.map(({ name }) => [name, workspaceValue(current.workspaceIdentities, name) ?? { ...(savedPolicies.get(name)?.identity ?? host) }])),
+      workspaceRepositoryAccess: Object.fromEntries(machines.map(({ name }) => {
+        const policy = savedPolicies.get(name)
+        return [name, workspaceValue(current.workspaceRepositoryAccess, name) ?? {
+          repositoryMode: policy?.repositoryMode ?? "selected" as const,
+          allRepositoriesAllowChanges: policy?.allRepositoriesAllowChanges ?? false,
+          ...(policy?.authenticationMethod ? { authenticationMethod: policy.authenticationMethod } : {}),
+        }]
+      })),
     })
     pending.run()
   }

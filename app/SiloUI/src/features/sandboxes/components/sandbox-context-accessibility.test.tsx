@@ -5,6 +5,30 @@ import { TooltipProvider } from "@/components/ui/tooltip"
 import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
 import { ComputerBadge } from "./computer-badge"
 import { MachineList } from "./machine-list"
+import { SandboxListRow } from "./sandbox-list"
+
+it("exposes the sandbox's management and runtime controls as named groups", () => {
+  render(<SandboxListRow name="dev" kind="vm" detail="Stopped"
+    hoverActions={<button type="button">Edit dev</button>}
+    actions={<button type="button">Start dev</button>} />)
+  expect(within(screen.getByRole("group", { name: "Manage dev" })).getByRole("button", { name: "Edit dev" })).toBeVisible()
+  expect(within(screen.getByRole("group", { name: "Controls for dev" })).getByRole("button", { name: "Start dev" })).toBeVisible()
+})
+
+it("names each sandbox list group with its own heading", () => {
+  render(<TooltipProvider>
+    <MachineList machines={[]} onMachinesChange={vi.fn()} />
+    <MachineList machines={[]} onMachinesChange={vi.fn()} />
+  </TooltipProvider>)
+  const groups = screen.getAllByRole("group", { name: "Sandboxes" })
+  expect(groups).toHaveLength(2)
+  expect(new Set(groups.map(group => group.getAttribute("aria-labelledby"))).size).toBe(2)
+  for (const group of groups) {
+    const heading = within(group).getByRole("heading", { name: "Sandboxes" })
+    expect(group).toHaveAttribute("aria-labelledby", heading.id)
+    expect(within(group).getByRole("list", { name: "Configured sandboxes" })).toBeVisible()
+  }
+})
 
 it("exposes the focusable computer badge as a named note with connection context", async () => {
   const user = userEvent.setup()

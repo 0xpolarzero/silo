@@ -40,6 +40,19 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals())
 
 describe("logs table", () => {
+  it("lets keyboard users focus the expanded message scroll container", async () => {
+    const user = userEvent.setup()
+    const properties = props()
+    properties.rows[0].entry.line = Array.from({ length: 50 }, (_, index) => `Diagnostic line ${index}`).join("\n")
+    render(<LogsTable {...properties} />)
+    await user.click(screen.getByRole("button", { name: /^Expand log from dev/ }))
+    await user.tab()
+    const output = screen.getByRole("region", { name: /^Log details from dev/ }).querySelector("pre")!
+    expect(output).toHaveFocus()
+    expect(output).toHaveAccessibleName(/^Log message from dev at /)
+    expect(output).toHaveTextContent("Diagnostic line 49")
+  })
+
   it("fills the table with skeleton rows while the first page loads", () => {
     render(<LogsTable {...props([])} loading />)
     const table = screen.getByRole("table", { name: "Logs" })

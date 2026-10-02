@@ -123,4 +123,65 @@ class DependencyCacheTests(unittest.TestCase):
         self.metadata.write_text(json.dumps(metadata))
         with self.assertRaisesRegex(ValueError,'identity'):self.restore()
         self.assertFalse(self.target.exists())
+
+class ReleaseDependencyBuildTests(unittest.TestCase):
+    def test_output_failure_stops_and_reaps_the_build_command(self):
+        import subprocess
+        import sys
+        from unittest.mock import patch
+
+        spec = importlib.util.spec_from_file_location('release_cache',
+                    Path(__file__).with_name('release-dependency-cache.py'))
+        release_cache = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(release_cache)
+
+        class FailedOutput(io.StringIO):
+            def write(self, _text):
+                raise OSError('fixture output failure')
+
+        for failed in ('stdout', 'stderr', 'metadata'):
+            with self.subTest(destination=failed), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                (root / 'metadata.json').write_text('{"resolve":{"root":"fixture"}}')
+                args = argparse.Namespace(app_root=root, state=root, target='fixture-target')
+                popen = subprocess.Popen
+                children = []
+                lines = {
+                    'stdout': 'compiler output',
+                    'stderr': json.dumps({'reason': 'compiler-message',
+                                         'message': {'rendered': 'compiler diagnostic'}}),
+                    'metadata': json.dumps({'reason': 'compiler-artifact'}),
+                }
+
+                def spawn(_command, **kwargs):
+                    script = f"import time; print({lines[failed]!r}, flush=True); time.sleep(30)"
+                    process = popen([sys.executable, '-c', script], **kwargs)
+                    children.append(process)
+                    return process
+
+                original_open = Path.open
+
+                def open_metadata(path, *args, **kwargs):
+                    if path == root / 'messages.jsonl':
+                        return FailedOutput()
+                    return original_open(path, *args, **kwargs)
+
+                destination = (patch.object(Path, 'open', open_metadata) if failed == 'metadata'
+                               else patch.object(release_cache.sys, failed, FailedOutput()))
+                try:
+                    with patch.object(release_cache.subprocess, 'Popen', side_effect=spawn):
+                        with destination:
+                            with self.assertRaisesRegex(OSError, 'fixture output failure'):
+                                release_cache.build(args)
+                    self.assertIsNotNone(children[0].returncode, 'build command was abandoned')
+                    self.assertLess(children[0].returncode, 0)
+                    with self.assertRaises(ChildProcessError):
+                        os.waitpid(children[0].pid, os.WNOHANG)
+                finally:
+                    for child in children:
+                        if child.poll() is None:
+                            child.terminate()
+                            child.wait(timeout=3)
+
+
 if __name__=='__main__':unittest.main()

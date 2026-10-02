@@ -25,6 +25,38 @@ function setup(operations: RepositoryPushOperation[]) {
 }
 
 describe("repository push notifications", () => {
+  it("updates the message and commit count while a push remains in progress", async () => {
+    const { update } = setup([{ ...base, status: "pushing" }])
+    expect(await screen.findByText("Pushing 2 commits")).toBeInTheDocument()
+    update([{ ...base, status: "pushing", commitCount: 3, message: "Waiting for push status" }])
+    expect(await screen.findByText("silo · Waiting for push status")).toBeInTheDocument()
+    expect(screen.getByText("Pushing 3 commits")).toBeInTheDocument()
+    expect(screen.queryByText("Pushing 2 commits")).not.toBeInTheDocument()
+  })
+
+  it("replaces failed push details and retries the latest confirmed target", async () => {
+    const { update, onPush } = setup([{ ...base, status: "pushing" }])
+    update([{ ...base, status: "failed", message: "SSH disconnected" }])
+    expect(await screen.findByText("SSH disconnected")).toBeInTheDocument()
+    const latest = { ...target, branch: "release", commit: "a".repeat(40) }
+    update([{ ...base, status: "failed", message: "Remote branch changed", commitCount: 3, target: latest }])
+    expect(await screen.findByText("Remote branch changed")).toBeInTheDocument()
+    expect(screen.queryByText("SSH disconnected")).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
+    expect(onPush).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", 3, latest)
+  })
+
+  it("updates Retry when only the confirmed target changes", async () => {
+    const { update, onPush } = setup([{ ...base, status: "pushing" }])
+    const failed = { ...base, status: "failed" as const, message: "Push rejected" }
+    update([failed])
+    expect(await screen.findByText("Push rejected")).toBeInTheDocument()
+    const latest = { ...target, commit: "b".repeat(40) }
+    update([{ ...failed, target: latest }])
+    await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }))
+    expect(onPush).toHaveBeenCalledExactlyOnceWith("dev", "acme/silo", 2, latest)
+  })
+
   it("shows loading, then a success that stays and clears the finished operation", async () => {
     const { update, onDismiss } = setup([])
     update([{ ...base, status: "pushing" }])

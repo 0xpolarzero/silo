@@ -95,3 +95,43 @@ prior allocation high-water mark. Exact failing/passing output is retained in
 `src-tauri/target/verification/unbounded-io/`. Formatting, typecheck, lint and diff
 checks passed; the complete Cargo test command is still waiting for the shared
 artifact lock.
+
+## Saved port settings
+
+**Trigger:** The saved `network.json` input exceeds the existing 128 KiB limit,
+or an input stream supplies that prefix and keeps the descriptor open.
+
+**Evidence:** `read_config` checked size after `fs::read`. The FIFO regression
+keeps its writer open until the reader rejects the oversized prefix. Before the
+fix, the reader waited for the writer's five-second EOF fallback and failed the
+ordering assertion; after the fix it rejects before the writer closes. A second
+test retains exact-limit acceptance and one-extra-byte rejection.
+
+**Correction:** Consume at most 128 KiB plus one byte before the existing size
+and mapping validation. Missing-file defaults and read/validation errors retain
+their previous behavior. The writer's existing size limit stays consistent.
+
+**Checks:** Source-extracted production reader, configuration types, validator
+and two regressions passed 2/2. Formatting, typecheck, lint and diff checks passed.
+The complete native Cargo run has not completed because the shared artifact lock
+remains held by another build; extracted checks do not prove full app compilation.
+
+## Advisory backup history
+
+**Trigger:** The remembered export-folder document grows beyond 1 MiB, including
+legacy archive entries that the application no longer uses.
+
+**Evidence:** `load_destination` read the complete document with `fs::read`. The
+regression accepted an exact-limit document and still returned its destination
+for a one-byte-larger document before the fix; the latter assertion now passes.
+
+**Correction:** Consume at most 1 MiB plus one byte before deserializing. Larger
+files use the existing advisory-data fallback and diagnostic: forget only the
+remembered destination, preserve the document, and do not touch archives or the
+separate recovery journal.
+
+**Checks:** Source-extracted production structure, reader and regression passed
+1/1. Formatting, typecheck, lint and diff checks passed. No app, live archive, VM
+or production data was used. Complete native Cargo verification remains blocked
+on the shared target's artifact lock; the source-extracted checks do not establish
+full native compilation.

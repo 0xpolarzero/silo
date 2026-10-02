@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react"
+import { render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { expect, it, vi } from "vitest"
 import { ActionsMenu } from "./actions-menu"
@@ -17,6 +17,21 @@ it.each(["menu", "palette"] as const)("names a confirmation opened through the %
     await user.click(screen.getByRole("menuitem", { name: "Delete dev" }))
   }
   expect(screen.getByRole("dialog", { name: "Delete dev" })).toContainElement(screen.getByText("Delete dev?"))
+})
+
+it("preserves focus on an outside control when a menu confirmation is dismissed", async () => {
+  const user = userEvent.setup()
+  render(<TooltipProvider>
+    <ActionsMenu label="More actions for dev" items={[{ label: "Delete", popover: "delete" }]}
+      popovers={{ delete: close => <ConfirmBody title="Delete dev?" confirmLabel="Delete permanently" onConfirm={vi.fn()} onClose={close} /> }} />
+    <button type="button">Another action</button>
+  </TooltipProvider>)
+  await user.click(screen.getByRole("button", { name: "More actions for dev" }))
+  await user.click(screen.getByRole("menuitem", { name: "Delete" }))
+  const outside = screen.getByRole("button", { name: "Another action" })
+  await user.click(outside)
+  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+  expect(outside).toHaveFocus()
 })
 
 it("supports keyboard selection and returns focus when dismissed", async () => {

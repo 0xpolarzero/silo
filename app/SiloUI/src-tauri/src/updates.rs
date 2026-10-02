@@ -70,17 +70,23 @@ struct Controller {
     preferences: PathBuf,
 }
 #[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Preferences {
     automatic_checks: bool,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 const MAX_PREFERENCE_BYTES: u64 = 1024 * 1024;
 const PREFERENCE_READ_ERROR: &str =
     "Update preferences could not be read. Save your preference again.";
 fn read_preferences(path: &Path) -> Result<bool, String> {
+    Ok(read_saved_preferences(path)?
+        .map(|preferences| preferences.automatic_checks)
+        .unwrap_or(true))
+}
+fn read_saved_preferences(path: &Path) -> Result<Option<Preferences>, String> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(PREFERENCE_READ_ERROR.into()),
     };
     let mut bytes = Vec::new();
@@ -91,7 +97,7 @@ fn read_preferences(path: &Path) -> Result<bool, String> {
         return Err(PREFERENCE_READ_ERROR.into());
     }
     serde_json::from_slice::<Preferences>(&bytes)
-        .map(|p| p.automatic_checks)
+        .map(Some)
         .map_err(|_| PREFERENCE_READ_ERROR.into())
 }
 
@@ -100,15 +106,26 @@ fn save_preferences(path: &Path, enabled: bool) -> Result<(), String> {
         .parent()
         .ok_or("Update preference storage is unavailable.")?;
     fs::create_dir_all(parent).map_err(|_| "Update preferences could not be saved.")?;
+    let extra = read_saved_preferences(path)
+        .ok()
+        .flatten()
+        .map(|preferences| preferences.extra)
+        .unwrap_or_default();
+    let bytes = serde_json::to_vec(&Preferences {
+        automatic_checks: enabled,
+        extra,
+    })
+    .map_err(|_| "Update preferences could not be saved.")?;
+    if bytes.len() as u64 > MAX_PREFERENCE_BYTES {
+        return Err(
+            "Update preferences are too large to save. Your saved preference was not changed."
+                .into(),
+        );
+    }
     let mut file = tempfile::NamedTempFile::new_in(parent)
         .map_err(|_| "Update preferences could not be saved.")?;
-    serde_json::to_writer(
-        &mut file,
-        &Preferences {
-            automatic_checks: enabled,
-        },
-    )
-    .map_err(|_| "Update preferences could not be saved.")?;
+    std::io::Write::write_all(&mut file, &bytes)
+        .map_err(|_| "Update preferences could not be saved.")?;
     file.as_file()
         .sync_all()
         .map_err(|_| "Update preferences could not be saved.")?;
@@ -1158,6 +1175,30 @@ mod tests {
             "oversized preferences allocated {extra} bytes"
         );
         assert_eq!(fs::metadata(&path).unwrap().len(), 128 * 1024 * 1024);
+        let before_save = peak_bytes();
+        save_preferences(&path, false).unwrap();
+        let save_extra = peak_bytes().saturating_sub(before_save);
+        assert!(
+            save_extra < 32 * 1024 * 1024,
+            "preference repair allocated {save_extra} bytes"
+        );
+        assert!(!read_preferences(&path).unwrap());
+    }
+    #[test]
+    fn a_preference_save_that_exceeds_the_limit_preserves_the_original() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        let mut preferences =
+            serde_json::json!({"automatic_checks": true, "future_preference": ""});
+        let padding =
+            MAX_PREFERENCE_BYTES as usize - serde_json::to_vec(&preferences).unwrap().len();
+        preferences["future_preference"] = serde_json::Value::String("x".repeat(padding));
+        let bytes = serde_json::to_vec(&preferences).unwrap();
+        assert_eq!(bytes.len(), MAX_PREFERENCE_BYTES as usize);
+        fs::write(&path, &bytes).unwrap();
+        assert!(save_preferences(&path, false).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        assert!(read_preferences(&path).unwrap());
     }
     #[test]
     fn preference_size_limit_accepts_boundary_and_rejects_larger_files() {
@@ -1172,6 +1213,46 @@ mod tests {
         assert_eq!(read_preferences(&path).unwrap_err(), PREFERENCE_READ_ERROR);
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
+    #[test]
+    fn additive_update_preferences_keep_the_choice_and_survive_saves() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        for automatic in [false, true] {
+            let saved = serde_json::json!({
+                "automatic_checks": automatic,
+                "future_preference": {"channel": "preview", "days": [1, 3, 5]}
+            });
+            let bytes = serde_json::to_vec(&saved).unwrap();
+            fs::write(&path, &bytes).unwrap();
+            assert_eq!(read_preferences(&path).unwrap(), automatic);
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+
+            save_preferences(&path, !automatic).unwrap();
+            let written: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(written["automatic_checks"], !automatic);
+            assert_eq!(written["future_preference"], saved["future_preference"]);
+            assert_eq!(read_preferences(&path).unwrap(), !automatic);
+        }
+    }
+
+    #[test]
+    fn malformed_known_update_preferences_are_not_accepted_as_additive_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        for bytes in [
+            br#"{"automatic_checks":"false","future_preference":true}"#.as_slice(),
+            br#"{"automatic_checks":null,"future_preference":true}"#,
+            br#"{"future_preference":true}"#,
+        ] {
+            fs::write(&path, bytes).unwrap();
+            assert!(read_preferences(&path).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+        save_preferences(&path, false).unwrap();
+        assert!(!read_preferences(&path).unwrap());
+    }
+
     #[test]
     fn missing_preferences_enable_checks_but_corrupt_preferences_do_not() {
         let dir = tempfile::tempdir().unwrap();

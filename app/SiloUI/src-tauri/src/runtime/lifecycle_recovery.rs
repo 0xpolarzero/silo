@@ -302,6 +302,7 @@ pub(super) fn perform(
         if matches!(action, "start" | "restart") {
             validate_inspected_resources(name, &initial.config, host)?;
         }
+        store(paths, &intent)?;
         Ok(initial)
     }) {
         Ok(initial) => initial,
@@ -311,7 +312,6 @@ pub(super) fn perform(
             return result;
         }
     };
-    store(paths, &intent)?;
     // Settle the superseded action only once the new intent replaced its file;
     // a new action rejected above leaves the saved one pending and unchanged.
     if let Some(mut previous) = superseded {
@@ -726,13 +726,21 @@ mod tests {
     }
 
     #[test]
-    fn intent_write_failure_still_blocks_runtime_mutation() {
+    fn intent_write_failure_records_a_failure_without_runtime_mutation() {
         let _test_state = crate::test_support::global_state();
         let (_dir, paths, _) = setup();
         fs::write(directory(&paths), "not a directory").unwrap();
         let runner = Fake::new("Running");
         assert!(perform(&runner, &paths, &host(), "stop", "dev").is_err());
         assert!(runner.mutations().is_empty());
+        let history = runtime_activity::read(&paths).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["status"], "completed");
+        assert_eq!(history[0]["tone"], "danger");
+        assert!(history[0]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("Sandbox action progress could not be saved."));
     }
 
     #[test]

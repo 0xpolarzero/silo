@@ -275,6 +275,7 @@ fn project_ports(
     // Reject the whole response before changing tunnel ownership or scheduling workers.
     validate_remote_ports(&value)?;
     let mut observed = HashSet::new();
+    let mut failed_vms = HashSet::new();
     let mut closed = Vec::new();
     let mut reconnect = Vec::new();
     for row in value["workspaces"]
@@ -285,6 +286,9 @@ fn project_ports(
             .as_str()
             .ok_or("Missing remote VM identity.")?
             .to_owned();
+        if row["error"].as_str().is_some() {
+            failed_vms.insert(vm.clone());
+        }
         let name = row["workspace"].as_str().unwrap_or("").to_owned();
         row["host"] = json!(crate::network::sandbox_host(&name, &vm));
         row["workspace"] = json!(format!("silo-remote:{host}:{vm}"));
@@ -354,12 +358,12 @@ fn project_ports(
             }
         }
     }
-    // Ports or sandboxes the owner no longer has are forgotten here too.
+    // Missing ports imply deletion only when their VM was observed successfully.
     let gone: Vec<Key> = tunnels
         .live
         .keys()
         .chain(tunnels.intents.keys())
-        .filter(|key| key.0 == host && !observed.contains(*key))
+        .filter(|key| key.0 == host && !observed.contains(*key) && !failed_vms.contains(&key.1))
         .cloned()
         .collect();
     for key in gone {
@@ -906,6 +910,49 @@ mod tests {
         assert!(
             tunnels.live.contains_key(&key("other")) && tunnels.intents.contains_key(&key("other"))
         );
+    }
+
+    #[test]
+    fn a_workspace_observation_error_does_not_forget_its_connections() {
+        let mut state = Tunnels::default();
+        state.live.insert(key("office"), tunnel(43000, 32000));
+        state.intents.insert(key("office"), intent(43000));
+        let failed = json!({"workspaces":[{"workspace":"dev","vmId":"vm","ports":[],"error":"Could not read network settings."}]});
+        let result = project_ports(failed, "office", &mut state).unwrap();
+        assert!(
+            result.closed.is_empty(),
+            "a partial observation closed a working tunnel"
+        );
+        assert!(state.intents.contains_key(&key("office")));
+        let recovered = project_ports(observed(Some(32000)), "office", &mut state).unwrap();
+        assert_eq!(port(&recovered)["hostPort"], 43000);
+        assert!(recovered.reconnect.is_empty());
+        let deleted = project_ports(
+            json!({"workspaces":[{"vmId":"vm","ports":[],"error":null}]}),
+            "office",
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(deleted.closed.len(), 1);
+        assert!(!state.intents.contains_key(&key("office")));
+    }
+
+    #[test]
+    fn an_observation_error_preserves_only_that_workspaces_intents() {
+        let mut state = Tunnels::default();
+        state.intents.insert(key("office"), intent(43000));
+        let healthy_key = ("office".into(), "healthy".into(), 3000);
+        state.intents.insert(healthy_key.clone(), intent(43001));
+        let partial = json!({"workspaces":[
+            {"vmId":"vm","ports":[],"error":"Read failed"},
+            {"vmId":"healthy","ports":[],"error":null}
+        ]});
+        project_ports(partial, "office", &mut state).unwrap();
+        assert!(
+            state.intents.contains_key(&key("office")),
+            "an uncertain row was treated as deletion"
+        );
+        assert!(!state.intents.contains_key(&healthy_key));
     }
 
     #[test]

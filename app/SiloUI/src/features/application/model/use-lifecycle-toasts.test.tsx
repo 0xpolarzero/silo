@@ -57,3 +57,24 @@ it("retires progress notifications and timers when the owner unmounts", () => {
   expect(dismissOperationToast).toHaveBeenCalledWith(`lifecycle::${source.workspaces[0].machine.id}`)
   expect(vi.getTimerCount()).toBe(0)
 })
+
+it("uses the current queue state when delayed progress first appears", () => {
+  const source = pendingSource()
+  const actions = createApplicationActionsMock()
+  const queued = {
+    ...source,
+    operationQueue: { running: [], waiting: [{
+      id: 1, kind: "lifecycle" as const, label: "Starting dev",
+      vmId: source.workspaces[0].machine.id, vmName: "dev", sinceMs: Date.now(),
+      cancellable: true, expectedMs: null, blockedByHidden: true,
+    }] },
+  }
+  const view = renderHook(({ current }) => useLifecycleToasts(current, actions), { initialProps: { current: queued } })
+  act(() => { vi.advanceTimersByTime(400) })
+  view.rerender({ current: { ...queued, operationQueue: { running: [], waiting: [] } } })
+  act(() => { vi.advanceTimersByTime(400) })
+  expect(showOperationProgress).toHaveBeenCalledExactlyOnceWith(
+    `lifecycle::${source.workspaces[0].machine.id}`,
+    expect.objectContaining({ title: "Starting dev", step: "Starting…" }),
+  )
+})

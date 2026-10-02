@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import { OnboardingApp } from "@/features/onboarding/onboarding-app"
 import type { GitHubConnectionState, OnboardingActions } from "@/features/onboarding/model/onboarding-source"
-import { createMemorySettingsStore, SettingsProvider, type SettingsStore } from "@/features/preferences/settings-store"
+import { createMemorySettingsStore, createSettingsStore, SettingsProvider, type SettingsSnapshot, type SettingsStore } from "@/features/preferences/settings-store"
 import { onboardingScenarios, repositoryFixtures } from "@/fixtures/scenarios"
 import { ApplicationCatalogProvider } from "@/features/preferences/application-catalog"
 import { fixtureApplicationCatalog } from "@/fixtures/application-catalog"
@@ -39,6 +39,40 @@ async function restartStore(previous: SettingsStore) {
 }
 
 describe("onboarding restart recovery", () => {
+  it("reports failed draft delivery and retries the latest edits before clearing the warning", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    let saved: SettingsSnapshot = { revision: 0, settings: {}, saveError: null, onboardingDraft: {
+      currentStep: "github", machines: onboardingScenarios.complete.machineConfigurations,
+      unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {},
+    } }
+    let failing = true
+    const store = createSettingsStore({
+      read: async () => saved,
+      subscribe: async () => () => {},
+      updateSettings: async patch => { saved = { ...saved, revision: saved.revision + 1, settings: { ...saved.settings, ...patch } }; return saved },
+      updateOnboardingDraft: async draft => {
+        if (failing) throw new Error("Draft delivery unavailable")
+        saved = { ...saved, revision: saved.revision + 1, onboardingDraft: draft }
+        return saved
+      },
+      flush: async () => {},
+    })
+    await store.initialize()
+    const user = userEvent.setup()
+    const view = render(onboarding(store, actions(), { scenario: "complete" }))
+    await user.clear(screen.getByLabelText("Git name for dev"))
+    await user.type(screen.getByLabelText("Git name for dev"), "Recover this author")
+    expect(await screen.findByRole("alert")).toHaveTextContent("Draft delivery unavailable")
+    expect(saved.onboardingDraft?.workspaceIdentities.dev?.name).not.toBe("Recover this author")
+    failing = false
+    await user.click(screen.getByRole("button", { name: "Retry saving settings" }))
+    expect(saved.onboardingDraft?.workspaceIdentities.dev?.name).toBe("Recover this author")
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument()
+    view.unmount()
+    store.dispose()
+    vi.restoreAllMocks()
+  })
+
   it("deletes the last sandbox, preserves the empty draft after restart, and finishes setup", async () => {
     const user = userEvent.setup()
     const machine = onboardingScenarios.complete.machineConfigurations[0]
