@@ -332,7 +332,12 @@ pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
 }
 
 pub(crate) fn key(path: &Path) -> Result<(), String> {
-    if !read_regular(path)?.is_empty() {
+    let bytes = read_regular(path)?;
+    if !bytes.is_empty() {
+        let metadata = fs::symlink_metadata(path).map_err(|_| FAILED)?;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            write_private(path, &bytes)?;
+        }
         return Ok(());
     }
     let mut command = Command::new("/usr/bin/ssh-keygen");
@@ -1187,6 +1192,23 @@ mod tests {
         std::os::unix::fs::symlink(&file, &link).unwrap();
         assert!(write_private(&link, b"replace").is_err());
         assert_eq!(fs::read(&file).unwrap(), b"Host existing\n  User user\n");
+    }
+
+    #[test]
+    fn reused_ssh_keys_repair_broad_permissions_without_rotating_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("client");
+        key(&file).unwrap();
+        let private = fs::read(&file).unwrap();
+        let public = public_key(&file).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o666)).unwrap();
+        key(&file).unwrap();
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(fs::read(&file).unwrap(), private);
+        assert_eq!(public_key(&file).unwrap(), public);
     }
 
     #[test]
