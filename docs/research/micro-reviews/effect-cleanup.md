@@ -15,3 +15,7 @@ Cleanup now clears timers, dismisses owned progress, and clears tracking entries
 ## Clipboard feedback timers
 
 `CopyButton` cleared the current timer on unmount but an unfinished clipboard write could create another timer afterward. Two overlapping writes could overwrite the timer handle and show feedback from an older request. A request revision now invalidates pending feedback on unmount and gives only the latest write ownership of status and its reset timer. Deferred clipboard regressions cover late success, late failure, and out-of-order completion.
+
+## Production source startup subscriptions
+
+`startLiveUpdates` awaited six registrations before checking disposal. A registration completing after disposal stayed active until every later registration completed, and previously acquired handles were released twice. Startup now checks disposal immediately after each registration, stops the late handle, and skips subsequent registrations. Disposal drains the owned handle list, and callbacks ignore disposed sources. Deferred registration tests cover the first, middle, and final registration boundaries without invoking native reads.

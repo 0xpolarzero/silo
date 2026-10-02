@@ -1028,27 +1028,35 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   async function startLiveUpdates() {
     if (disposed) return
     try {
-      unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
-      unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
-      unlisten.push(await native.listen("silo://application-state-changed", refreshFromEvent))
-      unlisten.push(await native.listen("desktop:status-opened", refreshFromEvent))
-      // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
-      // so setup and sandbox configuration must be accepted again.
-      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => {
-        if (event?.payload !== false) return
-        acceptingSetup = true
-        if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
-      }))
-      unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
-        const parsed = siloProgressEventSchema.safeParse(event?.payload)
-        if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
-        const progressEvents = [...activeConfiguration.progressEvents, parsed.data]
-        activeConfiguration = { ...activeConfiguration, progressEvents }
-        publish({ ...snapshot, setupEvents: progressEvents, setupActivity: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
-        if (parsed.data.step === "workspace-verification" && activeMachineJob) setJobStatus(activeMachineJob, ["workspaceVerify"], "running")
-      }))
+      const subscriptions: Array<[string, EventHandler]> = [
+        ["silo://network-state-changed", () => { void refreshNetwork() }],
+        ["silo://operation-queue-changed", () => { void refreshOperationQueue() }],
+        ["silo://application-state-changed", refreshFromEvent],
+        ["desktop:status-opened", refreshFromEvent],
+        // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
+        // so setup and sandbox configuration must be accepted again.
+        ["silo://shutdown-state-changed", (event) => {
+          if (event?.payload !== false) return
+          acceptingSetup = true
+          if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
+        }],
+        ["silo://machine-configuration-progress", (event) => {
+          const parsed = siloProgressEventSchema.safeParse(event?.payload)
+          if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
+          const progressEvents = [...activeConfiguration.progressEvents, parsed.data]
+          activeConfiguration = { ...activeConfiguration, progressEvents }
+          publish({ ...snapshot, setupEvents: progressEvents, setupActivity: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
+          if (parsed.data.step === "workspace-verification" && activeMachineJob) setJobStatus(activeMachineJob, ["workspaceVerify"], "running")
+        }],
+      ]
+      for (const [event, handler] of subscriptions) {
+        const stop = await native.listen(event, payload => { if (!disposed) handler(payload) })
+        if (disposed) { stop(); return }
+        unlisten.push(stop)
+      }
     } catch (cause) {
       unlisten.splice(0).forEach((stop) => stop())
+      if (disposed) return
       const error = `Silo could not subscribe to application updates: ${errorMessage(cause)}`
       publish({ ...snapshot, loading: false, error })
       throw new Error(error)
@@ -1973,7 +1981,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
+    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.splice(0).forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
   }
 }
 
