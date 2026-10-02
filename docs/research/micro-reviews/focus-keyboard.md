@@ -34,3 +34,22 @@ backward Tab already dismiss the popup and reach adjacent page controls.
 [WAI-ARIA's combobox pattern](https://www.w3.org/WAI/ARIA/apg/patterns/combobox/)
 keeps DOM focus in the input during arrow navigation; the existing implementation
 and regression suite already preserve that behavior.
+
+## Command confirmation returns focus to search
+
+Confirmed with a single command that requires confirmation. Enter opens its
+question; Escape or Cancel returns to the list but leaves focus on the dialog
+container, so typing no longer searches. Both dismissal regression cases failed
+before the fix. The saved failing output is
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/command-menu-before.log`.
+
+The search input now focuses when mounted, including when it replaces the
+confirmation panel. No focus trap is reimplemented. The tests cancel through
+both paths, type another search, close the palette, and verify focus returns
+to its trigger without running the command.
+
+Checks: both new dismissal tests, eight native-menu request tests, and seven
+palette integration tests passed. The shared machine's load exceeded 170 during
+verification; the integration tests initially timed out at five seconds and
+passed with a 30-second command-line timeout. Frontend typecheck, touched-file
+oxlint, Rust formatting, and diff whitespace checks passed.
