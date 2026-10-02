@@ -67,7 +67,7 @@ report's revision, status and verification limits against current code.
 | [github-http-followup.md](github-http-followup.md) | 4 |
 | [github-http.md](github-http.md) | 1 |
 | [github-native-follow-up.md](github-native-follow-up.md) | 3 |
-| [github-native-round-two.md](github-native-round-two.md) | 6 |
+| [github-native-round-two.md](github-native-round-two.md) | 5 |
 | [github-native.md](github-native.md) | 2 |
 | [github-tokens-fix-loop.md](github-tokens-fix-loop.md) | 5 |
 | [github-tokens.md](github-tokens.md) | 1 |
