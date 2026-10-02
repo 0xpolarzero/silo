@@ -230,6 +230,26 @@ describe("production setup queue", () => {
     store.dispose()
   })
 
+  it("saves and verifies only token policies when OAuth is disconnected", async () => {
+    const { store, github, invoke } = await setup()
+    const selected = structuredClone(request)
+    selected.machineConfiguration.machines = application.workspaces.map(({ machine }) => machine)
+    selected.github.workspaces = application.workspaces.map(({ machine }, index) => ({
+      ...request.github.workspaces[0], workspace: machine.name,
+      authenticationMethod: index === 0 ? "token" : "oauth",
+      repositoryMode: "selected", allRepositoriesAllowChanges: false,
+    }))
+    const policy = selected.github.workspaces[0]
+    github.mockResolvedValue({ ...application.github, workspaceOperations: [{ workspace: policy.workspace, status: "succeeded", message: "Verified" }] })
+    try {
+      await store.submitSetupStep("github", selected)
+      expect(invoke).toHaveBeenCalledWith("save_github_configuration", {
+        configuration: { baseRevision: application.github.policyRevision, hostIdentity: application.github.hostIdentity ?? null, workspaces: [policy] },
+      })
+      expect(store.getSnapshot().setupQueue.find(({ id }) => id === "githubVerify")?.status).toBe("succeeded")
+    } finally { store.dispose() }
+  })
+
   it.each(["succeeded", "failed"] as const)("waits for asynchronous GitHub policy and handles %s acknowledgment", async (status) => {
     vi.useFakeTimers()
     const { store, github } = await setup()
