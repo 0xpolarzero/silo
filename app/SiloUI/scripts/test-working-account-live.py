@@ -68,7 +68,7 @@ def main():
         return run([str(args.msb.resolve()), *command], **options)
 
     def guest(command, user='root', **options):
-        return msb('exec', name, '--no-tty', '--user', user, '--env', f'USER={user}', '--env', f'LOGNAME={user}', '--', '/bin/sh', '-c', command, **options)
+        return msb('exec', name, '--no-tty', '--user', user, '--env', f'USER={user}', '--env', f'LOGNAME={user}', '--', '/bin/sh', '-ec', command, **options)
 
     scripts = Path(__file__).resolve().parents[1] / 'src-tauri/guest'
 
