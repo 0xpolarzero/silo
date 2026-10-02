@@ -97,7 +97,7 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
       const status = parseChatGptAppStatus(value)
       if (status) set({ status, loadError: null })
       else if (!snapshot.status) set({ loadError: "Silo could not read the ChatGPT for Linux status." })
-    } catch (cause) { if (read === reads) set({ loadError: message(cause) }) }
+    } catch (cause) { if (read === reads && seenEvents === events) set({ loadError: message(cause) }) }
   }
   const retry = async () => {
     set({ busy: true, error: null })
