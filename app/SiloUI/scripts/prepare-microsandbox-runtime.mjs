@@ -8,6 +8,7 @@ import { stageLfsTransferRuntime } from "./lfs-transfer-runtime.mjs"
 import { stageGitRuntime } from "./git-runtime.mjs"
 import { preflight } from "./preflight.mjs"
 import { stageGuestImage } from "./guest-image.mjs"
+import { fetchStream } from "./build-input.mjs"
 import { stageLinuxPackageTools } from "./linux-package-tools.mjs"
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
@@ -19,37 +20,21 @@ const prepared = await stageRuntime({
   appRoot,
   targetTriple,
   hostTriple,
-  fetchBytes: async (url) => {
-    const response = await fetch(url, { redirect: "follow" })
-    if (!response.ok) throw new Error(`Download failed (${response.status}) for ${url}`)
-    return new Uint8Array(await response.arrayBuffer())
-  },
+  fetchStream,
 })
 
 const git = await stageGitRuntime({
   appRoot,
   targetTriple,
-  fetchBytes: async (url) => {
-    const response = await fetch(url, { redirect: "follow" })
-    if (!response.ok) throw new Error(`Download failed (${response.status}) for ${url}`)
-    return new Uint8Array(await response.arrayBuffer())
-  },
+  fetchStream,
 })
 
-await stageLfsTransferRuntime({ appRoot, targetTriple, fetchBytes: async url => {
-  const response = await fetch(url, { redirect: "follow" })
-  if (!response.ok) throw new Error(`Git LFS transfer source download failed (${response.status})`)
-  return new Uint8Array(await response.arrayBuffer())
-} })
+await stageLfsTransferRuntime({ appRoot, targetTriple, fetchStream })
 
 console.log(`Prepared bundled MicroSandbox ${prepared.targetTriple}`)
 console.log(`Prepared bundled Git ${git.targetTriple}`)
 
-const guest = await stageGuestImage({ appRoot, targetTriple, fetchBytes: async (url) => {
-  const response = await fetch(url, { redirect: "follow" })
-  if (!response.ok) throw new Error(`Guest image download failed (${response.status})`)
-  return new Uint8Array(await response.arrayBuffer())
-} })
+const guest = await stageGuestImage({ appRoot, targetTriple, fetchStream })
 console.log(`Prepared bundled guest ${guest.imageReference}`)
 
 // Signed package metadata lets publication verify version and target without running it.

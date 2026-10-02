@@ -17,6 +17,8 @@ export interface StoredMachineEditor {
   /** Every sandbox's saved configuration when the edit began (the change's `expected`). */
   baseline: SetupMachineConfiguration[] | null
   computerId: string
+  /** A save that must stay locked and settle even if its editor surface unmounts. */
+  pendingSave?: Promise<void>
 }
 
 export const MachineEditorDraftsContext = createContext<Map<string, StoredMachineEditor> | null>(null)

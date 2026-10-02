@@ -41,16 +41,28 @@ pub(crate) fn inventory(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
 ) -> Result<Vec<Member>, RuntimeError> {
-    let output = runner.run(
-        paths,
-        &[
-            "snapshot".into(),
-            "list".into(),
-            "--format".into(),
-            "json".into(),
-        ],
-        READ_TIMEOUT,
-    )?;
+    read_inventory(runner, paths, None)
+}
+
+pub(crate) fn inventory_in_group(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    group: &str,
+) -> Result<Vec<Member>, RuntimeError> {
+    read_inventory(runner, paths, Some(group))
+}
+
+fn read_inventory(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    group: Option<&str>,
+) -> Result<Vec<Member>, RuntimeError> {
+    let mut args = vec!["snapshot".into(), "list".into()];
+    if let Some(group) = group {
+        args.extend(["--group".into(), group.into()]);
+    }
+    args.extend(["--format".into(), "json".into()]);
+    let output = runner.run(paths, &args, READ_TIMEOUT)?;
     let members: Vec<Member> = serde_json::from_str(&output.stdout)
         .map_err(|_| error("The runtime returned an invalid checkpoint list."))?;
     Ok(members

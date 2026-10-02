@@ -7,6 +7,20 @@ import { MachineList } from "./machine-list"
 
 function popoverButton(name: string) { return within(document.querySelector<HTMLElement>("[data-slot=popover-content]")!).getByRole("button", { name }) }
 
+it("identifies the remote computer and describes both destructive choices", async () => {
+  const machine = productionMachineDefaults[0]
+  const user = userEvent.setup()
+  render(<TooltipProvider><MachineList machines={[machine]} onMachinesChange={vi.fn()}
+    computers={[{ id: "office", name: "Office", connected: true }]} getComputerId={() => "office"}
+    getRowPresentation={() => ({ menuActions: [], deleteDetails: { checkpoints: 2, exportFirst: vi.fn().mockResolvedValue(true) } })} /></TooltipProvider>)
+  await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
+  await user.click(screen.getByRole("menuitem", { name: `Delete ${machine.name} on Office` }))
+  const dialog = await screen.findByRole("dialog", { name: `Delete ${machine.name} on Office` })
+  for (const action of ["Delete permanently", "Export, then delete"]) {
+    expect(within(dialog).getByRole("button", { name: action })).toHaveAccessibleDescription(`Delete ${machine.name} on Office permanently? Its files and 2 checkpoints will be deleted. This can't be undone.`)
+  }
+})
+
 it("confirms a row deletion in a popover anchored to the ⋯ menu", async () => {
   const machine = productionMachineDefaults[0]
   const save = vi.fn()
@@ -15,7 +29,9 @@ it("confirms a row deletion in a popover anchored to the ⋯ menu", async () => 
   await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
   await user.click(screen.getByRole("menuitem", { name: `Delete ${machine.name}` }))
   expect(await screen.findByText(`Delete ${machine.name} permanently?`)).toBeVisible()
+  expect(screen.getByRole("dialog", { name: `Delete ${machine.name}` })).toBeVisible()
   expect(screen.getByText("Its files and checkpoints will be deleted. This can't be undone.")).toBeVisible()
+  expect(popoverButton("Delete permanently")).toHaveAccessibleDescription(`Delete ${machine.name} permanently? Its files and checkpoints will be deleted. This can't be undone.`)
   expect(save).not.toHaveBeenCalled()
   await user.click(popoverButton("Delete permanently"))
   await waitFor(() => expect(save).toHaveBeenCalledWith([], [machine]))
@@ -45,6 +61,24 @@ it("blocks a deletion if the VM starts before confirmation", async () => {
   rerender(view(true))
   await user.click(popoverButton("Delete permanently"))
   await new Promise(resolve => setTimeout(resolve, 20))
+  expect(save).not.toHaveBeenCalled()
+})
+
+it.each(["configuration lock", "offline computer"])("blocks deletion when a %s appears before confirmation", async reason => {
+  const machine = productionMachineDefaults[0]
+  const save = vi.fn()
+  const view = (blocked: boolean) => <TooltipProvider><MachineList machines={[machine]} onMachinesChange={vi.fn()} onDeleteMachine={save}
+    interactionDisabled={reason === "configuration lock" && blocked}
+    getComputerId={() => "office"}
+    validateOperation={() => reason === "offline computer" && blocked ? "Office is offline." : undefined}
+    isMachineRunning={() => false} getRowPresentation={() => ({ menuActions: [] })} /></TooltipProvider>
+  const { rerender } = render(view(false))
+  const user = userEvent.setup()
+  await user.click(screen.getByRole("button", { name: `More actions for ${machine.name}` }))
+  await user.click(screen.getByRole("menuitem", { name: `Delete ${machine.name}` }))
+  await screen.findByText(`Delete ${machine.name} permanently?`)
+  rerender(view(true))
+  await user.click(popoverButton("Delete permanently"))
   expect(save).not.toHaveBeenCalled()
 })
 

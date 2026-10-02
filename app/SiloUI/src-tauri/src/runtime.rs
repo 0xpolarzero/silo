@@ -890,8 +890,8 @@ pub(crate) fn prepare_private_directory(path: &Path) -> std::io::Result<()> {
             ),
         ));
     }
-    if metadata.mode() & 0o022 != 0 {
-        directory.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o777 & !0o022))?;
+    if metadata.mode() & 0o077 != 0 {
+        directory.set_permissions(fs::Permissions::from_mode(metadata.mode() & 0o700))?;
     }
     Ok(())
 }
@@ -901,8 +901,12 @@ pub(crate) fn prepare_runtime_home(
     storage_home: Option<&Path>,
 ) -> Result<(), RuntimeError> {
     let prepare = || -> std::io::Result<()> {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut builder = fs::DirBuilder::new();
+        builder.recursive(true).mode(0o700);
         let Some(storage_home) = storage_home else {
-            return fs::create_dir_all(home);
+            builder.create(home)?;
+            return prepare_private_directory(home);
         };
         let maximum = if cfg!(target_os = "macos") { 103 } else { 107 };
         let longest_socket = home.join("run/sandboxes/000000000000000000000000/control.sock");
@@ -948,7 +952,8 @@ pub(crate) fn prepare_runtime_home(
                 Err(error) => return Err(error),
             }
         }
-        fs::create_dir_all(storage_home)
+        builder.create(storage_home)?;
+        prepare_private_directory(storage_home)
     };
     prepare().map_err(|error| {
         RuntimeError::Unavailable(format!(
@@ -2554,7 +2559,7 @@ pub async fn read_application_state(
     app: AppHandle,
     refresh_repositories: Option<bool>,
 ) -> Result<ApplicationSource, BridgeError> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     tauri::async_runtime::spawn_blocking(move || {
         let paths = runtime_paths(&app)?;
         crate::secrets::schedule_revocations(&app);
@@ -3122,7 +3127,7 @@ pub async fn workspace_action(
     name: String,
     path: Option<String>,
 ) -> Result<ApplicationSource, BridgeError> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     if matches!(action.as_str(), "open-editor" | "open-terminal") {
         shutdown::ensure_accepting_operations()?;
         return tauri::async_runtime::spawn_blocking(move || {
@@ -4027,7 +4032,7 @@ pub async fn retry_machine_configuration(
     request_id: Option<String>,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
     let failure_title = retry_workspace.as_deref().map_or_else(
@@ -4082,7 +4087,7 @@ pub async fn change_machine_configuration(
     request_id: Option<String>,
     retry_workspace: Option<String>,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let request_id = normalize_request_id(request_id)?;
     let notify_app = app.clone();
     let failure_title = change.failure_title();
@@ -4664,17 +4669,19 @@ pub(crate) fn is_pending_restore(paths: &RuntimePaths, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Inspect a Silo VM without treating "not created yet" as a failure. A sandbox that
-/// is pending restore is decided from Silo's own record before the runtime is asked;
-/// a runtime that reports the sandbox as missing is likewise `Absent`.
+/// Inspect a Silo VM without treating "not created yet" as a failure. An unattempted
+/// restore is absent; after an attempt, inspect the VM it may have created. A runtime
+/// that reports the sandbox as missing is likewise `Absent`.
 pub(crate) fn observe_vm(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<VmRuntime, RuntimeError> {
     validate_name(name)?;
-    if is_pending_restore(paths, name) {
-        return Ok(VmRuntime::Absent);
+    if let Ok(id) = resolve_vm_id(paths, name) {
+        if checkpoints::pending_view(paths, &id, true)? {
+            return Ok(VmRuntime::Absent);
+        }
     }
     match inspect_workspace(runner, paths, name) {
         Ok(inspected) => Ok(VmRuntime::Present(inspected)),
@@ -4695,6 +4702,25 @@ pub(crate) fn ensure_managed(inspected: &InspectedSandbox) -> Result<(), Runtime
             "Sandbox '{}' is not owned by Silo. No sandbox operation was performed.",
             inspected.name
         )));
+    }
+    Ok(())
+}
+
+fn ensure_machine_identity(
+    machine: &MachineConfiguration,
+    inspected: &InspectedSandbox,
+) -> Result<(), RuntimeError> {
+    ensure_managed(inspected)?;
+    if inspected.name != machine.name()
+        || inspected
+            .config
+            .pointer("/labels/silo.machine-id")
+            .and_then(Value::as_str)
+            != Some(machine.id())
+    {
+        return Err(RuntimeError::Invalid(
+            "The sandbox identity changed. No settings were changed on the replacement.".into(),
+        ));
     }
     Ok(())
 }
@@ -5115,7 +5141,10 @@ fn apply_whole_configuration_with_progress(
             if *old != machine {
                 validate_machine_update(old, machine)?;
                 if machine.is_vm() {
-                    ensure_managed(&inspect_workspace(runner, paths, machine.name())?)?;
+                    ensure_machine_identity(
+                        machine,
+                        &inspect_workspace(runner, paths, machine.name())?,
+                    )?;
                 }
             }
         }
@@ -5644,6 +5673,7 @@ fn update_machine(
     // Renames, storage resizes, VM/SSH switches and desktop removal are rejected here.
     validate_machine_update(previous, machine)?;
     if crate::desktop::only_desktop_changed(previous, machine) {
+        ensure_machine_identity(previous, &inspect_workspace(runner, paths, machine.name())?)?;
         return crate::desktop::configure_with(
             runner,
             paths,
@@ -5668,7 +5698,7 @@ fn update_machine(
             },
         ) => {
             let inspected = inspect_workspace(runner, paths, name)?;
-            ensure_managed(&inspected)?;
+            ensure_machine_identity(previous, &inspected)?;
             if inspected.status == "Running" {
                 runner.run(
                     paths,
@@ -5676,7 +5706,7 @@ fn update_machine(
                     STOP_TIMEOUT,
                 )?;
                 let stopped = inspect_workspace(runner, paths, name)?;
-                ensure_managed(&stopped)?;
+                ensure_machine_identity(previous, &stopped)?;
                 if stopped.status != "Stopped" {
                     return Err(RuntimeError::Invalid(format!(
                         "{name} did not stop. Its settings were not changed. Retry after checking its state."
@@ -5923,20 +5953,31 @@ pub(crate) fn validate_name(name: &str) -> Result<(), RuntimeError> {
 }
 
 pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, RuntimeError> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(MachineConfigurationRequest {
-                schema_version: 1,
-                machines: Vec::new(),
-            })
-        }
+    Ok(
+        read_saved_metadata(path)?.unwrap_or(MachineConfigurationRequest {
+            schema_version: 1,
+            machines: Vec::new(),
+        }),
+    )
+}
+fn read_saved_metadata(path: &Path) -> Result<Option<MachineConfigurationRequest>, RuntimeError> {
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
             return Err(RuntimeError::Unavailable(format!(
                 "Silo could not read its sandbox configuration: {error}"
             )))
         }
     };
+    let mut bytes = Vec::new();
+    file.take(MAX_OUTPUT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| {
+            RuntimeError::Unavailable(format!(
+                "Silo could not read its sandbox configuration: {error}"
+            ))
+        })?;
     if bytes.len() as u64 > MAX_OUTPUT_BYTES {
         return Err(RuntimeError::Malformed(
             "Silo's sandbox configuration is too large.".into(),
@@ -5946,7 +5987,7 @@ pub(crate) fn read_metadata(path: &Path) -> Result<MachineConfigurationRequest, 
         RuntimeError::Malformed("Silo's saved sandbox configuration is invalid.".into())
     })?;
     validate_request(&request)?;
-    Ok(request)
+    Ok(Some(request))
 }
 
 /// Resolve a local VM's stable id from its current display name in fresh metadata.
@@ -6007,6 +6048,58 @@ pub(crate) fn write_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metadata_large_input_memory_is_bounded() {
+        const PROBE: &str = "SILO_TEST_METADATA_MEMORY_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::metadata_large_input_memory_is_bounded",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            return;
+        }
+
+        fn peak_bytes() -> u64 {
+            // SAFETY: getrusage initializes the supplied rusage structure.
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
+            #[cfg(target_os = "macos")]
+            return usage.ru_maxrss as u64;
+            #[cfg(not(target_os = "macos"))]
+            return usage.ru_maxrss as u64 * 1024;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sandboxes.json");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        let before = peak_bytes();
+        assert!(
+            matches!(read_metadata(&path), Err(RuntimeError::Malformed(message))
+            if message == "Silo's sandbox configuration is too large.")
+        );
+        let extra = peak_bytes().saturating_sub(before);
+        eprintln!("large metadata peak RSS increase: {extra} bytes");
+        assert!(
+            extra < 32 * 1024 * 1024,
+            "oversized metadata allocated {extra} bytes"
+        );
+        assert_eq!(fs::metadata(&path).unwrap().len(), 128 * 1024 * 1024);
+    }
 
     #[test]
     fn auto_retry_retries_transient_failures_and_releases_the_gate_between_attempts() {
@@ -6834,14 +6927,15 @@ esac
         }
         let runner = StubRunner::successful_json(vec![
             inspect(&paths(&dir), "Running"),
+            inspect(&paths(&dir), "Running"),
             json!(1),
             json!({}),
         ]);
         update_machine(&runner, &paths(&dir), &previous, &desired).unwrap();
         let calls = runner.calls.lock().unwrap();
-        assert_eq!(calls.len(), 3);
-        assert_eq!(calls[2][0], "exec");
-        assert!(calls[2]
+        assert_eq!(calls.len(), 4);
+        assert_eq!(calls[3][0], "exec");
+        assert!(calls[3]
             .last()
             .unwrap()
             .contains("silo-desktop autostart true"));
@@ -7918,7 +8012,7 @@ esac
         crate::test_support::paths(directory.path())
     }
 
-    fn vm() -> MachineConfiguration {
+    pub(super) fn vm() -> MachineConfiguration {
         MachineConfiguration::Vm {
             id: "00000000-0000-4000-8000-000000000001".into(),
             name: "dev".into(),
@@ -7932,7 +8026,7 @@ esac
         }
     }
 
-    fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
+    pub(super) fn request(machines: Vec<MachineConfiguration>) -> MachineConfigurationRequest {
         MachineConfigurationRequest {
             schema_version: 1,
             machines,
@@ -9757,6 +9851,48 @@ exit 9
     }
 
     #[test]
+    fn pending_secret_revocation_does_not_retire_a_running_failed_restore() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let pending: checkpoints::Record = serde_json::from_value(json!({
+            "version":1,
+            "checkpoints":[],
+            "restoreAttempted":true,
+            "pendingCheckpointRestore":{
+                "checkpointId":"c000000000000000000000000000000",
+                "sourceWorkspace":"source",
+                "state":"disk"
+            }
+        }))
+        .unwrap();
+        checkpoints::save(&paths, vm().id(), &pending).unwrap();
+        let record = pending_secret_fixture(&directory);
+        let mut removed = Vec::new();
+        let result = revoke_secret_with(
+            &StubRunner::successful_json(vec![
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+            ]),
+            &paths,
+            &record,
+            &mut |name| {
+                removed.push(name.to_owned());
+                Ok(())
+            },
+        )
+        .unwrap();
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        assert!(
+            !result,
+            "a running restore still exposes the revoked secret"
+        );
+        assert_eq!(removed, ["API_KEY"]);
+    }
+
+    #[test]
     fn pending_secret_retry_skips_busy_guests_and_rechecks_replacement_after_the_vm_settles() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10140,6 +10276,107 @@ exit 9
     }
 
     #[test]
+    fn edit_rejects_a_replacement_before_any_configuration_side_effect() {
+        let _test_state = crate::test_support::global_state();
+        for status in ["Running", "Stopped"] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let previous = request(vec![vm()]);
+            write_metadata(&paths.metadata, &previous).unwrap();
+            let mut changed = vm();
+            if let MachineConfiguration::Vm { cpus, .. } = &mut changed {
+                *cpus = 2;
+            }
+            let mut replacement = inspect(&paths, status);
+            replacement["config"]["labels"]["silo.machine-id"] =
+                json!("22222222-2222-4222-8222-222222222222");
+            let mut modified = inspect(&paths, "Stopped");
+            modified["config"]["resources"]["cpus"] = json!(2);
+            let mut outputs = vec![replacement.clone(), replacement];
+            if status == "Running" {
+                outputs.push(json!(null));
+                outputs.push(inspect(&paths, "Stopped"));
+            }
+            outputs.extend([json!(null), modified]);
+            let runner = StubRunner::successful_json(outputs);
+
+            let error = apply_whole_configuration(
+                &runner,
+                &paths,
+                &generous_host(),
+                request(vec![changed]),
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains("identity"), "{error}");
+            assert_eq!(read_metadata(&paths.metadata).unwrap(), previous);
+            assert!(configuration_recovery::load(&paths).unwrap().is_none());
+            assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn edit_rejects_replacements_for_resource_and_desktop_changes() {
+        let _test_state = crate::test_support::global_state();
+        for desktop_only in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let paths = paths(&directory);
+            let previous = vm();
+            let mut changed = previous.clone();
+            if let MachineConfiguration::Vm { cpus, desktop, .. } = &mut changed {
+                if desktop_only {
+                    *desktop = Some(crate::desktop::DesktopConfiguration {
+                        start_with_sandbox: true,
+                        built_in: false,
+                    });
+                } else {
+                    *cpus = 2;
+                }
+            }
+            let mut replacement = inspect(&paths, "Stopped");
+            replacement["config"]["labels"]["silo.machine-id"] =
+                json!("22222222-2222-4222-8222-222222222222");
+            let runner = StubRunner::successful_json(vec![replacement, json!(1), json!(null)]);
+
+            let error = update_machine(&runner, &paths, &previous, &changed).unwrap_err();
+
+            assert!(error.to_string().contains("identity"), "{error}");
+            assert_eq!(runner.calls.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn edit_rechecks_identity_after_stopping() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let previous = vm();
+        let mut changed = previous.clone();
+        if let MachineConfiguration::Vm { cpus, .. } = &mut changed {
+            *cpus = 2;
+        }
+        let mut replacement = inspect(&paths, "Stopped");
+        replacement["config"]["labels"]["silo.machine-id"] =
+            json!("22222222-2222-4222-8222-222222222222");
+        let runner = StubRunner::successful_json(vec![
+            inspect(&paths, "Running"),
+            json!(null),
+            replacement,
+            json!(null),
+        ]);
+
+        let error = update_machine(&runner, &paths, &previous, &changed).unwrap_err();
+
+        assert!(error.to_string().contains("identity"), "{error}");
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| args[0] == "modify"));
+    }
+
+    #[test]
     fn edit_stops_running_vm_before_modifying_and_does_not_restart() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
@@ -10502,6 +10739,41 @@ exit 9
         assert!(read_metadata(&path).is_err());
         fs::write(&path, br#"{"schemaVersion":1,"machines":[]}"#).unwrap();
         assert!(read_metadata(&path).unwrap().machines.is_empty());
+    }
+
+    #[test]
+    fn pre_desktop_metadata_keeps_its_persisted_field_names_on_round_trip() {
+        let saved = json!({
+            "schemaVersion": 1,
+            "machines": [
+                {
+                    "kind": "vm",
+                    "id": "00000000-0000-4000-8000-000000000001",
+                    "name": "dev",
+                    "cpus": 2,
+                    "maxCPUs": 4,
+                    "memoryGiB": 2,
+                    "maxMemoryGiB": 4,
+                    "workspaceStorageGiB": 10,
+                    "runtimeStorageGiB": 5
+                },
+                {
+                    "kind": "ssh",
+                    "id": "00000000-0000-4000-8000-000000000002",
+                    "name": "remote",
+                    "host": "example.test",
+                    "user": "developer",
+                    "port": 2222
+                }
+            ]
+        });
+        let request: MachineConfigurationRequest = serde_json::from_value(saved.clone()).unwrap();
+        validate_request(&request).unwrap();
+        assert!(matches!(
+            request.machines[0],
+            MachineConfiguration::Vm { desktop: None, .. }
+        ));
+        assert_eq!(serde_json::to_value(&request).unwrap(), saved);
     }
 
     #[test]
@@ -10880,8 +11152,58 @@ exit 9
         fs::set_permissions(parent, fs::Permissions::from_mode(0o775)).unwrap();
         fs::write(parent.join("existing"), b"preserved").unwrap();
         prepare_runtime_home(&alias, Some(&storage)).unwrap();
-        assert_eq!(fs::metadata(parent).unwrap().mode() & 0o777, 0o755);
+        assert_eq!(fs::metadata(parent).unwrap().mode() & 0o777, 0o700);
         assert_eq!(fs::read(parent.join("existing")).unwrap(), b"preserved");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_home_is_private_with_permissive_umask() {
+        const CHILD: &str = "SILO_PRIVATE_RUNTIME_HOME_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "runtime::tests::runtime_home_is_private_with_permissive_umask",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // This process runs only this test, so its umask cannot affect parallel tests.
+        unsafe { libc::umask(0) };
+        let directory = tempfile::Builder::new()
+            .prefix("silo")
+            .tempdir_in(crate::test_support::live::temp_root())
+            .unwrap();
+        let storage = directory.path().join("generation/microsandbox");
+        let alias = runtime_home_alias(directory.path(), &storage);
+        prepare_runtime_home(&alias, Some(&storage)).unwrap();
+        assert_eq!(fs::metadata(&storage).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(storage.parent().unwrap()).unwrap().mode() & 0o777,
+            0o700
+        );
+        fs::write(storage.join("private-config"), b"fixture").unwrap();
+        fs::set_permissions(&storage, fs::Permissions::from_mode(0o755)).unwrap();
+        prepare_runtime_home(&alias, Some(&storage)).unwrap();
+        assert_eq!(fs::metadata(&storage).unwrap().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::read(storage.join("private-config")).unwrap(),
+            b"fixture"
+        );
+        let standalone = directory.path().join("standalone");
+        prepare_runtime_home(&standalone, None).unwrap();
+        assert_eq!(fs::metadata(standalone).unwrap().mode() & 0o777, 0o700);
     }
 
     #[cfg(unix)]

@@ -15,7 +15,8 @@ def manifest_commands(build_rs):
     block = re.search(r'AppManifest::new\(\)\s*\.commands\(&\[(.*?)\]\)', build_rs, re.S)
     if not block:
         raise ValueError('build.rs has no AppManifest::new().commands(&[...]) list')
-    return re.findall(r'"([A-Za-z0-9_]+)"', block.group(1))
+    body = re.sub(r'//[^\n]*', '', block.group(1))
+    return re.findall(r'"([A-Za-z0-9_]+)"', body)
 
 
 def handler_commands(main_rs):

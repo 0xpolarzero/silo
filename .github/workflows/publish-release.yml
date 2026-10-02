@@ -6,8 +6,13 @@ on:
         description: Stable version of the reviewed draft, for example 0.1.0
         required: true
         type: string
+      allow_stable:
+        description: Owner-approved publication of version 1.0.0 or later
+        type: boolean
+        default: false
 concurrency:
   group: silo-release-publish
+  queue: max
   cancel-in-progress: false
 permissions:
   contents: read
@@ -19,6 +24,8 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
@@ -29,6 +36,12 @@ jobs:
           GH_REPO: ${{ github.repository }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_REF: ${{ github.ref }}
+          ALLOW_STABLE: ${{ inputs.allow_stable }}
         run: |
+          set -euo pipefail
           test "$RELEASE_REF" = "refs/tags/v$RELEASE_VERSION"
-          python3 app/SiloUI/scripts/publish-release.py "$RELEASE_VERSION" --publish
+          set --
+          if [[ "$ALLOW_STABLE" == true ]]; then
+            set -- --allow-stable
+          fi
+          python3 app/SiloUI/scripts/publish-release.py "$RELEASE_VERSION" --publish "$@"

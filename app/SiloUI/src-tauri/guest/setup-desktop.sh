@@ -203,7 +203,8 @@ PY
     ) || problem='The guest image marker is unreadable'
     [ "$problem" = ok ] || { echo "$problem"; return 0; }
     [ -f "$desktop_packages_file" ] || { echo 'The desktop package list is missing'; return 0; }
-    for package in $(cat "$desktop_packages_file"); do
+    image_packages=$(cat "$desktop_packages_file") || { echo 'The desktop package list is unreadable'; return 0; }
+    for package in $image_packages; do
         [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true)" = 'install ok installed' ] || { echo "The guest image package $package is missing"; return 0; }
     done
     case "$(dpkg-query -W -f='${Version}' selkies 2>/dev/null || true)" in

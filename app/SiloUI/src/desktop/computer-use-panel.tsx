@@ -175,6 +175,7 @@ export function ComputerUseSection({ workspace, pollMs = 5000, active = true }: 
   const working = useRef(false)
   const reading = useRef(false)
   const revision = useRef(0)
+  const failureDelay = useRef(0)
   const refresh = useCallback(async () => {
     // One read at a time, so a slow one can never be overtaken by a newer one and then overwrite it.
     if (!bridge || working.current || reading.current) return
@@ -182,17 +183,35 @@ export function ComputerUseSection({ workspace, pollMs = 5000, active = true }: 
     const current = revision.current
     try {
       const next = await bridge.readState(workspace)
-      if (current === revision.current) { setState(next); setLoadError(null) }
-    } catch (cause) { if (current === revision.current) setLoadError(cause instanceof Error ? cause.message : String(cause)) }
+      if (current === revision.current) {
+        failureDelay.current = 0
+        setState(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)
+        setLoadError(null)
+      }
+    } catch (cause) {
+      if (current === revision.current) {
+        failureDelay.current = Math.min(Math.max(failureDelay.current, pollMs) * 2, 30000)
+        setLoadError(cause instanceof Error ? cause.message : String(cause))
+      }
+    }
     finally { reading.current = false }
-  }, [bridge, workspace])
+  }, [bridge, workspace, pollMs])
   useEffect(() => {
     if (!active) return
-    const update = () => { if (document.visibilityState !== "hidden") void refresh() }
-    const initial = window.setTimeout(update, 0)
-    const interval = window.setInterval(update, pollMs)
+    let disposed = false
+    let timer: number | undefined
+    const update = () => {
+      window.clearTimeout(timer)
+      if (disposed || document.visibilityState === "hidden") return
+      void refresh().finally(() => {
+        if (disposed || document.visibilityState === "hidden") return
+        window.clearTimeout(timer)
+        timer = window.setTimeout(update, Math.max(pollMs, failureDelay.current))
+      })
+    }
+    timer = window.setTimeout(update, 0)
     document.addEventListener("visibilitychange", update)
-    return () => { window.clearTimeout(initial); window.clearInterval(interval); document.removeEventListener("visibilitychange", update) }
+    return () => { disposed = true; window.clearTimeout(timer); document.removeEventListener("visibilitychange", update) }
   }, [refresh, pollMs, active])
   const run = useCallback(async (work: () => Promise<LinuxDesktopState>, optimistic?: (state: LinuxDesktopState) => LinuxDesktopState, announce?: string) => {
     if (working.current) return

@@ -1,4 +1,4 @@
-import { useEffect, useEffectEvent, useState } from "react"
+import { useEffect, useEffectEvent, useId, useState } from "react"
 
 import { Button } from "@/components/ui/button"
 import { deleteSandboxDescription, deleteSandboxTitle, formatSandboxSize } from "@/features/sandboxes/model/delete-sandbox-copy"
@@ -28,6 +28,8 @@ export function DeleteSandboxBody({ kind, displayName, details = {}, onDelete, o
   onClose: () => void
 }) {
   const [size, setSize] = useState<string>()
+  const titleId = useId()
+  const descriptionId = useId()
   const { exportFirst, checkpoints } = details
   // Read the size once when the dialog opens; the size is informative and deletion never waits for it.
   const readSize = useEffectEvent(() => details.readSize?.() ?? Promise.resolve(null))
@@ -45,15 +47,15 @@ export function DeleteSandboxBody({ kind, displayName, details = {}, onDelete, o
   }
 
   const cancel = <Button type="button" variant="ghost" size="sm" onClick={onClose}>Cancel</Button>
-  const remove = <Button type="button" variant="destructive" size="sm" autoFocus data-popover-initial-focus="" onClick={() => run(onDelete)}>Delete permanently</Button>
+  const remove = <Button type="button" variant="destructive" size="sm" aria-describedby={`${titleId} ${descriptionId}`} autoFocus data-popover-initial-focus="" onClick={() => run(onDelete)}>Delete permanently</Button>
   return <div className="grid gap-2">
-    <p className="font-medium">{deleteSandboxTitle(displayName)}</p>
-    <div className="text-muted-foreground">{deleteSandboxDescription(kind, checkpoints, size)}</div>
+    <p id={titleId} className="font-medium">{deleteSandboxTitle(displayName)}</p>
+    <div id={descriptionId} className="text-muted-foreground">{deleteSandboxDescription(kind, checkpoints, size)}</div>
     {/* Three choices do not fit one row of the popover, so they stack full width like a macOS alert. */}
     {exportFirst
       ? <div className="grid gap-1.5 pt-1">
         {remove}
-        <Button type="button" variant="outline" size="sm" onClick={() => run(async () => { if (await exportFirst()) await onDelete() })}>Export, then delete</Button>
+        <Button type="button" variant="outline" size="sm" aria-describedby={`${titleId} ${descriptionId}`} onClick={() => run(async () => { if (await exportFirst()) await onDelete() })}>Export, then delete</Button>
         {cancel}
       </div>
       : <div className="flex justify-end gap-2">{cancel}{remove}</div>}

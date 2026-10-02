@@ -196,7 +196,7 @@ function projectWorkspaceProgress(source: OnboardingSource, queueItems: ReviewQu
   const completedOperations = recordedProgress ? completionKeys.size : queueItems.filter(({ id, status }) => queueByStep.workspaces.includes(id) && status === "succeeded").length * workspaces.length
   return {
     status: queueStatus,
-    elapsedSeconds: source.bootstrapState.startedAt
+    elapsedSeconds: source.bootstrapState.startedAt !== undefined
       ? Math.max(0, source.bootstrapState.updatedAt - source.bootstrapState.startedAt)
       : 0,
     currentWorkspace: currentEvent?.workspace,

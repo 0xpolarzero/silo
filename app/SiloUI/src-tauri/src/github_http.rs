@@ -88,10 +88,9 @@ fn key(route: &str, body: &[u8]) -> String {
     format!("{:x}", hash.finalize())
 }
 fn waiting(until: u64, at: u64) -> String {
-    format!(
-        "GitHub access update is waiting. Retrying in {} seconds.",
-        until.saturating_sub(at).max(1)
-    )
+    let seconds = until.saturating_sub(at).max(1);
+    let unit = if seconds == 1 { "second" } else { "seconds" };
+    format!("GitHub access update is waiting. Retrying in {seconds} {unit}.")
 }
 impl Gates {
     fn restore_floor(&mut self, class: &str, until: u64) {
@@ -154,7 +153,7 @@ impl Gates {
             .saturating_add(delay)
             .max(floor)
             .saturating_add(jitter % 4);
-        if rate {
+        if rate || floor > at {
             self.restore_floor(class, until);
         }
         // Safe reads (such as token validation) keep retrying with capped backoff;
@@ -201,6 +200,10 @@ pub(crate) fn retry_at() -> u64 {
 pub(crate) fn reset_retries() {
     // An explicit Retry cannot bypass GitHub's requested waiting period.
     gates().requests.clear();
+}
+pub(crate) fn reset_bearer_retries(token: &str) {
+    let class = rate_class(&Authentication::Bearer(token.into()));
+    gates().requests.retain(|_, failure| failure.class != class);
 }
 fn preflight(key: &str, class: &str) -> Result<(), String> {
     gates().check(key, class, now())
@@ -310,7 +313,7 @@ fn response(
             failure(
                 key,
                 class,
-                retryable_response(status, &headers, &Value::Null, safe),
+                safe || retryable_response(status, &headers, &Value::Null, safe),
                 retry_after(&headers, now()),
                 is_rate_limit(status, &headers, &Value::Null),
                 "GitHub returned an incomplete response.",
@@ -448,34 +451,166 @@ pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn personal_token_retry_preserves_unrelated_failures_and_server_floors() {
+        let _test_state = crate::test_support::global_state();
+        let token = uuid::Uuid::new_v4().to_string();
+        let personal = rate_class(&Authentication::Bearer(token.clone()));
+        let other = rate_class(&Authentication::Bearer(uuid::Uuid::new_v4().to_string()));
+        let app = format!("app:{}", uuid::Uuid::new_v4());
+        let validation_key = uuid::Uuid::new_v4().to_string();
+        let other_key = uuid::Uuid::new_v4().to_string();
+        let mint_key = uuid::Uuid::new_v4().to_string();
+        {
+            let mut g = gates();
+            for (key, class) in [
+                (&validation_key, &personal),
+                (&other_key, &other),
+                (&mint_key, &app),
+            ] {
+                g.fail(key.clone(), class, 100, false, 0, false, 0, "failed", false);
+                assert!(g.check(key, class, u64::MAX).is_err());
+            }
+            g.restore_floor(&personal, 5000);
+        }
+        reset_bearer_retries(&token);
+        let mut g = gates();
+        assert!(g.check(&validation_key, &personal, 5000).is_ok());
+        assert!(g.check(&validation_key, &personal, 4999).is_err());
+        assert!(g.check(&other_key, &other, u64::MAX).is_err());
+        assert!(g.check(&mint_key, &app, u64::MAX).is_err());
+        g.requests.remove(&other_key);
+        g.requests.remove(&mint_key);
+        g.rate_until.remove(&personal);
+    }
+    #[test]
+    fn retry_gate_pluralizes_the_remaining_seconds() {
+        let mut gates = Gates::default();
+        gates.restore_floor("fixture", 102);
+        assert_eq!(
+            gates.check("request", "fixture", 100).unwrap_err(),
+            "GitHub access update is waiting. Retrying in 2 seconds."
+        );
+        assert_eq!(
+            gates.check("request", "fixture", 101).unwrap_err(),
+            "GitHub access update is waiting. Retrying in 1 second."
+        );
+        assert!(gates.check("request", "fixture", 102).is_ok());
+    }
     fn wire_response(status: u16, body: &str, revoke: bool) -> Result<Value, String> {
-        use std::io::Write;
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
         let reply = format!(
             "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
+        wire_reply(
+            &uuid::Uuid::new_v4().to_string(),
+            "wire-test",
+            reply,
+            false,
+            revoke,
+        )
+    }
+    fn wire_reply(
+        key: &str,
+        class: &str,
+        reply: String,
+        safe: bool,
+        revoke: bool,
+    ) -> Result<Value, String> {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
         let server = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = [0u8; 1024];
-            stream.read(&mut request).unwrap();
+            assert!(stream.read(&mut request).unwrap() > 0);
             stream.write_all(reply.as_bytes()).unwrap();
         });
         let result = response(
-            &uuid::Uuid::new_v4().to_string(),
-            "wire-test",
+            key,
+            class,
             Client::builder()
                 .no_proxy()
+                .timeout(Duration::from_secs(5))
                 .build()
                 .unwrap()
                 .get(format!("http://{address}"))
                 .send(),
-            false,
+            safe,
             revoke,
         );
         server.join().unwrap();
         result
+    }
+    #[test]
+    fn interrupted_successful_body_retries_safe_reads_but_not_ambiguous_writes() {
+        let _test_state = crate::test_support::global_state();
+        for safe in [true, false] {
+            let key = uuid::Uuid::new_v4().to_string();
+            let class = uuid::Uuid::new_v4().to_string();
+            let error = wire_reply(
+                &key,
+                &class,
+                "HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\n{".into(),
+                safe,
+                false,
+            )
+            .unwrap_err();
+            let until = gates().requests[&key].until;
+            if safe {
+                let until = until.expect("interrupted safe read stopped retrying");
+                assert!(error.contains("Retrying"));
+                assert!(gates().check(&key, &class, until - 1).is_err());
+                assert!(gates().check(&key, &class, until).is_ok());
+                assert_eq!(
+                    wire_reply(
+                        &key,
+                        &class,
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+                            .into(),
+                        safe,
+                        false,
+                    )
+                    .unwrap(),
+                    serde_json::json!({})
+                );
+                assert!(!gates().requests.contains_key(&key));
+            } else {
+                assert!(until.is_none());
+                assert!(error.contains("Automatic retries stopped"));
+                assert!(gates().check(&key, &class, u64::MAX).is_err());
+                gates().requests.remove(&key);
+            }
+        }
+    }
+    #[test]
+    fn service_unavailable_retry_after_survives_explicit_retry_and_relaunch() {
+        let _test_state = crate::test_support::global_state();
+        let key = uuid::Uuid::new_v4().to_string();
+        let class = uuid::Uuid::new_v4().to_string();
+        let at = now();
+        let error = wire_reply(
+            &key,
+            &class,
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 600\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".into(),
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("Retrying"));
+        let until = gates().requests[&key].until.unwrap();
+        assert!(until >= at + 600);
+        reset_retries();
+        assert!(preflight(&key, &class).is_err());
+        let floors = retry_floors();
+        let mut restored = Gates::default();
+        for (class, until) in floors {
+            restored.restore_floor(&class, until);
+        }
+        assert!(restored.check(&key, &class, until - 1).is_err());
+        assert!(restored.check(&key, &class, until).is_ok());
+        assert!(restored.check("unrelated", "other-credential", at).is_ok());
+        gates().rate_until.remove(&class);
     }
     #[test]
     fn real_http_oauth_errors_are_redacted_and_revocation_accepts_empty_responses() {

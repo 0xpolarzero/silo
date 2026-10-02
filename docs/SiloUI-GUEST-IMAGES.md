@@ -29,15 +29,72 @@ Published version tags are never intentionally reused. For an image update,
 increment `GUEST_IMAGE_VERSION` in `app/SiloUI/scripts/build-guest-image.mjs`
 (and the recipe as needed); the workflow derives the release tag, title and
 container image names from it and from the publishing repository. The workflow refuses
-publication once its companion release or an architecture tag exists. If publication
+publication once its companion release, an architecture tag, or the multi-architecture tag exists. If publication
 fails halfway, recover the exact already-built artifacts; do not rebuild over the
 version. Otherwise increment the version.
+
+Guest publication keeps one shared concurrency group with GitHub's supported
+`queue: max` setting, so up to 100 pending runs wait instead of replacing one
+another. This preserves distinct version requests while serializing their
+existence checks and pushes. The default queue holds only one pending run even
+with `cancel-in-progress: false`; a third request cancels the second. See
+[GitHub's concurrency queue contract](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+GitHub [released this setting on May 7, 2026](https://github.blog/changelog/2026-05-07-github-actions-concurrency-groups-now-allow-larger-queues/).
+Actionlint 1.7.12 still rejects that supported key, tracked in
+[upstream issue 680](https://github.com/rhysd/actionlint/issues/680). When using
+that version locally, suppress only its `unexpected key "queue" for "concurrency"
+section` diagnostic; keep the policy test that requires `queue: max` and
+`cancel-in-progress: false`, and keep all other validation enabled.
+
+Publication preflight reads GitHub's release-by-tag endpoint and GHCR's manifest
+endpoint with the job token. Only a confirmed release HTTP 404 and registry
+HTTP 404 with `MANIFEST_UNKNOWN` or `NAME_UNKNOWN` permit a build. Authentication,
+transport, rate-limit, and server errors stop the job. Redirects are rejected so
+credentials stay on the fixed GitHub and GHCR hosts; diagnostics omit response
+bodies and credentials. The job token remains step-scoped and registry access
+uses a pull-scoped bearer token. This check does not reserve tags against writers
+outside the workflow's concurrency group.
+
+The supported Docker inspector cannot distinguish these failures reliably:
+its [registry client](https://github.com/docker/cli/blob/master/internal/registryclient/fetcher.go)
+can return the same missing-manifest error after unauthorized or unexpected HTTP
+responses. The preflight therefore uses Python's standard HTTP client for
+read-only API requests, without a new registry tool or credential service.
+The [OCI Distribution 1.1.1 manifest and error contract](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md)
+provides typed registry failures; [GitHub's container registry authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+supports the existing Actions job token. Keep builds and pushes in the maintained
+Docker tools; this script only enforces Silo's refusal to reuse a version.
+
+The QEMU setup action uses its supported `image` input to pin the privileged
+installer to `tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0`.
+Docker Hub's manifest index resolved on 2026-10-02 identifies version
+`qemu-v10.2.3-68`, source revision `e29e7d72c9672c8c8bf846655ab149b50e1a62bd`,
+and MIT licensing; it includes Linux AMD64 and ARM64 hosts. The Ubuntu AMD64
+publishing runner installs only ARM64 emulation. Keep this maintained upstream
+installer: no custom emulator installation is needed. Review and update the
+digest explicitly when updating QEMU. Pinning prevents tag drift; it does not
+remove the installer's host privileges or establish absence of vulnerabilities.
+The pinned action's [input contract](https://github.com/docker/setup-qemu-action/blob/99012661954931238ded8c8b007157a8430204e1/action.yml)
+and [implementation](https://github.com/docker/setup-qemu-action/blob/99012661954931238ded8c8b007157a8430204e1/src/main.ts)
+confirm the default is mutable and installation uses privileged containers.
 
 `app/SiloUI/guest-image/image-lock.json` pins the exact release archive SHA-256,
 length, uncompressed archive length and Docker config digest for each architecture.
 Normal `npm run runtime:prepare` downloads that exact archive once and stages it
 under `src-tauri/runtime/guest-image`. It does not require Docker. Cached or local
 artifacts must pass the same checksum; mismatches never silently reach an app.
+
+Preparation streams each archive through incremental SHA-256 verification into
+an exclusive temporary file beside its destination, then renames it only after
+verification succeeds. Cached guest archives are verified in 1 MiB chunks.
+Downloads stop at the architecture's pinned compressed length and have a
+10-minute deadline covering response headers and body. An interrupted,
+truncated, oversized or altered replacement leaves the previous archive and
+manifest intact. Local approved artifacts use the same streaming verifier.
+MicroSandbox, Git and Git LFS source downloads share the file pipeline; inputs
+without a pinned length have a 1 GiB cap, and license downloads have a 4 MiB cap.
+See [streaming build-input measurements](research/stream-build-inputs-2026-10-02.md)
+for peak memory, preparation timings and regression coverage.
 
 To produce a candidate image locally, with Docker available:
 
@@ -46,7 +103,16 @@ node app/SiloUI/scripts/build-guest-image.mjs arm64
 node app/SiloUI/scripts/build-guest-image.mjs amd64
 ```
 
+The CLI also accepts a symlink to the script. Entry-point detection uses Node's
+[canonical path resolution](https://nodejs.org/download/release/v24.11.1/docs/api/fs.html#fsrealpathsyncpath-options)
+so a symlink runs the requested command instead of silently exiting; importing
+the module for tests still performs no build.
+
 Build outputs are ignored under `src-tauri/guest-image-artifacts/<architecture>`.
+Docker export is compressed into a temporary archive. The builder waits for both
+the export process and compression to succeed before replacing `image.tar.gz`.
+A failed export removes temporary output and preserves the previous archive and
+manifest; it never marks a partial gzip stream as the new candidate.
 The Dockerfile-specific ignore file limits the Docker context to the recipe and
 setup script. Build credentials and unrelated app files are not sent to Docker.
 The base Ubuntu index is pinned. Apt packages are resolved at image publication

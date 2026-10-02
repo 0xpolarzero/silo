@@ -5,6 +5,11 @@ and existing Save/Cancel/Finish actions stay unchanged. The approved application
 menus now show installed choices, their icons, `System default`, and a native
 `Choose…` action.
 
+The verification sections preserve dated results from the earlier prototype,
+including removed native fixture flags and old bundle names. Use the
+[current Dev verification guide](SiloUI-DEPENDENCIES-BACKUP-TESTING.md) for new
+checks; those historical commands are not current isolation instructions.
+
 ## Login and notification authorization
 
 The Launch Silo at login switch now reports the operating system's effective
@@ -30,8 +35,9 @@ at `ServiceManagement.framework/Headers/SMAppService.h` through
 `objc2-service-management` 0.3.2.
 
 On Linux, the user entry is
-`$XDG_CONFIG_HOME/autostart/org.silo.preview.desktop`, falling back to
-`~/.config/autostart`. The reader follows `$XDG_CONFIG_HOME` then
+`$XDG_CONFIG_HOME/autostart/org.silo.preview.desktop` for production or
+`org.silo.dev.desktop` for Silo Dev, falling back to `~/.config/autostart`.
+The entry name comes from [the build channel](SiloUI-BUILD-CHANNELS.md). The reader follows `$XDG_CONFIG_HOME` then
 `$XDG_CONFIG_DIRS` precedence and evaluates the effective entry rather than file
 presence. It honors `Hidden`, `OnlyShowIn`, `NotShowIn`, `TryExec`, executable
 availability, and the common `X-GNOME-Autostart-enabled` key. Disabling writes a
@@ -170,13 +176,16 @@ terminal overrides, and no settings writes. The focused application/preferences
 suite passed 170 tests; status/settings/onboarding follow-up checks passed 33
 tests, including native menu and open folder-picker updates. Typecheck and lint
 passed. These are mocked discovery and UI checks, not native app launch evidence.
-The runtime currently rejects `open-editor`, `open-terminal`, and `open-site` as
-unknown workspace actions; preference propagation does not implement those
-separate launch handlers.
+That run verified preference propagation. The current native
+[`workspace_action` handler](../app/SiloUI/src-tauri/src/runtime.rs) dispatches
+`open-editor` and `open-terminal` to their launchers; website actions use
+[`open_network_port`](../app/SiloUI/src-tauri/src/network.rs), which checks the
+endpoint before invoking the chosen browser. See
+[editor and browser handoff](SiloUI-EDITOR-HANDOFF.md) and
+[terminal handoff](SiloUI-TERMINAL-HANDOFF.md) for implementation and verification.
 
-Browser and explicit native fixtures use a fixed catalog and disable the native
-picker. Native fixture storage is checked before consulting host applications or
-opening a dialog. Both native windows can read the catalog to resolve the same
+Browser previews and tests supply a fixed catalog. The native application uses
+host discovery and the native picker. Both native windows read the catalog to resolve the same
 installed defaults; only the main window can open the application picker.
 The picker uses the official [Tauri dialog plugin](https://v2.tauri.app/plugin/dialog/)
 behind those commands; the frontend receives no general filesystem permission.
@@ -298,11 +307,12 @@ verification. Current checks use `cargo test --locked`; see
 The existing valid `silo-theme` browser value is imported only when the native
 document lacks a theme, and its original key is retained.
 
-The document is `settings.json` under Tauri's `app_config_dir`, using the
-unchanged application identifier `org.silo.preview`. This resolves to
+The document is `settings.json` under Tauri's `app_config_dir`, keyed by the
+[build channel](SiloUI-BUILD-CHANNELS.md): `org.silo.preview` for production
+and `org.silo.dev` for Silo Dev. Production uses
 `~/Library/Application Support/org.silo.preview` on macOS and
 `$XDG_CONFIG_HOME/org.silo.preview` (normally `~/.config/org.silo.preview`) on
-Linux. See the official [Tauri path reference](https://docs.rs/tauri/latest/tauri/path/struct.PathResolver.html#method.app_config_dir).
+Linux. Dev uses the corresponding `org.silo.dev` directory. See the official [Tauri path reference](https://docs.rs/tauri/latest/tauri/path/struct.PathResolver.html#method.app_config_dir).
 
 ```json
 {
@@ -326,9 +336,10 @@ completed. Credentials and operation results are not accepted draft fields.
 
 ## Shared state and failures
 
-The main window initializes native storage before rendering. It selects fixture
-mode before Rust opens any settings file. Status reads wait for initialization
-on a worker thread. Changing fixture mode requires a full app relaunch.
+The main window initializes native storage before rendering the application.
+The [native settings owner](../app/SiloUI/src-tauri/src/settings.rs) always
+resolves `settings.json` through Tauri's app configuration directory. Status
+reads wait for initialization on a worker thread.
 
 One Rust mutex serializes individual preference patches and complete onboarding
 draft updates. Both windows subscribe before reading; numbered snapshots prevent
@@ -373,29 +384,23 @@ loaded as the settings document.
 
 ## Fixture isolation
 
-- Browser previews and tests use independent memory stores; they do not read or
-  write browser settings storage or native settings files.
-- Explicit native fixture selectors initialize native storage in memory before
-  any file access. `view` and `native-status` are navigation, not fixture selectors.
-- Debug `SILO_SETTINGS_MEMORY=1` forces native memory storage. Native theme import
-  ignores memory stores, and system-integration commands stop before platform
-  adapters, so a production theme or host authorization cannot seed the fixture.
-- Debug `SILO_SETTINGS_DIR=/absolute/test/directory` selects a separate persisted
-  test document. Reuse that directory to test restarts. Release builds ignore
-  both environment overrides.
+Browser previews and tests use independent memory stores. Native unit tests
+construct stores with temporary paths or no path; they do not use the user's
+settings. The [application entry point](../app/SiloUI/src/main.tsx) uses native
+production adapters and has no fixture-query selection. `SILO_SETTINGS_MEMORY`
+and `SILO_SETTINGS_DIR` no longer select native storage modes.
 
-Workspace status and integration results remain deterministic fixtures, not live
-VM telemetry or integration verification. Only preference edits and onboarding
-recovery input enter this storage path.
-
-Browser previews derive deterministic login and notification authority from
-their memory settings. Any explicit native fixture selector, including
-`scenario=complete`, remains isolated. After native settings initialize, the
-frontend reads their actual storage mode and selects deterministic integration
-authority for either explicit fixture storage or `SILO_SETTINGS_MEMORY=1`.
-Neither mode can read or mutate host login items or notification authorization.
+For UI checks use deterministic frontend fixtures. For native checks use the
+Dev channel and disposable state; follow [the current verification guide](SiloUI-DEPENDENCIES-BACKUP-TESTING.md#build-and-launch).
+Do not use the removed prototype flags as an isolation boundary.
 
 ### Real completed-onboarding verification
+
+Historical prototype verification, September 2026. The fixture progress,
+presentation switch, native storage overrides and `Silo Preview.app` commands
+below were removed. They record the original run and are not current launch
+instructions. The current setup adapter waits for real sandbox and GitHub
+acknowledgements; see [setup verification](SiloUI-DEPENDENCIES-BACKUP-TESTING.md#continue-and-the-setup-queue).
 
 On a normal launch, onboarding uses completed sandbox fixture progress, so
 Review → Finish opens the permission switches without an environment override.
@@ -435,6 +440,11 @@ state wins over the isolated saved flags. Do not use `scenario=complete` for thi
 check because that selector intentionally activates fixture isolation.
 
 ## Verification
+
+The results and manual procedures below are historical records. They include
+removed native fixture modes and old bundle names. Use [current Dev verification
+instructions](SiloUI-DEPENDENCIES-BACKUP-TESTING.md) for a new run; these records
+do not establish behavior at current HEAD.
 
 Completed on macOS arm64, 2026-09-07. Frontend commands run from `app/SiloUI`:
 

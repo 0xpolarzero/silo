@@ -26,6 +26,9 @@ fn rebind(descriptor: &str, cache: &Path) -> Result<Option<String>, String> {
             continue;
         };
         if Path::new(path).starts_with(&own) {
+            if !Path::new(path).is_file() {
+                return Err("An image file is missing from this runtime's cache.".into());
+            }
             lines.push(line.to_owned());
             continue;
         }
@@ -89,32 +92,44 @@ fn is_descriptor(path: &Path) -> bool {
 
 /// Whether any image descriptor in `cache` still names a file below `runtime`, so removing
 /// that runtime would break the VMs that boot from this cache. A descriptor that cannot be
-/// read counts as unverifiable and fails, since it might name such a file.
+/// read, is redirected, or exceeds the descriptor size limit counts as unverifiable
+/// and fails, since it might name such a file.
 pub(crate) fn reads_from(cache: &Path, runtime: &Path) -> Result<bool, String> {
     let entries = match fs::read_dir(cache.join("vmdk")) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(_) => return Err("Silo could not read the runtime's image cache.".into()),
     };
-    let canonical = fs::canonicalize(runtime).ok();
+    let canonical = fs::canonicalize(runtime)
+        .map_err(|_| "Silo could not resolve the previous runtime's image storage.")?;
     for entry in entries {
         let path = entry
             .map_err(|_| "Silo could not read the runtime's image cache.")?
             .path();
         if !is_descriptor(&path) {
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "vmdk")
+            {
+                return Err(
+                    "Silo could not verify an image descriptor in the runtime's cache.".into(),
+                );
+            }
             continue;
         }
         let descriptor = fs::read_to_string(&path)
             .map_err(|_| "Silo could not read an image descriptor in the runtime's cache.")?;
-        let inside = |extent: &str| {
+        for extent in descriptor.lines().filter_map(extent_path) {
             let extent = Path::new(extent);
-            extent.starts_with(runtime)
-                || canonical
-                    .as_ref()
-                    .is_some_and(|own| extent.starts_with(own))
-        };
-        if descriptor.lines().filter_map(extent_path).any(inside) {
-            return Ok(true);
+            if extent.starts_with(runtime) || extent.starts_with(&canonical) {
+                return Ok(true);
+            }
+            // Runtime aliases can name the previous generation outside its lexical path.
+            let resolved = fs::canonicalize(extent)
+                .map_err(|_| "Silo could not resolve an image descriptor's storage file.")?;
+            if resolved.starts_with(&canonical) {
+                return Ok(true);
+            }
         }
     }
     Ok(false)
@@ -139,8 +154,14 @@ pub(crate) fn repair(cache: &Path) -> Result<usize, String> {
         if !is_descriptor(&path) {
             continue;
         }
-        let Ok(descriptor) = fs::read_to_string(&path) else {
-            continue;
+        let descriptor = match fs::read_to_string(&path) {
+            Ok(descriptor) => descriptor,
+            Err(_) => {
+                failure = Some(
+                    "Silo could not read an image descriptor in the runtime's cache.".to_string(),
+                );
+                continue;
+            }
         };
         match rebind(&descriptor, cache) {
             Ok(Some(text)) => {
@@ -152,8 +173,8 @@ pub(crate) fn repair(cache: &Path) -> Result<usize, String> {
         }
     }
     match failure {
-        Some(error) if repaired == 0 => Err(error),
-        _ => Ok(repaired),
+        Some(error) => Err(error),
+        None => Ok(repaired),
     }
 }
 
@@ -262,9 +283,75 @@ mod tests {
     }
 
     #[test]
+    fn missing_files_in_the_current_cache_are_reported_without_rewriting_the_descriptor() {
+        let (_directory, cache) = cache();
+        let current = fs::canonicalize(&cache).unwrap();
+        let fsmeta = current.join("fsmeta").join(FSMETA);
+        let layer = current.join("layers").join(LAYER);
+        let vmdk = cache.join("vmdk/current.vmdk");
+        let text = descriptor(&fsmeta.display().to_string(), &layer.display().to_string());
+        fs::write(&vmdk, &text).unwrap();
+        fs::remove_file(&layer).unwrap();
+
+        assert!(repair(&cache).unwrap_err().contains("missing"));
+        assert_eq!(fs::read_to_string(&vmdk).unwrap(), text);
+        fs::write(&layer, [0; 512]).unwrap();
+        assert_eq!(repair(&cache).unwrap(), 0);
+    }
+
+    #[test]
+    fn repairing_another_descriptor_does_not_hide_missing_extents() {
+        let (_directory, cache) = cache();
+        let old = "/gone/cache";
+        let repaired = cache.join("vmdk/repairable.vmdk");
+        fs::write(
+            &repaired,
+            descriptor(
+                &format!("{old}/fsmeta/{FSMETA}"),
+                &format!("{old}/layers/{LAYER}"),
+            ),
+        )
+        .unwrap();
+        let broken = cache.join("vmdk/broken.vmdk");
+        let missing = format!("{old}/layers/sha256_{}.erofs", "0".repeat(64));
+        let broken_text = descriptor(&format!("{old}/fsmeta/{FSMETA}"), &missing);
+        fs::write(&broken, &broken_text).unwrap();
+
+        let result = repair(&cache);
+        assert!(!fs::read_to_string(&repaired).unwrap().contains(old));
+        assert_eq!(fs::read_to_string(&broken).unwrap(), broken_text);
+        assert!(result.unwrap_err().contains("missing"));
+    }
+
+    #[test]
+    fn unreadable_descriptors_are_reported_without_stopping_other_repairs() {
+        let (_directory, cache) = cache();
+        fs::write(cache.join("vmdk/unreadable.vmdk"), [0xff, 0xfe]).unwrap();
+        let repaired = cache.join("vmdk/repairable.vmdk");
+        fs::write(
+            &repaired,
+            descriptor(
+                &format!("/gone/cache/fsmeta/{FSMETA}"),
+                &format!("/gone/cache/layers/{LAYER}"),
+            ),
+        )
+        .unwrap();
+
+        let result = repair(&cache);
+        assert!(!fs::read_to_string(&repaired).unwrap().contains("/gone"));
+        assert!(result.unwrap_err().contains("read an image descriptor"));
+        // A cache with only the unreadable descriptor must report it as well.
+        fs::remove_file(&repaired).unwrap();
+        assert!(repair(&cache)
+            .unwrap_err()
+            .contains("read an image descriptor"));
+    }
+
+    #[test]
     fn a_descriptor_naming_a_file_below_a_runtime_is_reported() {
         let (directory, cache) = cache();
         let previous = directory.path().join("Application Support/runtime");
+        fs::create_dir_all(&previous).unwrap();
         let inside = previous.join("microsandbox/cache/layers").join(LAYER);
         let own = cache.join("layers").join(LAYER);
         let vmdk = cache.join("vmdk/x.vmdk");
@@ -282,6 +369,83 @@ mod tests {
         assert!(!reads_from(&cache, &previous).unwrap());
         // A descriptor that cannot be read cannot be verified.
         fs::write(&vmdk, [0xff, 0xfe, 0xfd]).unwrap();
+        assert!(reads_from(&cache, &previous).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dependency_through_the_previous_runtime_alias_blocks_removal() {
+        let (directory, cache) = cache();
+        let previous = directory.path().join("runtime");
+        let old_cache = previous.join("microsandbox/cache");
+        fs::create_dir_all(old_cache.join("layers")).unwrap();
+        let name = format!("sha256_{}.erofs", "b".repeat(64));
+        fs::write(old_cache.join("layers").join(&name), [0; 512]).unwrap();
+        let alias = directory.path().join("runtime-alias");
+        std::os::unix::fs::symlink(previous.join("microsandbox"), &alias).unwrap();
+        let extent = alias.join("cache/layers").join(&name);
+        let vmdk = cache.join("vmdk/aliased.vmdk");
+        let text = format!("RW 1 FLAT \"{}\" 0\n", extent.display());
+        fs::write(&vmdk, &text).unwrap();
+
+        // The missing local copy leaves the existing external extent in use.
+        assert_eq!(repair(&cache).unwrap(), 0);
+        assert_eq!(fs::read_to_string(&vmdk).unwrap(), text);
+        assert!(reads_from(&cache, &previous).unwrap());
+
+        // Once rebound to a local copy, removing the previous runtime is safe.
+        fs::write(cache.join("layers").join(&name), [0; 512]).unwrap();
+        assert_eq!(repair(&cache).unwrap(), 1);
+        assert!(!reads_from(&cache, &previous).unwrap());
+    }
+
+    #[test]
+    fn an_unresolved_extent_cannot_prove_independence_from_the_previous_runtime() {
+        let (directory, cache) = cache();
+        let previous = directory.path().join("runtime");
+        fs::create_dir_all(&previous).unwrap();
+        let missing = directory.path().join("missing.erofs");
+        fs::write(
+            cache.join("vmdk/missing.vmdk"),
+            format!("RW 1 FLAT \"{}\" 0\n", missing.display()),
+        )
+        .unwrap();
+        assert!(reads_from(&cache, &previous).is_err());
+    }
+
+    #[test]
+    fn an_oversized_descriptor_cannot_prove_independence() {
+        let (directory, cache) = cache();
+        let previous = directory.path().join("runtime");
+        fs::create_dir_all(&previous).unwrap();
+        let extent = previous.join("image.erofs");
+        fs::write(&extent, [0; 512]).unwrap();
+        let text = format!(
+            "{}RW 1 FLAT \"{}\" 0\n",
+            "# comment\n".repeat(7_000),
+            extent.display()
+        );
+        assert!(text.len() > 64 * 1024);
+        fs::write(cache.join("vmdk/large.vmdk"), text).unwrap();
+        assert!(reads_from(&cache, &previous).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_redirected_descriptor_cannot_prove_independence() {
+        let (directory, cache) = cache();
+        let previous = directory.path().join("runtime");
+        fs::create_dir_all(&previous).unwrap();
+        let descriptor = directory.path().join("external.vmdk");
+        fs::write(
+            &descriptor,
+            format!(
+                "RW 1 FLAT \"{}\" 0\n",
+                previous.join("image.erofs").display()
+            ),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(&descriptor, cache.join("vmdk/redirected.vmdk")).unwrap();
         assert!(reads_from(&cache, &previous).is_err());
     }
 

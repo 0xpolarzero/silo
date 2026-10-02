@@ -1,6 +1,6 @@
 export interface KeyboardShortcut { keys: string[]; aria: string }
 
-export const shortcutKeys: Readonly<Record<string, string>> = {
+const shortcutKeys: Readonly<Record<string, string>> = {
   "go-sandboxes": "1", "go-files": "2", "go-logs": "3", "go-network": "4",
   "go-activity": "5", "go-github": "6", "go-secrets": "7",
   settings: ",", search: "K", "toggle-sidebar": "B", "go-back": "[", "go-forward": "]", "new-sandbox": "N",

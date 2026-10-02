@@ -1,5 +1,5 @@
 import { bridgeErrorMessage, hasBridgeErrorCode } from "@/contracts/bridge-error"
-import { defaultSettings } from "@/features/preferences/model/settings"
+import { defaultSettings, settingSchemas } from "@/features/preferences/model/settings"
 import { workspaceStorageStateSchema } from "@/features/application/model/workspace-storage"
 import { isUnsupportedRemote, logPageSchema } from "@/features/application/model/logs"
 import { invoke } from "@tauri-apps/api/core"
@@ -128,7 +128,7 @@ const machineShape = z.discriminatedUnion("kind", [
     desktop: z.object({ startWithSandbox: z.boolean(), builtIn: z.boolean().optional() }).optional(),
   }).passthrough(),
   z.object({ kind: z.literal("ssh"), id: z.string().min(1), name: z.string().min(1), host: z.string().min(1), user: z.string().min(1), port: z.number().int().min(1).max(65535) }).passthrough(),
-]).transform(machine => machine as SetupMachineConfiguration)
+])
 
 const workspaceShape = z.object({
   machine: machineShape,
@@ -187,18 +187,27 @@ const runtimeRepairShape = z.object({
   status: tolerantEnum(["needed", "unavailable"], "unavailable"), reason: z.string(), recovery: z.string().optional(), checking: z.boolean().optional(),
 })
 
-const sandboxConfigurationOperationShape = z.object({
+const sandboxConfigurationOperationFields = {
   id: z.string().min(1),
-  status: z.enum(["applying", "awaiting-approval", "failed"]),
   candidate: setupMachineConfigurationRequestSchema,
   progressEvents: z.array(siloProgressEventSchema),
-  result: siloBootstrapResultSchema.nullable(),
-  error: siloProtocolErrorSchema.nullable(),
-})
+}
+const sandboxConfigurationOperationShape = z.discriminatedUnion("status", [
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("applying"), result: z.null(), error: z.null() }),
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("awaiting-approval"), result: siloBootstrapResultSchema, error: z.null() }),
+  z.object({ ...sandboxConfigurationOperationFields, status: z.literal("failed"), result: z.null(), error: siloProtocolErrorSchema }),
+])
 
 const preferencesShape = z.object({
   terminal: z.string(), editor: z.string(), browser: z.string(), launchAtLogin: z.boolean(),
   startWorkspacesAtLaunch: z.boolean(), reduceMotion: z.boolean(),
+  startupWorkspaceIds: settingSchemas.startupWorkspaceIds.optional().catch(undefined),
+  terminalPath: settingSchemas.terminalPath.optional().catch(undefined),
+  editorPath: settingSchemas.editorPath.optional().catch(undefined),
+  browserPath: settingSchemas.browserPath.optional().catch(undefined),
+  terminalUseSystemDefault: settingSchemas.terminalUseSystemDefault.optional().catch(undefined),
+  editorUseSystemDefault: settingSchemas.editorUseSystemDefault.optional().catch(undefined),
+  browserUseSystemDefault: settingSchemas.browserUseSystemDefault.optional().catch(undefined),
 }).passthrough()
 const backupSummaryShape = z.object({ lastArchive: z.string(), completedLabel: z.string(), compressedSize: z.string(), destination: z.string() })
 
@@ -268,12 +277,12 @@ export function parseNetworkState(input: unknown): NetworkState {
 }
 
 export function parseApplicationSource(input: unknown): ApplicationSource {
-  return applicationSourceShape.parse(input) as ApplicationSource
+  return applicationSourceShape.parse(input)
 }
 
 /** Another computer's snapshot, which may come from an older or newer Silo. */
 export function parseRemoteApplicationSource(input: unknown): ApplicationSource {
-  return remoteApplicationSourceShape.parse(input) as ApplicationSource
+  return remoteApplicationSourceShape.parse(input)
 }
 
 export function parseBackupState(input: unknown): BackupState {
@@ -352,6 +361,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     error: null,
   }
   let view = snapshot
+  let viewKey = JSON.stringify(view)
   type SetupItem = NonNullable<OnboardingSource["setupQueue"]>[number]
   type SetupJob = { items: SetupItem[]; activityId: string }
   let setupJobs: SetupJob[] = []
@@ -403,6 +413,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   let refreshRepositoriesOnReturn = false
   let githubMutationSequence = 0
   let githubMutationPending = false
+  let secretMutationSequence = 0
+  let appliedSecretMutation = 0
   const unlisten: Array<() => void> = []
   const listeners = new Set<() => void>()
   const pendingWorkspaceActions = new Set<string>()
@@ -575,9 +587,15 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   }
 
   async function changeSecret(command: string, arguments_: Record<string, unknown>) {
+    const sequence = ++secretMutationSequence
     const secrets = z.array(secretShape).parse(await native.invoke(command, arguments_))
-    ++refreshSequence
-    if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
+    if (disposed) return
+    // An older whole-list reply cannot undo a later successful secret mutation.
+    if (sequence > appliedSecretMutation) {
+      appliedSecretMutation = sequence
+      ++refreshSequence
+      if (snapshot.source) publish({ ...snapshot, source: { ...snapshot.source, secrets } })
+    }
     void refresh()
   }
 
@@ -589,7 +607,12 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   function publish(next: ProductionSnapshot) {
     if (disposed) return
     snapshot = next
-    view = derive(next)
+    const nextView = derive(next)
+    // Native reads return fresh objects even when the serialized state is unchanged.
+    const nextKey = JSON.stringify(nextView)
+    if (nextKey === viewKey) return
+    view = nextView
+    viewKey = nextKey
     listeners.forEach((listener) => listener())
   }
 
@@ -705,8 +728,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       activities,
       workspaces: workspaces.map(({ lifecycleAction: _reported, ...workspace }) => {
         const target = workspaceTarget(workspace)
-        const failure = workspaceFailures.get(target)
-        const action = pendingLifecycle.get(target)
+        const failure = workspaceFailures.get(workspace.machine.id)
+        const action = pendingLifecycle.get(workspace.machine.id)
         // A resubmitted lifecycle action supersedes the last failure or cancellation
         // until it reports its own result.
         const current = action ? { ...workspace, lifecycleFailure: undefined, lifecycleFailureAction: undefined, lifecycleFailureCancelled: undefined } : { ...workspace, ...reportedCancellation(workspace, cancelledActions.get(target)) }
@@ -1020,27 +1043,35 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   async function startLiveUpdates() {
     if (disposed) return
     try {
-      unlisten.push(await native.listen("silo://network-state-changed", () => { void refreshNetwork() }))
-      unlisten.push(await native.listen("silo://operation-queue-changed", () => { void refreshOperationQueue() }))
-      unlisten.push(await native.listen("silo://application-state-changed", refreshFromEvent))
-      unlisten.push(await native.listen("desktop:status-opened", refreshFromEvent))
-      // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
-      // so setup and sandbox configuration must be accepted again.
-      unlisten.push(await native.listen("silo://shutdown-state-changed", (event) => {
-        if (event?.payload !== false) return
-        acceptingSetup = true
-        if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
-      }))
-      unlisten.push(await native.listen("silo://machine-configuration-progress", (event) => {
-        const parsed = siloProgressEventSchema.safeParse(event?.payload)
-        if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
-        const progressEvents = [...activeConfiguration.progressEvents, parsed.data]
-        activeConfiguration = { ...activeConfiguration, progressEvents }
-        publish({ ...snapshot, setupEvents: progressEvents, setupActivity: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
-        if (parsed.data.step === "workspace-verification" && activeMachineJob) setJobStatus(activeMachineJob, ["workspaceVerify"], "running")
-      }))
+      const subscriptions: Array<[string, EventHandler]> = [
+        ["silo://network-state-changed", () => { void refreshNetwork() }],
+        ["silo://operation-queue-changed", () => { void refreshOperationQueue() }],
+        ["silo://application-state-changed", refreshFromEvent],
+        ["desktop:status-opened", refreshFromEvent],
+        // A cancelled Quit (VMs would not stop, settings failed to save) keeps Silo open,
+        // so setup and sandbox configuration must be accepted again.
+        ["silo://shutdown-state-changed", (event) => {
+          if (event?.payload !== false) return
+          acceptingSetup = true
+          if (snapshot.setupDrain) publish({ ...snapshot, setupDrain: undefined })
+        }],
+        ["silo://machine-configuration-progress", (event) => {
+          const parsed = siloProgressEventSchema.safeParse(event?.payload)
+          if (!parsed.success || parsed.data.requestId !== activeRequestId || !activeConfiguration) return
+          const progressEvents = [...activeConfiguration.progressEvents, parsed.data]
+          activeConfiguration = { ...activeConfiguration, progressEvents }
+          publish({ ...snapshot, setupEvents: progressEvents, setupActivity: progressEvents, source: snapshot.source ? { ...snapshot.source, sandboxConfigurationOperation: activeConfiguration } : null })
+          if (parsed.data.step === "workspace-verification" && activeMachineJob) setJobStatus(activeMachineJob, ["workspaceVerify"], "running")
+        }],
+      ]
+      for (const [event, handler] of subscriptions) {
+        const stop = await native.listen(event, payload => { if (!disposed) handler(payload) })
+        if (disposed) { stop(); return }
+        unlisten.push(stop)
+      }
     } catch (cause) {
       unlisten.splice(0).forEach((stop) => stop())
+      if (disposed) return
       const error = `Silo could not subscribe to application updates: ${errorMessage(cause)}`
       publish({ ...snapshot, loading: false, error })
       throw new Error(error)
@@ -1097,17 +1128,17 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     })
   }
 
-  function setWorkspaceFailure(action: string, name: string, cause: unknown) {
-    const workspace = view.source?.workspaces.find(workspace => workspaceTarget(workspace) === name)
+  function setWorkspaceFailure(action: string, machineId: string, cause: unknown) {
+    const workspace = view.source?.workspaces.find(workspace => workspace.machine.id === machineId)
     if (!workspace) return
     const message = errorMessage(cause)
     // A user-requested cancellation is not a failure: record it as a neutral,
     // retryable state so the row shows "<Action> cancelled", not a red error.
     const cancelled = isCancelledError(cause)
     const label = `${action[0].toUpperCase()}${action.slice(1)}`
-    workspaceFailures.set(name, { machineId: workspace.machine.id, action, message: cancelled ? message : `${label} failed: ${message}`, cancelled })
+    workspaceFailures.set(machineId, { machineId, action, message: cancelled ? message : `${label} failed: ${message}`, cancelled })
     publish({ ...snapshot, source: snapshot.source ? { ...snapshot.source,
-      workspaces: snapshot.source.workspaces.map(item => workspaceTarget(item) === name ? { ...item, freshness: "stale" } : item),
+      workspaces: snapshot.source.workspaces.map(item => item.machine.id === machineId ? { ...item, freshness: "stale" } : item),
     } : null })
   }
 
@@ -1122,21 +1153,24 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       reportUnavailable(`${remoteComputers.find(computer => computer.id === remote.hostId)?.name ?? "The remote computer"} is offline. Reconnect to it before changing ${remoteDisplayName(name) ?? "the sandbox"}.`)
       return
     }
-    const key = `${action}:${name}`
-    if (pendingWorkspaceActions.has(key) || pendingLifecycle.has(name)) return
+    const machineId = view.source?.workspaces.find(workspace => workspaceTarget(workspace) === name)?.machine.id ?? name
+    const stillExists = () => view.source?.workspaces.some(workspace => workspace.machine.id === machineId)
+    const key = `${action}:${machineId}`
+    if (pendingWorkspaceActions.has(key) || pendingLifecycle.has(machineId)) return
     pendingWorkspaceActions.add(key)
     const lifecycle = action === "start" || action === "stop" || action === "restart" || action === "dismiss-error"
     // Submitting a lifecycle action supersedes any prior failure or cancellation for
     // this sandbox: the view hides it while the resubmitted action waits or runs.
     if (lifecycle) {
-      workspaceFailures.delete(name)
-      pendingLifecycle.set(name, action)
+      workspaceFailures.delete(machineId)
+      pendingLifecycle.set(machineId, action)
       publish({ ...snapshot })
     }
     void native.invoke<unknown>(remote && lifecycle ? "remote_workspace_action" : "workspace_action", remote && lifecycle ? { ...remote, action, name: remoteDisplayName(name), ...extras } : { action, name, ...extras })
       // The follow-up refresh is not awaited: the action is finished, so a repeat must
       // not be ignored while a slow remote snapshot settles.
       .then((result) => {
+        if (!stillExists()) return
         if (remote && !lifecycle) { void refreshComputers(); return }
         const previous = remote ? remoteSnapshots.get(remote.hostId) ?? null : snapshot.source
         let source = remote ? parseMutationSource(result, previous, parseRemoteApplicationSource) : parseMutationSource(result)
@@ -1147,8 +1181,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           source = { ...source, workspaces: previous.workspaces.map(row =>
             (remote ? row.machine.id === remote.vmId : workspaceTarget(row) === name) ? target ?? row : row) }
         }
-        if (lifecycle || workspaceFailures.get(name)?.action === action) workspaceFailures.delete(name)
-        if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
+        if (lifecycle || workspaceFailures.get(machineId)?.action === action) workspaceFailures.delete(machineId)
+        if (lifecycle && pendingLifecycle.get(machineId) === action) pendingLifecycle.delete(machineId)
         if (remote) {
           bumpRemote(remote.hostId)
           remoteSnapshots.set(remote.hostId, source)
@@ -1161,15 +1195,16 @@ export function createProductionSource(native: ProductionBridge = bridge) {
         void refresh()
       })
       .catch((cause) => {
-        if (!remote) { setWorkspaceFailure(action, name, cause); return }
+        if (!stillExists()) return
+        if (!remote) { setWorkspaceFailure(action, machineId, cause); return }
         // One VM's failure (e.g. insufficient memory) belongs on that VM's row. Whether
         // the computer itself is reachable is decided by the next transport check.
-        if (lifecycle) { setWorkspaceFailure(action, name, cause); void refreshComputers(); return }
+        if (lifecycle) { setWorkspaceFailure(action, machineId, cause); void refreshComputers(); return }
         reportActionFailure(key, `Could not ${action.replace(/-/g, " ")}`, errorMessage(cause))
       })
       .finally(() => {
         pendingWorkspaceActions.delete(key)
-        if (lifecycle && pendingLifecycle.get(name) === action) pendingLifecycle.delete(name)
+        if (lifecycle && pendingLifecycle.get(machineId) === action) pendingLifecycle.delete(machineId)
         publish({ ...snapshot })
       })
   }
@@ -1458,6 +1493,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
       if (operations.every((operation) => operation?.status === "succeeded")) return
       if (Date.now() >= deadline) throw new Error("GitHub access has not been verified in every sandbox. Retry to check again.")
       await setupDelay(500)
+      if (disposed) throw new Error("Silo closed before GitHub access was verified.")
       if (!acceptingSetup) throw quitting()
       github = githubStateShape.parse(await native.invoke("read_github_state"))
       if (!githubMutationPending && snapshot.source && (github.policyRevision ?? 0) >= (snapshot.source.github.policyRevision ?? 0)) publish({ ...snapshot, source: { ...snapshot.source, github } })
@@ -1533,7 +1569,17 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     try {
       const result = await native.invoke<unknown>(command, { workspaceId: localWorkspace!.machine.id, ...arguments_ })
       ++refreshSequence
-      publish({ ...snapshot, source: parseMutationSource(result), error: null })
+      let source = parseMutationSource(result)
+      if (snapshot.source) {
+        const incoming = new Map(source.workspaces.map(workspace => [workspace.machine.id, workspace]))
+        const workspaces = snapshot.source.workspaces.map(workspace => workspace.machine.id === localWorkspace!.machine.id ? incoming.get(workspace.machine.id) ?? workspace : workspace)
+        if (kind === "fork" && typeof arguments_.newName === "string") {
+          const fork = source.workspaces.find(workspace => workspace.machine.name === arguments_.newName && !workspaces.some(current => current.machine.id === workspace.machine.id))
+          if (fork) workspaces.push(fork)
+        }
+        source = { ...source, workspaces }
+      }
+      publish({ ...snapshot, source, error: null })
       void refresh()
     } catch (cause) {
       void refresh()
@@ -1793,6 +1839,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
   /** Checks an export file under a request id so aborting `signal` stops the check (E-27).
    * The check changes no state, so no refresh follows it. */
   async function inspectBackupArchive(archivePath: string, signal?: AbortSignal) {
+    signal?.throwIfAborted()
     const requestId = crypto.randomUUID()
     const cancel = () => { void native.invoke("cancel_backup_inspection", { requestId }).catch(() => undefined) }
     signal?.addEventListener("abort", cancel, { once: true })
@@ -1820,7 +1867,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           ? "Silo no longer reports this export's result. Check the export folder before relying on it."
           : "Silo stopped tracking this export before it finished.", operationId))
       }
-      exportWaiters.add(waiter)
+      if (disposed) waiter(null, readSequence)
+      else exportWaiters.add(waiter)
     })
   }
 
@@ -1964,7 +2012,7 @@ export function createProductionSource(native: ProductionBridge = bridge) {
     applicationActions,
     backupActions,
     statusActions,
-    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; refreshSequence++; unlisten.forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
+    dispose() { exportWaiters.forEach(waiter => waiter(null, refreshSequence)); pushPollTimers.forEach(clearTimeout); pushPollTimers.clear(); if (remoteTimer) clearInterval(remoteTimer); disposed = true; setupWaits.forEach(wake => wake()); refreshSequence++; unlisten.splice(0).forEach((stop) => stop()); window.removeEventListener("focus", onWindowFocus); document.removeEventListener("visibilitychange", onVisibilityChange); listeners.clear() },
   }
 }
 

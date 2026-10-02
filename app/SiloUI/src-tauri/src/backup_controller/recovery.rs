@@ -123,7 +123,7 @@ impl Journal {
         }
     }
     /// Whether this holds a result the user has not yet been shown (see `unseen`).
-    fn is_unseen_result(&self) -> bool {
+    pub(super) fn is_unseen_result(&self) -> bool {
         self.terminal.is_some() && self.unseen
     }
     /// Whether the first launch of an upgrade settled everything it could without the
@@ -566,6 +566,13 @@ pub(super) fn pending(controller: &Controller) -> Result<bool, String> {
         .as_ref()
         .is_some_and(Journal::is_pending))
 }
+pub(super) fn snapshot(controller: &Controller) -> Result<Option<Journal>, String> {
+    Ok(controller
+        .journal
+        .lock()
+        .map_err(|_| "Saved operation unavailable.")?
+        .clone())
+}
 pub(super) fn token(controller: &Controller) -> Result<Option<String>, String> {
     Ok(controller
         .journal
@@ -575,6 +582,7 @@ pub(super) fn token(controller: &Controller) -> Result<Option<String>, String> {
         .map(|j| j.id.clone()))
 }
 /// Whether the journal holds a result the user has not been shown yet.
+#[cfg(test)]
 pub(super) fn unseen(controller: &Controller) -> Result<bool, String> {
     Ok(controller
         .journal
@@ -725,8 +733,22 @@ pub(super) fn discard_pending_import(
     Ok(())
 }
 
-pub(super) fn cancel(controller: &Controller) -> Result<(), String> {
-    update(controller, |j| j.cancelled = true)
+pub(super) fn cancel(controller: &Controller, expected: &str) -> Result<(), String> {
+    let mut saved = controller
+        .journal
+        .lock()
+        .map_err(|_| "Saved operation unavailable.")?;
+    let Some(journal) = saved
+        .as_ref()
+        .filter(|journal| journal.identity() == expected)
+    else {
+        return Ok(());
+    };
+    let mut next = journal.clone();
+    next.cancelled = true;
+    write(&controller.history_path, &next)?;
+    *saved = Some(next);
+    Ok(())
 }
 /// Stop retrying an interrupted operation whose recovery failed. The journal
 /// becomes a terminal failure so it can be dismissed; no files are removed.
@@ -1380,6 +1402,46 @@ mod tests {
 
     const IMPORT_GROUP: &str = "silo-import-0123456789abcdef0123456789abcdef";
     const IMPORT_MEMBER: &str = "silo-backup-0-1-2";
+
+    #[test]
+    fn a_delayed_cancellation_cannot_mark_a_replacement_journal() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let controller = history_controller(directory.path().join("backup-history.json"));
+        begin(
+            &controller,
+            Journal::backup(export_to(directory.path()), vec!["dev".into()], None),
+        )
+        .unwrap();
+        let first_id = token(&controller).unwrap().unwrap();
+        complete(&controller, result_operation("First export complete"));
+        begin(
+            &controller,
+            Journal::backup(export_to(directory.path()), vec!["dev".into()], None),
+        )
+        .unwrap();
+        let second_id = token(&controller).unwrap().unwrap();
+
+        cancel(&controller, &first_id).unwrap();
+        let saved = load(&controller.history_path).unwrap().unwrap();
+        assert_eq!(saved.identity(), second_id);
+        assert!(
+            !saved.cancelled,
+            "the first cancellation must not reach the second export"
+        );
+        assert!(
+            !controller
+                .journal
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .cancelled
+        );
+
+        cancel(&controller, &second_id).unwrap();
+        assert!(load(&controller.history_path).unwrap().unwrap().cancelled);
+    }
 
     #[test]
     fn relaunch_reports_an_interrupted_export_without_rerunning_it_or_starting_sandboxes() {
@@ -2491,7 +2553,7 @@ mod tests {
         .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         save_restore_identity(&controller, &id, IMPORT_GROUP).unwrap();
-        cancel(&controller).unwrap();
+        cancel(&controller, &token(&controller).unwrap().unwrap()).unwrap();
         let reloaded = load(&path).unwrap().unwrap();
         assert!(reloaded.cancelled);
         assert!(reloaded.terminal.is_none());
@@ -2583,7 +2645,7 @@ mod tests {
         .unwrap();
         fs::remove_file(journal_path(&path)).unwrap();
         fs::create_dir(journal_path(&path)).unwrap();
-        assert!(cancel(&controller).is_err());
+        assert!(cancel(&controller, &token(&controller).unwrap().unwrap()).is_err());
         assert!(
             !controller
                 .journal
@@ -2976,7 +3038,7 @@ mod tests {
             let controller = controller_in(app_data);
             prepare(&controller);
             if cancelled {
-                cancel(&controller).unwrap();
+                cancel(&controller, &token(&controller).unwrap().unwrap()).unwrap();
             }
             // The next launch reloads only the durable journal.
             let journal = load(&controller.history_path).unwrap().unwrap();
@@ -3242,7 +3304,7 @@ mod tests {
                 released_import(Some(IMPORT_ID)),
             );
             let journal = if cancelled {
-                cancel(&controller).unwrap();
+                cancel(&controller, &token(&controller).unwrap().unwrap()).unwrap();
                 load(&controller.history_path).unwrap().unwrap()
             } else {
                 journal

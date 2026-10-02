@@ -20,6 +20,14 @@ function setup(overrides: Partial<ApplicationActions> = {}, state: NetworkState 
   return {actions,user:userEvent.setup(),...render(<SettingsProvider initialSettings={{theme:"light"}}><Toaster /><NetworkPage workspaces={workspaces} browser={browser} network={state} actions={actions} active /></SettingsProvider>)}
 }
 describe("Network", () => {
+  it.each(["Starting", "Stopping"])("describes a transitioning sandbox's ports as %s", detail => {
+    const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
+    render(<NetworkPage workspaces={workspaces.map(workspace => ({ ...workspace, state: "starting", stateDetail: detail }))}
+      browser="Firefox" network={network} actions={actions} active={false} />)
+    expect(screen.getAllByText(`Sandbox ${detail.toLowerCase()}`)).toHaveLength(3)
+    expect(screen.queryByRole("button", { name: /^Open / })).not.toBeInTheDocument()
+  })
+
   it("uses actual forwarded addresses and opens only reachable web services", async () => {
     const {user,actions} = setup()
     expect(screen.getByText("127.0.0.1:45432")).toBeVisible()
@@ -52,11 +60,11 @@ describe("Network", () => {
     await user.click(screen.getByRole("button",{name:"Add"}))
     expect(save).toHaveBeenCalledWith({workspace:"dev",port:9000,hostPort:null,scheme:null})
     expect(await screen.findByText("Local port is already in use.")).toBeVisible()
-    expect(screen.getByText("Could not add port 9000")).toBeVisible()
+    expect(screen.getByText("Could not add port 9000 · dev")).toBeVisible()
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.getByRole("spinbutton",{name:"Port"})).toHaveValue(9000)
     await user.click(screen.getByRole("button",{name:"Retry"}))
-    expect(await screen.findByText("Port 9000 added")).toBeInTheDocument()
+    expect(await screen.findByText("Port 9000 added · dev")).toBeInTheDocument()
     expect(screen.queryByRole("spinbutton",{name:"Port"})).not.toBeInTheDocument()
   })
 
@@ -114,9 +122,9 @@ describe("Network", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Could not check services.")
     expect(screen.queryByText("No ports")).not.toBeInTheDocument()
   })
-  it("does not open cached services when the VM status is stale", () => {
+  it.each(["running", "starting", "stopped", "failed"] as const)("does not present a cached %s VM state as current when its status is stale", state => {
     const actions = {refreshNetwork:vi.fn(async () => {}),openNetworkPort:vi.fn(async () => {})} as unknown as ApplicationActions
-    render(<NetworkPage workspaces={workspaces.map(w => ({...w,freshness:"stale"}))} browser="Firefox" network={network} actions={actions} active />)
+    render(<NetworkPage workspaces={workspaces.map(w => ({...w,state,freshness:"stale"}))} browser="Firefox" network={network} actions={actions} active />)
     expect(screen.queryByRole("button",{name:/^Open /})).not.toBeInTheDocument()
     expect(screen.getAllByText("Unknown")).toHaveLength(3)
   })
@@ -132,7 +140,7 @@ describe("Network", () => {
 it("forwards a detected port immediately without a form", async () => {
   const {user,actions} = setup()
   await user.click(screen.getByRole("button",{name:/^Forward port 8080 to this (Mac|computer)$/}))
-  expect(await screen.findByText("Port 8080 forwarded")).toBeVisible()
+  expect(await screen.findByText("Port 8080 forwarded · dev")).toBeVisible()
   expect(actions.saveNetworkPort).toHaveBeenCalledWith({workspace:"dev",port:8080,hostPort:null,scheme:"http"})
   expect(screen.queryByRole("spinbutton",{name:"Port"})).not.toBeInTheDocument()
 })
@@ -234,4 +242,50 @@ it.each(["local", "remote"])("isolates %s discovery errors from a healthy same-n
   await user.click(within(healthy).getByRole("button", { name: "Open port 3000 in browser" }))
   expect(actions.openNetworkPort).toHaveBeenCalledWith(failing === "remote" ? "dev" : target, 3000)
   if (failing === "remote") expect(screen.getByRole("alert")).toHaveTextContent("dev (Office Mac): Remote discovery failed")
+})
+
+
+it("blocks a previous failure's Retry while another port save is pending", async () => {
+  let finish!: () => void
+  const save = vi.fn().mockRejectedValueOnce(new Error("Local port is already in use."))
+    .mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+    .mockResolvedValue(undefined)
+  const { user } = setup({ saveNetworkPort: save })
+  await user.click(screen.getByRole("button", { name: "Add port" }))
+  await user.type(screen.getByRole("spinbutton", { name: "Port" }), "9000")
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  await user.clear(screen.getByRole("spinbutton", { name: "Port" }))
+  await user.type(screen.getByRole("spinbutton", { name: "Port" }), "9001")
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
+  await act(async () => finish())
+  expect(await screen.findByText("Port 9001 added · dev")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Add port" })).toBeEnabled()
+})
+
+
+it("shows an empty filter result without waiting for unrelated network discovery", () => {
+  const actions = { refreshNetwork: vi.fn(() => new Promise<void>(() => {})) } as unknown as ApplicationActions
+  render(<NetworkPage workspaces={[]} browser="Firefox" actions={actions} active />)
+  expect(screen.getByText("No matching sandboxes")).toBeVisible()
+  expect(screen.queryByRole("status", { name: "Loading network" })).not.toBeInTheDocument()
+})
+
+
+it("keeps a filtered remote sandbox loading until its own network result arrives", () => {
+  const local = workspaces[0]
+  const remote = { ...local, computer: { id: "office", vmId: local.machine.id, name: "Office", address: "office.test", connected: true } }
+  const target = remoteWorkspaceTarget("office", local.machine.id)
+  const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
+  const localOnly = { workspaces: [{ workspace: "dev", error: null, ports: [] }] }
+  const view = render(<NetworkPage workspaces={[remote]} browser="Firefox" network={localOnly} actions={actions} active />)
+  expect(screen.getByRole("status", { name: "Loading network" })).toBeVisible()
+  expect(screen.queryByText("No ports")).not.toBeInTheDocument()
+  view.rerender(<NetworkPage workspaces={[remote]} browser="Firefox" network={{ workspaces: [...localOnly.workspaces, { workspace: target, error: null, ports: [] }] }} actions={actions} active />)
+  expect(screen.queryByRole("status", { name: "Loading network" })).not.toBeInTheDocument()
+  expect(screen.getByText("No ports")).toBeVisible()
 })

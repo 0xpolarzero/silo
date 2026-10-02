@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 POLICY = {'schemaVersion': 1, 'user': 'silo', 'home': '/home/silo'}
 RECORD = Path('/var/lib/silo/working-account.json')
@@ -72,18 +73,47 @@ def check_destination(destination):
 
 
 def relocate(value):
-    return value.replace('/home/silo-desktop/', '/home/silo/').replace('/root/', '/home/silo/')
+    for legacy in ('/home/silo-desktop', '/root'):
+        if value == legacy or value.startswith(legacy + '/'):
+            return '/home/silo' + value[len(legacy):]
+    return value
 
 
 def launcher_contents(path, relative):
     if not (relative.parent == Path('.') and path.name in SHELL_SETUP or 'bin' in relative.parts):
         return None
     try:
-        data = path.read_text()
-    except (UnicodeError, OSError):
+        data = path.read_bytes()
+    except OSError:
         return None
-    updated = relocate(data)
+    if b'\x00' in data:
+        return None
+    if not data.startswith(b'#!'):
+        try:
+            data.decode('utf-8')
+        except UnicodeError:
+            return None
+    updated = data.replace(b'/home/silo-desktop/', b'/home/silo/').replace(b'/root/', b'/home/silo/')
     return updated if updated != data else None
+
+
+def copy_file(path, target, contents=None, replace=False):
+    with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.silo-copy-', delete=False) as staged:
+        temporary = Path(staged.name)
+    try:
+        shutil.copy2(path, temporary)
+        if contents is not None:
+            if isinstance(contents, bytes):
+                temporary.write_bytes(contents)
+            else:
+                temporary.write_text(contents)
+        if replace:
+            os.replace(temporary, target)
+        else:
+            # Publish complete bytes without replacing an entry created during copying.
+            os.link(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def copy_home(source, destination):
@@ -118,7 +148,7 @@ def copy_home(source, destination):
                 if path.parent == source and path.name in SHELL_SETUP:
                     return
                 updated = launcher_contents(path, relative)
-                same = target.read_bytes() == updated.encode() if updated is not None else filecmp.cmp(path, target, shallow=False)
+                same = target.read_bytes() == updated if updated is not None else filecmp.cmp(path, target, shallow=False)
                 if same:
                     return
                 conflict(target)
@@ -134,10 +164,7 @@ def copy_home(source, destination):
             target.symlink_to(relocate(os.readlink(path)))
             shutil.copystat(path, target, follow_symlinks=False)
         else:
-            shutil.copy2(path, target)
-            updated = launcher_contents(path, path.relative_to(source))
-            if updated is not None:
-                target.write_text(updated)
+            copy_file(path, target, launcher_contents(path, path.relative_to(source)))
     for path, target, mode in reversed(copies):
         if stat.S_ISDIR(mode):
             shutil.copystat(path, target)
@@ -155,17 +182,37 @@ def copy_shell_setup(source, destination):
                 conflict(target)
             originals.append((original, target))
     for original, target in originals:
-        shutil.copy2(original, target)
-        target.write_text(relocate(original.read_text()))
+        contents = original.read_bytes().replace(b'/home/silo-desktop/', b'/home/silo/').replace(b'/root/', b'/home/silo/')
         # Root's profile does not put the user's own tools on PATH.
-        if original.name == '.profile' and PATH_SETUP not in target.read_text():
-            with target.open('a') as output:
-                output.write(PATH_SETUP)
+        if original.name == '.profile' and PATH_SETUP.encode('utf-8') not in contents:
+            contents += PATH_SETUP.encode('utf-8')
+        copy_file(original, target, contents, replace=True)
 
 
 def validate_account(entry):
     if entry.pw_uid != 1001 or entry.pw_gid != 1001 or entry.pw_dir != '/home/silo':
         raise RuntimeError('The silo account does not match the layout Silo needs.')
+
+
+def write_text_atomic(path, contents, mode):
+    fd, temporary = tempfile.mkstemp(prefix=f'.{path.name}-', dir=path.parent)
+    try:
+        with os.fdopen(fd, 'w') as output:
+            output.write(contents)
+            output.flush()
+            os.fchmod(output.fileno(), mode)
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
 
 
 def set_up(desktop_service):
@@ -221,22 +268,16 @@ def set_up(desktop_service):
     # Do not traverse other mounts or follow symlinks into system or host files.
     run('find', '/workspace', '-xdev', '-exec', 'chown', '-h', 'silo:silo', '{}', '+')
     sudoers = Path('/etc/sudoers.d/silo')
-    sudoers.write_text('silo ALL=(ALL:ALL) NOPASSWD: ALL\n')
-    sudoers.chmod(0o440)
+    write_text_atomic(sudoers, 'silo ALL=(ALL:ALL) NOPASSWD: ALL\n', 0o440)
     run('visudo', '-cf', str(sudoers))
     state = Path('/var/lib/silo-desktop')
     if (state / 'installed.json').exists():
         service = Path('/usr/local/bin/silo-desktop')
-        service.write_text(desktop_service)
-        service.chmod(0o755)
-        (state / 'configuration-managed.json').write_text('{"home":"/home/silo"}\n')
-        (state / 'configuration-managed.json').chmod(0o600)
+        write_text_atomic(service, desktop_service, 0o755)
+        write_text_atomic(state / 'configuration-managed.json', '{"home":"/home/silo"}\n', 0o600)
     run('runuser', '-u', 'silo', '--', 'env', 'HOME=/home/silo', 'USER=silo', 'LOGNAME=silo', 'sh', '-ec', 'test -w "$HOME"; test -w /workspace; sudo -n true; test -x /usr/lib/openssh/sftp-server')
     RECORD.parent.mkdir(parents=True, exist_ok=True)
-    temporary = RECORD.with_suffix('.tmp')
-    temporary.write_text(json.dumps(POLICY, separators=(',', ':')) + '\n')
-    temporary.chmod(0o644)
-    temporary.replace(RECORD)
+    write_text_atomic(RECORD, json.dumps(POLICY, separators=(',', ':')) + '\n', 0o644)
 
 
 if __name__ == '__main__':

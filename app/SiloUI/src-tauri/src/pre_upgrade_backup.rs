@@ -93,10 +93,18 @@ fn load(app_data: &Path) -> Saved {
         return Saved::Unreadable;
     };
     match OffsetDateTime::parse(&record.started_at, &Rfc3339) {
-        Ok(started) if record.version == VERSION => Saved::Valid {
-            started,
-            acknowledged: record.notice_acknowledged,
-        },
+        Ok(started)
+            if record.version == VERSION
+                && started
+                    .checked_add(RETENTION)
+                    .and_then(|date| date.checked_to_offset(UtcOffset::UTC))
+                    .is_some() =>
+        {
+            Saved::Valid {
+                started,
+                acknowledged: record.notice_acknowledged,
+            }
+        }
         _ => Saved::Unreadable,
     }
 }
@@ -601,6 +609,7 @@ mod tests {
             ("2026-12-25T00:00:00Z", "2027-01-08T00:00:00Z"),
             ("2028-02-20T12:00:00Z", "2028-03-05T12:00:00Z"),
             ("2027-02-20T12:00:00Z", "2027-03-06T12:00:00Z"),
+            ("9999-12-17T23:59:59Z", "9999-12-31T23:59:59Z"),
             // A local start is stored and compared as the same instant in UTC.
             ("2026-10-01T23:30:00-07:00", "2026-10-16T06:30:00Z"),
         ] {
@@ -857,6 +866,14 @@ mod tests {
                 br#"{"version":2,"startedAt":"2020-01-01T00:00:00Z"}"#,
             ),
             ("bad date", br#"{"version":1,"startedAt":"last tuesday"}"#),
+            (
+                "deletion date overflow",
+                br#"{"version":1,"startedAt":"9999-12-31T23:59:59Z"}"#,
+            ),
+            (
+                "UTC deletion date overflow",
+                br#"{"version":1,"startedAt":"9999-12-17T23:59:59-23:59"}"#,
+            ),
         ] {
             let dir = complete();
             fs::write(dir.path().join(FILE), contents).unwrap();
