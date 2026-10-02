@@ -34,6 +34,26 @@ function setup(initialSource = source, initialPolicies?: ApplicationGitHubWorksp
   return { ...render(wrap(initialSource, initialPolicies)), wrap, store, actions, user: userEvent.setup() }
 }
 
+it.each([false, true])("handles a sandbox named constructor with missing policies (recovered=%s)", async (recovered) => {
+  const machine = { ...source.machineConfigurations[0], name: "constructor" }
+  const current = { ...source, machineConfigurations: [machine], progressEvents: [], bootstrapConfiguration: {
+    ...source.bootstrapConfiguration,
+    workspaces: [{ ...source.bootstrapConfiguration.workspaces[0], name: machine.name }],
+  } }
+  const restored: OnboardingDraft | null = recovered ? {
+    currentStep: "github", machines: [machine], unfinishedMachineEditor: null,
+    workspaceSelections: {}, workspaceIdentities: {},
+  } : null
+  const view = setup(current, [], restored)
+
+  await view.user.click(screen.getByRole("tab", { name: /GitHub/ }))
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: [expect.objectContaining({ workspace: "constructor", repositories: [] })] }),
+  }))
+})
+
 it.each(["before render", "after equal machines", "after changed machines"])("submits untouched saved policies loaded %s", async (timing) => {
   const initial = timing === "after changed machines"
     ? { ...source, machinesAuthoritative: false, machineConfigurations: [source.machineConfigurations[0]] }
