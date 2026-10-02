@@ -1294,9 +1294,15 @@ fn backup_at_paths(
         // lineage group; a state export captures the sandbox's current disk.
         let (snapshot_group, existing_member) = match checkpoint_id {
             Some(checkpoint_id) => {
-                let (group, member, _scope, _name) =
+                let (_group, member, _scope, _name) =
                     runtime::checkpoints::export_source(paths, machine.id(), checkpoint_id)
                         .map_err(|error| error.to_string())?;
+                let group = runtime::checkpoints::ensure_snapshot_group(
+                    paths,
+                    machine.id(),
+                    machine.name(),
+                )
+                .map_err(|error| error.to_string())?;
                 (group, Some(member))
             }
             None => (
