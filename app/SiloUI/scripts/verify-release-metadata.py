@@ -35,6 +35,8 @@ def verify(root, version):
                 return tar.extractfile(member).read()
             info=plistlib.loads(read('Info.plist'))
             if info['CFBundleShortVersionString']!=version:raise RuntimeError('macOS version mismatch.')
+            production=json.loads((Path(__file__).resolve().parent.parent/'src-tauri/tauri.conf.json').read_text())
+            if info.get('CFBundleIdentifier')!=production['identifier']:raise RuntimeError('macOS application identity mismatch.')
             identity(read('Resources/release-info.json'),version,'aarch64-apple-darwin')
             binary=tar.getmember('Silo.app/Contents/MacOS/'+info['CFBundleExecutable'])
             if not binary.isfile():raise RuntimeError('Invalid macOS executable.')
@@ -43,9 +45,9 @@ def verify(root, version):
     for arch,target in TARGETS.items():
         package=root/f'Silo-linux-{arch}.deb'
         if package.exists():
-            fields=subprocess.check_output(['dpkg-deb','-f',str(package),'Version','Architecture'],text=True).splitlines()
-            expected=['Version: '+version,'Architecture: '+('amd64' if arch=='x64' else 'arm64')]
-            if fields!=expected:raise RuntimeError('Debian version or architecture mismatch.')
+            fields=subprocess.check_output(['dpkg-deb','-f',str(package),'Package','Version','Architecture'],text=True).splitlines()
+            expected=['Package: silo','Version: '+version,'Architecture: '+('amd64' if arch=='x64' else 'arm64')]
+            if fields!=expected:raise RuntimeError('Debian package, version or architecture mismatch.')
         image=root/f'Silo-linux-{arch}.AppImage'
         if image.exists():
             offset=appimage_offset(image,62 if arch=='x64' else 183)

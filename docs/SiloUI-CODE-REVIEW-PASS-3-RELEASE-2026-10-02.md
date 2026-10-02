@@ -26,6 +26,7 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-06 | P2 | Required minimum-macOS gate uses a runner with imminent brownouts | Open; replacement qualification required |
 | RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed: `abae62fe` |
 | RL-08 | P2 | Failed license staging replaces the MicroSandbox sidecar without its manifest | Fixed; regression passes |
+| RL-09 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed; regression passes |
 
 ## Detailed findings
 
@@ -155,6 +156,22 @@ sidecar comparison; no native executable or network request was used.
 and manifest staging. The regression now verifies that a failed license fetch
 preserves all three previously prepared outputs. This does not claim atomic
 publication across a process crash or final filesystem errors.
+
+### RL-09 Package identity gate accepts another Debian package or macOS Dev bundle
+
+**P2.** The final metadata verifier checked Debian version/architecture but not
+`Package`, and macOS version/CPU but not `CFBundleIdentifier`. Correctly versioned
+artifacts belonging to another application or the Dev channel therefore passed.
+
+**Evidence.** Synthetic signed-package contents for both Debian architectures
+with `Package: unrelated`, plus ARM64 macOS archives with Dev/other identifiers,
+all passed before the correction. Four rejecting subcases failed. These fixtures
+exercise the metadata verifier, not cryptographic signing or publication.
+
+**Correction and status.** Fixed: Debian packages must identify `silo`; macOS
+archives must use the production identifier from the tracked Tauri configuration.
+Positive production fixtures still pass. The Linux fixture builds real `.deb`
+files with `dpkg-deb` and accepts `silo` while rejecting an unrelated package.
 
 ## Verification and reproducibility
 
