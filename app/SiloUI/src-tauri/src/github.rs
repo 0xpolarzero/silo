@@ -717,6 +717,16 @@ fn store(c: &Credential) -> Result<(), String> {
     );
     result
 }
+fn replace_connection_credential(
+    secret: &SessionSecret<Option<Credential>>,
+    credential: &Credential,
+    persist: impl FnOnce() -> Result<(), String>,
+    publish: impl FnOnce(Result<Option<u64>, String>),
+) -> Result<(), String> {
+    secret.replace(Some(credential.clone()), persist)?;
+    publish(Ok(Some(observed_expiry(credential))));
+    Ok(())
+}
 /// Retry storing a credential whose earlier write failed (for example a renewed
 /// credential after a refresh), at most every 15 minutes so a denied Keychain prompt
 /// is not reopened in a loop. Until then the renewed credential is used in memory.
@@ -2606,6 +2616,14 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             return Err("GitHub connection cancelled.".into());
         }
         let mut d = load(app)?;
+        // A failed explicit replacement must leave the previous account and its access intact.
+        replace_connection_credential(
+            &ACCOUNT_SECRET,
+            &c,
+            || entry().and_then(|entry| store_entry(&entry, &c)),
+            publish_credential_observation,
+        )?;
+        unstored.kept();
         // Reconnecting creates a new account authorization. Never reuse old
         // grants, even if the account name and repository choices are identical.
         let prefix = format!("{}:", path(app)?.display());
@@ -2636,13 +2654,6 @@ fn connect(app: &tauri::AppHandle, generation: u64) -> Result<Value, String> {
             .lock()
             .map_err(|_| "GitHub state is unavailable.")?
             .retain(|key, _| !key.starts_with(&prefix));
-        let stored = store(&c);
-        // A failed store write keeps the new credential in use in memory and stores it
-        // later, so it is kept; only a credential that Silo holds nowhere is revoked.
-        if stored.is_ok() || ACCOUNT_SECRET.peek() == Some(Ok(Some(c.clone()))) {
-            unstored.kept();
-        }
-        stored?;
         let same = account
             .as_deref()
             .is_some_and(|login| same_account(d.account.as_deref(), login));
@@ -3366,6 +3377,41 @@ mod tests {
         cache.retry();
         cache.write(Some(2), || Ok(())).unwrap();
         assert_eq!(cache.read(|| panic!("Read after write")).unwrap(), Some(2));
+    }
+    #[test]
+    fn failed_reconnection_preserves_the_previous_credential_and_observation() {
+        let secret = SessionSecret::new();
+        let old = fixture_credential("previous-account", now() + 600);
+        let new = fixture_credential("new-account", now() + 900);
+        let stored = std::cell::RefCell::new(Some(old.clone()));
+        let observed = std::cell::RefCell::new(Ok(Some(observed_expiry(&old))));
+        secret.read(|| Ok(stored.borrow().clone())).unwrap();
+        assert!(replace_connection_credential(
+            &secret,
+            &new,
+            || Err("store denied".into()),
+            |value| *observed.borrow_mut() = value,
+        )
+        .is_err());
+        assert!(secret.peek() == Some(Ok(Some(old.clone()))));
+        assert!(*observed.borrow() == Ok(Some(observed_expiry(&old))));
+        secret
+            .flush(|_| panic!("failed reconnect must not be retried as a renewal"))
+            .unwrap();
+        assert!(*stored.borrow() == Some(old));
+        replace_connection_credential(
+            &secret,
+            &new,
+            || {
+                *stored.borrow_mut() = Some(new.clone());
+                Ok(())
+            },
+            |value| *observed.borrow_mut() = value,
+        )
+        .unwrap();
+        assert!(secret.peek() == Some(Ok(Some(new.clone()))));
+        assert!(*stored.borrow() == Some(new.clone()));
+        assert!(*observed.borrow() == Ok(Some(observed_expiry(&new))));
     }
     #[test]
     fn expired_credential_with_refresh_token_stays_connected() {

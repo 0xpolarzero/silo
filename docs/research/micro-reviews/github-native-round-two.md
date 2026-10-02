@@ -11,3 +11,11 @@ Explicit personal-token replacement now publishes its cache value only after sto
 Regression: `failed_personal_token_replacement_preserves_cached_and_stored_identity` failed at the old-account cache assertion before the fix, then passed. Five existing cache tests also passed, covering retained OAuth rotations, failed writes and flush, explicit denial retry, concurrent reads, and nonblocking observation. Verification used Rust 1.94.0 with the exact production cache implementation extracted into a synthetic source harness under `/tmp/silo-codex-target/verification/github-native-round2/`; no real credential store or application was used. Rust formatting and whitespace checks passed. Full native GitHub tests were queued on the shared target lock.
 
 The integration branch received the same R-19 production fix concurrently. The merge retains its mocked credential-store command seam and both regression tests; the additional cache test rejects a failed replacement silently reappearing on a later flush.
+
+## OAuth reconnect preserves the old account when storage fails
+
+A reconnect previously called the rotation-oriented `store` after detaching guests and clearing active grants. Its failed write replaced the in-memory credential, but returned before `record_connection`, leaving the old account and catalog alongside the new credential. This is a new code exchange, not a consumed refresh token.
+
+Explicit reconnect now uses transactional `SessionSecret::replace` before any workspace detachment or grant-cache mutation. Failed writes preserve the old credential and observation and do not queue the rejected connection for a later flush; the existing `Unstored` guard discards the unused exchange. Successful writes proceed with the existing replacement flow. Rotation continues to use `store` and retains newly rotated credentials after write failures.
+
+The production cache and reconnect seam regression failed at the old-credential assertion before the fix, then passed with six existing cache tests. Synthetic fixtures only; no real OAuth exchange, Keychain, app or VM was used.
