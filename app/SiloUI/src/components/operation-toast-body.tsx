@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { CheckIcon, CircleAlertIcon, CircleIcon, Loader2Icon } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { formatElapsed } from "@/lib/format-elapsed"
+import { restoreFocus } from "@/lib/focus"
 
 export type OperationStepState = "done" | "current" | "pending" | "failed"
 export interface OperationStep { label: string; state: OperationStepState }
@@ -71,6 +72,12 @@ function isRedundantStep(title: string | undefined, step: string | undefined): b
 export function OperationToastBody({ title, step, steps, progress, startedAt, cancel }: Omit<OperationProgressOptions, "title"> & { title?: string }) {
   const elapsed = useElapsed(startedAt)
   const [confirming, setConfirming] = useState(false)
+  const cancelButton = useRef<HTMLButtonElement>(null)
+  const wasConfirming = useRef(false)
+  useEffect(() => {
+    if (wasConfirming.current && !confirming) restoreFocus(cancelButton.current)
+    wasConfirming.current = confirming
+  }, [confirming])
   const value = progress == null ? null : Math.min(100, Math.max(0, progress * 100))
 
   if (confirming && cancel?.confirm) {
@@ -96,6 +103,6 @@ export function OperationToastBody({ title, step, steps, progress, startedAt, ca
         {stepIcon[entry.state]}<span className="min-w-0 truncate">{entry.label}<span className="sr-only">: {stepStatus[entry.state]}</span></span>
       </li>)}
     </ul>}
-    {cancel && <div className="flex justify-end"><Button type="button" variant="outline" size="xs" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button></div>}
+    {cancel && <div className="flex justify-end"><Button ref={cancelButton} type="button" variant="outline" size="xs" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button></div>}
   </div>
 }
