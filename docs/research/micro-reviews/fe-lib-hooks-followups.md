@@ -32,3 +32,14 @@ Scope: `app/SiloUI/src/lib/` and `app/SiloUI/src/hooks/`. Follow-up to the untra
 - Fix: Include U+00AD in the existing invisible-character regex.
 - Test: Assert `con\u00ADfig.json` displays a U+00AD marker. Render a folder with that character, find it by its marked label, and verify Open passes the original path unchanged.
 - Primary source: [Unicode UAX #14, Soft Hyphen](https://www.unicode.org/reports/tr14/tr14-51.html#SoftHyphen), which defines its invisible, zero-width rendering between line breaks. This is a targeted correction to the existing display policy, not a claim to prevent all Unicode lookalike names.
+
+
+## FE-LIB-HOOKS-6: Progress retains a finished result's action
+
+- Priority: P2.
+- File: `app/SiloUI/src/lib/operation-toast.ts`, `showOperationProgress`.
+- Trigger: Show an actionable success or retryable failure, then show progress under the same ID. Progress options omit `action`, so Sonner merges in the previous result's action. The rendered regressions found both stale Retry and Open controls beside the new progress.
+- Consequence: The progress toast offers actions belonging to an earlier result. A retained Retry can start the same operation again while its first retry is still running; retained Open refers to the previous completed result.
+- Fix: Explicitly clear `action` when rendering progress.
+- Test: Replace both a Retry failure and an Open success with same-ID progress; assert their old actions are absent and the new Cancel control remains.
+- Primary source: [Sonner v2.0.8 state updates](https://github.com/emilkowalski/sonner/blob/v2.0.8/src/state.ts), whose existing-ID update spreads previous toast properties before supplied data. Supplying an undefined action removes the previous action through the supported toast options.
