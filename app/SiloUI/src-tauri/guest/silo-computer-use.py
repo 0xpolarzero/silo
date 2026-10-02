@@ -9,7 +9,10 @@ into the guest, then runs `sync` after each boot and whenever the app becomes re
 * the pinned LCU archive (staged in the guest image, or downloaded and hash-checked)
   is extracted to local disk and installed in place against that folder;
 * `lcu setup --agent auto --session direct --yes --approval <mode>` runs as `silo`;
-* `lcu status --json` and `lcu doctor` (inside the desktop session) are recorded.
+* `lcu status --json` and `lcu doctor` (inside the desktop session) are recorded. After a
+  boot the helper waits for the session (bounded) and, when the session ended up failed
+  or stopped although the desktop starts with the VM, asks `silo-desktop start` for it
+  again a few times with backoff instead of failing the receipt.
 
 The result is a receipt under /var/lib/silo-computer-use that `status` projects
 for the host. Nothing here talks to the host or holds credentials.
@@ -36,7 +39,9 @@ LOG = Path('/var/log/silo-computer-use.log')
 IMAGE_DIR = Path('/usr/local/share/silo/lcu')
 PREFIX = Path('/opt/lcu')
 MOUNT = Path('/opt/silo/chatgpt')
-DESKTOP = ['/usr/local/bin/silo-desktop', 'status']
+DESKTOP_COMMAND = '/usr/local/bin/silo-desktop'
+DESKTOP = [DESKTOP_COMMAND, 'status']
+DESKTOP_CONFIG = Path('/var/lib/silo-desktop/config.json')
 USER = 'silo'
 HOME = '/home/silo'
 SCHEMA = 1
@@ -48,6 +53,10 @@ APPROVALS = ('ask', 'auto')
 COMPATIBILITY = ('tested', 'untested', 'unknown')
 SESSION_WAIT_BOOT = 300
 SESSION_WAIT = 90
+# After a boot a failed or stopped session is started again this many times, waiting
+# SESSION_REPAIR_BASE * 2 ** (n - 1) seconds before attempt n.
+SESSION_REPAIR_ATTEMPTS = 3
+SESSION_REPAIR_BASE = 2
 LOCK_WAIT = 1800
 
 
@@ -349,23 +358,58 @@ def registered_agents(output):
     return sorted(names)
 
 
-def session_running():
+def desktop_session():
+    """The session state `silo-desktop status` reports (`running`, `starting`, `failed`,
+    `stopped`), or None when it cannot be read."""
     try:
         result = subprocess.run(DESKTOP, stdin=subprocess.DEVNULL, capture_output=True,
                                 text=True, timeout=30)
         state = json.loads(result.stdout)
     except (OSError, ValueError, subprocess.TimeoutExpired):
-        return False
-    return state.get('sessionState', state.get('state')) == 'running'
+        return None
+    value = state.get('sessionState', state.get('state')) if isinstance(state, dict) else None
+    return value if isinstance(value, str) else None
 
 
-def doctor(wait):
-    """True when `lcu doctor` reports ready inside the desktop session."""
+def session_running():
+    return desktop_session() == 'running'
+
+
+def desktop_autostart():
+    """Whether the desktop starts with the VM (the default when never configured)."""
+    value = read_json(DESKTOP_CONFIG)
+    return not value or value.get('autoStart') is not False
+
+
+def start_desktop():
+    run([DESKTOP_COMMAND, 'start'], timeout=180, check=False, quiet=True)
+
+
+def wait_for_session(wait, repair):
+    """Waits (bounded) for the desktop session; with `repair`, a session that failed or
+    stopped is started again up to SESSION_REPAIR_ATTEMPTS times, then the wait ends."""
     deadline = time.monotonic() + wait
-    while not session_running():
+    repairs = 0
+    while True:
+        state = desktop_session()
+        if state == 'running':
+            return
+        if repair and state in ('failed', 'stopped') and desktop_autostart():
+            if repairs >= SESSION_REPAIR_ATTEMPTS:
+                raise Failure('desktop-session-not-running')
+            repairs += 1
+            log(f'desktop session is {state}; starting it again ({repairs} of {SESSION_REPAIR_ATTEMPTS})')
+            time.sleep(SESSION_REPAIR_BASE * 2 ** (repairs - 1))
+            start_desktop()
+            continue
         if time.monotonic() >= deadline:
             raise Failure('desktop-session-not-running')
         time.sleep(2)
+
+
+def doctor(wait, repair=False):
+    """True when `lcu doctor` reports ready inside the desktop session."""
+    wait_for_session(wait, repair)
     # The launcher must run as the desktop account itself.
     result = run([lcu_command('lcu-session'), '--user', USER, '--', lcu_command('lcu'),
                   'doctor', '--non-interactive', '--require-ready'], user=True, timeout=300,
@@ -457,7 +501,7 @@ def update(pinned, mode, force, boot):
             install(pinned, STAGE)
         agents = setup(mode)
         report = digest(lcu_status())
-        if not doctor(SESSION_WAIT_BOOT if boot else SESSION_WAIT):
+        if not doctor(SESSION_WAIT_BOOT if boot else SESSION_WAIT, repair=boot):
             raise Failure('doctor-failed')
         write_receipt(pinned, mode, 'ready', readiness='ready', agents=agents, **report)
     except Failure as failure:
