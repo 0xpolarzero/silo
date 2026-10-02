@@ -54,6 +54,23 @@ it.each([false, true])("handles a sandbox named constructor with missing policie
   }))
 })
 
+it("shows a missing recovered Git identity as unapplied, matching the submission", async () => {
+  const restored: OnboardingDraft = {
+    currentStep: "github", machines: source.machineConfigurations, unfinishedMachineEditor: null,
+    workspaceSelections: {}, workspaceIdentities: {},
+  }
+  const view = setup({ ...source, currentHostGitIdentity: null }, [], restored)
+
+  expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
+  await view.user.click(screen.getByRole("button", { name: "Continue" }))
+
+  expect(view.actions.submitStep).toHaveBeenCalledWith("github", expect.objectContaining({
+    github: expect.objectContaining({ workspaces: expect.arrayContaining([
+      expect.objectContaining({ workspace: "dev", identity: { name: "", email: "", apply: false } }),
+    ]) }),
+  }))
+})
+
 it.each(["before render", "after equal machines", "after changed machines"])("submits untouched saved policies loaded %s", async (timing) => {
   const initial = timing === "after changed machines"
     ? { ...source, machinesAuthoritative: false, machineConfigurations: [source.machineConfigurations[0]] }
