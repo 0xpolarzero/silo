@@ -320,3 +320,33 @@ it("blocks removal Retry while a remote management change is pending", async () 
   await act(async () => finish())
   expect(toggle).toBeEnabled()
 })
+
+
+it("ignores an obsolete management Retry after a newer choice succeeds", async () => {
+  const user = userEvent.setup()
+  const management = { enabled: false, hostId: "local", name: "Laptop", address: "owner@laptop" }
+  const setRemoteManagement = vi.fn().mockRejectedValueOnce(new Error("Reply unavailable")).mockResolvedValue(undefined)
+  const api = actions({ setRemoteManagement })
+  const view = (enabled: boolean) => <><Toaster /><RemoteComputersSettings source={source({ ...management, enabled })} actions={api} /></>
+  const { rerender } = render(view(false))
+  await user.click(screen.getByRole("switch", { name: "Allow remote management" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  rerender(view(true))
+  await user.click(screen.getByRole("switch", { name: "Allow remote management" }))
+  await waitFor(() => expect(screen.getByRole("switch", { name: "Allow remote management" })).toBeEnabled())
+  await user.click(retry)
+  expect(setRemoteManagement).toHaveBeenCalledTimes(2)
+  expect(setRemoteManagement).toHaveBeenLastCalledWith(false)
+})
+
+it("ignores a computer setting Retry after the settings controls unmount", async () => {
+  const user = userEvent.setup()
+  const management = { enabled: false, hostId: "local", name: "Laptop", address: "owner@laptop" }
+  const setRemoteManagement = vi.fn().mockRejectedValue(new Error("Reply unavailable"))
+  const { rerender } = render(<><Toaster /><RemoteComputersSettings source={source(management)} actions={actions({ setRemoteManagement })} /></>)
+  await user.click(screen.getByRole("switch", { name: "Allow remote management" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  rerender(<Toaster />)
+  await user.click(retry)
+  expect(setRemoteManagement).toHaveBeenCalledOnce()
+})
