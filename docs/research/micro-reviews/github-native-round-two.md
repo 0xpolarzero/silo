@@ -29,3 +29,9 @@ The reader rejects documents larger than 16 MiB, while the writer previously rep
 ## Bound oversized configuration reads
 
 The old `fs::read` allocated and read the entire file before checking the 16 MiB limit. The production read seam now uses `Read::take` at the limit plus one sentinel byte, rejecting oversized inputs without consuming their remaining content. The counting-reader regression consumed all 32 MiB before the fix and exactly 16 MiB plus one byte after it; valid document parsing and malformed JSON rejection remain covered. Focused Rust tests, Clippy, formatting, and whitespace checks passed.
+
+## Repository Refresh preserves stopped writes
+
+After the integration fixes to personal-token and workspace retries, Repository Refresh remained a caller of the global HTTP reset. It reopened stopped OAuth refreshes, token mints, and unrelated credentials. The transport now records the existing safe-request flag on failures and resets only safe, account-level failures for the selected bearer credential. Workspace-owned requests, unsafe writes, other credentials, and server floors remain intact. Reset occurs inside the serialized Refresh operation.
+
+The new transport regression failed under the old global reset because the ambiguous write became admissible. The real transport module is compiled directly in the synthetic test harness, with only the test-isolation mutex substituted; no external GitHub requests are used.
