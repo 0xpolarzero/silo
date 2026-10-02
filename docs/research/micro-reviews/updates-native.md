@@ -96,3 +96,15 @@ UPDATES-NATIVE-6 verification: the regression failed on the original recovery de
 
 
 UPDATES-NATIVE-6 merge verification: retained the concurrent metadata reader's 1 MiB-plus-one-byte consumption limit. Seven extracted tests passed, including its child-process peak-memory regression against a sparse 128 MiB file. Formatting, typecheck, lint, and whitespace checks passed after resolving the merge. The complete earlier update audit trail was preserved.
+
+## UPDATES-NATIVE-7: Update preferences allocate the complete input before rejection
+
+- **Priority:** P2.
+- **Location:** `updates.rs::read_preferences` before the fix.
+- **Trigger:** A corrupted or externally edited update preference file grows well beyond the one-boolean schema.
+- **Evidence:** The exact production reader consumed a sparse 128 MiB fixture. A child-process peak-RSS regression measured a 134,299,648-byte increase before rejection and failed its 32 MiB budget.
+- **Consequence:** Startup allocates memory proportional to arbitrary file size before displaying the preference-read error; sufficiently large files can exhaust application memory.
+- **Correction:** Use standard `Read::take` with the existing application settings convention of 1 MiB plus one byte, reject oversized files, and retain missing-file/default and malformed-file error behavior.
+- **Regressions:** `preferences_large_input_memory_is_bounded` measures the real read in an isolated subprocess; `preference_size_limit_accepts_boundary_and_rejects_larger_files` accepts an exact-limit valid document, rejects one extra byte, and preserves the input bytes.
+
+UPDATES-NATIVE-7 verification: the peak-memory regression failed before the fix and 12 extracted preference/scheduler tests passed afterward, including exact-limit preservation and previous preference repairs. Formatting, typecheck, lint, and whitespace checks passed. Full native validation remains queued on the shared artifact lock.

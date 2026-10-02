@@ -5,6 +5,7 @@ use schedule::Schedule;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    io::Read,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -73,17 +74,27 @@ struct Controller {
 struct Preferences {
     automatic_checks: bool,
 }
+const MAX_PREFERENCE_BYTES: u64 = 1024 * 1024;
 const PREFERENCE_READ_ERROR: &str =
     "Update preferences could not be read. Save your preference again.";
 fn read_preferences(path: &Path) -> Result<bool, String> {
-    match fs::read(path) {
-        Ok(bytes) => serde_json::from_slice::<Preferences>(&bytes)
-            .map(|p| p.automatic_checks)
-            .map_err(|_| PREFERENCE_READ_ERROR.into()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
-        Err(_) => Err(PREFERENCE_READ_ERROR.into()),
+    let file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
+        Err(_) => return Err(PREFERENCE_READ_ERROR.into()),
+    };
+    let mut bytes = Vec::new();
+    file.take(MAX_PREFERENCE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| PREFERENCE_READ_ERROR)?;
+    if bytes.len() as u64 > MAX_PREFERENCE_BYTES {
+        return Err(PREFERENCE_READ_ERROR.into());
     }
+    serde_json::from_slice::<Preferences>(&bytes)
+        .map(|p| p.automatic_checks)
+        .map_err(|_| PREFERENCE_READ_ERROR.into())
 }
+
 fn save_preferences(path: &Path, enabled: bool) -> Result<(), String> {
     let parent = path
         .parent()
@@ -1099,6 +1110,67 @@ mod tests {
         assert_eq!(unrelated.error.as_deref(), Some("Download failed"));
         assert_eq!(unrelated.phase, "error");
         assert_eq!(unrelated.retry_action.as_deref(), Some("download"));
+    }
+    #[test]
+    fn preferences_large_input_memory_is_bounded() {
+        const PROBE: &str = "SILO_TEST_UPDATE_PREFERENCES_MEMORY_PROBE";
+        if std::env::var_os(PROBE).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "updates::tests::preferences_large_input_memory_is_bounded",
+                    "--nocapture",
+                ])
+                .env(PROBE, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed;"));
+            return;
+        }
+
+        fn peak_bytes() -> u64 {
+            // SAFETY: getrusage initializes the supplied rusage structure.
+            let mut usage: libc::rusage = unsafe { std::mem::zeroed() };
+            assert_eq!(unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut usage) }, 0);
+            #[cfg(target_os = "macos")]
+            return usage.ru_maxrss as u64;
+            #[cfg(not(target_os = "macos"))]
+            return usage.ru_maxrss as u64 * 1024;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sandboxes.json");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(128 * 1024 * 1024)
+            .unwrap();
+        let before = peak_bytes();
+        assert_eq!(read_preferences(&path).unwrap_err(), PREFERENCE_READ_ERROR);
+        let extra = peak_bytes().saturating_sub(before);
+        eprintln!("large preference peak RSS increase: {extra} bytes");
+        assert!(
+            extra < 32 * 1024 * 1024,
+            "oversized preferences allocated {extra} bytes"
+        );
+        assert_eq!(fs::metadata(&path).unwrap().len(), 128 * 1024 * 1024);
+    }
+    #[test]
+    fn preference_size_limit_accepts_boundary_and_rejects_larger_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("prefs.json");
+        let mut bytes = br#"{"automatic_checks":false}"#.to_vec();
+        bytes.resize(MAX_PREFERENCE_BYTES as usize, b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert!(!read_preferences(&path).unwrap());
+        bytes.push(b' ');
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(read_preferences(&path).unwrap_err(), PREFERENCE_READ_ERROR);
+        assert_eq!(fs::read(&path).unwrap(), bytes);
     }
     #[test]
     fn missing_preferences_enable_checks_but_corrupt_preferences_do_not() {
