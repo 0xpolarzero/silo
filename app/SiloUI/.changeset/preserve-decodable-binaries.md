@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Preserve binary launcher files containing NUL bytes during home migration, even when their bytes decode as UTF-8.
+Preserve binary launcher files when migrating older sandbox accounts, even when they contain the old home folder path.
