@@ -466,7 +466,9 @@ fn make_tree_deletable(path: &Path) -> std::io::Result<()> {
 
 /// Reads a small regular file below `dir` (never through a symlink).
 fn read_small(dir: &Dir, name: &str) -> Option<Vec<u8>> {
-    let file = dir.open_file(name, libc::O_RDONLY, 0).ok()?;
+    let file = dir
+        .open_file(name, libc::O_RDONLY | libc::O_NONBLOCK, 0)
+        .ok()?;
     let meta = file.metadata().ok()?;
     if !meta.is_file() || meta.uid() != effective_uid() || meta.len() > MAX_RECORD_BYTES {
         return None;
