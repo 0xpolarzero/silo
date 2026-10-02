@@ -93,6 +93,24 @@ Checks: all 44 import, shared-popover, and sandbox-transfer tests passed.
 Frontend typecheck, touched-file oxlint, Rust formatting, and diff whitespace
 checks passed.
 
+## Repository picker suggestions stay out of the Tab sequence
+
+The GitHub repository picker has its own combobox implementation, separate from
+the shared filter already fixed in `a11y-application.md`. With no selected
+repositories, Tab from its input entered a popup button instead of leaving the
+picker. Both new regressions failed: one with a repository result and one with
+only the Add more repositories on GitHub action. Output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/repositories-before.log`.
+
+Both kinds of suggestion now have `tabIndex={-1}`, following the WAI-ARIA
+combobox pattern linked above. Arrow keys and Enter continue to select them
+through the focused input; pointer selection remains available. The regressions
+verify Tab leaves the last page control and closes the popup.
+
+Checks: all 19 repository editor and GitHub-page tests passed. Frontend
+typecheck, touched-file oxlint, Rust formatting, and diff whitespace checks
+passed.
+
 ## Escape dismisses operation cancellation questions
 
 Integration already fixed focus restoration after Keep going, recorded in

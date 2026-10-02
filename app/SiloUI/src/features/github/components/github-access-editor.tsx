@@ -161,6 +161,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
             id={`${listboxId}-${index}`}
             type="button"
             role="option"
+            tabIndex={-1}
             aria-selected={index === activeIndex}
             className="flex w-full items-center rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus:bg-accent aria-selected:bg-accent"
             disabled={disabled}
@@ -179,6 +180,7 @@ function RepositoryCombobox({ workspace, repositoryOptions, selectedRepositories
             id={`${listboxId}-${results.length + index}`}
             type="button"
             role="option"
+            tabIndex={-1}
             aria-selected={activeIndex === results.length + index}
             className={`flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs outline-none hover:bg-accent focus:bg-accent aria-selected:bg-accent ${index === 0 ? "mt-1 border-t border-border" : ""}`}
             onMouseDown={(event) => event.preventDefault()}
