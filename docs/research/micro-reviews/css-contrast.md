@@ -44,3 +44,23 @@ The chromatic test uses the public-domain inverse transform from
 [OKLab's author](https://bottosson.github.io/posts/oklab/#converting-from-linear-srgb-to-oklab)
 and WCAG's sRGB luminance weights. This is a deterministic token check, not a
 packaged-app visual audit.
+
+## Unbroken tooltip text
+
+Compile the shared tooltip's class string with the installed Tailwind compiler,
+then render a 400-character unbroken name in a browser fixture. Before the fix,
+the tooltip had a 224 px client width and a 2,527 px scroll width at an 800 px
+viewport. The page grew to 2,567 px. This reproduces long file paths and names
+extending past the tooltip background.
+
+Use `overflow-wrap: anywhere` on the shared tooltip, and allow its label to
+shrink in the shortcut flex row. The
+[CSS Text specification](https://www.w3.org/TR/css-text-3/#overflow-wrap-property)
+defines emergency breaks and their contribution to intrinsic sizing for this
+value. After compiling the changed classes, both plain and shortcut tooltip
+fixtures have 224 px client and scroll widths; all 400 characters remain visible.
+
+Verification used static HTML fixtures in Chromium through Playwright, not a
+native bundle or live sandbox. Local evidence: `/tmp/silo-css-tooltip-before.html`
+and `/tmp/silo-css-tooltip-after.html`. No class-string unit assertion was added:
+the browser's measured text overflow is the relevant check.
