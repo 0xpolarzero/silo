@@ -530,6 +530,38 @@ describe("overlapping lifecycle responses", () => {
   })
 })
 
+describe("remote management response ordering", () => {
+  it.each([
+    { when: "before", fails: false }, { when: "before", fails: true },
+    { when: "during", fails: false }, { when: "during", fails: true },
+  ])("ignores an older status reply started $when a toggle (failure: $fails)", async ({ when, fails }) => {
+    const status = { enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }
+    const late = deferred<unknown>()
+    const toggle = deferred<unknown>()
+    let delayed = false
+    const mock = bridge(command => {
+      if (command === "remote_management_status") return delayed ? late.promise.then(value => { if (fails) throw new Error("Old status unavailable"); return value }) : status
+      if (command === "set_remote_management") return toggle.promise
+    })
+    const store = createProductionSource(mock.native)
+    try {
+      await store.initialize()
+      delayed = true
+      const changing = when === "during" ? store.applicationActions.setRemoteManagement!(true) : undefined
+      const refresh = store.applicationActions.refreshRepositories!()
+      await vi.waitFor(() => expect(count(mock.invoke, "remote_management_status")).toBeGreaterThan(1))
+      const saving = changing ?? store.applicationActions.setRemoteManagement!(true)
+      toggle.resolve({ ...status, enabled: true })
+      await saving
+      expect(store.getSnapshot().source?.remoteManagement?.enabled).toBe(true)
+      late.resolve(status)
+      await refresh
+      expect(store.getSnapshot().source?.remoteManagement?.enabled).toBe(true)
+      expect(store.getSnapshot().source?.remoteManagementError).toBeUndefined()
+    } finally { store.dispose() }
+  })
+})
+
 describe("checkpoint response ordering", () => {
   it.each(["capture", "fork"] as const)("preserves a newer sibling lifecycle result after a late %s response", async kind => {
     const initial = structuredClone(source)
