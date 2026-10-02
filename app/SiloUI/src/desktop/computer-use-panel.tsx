@@ -4,16 +4,8 @@ import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Switch } from "@/components/ui/switch"
 import { computerOfWorkspace, useChatGptApp, useComputerUseBridge, type ChatGptAppStore } from "./computer-use-bridge"
+import { computerUseLabel } from "./computer-use-labels"
 import type { ChatGptAppStatus, ComputerUseApproval, ComputerUseState, LinuxDesktopState } from "./linux-desktop-state"
-
-const stateLabels: Record<ComputerUseState["state"], string> = {
-  unavailable: "Unavailable",
-  preparing: "Preparing…",
-  installing: "Installing…",
-  ready: "Ready",
-  failed: "Setup failed",
-}
-export const computerUseLabel = (state: ComputerUseState["state"], cause?: ComputerUseState["cause"]) => state === "failed" && cause === "app-download" ? "Download failed" : stateLabels[state]
 
 function megabytes(bytes: number) {
   return `${Math.max(0, Math.round(bytes / 1_000_000)).toLocaleString("en-US")} MB`
@@ -30,22 +22,6 @@ function ErrorLine({ message, actionLabel, onAction, onDismiss, busy }: { messag
 
 /** What Silo tells the user about the ChatGPT app. It downloads it by itself: nothing to accept. */
 export const CHATGPT_DOWNLOAD_NOTE = "Silo downloads ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux desktop."
-
-/** The one-line state of a computer's ChatGPT app, for lists. */
-export function chatGptStatusText(status: ChatGptAppStatus | null) {
-  switch (status?.state) {
-    case "ready": return status.version ? `Ready ${status.version}` : "Ready"
-    case "downloading": {
-      const total = status.totalBytes ?? 0
-      return total > 0 ? `Downloading ${Math.min(100, Math.round(status.receivedBytes / total * 100))}%` : "Downloading"
-    }
-    case "verifying": return "Verifying the download"
-    case "extracting": return "Unpacking"
-    case "idle": return "Waiting to download"
-    case "failed": return "Failed"
-    default: return "Unknown"
-  }
-}
 
 /** Progress and result of preparing the ChatGPT app, read-only: a Retry button appears only with `onRetry`. */
 export function ChatGptAppProgress({ status, busy = false, onRetry }: { status: ChatGptAppStatus; busy?: boolean; onRetry?: () => void }) {

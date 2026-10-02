@@ -4,7 +4,8 @@ import { describe, expect, it, vi } from "vitest"
 import { ConnectComputerForm, RemoteComputersSettings } from "./remote-computers-settings"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { remoteManagementSchema } from "../model/remote-computers"
-import { ComputerUseProvider, createComputerUseBridge, type ComputerUseBackend } from "@/desktop/computer-use-bridge"
+import { createComputerUseBridge, type ComputerUseBackend } from "@/desktop/computer-use-bridge"
+import { ComputerUseProvider } from "@/desktop/computer-use-provider"
 import type { ApplicationActions, ApplicationSource } from "../model/application-source"
 
 function source(remoteManagement: ApplicationSource["remoteManagement"]): ApplicationSource {

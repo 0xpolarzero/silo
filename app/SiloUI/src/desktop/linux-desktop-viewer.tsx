@@ -5,7 +5,7 @@ import { CircleAlert, Maximize, Monitor } from "lucide-react"
 import { parseLinuxDesktopState, type LinuxDesktopState, type DesktopAction } from "./linux-desktop-state"
 import { Button } from "@/components/ui/button"
 import { TooltipProvider } from "@/components/ui/tooltip"
-import { computerUseLabel } from "./computer-use-panel"
+import { computerUseLabel } from "./computer-use-labels"
 import { DesktopActionsMenu, NativeDesktopActionsMenu, type DesktopMenuProps } from "./linux-desktop-menu"
 
 // Guest pages draw inside Silo's window, so anything inside the frame,

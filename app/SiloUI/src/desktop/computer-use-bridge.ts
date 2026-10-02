@@ -1,4 +1,4 @@
-import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react"
+import { createContext, useContext, useSyncExternalStore } from "react"
 import { invoke } from "@tauri-apps/api/core"
 import { listen } from "@tauri-apps/api/event"
 import { parseRemoteWorkspaceTarget } from "@/features/application/model/remote-computers"
@@ -153,12 +153,7 @@ export function createComputerUseBridge(backend: ComputerUseBackend, pollMs?: { 
   }
 }
 
-const ComputerUseContext = createContext<ComputerUseBridge | null>(null)
-
-/** Its presence means this build creates VMs with the built-in desktop. */
-export function ComputerUseProvider({ bridge, children }: { bridge: ComputerUseBridge; children: ReactNode }) {
-  return <ComputerUseContext.Provider value={bridge}>{children}</ComputerUseContext.Provider>
-}
+export const ComputerUseContext = createContext<ComputerUseBridge | null>(null)
 
 export function useComputerUseBridge() { return useContext(ComputerUseContext) }
 
