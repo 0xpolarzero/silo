@@ -60,7 +60,7 @@ it("accepts a notice without a sandbox and rejects an unknown category", () => {
   expect(noticeSchema.safeParse({ ...notice, category: "health" }).success).toBe(false)
 })
 
-it.fails("bug: disposed notice subscription forwards events before pending registration completes", async () => {
+it("ignores notices after disposal while native registration is still pending", async () => {
   let register!: (stop: () => void) => void
   let emit!: (event: { payload: unknown }) => void
   const stop = vi.fn()
@@ -74,6 +74,7 @@ it.fails("bug: disposed notice subscription forwards events before pending regis
   emit({ payload: notice })
   register(stop)
   await Promise.resolve()
+  emit({ payload: notice })
   expect(stop).toHaveBeenCalledOnce()
   expect(handler).not.toHaveBeenCalled()
 })

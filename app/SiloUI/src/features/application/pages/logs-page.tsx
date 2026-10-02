@@ -68,7 +68,7 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
     {error && <div role="alert" className="text-xs text-destructive">Logs unavailable: {error} <Button size="xs" variant="outline" disabled={busy} onClick={() => void retry()}>Retry</Button></div>}
     {unsupportedNotice && <p role="status" className="text-xs text-muted-foreground">{unsupportedNotice}</p>}
     {historyLimited && <p role="status" className="text-xs text-muted-foreground">Some loaded records have left this list to keep browsing responsive. Refresh to return to the latest records, or narrow the search.{actions.exportLogs ? " Save logs includes all matching records." : ""}</p>}
-    {!invalidRange && <p role="status" className="min-h-4 shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{rows.length > 0 || historyLimited ? `Showing ${rows.length} of ${total} matching records.` : ""}{results.some(result => result.page.unreadableRecords) ? " Some records could not be read and are shown as placeholders or truncated." : ""}</p>}
+    {!invalidRange && <p role="status" className="min-h-4 shrink-0 text-xs text-muted-foreground" title={results.some(result => result.page.timestampEstimated) ? "Some timestamps are estimated from the log file." : undefined}>{rows.length > 0 || historyLimited ? `Showing ${rows.length} of ${total} matching ${total === 1 ? "record" : "records"}.` : ""}{results.some(result => result.page.unreadableRecords) ? " Some records could not be read and are shown as placeholders or truncated." : ""}</p>}
     {!invalidRange && (rows.length > 0 || hasOlder || !ready && !error) ? <LogsTable
       rows={rows}
       loading={!ready}
@@ -80,6 +80,6 @@ export function Logs({ workspaces, query, onQueryChange, actions, active, window
       expandedRows={expandedRows}
       onExpandedRowsChange={setExpandedRows}
       onLoadOlder={() => void loadOlder()}
-    /> : !busy && !error && !invalidRange && <EmptyState icon={<ScrollText />} title={historyLimited ? "Records exceed the list limit" : query || source || since || until ? "No results" : "No logs yet"} />}
+    /> : !busy && !error && !invalidRange && !unsupportedNotice && <EmptyState icon={<ScrollText />} title={historyLimited ? "Records exceed the list limit" : query || source || since || until ? "No results" : "No logs yet"} />}
   </div>
 }

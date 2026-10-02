@@ -180,10 +180,9 @@ export function useMachineEditing({
 
   // Restrict a captured baseline to the machines this list actually commits (local vs a
   // single remote computer), matching the list the save is derived against.
-  function scopedBaseline(): SetupMachineConfiguration[] | undefined {
-    const baseline = baselineRef.current
+  function scopedBaseline(baseline = baselineRef.current, targetComputerId = computerId): SetupMachineConfiguration[] | undefined {
     if (!baseline) return undefined
-    return getComputerId ? baseline.filter(machine => (getComputerId(machine) ?? "") === computerId) : baseline
+    return getComputerId ? baseline.filter(machine => (getComputerId(machine) ?? "") === targetComputerId) : baseline
   }
 
   /** Applies a whole-list change; returns its settlement (failures already reported) when asynchronous. */
@@ -288,14 +287,10 @@ export function useMachineEditing({
     if (disabled) throw new Error(interactionDisabledReason)
     const blocked = validateOperation?.(machine, false, getComputerId?.(machine) ?? "")
     if (blocked) throw new Error(blocked)
-    captureBaseline()
-    const baseline = baselineRef.current ?? undefined
+    const baseline = structuredClone(machines as SetupMachineConfiguration[])
     if (onDeleteMachine) { await onDeleteMachine(machine, baseline); return }
-    const base = baseline ?? machines
-    const next = configurationRequest(base.filter(({ id }) => id !== machine.id)).machines
-    const outcome = baseline
-      ? onMachinesChange(next, scopedBaseline())
-      : onMachinesChange(next)
+    const next = configurationRequest(baseline.filter(({ id }) => id !== machine.id)).machines
+    const outcome = onMachinesChange(next, scopedBaseline(baseline, getComputerId?.(machine) ?? ""))
     if (outcome) await outcome
   }
 

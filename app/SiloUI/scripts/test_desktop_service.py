@@ -47,6 +47,66 @@ class DesktopLifecycle(unittest.TestCase):
             service.main()
             return json.loads(output.getvalue())
 
+    def test_autostart_file_sync_failure_preserves_previous_preference(self):
+        start = patch.object(service, 'start')
+        start.start()
+        self.addCleanup(start.stop)
+        self.command('autostart', 'false')
+        before = (service.STATE / 'config.json').read_bytes()
+        entries = set(service.STATE.iterdir())
+        with patch.object(service.os, 'fsync', side_effect=OSError('disk full')):
+            with self.assertRaisesRegex(OSError, 'disk full'):
+                self.command('autostart', 'true')
+        self.assertEqual((service.STATE / 'config.json').read_bytes(), before)
+        self.assertEqual(set(service.STATE.iterdir()), entries)
+        self.command('autostart', 'true')
+        self.assertEqual(service.read('config.json'), {'autoStart': True})
+
+    def test_autostart_syncs_complete_file_before_publishing_and_directory_after(self):
+        start = patch.object(service, 'start')
+        start.start()
+        self.addCleanup(start.stop)
+        self.command('autostart', 'false')
+        path = service.STATE / 'config.json'
+        synced = []
+        fsync = os.fsync
+
+        def sync(fd):
+            info = os.fstat(fd)
+            if stat.S_ISREG(info.st_mode):
+                self.assertEqual(service.read('config.json'), {'autoStart': False})
+                self.assertEqual(os.pread(fd, info.st_size, 0), b'{"autoStart": true}\n')
+                self.assertEqual(stat.S_IMODE(info.st_mode), 0o600)
+                synced.append('file')
+            else:
+                self.assertTrue(stat.S_ISDIR(info.st_mode))
+                self.assertEqual(info.st_ino, service.STATE.stat().st_ino)
+                self.assertEqual(service.read('config.json'), {'autoStart': True})
+                synced.append('directory')
+            fsync(fd)
+
+        with patch.object(service.os, 'fsync', side_effect=sync):
+            self.command('autostart', 'true')
+        self.assertEqual(synced, ['file', 'directory'])
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_autostart_directory_sync_failure_does_not_report_success(self):
+        start = patch.object(service, 'start')
+        start.start()
+        self.addCleanup(start.stop)
+        self.command('autostart', 'false')
+        fsync = os.fsync
+
+        def sync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError('directory sync failed')
+            fsync(fd)
+
+        with patch.object(service.os, 'fsync', side_effect=sync):
+            with self.assertRaisesRegex(OSError, 'directory sync failed'):
+                self.command('autostart', 'true')
+        self.assertEqual(service.read('config.json'), {'autoStart': True})
+
     def test_absent_account_policy_requires_migration_even_when_installed(self):
         service.WORKING_ACCOUNT.unlink()
         for action in ('status', 'prepare-install', 'start', 'boot'):
@@ -824,6 +884,59 @@ class DesktopLifecycle(unittest.TestCase):
         self.assertFalse((service.RUN / 'failed').exists())
         self.assertEqual(len(waits), 3)
         self.assertEqual(log.read_bytes(), waits[-1][-256 * 1024:])
+
+    def test_log_retention_does_not_follow_home_or_vnc_directory_links(self):
+        for linked in ('home', 'vnc'):
+            with self.subTest(linked=linked):
+                case = self.root / linked
+                case.mkdir()
+                external = case / 'external'
+                external.mkdir()
+                sentinel = external / 'private.log'
+                original = b'outside-desktop' * (128 * 1024)
+                sentinel.write_bytes(original)
+                home = case / 'home'
+                if linked == 'vnc':
+                    home.mkdir()
+                    (home / '.vnc').symlink_to(external, target_is_directory=True)
+                else:
+                    actual_home = case / 'actual-home'
+                    actual_home.mkdir()
+                    (actual_home / '.vnc').mkdir()
+                    sentinel.rename(actual_home / '.vnc/private.log')
+                    sentinel = actual_home / '.vnc/private.log'
+                    home.symlink_to(actual_home, target_is_directory=True)
+                with patch.object(service, 'HOME', home), patch.object(service, 'LOG', case / 'service.log'):
+                    service.trim_logs()
+                self.assertEqual(sentinel.read_bytes(), original)
+
+    def test_log_retention_keeps_the_opened_directory_when_its_path_is_replaced(self):
+        home = self.root / 'home'
+        directory = home / '.vnc'
+        directory.mkdir(parents=True)
+        managed = directory / 'desktop.log'
+        managed.write_bytes(b'a' * (1280 * 1024))
+        external = self.root / 'external'
+        external.mkdir()
+        sentinel = external / 'desktop.log'
+        original = b'private' * (256 * 1024)
+        sentinel.write_bytes(original)
+        retained = home / 'retained-vnc'
+        listdir = os.listdir
+
+        def replace_directory(fd):
+            names = listdir(fd)
+            directory.rename(retained)
+            directory.symlink_to(external, target_is_directory=True)
+            return names
+
+        with patch.object(service, 'HOME', home), \
+             patch.object(service, 'LOG', self.root / 'service.log'), \
+             patch.object(service.os, 'listdir', side_effect=replace_directory):
+            service.trim_logs()
+        self.assertTrue(directory.is_symlink())
+        self.assertEqual((retained / 'desktop.log').read_bytes(), b'a' * (256 * 1024))
+        self.assertEqual(sentinel.read_bytes(), original)
 
     def test_log_bounds_preserve_tail_and_do_not_follow_symlinks(self):
         home = self.root / 'home'

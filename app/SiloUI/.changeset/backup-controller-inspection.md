@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Stop queued export-file checks when the import review closes, and keep newer checks safe from older queued work.
+Skip pending import file checks after you close the review, and keep them from interfering with a new review.

@@ -1656,10 +1656,16 @@ fn scopes(d: &Document, policy: &Value) -> Result<Vec<GrantScope>, String> {
     let selected = policy["repositories"]
         .as_array()
         .ok_or("Invalid repository selection.")?;
+    let matches = |repo: &Value, selection: &Value| {
+        repo["name"]
+            .as_str()
+            .zip(selection["repository"].as_str())
+            .is_some_and(|(catalog, saved)| catalog.eq_ignore_ascii_case(saved))
+    };
     if !all
         && selected
             .iter()
-            .any(|s| !d.repositories.iter().any(|r| r["name"] == s["repository"]))
+            .any(|s| !d.repositories.iter().any(|r| matches(r, s)))
     {
         return Err(
             "A selected repository is no longer authorized by GitHub. Update the selection.".into(),
@@ -1667,7 +1673,7 @@ fn scopes(d: &Document, policy: &Value) -> Result<Vec<GrantScope>, String> {
     }
     let mut groups = std::collections::BTreeMap::<u64, GrantScope>::new();
     for repo in &d.repositories {
-        let selection = selected.iter().find(|s| s["repository"] == repo["name"]);
+        let selection = selected.iter().find(|s| matches(repo, s));
         if !all && selection.is_none() {
             continue;
         }
@@ -2393,7 +2399,11 @@ fn read_callback_request(reader: &mut impl Read) -> Option<String> {
     let mut chunk = [0; 1024];
     while bytes.len() < 8192 && Instant::now() < deadline {
         let remaining = (8192 - bytes.len()).min(chunk.len());
-        let length = reader.read(&mut chunk[..remaining]).ok()?;
+        let length = match reader.read(&mut chunk[..remaining]) {
+            Ok(length) => length,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        };
         if length == 0 {
             return None;
         }
@@ -4027,6 +4037,27 @@ mod tests {
         });
     }
     #[test]
+    fn selected_scopes_preserve_access_when_catalog_capitalization_changes() {
+        let _test_state = crate::test_support::global_state();
+        let d = Document {
+            access_enabled: true,
+            account: Some("owner".into()),
+            repositories: vec![
+                json!({"name":"OWNER/Project","ownerId":7,"id":11}),
+                json!({"name":"OWNER/Other","ownerId":7,"id":12}),
+            ],
+            ..Default::default()
+        };
+        let policy = json!({"repositoryMode":"selected","repositories":[{"repository":"owner/project","allowPushes":true}]});
+        let desired = scopes(&d, &policy).unwrap();
+        assert_eq!(desired.len(), 1);
+        assert_eq!(desired[0].owner, 7);
+        assert_eq!(desired[0].ids, vec![11]);
+        assert_eq!(desired[0].writes, vec![11]);
+        assert_eq!(desired[0].login, "OWNER");
+    }
+
+    #[test]
     fn invalid_remaining_selection_never_preserves_removed_repository_access() {
         let _test_state = crate::test_support::global_state();
         let previous = test_grant();
@@ -4569,6 +4600,36 @@ mod tests {
             assert!(callback(request, "right").is_err());
         }
     }
+    #[test]
+    fn callback_retries_interrupted_reads_without_losing_partial_headers() {
+        struct Interrupted<'a> {
+            bytes: &'a [u8],
+            interrupt: bool,
+        }
+        impl Read for Interrupted<'_> {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                self.interrupt = !self.interrupt;
+                if self.interrupt {
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let length = self.bytes.len().min(target.len()).min(3);
+                target[..length].copy_from_slice(&self.bytes[..length]);
+                self.bytes = &self.bytes[length..];
+                Ok(length)
+            }
+        }
+        let request =
+            b"GET /github/callback?state=right&code=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+        let mut reader = Interrupted {
+            bytes: request,
+            interrupt: false,
+        };
+        assert_eq!(
+            read_callback_request(&mut reader).as_deref(),
+            Some(std::str::from_utf8(request).unwrap())
+        );
+    }
+
     #[test]
     fn callback_requires_complete_bounded_headers_across_fragments() {
         let _test_state = crate::test_support::global_state();

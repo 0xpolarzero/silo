@@ -9,7 +9,7 @@ use std::{
     io::{Read, Write},
     path::Path,
     sync::Mutex,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 static IMPORT_LOCK: Mutex<()> = Mutex::new(());
@@ -78,11 +78,34 @@ fn valid_sha256(value: &str) -> bool {
 }
 
 /// Inspect bundled resources only. This never creates/imports a runtime cache.
+#[cfg(test)]
 pub(crate) fn validate_bundle(resource_dir: &Path) -> Result<GuestImageManifest, String> {
     validate_directory(&resource_dir.join("guest-image"))
 }
 
+pub(crate) fn validate_bundle_until(
+    resource_dir: &Path,
+    deadline: Instant,
+) -> Result<GuestImageManifest, String> {
+    validate_directory_until(&resource_dir.join("guest-image"), Some(deadline))
+}
+
 fn validate_directory(directory: &Path) -> Result<GuestImageManifest, String> {
+    validate_directory_until(directory, None)
+}
+
+fn validate_directory_until(
+    directory: &Path,
+    deadline: Option<Instant>,
+) -> Result<GuestImageManifest, String> {
+    let check_deadline = || {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            Err("Silo's VM image check timed out. Retry checks.".to_owned())
+        } else {
+            Ok(())
+        }
+    };
+    check_deadline()?;
     let file = File::open(directory.join("manifest.json"))
         .map_err(|_| "Silo's bundled VM image is missing. Reinstall Silo and retry.")?;
     let mut bytes = Vec::new();
@@ -123,6 +146,7 @@ fn validate_directory(directory: &Path) -> Result<GuestImageManifest, String> {
     let mut hash = Sha256::new();
     let mut buffer = [0u8; 128 * 1024];
     loop {
+        check_deadline()?;
         let count = archive
             .read(&mut buffer)
             .map_err(|_| "Silo's VM image could not be read.")?;
@@ -131,6 +155,7 @@ fn validate_directory(directory: &Path) -> Result<GuestImageManifest, String> {
         }
         hash.update(&buffer[..count]);
     }
+    check_deadline()?;
     if format!("{:x}", hash.finalize()) != manifest.archive_sha256 {
         return Err(
             "Silo's bundled VM image failed its integrity check. Reinstall Silo and retry.".into(),
@@ -307,6 +332,15 @@ mod tests {
             .unwrap_err()
             .contains("incomplete"));
     }
+    #[test]
+    fn preflight_stops_validating_when_its_collection_deadline_expires() {
+        let dir = tempfile::tempdir().unwrap();
+        fixture(dir.path());
+        let error = validate_bundle_until(dir.path(), std::time::Instant::now()).unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(validate_bundle(dir.path()).is_ok());
+    }
+
     #[test]
     fn missing_and_wrong_architecture_never_pass() {
         let dir = tempfile::tempdir().unwrap();

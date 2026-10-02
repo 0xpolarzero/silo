@@ -5,7 +5,7 @@ import { setupFakeTimerUser } from "@/test/fake-timer-user"
 import { toast } from "sonner"
 import { Toaster } from "@/components/ui/sonner"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
-import { SshAccessBadges, SshAccessPanel } from "./ssh-access-panel"
+import { SshAccessBadges, SshAccessPanel, SshAccessRow } from "./ssh-access-panel"
 import type { ApplicationActions, ApplicationWorkspace, SshAccessWorkspace } from "../model/application-source"
 const workspace = applicationSourceForScenario("complete").workspaces[0]
 const publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOV89nMlTnLLFa2UlVuqssPU56E2EbdIg1XmcraGpVXQ laptop"
@@ -312,4 +312,88 @@ describe("SSH badge", () => {
     expect(badge()).toHaveAccessibleName("SSH from Ada’s Mac mini only: Waiting for sandbox")
     expect(badge().querySelector(".lucide-triangle-alert")).toBeNull()
   })
+})
+
+
+it.each(["save", "connection"])("blocks an old SSH Retry while another %s is pending", async operation => {
+  let finish!: () => void
+  const pending = new Promise<void>(resolve => { finish = resolve })
+  const save = vi.fn().mockRejectedValueOnce(new Error("SSH save failed."))
+    .mockImplementationOnce(() => pending).mockResolvedValue(undefined)
+  const { user, actions } = setup({}, save)
+  await expand(user)
+  const toggle = screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" })
+  await user.click(toggle)
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  if (operation === "save") await user.click(toggle)
+  else {
+    vi.mocked(actions.sshConnection!).mockImplementationOnce(() => pending.then(() => null))
+    await selectAction(user, "Copy local SSH command")
+  }
+  const saves = operation === "save" ? 2 : 1
+  expect(toggle).toBeDisabled()
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(saves)
+  expect(toggle).toBeDisabled()
+  await act(async () => finish())
+  expect(toggle).toBeEnabled()
+})
+
+
+it("blocks an old SSH Retry for connection preparation while a save is pending", async () => {
+  let finish!: () => void
+  const save = vi.fn(() => new Promise<void>(resolve => { finish = resolve }))
+  const { user, actions } = setup({}, save)
+  vi.mocked(actions.sshConnection!).mockRejectedValueOnce(new Error("SSH preparation failed."))
+  await expand(user)
+  await selectAction(user, "Copy local SSH command")
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  const toggle = screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" })
+  await user.click(toggle)
+  expect(toggle).toBeDisabled()
+  await user.click(retry)
+  expect(actions.sshConnection).toHaveBeenCalledOnce()
+  expect(toggle).toBeDisabled()
+  await act(async () => finish())
+  expect(toggle).toBeEnabled()
+})
+
+
+it("ignores an old SSH Retry after a newer save completes", async () => {
+  const save = vi.fn().mockRejectedValueOnce(new Error("Port is in use.")).mockResolvedValue(undefined)
+  const { user } = setup({}, save)
+  await expand(user)
+  await selectAction(user, "Edit connection")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  const port = screen.getByRole("spinbutton", { name: "SSH port" })
+  await user.clear(port); await user.type(port, "2223")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  await waitFor(() => expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument())
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(2)
+  expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ port: 2223 }))
+})
+
+it("ignores an SSH Retry after its sandbox controls unmount", async () => {
+  const save = vi.fn().mockRejectedValue(new Error("Port is in use."))
+  const { user, rerender } = setup({}, save)
+  await expand(user)
+  await selectAction(user, "Edit connection")
+  await user.click(screen.getByRole("button", { name: "Save" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  rerender(<Toaster />)
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(1)
+})
+
+it("checks current read-only state before retrying an SSH save", async () => {
+  const save = vi.fn().mockRejectedValue(new Error("Port is in use."))
+  const user = userEvent.setup()
+  const { rerender } = render(<><Toaster /><SshAccessRow workspace={workspace} access={base} save={save} stale={false} embedded /></>)
+  await user.click(screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  rerender(<><Toaster /><SshAccessRow workspace={workspace} access={base} save={save} stale={false} embedded readOnly /></>)
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(1)
 })

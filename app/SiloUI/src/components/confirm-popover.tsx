@@ -3,6 +3,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode, typ
 import { Button } from "@/components/ui/button"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip"
 import { Popover, PopoverAnchor, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { restoreFocus } from "@/lib/focus"
 
 /**
  * Ask in a popover, do in a toast. Use `ConfirmPopover` for yes/no confirmations and
@@ -84,10 +85,20 @@ function Shell({ open, setOpen, children, anchor, anchorRef, align, side, conten
       </Tooltip>
       : trigger}
     <PopoverContent ref={contentElement} aria-labelledby={titleId} aria-describedby={descriptionId} align={align} side={side} collisionPadding={8} className="w-64 p-3 text-xs" onOpenAutoFocus={(event) => {
-      // Move focus into the popover ourselves so Escape and Enter always act on it.
+      const initialFocus = contentElement.current?.querySelector<HTMLElement>("[data-popover-initial-focus], input, textarea, select")
+      if (!initialFocus) return
+      // Prefer the form field or confirmation button; Radix handles action-only content.
       event.preventDefault()
-      contentElement.current?.querySelector<HTMLElement>("[data-popover-initial-focus], input, textarea, select")?.focus()
-    }} onCloseAutoFocus={(event) => { if (anchor) { event.preventDefault(); element.current?.focus() } }}>
+      initialFocus.focus()
+    }} onCloseAutoFocus={(event) => {
+      if (!anchor) return
+      event.preventDefault()
+      const target = element.current
+      restoreFocus(target)
+      if (target && target.ownerDocument.activeElement !== target) {
+        restoreFocus(target.querySelector<HTMLElement>("button:not(:disabled), a[href], input:not(:disabled), textarea:not(:disabled), select:not(:disabled), [tabindex]:not([tabindex='-1']):not(:disabled)"))
+      }
+    }}>
       {content}
     </PopoverContent>
   </Popover>

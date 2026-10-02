@@ -51,6 +51,24 @@ describe("ConfirmPopover", () => {
     expect(screen.getByText("Import?")).toBeInTheDocument()
   })
 
+  it.each(["Escape", "Cancel"])("returns focus to a button inside an external anchor after %s", async dismissal => {
+    function AnchoredForm() {
+      const [open, setOpen] = useState(false)
+      return <FormPopover open={open} onOpenChange={setOpen} title="Import sandbox" confirmLabel="Import" onSubmit={vi.fn()}
+        anchor={<span><button type="button" onClick={() => setOpen(true)}>Add sandbox</button></span>}
+        fields={<input aria-label="Sandbox name" />} />
+    }
+    const user = userEvent.setup()
+    render(<AnchoredForm />)
+    const anchorButton = screen.getByRole("button", { name: "Add sandbox" })
+    await user.click(anchorButton)
+    expect(screen.getByRole("textbox", { name: "Sandbox name" })).toHaveFocus()
+    if (dismissal === "Escape") await user.keyboard("{Escape}")
+    else await user.click(screen.getByRole("button", { name: "Cancel" }))
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument())
+    expect(anchorButton).toHaveFocus()
+  })
+
   it("keeps the names and descriptions of separate confirmations distinct", () => {
     render(<>
       <ConfirmPopover open title="Delete alpha?" description="Alpha is removed." confirmLabel="Delete" onConfirm={vi.fn()} />

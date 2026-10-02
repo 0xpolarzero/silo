@@ -54,7 +54,7 @@ it("cleans up a subscription that registers after the updates view unmounts", as
   expect(backend.read).not.toHaveBeenCalled()
 })
 
-it.fails("bug: an obsolete initial read failure shows a connection error after a newer native event", async () => {
+it("ignores an obsolete initial read failure after a newer native event", async () => {
   let reject!: (error: Error) => void
   const read = vi.fn(() => new Promise<UpdateSnapshot>((_, fail) => { reject = fail }))
   const { emit } = mount({}, backend => { backend.read = read })
@@ -76,6 +76,23 @@ it("restores update events after returning to a window whose subscription failed
   emit({ phase: "available", availableVersion: "0.2.0" })
   expect(screen.getByRole("status")).toHaveTextContent("Silo 0.2.0 is available.")
   expect(backend.check).not.toHaveBeenCalled()
+})
+it("keeps a failed update connection visible when focus returns during listener recovery", async () => {
+  let rejectRegistration!: (cause: Error) => void
+  let resolveRead: ((next: UpdateSnapshot) => void) | undefined
+  const { backend } = mount({}, backend => {
+    vi.mocked(backend.subscribe).mockRejectedValueOnce(new Error("event registration failed"))
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectRegistration = reject }))
+    vi.mocked(backend.read).mockImplementation(() => new Promise(resolve => { resolveRead = resolve }))
+  })
+  await screen.findByRole("alert")
+  fireEvent.focus(window)
+  await waitFor(() => expect(backend.subscribe).toHaveBeenCalledTimes(2))
+  fireEvent.focus(window)
+  await act(async () => rejectRegistration(new Error("registration failed again")))
+  await act(async () => resolveRead?.(state))
+  expect(screen.getByRole("alert")).toHaveTextContent("Silo could not load updates. Try again.")
+  expect(screen.getByRole("button", { name: "Retry" })).toBeEnabled()
 })
 it("loads the installed version without a fake up-to-date result and persists automatic checks", async () => {
   const user = userEvent.setup()
@@ -127,6 +144,17 @@ it("opens the package release for manual installations instead of offering nativ
   expect(backend.openRelease).toHaveBeenCalledOnce()
   expect(backend.download).not.toHaveBeenCalled()
   expect(screen.queryByRole("button", { name: "Restart and update" })).not.toBeInTheDocument()
+})
+it("retries opening manual installers after the release page failed to open", async () => {
+  const user = userEvent.setup()
+  const { backend } = mount({ packageKind: "manual", phase: "available", availableVersion: "0.2.0" }, backend => {
+    vi.mocked(backend.openRelease).mockRejectedValueOnce(new Error("browser unavailable"))
+  })
+  await user.click(await screen.findByRole("button", { name: "View installers on GitHub" }))
+  await user.click(await screen.findByRole("button", { name: "Retry" }))
+  expect(backend.openRelease).toHaveBeenCalledTimes(2)
+  expect(backend.check).not.toHaveBeenCalled()
+  expect(backend.download).not.toHaveBeenCalled()
 })
 it("keeps native failure details collapsed and shows a useful retry", async () => {
   const user = userEvent.setup()

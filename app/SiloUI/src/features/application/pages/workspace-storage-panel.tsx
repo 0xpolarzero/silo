@@ -8,7 +8,11 @@ import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/comp
 type ReclaimEntry = WorkspaceStorageState['history'][number]
 
 function date(at: number) { return new Date(at * 1000).toLocaleString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) }
-function trigger(value: string) { return ({ manual: 'Manual', scheduled: 'Scheduled', beforeStop: 'Before stop', afterStart: 'After start', legacy: 'Previous reclaim' } as Record<string, string>)[value] ?? 'Automatic' }
+const reclaimTriggerLabels = new Map([
+  ['manual', 'Manual'], ['scheduled', 'Scheduled'], ['beforeStop', 'Before stop'],
+  ['afterStart', 'After start'], ['legacy', 'Previous reclaim'],
+])
+function trigger(value: string) { return reclaimTriggerLabels.get(value) ?? 'Automatic' }
 
 interface StoragePanelProps {
   workspaceId: string
@@ -61,17 +65,21 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
     if (reclaimSpace) showOperationProgress(toastId, { title: 'Reclaiming unused space', step: 'Your files stay available' })
     try {
       const value = await (reclaimSpace ? reclaim! : read)(workspaceId)
-      if (requests.current.generation !== request) return
-      setStorage(value)
-      dismissOperationToast(`storage-read:${workspaceId}`)
+      const current = requests.current.generation === request
+      if (current) {
+        setStorage(value)
+        dismissOperationToast(`storage-read:${workspaceId}`)
+      }
+      // The operation's notification outlives the panel that started it.
       if (reclaimSpace) {
-        if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: value.lastError, retry: () => void latestLoad.current?.(true) })
+        if (value.lastError) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: value.lastError, retry: current ? () => void latestLoad.current?.(true) : undefined })
         else showOperationSuccess(toastId, `Reclaimed ${formatBytes(value.lastReclaimedBytes ?? 0)}`, { description: `Freed ${where}.`, persist: true, noticeSandbox })
       }
     } catch (cause) {
-      if (requests.current.generation === request) {
-        if (reclaimSpace) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: errorMessage(cause), retry: () => void latestLoad.current?.(true) })
-        else showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
+      const current = requests.current.generation === request
+      if (reclaimSpace) showOperationFailure(toastId, 'Reclaim failed', { noticeSandbox, description: errorMessage(cause), retry: current ? () => void latestLoad.current?.(true) : undefined })
+      if (current) {
+        if (!reclaimSpace) showOperationFailure(`storage-read:${workspaceId}`, 'Could not read storage', { description: errorMessage(cause), retry: () => void latestLoad.current?.(false), native: false })
         if (reclaimSpace) {
           try {
             const value = await read(workspaceId)
@@ -104,7 +112,9 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
     icon: Layers,
     label: 'Checkpoints',
     value: host(storage?.checkpointHostBytes),
-    help: checkpointCount === 0
+    help: !storage
+      ? loading ? 'Reading saved checkpoint usage…' : 'Refresh storage to check saved checkpoints.'
+      : checkpointCount === 0
       ? `No checkpoints are saved ${where}.`
       : `${checkpointCount === 1 ? '1 checkpoint' : `${checkpointCount} checkpoints`} saved ${where}, each counted in full; copies that share blocks can use less. Delete ones you no longer need in Checkpoints.`,
   }
@@ -137,7 +147,7 @@ function WorkspaceStorageContent({ workspaceId, sandboxName, running, computerNa
       {loading && <div role="status" aria-label="Reading storage" className="sr-only">Reading storage…</div>}
       {storage?.lastError && !reclaiming && <p className="flex items-start gap-2 text-destructive"><CircleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />{storage.lastError}</p>}
 
-      <ReclaimHistory history={storage?.history ?? []} open={historyOpen} onOpenChange={setHistoryOpen} />
+      {storage && <ReclaimHistory history={storage.history} open={historyOpen} onOpenChange={setHistoryOpen} />}
     </section>
   </TooltipProvider>
 }
@@ -178,7 +188,7 @@ function ReclaimHistory({ history, open, onOpenChange }: { history: ReclaimEntry
   const latest = history[0]
   const summary = latest ? `${latest.error ? 'Failed' : `${formatBytes(latest.reclaimedBytes ?? 0)} freed`} · ${date(latest.at)}` : 'No reclaims yet'
   return <div className="border-t border-border pt-2">
-    <button type="button" aria-label={`Reclaim history, ${history.length} attempts`} aria-expanded={open} aria-controls={listId} onClick={() => onOpenChange(!open)} className="flex w-full items-center gap-2 py-1 text-muted-foreground hover:text-foreground">
+    <button type="button" aria-label={`Reclaim history, ${history.length} ${history.length === 1 ? 'attempt' : 'attempts'}`} aria-expanded={open} aria-controls={listId} onClick={() => onOpenChange(!open)} className="flex w-full items-center gap-2 py-1 text-muted-foreground hover:text-foreground">
       <History aria-hidden="true" className="size-3.5" />
       <span>Reclaim history</span>
       <span className="rounded bg-muted px-1.5 text-[10px]">{history.length}</span>

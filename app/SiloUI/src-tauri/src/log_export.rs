@@ -3,9 +3,9 @@ use crate::runtime::runtime_logs::{self, Page, Query};
 use serde::Serialize;
 use std::{
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicU64, Ordering},
         Mutex,
     },
 };
@@ -13,7 +13,16 @@ use tauri::{AppHandle, WebviewWindow};
 use tauri_plugin_dialog::DialogExt;
 
 static EXPORT_LOCK: Mutex<()> = Mutex::new(());
-static CANCELLED: AtomicBool = AtomicBool::new(false);
+static CANCELLATION: AtomicU64 = AtomicU64::new(0);
+
+fn cancellation_check() -> impl Fn() -> bool {
+    let generation = CANCELLATION.load(Ordering::Acquire);
+    move || CANCELLATION.load(Ordering::Acquire) != generation
+}
+
+fn cancel() {
+    CANCELLATION.fetch_add(1, Ordering::Release);
+}
 
 fn require_main(window: &WebviewWindow) -> Result<(), String> {
     if window.label() == "main" {
@@ -57,7 +66,7 @@ fn save_atomically(
 #[tauri::command]
 pub(crate) fn cancel_log_export(window: WebviewWindow) -> Result<(), String> {
     require_main(&window)?;
-    CANCELLED.store(true, Ordering::Release);
+    cancel();
     Ok(())
 }
 
@@ -71,36 +80,54 @@ pub(crate) async fn export_workspace_logs(
     if requests.is_empty() || requests.len() > 100 {
         return Err("Select between one and 100 sandboxes to export logs.".into());
     }
+    let cancelled = cancellation_check();
     tauri::async_runtime::spawn_blocking(move || {
-        let _guard = EXPORT_LOCK
-            .try_lock()
-            .map_err(|_| "A log export is already in progress.")?;
-        CANCELLED.store(false, Ordering::Release);
-        let Some(selected) = app
-            .dialog()
-            .file()
-            .set_parent(&window)
-            .set_title("Export logs")
-            .set_file_name("silo-logs.jsonl")
-            .add_filter("JSON Lines", &["jsonl"])
-            .blocking_save_file()
-        else {
-            return Ok(false);
-        };
-        let destination = selected
-            .into_path()
-            .map_err(|_| "The export destination is unavailable.")?;
-        save_atomically(&destination, |output| {
-            write_requests(
-                output,
-                requests,
-                |request| runtime_logs::query(&app, request).map_err(|error| error.message),
-                || CANCELLED.load(Ordering::Acquire),
-            )
-        })
+        export_with(
+            requests,
+            || {
+                app.dialog()
+                    .file()
+                    .set_parent(&window)
+                    .set_title("Export logs")
+                    .set_file_name("silo-logs.jsonl")
+                    .add_filter("JSON Lines", &["jsonl"])
+                    .blocking_save_file()
+                    .map(|selected| {
+                        selected
+                            .into_path()
+                            .map_err(|_| "The export destination is unavailable.".into())
+                    })
+                    .transpose()
+            },
+            |request| runtime_logs::query(&app, request).map_err(|error| error.message),
+            cancelled,
+        )
     })
     .await
     .map_err(|_| "The log export task failed.".to_owned())?
+}
+
+fn export_with(
+    requests: Vec<Query>,
+    select: impl FnOnce() -> Result<Option<PathBuf>, String>,
+    query: impl FnMut(Query) -> Result<Page, String>,
+    cancelled: impl Fn() -> bool,
+) -> Result<bool, String> {
+    let _guard = EXPORT_LOCK
+        .try_lock()
+        .map_err(|_| "A log export is already in progress.")?;
+    if cancelled() {
+        return Ok(false);
+    }
+    let Some(destination) = select()? else {
+        return Ok(false);
+    };
+    if cancelled() {
+        return Ok(false);
+    }
+    save_atomically(&destination, |output| {
+        write_requests(output, requests, query, cancelled)
+    })
 }
 
 pub(crate) fn write_requests(
@@ -165,6 +192,58 @@ pub(crate) fn write_requests(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_before_the_export_worker_starts_skips_the_picker_and_output() {
+        let _isolation = crate::test_support::global_state();
+        let cancelled = cancellation_check();
+        cancel();
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("logs.jsonl");
+        std::fs::write(&destination, b"previous export").unwrap();
+        let selected = std::cell::Cell::new(false);
+        let saved = export_with(
+            vec![Query::default()],
+            || {
+                selected.set(true);
+                Ok(Some(destination.clone()))
+            },
+            |_| Ok(page(0, 1)),
+            cancelled,
+        )
+        .unwrap();
+        assert!(!saved);
+        assert!(!selected.get());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous export");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn a_new_export_after_cancellation_can_save_normally() {
+        let _isolation = crate::test_support::global_state();
+        let old = cancellation_check();
+        cancel();
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("logs.jsonl");
+        assert!(export_with(
+            vec![Query::default()],
+            || Ok(Some(destination.clone())),
+            |_| Ok(page(0, 1)),
+            cancellation_check(),
+        )
+        .unwrap());
+        assert!(
+            old(),
+            "starting another export must not undo the old cancellation"
+        );
+        assert_eq!(
+            std::fs::read_to_string(destination)
+                .unwrap()
+                .lines()
+                .count(),
+            3
+        );
+    }
 
     fn page(offset: usize, total: usize) -> Page {
         let end = (offset + 200).min(total);

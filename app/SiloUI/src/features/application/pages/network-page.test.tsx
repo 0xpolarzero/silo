@@ -20,6 +20,14 @@ function setup(overrides: Partial<ApplicationActions> = {}, state: NetworkState 
   return {actions,user:userEvent.setup(),...render(<SettingsProvider initialSettings={{theme:"light"}}><Toaster /><NetworkPage workspaces={workspaces} browser={browser} network={state} actions={actions} active /></SettingsProvider>)}
 }
 describe("Network", () => {
+  it.each(["Starting", "Stopping"])("describes a transitioning sandbox's ports as %s", detail => {
+    const actions = { refreshNetwork: vi.fn(async () => {}) } as unknown as ApplicationActions
+    render(<NetworkPage workspaces={workspaces.map(workspace => ({ ...workspace, state: "starting", stateDetail: detail }))}
+      browser="Firefox" network={network} actions={actions} active={false} />)
+    expect(screen.getAllByText(`Sandbox ${detail.toLowerCase()}`)).toHaveLength(3)
+    expect(screen.queryByRole("button", { name: /^Open / })).not.toBeInTheDocument()
+  })
+
   it("uses actual forwarded addresses and opens only reachable web services", async () => {
     const {user,actions} = setup()
     expect(screen.getByText("127.0.0.1:45432")).toBeVisible()
@@ -234,4 +242,35 @@ it.each(["local", "remote"])("isolates %s discovery errors from a healthy same-n
   await user.click(within(healthy).getByRole("button", { name: "Open port 3000 in browser" }))
   expect(actions.openNetworkPort).toHaveBeenCalledWith(failing === "remote" ? "dev" : target, 3000)
   if (failing === "remote") expect(screen.getByRole("alert")).toHaveTextContent("dev (Office Mac): Remote discovery failed")
+})
+
+
+it("blocks a previous failure's Retry while another port save is pending", async () => {
+  let finish!: () => void
+  const save = vi.fn().mockRejectedValueOnce(new Error("Local port is already in use."))
+    .mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve }))
+    .mockResolvedValue(undefined)
+  const { user } = setup({ saveNetworkPort: save })
+  await user.click(screen.getByRole("button", { name: "Add port" }))
+  await user.type(screen.getByRole("spinbutton", { name: "Port" }), "9000")
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  const retry = await screen.findByRole("button", { name: "Retry" })
+  await user.clear(screen.getByRole("spinbutton", { name: "Port" }))
+  await user.type(screen.getByRole("spinbutton", { name: "Port" }), "9001")
+  await user.click(screen.getByRole("button", { name: "Add" }))
+  expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
+  await user.click(retry)
+  expect(save).toHaveBeenCalledTimes(2)
+  expect(screen.getByRole("button", { name: "Add" })).toBeDisabled()
+  await act(async () => finish())
+  expect(await screen.findByText("Port 9001 added · dev")).toBeVisible()
+  expect(screen.getByRole("button", { name: "Add port" })).toBeEnabled()
+})
+
+
+it("shows an empty filter result without waiting for unrelated network discovery", () => {
+  const actions = { refreshNetwork: vi.fn(() => new Promise<void>(() => {})) } as unknown as ApplicationActions
+  render(<NetworkPage workspaces={[]} browser="Firefox" actions={actions} active />)
+  expect(screen.getByText("No matching sandboxes")).toBeVisible()
+  expect(screen.queryByRole("status", { name: "Loading network" })).not.toBeInTheDocument()
 })

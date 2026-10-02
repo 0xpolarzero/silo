@@ -12,7 +12,7 @@ Reviewed boundaries: `app/SiloUI/scripts/`, `.github/workflows/`, `.github/actio
 
 P1 denotes an essential delivery or isolation failure; P2 denotes a concrete correctness, availability, or verification failure; P3 denotes a narrower defect with a practical workaround. Evidence distinguishes executed fixture behavior from source-confirmed consequences.
 
-No release is published, signed, tagged, or pushed. No runtime preparation, app launch, real VM, production HOME, or credential store is used. Tests use synthetic inputs and temporary paths.
+No release was published or signed, and no repository or remote release tag was changed. The existing Node adapter suite created unsigned tags in disposable test repositories in two runs; their cleanup removed those fixtures. The attempted exclusion filter did not exclude that test; a subsequent positively selected publication regression ran alone. This verification mistake violated the instruction not to tag and is recorded explicitly. No runtime preparation, app launch, real VM, production HOME, or credential store is used. Tests use synthetic inputs and temporary paths.
 
 ## Findings at a glance
 
@@ -25,6 +25,10 @@ No release is published, signed, tagged, or pushed. No runtime preparation, app 
 | RL-05 | P3 | Release guide omits the implemented in-app Debian update | Corrected and folded: `17edafc6` |
 | RL-06 | P2 | Required minimum-macOS gate uses a runner with imminent brownouts | Open; replacement qualification required |
 | RL-07 | P2 | MicroSandbox fallback executable cache ignores compiler flags and build recipe | Fixed: `abae62fe` |
+| RL-08 | P2 | Failed license staging replaces the MicroSandbox sidecar without its manifest | Fixed; regression passes |
+| RL-09 | P2 | Optional GNOME verifier uses obsolete tray and channel expectations | Fixed and folded: `028ce994` |
+| RL-10 | P2 | Package identity gate accepts another Debian package or macOS Dev bundle | Fixed: `8102c670` |
+| RL-11 | P2 | Lifecycle guest probes use the production alias for Dev | Confirmed; fix pending |
 
 ## Detailed findings
 
@@ -137,6 +141,71 @@ tools compiled eight times across the existing capability/source cases. Changing
 the four documented Cargo flag environment inputs. The regression checks rebuilds
 for changed plain, encoded, build-wide, and target-specific flags, and reuse when
 those inputs remain unchanged. The focused runtime staging tests pass.
+
+### RL-08 Failed license staging replaces the MicroSandbox sidecar without its manifest
+
+**P2.** `stageRuntime` published the compiled sidecar before fetching and verifying
+the remaining licenses and writing the new resource manifest. A later download
+failure left the previously prepared manifest and library alongside a replacement
+sidecar with a different digest.
+
+**Evidence.** A fixture first prepared a complete runtime, then attempted a new
+compiled executable with an unavailable license URL. The call rejected, but the
+sidecar contained the replacement bytes. The regression failed on the original
+sidecar comparison; no native executable or network request was used.
+
+**Correction and status.** Fixed: sidecar publication follows complete resource
+and manifest staging. The regression now verifies that a failed license fetch
+preserves all three previously prepared outputs. This does not claim atomic
+publication across a process crash or final filesystem errors.
+### RL-09 Optional GNOME verifier uses obsolete tray and channel expectations
+
+**P2.** Confirmed at `ac8aaf87`. Locations: [linux_desktop_services.py](../app/SiloUI/scripts/linux_desktop_services.py), tray item selection, Open action and health fixture; [tray.rs](../app/SiloUI/src-tauri/src/tray.rs), Linux `menu` and `title`.
+
+**Trigger.** Enable the smoke harness's optional `SILO_LINUX_DESKTOP_SERVICES=gnome` mode against a current production or Dev fixture.
+
+**Evidence.** Native Linux tray code exports the menu label `Open Silo`; the GNOME helper selects `Open Silo…` and therefore raises `StopIteration` for the current menu even in production. For Dev, it first rejects the channel's `Silo Dev` tray title and window title because both comparisons require `Silo`. Its health-error injection also writes metadata under the production identifier regardless of the selected fixture identifier. These are source-confirmed adapter mismatches; no desktop service was launched.
+
+**Consequence.** The optional verification cannot reach its claimed native reopen, health notification, and Quit checks. The title and metadata assumptions also prevent extending that qualification to the Dev channel selected by the current build workflow. This is separate from RL-02's ordinary settings/autostart smoke paths.
+
+**Correction.** Match the actual Open action and derive tray/window names and health metadata from the selected channel. Keep the native menu's current shared action labels; changing product menus is outside this fixture correction.
+
+**Rejecting test.** Feed the extracted real GNOME menu selector a layout populated from the native tray's actual action labels. It must select Open and Quit. Exercise the tray-title predicate and health metadata path for both standard channel identifiers, requiring Dev state to remain under the Dev fixture root. Then qualify the full optional GNOME run separately.
+
+### RL-10 Package identity gate accepts another Debian package or macOS Dev bundle
+
+**P2.** The final metadata verifier checked Debian version/architecture but not
+`Package`, and macOS version/CPU but not `CFBundleIdentifier`. Correctly versioned
+artifacts belonging to another application or the Dev channel therefore passed.
+
+**Evidence.** Synthetic signed-package contents for both Debian architectures
+with `Package: unrelated`, plus ARM64 macOS archives with Dev/other identifiers,
+all passed before the correction. Four rejecting subcases failed. These fixtures
+exercise the metadata verifier, not cryptographic signing or publication.
+
+**Correction and status.** Fixed: Debian packages must identify `silo`; macOS
+archives must use the production identifier from the tracked Tauri configuration.
+Positive production fixtures still pass. The Linux fixture builds real `.deb`
+files with `dpkg-deb` and accepts `silo` while rejecting an unrelated package.
+
+### RL-11 Lifecycle guest probes use the production alias for Dev
+
+**P2.** Confirmed at `0aef0323`. Locations: [test-linux-desktop.py](../app/SiloUI/scripts/test-linux-desktop.py), `run_lifecycle` identifier and nested `guest_for`; [runtime.rs](../app/SiloUI/src-tauri/src/runtime.rs), `runtime_home_alias`; [channel.rs](../app/SiloUI/src-tauri/src/channel.rs), `from_identifier` and `state_dir_name`.
+
+**Trigger.** Run lifecycle verification against an isolated Dev fixture, or the helper's default historical `org.silo.preview.linux-checkpoints` identifier. Native code classifies every identifier except exact `org.silo.preview` as Dev.
+
+**Evidence.** `guest_for` computes its alias under HOME plus literal `.silo`, while native runtime aliases use `.silo-dev` for Dev and historical/custom identifiers. A deterministic execution of the actual nested guest probe with the correct fixture alias fails its missing-directory assertion for both Dev and the historical default. Explicit production passes the same seam. A separate default-identifier regression rejects the historical default, which is no longer one of the two supported builds.
+
+**Consequence.** Migration can finish, but the first guest probe fails before invoking the bundled CLI, so lifecycle verification provides no claimed guest/checkpoint/archive evidence for Dev. This is a hard-coded host name outside `channel.rs`, distinct from ordinary smoke settings in RL-02 and the GNOME adapter in RL-09.
+
+**Correction.** Default lifecycle fixtures to the supported Dev identifier and select the private directory using the native channel rule, retaining explicit production fixture compatibility and the native Dev treatment of historical identifiers.
+
+**Rejecting test.** Execute the actual guest probe with synthetic aliases for Dev, production, and the historical identifier. Only the matching alias exists; the recorded CLI environment must receive that alias as `MSB_HOME`. The default must select Dev. No app, VM, CLI executable, or real HOME is needed.
+
+**Status.** Regression fails before the correction in three subcases; fix pending.
+
+
+**Integration follow-up for RL-09.** A subsequent native channel-name change made Open and Quit labels use the product name. The merged regression caught the obsolete literal adapter and failed with `StopIteration`. The adapter and source-derived menu regression now cover `Open/ Quit Silo` and `Open/ Quit Silo Dev`; both channel cases pass.
 
 ## Verification and reproducibility
 

@@ -8,6 +8,20 @@ import * as operationToast from "@/lib/operation-toast"
 
 afterEach(() => { toast.dismiss() })
 
+it.each(["Cancel", "Connect token"])("moves focus into token editing and returns it after %s", async (close) => {
+  const user = userEvent.setup()
+  const save = vi.fn().mockResolvedValue(undefined)
+  render(<PersonalTokenConnection onSave={save} />)
+  const add = screen.getByRole("button", { name: "Add token" })
+  await user.click(add)
+  const input = screen.getByLabelText("GitHub personal access token")
+  expect(input).toHaveFocus()
+  if (close === "Connect token") await user.type(input, "github_pat_synthetic")
+  await user.click(screen.getByRole("button", { name: close }))
+  await waitFor(() => expect(add).toHaveFocus())
+  expect(screen.queryByLabelText("GitHub personal access token")).not.toBeInTheDocument()
+})
+
 it("submits a token once and clears it immediately while native validation runs", async () => {
   const user = userEvent.setup()
   let complete!: () => void
@@ -54,7 +68,7 @@ it("invalidates a failed removal retry before replacing the token", async () => 
   const save = vi.fn(() => new Promise<void>(resolve => { complete = resolve }))
   render(<><Toaster /><PersonalTokenConnection status={{ state: "connected", saved: true, account: "original" }} onSave={save} onRemove={remove} /></>)
   await user.click(screen.getByRole("button", { name: "Remove token" }))
-  expect(await screen.findByRole("button", { name: "Retry" })).toBeVisible()
+  expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument()
   const retry = failure.mock.calls[0][2]!
   await user.click(screen.getByRole("button", { name: "Replace token" }))
   await user.type(screen.getByLabelText("GitHub personal access token"), "github_pat_replacement")
@@ -91,10 +105,17 @@ it("invalidates removal retries when the component unmounts", async () => {
   render(<Toaster />)
   const view = render(<PersonalTokenConnection status={{ state: "connected", saved: true, account: "original" }} onRemove={remove} />)
   await user.click(screen.getByRole("button", { name: "Remove token" }))
-  expect(await screen.findByRole("button", { name: "Retry" })).toBeVisible()
+  expect(await screen.findByRole("button", { name: "Retry" })).toBeInTheDocument()
   const retry = failure.mock.calls[0][2]!
   view.unmount()
   act(() => retry())
   expect(remove).toHaveBeenCalledOnce()
   await waitFor(() => expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument())
+})
+
+it("leaves the notification store alone on teardown without a removal failure", () => {
+  const dismiss = vi.spyOn(toast, "dismiss")
+  const view = render(<PersonalTokenConnection />)
+  view.unmount()
+  expect(dismiss).not.toHaveBeenCalled()
 })

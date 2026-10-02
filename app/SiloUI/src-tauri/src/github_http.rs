@@ -88,10 +88,9 @@ fn key(route: &str, body: &[u8]) -> String {
     format!("{:x}", hash.finalize())
 }
 fn waiting(until: u64, at: u64) -> String {
-    format!(
-        "GitHub access update is waiting. Retrying in {} seconds.",
-        until.saturating_sub(at).max(1)
-    )
+    let seconds = until.saturating_sub(at).max(1);
+    let unit = if seconds == 1 { "second" } else { "seconds" };
+    format!("GitHub access update is waiting. Retrying in {seconds} {unit}.")
 }
 impl Gates {
     fn restore_floor(&mut self, class: &str, until: u64) {
@@ -154,7 +153,7 @@ impl Gates {
             .saturating_add(delay)
             .max(floor)
             .saturating_add(jitter % 4);
-        if rate {
+        if rate || floor > at {
             self.restore_floor(class, until);
         }
         // Safe reads (such as token validation) keep retrying with capped backoff;
@@ -448,6 +447,20 @@ pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn retry_gate_pluralizes_the_remaining_seconds() {
+        let mut gates = Gates::default();
+        gates.restore_floor("fixture", 102);
+        assert_eq!(
+            gates.check("request", "fixture", 100).unwrap_err(),
+            "GitHub access update is waiting. Retrying in 2 seconds."
+        );
+        assert_eq!(
+            gates.check("request", "fixture", 101).unwrap_err(),
+            "GitHub access update is waiting. Retrying in 1 second."
+        );
+        assert!(gates.check("request", "fixture", 102).is_ok());
+    }
     fn wire_response(status: u16, body: &str, revoke: bool) -> Result<Value, String> {
         let reply = format!(
             "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -533,6 +546,35 @@ mod tests {
                 gates().requests.remove(&key);
             }
         }
+    }
+    #[test]
+    fn service_unavailable_retry_after_survives_explicit_retry_and_relaunch() {
+        let _test_state = crate::test_support::global_state();
+        let key = uuid::Uuid::new_v4().to_string();
+        let class = uuid::Uuid::new_v4().to_string();
+        let at = now();
+        let error = wire_reply(
+            &key,
+            &class,
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 600\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}".into(),
+            true,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("Retrying"));
+        let until = gates().requests[&key].until.unwrap();
+        assert!(until >= at + 600);
+        reset_retries();
+        assert!(preflight(&key, &class).is_err());
+        let floors = retry_floors();
+        let mut restored = Gates::default();
+        for (class, until) in floors {
+            restored.restore_floor(&class, until);
+        }
+        assert!(restored.check(&key, &class, until - 1).is_err());
+        assert!(restored.check(&key, &class, until).is_ok());
+        assert!(restored.check("unrelated", "other-credential", at).is_ok());
+        gates().rate_until.remove(&class);
     }
     #[test]
     fn real_http_oauth_errors_are_redacted_and_revocation_accepts_empty_responses() {

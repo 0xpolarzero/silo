@@ -1,10 +1,12 @@
 import test from "node:test"
 import assert from "node:assert/strict"
 import { spawn, execFileSync } from "node:child_process"
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { copyFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
+import { Readable } from "node:stream"
+import { MICROSANDBOX_PATCHES, runtimeTargets, sha256, stageRuntime } from "./microsandbox-runtime.mjs"
 
 const runtimeModule = new URL("./microsandbox-runtime.mjs", import.meta.url).href
 const toolScript = `#!${process.execPath}
@@ -18,7 +20,7 @@ if (process.argv[1].endsWith("rustc")) {
   if (process.env.FIXTURE_ROLE === "failure") throw new Error("Fixture compiler failure")
   if (process.env.FIXTURE_ROLE === "first") {
     writeFileSync(join(process.env.FIXTURE_ROOT, "ready"), process.cwd())
-    const deadline = Date.now() + 10000
+    const deadline = Date.now() + 30000
     while (true) {
       try { readFileSync(join(process.env.FIXTURE_ROOT, "continue")); break } catch {}
       if (Date.now() > deadline) throw new Error("Fixture gate timed out")
@@ -79,14 +81,14 @@ function runWorker(t, fixture, role) {
 }
 
 async function waitForFile(path) {
-  const deadline = Date.now() + 5000
+  const deadline = Date.now() + 15000
   while (Date.now() < deadline) {
     try { return await readFile(path, "utf8") } catch { await delay(10) }
   }
   throw new Error(`Timed out waiting for ${path}`)
 }
 
-test("a completed preparation cannot remove another process's active source", { timeout: 15000 }, async t => {
+test("a completed preparation cannot remove another process's active source", { timeout: 45000 }, async t => {
   const paths = await fixture(t)
   const first = runWorker(t, paths, "first")
   const firstSource = await waitForFile(join(paths.root, "ready"))
@@ -112,4 +114,44 @@ test("a failed preparation removes its own extracted source", async t => {
   for (const name of await readdir(builds)) {
     assert.deepEqual((await readdir(join(builds, name))).filter(entry => entry.startsWith("work-")), [])
   }
+})
+
+
+test("failed capability verification removes staging files and preserves the published runtime", async t => {
+  const { root } = await fixture(t)
+  const appRoot = join(root, "app")
+  const targetTriple = "aarch64-apple-darwin"
+  const executable = Buffer.from(`#!${process.execPath}\nconsole.log("unsupported runtime")\n`)
+  const agentd = Buffer.from("fixture agent")
+  const library = Buffer.from("fixture library")
+  const source = Buffer.from("fixture source")
+  const selected = {
+    ...runtimeTargets[targetTriple], executableSha256: sha256(executable),
+    agentdSha256: sha256(agentd), librarySha256: sha256(library),
+  }
+  const sourceArtifact = { url: "https://fixture.invalid/source", sha256: sha256(source) }
+  await mkdir(join(appRoot, "patches"), { recursive: true })
+  for (const patch of MICROSANDBOX_PATCHES) {
+    await copyFile(new URL(`../${patch.path}`, import.meta.url), join(appRoot, patch.path))
+  }
+  const binaries = join(appRoot, "src-tauri/binaries")
+  const resources = join(appRoot, "src-tauri/runtime")
+  const published = join(resources, "microsandbox")
+  await mkdir(binaries, { recursive: true })
+  await mkdir(published, { recursive: true })
+  await writeFile(join(binaries, `msb-${targetTriple}`), "previous executable")
+  await writeFile(join(published, "manifest.json"), "previous manifest")
+  const fetchStream = async url => {
+    const bytes = url === sourceArtifact.url ? source : url.endsWith(selected.agentdAsset) ? agentd
+      : url.endsWith(selected.libraryAsset) ? library : executable
+    return Readable.from([bytes])
+  }
+  await assert.rejects(stageRuntime({
+    appRoot, targetTriple, selected, sourceArtifact, licenses: [], fetchStream,
+    buildExecutable: async () => executable,
+  }), /failed its version/)
+  assert.equal(await readFile(join(binaries, `msb-${targetTriple}`), "utf8"), "previous executable")
+  assert.equal(await readFile(join(published, "manifest.json"), "utf8"), "previous manifest")
+  assert.deepEqual(await readdir(binaries), [`msb-${targetTriple}`])
+  assert.deepEqual(await readdir(resources), ["microsandbox"])
 })

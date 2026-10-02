@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep pre-upgrade backups when sandbox images still read their files through a runtime alias or their dependencies cannot be verified.
+Keep pre-upgrade backups while sandbox images still depend on their files, or when those dependencies cannot be checked.

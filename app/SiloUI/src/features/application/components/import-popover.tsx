@@ -31,6 +31,7 @@ export function ImportPopover({ source, review, anchor, onReview, onImport, onCl
   const nameConflict = isReview
     ? source.workspaces.filter((w) => !w.computer).some(({ machine }) => machine.name.toLowerCase() === isReview.newName.toLowerCase())
     : false
+  const validationError = nameError ?? (isReview && nameConflict ? `A sandbox named ${isReview.newName} already exists.` : undefined)
   const title = isReview ? `Import ${isReview.archive.name}` : review?.kind === "invalid" ? "This export cannot be imported" : "Checking export"
   const fields = !review ? null : review.kind === "checking"
     ? <Progress value={null} aria-label="Import validation progress" />
@@ -39,7 +40,11 @@ export function ImportPopover({ source, review, anchor, onReview, onImport, onCl
     : <div className="grid gap-2">
         <p className="text-muted-foreground">{review.archive.size} · {review.archive.sandboxes.length === 1 ? review.archive.sandboxes[0] : `${review.archive.sandboxes.length} sandboxes`}. Imported as a new stopped sandbox; existing sandboxes and the export file stay unchanged.</p>
         {review.archive.sandboxes.length > 1 && <label className="grid gap-1">Sandbox to import<Select value={review.sourceName} onValueChange={(sourceName) => onReview({ ...review, sourceName, newName: review.newName === `${review.sourceName}-imported` ? `${sourceName}-imported` : review.newName })}><SelectTrigger className="h-7 text-[11px]" aria-label="Sandbox to import"><SelectValue /></SelectTrigger><SelectContent>{review.archive.sandboxes.map((name) => <SelectItem key={name} value={name}>{name}</SelectItem>)}</SelectContent></Select></label>}
-        <label className="grid gap-1">New sandbox name<Input technical value={review.newName} aria-invalid={Boolean(nameError) || nameConflict} aria-describedby={nameError ? nameErrorID : undefined} onChange={(event) => onReview({ ...review, newName: event.target.value })} />{nameError && <span id={nameErrorID} className="text-destructive">{nameError}</span>}{!nameError && nameConflict && <span className="text-destructive">A sandbox named {review.newName} already exists.</span>}</label>
+        <div className="grid gap-1">
+          <label htmlFor={`${nameErrorID}-input`}>New sandbox name</label>
+          <Input technical id={`${nameErrorID}-input`} value={review.newName} aria-invalid={Boolean(validationError)} aria-describedby={validationError ? nameErrorID : undefined} onChange={(event) => onReview({ ...review, newName: event.target.value })} />
+          {validationError && <span id={nameErrorID} className="text-destructive">{validationError}</span>}
+        </div>
       </div>
   return <FormPopover
     open={review !== null}

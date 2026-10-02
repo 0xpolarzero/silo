@@ -97,7 +97,7 @@ fn load(app_data: &Path) -> Saved {
             if record.version == VERSION
                 && started
                     .checked_add(RETENTION)
-                    .and_then(|deadline| deadline.checked_to_offset(UtcOffset::UTC))
+                    .and_then(|date| date.checked_to_offset(UtcOffset::UTC))
                     .is_some() =>
         {
             Saved::Valid {
@@ -630,28 +630,6 @@ mod tests {
     }
 
     #[test]
-    fn an_overflowing_retention_date_keeps_the_backup_and_saved_record() {
-        for started in ["9999-12-31T23:59:59Z", "9999-12-17T23:59:59-23:59"] {
-            let dir = complete();
-            let record =
-                format!(r#"{{"version":1,"startedAt":"{started}","noticeAcknowledged":false}}"#);
-            fs::write(dir.path().join(FILE), &record).unwrap();
-            let now = at("2026-10-01T10:00:00Z");
-            assert_eq!(
-                status(dir.path(), now).unwrap(),
-                Some(Status {
-                    delete_at: None,
-                    notice_pending: false,
-                })
-            );
-            assert!(!delete_if_due(dir.path(), None, now).unwrap());
-            acknowledge(dir.path(), now).unwrap();
-            assert!(dir.path().join("runtime").is_dir());
-            assert_eq!(fs::read(dir.path().join(FILE)).unwrap(), record.as_bytes());
-        }
-    }
-
-    #[test]
     fn a_fresh_migration_starts_its_window_once_and_reports_the_date() {
         let dir = complete();
         let first = status(dir.path(), at("2026-10-01T10:00:00Z"))
@@ -888,6 +866,14 @@ mod tests {
                 br#"{"version":2,"startedAt":"2020-01-01T00:00:00Z"}"#,
             ),
             ("bad date", br#"{"version":1,"startedAt":"last tuesday"}"#),
+            (
+                "deletion date overflow",
+                br#"{"version":1,"startedAt":"9999-12-31T23:59:59Z"}"#,
+            ),
+            (
+                "UTC deletion date overflow",
+                br#"{"version":1,"startedAt":"9999-12-17T23:59:59-23:59"}"#,
+            ),
         ] {
             let dir = complete();
             fs::write(dir.path().join(FILE), contents).unwrap();

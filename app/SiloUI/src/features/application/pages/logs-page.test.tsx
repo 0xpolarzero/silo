@@ -25,6 +25,11 @@ function scrollNearEnd() {
   return viewport
 }
 describe("retained logs", () => {
+  it.each([[1, "record"], [2, "records"]])("pluralizes the summary for %i matching %s", async (count, noun) => {
+    const { workspace, actions } = fixture(count)
+    render(<Logs workspaces={[workspace]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    expect(await screen.findByText(`Showing ${count} of ${count} matching ${noun}.`)).toBeVisible()
+  })
   it("formats clipboard text on click and copies the current loaded window", async () => {
     const user = userEvent.setup()
     const { workspace, actions } = fixture(401)
@@ -204,7 +209,7 @@ describe("retained logs", () => {
     expect(details).toHaveTextContent("old diagnostic needle")
     expect(details).toHaveTextContent("The complete diagnostic message remains visible when expanded.")
     expect(screen.getByLabelText("Search logs")).toHaveValue("needle")
-    expect(screen.getByText("Showing 1 of 1 matching records.")).toBeVisible()
+    expect(screen.getByText("Showing 1 of 1 matching record.")).toBeVisible()
     expect(queryLogs).toHaveBeenCalledTimes(1)
     expect(queryLogs).toHaveBeenLastCalledWith(expect.objectContaining({ query: "needle", ...window, limit: 200 }))
     fireEvent.click(screen.getByRole("button", { name: `Collapse ${label}` }))
@@ -260,12 +265,12 @@ describe("retained logs", () => {
     })
     render(<Logs workspaces={[workspace, remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
     expect(await screen.findByText("old diagnostic needle")).toBeVisible()
-    expect(screen.getByRole("alert")).toHaveTextContent("remote sandbox: Error: Offline")
+    expect(screen.getByRole("alert")).toHaveTextContent("remote sandbox: Offline")
   })
   it("retries a failed first read from the error control without overlapping requests", async () => {
     const { workspace, actions } = fixture(2)
     let resolve!: (page: LogPage) => void
-    const queryLogs = vi.fn().mockRejectedValueOnce(new Error("Host unavailable"))
+    const queryLogs = vi.fn().mockRejectedValueOnce({ code: "internal", message: "Host unavailable" })
       .mockImplementationOnce(() => new Promise<LogPage>(done => { resolve = done }))
     actions.queryLogs = queryLogs
     render(<Logs workspaces={[workspace]} actions={actions} active query="needle" onQueryChange={vi.fn()} />)
@@ -282,7 +287,7 @@ describe("retained logs", () => {
 
     expect(screen.queryByRole("alert")).not.toBeInTheDocument()
     expect(screen.getByText("old diagnostic needle")).toBeVisible()
-    expect(screen.getByText("Showing 1 of 1 matching records.")).toBeVisible()
+    expect(screen.getByText("Showing 1 of 1 matching record.")).toBeVisible()
     expect(screen.getByRole("button", { name: "Refresh logs" })).toBeEnabled()
   })
   it("refreshes only while following and active", async () => {
@@ -401,13 +406,15 @@ describe("retained logs", () => {
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
   })
 
-  it("uses the unsupported remote error code as an update hint", async () => {
+  it.each(["", "needle"])("uses the unsupported remote error code as an update hint without claiming empty logs (query: %s)", async query => {
     const { workspace, actions } = fixture()
     const remote = { ...workspace, machine: { ...workspace.machine, id: "silo-remote:zeronival:dev-zeronival", name: "dev-zeronival" }, computer: { id: "zeronival", vmId: "dev-zeronival", name: "zeronival", address: "zeronival.local", connected: true } }
     actions.queryLogs = vi.fn(async () => { throw { code: "unsupported_remote_operation", message: "This computer cannot query logs." } })
-    render(<Logs workspaces={[remote]} actions={actions} active query="" onQueryChange={vi.fn()} />)
+    render(<Logs workspaces={[remote]} actions={actions} active query={query} onQueryChange={vi.fn()} />)
     expect(await screen.findByText("Update Silo on zeronival to see logs for dev-zeronival.")).toBeVisible()
     expect(screen.queryByText(/Logs unavailable/)).not.toBeInTheDocument()
+    expect(screen.queryByText("No logs yet")).not.toBeInTheDocument()
+    expect(screen.queryByText("No results")).not.toBeInTheDocument()
   })
 
 })

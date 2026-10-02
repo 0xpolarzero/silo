@@ -636,6 +636,28 @@ matrix, frontend checks, package checks and minimum-macOS checks to pass. Native
 test jobs receive no signing credentials. Only the reviewed public release dependencies
 described above are cached; application and native-test products are excluded.
 
+Workflow checkouts set `persist-credentials: false`. The [pinned checkout action](https://github.com/actions/checkout/blob/3d3c42e5aac5ba805825da76410c181273ba90b1/action.yml)
+defaults to retaining its token for later authenticated Git commands. These jobs
+need Git authentication only during checkout; publication and package downloads
+receive explicit step-scoped tokens. Disabling persistence keeps that token out
+of subsequent build and test Git commands. Job permissions remain read-only by
+default, with existing write permissions confined to publication jobs.
+
+Reusable workflow and runtime-action string inputs enter shell commands through
+quoted environment variables. GitHub expands expressions before parsing inline
+scripts, so quoting a `${{ inputs.target }}` expression alone does not prevent
+script injection. See [GitHub's script-injection guidance](https://docs.github.com/en/actions/reference/security/secure-use#use-an-intermediate-environment-variable).
+The workflow regression runs extracted commands against disposable executables
+with ordinary targets, quote-breaking input and command-substitution input.
+Current release callers supply fixed matrix values; this protects the reusable
+input boundary without changing release gates or published asset names.
+
+Linux verification and release-tooling checks cancel obsolete runs for the same
+pull request and workflow. Push and manual verification runs use their run IDs,
+so they stay independent. [GitHub concurrency groups](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+are repository-wide; including the workflow name prevents cross-workflow
+cancellation. Publication and release-build concurrency policies are unchanged.
+
 Artifact-only runs have independent concurrency groups, so they do not queue
 behind or displace a pending publication. Tagged and draft publications of the
 same release tag share one concurrency group per tag, so builds of different
@@ -666,3 +688,13 @@ streams output and remains in the bundle log. Compilation, runtime preparation
 and package validation are outside this retry boundary; other errors fail
 immediately. This handles transient upstream download failures without
 repeating the expensive build phases.
+
+Each bundle attempt runs in its own process group. If forwarding stdout/stderr
+or writing the local log fails, the wrapper stops that group and reaps its
+bundle command before propagating the error. Python's
+[`Popen` context manager](https://docs.python.org/3/library/subprocess.html#subprocess.Popen)
+waits for the child on exit; it does not stop it on an exception. The synthetic
+stream-failure regression checks all three output destinations and verifies
+that the child is reaped. A descendant fixture inherits a separate pipe; EOF
+verifies that it also exits after forwarding fails. This does not test a real
+package build.
