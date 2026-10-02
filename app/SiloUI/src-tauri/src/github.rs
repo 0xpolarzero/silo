@@ -2804,6 +2804,7 @@ fn catalog_refresh_due(d: &Document, now: u64) -> bool {
 fn sweep_retirement(
     retirement: &Mutex<TokenRetirement>,
     at: u64,
+    flush: impl FnOnce() -> Result<(), String>,
     read: impl FnOnce() -> Result<TokenLedger, String>,
     mut retire: impl FnMut(&str) -> Result<(), String>,
 ) -> Result<(), String> {
@@ -2815,6 +2816,8 @@ fn sweep_retirement(
         // Advance before network work so a completed push can request an earlier pass.
         state.retry_at = at + RETIREMENT_RETRY_AFTER;
     }
+    // Store a ledger whose earlier write failed first, even when it has no keys left.
+    flush()?;
     let mut failure = None;
     for name in read()?.keys() {
         if let Err(error) = retire(name) {
@@ -2982,6 +2985,11 @@ pub fn install(app: &tauri::AppHandle) {
             let _ = sweep_retirement(
                 retirement(),
                 now(),
+                || {
+                    LEDGER_SECRET.flush(|ledger| {
+                        ledger_entry().and_then(|entry| save_ledger(&entry, ledger))
+                    })
+                },
                 || LEDGER_SECRET.read(|| ledger_entry().and_then(|entry| read_ledger(&entry))),
                 |name| retire_unused(&app, name),
             );
@@ -4642,6 +4650,7 @@ mod tests {
             sweep_retirement(
                 &retirement,
                 29,
+                || panic!("flush before deadline"),
                 || panic!("retirement before deadline"),
                 |_| panic!("early revocation"),
             )
@@ -4649,6 +4658,7 @@ mod tests {
             assert!(sweep_retirement(
                 &retirement,
                 30,
+                || Ok(()),
                 || secret.read(|| panic!("unexpected store read")),
                 |name| retire_ledger_tokens(
                     &secret,
@@ -4664,6 +4674,7 @@ mod tests {
             sweep_retirement(
                 &retirement,
                 59,
+                || panic!("flush before retry"),
                 || panic!("retirement before retry"),
                 |_| panic!("early retry"),
             )
@@ -4671,6 +4682,7 @@ mod tests {
             sweep_retirement(
                 &retirement,
                 60,
+                || Ok(()),
                 || secret.read(|| panic!("unexpected store read")),
                 |name| retire_ledger_tokens(&secret, &entry, name, |_| false, |_| Ok(())),
             )
@@ -4680,6 +4692,47 @@ mod tests {
                 .unwrap()
                 .is_empty());
         }
+    }
+    #[test]
+    fn retirement_worker_flushes_an_unsaved_empty_ledger_after_storage_recovers() {
+        let secret = SessionSecret::new();
+        let entry =
+            keyring::Entry::new_with_credential(Box::new(keyring::mock::MockCredential::default()));
+        append_ledger_token(&secret, &entry, "dev", "push").unwrap();
+        let mock = entry
+            .get_credential()
+            .downcast_ref::<keyring::mock::MockCredential>()
+            .unwrap();
+        mock.set_error(keyring::Error::NoStorageAccess(Box::new(
+            std::io::Error::other("denied"),
+        )));
+        assert!(retire_ledger_tokens(&secret, &entry, "dev", |_| false, |_| Ok(())).is_err());
+        assert!(secret
+            .read(|| panic!("unexpected store read"))
+            .unwrap()
+            .is_empty());
+        let retirement = Mutex::new(TokenRetirement::default());
+        let sweep = |at| {
+            sweep_retirement(
+                &retirement,
+                at,
+                || secret.flush(|ledger| save_ledger(&entry, ledger)),
+                || secret.read(|| panic!("unexpected store read")),
+                |_| panic!("empty ledger has no tokens to retire"),
+            )
+        };
+        mock.set_error(keyring::Error::NoStorageAccess(Box::new(
+            std::io::Error::other("denied"),
+        )));
+        assert!(sweep(0).is_err());
+        assert_eq!(retirement.lock().unwrap().wait(0), Duration::from_secs(30));
+        sweep(30).unwrap();
+        assert!(read_ledger(&entry).unwrap().is_empty());
+        begin_host_push_token(&retirement, "next", || {
+            append_ledger_token(&secret, &entry, "dev", "next")
+        })
+        .unwrap();
+        assert_eq!(read_ledger(&entry).unwrap()["dev"], ["next"]);
     }
     #[test]
     fn push_token_is_durable_before_use_and_survives_a_crash() {
@@ -4695,6 +4748,7 @@ mod tests {
         sweep_retirement(
             &retirement,
             1,
+            || Ok(()),
             || secret.read(|| panic!("unexpected store read")),
             |name| {
                 retire_ledger_tokens(
@@ -4713,6 +4767,7 @@ mod tests {
         sweep_retirement(
             &restarted_retirement,
             2,
+            || Ok(()),
             || restarted.read(|| read_ledger(&entry)),
             |name| retire_ledger_tokens(&restarted, &entry, name, |_| false, |_| Ok(())),
         )
