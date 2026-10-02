@@ -140,4 +140,33 @@ describe("ChatGPT for Linux on each computer", () => {
     // An offline computer is not asked.
     expect(reads).not.toContain(OFFLINE)
   })
+
+  it("marks a retained status as last known when a later read fails, keeps older owners unknown, and refreshes on request", async () => {
+    let failing = false
+    const statuses: Record<string, unknown> = { local: { state: "ready", path: "/p", version: "1" }, [HOST]: { state: "ready", path: "/p", version: "2.0" } }
+    const backend: ComputerUseBackend = {
+      readDesktopState: async () => ({}), setApproval: async () => ({}), setup: async () => ({}),
+      chatGptStatus: async computer => { if (computer && failing) throw new Error("SSH connection lost."); return statuses[computer ?? "local"] },
+      retry: async () => ({}), listenStatus: async () => () => {},
+    }
+    render(<ComputerUseProvider bridge={createComputerUseBridge(backend, { busy: 20, idle: 20 })}>
+      <RemoteComputersSettings source={{ ...source(undefined), remoteComputers: computers }} actions={actions()} />
+    </ComputerUseProvider>)
+    expect(await screen.findByText("Ready 2.0")).toBeVisible()
+    failing = true
+    await waitFor(() => expect(within(row("Office Mac")).getByRole("alert")).toHaveTextContent("Could not refresh: SSH connection lost."))
+    expect(within(row("Office Mac")).getByText("Last known: Ready 2.0")).toBeVisible()
+    expect(within(row("This computer")).queryByText(/Last known/)).not.toBeInTheDocument()
+    failing = false
+    fireEvent.click(within(row("Office Mac")).getByRole("button", { name: "Refresh ChatGPT for Linux status on Office Mac" }))
+    await waitFor(() => expect(within(row("Office Mac")).queryByRole("alert")).not.toBeInTheDocument())
+    expect(within(row("Office Mac")).getByText("Ready 2.0")).toBeVisible()
+    // An owner on an older Silo stays Unknown, with or without a failed read.
+    statuses[HOST] = { state: "notConsented" }
+    await waitFor(() => expect(within(row("Office Mac")).getByText("Unknown")).toBeVisible())
+    failing = true
+    await waitFor(() => expect(within(row("Office Mac")).getByRole("alert")).toBeVisible())
+    expect(within(row("Office Mac")).getByText("Unknown")).toBeVisible()
+    expect(within(row("Office Mac")).queryByText(/Last known/)).not.toBeInTheDocument()
+  })
 })

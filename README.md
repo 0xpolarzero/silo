@@ -12,7 +12,7 @@ Use your usual editor and terminal, give an AI agent a Linux desktop, and choose
 
 - **Work across computers.** Create, start, stop, and monitor local and remote sandboxes in one app. Each sandbox has its own page for its settings, checkpoints, storage, and SSH access.
 - **Use familiar tools.** Open projects in your editor or terminal, browse files, and connect to development servers through local addresses.
-- **Give agents a desktop.** Add an interactive Linux desktop to a sandbox. Agents can use it through LCU: choose "Set up LCU" in the desktop viewer, which requires the official ChatGPT Linux app inside the sandbox. Built-in computer use for new sandboxes is planned; see the [computer-use plan](docs/SiloUI-COMPUTER-USE-PLAN.md). Install and sign in to the agents inside the sandbox yourself.
+- **Give agents a desktop.** New sandboxes have the Linux desktop built in, with computer use for agents. Silo downloads ChatGPT for Linux from OpenAI automatically on each computer, and computer use becomes ready by itself once that one-time download and the sandbox's setup finish. Choose **Set up computer use** on a sandbox's page after installing a new agent, and use its switch to let agents act without asking. Install and sign in to the agents inside the sandbox yourself. See the [computer-use plan](docs/SiloUI-COMPUTER-USE-PLAN.md).
 - **Control GitHub access.** Connect through OAuth and select repositories for each sandbox, with read-only access by default. Alternatively, use a [personal token](docs/SiloUI-GITHUB-PERSONAL-TOKENS.md), which grants the token's full permissions.
 - **Scope API credentials.** Store credentials in your computer's credential store and choose the sandboxes and HTTPS domains that can use them. See [how secrets work](docs/SiloUI-SECRETS.md).
 - **Save and branch state.** Create checkpoints of a sandbox, restore it to an earlier checkpoint, or fork a new sandbox with a copy of its files.
@@ -20,7 +20,7 @@ Use your usual editor and terminal, give an AI agent a Linux desktop, and choose
 
 ## Install
 
-The sandbox runtime, base Linux image, and Git tools are bundled. Optional desktop packages download when you add a desktop.
+The sandbox runtime, base Linux image, and Git tools are bundled. Silo downloads ChatGPT for Linux in the background for computer use. Sandboxes created before the built-in desktop download optional desktop packages when you add a desktop.
 
 | Platform | Requirements | Download |
 | --- | --- | --- |
@@ -36,10 +36,10 @@ Upgrading an older installation? Read the [release notes](https://github.com/0xp
 
 ## Start working
 
-1. **Create a sandbox.** Follow setup to choose its name, CPU, memory, and disk size. GitHub is optional. Select **Linux desktop** if you want graphical apps or agent computer use. Use **Add → New sandbox** to create more later.
+1. **Create a sandbox.** Follow setup to choose its name, CPU, memory, and disk size. GitHub is optional. The Linux desktop and computer use are built in. Use **Add → New sandbox** to create more later.
 2. **Open your project.** Start the sandbox and open its terminal. Create or clone your project in `/workspace`; use HTTPS URLs for Silo's GitHub integration. In **Files**, open a folder in your preferred editor.
 3. **Open a development server.** Run it inside the sandbox, listening on `0.0.0.0`. In **Network**, connect a discovered port or choose **Add port**, then open the displayed address on your computer.
-4. **Open the desktop, if installed.** Choose **Open Linux desktop** from the sandbox's actions. You can add one later with **Add Linux desktop**. Closing the viewer leaves its graphical apps running.
+4. **Open the desktop.** Choose **Open Linux desktop** from the sandbox's actions. Closing the viewer leaves its graphical apps running. A sandbox created before the built-in desktop keeps its current setup: add a desktop with **Add Linux desktop**, then choose **Set up LCU** in the viewer, which needs the official ChatGPT Linux app inside the sandbox. Create a new sandbox for automatic computer use.
 
 Stopping a sandbox ends its running programs and preserves its files. Names and disk sizes are fixed after creation; changing CPU or memory stops the sandbox and applies on its next start. Quitting Silo stops local sandboxes; sandboxes on other computers keep running.
 

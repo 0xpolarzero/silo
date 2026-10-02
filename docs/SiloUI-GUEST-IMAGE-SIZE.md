@@ -137,7 +137,7 @@ contains it is a separate decision from these measurements.
 
 Built with `node app/SiloUI/scripts/build-guest-image.mjs arm64|amd64` (Docker/OrbStack;
 arm64 native, amd64 emulated), from the unpublished v4 recipe described in
-[guest images](SiloUI-GUEST-IMAGES.md#guest-image-v4-recipe-unpublished). Decimal MB.
+[guest images](SiloUI-GUEST-IMAGES.md#guest-image-v4-recipe-published). Decimal MB.
 
 | Architecture | gzip -9 archive | Uncompressed Docker-save archive | Packages |
 | --- | ---: | ---: | ---: |

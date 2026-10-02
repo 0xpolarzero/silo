@@ -1,8 +1,10 @@
 # Optional Linux desktop
 
-Silo can install an Xfce desktop into the same Ubuntu 24.04 sandbox used for
-terminal work. Creation opt-in and later installation use the same recipe.
-The desktop is optional; no removal operation is provided.
+For sandboxes created before guest image v4, Silo can install an Xfce desktop into
+the same Ubuntu 24.04 sandbox used for terminal work. Creation opt-in and later
+installation use the same recipe. The desktop is optional there; no removal
+operation is provided. Sandboxes from v4 on have the desktop built in; see
+[Guest image v4](#guest-image-v4-the-desktop-is-part-of-the-vm).
 
 ## Lifecycle
 
@@ -37,7 +39,7 @@ restart of a built-in VM; intermittent on restart and on import.
 
 ## Guest image v4: the desktop is part of the VM
 
-Guest images from v4 on (unpublished until the owner publishes it; see
+Guest images from v4 on (published and pinned in the image lock; see
 [guest images](SiloUI-GUEST-IMAGES.md)) already contain the Xfce packages, Selkies
 2.0.0, the accessibility defaults (dconf `toolkit-accessibility=true` and the
 `/etc/xdg/autostart/silo-accessibility.desktop` poller) and GNOME Text Editor as

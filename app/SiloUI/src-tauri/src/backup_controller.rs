@@ -4538,6 +4538,21 @@ mod tests {
         eprintln!("Verified an older checkpoint export imports and cold-boots.");
     }
 
+    /// Copies a directory tree, as a copy-on-write clone where the file system supports it.
+    /// macOS `cp -c` clones; GNU `cp` has no `-c`, so Linux asks for `--reflink=auto`.
+    fn clone_tree(from: &Path, to: &Path) -> bool {
+        let mut copy = std::process::Command::new("cp");
+        if cfg!(target_os = "macos") {
+            copy.arg("-cR");
+        } else {
+            copy.args(["--reflink=auto", "-R"]);
+        }
+        copy.arg(from)
+            .arg(to)
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
     /// Built-in computer use against the real runtime, through the production export and
     /// import paths. A VM from the v4 image gets the read-only ChatGPT folder and sets
     /// itself up; its approval is switched to `auto`; it is exported (`backup_at_paths`,
@@ -4575,13 +4590,13 @@ mod tests {
         let version = crate::chatgpt_app::Lock::bundled()
             .unwrap()
             .directory_name(crate::chatgpt_app::DebArch::host().unwrap());
-        let cloned = std::process::Command::new("cp")
-            .arg("-cR")
-            .arg(source_published.join(&version))
-            .arg(target_published.join(&version))
-            .status()
-            .unwrap();
-        assert!(cloned.success(), "could not clone the published app tree");
+        assert!(
+            clone_tree(
+                &source_published.join(&version),
+                &target_published.join(&version)
+            ),
+            "could not clone the published app tree"
+        );
         crate::chatgpt_app::set_test_cache(Some(crate::chatgpt_app::Status::Ready {
             path: source_published.join(&version),
             version: "26.928.31416".into(),
@@ -4902,13 +4917,13 @@ mod tests {
         let version = crate::chatgpt_app::Lock::bundled()
             .unwrap()
             .directory_name(crate::chatgpt_app::DebArch::host().unwrap());
-        assert!(std::process::Command::new("cp")
-            .arg("-cR")
-            .arg(source_published.join(&version))
-            .arg(target_published.join(&version))
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            clone_tree(
+                &source_published.join(&version),
+                &target_published.join(&version)
+            ),
+            "could not clone the published app tree"
+        );
         crate::chatgpt_app::set_test_cache(Some(crate::chatgpt_app::Status::Ready {
             path: source_published.join(&version),
             version: "26.928.31416".into(),

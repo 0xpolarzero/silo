@@ -446,6 +446,19 @@ setup, key rotation, migration, and installer tests are documented in
   after upgrading an ad-hoc signed app.
 - AppImage extraction, library resolution, tray/notifications/desktop integration
   on both architectures; package-manager upgrade for Debian installations.
+- Built-in computer use qualified on real Linux hosts, one x86-64 and one ARM64
+  with KVM, using the release's own Linux packages (the release workflows cannot
+  run VMs). On each host, run the opt-in live tests
+  `backup_controller::tests::live_built_in_computer_use_sets_up_and_survives_export_and_import`
+  and `live_built_in_desktop_boots_repeatedly` with the v4 guest image, a
+  published ChatGPT app and the packaged `msb`; see
+  [ChatGPT app](SiloUI-CHATGPT-APP.md#integration-2026-10-02) for the inputs
+  and `SILO_LIVE_TEST_CONFIRM=disposable-test-fixtures`. Then confirm in the
+  installed package, with throwaway `e2e-*` sandboxes: a fresh boot, a
+  stop and start, a checkpoint restore, an export and import, and LCU readiness
+  (`computerUse` is `ready` and `lcu doctor` passes) after each. Record the host,
+  architecture, package version, commands and results with the release evidence.
+  Without it, built-in computer use is not claimed for that architecture.
 - No public-release claim until these checks have real evidence. Unit/build
   success does not substitute for clean installation or VM execution.
 
