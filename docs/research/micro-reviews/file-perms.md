@@ -17,6 +17,12 @@ All executions use temporary fixtures and synthetic keys. No app or VM was launc
   The fix requests `0700` when creating directories and removes all group/other access
   on existing managed roots. The extracted tests pass 3/3, including symlink rejection
   without changing the symlink target. Contents are preserved during permission repair.
+- Backup export and restore staging used default temporary directory modes. The new
+  subprocess regression failed with `0777` under umask `000`. Both call sites now use
+  a staging factory requesting `0700` before payloads are written. Its extracted
+  production regression passes for both export and restore prefixes. The pinned
+  [tempfile builder documentation](https://docs.rs/tempfile/3.27.0/tempfile/struct.Builder.html#method.permissions)
+  states that temporary files default to `0600` but temporary directories default to `0777`.
 
 The extracted Rust checks use the production functions and tests with minimal collaborators
 for channel path construction and process environment sanitation. Full Cargo regressions
