@@ -360,6 +360,7 @@ export async function importProductionSettings({
     }
   }
   // Confirmation can remain open while destination entries change.
+  if (isDevRunning()) throw new Error(`${DEVELOPMENT.productName} is running. Quit it, then run this command again.`)
   for (const action of actions) if (action.file) devFile(action.file)
   for (const action of actions) {
     action.apply()

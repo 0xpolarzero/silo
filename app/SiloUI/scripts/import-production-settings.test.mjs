@@ -264,6 +264,25 @@ test("refuses to run while Silo Dev is running and changes nothing", async () =>
   assert.deepEqual(keychain.writes, [])
 })
 
+test("refuses an import when Dev starts while replacement confirmation is open", async t => {
+  const { home, source, target } = fixtureHome()
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  fs.mkdirSync(target.config, { recursive: true })
+  const settings = path.join(target.config, "settings.json")
+  fs.writeFileSync(settings, "previous Dev settings")
+  const before = snapshot(source.config)
+  const keychain = productionKeychain()
+  let running = false
+  await assert.rejects(run(home, keychain, {
+    isDevRunning: () => running,
+    confirm: async () => { running = true; return true },
+  }), /Silo Dev is running/)
+  assert.equal(fs.readFileSync(settings, "utf8"), "previous Dev settings")
+  assert.deepEqual(fs.readdirSync(target.config), ["settings.json"])
+  assert.deepEqual(snapshot(source.config), before)
+  assert.deepEqual(keychain.writes, [])
+})
+
 test("dry run changes nothing and prints no secret values", async () => {
   const { home, target } = fixtureHome()
   const keychain = productionKeychain()
