@@ -47,3 +47,12 @@ Full-crate Cargo regressions were queued with the shared `/tmp/silo-codex-target
 - **Consequence:** Quit reports a shutdown failure and leaves the app open even though its owned VM stopped. A second Quit succeeds after inspecting the already-stopped VM.
 - **Fix:** After a command error, re-inspect the exact journal-owned identity. Accept only Stopped, Created, or Crashed; otherwise retain the command error. An unreadable or replaced VM still blocks Quit.
 - **Regression test:** The full uncommitted shutdown transaction must succeed when fake Stop commands set their VMs Stopped before returning timeout errors, and preserve the unfinished configuration journal. The same fixture must fail if the commands leave the VMs Running. Both extracted helper checks pass after the fix; the completed-stop assertion failed before it.
+
+## runtime-dir-c-7 — P2 — Reusing a removed VM's name blocks Quit
+
+- **Location:** `app/SiloUI/src-tauri/src/runtime/shutdown.rs`, `stop_local_vms_with()`.
+- **Trigger:** An unfinished configuration transaction removes a VM and creates another under the same name with a different immutable ID. Its journal retains both identities, whether the replacement metadata has been published or not.
+- **Evidence:** Shutdown selected both identities by name. The removed identity failed verification against the present replacement, so Quit failed even after stopping the replacement. The extracted shutdown function failed with an identity error for both metadata-publication cases.
+- **Consequence:** A successfully stopped replacement leaves the app unable to Quit until configuration recovery clears the journal.
+- **Fix:** Skip an absent journal identity only when an exact-name, managed runtime inspection matches a different known identity under that name. The present identity still follows normal shutdown verification; unknown identities remain errors.
+- **Regression test:** Both committed and uncommitted replacements stop successfully without discarding their recovery journal. The extracted production shutdown function failed before and passes after the fix. Native regressions were added; full-crate execution remains blocked by the shared Cargo lock. Rust formatting, frontend typecheck, lint, and diff checks passed for the fixes in this loop.
