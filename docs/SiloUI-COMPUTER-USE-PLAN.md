@@ -111,7 +111,7 @@ absolute).
 - ChatGPT runtime dependencies and LCU system packages, so LCU installs with
   `--skip-system --offline`.
 - Pinned LCU release archive, hash-checked, staged for installation in the VM
-  (done: `guest/lcu-lock.json`, LCU 0.8.0, `/usr/local/share/silo/lcu/`).
+  (done: `guest/lcu-lock.json`, LCU 0.8.1, `/usr/local/share/silo/lcu/`).
 - Accessibility: dconf `toolkit-accessibility=true` system default and an
   autostarted AT-SPI attribute poller for Chromium/Electron.
 - GNOME Text Editor as the `text/plain` default instead of Mousepad.
@@ -130,7 +130,7 @@ absolute).
 - Pass canonical paths to MicroSandbox.
 - Remote computers do this on the owning computer.
 
-Done: lock (`lcuVersion` 0.8.0), notice, download, verification, extraction and
+Done: lock (`lcuVersion` 0.8.1), notice, download, verification, extraction and
 publication under `<app data>/chatgpt/published/`, with the three commands
 registered, cached status reads and routing to the owning computer. See
 [ChatGPT app](SiloUI-CHATGPT-APP.md).

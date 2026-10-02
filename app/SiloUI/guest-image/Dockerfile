@@ -21,9 +21,9 @@ RUN sh /tmp/silo-setup-github.sh \
 #     No mousepad (GTK 3.24's AT-SPI PasteText use-after-free crashes every GTK3
 #     text view); gnome-text-editor (GTK4) is the text editor. Includes the dconf
 #     stack and python3-pyatspi for the poller in src-tauri/guest/silo-accessibility.py.
-#  3. LCU SYSTEM_PACKAGES (checked against v0.8.0), a superset of the ChatGPT Linux
+#  3. LCU SYSTEM_PACKAGES (checked against v0.8.1), a superset of the ChatGPT Linux
 #     .deb's dependencies on Ubuntu 24.04, so LCU installs with --skip-system --offline.
-#     Source: https://github.com/0xpolarzero/lcu/blob/v0.8.0/scripts/install.py
+#     Source: https://github.com/0xpolarzero/lcu/blob/v0.8.1/scripts/install.py
 #     Packages already named in an earlier group are not repeated.
 #
 # The pinned Selkies .deb is downloaded, SHA-256 verified, installed and deleted

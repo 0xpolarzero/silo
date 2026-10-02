@@ -111,8 +111,8 @@ SFTP server) and adds, in one further layer:
   The runtime pieces of `setup-desktop.sh` (Selkies web-client patch, connection
   credentials, receipts, `silo-desktop`) are not part of the image.
 - **ChatGPT and LCU system libraries.** The LCU `SYSTEM_PACKAGES` (checked against
-  v0.8.0,
-  [source](https://github.com/0xpolarzero/lcu/blob/v0.8.0/scripts/install.py)),
+  v0.8.1,
+  [source](https://github.com/0xpolarzero/lcu/blob/v0.8.1/scripts/install.py)),
   a superset of the ChatGPT Linux `.deb` dependencies on Ubuntu 24.04, so LCU
   installs with `--skip-system --offline`. No OpenAI file and no installed LCU
   are in the image.
