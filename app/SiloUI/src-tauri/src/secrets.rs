@@ -187,7 +187,10 @@ fn store_path() -> Option<PathBuf> {
     PATH.get().cloned()
 }
 fn load() -> Result<Document, String> {
-    let Some(path) = store_path() else {
+    load_from(store_path())
+}
+fn load_from(path: Option<PathBuf>) -> Result<Document, String> {
+    let Some(path) = path else {
         return Ok(Document::default());
     };
     match File::open(&path) {
@@ -247,7 +250,10 @@ fn public(secret: &Secret) -> Value {
         "error": if errors.is_empty() {Value::Null} else {json!(errors.join(" "))}})
 }
 pub(crate) fn snapshot() -> Result<Vec<Value>, String> {
-    Ok(load()?.secrets.iter().map(public).collect())
+    snapshot_from(store_path())
+}
+fn snapshot_from(path: Option<PathBuf>) -> Result<Vec<Value>, String> {
+    Ok(load_from(path)?.secrets.iter().map(public).collect())
 }
 pub(crate) fn activities() -> Result<Vec<Value>, String> {
     Ok(load()?.activities)
@@ -743,7 +749,10 @@ fn require_main(window: &WebviewWindow) -> Result<(), String> {
 }
 #[tauri::command]
 pub async fn read_secrets_state() -> Result<Vec<Value>, String> {
-    snapshot()
+    let path = store_path();
+    tauri::async_runtime::spawn_blocking(move || snapshot_from(path))
+        .await
+        .map_err(|_| "Secret settings could not be read.".to_string())?
 }
 #[tauri::command]
 pub async fn save_secret(
@@ -906,6 +915,38 @@ mod tests {
             errors: BTreeMap::new(),
             removing: false,
         }
+    }
+    #[cfg(unix)]
+    #[test]
+    fn slow_secret_read_keeps_the_async_executor_responsive() {
+        use std::io::Write;
+
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secrets.json");
+        let fifo = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        use_test_store(Some(path.clone()));
+        let (heartbeat, observed) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let responsive = observed.recv_timeout(Duration::from_secs(2)).is_ok();
+            File::create(path).unwrap().write_all(b"{}").unwrap();
+            responsive
+        });
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let (result, ()) = runtime.block_on(async {
+            tokio::join!(biased; read_secrets_state(), async {
+                let _ = heartbeat.send(());
+            })
+        });
+        use_test_store(None);
+        assert_eq!(result.unwrap(), Vec::<Value>::new());
+        assert!(
+            writer.join().unwrap(),
+            "the secret read blocked the executor heartbeat"
+        );
     }
     #[test]
     fn oversized_save_preserves_readable_settings() {
