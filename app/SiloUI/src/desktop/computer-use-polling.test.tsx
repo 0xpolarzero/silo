@@ -1,3 +1,4 @@
+import { ComputerUseProvider } from "./computer-use-provider"
 import { act, fireEvent, render, screen } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
@@ -5,7 +6,7 @@ import { RemoteComputersSettings } from "@/features/application/components/remot
 import type { ApplicationActions } from "@/features/application/model/application-source"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import { createFixtureComputerUseBackend, fixtureDesktopState } from "@/fixtures/computer-use"
-import { ComputerUseProvider, createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
+import { createComputerUseBridge, type ComputerUseBackend } from "./computer-use-bridge"
 import { ComputerUseSection } from "./computer-use-panel"
 
 const workspace = "silo-remote:11111111-1111-4111-8111-111111111111:33333333-3333-4333-8333-333333333333"

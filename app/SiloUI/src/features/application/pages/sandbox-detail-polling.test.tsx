@@ -1,7 +1,8 @@
+import { ComputerUseProvider } from "@/desktop/computer-use-provider"
 import { act, render } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
-import { ComputerUseProvider, createComputerUseBridge } from "@/desktop/computer-use-bridge"
+import { createComputerUseBridge } from "@/desktop/computer-use-bridge"
 import { createFixtureComputerUseBackend, fixtureDesktopState } from "@/fixtures/computer-use"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 import type { ApplicationActions } from "../model/application-source"
