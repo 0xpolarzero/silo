@@ -334,6 +334,7 @@ export function WorkspacesPage({
   onDismissRepositoryPush,
   onCreateSandbox,
   operationQueue,
+  notifyOperations = true,
 }: {
   /** The application source, for the same availability rules as the other surfaces. */
   source: ApplicationSource
@@ -358,11 +359,14 @@ export function WorkspacesPage({
   onDismissRepositoryPush: (workspace: string, repositoryPath: string) => void
   /** Opens the new-sandbox editor; omitted while a sandbox cannot be created. */
   onCreateSandbox?: () => void
+  /** Standalone pages own notifications; ApplicationApp owns them across navigation. */
+  notifyOperations?: boolean
   /** Lets a running push be cancelled from its notification. */
   operationQueue?: OperationQueue
 }) {
   const [logWindow, setLogWindow] = useState<LogWindow>()
   useRepositoryPushToasts(repositoryPushOperations, {
+    enabled: notifyOperations,
     onPush: onPushRepository,
     onDismiss: onDismissRepositoryPush,
     queue: operationQueue,
