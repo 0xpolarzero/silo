@@ -1269,6 +1269,54 @@ mod tests {
     fn line(index: usize, body: &str) -> String {
         format!("{{\"t\":\"2026-09-18T12:00:00.{index:09}Z\",\"s\":\"stderr\",\"d\":\"{body}\",\"id\":42}}\n")
     }
+    #[test]
+    fn credential_urls_are_hidden_in_pages_context_and_export() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut records = line(0, "ordinary connection failure");
+        for (index, body) in [
+            "fetch failed: https://alice:synthetic-url-password@example.test/repo",
+            "git clone 'https://synthetic-url-token@example.test/repo'",
+            "connect(postgresql://alice:synthetic-db-password@localhost/db)",
+            "remote=https://alice:synthetic%2Dencoded%2Dpassword@example.test/repo",
+        ]
+        .iter()
+        .enumerate()
+        {
+            records.push_str(&line(index + 1, body));
+        }
+        fs::write(directory.path().join("exec.log"), records).unwrap();
+        let mut query = request();
+        query.limit = Some(1);
+        let first = read(directory.path(), query.clone(), "dev", "pc", "Desktop").unwrap();
+        query.cursor = first.next_cursor.clone();
+        let page = read(directory.path(), query, "dev", "pc", "Desktop").unwrap();
+        let mut context = request();
+        context.around_id = Some(page.entries[0].id.clone());
+        let context = read(directory.path(), context, "dev", "pc", "Desktop").unwrap();
+        let mut exported = Vec::new();
+        crate::log_export::write_requests(
+            &mut exported,
+            vec![request()],
+            |query| read(directory.path(), query, "dev", "pc", "Desktop"),
+            || false,
+        )
+        .unwrap();
+        for text in [
+            serde_json::to_string(&first).unwrap(),
+            serde_json::to_string(&page).unwrap(),
+            serde_json::to_string(&context).unwrap(),
+            String::from_utf8(exported).unwrap(),
+        ] {
+            assert!(
+                !text.contains("synthetic"),
+                "URL credentials escaped: {text}"
+            );
+        }
+        assert!(context
+            .entries
+            .iter()
+            .any(|entry| entry.line == "ordinary connection failure"));
+    }
     fn disposable_pem() -> Vec<String> {
         let output = Command::new("openssl")
             .args([

@@ -4,6 +4,7 @@ import { render } from "@testing-library/react"
 
 import styles from "@/index.css?raw"
 import { OperationToastBody } from "@/components/operation-toast-body"
+import { buttonVariants } from "@/components/ui/button"
 
 // Muted text sits on every neutral surface, including muted chips (kind badges) and
 // 11 px captions, so it must meet WCAG AA for normal text (4.5:1) on each of them.
@@ -12,7 +13,25 @@ const surfaces = ["--background", "--card", "--popover", "--muted", "--accent", 
 function tokens(selector: ":root" | ".dark") {
   const start = styles.indexOf(`${selector} {`)
   const block = styles.slice(start, styles.indexOf("}", start))
-  return new Map([...block.matchAll(/(--[\w-]+):\s*oklch\(([\d.]+) ([\d.]+) ([\d.]+)\)/g)].map(([, name, lightness, chroma]) => [name, { lightness: Number(lightness), chroma: Number(chroma) }]))
+  return new Map([...block.matchAll(/(--[\w-]+):\s*oklch\(([\d.]+) ([\d.]+) ([\d.]+)\)/g)].map(([, name, lightness, chroma, hue]) => [name, { lightness: Number(lightness), chroma: Number(chroma), hue: Number(hue) }]))
+}
+
+// OKLab's published inverse sRGB transform: https://bottosson.github.io/posts/oklab/
+function linearRgb({ lightness: L, chroma: C, hue: H }: { lightness: number; chroma: number; hue: number }) {
+  const a = C * Math.cos(H * Math.PI / 180)
+  const b = C * Math.sin(H * Math.PI / 180)
+  const l = (L + 0.3963377774 * a + 0.2158037573 * b) ** 3
+  const m = (L - 0.1055613458 * a - 0.0638541728 * b) ** 3
+  const s = (L - 0.0894841775 * a - 1.291485548 * b) ** 3
+  return [
+    4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s,
+    -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s,
+    -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s,
+  ].map(channel => Math.max(0, Math.min(1, channel)))
+}
+
+function rgbLuminance([r, g, b]: number[]) {
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
 // For an achromatic OKLab colour the linear sRGB channels all equal L³, which is also its
@@ -57,5 +76,27 @@ describe("pending operation steps", () => {
     const foreground = luminance(theme.get("--muted-foreground")!)
     const paintedText = linear(srgb(foreground) * opacity + srgb(background) * (1 - opacity))
     expect(contrast(paintedText, background)).toBeGreaterThanOrEqual(4.5)
+  })
+})
+
+describe("destructive text contrast", () => {
+  it.each([":root", ".dark"] as const)("meets WCAG AA for error text and destructive button states in %s", (selector) => {
+    const theme = tokens(selector)
+    const text = linearRgb(theme.get("--destructive")!)
+    const classes = buttonVariants({ variant: "destructive" }).split(" ")
+    const dark = selector === ".dark"
+    const opacity = (hover: boolean) => {
+      const prefix = `${dark ? "dark:" : ""}${hover ? "hover:" : ""}bg-destructive/`
+      const value = classes.find(value => value.startsWith(prefix)) ?? classes.find(value => value.startsWith(`${hover ? "hover:" : ""}bg-destructive/`))!
+      return Number(value.split("/").at(-1)) / 100
+    }
+    for (const surface of surfaces) {
+      const background = linearRgb(theme.get(surface)!)
+      for (const alpha of [0, opacity(false), opacity(true)]) {
+        const tinted = background.map((channel, index) => linear(srgb(text[index]) * alpha + srgb(channel) * (1 - alpha)))
+        const ratio = contrast(rgbLuminance(text), rgbLuminance(tinted))
+        expect(ratio, `${selector} destructive on ${surface} at ${alpha}: ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5)
+      }
+    }
   })
 })

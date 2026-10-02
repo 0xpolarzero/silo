@@ -46,6 +46,16 @@ describe("live file tree", () => {
     expect(onOpenEditor).toHaveBeenLastCalledWith(workspace.machine.name, "/workspace")
   })
 
+  it("reveals a soft hyphen in a folder label while opening its exact original path", async () => {
+    const user = userEvent.setup()
+    const onOpenEditor = vi.fn()
+    const store = createDirectoryStore(vi.fn().mockResolvedValue(page("con\u00ADfig", "folder")))
+    render(<WorkspaceFileTree editor="Cursor" workspace={workspace} store={store} active onOpenEditor={onOpenEditor} />)
+    const folder = await screen.findByRole("button", { name: "Folder con⟨U+00AD⟩fig" })
+    await user.click(within(folder.parentElement!).getByRole("button", { name: "Open in Cursor" }))
+    expect(onOpenEditor).toHaveBeenCalledWith(workspace.machine.name, "/workspace/con\u00ADfig")
+  })
+
   it("shows skeletons, lazily opens folders and immediately reuses cached contents", async () => {
     const user = userEvent.setup()
     let resolve!: (value: DirectoryPage) => void

@@ -1307,20 +1307,34 @@ pub(crate) fn setup_with(
     cancel: Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<Value, RuntimeError> {
     // Like an apply, the run yields to a queued stop or delete of this VM and to Quit.
-    let _preempt = Preempt::watch(gate, machine.id(), cancel);
+    let _preempt = Preempt::watch(gate, machine.id(), cancel.clone());
     let policy = policy_for_apply(paths, machine.id());
-    let mode = policy.approval;
+    let mut mode = policy.approval;
+    let mut force = force;
     let _pending = policy.needs_apply().then(|| Pending::begin(machine.id()));
-    run_attempt(
-        runner,
-        paths,
-        machine.id(),
-        machine.name(),
-        mode,
-        force,
-        false,
-    )
-    .map(|(status, _)| status)
+    loop {
+        let run = run_attempt(
+            runner,
+            paths,
+            machine.id(),
+            machine.name(),
+            mode,
+            force,
+            false,
+        );
+        // A queued follow-up can expire while manual setup holds the turn, so
+        // finish applying the current choice here just as a background apply does.
+        if matches!(
+            &run,
+            Err(RuntimeError::Cancelled { .. }) | Ok((_, Report::NotReady))
+        ) || cancel.load(std::sync::atomic::Ordering::SeqCst)
+            || read_policy(paths, machine.id()).approval == mode
+        {
+            return run.map(|(status, _)| status);
+        }
+        mode = policy_for_apply(paths, machine.id()).approval;
+        force = false;
+    }
 }
 
 /// Stores the VM's approval mode and, when it runs, applies it on a background thread

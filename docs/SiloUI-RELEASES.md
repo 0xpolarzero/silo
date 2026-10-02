@@ -636,6 +636,15 @@ matrix, frontend checks, package checks and minimum-macOS checks to pass. Native
 test jobs receive no signing credentials. Only the reviewed public release dependencies
 described above are cached; application and native-test products are excluded.
 
+Reusable workflow and runtime-action string inputs enter shell commands through
+quoted environment variables. GitHub expands expressions before parsing inline
+scripts, so quoting a `${{ inputs.target }}` expression alone does not prevent
+script injection. See [GitHub's script-injection guidance](https://docs.github.com/en/actions/reference/security/secure-use#use-an-intermediate-environment-variable).
+The workflow regression runs extracted commands against disposable executables
+with ordinary targets, quote-breaking input and command-substitution input.
+Current release callers supply fixed matrix values; this protects the reusable
+input boundary without changing release gates or published asset names.
+
 Artifact-only runs have independent concurrency groups, so they do not queue
 behind or displace a pending publication. Tagged and draft publications of the
 same release tag share one concurrency group per tag, so builds of different
@@ -666,3 +675,10 @@ streams output and remains in the bundle log. Compilation, runtime preparation
 and package validation are outside this retry boundary; other errors fail
 immediately. This handles transient upstream download failures without
 repeating the expensive build phases.
+
+If forwarding stdout/stderr or writing the local log fails, the wrapper kills
+and reaps its bundle command before propagating that error. Python's
+[`Popen` context manager](https://docs.python.org/3/library/subprocess.html#subprocess.Popen)
+waits for the child on exit; it does not stop it on an exception. The synthetic
+stream-failure regression checks all three output destinations and verifies
+that the child is reaped. This does not test a real package build.

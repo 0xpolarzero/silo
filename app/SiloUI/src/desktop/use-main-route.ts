@@ -17,9 +17,15 @@ export function useMainRoute(enabled: boolean) {
     if (!enabled) return
     let disposed = false
     let unlisten: (() => void) | undefined
+    let sequence = 0
+    let applied = 0
     const receive = async () => {
+      const request = ++sequence
       const parsed = routeShape.safeParse(await invoke("take_main_route"))
-      if (!disposed && parsed.success) setRoute(parsed.data)
+      if (!disposed && parsed.success && request > applied) {
+        applied = request
+        setRoute(parsed.data)
+      }
     }
     // Register before draining the pending request so opening during startup is reliable.
     void listen("desktop:route-requested", () => { void receive().catch(console.error) })
