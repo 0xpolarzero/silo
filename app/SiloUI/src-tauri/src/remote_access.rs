@@ -26,6 +26,22 @@ fn string<'a>(params: &'a Value, key: &str) -> Result<&'a str, String> {
 fn vm_name(app: &AppHandle, params: &Value) -> Result<String, String> {
     runtime::remote_ops::local_vm_name(app, string(params, "vmId")?)
 }
+
+fn guest_access_turn<'a>(
+    gate: &'a runtime::operation_gate::OperationGate,
+    paths: &runtime::RuntimePaths,
+    expected_id: &str,
+    name: &str,
+) -> Result<runtime::operation_gate::OperationGuard<'a>, String> {
+    let turn = gate
+        .vm(expected_id, name, &format!("Preparing access to {name}"))
+        .map_err(|e| e.to_string())?;
+    if runtime::resolve_vm_id(paths, name).map_err(|e| e.to_string())? != expected_id {
+        return Err("The sandbox changed identity. Refresh before preparing guest access.".into());
+    }
+    Ok(turn)
+}
+
 pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<Value, String> {
     match method {
         "desktop.connect" => crate::desktop_viewer::local_connection(app, &vm_name(app, params)?),
@@ -64,10 +80,8 @@ pub(crate) fn dispatch(app: &AppHandle, method: &str, params: &Value) -> Result<
             // Authorizes a remote key inside one VM's guest; wait its turn per VM.
             let name = vm_name(app, params)?;
             let paths = runtime::runtime_paths(app)?;
-            let vm_id = runtime::resolve_vm_id(&paths, &name).map_err(|e| e.to_string())?;
-            let _guard = runtime::OPERATIONS
-                .vm(&vm_id, &name, &format!("Preparing access to {name}"))
-                .map_err(|e| e.to_string())?;
+            let _guard =
+                guest_access_turn(&runtime::OPERATIONS, &paths, string(params, "vmId")?, &name)?;
             let user = crate::working_account::inspect_user(&paths, &name)?;
             crate::working_account::require_client_protocol(params)?;
             let public = crate::editor::authorize_remote(
@@ -226,6 +240,83 @@ pub(crate) fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const ORIGINAL: &str = "00000000-0000-4000-8000-000000000001";
+    const REPLACEMENT: &str = "00000000-0000-4000-8000-000000000002";
+
+    fn save_vm(paths: &runtime::RuntimePaths, id: &str) {
+        runtime::write_metadata(
+            &paths.metadata,
+            &runtime::MachineConfigurationRequest {
+                schema_version: 1,
+                machines: vec![runtime::MachineConfiguration::Vm {
+                    id: id.into(),
+                    name: "dev".into(),
+                    cpus: 4,
+                    max_cpus: 6,
+                    memory_gib: 16,
+                    max_memory_gib: 32,
+                    workspace_storage_gib: 60,
+                    runtime_storage_gib: 80,
+                    desktop: None,
+                }],
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn queued_guest_access_rejects_a_same_named_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(directory.path());
+        save_vm(&paths, ORIGINAL);
+        let gate = runtime::operation_gate::OperationGate::new();
+        let computer = gate.computer("Replace sandbox").unwrap();
+        let changed = std::sync::atomic::AtomicBool::new(false);
+
+        std::thread::scope(|scope| {
+            let prepare = scope.spawn(|| {
+                let _turn = guest_access_turn(&gate, &paths, ORIGINAL, "dev")?;
+                changed.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok::<_, String>(())
+            });
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while gate.snapshot().waiting.is_empty() {
+                assert!(
+                    std::time::Instant::now() < until,
+                    "guest access never queued"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            save_vm(&paths, REPLACEMENT);
+            drop(computer);
+
+            assert!(prepare.join().unwrap().is_err());
+        });
+        assert!(!changed.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    #[test]
+    fn guest_access_rejects_a_stale_explicit_id_before_admission() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(directory.path());
+        save_vm(&paths, REPLACEMENT);
+        let gate = runtime::operation_gate::OperationGate::new();
+
+        assert!(guest_access_turn(&gate, &paths, ORIGINAL, "dev").is_err());
+    }
+
+    #[test]
+    fn guest_access_admits_the_requested_vm() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths = crate::test_support::paths(directory.path());
+        save_vm(&paths, ORIGINAL);
+        let gate = runtime::operation_gate::OperationGate::new();
+
+        let _turn = guest_access_turn(&gate, &paths, ORIGINAL, "dev").unwrap();
+        assert_eq!(gate.snapshot().running[0].vm_id.as_deref(), Some(ORIGINAL));
+    }
+
     #[test]
     fn remote_targets_never_fall_back_to_local_names() {
         let host = uuid::Uuid::new_v4();
