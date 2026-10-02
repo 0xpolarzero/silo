@@ -45,7 +45,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     time::{Duration, Instant},
@@ -500,6 +500,17 @@ struct RootLock(File);
 
 impl RootLock {
     fn take(root: &Path) -> Result<Self, Error> {
+        Self::acquire(root, true)?
+            .ok_or_else(|| Error::retry("Silo could not lock its ChatGPT app folder."))
+    }
+
+    /// Like `take`, but `None` at once when another holder (a download or extraction)
+    /// has the lock.
+    fn try_take(root: &Path) -> Result<Option<Self>, Error> {
+        Self::acquire(root, false)
+    }
+
+    fn acquire(root: &Path, wait: bool) -> Result<Option<Self>, Error> {
         let failed = || Error::retry("Silo could not lock its ChatGPT app folder.");
         let dir = Dir::open_root(root, true)
             .map_err(|_| Error::retry("Silo could not prepare its ChatGPT app folder."))?;
@@ -520,12 +531,21 @@ impl RootLock {
         if !meta.is_file() || meta.uid() != effective_uid() {
             return Err(failed());
         }
-        while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+        let mode = if wait {
+            libc::LOCK_EX
+        } else {
+            libc::LOCK_EX | libc::LOCK_NB
+        };
+        while unsafe { libc::flock(file.as_raw_fd(), mode) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if !wait && error.kind() == std::io::ErrorKind::WouldBlock {
+                return Ok(None);
+            }
+            if error.kind() != std::io::ErrorKind::Interrupted {
                 return Err(failed());
             }
         }
-        Ok(Self(file))
+        Ok(Some(Self(file)))
     }
 }
 
@@ -1789,7 +1809,34 @@ pub(crate) fn collect_garbage(
     if fs::symlink_metadata(root).is_err() {
         return Ok(Vec::new());
     }
-    let _lock = RootLock::take(root)?;
+    let held = RootLock::take(root)?;
+    collect_garbage_locked(root, lock, arch, in_use, &held)
+}
+
+/// `collect_garbage` that never waits for the storage lock: `None` when a download or
+/// extraction holds it (the caller keeps the work pending and tries again later).
+fn try_collect_garbage(
+    root: &Path,
+    lock: &Lock,
+    arch: DebArch,
+    in_use: &HashSet<String>,
+) -> Result<Option<Vec<String>>, Error> {
+    if fs::symlink_metadata(root).is_err() {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(held) = RootLock::try_take(root)? else {
+        return Ok(None);
+    };
+    collect_garbage_locked(root, lock, arch, in_use, &held).map(Some)
+}
+
+fn collect_garbage_locked(
+    root: &Path,
+    lock: &Lock,
+    arch: DebArch,
+    in_use: &HashSet<String>,
+    _held: &RootLock,
+) -> Result<Vec<String>, Error> {
     let list_failed = || Error::retry("Could not list ChatGPT app versions.");
     let (root_dir, published_dir) = open_storage(root, true).map_err(|_| list_failed())?;
     clean_staging(root, &root_dir);
@@ -1945,14 +1992,79 @@ pub(crate) fn refresh_status_blocking(app: &tauri::AppHandle) -> Status {
 /// VM start, restore and resume also takes, so no VM can begin booting from a version
 /// between the inventory and the deletion. Collection is skipped, not queued, while
 /// any operation runs; the next start or prepare tries again.
+///
+/// Collection never waits for the storage lock either: a download or extraction can hold
+/// it for minutes, and waiting while holding the computer-wide gate would stall every
+/// lifecycle operation and Quit behind it.
+///
+/// A skipped collection (an operation or VM running, or the storage busy) stays
+/// pending and is retried every `COLLECTION_RETRY` until it ran.
 pub(crate) fn collect_unused(app: &tauri::AppHandle) {
-    let Ok(root) = storage_root(app) else { return };
+    if COLLECTION.note(collect_unused_once(app)) {
+        let app = app.clone();
+        let _ = std::thread::Builder::new()
+            .name("chatgpt-app-gc".into())
+            .spawn(move || {
+                COLLECTION.run_retries(
+                    || collect_unused_once(&app),
+                    || std::thread::sleep(COLLECTION_RETRY),
+                )
+            });
+    }
+}
+
+fn collect_unused_once(app: &tauri::AppHandle) -> bool {
+    let Ok(root) = storage_root(app) else {
+        return true;
+    };
     let (Ok(lock), Ok(arch)) = (Lock::bundled(), DebArch::host()) else {
-        return;
+        return true;
     };
     collect_unused_gated(&crate::runtime::OPERATIONS, &root, &lock, arch, || {
         crate::runtime::update_recovery::running_names(app).is_ok_and(|names| names.is_empty())
-    });
+    })
+}
+
+const COLLECTION_RETRY: Duration = Duration::from_secs(120);
+static COLLECTION: Maintenance = Maintenance::new();
+
+/// Work that was skipped because the computer was busy and must run later.
+struct Maintenance {
+    pending: AtomicBool,
+    retrying: AtomicBool,
+}
+
+impl Maintenance {
+    const fn new() -> Self {
+        Self {
+            pending: AtomicBool::new(false),
+            retrying: AtomicBool::new(false),
+        }
+    }
+
+    /// Records the outcome of a pass; true when the caller must start the retry loop
+    /// (work is pending and no loop runs yet).
+    fn note(&self, done: bool) -> bool {
+        self.pending.store(!done, Ordering::SeqCst);
+        !done && !self.retrying.swap(true, Ordering::SeqCst)
+    }
+
+    /// The retry loop: waits, tries, repeats until the work ran.
+    fn run_retries(&self, mut attempt: impl FnMut() -> bool, mut wait: impl FnMut()) {
+        loop {
+            while self.pending.load(Ordering::SeqCst) {
+                wait();
+                if attempt() {
+                    self.pending.store(false, Ordering::SeqCst);
+                }
+            }
+            self.retrying.store(false, Ordering::SeqCst);
+            // A pass that was skipped between the last attempt and now started no loop.
+            if !self.pending.load(Ordering::SeqCst) || self.retrying.swap(true, Ordering::SeqCst) {
+                return;
+            }
+        }
+    }
 }
 
 /// Collects garbage while holding `gate` exclusively; `none_running` is evaluated
@@ -1970,7 +2082,11 @@ fn collect_unused_gated(
     if !none_running() {
         return false;
     }
-    collect_garbage(root, lock, arch, &HashSet::new()).is_ok()
+    // Never wait for the storage lock inside the gate (see `collect_unused`).
+    matches!(
+        try_collect_garbage(root, lock, arch, &HashSet::new()),
+        Ok(Some(_))
+    )
 }
 
 /// Downloads and publishes the pinned app (blocking), reporting progress. Returns the

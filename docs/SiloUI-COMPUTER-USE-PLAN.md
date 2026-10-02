@@ -150,7 +150,7 @@ by the host after every boot (`prepare_booted`) and when the app becomes ready
 while VMs run, rather than by a guest boot hook, so the helper always matches
 Silo; garbage collection runs at start and after a prepare, only while no VM
 runs, and holds the computer-wide operation gate (which every VM start takes)
-from the inventory through the deletion, skipping when any operation is active.
+from the inventory through the deletion, skipping when any operation is active or a download holds the storage lock (it never waits for either); a skipped pass stays pending and is retried every two minutes until it ran.
 Pushing the helper happens on a host background thread, never inside Start: it
 first checks the VM is still the same running instance, then reads the approval
 policy at launch time.
