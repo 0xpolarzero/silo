@@ -31,3 +31,13 @@ Scope: the native ChatGPT app implementation and adjacent computer-use state int
 - **Regression:** Three rendered tests failed before the fix: errors were absent for Ready, Unknown, and an unreadable first status. They verify visibility and dismissal independently of download status or status-read errors.
 - **Fix:** Render the retained Retry error in every status branch; dismissing it leaves independent status-read errors intact.
 - **Verification:** Frontend fixtures only. Red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/retry-error-red.log`; both focused frontend files passed, 129 tests total; Node 24 typecheck and lint passed.
+
+## CHATGPT-APP-7: Malformed remote status bypasses read-failure backoff
+
+- **Priority:** P3
+- **Location:** `app/SiloUI/src/desktop/computer-use-bridge.ts`, `createChatGptAppStore.refresh`.
+- **Trigger:** A remote owner returns an untagged or empty status payload. Parsing sets a read error but, unlike a rejected request, never increases the polling delay.
+- **Consequence:** Silo continues issuing requests at the normal interval while the owner cannot provide readable status, including every three seconds if the last status was a download in progress.
+- **Regression:** `backs off malformed remote download status and restores polling after recovery` failed because a second request arrived before the first backoff interval. It verifies every delay through the 30-second cap, then recovery and normal polling.
+- **Fix:** Apply the existing failed-read backoff to unreadable response payloads.
+- **Verification:** The red output is preserved under `/tmp/silo-codex-target/verification/chatgpt-app/malformed-status-red.log`; both focused frontend files passed, 130 tests total, and Node 24 typecheck and lint passed. Verification uses deterministic frontend fixtures only.
