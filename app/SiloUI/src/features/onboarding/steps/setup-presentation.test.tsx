@@ -8,6 +8,8 @@ import { fixtureMachineDefaults } from "@/fixtures/machine-configurations"
 import type { ReviewQueueItemView, WorkspaceProgressView } from "@/features/onboarding/model/onboarding-state"
 import { ReviewStep } from "@/features/onboarding/steps/review-step"
 import { WorkspacesStep } from "@/features/onboarding/steps/workspaces-step"
+import { projectOnboarding } from "@/features/onboarding/model/onboarding-state"
+import { onboardingScenarios } from "@/fixtures/scenarios"
 
 const progress: WorkspaceProgressView = {
   status: "running", elapsedSeconds: 83, currentWorkspace: "playgrounds", currentMessage: "Checking sandbox connectivity",
@@ -36,6 +38,12 @@ function renderReview(onEditStep = vi.fn()) {
 }
 
 describe("setup progress and review presentation", () => {
+  it("shows elapsed sandbox setup time when the start timestamp is zero", () => {
+    const source = onboardingScenarios.running
+    const { workspaceProgress } = projectOnboarding({ ...source, bootstrapState: { ...source.bootstrapState, startedAt: 0, updatedAt: 83 } }, "connected")
+    render(<WorkspacesStep machines={fixtureMachineDefaults} progress={workspaceProgress} onMachinesChange={vi.fn()} onRetry={vi.fn()} />)
+    expect(screen.getByLabelText("Elapsed time").textContent).toBe("01:23")
+  })
   it("keeps activity collapsed until requested and preserves the list while opening it", async () => {
     const user = userEvent.setup()
     render(<WorkspacesStep machines={fixtureMachineDefaults} progress={progress} onMachinesChange={vi.fn()} onRetry={vi.fn()} />)

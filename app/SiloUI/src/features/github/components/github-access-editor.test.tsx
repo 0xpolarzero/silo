@@ -8,6 +8,50 @@ import type { ApplicationActions } from "@/features/application/model/applicatio
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 
 describe("GitHubAccessEditor", () => {
+  it.each([{ repositoryOptions: [] }, { repositoryOptions: ["acme/silo"] }])("excludes repository suggestions and GitHub authorization from the page Tab order (%j)", async ({ repositoryOptions }) => {
+    const user = userEvent.setup()
+    render(<GitHubAccessEditor
+      workspaces={[{ name: "dev" }]} connectionState="connected"
+      repositoryOptions={repositoryOptions} workspaceSelections={{}} workspaceIdentities={{}}
+      currentHostGitIdentity={null} onConnect={vi.fn()}
+      onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
+      onManageRepositories={vi.fn()}
+    />)
+    await user.click(screen.getByRole("combobox", { name: "Add repository to dev" }))
+    expect(screen.getAllByRole("option")).toHaveLength(repositoryOptions.length + 1)
+    await user.tab()
+    expect(document.activeElement).toBe(document.body)
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument()
+  })
+
+  it("reveals arrow-key repository selections and the authorization action while keeping input focus", async () => {
+    const user = userEvent.setup()
+    const scroll = vi.spyOn(Element.prototype, "scrollIntoView")
+    const onManage = vi.fn()
+    render(<GitHubAccessEditor
+      workspaces={[{ name: "dev" }]} connectionState="connected"
+      repositoryOptions={Array.from({ length: 30 }, (_, index) => `acme/repo-${index}`)}
+      workspaceSelections={{}} workspaceIdentities={{}} currentHostGitIdentity={null}
+      onConnect={vi.fn()} onWorkspaceSelectionsChange={vi.fn()}
+      onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()} onManageRepositories={onManage}
+    />)
+    const input = screen.getByRole("combobox", { name: "Add repository to dev" })
+    await user.click(input)
+    await user.keyboard("{ArrowDown>20/}")
+    const repository = screen.getByRole("option", { name: "acme/repo-20", selected: true })
+    expect(input).toHaveAttribute("aria-activedescendant", repository.id)
+    expect(input).toHaveFocus()
+    expect(scroll.mock.contexts.at(-1)).toBe(repository)
+    await user.keyboard("{ArrowDown>10/}")
+    const authorize = screen.getByRole("option", { name: "Add more repositories on GitHub", selected: true })
+    expect(scroll.mock.contexts.at(-1)).toBe(authorize)
+    await user.keyboard("{ArrowUp}")
+    expect(scroll.mock.contexts.at(-1)).toBe(screen.getByRole("option", { name: "acme/repo-29", selected: true }))
+    expect(input).toHaveFocus()
+    await user.keyboard("{ArrowDown}{Enter}")
+    expect(onManage).toHaveBeenCalledOnce()
+  })
+
   it("uses empty defaults for an incoming sandbox named constructor", () => {
     const props = {
       workspaces: [{ name: "dev" }], connectionState: "connected" as const,

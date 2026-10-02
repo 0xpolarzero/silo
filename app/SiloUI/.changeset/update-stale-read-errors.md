@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep fresh update status visible when an older status read fails after a native update event.
+Keep the latest update status visible when an earlier status check fails.

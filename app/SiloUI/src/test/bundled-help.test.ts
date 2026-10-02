@@ -21,3 +21,10 @@ it("qualifies copying diagnostics because some Details sections have no copy con
   const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Read the operation's error"))
   expect(instructions?.textContent).toMatch(/copy control when.*offered/i)
 })
+
+it("distinguishes reclaimed host allocation from unchanged workspace capacity", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Reclaim unused space"))
+  expect(instructions?.textContent).toMatch(/reclamation.*allocated space.*on this computer/i)
+  expect(instructions?.textContent).toMatch(/workspace capacity.*stay.*same/i)
+})

@@ -60,3 +60,41 @@ treats ordinary comments as whitespace. Apply the existing line-comment
 handling to the manifest body. The fixture regression failed with both false
 errors before the fix; real repository sources remain covered by the existing
 test. This changes an internal CI checker, so no app changeset is needed.
+
+## Build wrappers mistake arbitrary JSON output for Cargo messages
+
+`release-dependency-cache.py` and `dependency-cache-benchmark.py` parsed all
+valid JSON stdout lines as Cargo message dictionaries. A temporary executable
+printing `null` before a compiler artifact made both real build functions raise
+`AttributeError`, before waiting for the process or preserving its exit status.
+
+The [Cargo JSON message contract](https://doc.rust-lang.org/cargo/reference/external-tools.html#json-messages)
+defines object messages and explicitly permits arbitrary output from other
+tools. Treat non-object JSON as ordinary tool output, exclude it from the
+artifact inventory, and close the exhausted stdout pipe before waiting. Real
+temporary executable regressions cover null, array, string, number, and boolean
+output and invalid UTF-8 bytes; release-build success and exit 19; benchmark artifact freshness and
+synthetic configuration verification. No Cargo compilation or runtime
+preparation runs in these tests. Both focused groups failed before the fix.
+An invalid UTF-8 byte also raised `UnicodeDecodeError` before the JSON parser;
+decode the stream as UTF-8 with replacement, matching the guest computer-use
+command helper's existing treatment of diagnostic output.
+The dependency-tool suite passed 33 tests on Python 3.12 with
+`ResourceWarning` promoted to an error.
+
+## Build CLI signal statuses wrap into unrelated exit codes
+
+Both dependency build wrappers returned the negative `Popen.wait()` status
+directly to `sys.exit`. A child terminating itself with SIGTERM made each CLI
+exit 241 instead of 143. The
+[Python subprocess contract](https://docs.python.org/3.12/library/subprocess.html#subprocess.Popen.returncode)
+defines `-N` as termination by signal N; the shell convention is 128 + N.
+
+Use the same conversion already used by `measure-command.py` and
+`retry-bundle.py`. Keep the benchmark report's raw subprocess status intact.
+CLI regressions run temporary self-terminating executables, assert exit 143,
+and check benchmark `exitCode: -15`. Both failed with actual exit 241 before the
+fix. The tests neither identify nor signal an external process.
+The dependency-tool group passed 35 tests on Python 3.12 with resource warnings
+treated as errors; the release-workflow group passed nine tests. Format,
+typecheck, lint, and whitespace checks also passed before each fix commit.

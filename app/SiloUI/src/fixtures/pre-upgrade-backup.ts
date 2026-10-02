@@ -7,8 +7,8 @@ import type { TransferResultNoticeBackend } from "@/features/application/model/t
  * the backup by itself. `delete-fails`: the first deletion fails and a retry succeeds.
  * `read-fails`: Silo cannot check for the backup; Retry succeeds.
  */
-export const preUpgradeBackupFixtureModes = ["present", "no-date", "delete-fails", "read-fails"] as const
-export type PreUpgradeBackupFixtureMode = (typeof preUpgradeBackupFixtureModes)[number]
+const preUpgradeBackupFixtureModes = ["present", "no-date", "delete-fails", "read-fails"] as const
+type PreUpgradeBackupFixtureMode = (typeof preUpgradeBackupFixtureModes)[number]
 
 export function preUpgradeBackupFixtureModeFromSearch(search: string): PreUpgradeBackupFixtureMode | undefined {
   const requested = new URLSearchParams(search).get("pre-upgrade-backup")
@@ -16,8 +16,8 @@ export function preUpgradeBackupFixtureModeFromSearch(search: string): PreUpgrad
 }
 
 // Midday UTC, so the local date is the same in every time zone from UTC-11 to UTC+11.
-export const fixtureDeleteAt = "2026-10-15T12:00:00Z"
-export const fixtureBackupBytes = Math.round(12.4 * 1024 ** 3)
+const fixtureDeleteAt = "2026-10-15T12:00:00Z"
+const fixtureBackupBytes = Math.round(12.4 * 1024 ** 3)
 export const fixtureDeleteFailure = "Silo could not finish deleting the pre-upgrade backup: Permission denied (os error 13). Your sandboxes were not affected. Try again."
 
 export interface PreUpgradeBackupFixtureOptions {
@@ -71,7 +71,7 @@ export function fixtureBackupForMode(mode: PreUpgradeBackupFixtureMode, delayMs 
   return createFixturePreUpgradeBackup({ delayMs, deleteAt: mode === "no-date" ? null : undefined, failures: mode === "delete-fails" ? 1 : 0 })
 }
 
-export const fixtureCompletedMigration: RuntimeMigrationState = {
+const fixtureCompletedMigration: RuntimeMigrationState = {
   status: "complete", stage: "Migration complete", logs: [], migratedCount: 2, failedCount: 0, totalCount: 2, canContinue: false,
 }
 

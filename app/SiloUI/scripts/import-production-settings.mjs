@@ -167,11 +167,28 @@ function validHosts(config) {
 }
 
 function writeAtomic(file, bytes, mode) {
-  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
-  const temporary = path.join(path.dirname(file), `.import-${process.pid}-${randomUUID()}`)
-  fs.writeFileSync(temporary, bytes, { mode })
-  fs.chmodSync(temporary, mode)
-  fs.renameSync(temporary, file)
+  const parent = path.dirname(file)
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 })
+  const temporary = path.join(parent, `.import-${process.pid}-${randomUUID()}`)
+  const output = fs.openSync(temporary, "wx", mode)
+  try {
+    try {
+      fs.writeFileSync(output, bytes)
+      fs.fchmodSync(output, mode)
+      fs.fsyncSync(output)
+    } finally {
+      fs.closeSync(output)
+    }
+    fs.renameSync(temporary, file)
+    const directory = fs.openSync(parent, "r")
+    try {
+      fs.fsyncSync(directory)
+    } finally {
+      fs.closeSync(directory)
+    }
+  } finally {
+    fs.rmSync(temporary, { force: true })
+  }
 }
 
 function backup(file, stamp, mode) {

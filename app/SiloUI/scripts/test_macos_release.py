@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tarfile
 import unittest
 from unittest.mock import patch
 
@@ -120,10 +121,12 @@ int main(int argc, char **argv) {
         # also fails if package.json is ever changed back to plain tauri build.
         scripts = self.case / 'scripts'
         scripts.mkdir()
-        for name in ('build_desktop.py', 'macos_release_signing.py'):
+        for name in ('build_desktop.py', 'macos_release_signing.py', 'channel_names.py', 'channel_names.rs'):
             shutil.copy2(SCRIPT.with_name(name), scripts / name)
         shutil.copy2(SCRIPT.parent.parent / 'package.json', self.case / 'package.json')
-        (self.case / 'src-tauri').mkdir()
+        (self.case / 'src-tauri/src').mkdir(parents=True)
+        shutil.copy2(SCRIPT.parent.parent / 'src-tauri/src/channel.rs',
+                     self.case / 'src-tauri/src/channel.rs')
         shutil.copy2(SCRIPT.parent.parent / 'src-tauri/Entitlements.plist',
                      self.case / 'src-tauri/Entitlements.plist')
         cli = self.case / 'node_modules/@tauri-apps/cli/tauri.js'
@@ -182,10 +185,13 @@ int main(int argc, char **argv) {
 
 
 class MacOSReleaseSignerEnvironmentTests(unittest.TestCase):
-    def run_packager(self, file_key, signer_exit=0):
+    def run_packager(self, file_key, signer_exit=0, product_name="Silo"):
+        from channel_names import channel_names
+        names = channel_names()
+        names = {**names, "production": {**names["production"], "productName": product_name}}
         with tempfile.TemporaryDirectory(prefix='silo-signer-env-') as temporary:
             root = Path(temporary)
-            app = root / 'Silo.app'
+            app = root / f'{product_name}.app'
             (app / 'Contents/MacOS').mkdir(parents=True)
             (app / 'Contents/MacOS/msb').write_bytes(b'fixture runtime')
             key = 'disposable-inline-fixture'
@@ -212,6 +218,7 @@ class MacOSReleaseSignerEnvironmentTests(unittest.TestCase):
             with patch.dict(os.environ, environment), \
                     patch.object(sys, 'argv', [str(script), str(app), str(root / 'output')]), \
                     patch.object(module, 'sign_runtime'), patch.object(module, 'verify_bundle'), \
+                    patch.object(module, 'channel_names', return_value=names, create=True), \
                     patch.object(module.subprocess, 'run', side_effect=command):
                 if signer_exit:
                     with self.assertRaisesRegex(RuntimeError, 'Updater signing failed.*exit code 17') as failure:
@@ -219,6 +226,15 @@ class MacOSReleaseSignerEnvironmentTests(unittest.TestCase):
                     self.assertNotIn(environment['TAURI_SIGNING_PRIVATE_KEY_PASSWORD'], str(failure.exception))
                 else:
                     module.main()
+            if not signer_exit:
+                archive = root / 'output' / f'{product_name}-macos-arm64.app.tar.gz'
+                with tarfile.open(archive) as packaged:
+                    self.assertTrue(all(entry.name.split('/')[0] == f'{product_name}.app'
+                                        for entry in packaged))
+                ditto = next(args for args, _ in invocations if args[0] == 'ditto')
+                self.assertEqual(Path(ditto[-1]).name, f'{product_name}.app')
+                image = next(args for args, _ in invocations if args[0] == 'hdiutil')
+                self.assertEqual(image[image.index('-volname') + 1], product_name)
             signer = [(args, kwargs) for args, kwargs in invocations if args[0] == 'npx']
             self.assertEqual(len(signer), 1)
             args, kwargs = signer[0]
@@ -233,6 +249,9 @@ class MacOSReleaseSignerEnvironmentTests(unittest.TestCase):
                 self.assertNotIn('-f', args)
                 self.assertEqual(kwargs['env']['TAURI_SIGNING_PRIVATE_KEY'], key)
                 self.assertNotIn(key, args)
+
+    def test_bundle_name_comes_from_the_production_channel(self):
+        self.run_packager(file_key=False, product_name="Fixture Channel")
 
     def test_file_key_removes_conflicting_inline_environment(self):
         self.run_packager(file_key=True)

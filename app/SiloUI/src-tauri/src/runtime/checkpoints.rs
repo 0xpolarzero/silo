@@ -723,7 +723,7 @@ pub async fn create_checkpoint(
     workspace_id: String,
     name: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -1543,10 +1543,10 @@ fn fork_commit_with_metadata_writer(
     });
     child_record.desired_network_policy = Some(fork.desired_policy.clone());
     save(paths, &child_id, &child_record)?;
-    crate::computer_use::inherit_settings(paths, source.id(), &child_id);
     let mut copied_github = false;
     let mut copied_secrets = false;
     let result = (|| {
+        crate::computer_use::inherit_settings(paths, source.id(), &child_id)?;
         assignments
             .copy_github(source.name(), new_name)
             .map_err(RuntimeError::Unavailable)?;
@@ -1643,7 +1643,7 @@ pub async fn fork_checkpoint(
     checkpoint_id: Option<String>,
     new_name: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2046,7 +2046,7 @@ pub async fn restore_checkpoint(
     workspace_id: String,
     checkpoint_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2219,7 +2219,7 @@ pub async fn abandon_restore(
     app: AppHandle,
     workspace_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -2489,7 +2489,7 @@ pub async fn delete_checkpoint(
     workspace_id: String,
     checkpoint_id: String,
 ) -> Result<ApplicationSource, String> {
-    crate::runtime_migration::ensure_ready(&app)?;
+    crate::runtime_migration::ensure_ready_async(&app).await?;
     let worker_app = app.clone();
     super::operation_gate::spawn_blocking(move || {
         let paths = runtime_paths(&worker_app)?;
@@ -4776,6 +4776,7 @@ mod tests {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let (paths, fork) = fork_fixture(&directory);
+        crate::computer_use::set_approval(&paths, ID, crate::computer_use::Approval::Auto).unwrap();
         let assignments = FakeAssignments::new(&[]);
         fork_commit(
             &journal_runner("Running", ""),
@@ -4791,6 +4792,10 @@ mod tests {
             .iter()
             .find(|machine| machine.name() == "branch")
             .unwrap();
+        assert_eq!(
+            crate::computer_use::settings(&paths, child.id()).approval,
+            crate::computer_use::Approval::Auto
+        );
         let pending = load(&paths, child.id())
             .unwrap()
             .pending_checkpoint_restore
@@ -4799,6 +4804,39 @@ mod tests {
         assert_eq!(pending.source_workspace, "dev");
         assert_eq!(*assignments.github.lock().unwrap(), ["branch"]);
         assert_eq!(*assignments.secrets.lock().unwrap(), ["branch"]);
+    }
+
+    #[test]
+    fn a_failed_approval_copy_does_not_publish_the_fork_or_leave_its_record() {
+        let _test_state = crate::test_support::global_state();
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let (paths, fork) = fork_fixture(&directory);
+        crate::computer_use::set_approval(&paths, ID, crate::computer_use::Approval::Auto).unwrap();
+        let policy_directory = paths.metadata.with_file_name("computer-use");
+        fs::set_permissions(&policy_directory, fs::Permissions::from_mode(0o500)).unwrap();
+        let assignments = FakeAssignments::new(&[]);
+        let result = fork_commit(
+            &journal_runner("Running", ""),
+            &paths,
+            &assignments,
+            &fork,
+            "branch",
+        );
+        fs::set_permissions(&policy_directory, fs::Permissions::from_mode(0o700)).unwrap();
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("computer-use setting"));
+        assert_eq!(record_ids(&paths), [ID]);
+        assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
+        assert!(assignments.github.lock().unwrap().is_empty());
+        assert!(assignments.secrets.lock().unwrap().is_empty());
+        assert_eq!(
+            crate::computer_use::settings(&paths, ID).approval,
+            crate::computer_use::Approval::Auto
+        );
+        assert_eq!(fs::read_dir(&policy_directory).unwrap().count(), 1);
     }
 
     #[test]
@@ -4930,8 +4968,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let (paths, fork) = fork_fixture(&directory);
+        crate::computer_use::set_approval(&paths, ID, crate::computer_use::Approval::Auto).unwrap();
         let parent = paths.metadata.parent().unwrap().to_path_buf();
-        // The checkpoint directory already exists, so only the inventory write fails.
+        // The checkpoint and approval directories exist, so only the inventory write fails.
         fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
         let assignments = FakeAssignments::new(&[]);
         let result = fork_commit(
@@ -4947,6 +4986,12 @@ mod tests {
         assert_eq!(read_metadata(&paths.metadata).unwrap().machines.len(), 1);
         assert!(assignments.github.lock().unwrap().is_empty());
         assert!(assignments.secrets.lock().unwrap().is_empty());
+        assert_eq!(
+            fs::read_dir(paths.metadata.with_file_name("computer-use"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 
     #[test]

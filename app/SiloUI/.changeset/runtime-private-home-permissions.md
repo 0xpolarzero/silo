@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Keep managed runtime directories owner-only regardless of the launcher's umask, and repair broader permissions on existing runtime homes.
+Keep Silo's managed virtual-machine folders private to the current user and repair existing folders with broader permissions.
