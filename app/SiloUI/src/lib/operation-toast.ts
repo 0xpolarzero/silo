@@ -1,6 +1,7 @@
 import { createElement, useEffect, useRef, type ReactNode, type MouseEvent } from "react"
 import { toast } from "sonner"
 
+import { bridgeErrorMessage } from "@/contracts/bridge-error"
 import { deliverNotice, type Notice, type NoticeSandbox } from "@/desktop/notices"
 import { OperationToastBody, type OperationProgressOptions } from "@/components/operation-toast-body"
 
@@ -47,7 +48,7 @@ export interface OperationToastOptions {
 }
 
 export function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  return bridgeErrorMessage(error) ?? (error instanceof Error ? error.message : String(error))
 }
 
 /**
