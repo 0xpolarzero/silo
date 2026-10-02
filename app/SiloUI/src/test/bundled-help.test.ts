@@ -66,3 +66,10 @@ it("explains the update prerequisite before starting an outdated legacy desktop"
   expect(instructions?.textContent).toMatch(/sandbox running.*desktop stopped/i)
   expect(instructions?.textContent).toMatch(/updating.*does not start.*automatically/i)
 })
+
+it("names the macOS Settings menu for both Silo build channels", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Search or Jump To"))
+  expect(instructions?.textContent).toMatch(/Silo → Settings/)
+  expect(instructions?.textContent).toMatch(/Silo Dev → Settings/)
+})
