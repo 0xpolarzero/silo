@@ -100,7 +100,7 @@ export function OperationToastBody({ title, step, steps, progress, startedAt, ca
     </div>
     {steps && steps.length > 0 && <ul className="grid gap-0.5" aria-label="Steps">
       {steps.map((entry) => <li key={entry.label} data-state={entry.state} aria-current={entry.state === "current" ? "step" : undefined} className={`flex items-center gap-1.5 ${entry.state === "pending" ? "text-muted-foreground" : entry.state === "failed" ? "text-destructive" : ""}`}>
-        {stepIcon[entry.state]}<span className="min-w-0 truncate">{entry.label}<span className="sr-only">: {stepStatus[entry.state]}</span></span>
+        {stepIcon[entry.state]}<span className="min-w-0 truncate" title={entry.label}>{entry.label}<span className="sr-only">: {stepStatus[entry.state]}</span></span>
       </li>)}
     </ul>}
     {cancel && <div className="flex justify-end"><Button ref={cancelButton} type="button" variant="outline" size="xs" onClick={() => (cancel.confirm ? setConfirming(true) : cancel.onCancel())}>{cancel.label ?? "Cancel"}</Button></div>}

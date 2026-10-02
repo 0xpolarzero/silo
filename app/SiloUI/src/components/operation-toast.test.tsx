@@ -107,6 +107,14 @@ it("formats elapsed time", () => {
 })
 
 describe("progress notification polish", () => {
+  it("reveals complete checklist labels in every step state", async () => {
+    const steps = (["done", "current", "pending", "failed"] as const).map(state => ({ state, label: `${state}: ${"long operation step ".repeat(20)}`.trim() }))
+    render(<Host />)
+    act(() => showOperationProgress("long-checklist", { title: "Working", steps }))
+    await tick()
+    for (const { label } of steps) expect(screen.getByText(label)).toHaveAttribute("title", label)
+  })
+
   it("hides a step that only repeats the title", async () => {
     render(<Host />)
     act(() => showOperationProgress("dup", { title: "Creating checkpoint “X”", step: "Creating checkpoint…", progress: null }))
