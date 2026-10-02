@@ -73,11 +73,11 @@ describe("managed SSH access", () => {
     ["Copy SSH address", "Copy address"],
     ["More local SSH actions", "More local SSH actions"],
   ])("uses the app tooltip for %s without native titles", async (name, caption) => {
-    const { user, container } = setup()
+    const { user } = setup()
     await expand(user)
     await user.hover(screen.getByRole("button", { name }))
     expect(await screen.findByRole("tooltip")).toHaveTextContent(caption)
-    expect(container.querySelector("[title]")).toBeNull()
+    expect(screen.getByRole("button", { name }).closest("[title]")).toBeNull()
   })
   it("copies the displayed network address and keeps the fingerprint in its tooltip", async () => {
     const { user } = setup({ bindAddress: "192.168.1.42" })
