@@ -28,6 +28,9 @@ inline by the editor and never notifies.
 - Never notified: user cancellations, requests deduplicated into an already queued
   action (`GateError::AlreadyQueued`, D-13), dismiss-error, synchronous rejections of an
   export/import that the UI already shows (E-48).
+- Delivery ordering: OS calls for the same key share a gate. Queued requests carry
+  revisions assigned before background dispatch; superseded requests are skipped.
+  Different keys have independent gates.
 - Replacement: the `key` is the notification identity (`vm:{id}:lifecycle`,
   `vm:{id}:transfer`, ...). A newer notice with the same key replaces the older one: on
   macOS as the request identifier, on Linux through `replaces_id`.
@@ -37,9 +40,11 @@ inline by the editor and never notifies.
   opens the main window at `{"tab":"workspaces","workspace":<name>}`, or
   `{"tab":"workspaces"}` without a sandbox, through `status_panel::open_main`.
   Notifications group by thread: sandbox id, else the category name.
-- Clearing: delivered identifiers are tracked per sandbox id. Deleting a sandbox (local
-  `change_machine_configuration`, remote `remote_delete_machine`) removes its delivered
-  notifications (`removeDeliveredNotificationsWithIdentifiers`, or `CloseNotification`).
+- Clearing: queued and delivered identifiers are tracked per sandbox id. Deleting a
+  sandbox (local `change_machine_configuration`, remote `remote_delete_machine`)
+  invalidates queued deliveries and withdraws in-flight and delivered notifications
+  (`removeDeliveredNotificationsWithIdentifiers`, or `CloseNotification`). A delayed
+  withdrawal preserves a newer successful submission for the same key.
 
 ## Platform gaps
 
