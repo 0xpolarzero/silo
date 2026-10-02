@@ -4669,17 +4669,19 @@ pub(crate) fn is_pending_restore(paths: &RuntimePaths, name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Inspect a Silo VM without treating "not created yet" as a failure. A sandbox that
-/// is pending restore is decided from Silo's own record before the runtime is asked;
-/// a runtime that reports the sandbox as missing is likewise `Absent`.
+/// Inspect a Silo VM without treating "not created yet" as a failure. An unattempted
+/// restore is absent; after an attempt, inspect the VM it may have created. A runtime
+/// that reports the sandbox as missing is likewise `Absent`.
 pub(crate) fn observe_vm(
     runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     name: &str,
 ) -> Result<VmRuntime, RuntimeError> {
     validate_name(name)?;
-    if is_pending_restore(paths, name) {
-        return Ok(VmRuntime::Absent);
+    if let Ok(id) = resolve_vm_id(paths, name) {
+        if checkpoints::pending_view(paths, &id, true)? {
+            return Ok(VmRuntime::Absent);
+        }
     }
     match inspect_workspace(runner, paths, name) {
         Ok(inspected) => Ok(VmRuntime::Present(inspected)),
@@ -9783,6 +9785,48 @@ exit 9
         .unwrap());
         crate::secrets::use_test_store(None);
         crate::secrets::use_test_vault(None);
+    }
+
+    #[test]
+    fn pending_secret_revocation_does_not_retire_a_running_failed_restore() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        write_metadata(&paths.metadata, &request(vec![vm()])).unwrap();
+        let pending: checkpoints::Record = serde_json::from_value(json!({
+            "version":1,
+            "checkpoints":[],
+            "restoreAttempted":true,
+            "pendingCheckpointRestore":{
+                "checkpointId":"c000000000000000000000000000000",
+                "sourceWorkspace":"source",
+                "state":"disk"
+            }
+        }))
+        .unwrap();
+        checkpoints::save(&paths, vm().id(), &pending).unwrap();
+        let record = pending_secret_fixture(&directory);
+        let mut removed = Vec::new();
+        let result = revoke_secret_with(
+            &StubRunner::successful_json(vec![
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+                inspected_secret(&paths, "Running", &["API_KEY"]),
+            ]),
+            &paths,
+            &record,
+            &mut |name| {
+                removed.push(name.to_owned());
+                Ok(())
+            },
+        )
+        .unwrap();
+        crate::secrets::use_test_store(None);
+        crate::secrets::use_test_vault(None);
+        assert!(
+            !result,
+            "a running restore still exposes the revoked secret"
+        );
+        assert_eq!(removed, ["API_KEY"]);
     }
 
     #[test]
