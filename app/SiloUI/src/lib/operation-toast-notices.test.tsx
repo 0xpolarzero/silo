@@ -24,7 +24,7 @@ function Host() { return <SettingsProvider initialSettings={{ theme: "light" }}>
 const tick = () => act(async () => { await Promise.resolve(); await vi.advanceTimersByTimeAsync(50) })
 const sandbox = { id: "vm-1", name: "dev" }
 
-beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }); delivered.mockClear() })
+beforeEach(() => { vi.useFakeTimers({ now: new Date("2026-10-02T12:00:00Z") }); delivered.mockClear() })
 afterEach(() => { dismissOperationToast("op"); vi.useRealTimers() })
 
 describe("system notice mirroring", () => {
@@ -67,12 +67,16 @@ describe("system notice mirroring", () => {
     expect(delivered.mock.calls[1][0].key).toBe("action-failure:Could not open port 80")
   })
 
-  it("mirrors a success only after progress shown for over 3 seconds", () => {
+  it.each([LONG_OPERATION_MS - 1, LONG_OPERATION_MS, LONG_OPERATION_MS + 1])("mirrors a success only after progress shown for over 3 seconds (%i ms)", elapsed => {
     const start = Date.now()
     showOperationProgress("op", { title: "Working", startedAt: start })
-    vi.setSystemTime(start + LONG_OPERATION_MS + 1)
+    vi.setSystemTime(start + elapsed)
     showOperationSuccess("op", "Done", { description: "took a while", noticeSandbox: sandbox })
-    expect(delivered).toHaveBeenCalledExactlyOnceWith({ category: "completions", key: "op", title: "Done", body: "took a while", sandbox })
+    if (elapsed > LONG_OPERATION_MS) {
+      expect(delivered).toHaveBeenCalledExactlyOnceWith({ category: "completions", key: "op", title: "Done", body: "took a while", sandbox })
+    } else {
+      expect(delivered).not.toHaveBeenCalled()
+    }
   })
 
   it("does not mirror a quick success, a success without progress, a notice, progress, or a quick confirmation", () => {
