@@ -35,3 +35,22 @@ records across several byte-limited pages instead of an impossible 3,000-record
 response. The malformed-response regression remains intentionally malformed to
 check frontend containment. Static log pages do not simulate native index
 caching or file retention.
+
+## Checkpoint outcomes
+
+The preview fork action ignored its source and checkpoint, copied the first VM's
+live runtime fields, and returned success for missing selections. Restore never
+published a pending checkpoint reference and always fabricated a full recovery
+point. Native [checkpoint commands](../../../app/SiloUI/src-tauri/src/runtime/checkpoints.rs),
+`fork_source`, `fork_commit`, `pending_workspace`, and `restore_steps`, resolve the
+selected owner, publish a stopped VM with empty runtime fields, and retain
+snapshot lineage and scope until Start. Recovery captures are full for running
+VMs and disk for stopped VMs; a pending VM preserves its existing native member
+under a new public recovery checkpoint ID.
+
+The hook regressions cover local and remote ownership, missing-selection string
+errors, duplicate names, current-state capture, pending-state forks, and recovery
+scope/native-member references. These deterministic outcomes do not simulate
+runtime checkpoint I/O, operation admission, or failure recovery journals.
+Capture cases also exercise native label trimming/validation, newest-first
+ordering, native-shaped generated IDs, and remote owner resolution.
