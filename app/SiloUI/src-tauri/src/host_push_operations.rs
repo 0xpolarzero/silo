@@ -163,6 +163,26 @@ fn claim(
     );
     Ok((value, true))
 }
+fn persist_claim(
+    journal: &Path,
+    jobs: &Journal,
+    id: &str,
+    save: impl Fn(&Path, &Journal) -> Result<(), String>,
+) -> Result<(), String> {
+    if let Err(message) = save(journal, jobs) {
+        if let Some(job) = jobs.get(id) {
+            let mut value = job.operation.clone();
+            value["status"] = json!("failed");
+            value["commitCount"] = json!(0);
+            value["message"] = json!(message);
+            // A rename can succeed before directory sync fails. No worker was
+            // dispatched, so resolve any saved claim even if recovery cannot save.
+            record_completion_locked(journal, id, value, save);
+        }
+        return Err(message);
+    }
+    Ok(())
+}
 pub(crate) fn start(
     app: &AppHandle,
     workspace: String,
@@ -186,7 +206,7 @@ pub(crate) fn start(
         job.operation["commitCount"] = json!(planned);
     }
     // Persist before acknowledging or starting: retrying a lost reply never starts a second job.
-    write(&journal, &jobs)?;
+    persist_claim(&journal, &jobs, &id, write)?;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let result = host_push::push_repository(
@@ -210,6 +230,14 @@ fn record_completion(journal: &Path, id: &str, value: Value) {
     let Ok(_guard) = LOCK.lock() else {
         return;
     };
+    record_completion_locked(journal, id, value, write);
+}
+fn record_completion_locked(
+    journal: &Path,
+    id: &str,
+    value: Value,
+    save: impl Fn(&Path, &Journal) -> Result<(), String>,
+) {
     if let Ok(mut completed) = COMPLETED.get_or_init(|| Mutex::new(HashMap::new())).lock() {
         completed.insert(id.to_owned(), (value.clone(), now()));
     }
@@ -220,7 +248,7 @@ fn record_completion(journal: &Path, id: &str, value: Value) {
         }
         // A failed save leaves the previous durable record unresolved, never a fabricated success.
         // Once saved, the durable record replaces the in-memory copy.
-        if write(journal, &jobs).is_ok() {
+        if save(journal, &jobs).is_ok() {
             if let Ok(mut completed) = COMPLETED.get_or_init(|| Mutex::new(HashMap::new())).lock() {
                 completed.remove(id);
             }
@@ -462,6 +490,47 @@ mod tests {
         )
         .unwrap();
         assert_eq!(value["target"]["commit"], "a".repeat(40));
+    }
+    #[test]
+    fn a_failed_claim_save_never_leaves_an_unstarted_push_active() {
+        let _state = crate::test_support::global_state();
+        let _guard = LOCK.lock().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("jobs.json");
+        let id = uuid::Uuid::new_v4().to_string();
+        let mut jobs = Journal::new();
+        claim(&mut jobs, &id, "dev", "/workspace/repo", &target()).unwrap();
+        // The rename succeeds, but the subsequent durability check fails.
+        // Recovery writes fail too, so the live fallback must resolve the job.
+        let failed_save = |path: &Path, jobs: &Journal| {
+            if !path.exists() {
+                write(path, jobs)?;
+            }
+            Err("Cannot save push operations.".to_string())
+        };
+        assert!(persist_claim(&path, &jobs, &id, failed_save).is_err());
+        let mut recovered = read(&path).unwrap();
+        let (result, replayed) =
+            claim(&mut recovered, &id, "dev", "/workspace/repo", &target()).unwrap();
+        assert!(!replayed);
+        assert_eq!(result["status"], "failed");
+        let durable: Journal = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(durable[&id].operation["status"], "pushing");
+        assert_eq!(result["target"], serde_json::to_value(target()).unwrap());
+        assert!(
+            claim(
+                &mut recovered,
+                &uuid::Uuid::new_v4().to_string(),
+                "dev",
+                "/workspace/repo",
+                &target(),
+            )
+            .unwrap()
+            .1
+        );
+        if let Some(completed) = COMPLETED.get() {
+            completed.lock().unwrap().remove(&id);
+        }
     }
     #[test]
     fn claim_prunes_dismissed_and_old_finished_history() {
