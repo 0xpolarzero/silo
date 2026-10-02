@@ -39,3 +39,14 @@ regression failed before correction; it and the existing byte-preservation and
 symlink-refusal test passed with the exact production file functions isolated
 from the editor adapters, using Rust 1.94.0 and warnings denied. Root skips the
 permission fixture. No live SSH connection or editor was used.
+
+## Secret metadata: fixed
+
+`secrets.rs::save` synchronized its JSON file but omitted parent-directory sync
+after publication. It now propagates that failure instead of acknowledging the
+save. The regression verifies complete private JSON after replacement, rejects
+the unsynchronized save and then successfully retries after restoring directory
+access. It failed before the fix and passed afterward in a harness with the exact
+production document types, thread-local path override, path resolver, writer and
+test, compiled with Rust 1.94.0 and warnings denied. No credential store or guest
+was accessed; root skips the permission boundary.
