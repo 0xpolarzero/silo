@@ -116,7 +116,7 @@ describe("backend notices", () => {
     await tick()
     expect(screen.getByText("Update failed")).toBeInTheDocument()
     expect(screen.getByText("Export finished")).toBeInTheDocument()
-    act(() => dismissSandboxToasts("dev"))
+    act(() => dismissSandboxToasts(sandbox.id))
     await tick()
     await act(async () => { await vi.advanceTimersByTimeAsync(500) })
     expect(screen.queryByText("dev is running again")).not.toBeInTheDocument()
