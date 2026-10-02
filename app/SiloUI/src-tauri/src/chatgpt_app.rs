@@ -1603,6 +1603,7 @@ fn ensure_inner(
         .and_then(|()| published_dir.remove_entry(&published_path, &name))
         .map_err(prepare)?;
     clean_staging(root, &root_dir);
+    clean_staging(&published_path, &published_dir);
 
     let (downloads, _) = root_dir.subdir("downloads", true).map_err(prepare)?;
     let deb_name = format!("chatgpt_{}_{}.deb", lock.version, arch.name());
@@ -1863,6 +1864,7 @@ fn collect_garbage_locked(
     clean_staging(root, &root_dir);
     let pinned = lock.directory_name(arch);
     let published = published_path(root);
+    clean_staging(&published, &published_dir);
     let mut removed = Vec::new();
     // A record of a version that is going away goes with it (or alone).
     for entry in fs::read_dir(root).map_err(|_| list_failed())?.flatten() {
