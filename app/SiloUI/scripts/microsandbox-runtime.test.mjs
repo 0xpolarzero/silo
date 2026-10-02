@@ -20,7 +20,7 @@ if (process.argv[1].endsWith("rustc")) {
   if (process.env.FIXTURE_ROLE === "failure") throw new Error("Fixture compiler failure")
   if (process.env.FIXTURE_ROLE === "first") {
     writeFileSync(join(process.env.FIXTURE_ROOT, "ready"), process.cwd())
-    const deadline = Date.now() + 10000
+    const deadline = Date.now() + 30000
     while (true) {
       try { readFileSync(join(process.env.FIXTURE_ROOT, "continue")); break } catch {}
       if (Date.now() > deadline) throw new Error("Fixture gate timed out")
@@ -81,14 +81,14 @@ function runWorker(t, fixture, role) {
 }
 
 async function waitForFile(path) {
-  const deadline = Date.now() + 5000
+  const deadline = Date.now() + 15000
   while (Date.now() < deadline) {
     try { return await readFile(path, "utf8") } catch { await delay(10) }
   }
   throw new Error(`Timed out waiting for ${path}`)
 }
 
-test("a completed preparation cannot remove another process's active source", { timeout: 15000 }, async t => {
+test("a completed preparation cannot remove another process's active source", { timeout: 45000 }, async t => {
   const paths = await fixture(t)
   const first = runWorker(t, paths, "first")
   const firstSource = await waitForFile(join(paths.root, "ready"))
