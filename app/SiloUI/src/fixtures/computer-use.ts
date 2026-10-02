@@ -6,7 +6,7 @@ import { computerUseStates } from "@/desktop/linux-desktop-state"
 // Deterministic fixtures for built-in computer use. Select with `?computer-use=<name>`,
 // `&chatgpt=<name>` (this computer's ChatGPT app) and `&chatgpt-remote=<name>` (every remote
 // computer's) in the browser preview; nothing here reaches Silo services.
-export const computerUseFixtureNames = [...computerUseStates, "untested", "auto", "unknown-approval", "pre-v4"] as const
+export const computerUseFixtureNames = [...computerUseStates, "untested", "auto", "unknown-approval", "unapplied-ask", "pre-v4"] as const
 export type ComputerUseFixtureName = typeof computerUseFixtureNames[number]
 export const chatGptFixtureNames = ["idle", "downloading", "verifying", "extracting", "ready", "failed", "failed-final", "unknown"] as const
 export type ChatGptFixtureName = typeof chatGptFixtureNames[number]
@@ -22,7 +22,7 @@ export function chatGptFixtureFromSearch(search: string, parameter = "chatgpt"):
 
 export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseState {
   const base: ComputerUseState = {
-    state: "ready", reason: null, compatibility: "tested", warning: null, approval: "ask",
+    state: "ready", reason: null, compatibility: "tested", warning: null, approval: "ask", appliedApproval: "ask",
     appVersion: "26.928.31416", runtimeVersion: "0.0.14", lcuVersion: "0.8.0", agents: ["Claude Code", "Codex"],
   }
   switch (name) {
@@ -31,8 +31,10 @@ export function fixtureComputerUse(name: ComputerUseFixtureName): ComputerUseSta
     case "installing": return { ...base, state: "installing", reason: "Configuring Claude Code and Codex." }
     case "failed": return { ...base, state: "failed", reason: "No supported agent was found. Install one, then choose Set up computer use.", agents: [] }
     case "untested": return { ...base, compatibility: "untested", warning: "ChatGPT for Linux 26.1002.1 has not been tested with this version of Silo. Computer use may not work as expected." }
-    case "auto": return { ...base, approval: "auto" }
-    case "unknown-approval": return { ...base, approval: "unknown" }
+    case "auto": return { ...base, approval: "auto", appliedApproval: "auto" }
+    case "unknown-approval": return { ...base, approval: "unknown", appliedApproval: "unknown" }
+    // The user turned it off, but the guest still auto-approves.
+    case "unapplied-ask": return { ...base, approval: "ask", appliedApproval: "auto", state: "installing", reason: "Applying approval change…" }
     default: return base
   }
 }
@@ -88,7 +90,7 @@ export function createFixtureComputerUseBackend(name: ComputerUseFixtureName, ch
   const setUse = (patch: Partial<ComputerUseState>) => { if (desktop.computerUse) desktop = { ...desktop, computerUse: { ...desktop.computerUse, ...patch } } }
   return {
     readDesktopState: async () => structuredClone(desktop),
-    setApproval: async (_workspace, mode) => { setUse({ approval: mode }); return structuredClone(desktop) },
+    setApproval: async (_workspace, mode) => { setUse({ approval: mode, appliedApproval: mode }); return structuredClone(desktop) },
     setup: async () => { await delay(900); setUse({ state: "ready", reason: null }); return structuredClone(desktop) },
     chatGptStatus: async computer => statusOf(computer),
     retry: async computer => {

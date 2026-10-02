@@ -567,6 +567,50 @@ describe("unreadable approval policy", () => {
   })
 })
 
+describe("saved and applied approval", () => {
+  const desktop = { installed: true, autoStart: true, state: "running" }
+  it("parses appliedApproval tolerantly: unknown when missing or malformed", () => {
+    const parse = (computerUse: object) => parseLinuxDesktopState({ ...desktop, computerUse }).computerUse
+    expect(parse({ state: "ready", approval: "ask" })?.appliedApproval).toBe("unknown")
+    expect(parse({ state: "ready", approval: "ask", appliedApproval: 3 })?.appliedApproval).toBe("unknown")
+    expect(parse({ state: "ready", approval: "ask", appliedApproval: "auto" })).toMatchObject({ approval: "ask", appliedApproval: "auto" })
+  })
+  it("shows the chosen mode in the switch and warns while the guest still auto-approves", () => {
+    render(<ComputerUsePanel computerUse={fixtureComputerUse("unapplied-ask")} running busy={false} error={null} onApproval={vi.fn()} onSetup={vi.fn()} />)
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
+    expect(screen.getByRole("note")).toHaveTextContent("Agents in this sandbox can still act without asking until this change is applied.")
+  })
+  it("says agents still ask while a switch to auto is pending", () => {
+    render(<ComputerUsePanel computerUse={{ ...ready, approval: "auto", appliedApproval: "ask" }} running busy={false} error={null} onApproval={vi.fn()} onSetup={vi.fn()} />)
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).toBeChecked()
+    expect(screen.getByRole("note")).toHaveTextContent("still ask first until this change is applied")
+    expect(screen.queryByText(/can still act without asking/)).toBeNull()
+  })
+  it("shows no warning when both agree or the applied mode is not known", () => {
+    for (const computerUse of [ready, fixtureComputerUse("auto"), { ...ready, approval: "auto" as const, appliedApproval: "unknown" as const }, { ...ready, appliedApproval: "unknown" as const }]) {
+      const { unmount } = render(<ComputerUsePanel computerUse={computerUse} running busy={false} error={null} onApproval={vi.fn()} onSetup={vi.fn()} />)
+      expect(screen.queryByRole("note")).toBeNull()
+      unmount()
+    }
+  })
+  it("keeps the unreadable-policy diagnostic alone, never a second warning", () => {
+    render(<ComputerUsePanel computerUse={{ ...ready, approval: "unknown", appliedApproval: "auto" }} running busy={false} error={null} onApproval={vi.fn()} onSetup={vi.fn()} />)
+    expect(screen.getAllByRole("note")).toHaveLength(1)
+    expect(screen.getByRole("note")).toHaveTextContent("could not read this sandbox's approval setting")
+  })
+  it("keeps the warning after a failed change reverts the optimistic switch", async () => {
+    const user = userEvent.setup()
+    render(wrap(backend({
+      readDesktopState: async () => ({ ...fixtureDesktopState("ready"), computerUse: fixtureComputerUse("auto") }),
+      // Saved as ask, but the guest could not apply it: the state keeps reporting auto as applied.
+      setApproval: async () => ({ ...fixtureDesktopState("ready"), computerUse: { ...fixtureComputerUse("unapplied-ask"), state: "failed" as const, reason: "Silo could not apply the approval change." } }),
+    }), <ComputerUseSection workspace="office/vm-1" pollMs={60_000} />))
+    await user.click(await screen.findByRole("switch", { name: /Allow without asking/ }))
+    expect(await screen.findByText(/can still act without asking until this change is applied/)).toBeVisible()
+    expect(screen.getByRole("switch", { name: /Allow without asking/ })).not.toBeChecked()
+  })
+})
+
 describe("approval copy", () => {
   it("does not claim every agent asks or that accounts are out of reach", () => {
     render(<ComputerUsePanel computerUse={ready} running busy={false} error={null} onApproval={vi.fn()} onSetup={vi.fn()} />)

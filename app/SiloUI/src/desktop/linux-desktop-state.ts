@@ -11,7 +11,11 @@ export const computerUseSchema = z.object({
   compatibility: z.enum(["tested", "untested", "unknown"]).catch("unknown"),
   warning: z.string().nullish().catch(null),
   // A missing or unreadable policy is "unknown", never "ask": the guest may still auto-approve.
+  // What the user chose. Silo shows it in the switch.
   approval: z.enum(["ask", "auto", "unknown"]).catch("unknown"),
+  // What the guest confirmed applying ("unknown" when it has not said, or an older Silo does not
+  // report it). It differs from `approval` while a change is pending or after it failed.
+  appliedApproval: z.enum(["ask", "auto", "unknown"]).catch("unknown"),
   appVersion: z.string().nullish().catch(null),
   runtimeVersion: z.string().nullish().catch(null),
   lcuVersion: z.string().nullish().catch(null),

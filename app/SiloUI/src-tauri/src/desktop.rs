@@ -105,6 +105,28 @@ pub(crate) fn guest(
     timeout: Duration,
     allow_boot: bool,
 ) -> Result<String, RuntimeError> {
+    guest_within(
+        runner,
+        paths,
+        name,
+        script,
+        timeout,
+        Duration::from_secs(60),
+        allow_boot,
+    )
+}
+
+/// `guest` with an explicit allowance on top of the guest-side `timeout` for the host's
+/// own wait (starting the command and collecting its output).
+pub(crate) fn guest_within(
+    runner: &dyn RuntimeRunner,
+    paths: &RuntimePaths,
+    name: &str,
+    script: &str,
+    timeout: Duration,
+    grace: Duration,
+    allow_boot: bool,
+) -> Result<String, RuntimeError> {
     let mut args = vec![
         "exec".into(),
         name.into(),
@@ -124,7 +146,7 @@ pub(crate) fn guest(
     if !allow_boot {
         args.insert(2, "--no-start".into());
     }
-    let output = runner.run(paths, &args, timeout + Duration::from_secs(60))?;
+    let output = runner.run(paths, &args, timeout + grace)?;
     Ok(output.stdout)
 }
 

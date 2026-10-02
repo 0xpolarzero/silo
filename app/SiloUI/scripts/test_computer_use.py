@@ -287,26 +287,92 @@ class Sync(Guest):
         self.assertEqual(cu.sync(approval='ask', revision=7)['approvalRevision'], 7)
         self.assertEqual(cu.sync(approval='auto', revision=8)['approval'], 'auto')
 
-    def test_a_new_owner_replaces_the_record_whatever_its_revision(self):
-        # A VM imported from a computer whose clock was far ahead: its record carries a
-        # huge revision under the source owner.
-        source = '11111111-1111-4111-8111-111111111111'
-        destination = '22222222-2222-4222-8222-222222222222'
-        cu.sync(approval='auto', revision=9_000_000_000_000, owner=source)
-        result = cu.sync(approval='ask', revision=1_000, owner=destination)
-        self.assertEqual((result['approval'], result['approvalRevision'], result['approvalOwner']),
-                         ('ask', 1_000, destination))
-        # Within the new owner revisions order again, and the old owner is a new owner.
-        cu.sync(approval='auto', revision=1_001, owner=destination)
-        result = cu.sync(approval='ask', revision=1_000, owner=destination)
+    SOURCE = '11111111-1111-4111-8111-111111111111'
+    HOST = '22222222-2222-4222-8222-222222222222'
+
+    def record(self):
+        return json.loads((self.state / 'approval.json').read_text())
+
+    def test_a_new_generation_replaces_the_record_whatever_its_revision(self):
+        # A VM imported with a future-dated record: the host's fresh default `ask` must win
+        # even though the guest's disk carries `auto` at a huge revision.
+        cu.sync(approval='auto', revision=9_000_000_000_000, generation=self.SOURCE)
+        result = cu.sync(approval='ask', revision=1_000, generation=self.HOST)
+        self.assertEqual((result['approval'], result['approvalRevision'], result['approvalGeneration']),
+                         ('ask', 1_000, self.HOST))
+        # Within the host's generation revisions order again, and the old generation is new.
+        cu.sync(approval='auto', revision=1_001, generation=self.HOST)
+        result = cu.sync(approval='ask', revision=1_000, generation=self.HOST)
         self.assertEqual((result['approval'], result['approvalRevision']), ('auto', 1_001))
 
-    def test_equal_revisions_of_one_owner_converge_on_ask(self):
-        owner = '22222222-2222-4222-8222-222222222222'
+    def test_a_guest_record_forged_with_the_hosts_old_clock_cannot_block_a_new_generation(self):
+        # A forged record on the guest disk: any owner-like fields and an enormous revision.
+        (self.state / 'approval.json').write_text(json.dumps({
+            'schemaVersion': 1, 'approval': 'auto', 'revision': 2 ** 62, 'generation': self.SOURCE,
+            'applied': {'approval': 'auto', 'revision': 2 ** 62, 'generation': self.SOURCE}}))
+        self.assertEqual(cu.status()['approval'], 'auto')
+        result = cu.sync(approval='ask', revision=1, generation=self.HOST)
+        self.assertEqual((result['approval'], result['approvalRevision']), ('ask', 1))
+        self.assertEqual(self.receipt()['approval'], 'ask')
+
+    def test_same_generation_exceeding_the_hosts_revision_is_visible_to_the_host(self):
+        cu.sync(approval='auto', revision=2 ** 40, generation=self.HOST)
+        result = cu.status()
+        self.assertEqual((result['approvalRevision'], result['approvalGeneration']), (2 ** 40, self.HOST))
+
+    def test_equal_revisions_of_one_generation_converge_on_ask(self):
         for revision, (first, second) in ((40, ('auto', 'ask')), (50, ('ask', 'auto'))):
-            cu.sync(approval=first, revision=revision, owner=owner)
-            cu.sync(approval=second, revision=revision, owner=owner)
+            cu.sync(approval=first, revision=revision, generation=self.HOST)
+            cu.sync(approval=second, revision=revision, generation=self.HOST)
             self.assertEqual(cu.status()['approval'], 'ask')
+
+    def test_a_failed_setup_is_not_recorded_as_applied_and_is_retried(self):
+        cu.sync(approval='auto', revision=1, generation=self.HOST)
+        self.assertEqual(cu.status()['approval'], 'auto')
+        # `lcu setup` fails before it removed the auto-approval entries.
+        self.failures['setup --agent'] = True
+        result = cu.sync(approval='ask', revision=2, generation=self.HOST)
+        record = self.record()
+        self.assertEqual((record['approval'], record['revision']), ('ask', 2))
+        self.assertEqual(record['applied']['approval'], 'auto')
+        # The host sees what was applied (still auto, revision 1) and the failure.
+        self.assertEqual((result['approval'], result['approvalRevision']), ('auto', 1))
+        self.assertEqual((result['state'], result['reason']), ('failed', 'command-failed'))
+        self.assertEqual((cu.status()['approval'], cu.status()['approvalRevision']), ('auto', 1))
+        # The same request again (a reconcile, or Set up) runs setup again and succeeds.
+        self.failures.clear()
+        self.commands.clear()
+        result = cu.sync(approval='ask', revision=2, generation=self.HOST)
+        self.assertTrue(any(argv[1:2] == ['setup'] for argv, *_ in self.commands))
+        self.assertEqual((result['state'], result['approval'], result['approvalRevision']),
+                         ('ready', 'ask', 2))
+        self.assertEqual(self.record()['applied']['approval'], 'ask')
+
+    def test_a_same_mode_revision_bump_is_applied_without_rerunning_setup(self):
+        cu.sync(approval='ask', revision=1, generation=self.HOST)
+        self.commands.clear()
+        result = cu.sync(approval='ask', revision=2, generation=self.SOURCE)
+        self.assertEqual(self.commands, [])
+        self.assertEqual((result['approvalRevision'], result['approvalGeneration']), (2, self.SOURCE))
+
+    def test_status_says_whether_an_approval_was_confirmed_applied(self):
+        self.assertFalse(cu.status()['approvalConfirmed'])
+        cu.sync(approval='auto', revision=1, generation=self.HOST)
+        self.assertTrue(cu.status()['approvalConfirmed'])
+
+    def test_a_record_without_applied_is_reported_as_nothing_applied(self):
+        cu.sync(approval='auto', revision=3, generation=self.HOST)
+        record = self.record()
+        del record['applied']
+        (self.state / 'approval.json').write_text(json.dumps(record))
+        result = cu.status()
+        self.assertEqual((result['approval'], result['approvalRevision'], result['approvalGeneration']),
+                         ('ask', 0, None))
+        # A sync finds setup already done for that mode and confirms it.
+        self.commands.clear()
+        result = cu.sync(approval='auto', revision=3, generation=self.HOST)
+        self.assertEqual(self.commands, [])
+        self.assertEqual((result['approval'], result['approvalRevision']), ('auto', 3))
 
     def test_an_unrevised_request_keeps_the_applied_revision(self):
         cu.sync(approval='auto', revision=5)

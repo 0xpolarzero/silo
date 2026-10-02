@@ -99,6 +99,11 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
   const switchId = useId()
   const auto = computerUse.approval === "auto"
   const unknownApproval = computerUse.approval === "unknown"
+  // The guest applied another mode than the one chosen (a change pending or failed). `unknown`
+  // says nothing either way, so it never warns on its own.
+  const applied = computerUse.appliedApproval
+  const unapplied = !unknownApproval && applied !== "unknown" && applied !== computerUse.approval
+  const stillAuto = unapplied && applied === "auto"
   const setupDisabled = busy || !running || computerUse.state === "installing" || computerUse.state === "preparing"
   const details = [
     computerUse.appVersion && ["ChatGPT app", computerUse.appVersion],
@@ -128,6 +133,12 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
     {unknownApproval && <p role="note" className="flex items-start gap-1.5 text-amber-700 dark:text-amber-400">
       <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
       <span className="min-w-0 break-words">Silo could not read this sandbox's approval setting. Agents may be running without asking. Changes are disabled until it can be read.</span>
+    </p>}
+    {unapplied && <p role="note" className={stillAuto ? "flex items-start gap-1.5 text-amber-700 dark:text-amber-400" : "flex items-start gap-1.5 text-muted-foreground"}>
+      <TriangleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
+      <span className="min-w-0 break-words">{stillAuto
+        ? "Agents in this sandbox can still act without asking until this change is applied."
+        : "Agents in this sandbox still ask first until this change is applied."}</span>
     </p>}
     <div className="flex items-center justify-between gap-3">
       <span className="min-w-0 text-[11px] text-muted-foreground">Use after installing a new agent in this sandbox.{!running && " Start the sandbox first."}</span>
