@@ -61,3 +61,12 @@ Scope: `app/SiloUI/src/features/sandboxes/`. Verification uses deterministic fro
 - Consequence: a keyboard user encounters a button without knowing how to change the order.
 - Fix: associate each handle with shared offscreen arrow-key instructions using a per-list id.
 - Coverage: the described handle submits the expected reordered configuration, retains focus when the source publishes the new order, and updates the existing polite live announcement.
+
+## List and row-control labels use unnamed generic containers
+
+- Trigger: inspect a sandbox list or its grouped management/runtime actions with assistive technology.
+- Evidence: both regressions failed to find the intended named groups. The list's aria-labelledby and the action containers' aria-label were applied to generic divs, which prohibit names.
+- Consequence: existing contextual labels have no supported semantic mapping, so row controls are not exposed as the intended named collections.
+- Fix: use the group role for the existing containers and a per-instance heading id for each list.
+- Coverage: management and runtime buttons belong to the expected named groups; two list instances each associate their group with their own heading and retain their labeled ordered list.
+- Primary source: [WAI-ARIA generic role](https://www.w3.org/TR/wai-aria-1.2/#generic) recommends group for named containers.
