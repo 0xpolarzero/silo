@@ -179,7 +179,9 @@ fn forward_body(
             Err(e)
                 if matches!(
                     e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
                 ) =>
             {
                 continue
@@ -222,7 +224,9 @@ fn relay(
             Err(e)
                 if matches!(
                     e.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    std::io::ErrorKind::WouldBlock
+                        | std::io::ErrorKind::TimedOut
+                        | std::io::ErrorKind::Interrupted
                 ) =>
             {
                 continue
@@ -286,6 +290,7 @@ fn serve_with_header_progress(
         match client.read(&mut byte) {
             Ok(0) => return Ok(()),
             Ok(_) => bytes.push(byte[0]),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(error) => return Err(error),
         }
     }
@@ -410,6 +415,79 @@ mod tests {
         let path = directory.path().join("desktop.sock");
         let listener = UnixListener::bind(&path).unwrap();
         (directory, listener, path)
+    }
+
+    struct InterruptedOnce {
+        stream: UnixStream,
+        interrupted: bool,
+    }
+
+    impl Read for InterruptedOnce {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            if !self.interrupted {
+                self.interrupted = true;
+                return Err(std::io::ErrorKind::Interrupted.into());
+            }
+            self.stream.read(bytes)
+        }
+    }
+
+    impl Write for InterruptedOnce {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.stream.write(bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            self.stream.flush()
+        }
+    }
+
+    impl Stream for InterruptedOnce {
+        fn read_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+            self.stream.set_read_timeout(timeout)
+        }
+
+        fn write_timeout(&self, timeout: Option<Duration>) -> std::io::Result<()> {
+            self.stream.set_write_timeout(timeout)
+        }
+
+        fn shutdown_write(&self) {
+            let _ = self.stream.shutdown(Shutdown::Write);
+        }
+    }
+
+    fn assert_interrupted_read_is_retried(response: bool) {
+        let (incoming, mut sender) = UnixStream::pair().unwrap();
+        let (outgoing, mut receiver) = UnixStream::pair().unwrap();
+        receiver
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        sender.write_all(b"payload").unwrap();
+        sender.shutdown(Shutdown::Write).unwrap();
+        let incoming = InterruptedOnce {
+            stream: incoming,
+            interrupted: false,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let ended = Arc::new(AtomicBool::new(false));
+        if response {
+            relay(incoming, outgoing, stop, ended, None);
+        } else {
+            forward_body(incoming, outgoing, 7, stop, ended);
+        }
+        let mut received = Vec::new();
+        receiver.read_to_end(&mut received).unwrap();
+        assert_eq!(received, b"payload", "response stream: {response}");
+    }
+
+    #[test]
+    fn interrupted_body_reads_do_not_truncate_requests() {
+        assert_interrupted_read_is_retried(false);
+    }
+
+    #[test]
+    fn interrupted_response_reads_do_not_truncate_streams() {
+        assert_interrupted_read_is_retried(true);
     }
 
     #[test]
