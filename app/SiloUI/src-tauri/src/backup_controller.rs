@@ -1063,6 +1063,8 @@ struct TransferError {
     message: String,
     /// What was left behind, when it differs from the default for the kind.
     detail: Option<&'static str>,
+    /// Metadata may already own the imported group; cleanup must wait for recovery.
+    preserve_import: bool,
 }
 
 impl TransferError {
@@ -1071,13 +1073,23 @@ impl TransferError {
             cancelled: true,
             message: String::new(),
             detail: None,
+            preserve_import: false,
         }
     }
 
     /// An import that failed after its snapshot started unpacking may leave
     /// that data in the runtime's snapshot store (see E-23).
     fn after_unpacking(mut self) -> Self {
-        self.detail = Some("No sandbox was added. Data unpacked for it may still use disk space.");
+        if !self.preserve_import {
+            self.detail =
+                Some("No sandbox was added. Data unpacked for it may still use disk space.");
+        }
+        self
+    }
+
+    fn uncertain_import(mut self) -> Self {
+        self.preserve_import = true;
+        self.detail = Some("Silo could not verify whether the sandbox was saved. Its imported disks were kept for recovery.");
         self
     }
 }
@@ -1088,6 +1100,7 @@ impl From<String> for TransferError {
             cancelled: false,
             message,
             detail: None,
+            preserve_import: false,
         }
     }
 }
@@ -1853,13 +1866,21 @@ fn restore_at_paths(
         progress,
         original,
     );
-    result.map_err(|error| {
-        let mut error = error.after_unpacking();
+    result.map_err(|error| settle_failed_import(paths, controller, error))
+}
+
+fn settle_failed_import(
+    paths: &runtime::RuntimePaths,
+    controller: &Controller,
+    error: TransferError,
+) -> TransferError {
+    let mut error = error.after_unpacking();
+    if !error.preserve_import {
         if let Err(cleanup) = recovery::discard_pending_import(paths, controller) {
             error.message = format!("{} {cleanup}", error.message);
         }
-        error
-    })
+    }
+    error
 }
 
 fn unpack_and_save(
@@ -1911,7 +1932,7 @@ fn unpack_and_save(
     }
     enter_commit(controller, cancellation)?;
     progress("Saving stopped sandbox");
-    commit_import(
+    let committed = commit_import(
         paths,
         controller,
         original,
@@ -1919,9 +1940,18 @@ fn unpack_and_save(
         &id,
         &prepared.snapshot_group,
         &prepared.snapshot_member,
-    )?;
-    import_group.keep();
-    Ok(())
+    );
+    finish_import_commit(import_group, committed)
+}
+
+fn finish_import_commit(
+    import_group: backup::ImportGroupGuard<'_, backup::SystemMsbRunner>,
+    committed: Result<(), TransferError>,
+) -> Result<(), TransferError> {
+    if committed.is_ok() || committed.as_ref().is_err_and(|error| error.preserve_import) {
+        import_group.keep();
+    }
+    committed
 }
 
 /// Saves an imported sandbox. Its id and snapshot group are journaled first,
@@ -1937,25 +1967,48 @@ fn commit_import(
     id: &str,
     group: &str,
     member: &str,
-) -> Result<(), String> {
+) -> Result<(), TransferError> {
     recovery::save_restore_identity(controller, id, group)?;
     let discard = |error: String| {
         let _ = recovery::discard_uncommitted_import(paths, controller, id, Some(group));
-        Err(error)
+        Err(error.into())
     };
     if let Err(error) = runtime::checkpoints::import_pending_restore(paths, id, group, member) {
         return discard(error.to_string());
     }
-    let mut updated = original;
-    updated.machines.push(machine);
-    if let Err(error) = runtime::write_metadata(&paths.metadata, &updated) {
+    save_import_metadata(
+        original,
+        machine,
+        id,
+        &|updated| {
+            runtime::write_metadata(&paths.metadata, updated).map_err(|error| error.to_string())
+        },
+        &|| runtime::read_metadata(&paths.metadata).map_err(|error| error.to_string()),
+    )
+    .map_err(|error| {
+        if !error.preserve_import {
+            let _ = recovery::discard_uncommitted_import(paths, controller, id, Some(group));
+        }
+        error
+    })
+}
+
+fn save_import_metadata(
+    mut original: runtime::MachineConfigurationRequest,
+    machine: runtime::MachineConfiguration,
+    id: &str,
+    write: &dyn Fn(&runtime::MachineConfigurationRequest) -> Result<(), String>,
+    read: &dyn Fn() -> Result<runtime::MachineConfigurationRequest, String>,
+) -> Result<(), TransferError> {
+    original.machines.push(machine);
+    if let Err(error) = write(&original) {
         // A late failure (after the file was replaced) still saved the sandbox.
-        let saved = runtime::read_metadata(&paths.metadata)
-            .is_ok_and(|metadata| metadata.machines.iter().any(|machine| machine.id() == id));
-        return if saved {
-            Ok(())
-        } else {
-            discard(error.to_string())
+        return match read() {
+            Ok(metadata) if metadata.machines.iter().any(|machine| machine.id() == id) => Ok(()),
+            Ok(_) => Err(error.into()),
+            Err(read_error) => {
+                Err(TransferError::from(format!("{error} {read_error}")).uncertain_import())
+            }
         };
     }
     Ok(())
@@ -3498,7 +3551,100 @@ mod tests {
     }
 
     #[test]
-    fn an_import_that_cannot_save_its_settings_removes_its_record_and_identity() {
+    fn a_failed_readback_keeps_a_possibly_committed_import() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("machines.json");
+        let id = uuid::Uuid::new_v4().to_string();
+        let original = runtime::read_metadata(&path).unwrap();
+        let error = save_import_metadata(
+            original,
+            imported_machine(&id),
+            &id,
+            &|updated| {
+                runtime::write_metadata(&path, updated).unwrap();
+                Err("Could not sync settings directory".into())
+            },
+            &|| Err("Could not read settings after replacement".into()),
+        )
+        .unwrap_err();
+        assert!(
+            error.preserve_import,
+            "uncertain commit must keep the imported disks"
+        );
+        assert!(runtime::read_metadata(&path)
+            .unwrap()
+            .machines
+            .iter()
+            .any(|machine| machine.id() == id));
+        let error = error.after_unpacking();
+        assert!(!error.detail.unwrap().contains("No sandbox was added"));
+    }
+
+    #[test]
+    fn a_readable_import_commit_is_kept_and_verified_absence_allows_cleanup() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("machines.json");
+        let id = uuid::Uuid::new_v4().to_string();
+        save_import_metadata(
+            runtime::read_metadata(&path).unwrap(),
+            imported_machine(&id),
+            &id,
+            &|updated| {
+                runtime::write_metadata(&path, updated).unwrap();
+                Err("Could not sync settings directory".into())
+            },
+            &|| runtime::read_metadata(&path).map_err(|error| error.to_string()),
+        )
+        .unwrap();
+        fs::remove_file(&path).unwrap();
+        let error = save_import_metadata(
+            runtime::read_metadata(&path).unwrap(),
+            imported_machine(&id),
+            &id,
+            &|_| Err("Could not replace settings".into()),
+            &|| runtime::read_metadata(&path).map_err(|error| error.to_string()),
+        )
+        .unwrap_err();
+        assert!(
+            !error.preserve_import,
+            "verified absence must still clean up failed imports"
+        );
+    }
+
+    #[test]
+    fn an_uncertain_commit_keeps_its_import_group_and_recovery_identity() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = import_paths(directory.path());
+        let controller = controller_with_scripted_msb(directory.path(), &paths, GROUP);
+        recovery::begin(
+            &controller,
+            recovery::Journal::restore(completed_archive(), "copy".into(), Some("dev".into())),
+        )
+        .unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        recovery::save_restore_identity(&controller, &id, GROUP).unwrap();
+        let guard = controller.service.discard_import_on_failure(GROUP);
+        let error = finish_import_commit(
+            guard,
+            Err(TransferError::from("Could not verify settings".to_string()).uncertain_import()),
+        )
+        .unwrap_err();
+        let error = settle_failed_import(&paths, &controller, error);
+        assert!(error.preserve_import);
+        assert!(
+            scripted_calls(directory.path()).is_empty(),
+            "uncertain commit must not issue snapshot removal"
+        );
+        let journal = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
+        assert!(journal.contains(&id) && journal.contains(GROUP));
+        assert!(recovery::pending(&controller).unwrap());
+    }
+
+    #[test]
+    fn an_import_that_cannot_read_back_its_settings_keeps_its_record_and_identity() {
         let _test_state = crate::test_support::global_state();
         let directory = tempfile::tempdir().unwrap();
         let paths = import_paths(directory.path());
@@ -3511,31 +3657,32 @@ mod tests {
         .unwrap();
         let id = uuid::Uuid::new_v4().to_string();
         let original = runtime::read_metadata(&paths.metadata).unwrap();
-        // Settings cannot be written where a directory occupies the file.
+        // A directory prevents both replacement and verification of the settings.
         fs::create_dir(&paths.metadata).unwrap();
-        assert!(commit_import(
+        let error = commit_import(
             &paths,
             &controller,
             original,
             imported_machine(&id),
             &id,
             GROUP,
-            MEMBER
+            MEMBER,
         )
-        .is_err());
-        assert!(!paths
+        .unwrap_err();
+        assert!(error.preserve_import);
+        assert!(paths
             .metadata
             .with_file_name("checkpoints")
             .join(format!("{id}.json"))
             .exists());
         let saved = fs::read_to_string(directory.path().join("backup-operation.json")).unwrap();
-        assert!(!saved.contains(&id), "{saved}");
-        // The loaded snapshot group went with it (E-23).
+        assert!(saved.contains(&id) && saved.contains(GROUP), "{saved}");
+        // Uncertain settings cannot authorize native data removal.
         let removed = scripted_calls(directory.path())
             .into_iter()
             .filter(|call| call.starts_with("snapshot remove"))
             .count();
-        assert_eq!(removed, 2);
+        assert_eq!(removed, 0);
     }
 
     fn outcome_and_detail(operation: &Operation) -> (&'static str, String) {
