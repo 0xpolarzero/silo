@@ -134,6 +134,13 @@ the private key or its `.pub` file. If both are unavailable, disabling reports a
 error instead of retaining an unidentified managed authorization. Restore
 `MSB_HOME/ssh/managed-clients/MACHINE_ID.pub` and retry.
 
+Port, address, and access-toggle saves omit the authorized-key list. The owning
+computer uses its latest saved keys while holding the operation gate, so an
+older UI snapshot cannot revoke a newly registered controller. Disabling still
+revokes managed keys and retains user-added keys. An explicit key list replaces
+the authorization set; an empty list removes user and controller keys. Update
+both computers before using this save behavior with an older owner.
+
 External authorized keys live in `MSB_HOME/ssh/managed-access/MACHINE_ID.authorized_keys`.
 Neither `MSB_HOME/ssh/authorized_keys` nor Silo's internal client private key is
 read or modified by this feature. Keys are structurally validated as Ed25519

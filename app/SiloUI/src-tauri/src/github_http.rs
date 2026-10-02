@@ -38,6 +38,7 @@ struct Failure {
     message: String,
     class: String,
     workspace: Option<String>,
+    safe: bool,
 }
 fn now() -> u64 {
     SystemTime::now()
@@ -178,6 +179,7 @@ impl Gates {
                 message: message.clone(),
                 class: class.into(),
                 workspace: None,
+                safe: persistent,
             },
         );
         message
@@ -216,6 +218,12 @@ pub(crate) fn reset_workspace_retries(workspace: &str) {
     gates()
         .requests
         .retain(|_, failure| failure.workspace.as_deref() != Some(workspace));
+}
+pub(crate) fn reset_catalog_retries(token: &str) {
+    let class = rate_class(&Authentication::Bearer(token.into()));
+    gates().requests.retain(|_, failure| {
+        failure.class != class || failure.workspace.is_some() || !failure.safe
+    });
 }
 fn preflight(key: &str, class: &str) -> Result<(), String> {
     gates().check(key, class, now())
@@ -480,8 +488,86 @@ pub(crate) fn github(token: &str, path: &str) -> Result<Value, String> {
 }
 
 #[cfg(test)]
+pub(crate) fn assert_bearer_retry_isolated(retry: impl FnOnce(&str)) {
+    let _test_state = crate::test_support::global_state();
+    let token = uuid::Uuid::new_v4().to_string();
+    let personal = rate_class(&Authentication::Bearer(token.clone()));
+    let other = rate_class(&Authentication::Bearer(uuid::Uuid::new_v4().to_string()));
+    let app = format!("app:{}", uuid::Uuid::new_v4());
+    let validation_key = uuid::Uuid::new_v4().to_string();
+    let other_key = uuid::Uuid::new_v4().to_string();
+    let mint_key = uuid::Uuid::new_v4().to_string();
+    {
+        let mut g = gates();
+        for (key, class) in [
+            (&validation_key, &personal),
+            (&other_key, &other),
+            (&mint_key, &app),
+        ] {
+            g.fail(
+                key.clone(),
+                class,
+                100,
+                false,
+                0,
+                false,
+                0,
+                "failed",
+                key == &validation_key,
+            );
+            assert!(g.check(key, class, u64::MAX).is_err());
+        }
+        g.restore_floor(&personal, 5000);
+    }
+    retry(&token);
+    let mut g = gates();
+    assert!(g.check(&validation_key, &personal, 5000).is_ok());
+    assert!(g.check(&validation_key, &personal, 4999).is_err());
+    assert!(g.check(&other_key, &other, u64::MAX).is_err());
+    assert!(g.check(&mint_key, &app, u64::MAX).is_err());
+    g.requests.remove(&other_key);
+    g.requests.remove(&mint_key);
+    g.rate_until.remove(&personal);
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn catalog_retry_preserves_ambiguous_writes_and_unrelated_reads() {
+        let _test_state = crate::test_support::global_state();
+        let token = uuid::Uuid::new_v4().to_string();
+        let class = rate_class(&Authentication::Bearer(token.clone()));
+        let other_class = rate_class(&Authentication::Bearer(uuid::Uuid::new_v4().to_string()));
+        let read = uuid::Uuid::new_v4().to_string();
+        let write = uuid::Uuid::new_v4().to_string();
+        let workspace_read = uuid::Uuid::new_v4().to_string();
+        let other_read = uuid::Uuid::new_v4().to_string();
+        {
+            let mut g = gates();
+            for (key, owner, safe) in [
+                (&read, &class, true),
+                (&write, &class, false),
+                (&workspace_read, &class, true),
+                (&other_read, &other_class, true),
+            ] {
+                g.fail(key.clone(), owner, 100, false, 0, false, 0, "failed", safe);
+            }
+            g.requests.get_mut(&workspace_read).unwrap().workspace = Some("workspace".into());
+            g.restore_floor(&class, 5000);
+        }
+        reset_catalog_retries(&token);
+        let mut g = gates();
+        assert!(g.check(&read, &class, 5000).is_ok());
+        assert!(g.check(&read, &class, 4999).is_err());
+        assert!(g.check(&write, &class, u64::MAX).is_err());
+        assert!(g.check(&workspace_read, &class, u64::MAX).is_err());
+        assert!(g.check(&other_read, &other_class, u64::MAX).is_err());
+        for key in [&write, &workspace_read, &other_read] {
+            g.requests.remove(key);
+        }
+        g.rate_until.remove(&class);
+    }
     #[test]
     fn workspace_retry_preserves_other_workspaces_and_account_operations() {
         let _test_state = crate::test_support::global_state();
@@ -523,36 +609,40 @@ mod tests {
         g.rate_until.remove(&class);
     }
     #[test]
-    fn personal_token_retry_preserves_unrelated_failures_and_server_floors() {
+    fn repository_refresh_preserves_ambiguous_writes_and_server_floors() {
         let _test_state = crate::test_support::global_state();
         let token = uuid::Uuid::new_v4().to_string();
-        let personal = rate_class(&Authentication::Bearer(token.clone()));
-        let other = rate_class(&Authentication::Bearer(uuid::Uuid::new_v4().to_string()));
-        let app = format!("app:{}", uuid::Uuid::new_v4());
-        let validation_key = uuid::Uuid::new_v4().to_string();
-        let other_key = uuid::Uuid::new_v4().to_string();
+        let class = rate_class(&Authentication::Bearer(token.clone()));
+        let read_key = uuid::Uuid::new_v4().to_string();
         let mint_key = uuid::Uuid::new_v4().to_string();
+        let refresh_key = uuid::Uuid::new_v4().to_string();
         {
             let mut g = gates();
-            for (key, class) in [
-                (&validation_key, &personal),
-                (&other_key, &other),
-                (&mint_key, &app),
-            ] {
-                g.fail(key.clone(), class, 100, false, 0, false, 0, "failed", false);
-                assert!(g.check(key, class, u64::MAX).is_err());
+            for (key, safe) in [(&read_key, true), (&mint_key, false), (&refresh_key, false)] {
+                g.fail(key.clone(), &class, 100, false, 0, false, 0, "failed", safe);
+                assert!(g.check(key, &class, u64::MAX).is_err());
             }
-            g.restore_floor(&personal, 5000);
+            g.restore_floor(&class, 5000);
         }
-        reset_bearer_retries(&token);
+        reset_catalog_retries(&token);
         let mut g = gates();
-        assert!(g.check(&validation_key, &personal, 5000).is_ok());
-        assert!(g.check(&validation_key, &personal, 4999).is_err());
-        assert!(g.check(&other_key, &other, u64::MAX).is_err());
-        assert!(g.check(&mint_key, &app, u64::MAX).is_err());
-        g.requests.remove(&other_key);
+        assert!(g.check(&read_key, &class, 5000).is_ok());
+        assert!(g.check(&read_key, &class, 4999).is_err());
+        assert!(
+            g.check(&mint_key, &class, u64::MAX).is_err(),
+            "Repository Refresh reopened an ambiguous mint"
+        );
+        assert!(
+            g.check(&refresh_key, &class, u64::MAX).is_err(),
+            "Repository Refresh replayed a rotating refresh token"
+        );
         g.requests.remove(&mint_key);
-        g.rate_until.remove(&personal);
+        g.requests.remove(&refresh_key);
+        g.rate_until.remove(&class);
+    }
+    #[test]
+    fn personal_token_retry_preserves_unrelated_failures_and_server_floors() {
+        assert_bearer_retry_isolated(reset_bearer_retries);
     }
     #[test]
     fn retry_gate_pluralizes_the_remaining_seconds() {

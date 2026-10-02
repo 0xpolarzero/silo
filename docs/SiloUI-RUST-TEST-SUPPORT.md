@@ -25,6 +25,22 @@ verify that both generations and the journal remain untouched, and restore it to
 verify recovery. An installation that needs no migration still uses `runtime/`
 without a marker.
 
+Export-folder preferences also preserve additive JSON fields through an explicit
+folder change using a flattened map. Their reader retains the 1 MiB limit and
+schema-version check; malformed destinations or archive arrays remain unreadable.
+The temporary-file tests verify that reads leave the saved bytes untouched.
+
+Remote-management settings retain unknown top-level preferences when their known
+fields change. Temporary-file round trips verify the saved identity and host list,
+while malformed or absent required fields still fail to load. Existing read/write
+size-limit and directory-sync regressions exercise the same reader and writer.
+
+GitHub settings preserve additive top-level fields when known choices change.
+Round-trip fixtures pin legacy defaults for access, account, grants and workspace
+policies, and retain the existing rejection of unsafe policy revisions. The
+isolated serialization harness supplies no HTTP retry floors; native tests take
+the shared state guard because the production writer collects those floors.
+
 ## Process-wide state
 
 `test_support::global_state()` guards tests in modules that reach the global
@@ -187,3 +203,33 @@ with the required live inputs. Their source and fixture checks alone do not prov
 those workflows passed. A successful live run qualifies only the tested runtime,
 image and scenario; it does not launch the packaged Silo app or establish
 installed-app or release readiness.
+
+## Blocked test-speed experiment (2026-10-02)
+
+The two SSH listener-startup regressions still use 2.5/1-second child delays
+and 600/500 ms parent sleeps. A disposable prototype replaced those delays
+with a loopback TCP readiness handshake and scoped reconcile workers, keeping
+the existing assertions. Three standalone fixture-child checks verified held
+readiness, release, TCP echo and owner-EOF exit. Those checks do not exercise
+the Rust reconciliation regressions. The prototype was reverted; no Rust
+before/after timing or speedup is claimed.
+
+The first `cargo +1.94.0 test --locked --no-run --message-format=json` used
+`CARGO_TARGET_DIR=/tmp/silo-codex-target` and synthetic GitHub values. It waited
+roughly 24 minutes for the shared lock, then exited 101 because
+`binaries/msb-aarch64-apple-darwin` was absent. The documented test-only override
+from the [computer-use review](SiloUI-CODE-REVIEW-PASS-3-COMPUTER-USE-2026-10-02.md)
+clears generated inputs without preparing the runtime:
+
+```sh
+TAURI_CONFIG='{"bundle":{"externalBin":[],"resources":[],"macOS":{"frameworks":[]}}}'
+```
+
+The retry stayed queued and was cancelled after verifying its owned Cargo
+process, worktree, redirected files and absence of compiler children. Do not
+interrupt other builds or time an unidentified shared test executable. Resume
+native measurement after the shared build queue clears, with that unit-test
+override and synthetic GitHub configuration. Ignored evidence under
+`app/SiloUI/src-tauri/target/verification/test-speed/` includes
+`rust-build.{jsonl,log}`, `rust-unit-build.{jsonl,log}`,
+`handshake-prototype.log`, and the unverified `ssh-readiness-candidate.patch`.

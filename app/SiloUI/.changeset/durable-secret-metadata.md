@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Flush secret metadata directory changes before acknowledging a successful settings save.
+Save secret settings to disk before confirming success.

@@ -27,8 +27,12 @@ pub(crate) fn exec_argv(tokens: impl IntoIterator<Item = String>) -> Vec<String>
     let mut argv: Vec<_> = tokens
         .into_iter()
         .filter(|token| {
-            !(token.len() == 2 && token.starts_with('%')) && !matches!(token.as_str(), "@@" | "@@u")
+            !(token.len() == 2 && token.starts_with('%') && token != "%%")
+                && !matches!(token.as_str(), "@@" | "@@u")
         })
+        // Expand literal percent escapes once, after removing field codes.
+        // An escaped %%F is a literal %F argument, not a file placeholder.
+        .map(|token| token.replace("%%", "%"))
         .collect();
     // Field-code removal can leave an empty file-argument section. Silo's
     // appended options must still be parsed as options by the editor.
@@ -63,7 +67,7 @@ fn file_name(path: &Path) -> &str {
     path.file_name().and_then(OsStr::to_str).unwrap_or("")
 }
 
-pub(super) fn executable_file(path: &Path) -> bool {
+pub(crate) fn executable_file(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
@@ -382,6 +386,33 @@ mod tests {
         assert!(resolve().is_none(), "non-executable terminal was accepted");
         fs::remove_file(&program).unwrap();
         assert!(resolve().is_none());
+    }
+
+    #[test]
+    fn desktop_percent_escapes_preserve_the_editor_path_and_arguments() {
+        let directory = tempfile::tempdir().unwrap();
+        let program = directory.path().join("100%/code");
+        executable(&program);
+        std::fs::write(&program, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        let escaped_program = program.to_str().unwrap().replace('%', "%%");
+        let argv = exec_argv([
+            escaped_program,
+            "--user-data-dir=/tmp/100%%".into(),
+            "%%".into(),
+            "%%F".into(),
+            "%F".into(),
+        ]);
+        let command = linux_editor_command(&argv, None, &nowhere).unwrap();
+        let output = Command::new(command.program)
+            .args(command.args)
+            .arg("fixture.code-workspace")
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "--user-data-dir=/tmp/100%\n%\n%F\nfixture.code-workspace\n"
+        );
     }
 
     #[test]

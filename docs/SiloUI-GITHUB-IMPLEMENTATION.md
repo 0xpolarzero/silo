@@ -35,6 +35,11 @@ key. User access/refresh credentials remain in Keychain or Secret Service.
 - `github_tokens.rs`: direct code exchange, refresh, restricted-token creation,
   individual-token retirement and whole-authorization revocation. Repository-only
   permission validation and read/write maps are explicit. Unknown grants fail.
+  Rejected code-exchange sessions attempt individual-token retirement before
+  returning an error. GitHub [omits refresh and expiry fields when user-token
+  expiration is disabled](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app);
+  Silo requires rotating sessions. Cleanup targets the new token so an existing
+  connection that shares its authorization remains valid.
 - `github_http.rs`: fixed GitHub HTTPS destinations, no redirects, bounded response
   size/timeouts, redacted errors and retry gates. OAuth errors returned with HTTP
   200 fail. Empty HTTP 204 revocations succeed; already-absent 404 is idempotent.
@@ -76,6 +81,9 @@ exponential backoff and positive jitter. Automatic retries are bounded at five;
 explicit Retry retains GitHub's imposed waiting period, including after relaunch.
 Ambiguous code exchange, refresh or mint outcomes are not automatically replayed.
 Safe reads and idempotent revocations can retry. Guest writes are never replayed.
+Repository Refresh resets only safe operations after acquiring the GitHub operation
+lock. Stopped token mints and rotating OAuth refreshes require their explicit Retry;
+refreshing the catalog preserves their refusal and every server waiting deadline.
 
 When refresh succeeds but secure storage fails, the renewed credential is retained
 in host memory for storage retry, tied to the original account token. The consumed

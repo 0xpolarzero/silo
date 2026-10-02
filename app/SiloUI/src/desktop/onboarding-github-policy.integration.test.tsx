@@ -19,9 +19,9 @@ function Setup({ source }: { source: ProductionSource }) {
   return <ProductionOnboarding source={source} application={snapshot.source} dependencies={{ checks: onboardingScenarios.complete.preflightChecks, retry: () => {} }} />
 }
 
-it("keeps token policy through the real onboarding save bridge and completion", async () => {
+it.each(["connected", "disconnected"] as const)("keeps token policy through the real onboarding save bridge and completion with OAuth %s", async (oauthState) => {
   const user = userEvent.setup()
-  const live = applicationSourceForScenario("running", "connected")
+  const live = applicationSourceForScenario("running", oauthState)
   live.workspaces = [live.workspaces[0]]
   const policy = { ...live.github.workspaces![0], authenticationMethod: "token" as const, repositoryMode: "selected" as const, allRepositoriesAllowChanges: false }
   live.github = { ...live.github, personalToken: { state: "connected", saved: true }, workspaces: [policy], policyRevision: 10 }
@@ -57,6 +57,10 @@ it("keeps token policy through the real onboarding save bridge and completion", 
       configuration: { baseRevision: 10, hostIdentity: live.github.hostIdentity ?? null, workspaces: [policy] },
     }))
     expect(source.getSnapshot().source?.github.workspaces).toEqual([policy])
+    if (oauthState === "disconnected") {
+      expect(screen.getByRole("group", { name: "GitHub access" })).toHaveTextContent("Personal token in 1 sandbox")
+      expect(screen.getByRole("group", { name: "GitHub access" })).not.toHaveTextContent("Skipped")
+    }
     await waitFor(() => expect(screen.getByRole("button", { name: "Finish" })).toBeEnabled())
     await user.click(screen.getByRole("button", { name: "Finish" }))
     await waitFor(() => expect(settings.getSnapshot().settings.onboardingComplete).toBe(true))

@@ -676,7 +676,7 @@ impl OperationGate {
         let still_wanted = || {
             let wanted = pending
                 .as_ref()
-                .is_none_or(|condition| (condition.0.wanted)());
+                .is_none_or(|condition| condition.started() || (condition.0.wanted)());
             expired.set(!wanted);
             wanted && keep_waiting.is_none_or(|keep| keep())
         };
@@ -701,7 +701,10 @@ impl OperationGate {
             if state.admissible(index) {
                 // Work no longer wanted when its turn arrives never starts. The condition is
                 // asked without the state lock held (D-33); the next pass re-checks the turn.
-                if let Some(condition) = pending.as_ref().filter(|_| !confirmed) {
+                if let Some(condition) = pending
+                    .as_ref()
+                    .filter(|condition| !confirmed && !condition.started())
+                {
                     drop(state);
                     let wanted = (condition.0.wanted)();
                     state = self.lock();
@@ -2037,6 +2040,41 @@ mod tests {
         // The condition applies only inside its scope.
         assert!(StartCondition::current().is_none());
         drop(gate.vm("id-a", "a", "Local work").unwrap());
+    }
+
+    #[test]
+    fn a_waiting_step_continues_when_another_worker_has_started_the_same_request() {
+        let gate = leak();
+        let busy = gate.vm("id-a", "a", "Long work").unwrap();
+        let wanted = Arc::new(AtomicBool::new(true));
+        let condition = StartCondition::new({
+            let wanted = wanted.clone();
+            move || wanted.load(Ordering::SeqCst)
+        });
+        let waiter = {
+            let condition = condition.clone();
+            thread::spawn(move || {
+                StartCondition::scope(Some(condition), || {
+                    gate.vm("id-a", "a", "Request step A").map(drop)
+                })
+            })
+        };
+        wait_until(gate, |queue| queue.waiting.len() == 1);
+        let other_step = {
+            let condition = condition.clone();
+            thread::spawn(move || {
+                StartCondition::scope(Some(condition), || {
+                    gate.vm("id-b", "b", "Request step B").map(drop)
+                })
+            })
+        };
+        assert_eq!(other_step.join().unwrap(), Ok(()));
+        assert!(condition.started());
+        wanted.store(false, Ordering::SeqCst);
+        drop(busy);
+        assert_eq!(waiter.join().unwrap(), Ok(()));
+        assert!(!condition.expired());
+        assert!(gate.is_idle());
     }
 
     #[test]

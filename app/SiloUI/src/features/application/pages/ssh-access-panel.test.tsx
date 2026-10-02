@@ -107,7 +107,7 @@ describe("managed SSH access", () => {
     expect(screen.getByRole("switch", { name: "Allow SSH from other computers" })).toBeDisabled()
     expect(screen.queryByRole("button", { name: "Copy local SSH command" })).not.toBeInTheDocument()
     await user.click(screen.getByRole("switch", { name: "Allow SSH from Ada’s Mac mini" }))
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ enabled: true, keys: [] }))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ enabled: true }))
   })
   it("omits the redundant waiting caption", async () => {
     const { user } = setup({ state: "waiting" })
@@ -124,7 +124,7 @@ describe("managed SSH access", () => {
     expect(dialog).toHaveTextContent("192.168.1.42")
     expect(dialog).toHaveTextContent("port 2222")
     await user.click(within(dialog).getByRole("button", { name: "Allow" }))
-    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ bindAddress: "192.168.1.42", keys: [publicKey] })))
+    await waitFor(() => expect(save).toHaveBeenCalledWith(expect.objectContaining({ bindAddress: "192.168.1.42" })))
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument()
   })
   it("keeps SSH local when the network warning is cancelled", async () => {
@@ -185,7 +185,7 @@ describe("managed SSH access", () => {
     const { user, save } = setup({ bindAddress: "192.168.1.42" })
     await expand(user)
     await user.click(screen.getByRole("switch", { name: "Allow SSH from other computers" }))
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ enabled: true, bindAddress: "127.0.0.1", keys: [publicKey] }))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ enabled: true, bindAddress: "127.0.0.1" }))
   })
   it("edits and validates the port beside the connection", async () => {
     const { user, save } = setup()
@@ -198,8 +198,23 @@ describe("managed SSH access", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("Enter a port from 1 to 65535")
     await user.clear(port); await user.type(port, "2223")
     await user.click(screen.getByRole("button", { name: "Save" }))
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ port: 2223, keys: [publicKey] }))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ port: 2223 }))
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument()
+  })
+  it("retains a newly registered controller key when editing from an older snapshot", async () => {
+    const controllerKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB silo-controller:00000000-0000-4000-8000-000000000002"
+    let ownerKeys = [publicKey, controllerKey]
+    const save = vi.fn().mockImplementation(async (request: { keys?: string[] }) => {
+      if (request.keys !== undefined) ownerKeys = request.keys
+    })
+    const { user } = setup({}, save)
+    await expand(user)
+    await selectAction(user, "Edit connection")
+    const port = screen.getByRole("spinbutton", { name: "SSH port" })
+    await user.clear(port); await user.type(port, "2223")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(save).toHaveBeenCalledOnce()
+    expect(ownerKeys).toContain(controllerKey)
   })
   it("preserves a failed port edit and displays its error", async () => {
     const { user } = setup({}, vi.fn().mockRejectedValue(new Error("Port is in use.")))
@@ -247,7 +262,7 @@ describe("managed SSH access", () => {
     await selectAction(user, "Copy network SSH command")
     expect(actions.sshConnection).toHaveBeenCalledWith(target, false, true)
     await user.click(screen.getByRole("switch", { name: "Allow SSH from Office Mac" }))
-    expect(save).toHaveBeenCalledWith(expect.objectContaining({ workspace: target, enabled: false, keys: [publicKey] }))
+    expect(save).toHaveBeenCalledWith(expect.objectContaining({ workspace: target, enabled: false }))
   })
   it("hides the owner's loopback address on remote rows and uses the reported account", async () => {
     const remote = { ...workspace, computer: { id: "office", vmId: "vm-immutable-id", name: "Office Mac", address: "user@office", connected: true } }

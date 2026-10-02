@@ -21,6 +21,19 @@ use tauri::{Emitter, Manager};
 struct Discovery {
     last: Option<(Instant, Result<Vec<Value>, String>)>,
     running: bool,
+    generation: u64,
+}
+impl Discovery {
+    fn invalidate(&mut self) {
+        self.last = None;
+        self.generation = self.generation.wrapping_add(1);
+    }
+    fn finish(&mut self, generation: u64, started: Instant, result: Result<Vec<Value>, String>) {
+        if generation == self.generation {
+            self.last = Some((started, result));
+        }
+        self.running = false;
+    }
 }
 type Discoveries = (Mutex<HashMap<String, Discovery>>, std::sync::Condvar);
 static DISCOVERIES: OnceLock<Discoveries> = OnceLock::new();
@@ -208,10 +221,11 @@ const DISCOVERY_SECONDS: u64 = 20;
 pub(crate) fn discover(
     paths: &RuntimePaths,
     name: &str,
+    vm_id: &str,
     refresh: bool,
 ) -> Result<Vec<Value>, String> {
     let requested = Instant::now();
-    let key = format!("{}:{name}", paths.home.display());
+    let key = format!("{}:{vm_id}", paths.home.display());
     let (lock, changed) = discoveries();
     let wait_until = requested
         + if refresh {
@@ -234,6 +248,7 @@ pub(crate) fn discover(
         }
         if !entry.running {
             entry.running = true;
+            let generation = entry.generation;
             let (paths, name, key) = (paths.clone(), name.to_owned(), key.clone());
             thread::spawn(move || {
                 let started = Instant::now();
@@ -244,8 +259,7 @@ pub(crate) fn discover(
                     entries.retain(|other, entry| entry.running || *other == key);
                 }
                 let entry = entries.entry(key).or_default();
-                entry.last = Some((started, result));
-                entry.running = false;
+                entry.finish(generation, started, result);
                 changed.notify_all();
             });
         }
@@ -274,7 +288,7 @@ const DISCOVER_REPOSITORIES: &str = r#"find "$1" \( -name node_modules -o -name 
 p=${directory%/.git}
 branch=$(git -C "$p" symbolic-ref --quiet --short HEAD) || continue
 counts=$(git -C "$p" rev-list --left-right --count HEAD..."refs/remotes/origin/$branch" 2>/dev/null) || counts="$(git -C "$p" rev-list --count HEAD --not --remotes=origin) 0"
-dirty=$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null)
+dirty=$(git -C "$p" status --porcelain --untracked-files=no 2>/dev/null) || { echo 'Cannot read repository working tree status' >&2; exit 1; }
 head=$(git -C "$p" rev-parse --verify --quiet HEAD) || head=
 origin=$(git -C "$p" remote get-url origin 2>/dev/null) || origin=
 printf '%s\000%s\000%s\000%s\000%s\000%s\000' "$p" "$branch" "$counts" "$dirty" "$head" "$origin"
@@ -1120,8 +1134,8 @@ printf '%s\n' "$commit"
         });
         // The next state refresh reads the repository again.
         if let Ok(mut entries) = discoveries().0.lock() {
-            if let Some(entry) = entries.get_mut(&format!("{}:{workspace}", paths.home.display())) {
-                entry.last = None;
+            if let Some(entry) = entries.get_mut(&format!("{}:{vm_id}", paths.home.display())) {
+                entry.invalidate();
             }
         }
         Ok(count)
@@ -1193,11 +1207,17 @@ pub(crate) fn planned_count(app: &tauri::AppHandle, workspace: &str, repository_
     runtime::runtime_paths(app)
         .ok()
         .and_then(|paths| {
+            let metadata = runtime::read_metadata(&paths.metadata).ok()?;
+            let vm_id = metadata
+                .machines
+                .iter()
+                .find(|machine| machine.is_vm() && machine.name() == workspace)?
+                .id();
             discoveries()
                 .0
                 .lock()
                 .ok()?
-                .get(&format!("{}:{workspace}", paths.home.display()))?
+                .get(&format!("{}:{vm_id}", paths.home.display()))?
                 .last
                 .as_ref()?
                 .1
@@ -1276,6 +1296,39 @@ mod tests {
 
     use super::*;
     #[test]
+    fn recreated_vm_cannot_receive_the_previous_vms_repository_discovery() {
+        let root = tempfile::tempdir().unwrap();
+        let paths = RuntimePaths {
+            executable: root.path().join("missing-msb"),
+            home: root.path().to_path_buf(),
+            guest_image: root.path().join("image"),
+            storage_home: None,
+            library: root.path().join("library"),
+            metadata: root.path().join("metadata"),
+            volumes: root.path().join("volumes"),
+        };
+        let key = format!("{}:vm-old", paths.home.display());
+        let cached = vec![json!({"path": "previous-vm-private-repository"})];
+        discoveries().0.lock().unwrap().insert(
+            key.clone(),
+            Discovery {
+                last: Some((Instant::now(), Ok(cached.clone()))),
+                running: false,
+                generation: 0,
+            },
+        );
+        assert_eq!(discover(&paths, "dev", "vm-old", false).unwrap(), cached);
+        let replacement = discover(&paths, "dev", "vm-new", false);
+        discoveries().0.lock().unwrap().remove(&key);
+        discoveries()
+            .0
+            .lock()
+            .unwrap()
+            .remove(&format!("{}:vm-new", paths.home.display()));
+        assert!(replacement.is_err(), "The replacement VM must discover its own repositories instead of returning the previous VM's cached rows: {replacement:?}");
+    }
+
+    #[test]
     fn manual_discovery_bypasses_cached_rows() {
         let root = tempfile::tempdir().unwrap();
         let executable = root.path().join("missing-msb");
@@ -1288,21 +1341,22 @@ mod tests {
             metadata: root.path().join("metadata"),
             volumes: root.path().join("volumes"),
         };
-        let key = format!("{}:test", paths.home.display());
+        let key = format!("{}:vm-1", paths.home.display());
         let cached = vec![json!({"path": "removed-repository"})];
         discoveries().0.lock().unwrap().insert(
             key.clone(),
             Discovery {
                 last: Some((Instant::now(), Ok(cached.clone()))),
                 running: false,
+                generation: 0,
             },
         );
-        assert_eq!(discover(&paths, "test", false).unwrap(), cached);
+        assert_eq!(discover(&paths, "test", "vm-1", false).unwrap(), cached);
         // A forced read must reach the missing runtime instead of returning
         // the fresh cached rows. No real VM or runtime is involved.
-        let refreshed = discover(&paths, "test", true);
+        let refreshed = discover(&paths, "test", "vm-1", true);
         assert!(refreshed.is_err());
-        assert_eq!(discover(&paths, "test", false), refreshed);
+        assert_eq!(discover(&paths, "test", "vm-1", false), refreshed);
         discoveries().0.lock().unwrap().remove(&key);
     }
 
@@ -1380,6 +1434,37 @@ mod tests {
         assert_eq!(rows[0]["head"], head.trim());
     }
 
+    #[test]
+    fn discovery_started_before_a_push_cannot_restore_stale_rows() {
+        let mut entry = Discovery {
+            running: true,
+            ..Discovery::default()
+        };
+        let generation = entry.generation;
+        let started = Instant::now();
+        entry.invalidate();
+        entry.finish(
+            generation,
+            started,
+            Ok(vec![json!({"path":"/workspace/repo","ahead":1})]),
+        );
+        assert!(
+            entry.last.is_none(),
+            "the pre-push discovery restored stale rows"
+        );
+        assert!(
+            !entry.running,
+            "the next refresh must be able to start a read"
+        );
+        entry.running = true;
+        entry.finish(
+            entry.generation,
+            Instant::now(),
+            Ok(vec![json!({"path":"/workspace/repo","ahead":0})]),
+        );
+        assert_eq!(entry.last.unwrap().1.unwrap()[0]["ahead"], 0);
+    }
+
     /// A runtime whose guest runs the shell command `wait` during each discovery and
     /// counts them.
     fn slow_discovery_runtime(root: &Path, wait: &str) -> (RuntimePaths, PathBuf) {
@@ -1431,7 +1516,7 @@ mod tests {
         let readers: Vec<_> = (0..3)
             .map(|_| {
                 let paths = paths.clone();
-                thread::spawn(move || discover(&paths, "dev", false))
+                thread::spawn(move || discover(&paths, "dev", "vm-1", false))
             })
             .collect();
         wait_until("the guest read never started", &|| runs(&count) >= 1);
@@ -1442,7 +1527,7 @@ mod tests {
         }
         assert_eq!(runs(&count), 1);
         // Once stale, the known rows are returned at once while a new read runs.
-        let key = format!("{}:dev", paths.home.display());
+        let key = format!("{}:vm-1", paths.home.display());
         discoveries()
             .0
             .lock()
@@ -1454,7 +1539,7 @@ mod tests {
             .unwrap()
             .0 = Instant::now() - Duration::from_secs(60);
         fs::remove_file(&gate).unwrap();
-        assert_eq!(discover(&paths, "dev", false).unwrap().len(), 1);
+        assert_eq!(discover(&paths, "dev", "vm-1", false).unwrap().len(), 1);
         // The call returned while the new read is still blocked in the guest: it served
         // the known rows instead of waiting for it.
         wait_until("background discovery never started", &|| runs(&count) >= 2);
@@ -1472,20 +1557,70 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let (paths, count) = slow_discovery_runtime(root.path(), "sleep 6");
         let started = Instant::now();
-        assert!(discover(&paths, "dev", false).unwrap().is_empty());
+        assert!(discover(&paths, "dev", "vm-1", false).unwrap().is_empty());
         assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
         // Later refreshes do not start another read or wait for this one.
         let started = Instant::now();
-        assert!(discover(&paths, "dev", false).unwrap().is_empty());
+        assert!(discover(&paths, "dev", "vm-1", false).unwrap().is_empty());
         assert!(started.elapsed() < DISCOVERY_FIRST_WAIT + Duration::from_secs(1));
         assert_eq!(runs(&count), 1);
         // An explicit refresh waits for the read to finish.
-        assert_eq!(discover(&paths, "dev", true).unwrap().len(), 1);
+        assert_eq!(discover(&paths, "dev", "vm-1", true).unwrap().len(), 1);
         discoveries()
             .0
             .lock()
             .unwrap()
-            .remove(&format!("{}:dev", paths.home.display()));
+            .remove(&format!("{}:vm-1", paths.home.display()));
+    }
+
+    #[test]
+    fn discovery_rejects_unreadable_worktree_status() {
+        let root = tempfile::tempdir().unwrap();
+        let repository = root.path().join("repository");
+        fs::create_dir(&repository).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                ])
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .current_dir(&repository)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{args:?}: {:?}", output.stderr);
+            String::from_utf8(output.stdout).unwrap()
+        };
+        git(&["init", "--quiet", "--initial-branch=main"]);
+        fs::write(repository.join("README"), "committed\n").unwrap();
+        git(&["add", "README"]);
+        git(&["commit", "--quiet", "-m", "fixture"]);
+        git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+        fs::write(repository.join("README"), "uncommitted\n").unwrap();
+        let discover = || {
+            Command::new("/bin/sh")
+                .args(["-c", DISCOVER_REPOSITORIES, "silo-host-push"])
+                .arg(root.path())
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap()
+        };
+        let healthy = discover();
+        assert!(healthy.status.success());
+        let record = String::from_utf8(healthy.stdout).unwrap();
+        assert!(record.split('\0').nth(3).unwrap().contains("README"));
+        fs::write(repository.join(".git/index"), "corrupt index").unwrap();
+        let output = discover();
+        assert!(
+            !output.status.success(),
+            "A failed status read must not publish a clean repository: {:?}",
+            output.stdout
+        );
     }
 
     #[test]

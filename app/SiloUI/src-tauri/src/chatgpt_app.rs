@@ -1807,7 +1807,7 @@ fn free_space_check(root: &Path, download_bytes: u64) -> Result<(), Error> {
     let required = download_bytes.saturating_mul(5);
     if available < required {
         return Err(Error::retry(format!(
-            "Free at least {} MB to download the ChatGPT app, then retry.",
+            "Free at least {} MiB to download the ChatGPT app, then retry.",
             required.div_ceil(1024 * 1024)
         )));
     }

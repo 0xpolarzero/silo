@@ -424,12 +424,16 @@ export function OnboardingApp({
       applications,
       github: {
         connectionState: githubConnectionState,
-        workspaces: currentDraft.current.machines.map(({ name }) => ({
-          workspace: name,
-          ...(githubConnectionState === "connected" ? workspaceValue(currentDraft.current.workspaceRepositoryAccess, name) : undefined),
-          repositories: githubConnectionState === "connected" ? [...(workspaceValue(currentDraft.current.workspaceSelections, name) ?? [])] : [],
-          identity: { ...(workspaceValue(currentDraft.current.workspaceIdentities, name) ?? { name: "", email: "", apply: false }) },
-        })),
+        workspaces: currentDraft.current.machines.map(({ name }) => {
+          const access = workspaceValue(currentDraft.current.workspaceRepositoryAccess, name)
+          const useGitHub = githubConnectionState === "connected" || access?.authenticationMethod === "token"
+          return {
+            workspace: name,
+            ...(useGitHub ? access : undefined),
+            repositories: useGitHub ? [...(workspaceValue(currentDraft.current.workspaceSelections, name) ?? [])] : [],
+            identity: { ...(workspaceValue(currentDraft.current.workspaceIdentities, name) ?? { name: "", email: "", apply: false }) },
+          }
+        }),
       },
     }
   }
@@ -457,6 +461,7 @@ export function OnboardingApp({
   }
 
   const machineNames = machines.map(({ name }) => name)
+  const tokenWorkspaceCount = machineNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.authenticationMethod === "token").length
   const allWorkspaceCount = machineNames.filter((name) => workspaceValue(draft.workspaceRepositoryAccess, name)?.repositoryMode === "all").length
   const allWriteWorkspaceCount = machineNames.filter((name) => {
     const access = workspaceValue(draft.workspaceRepositoryAccess, name)
@@ -472,7 +477,7 @@ export function OnboardingApp({
   const pushRepositoryLabel = pushEnabledRepositoryCount === 1 ? "repository" : "repositories"
   const githubSummary = githubConnectionState === "connected"
     ? allWorkspaceCount > 0 ? `All authorized repositories in ${allWorkspaceCount} ${allWorkspaceCount === 1 ? "sandbox" : "sandboxes"} · ${allWriteWorkspaceCount} allowing GitHub changes` : `${repositoryCount} ${repositoryLabel} across ${configuredWorkspaceCount} of ${machines.length} ${machines.length === 1 ? "sandbox" : "sandboxes"} · ${pushEnabledRepositoryCount} ${pushRepositoryLabel} allowing GitHub changes`
-    : "GitHub not connected"
+    : tokenWorkspaceCount > 0 ? `Personal token in ${tokenWorkspaceCount} ${tokenWorkspaceCount === 1 ? "sandbox" : "sandboxes"}` : "GitHub not connected"
   const identitySummary = workspaceIdentitySummary(
     workspaceIdentities,
     machineNames,
@@ -542,7 +547,7 @@ export function OnboardingApp({
           queueItems={viewModel.queueItems}
           workspaces={viewModel.workspaceProgress.workspaces}
           machines={machines}
-          githubConnected={githubConnectionState === "connected"}
+          githubConnected={githubConnectionState === "connected" || tokenWorkspaceCount > 0}
           githubSummary={githubSummary}
           identitySummary={identitySummary}
           errorMessage={viewModel.error?.message}

@@ -567,7 +567,7 @@ fn reconcile_with(
         .collect();
     for workspace in targets {
         let mut attempts = 0;
-        let result = loop {
+        let (result, applied_revision) = loop {
             if !load()?.secrets.iter().any(|secret| secret.id == id) {
                 return Ok(());
             }
@@ -584,10 +584,17 @@ fn reconcile_with(
                 let restarted = last_start(&workspace).is_some_and(|start| {
                     Some(&start) != started_before.as_ref() && start.1 == desired_revision
                 });
-                break result.map(|pending| if restarted { Vec::new() } else { pending });
+                break (
+                    result.map(|pending| if restarted { Vec::new() } else { pending }),
+                    desired_revision,
+                );
             }
         };
         update(|document| {
+            // Exhausted retries and concurrent deletion cannot publish an obsolete result.
+            if revision(document, &workspace) != applied_revision {
+                return Ok(());
+            }
             let Some(secret) = document.secrets.iter_mut().find(|s| s.id == id) else {
                 return Ok(());
             };
@@ -1367,6 +1374,61 @@ mod tests {
         .unwrap();
         assert_eq!(load().unwrap().secrets[0].workspaces, ["dev"]);
         use_test_store(None);
+    }
+    #[test]
+    fn exhausted_reconcile_does_not_publish_success_for_a_newer_revision() {
+        let _test_state = crate::test_support::global_state();
+        let dir = tempfile::tempdir().unwrap();
+        use_test_store(Some(dir.path().join("secrets.json")));
+        use_test_vault(Some(
+            [
+                ("private-reference".into(), "initial-value".into()),
+                ("generation-1".into(), "rotation-1".into()),
+                ("generation-2".into(), "rotation-2".into()),
+                ("generation-3".into(), "rotation-3".into()),
+            ]
+            .into(),
+        ));
+        save(&Document {
+            secrets: vec![secret()],
+            ..Default::default()
+        })
+        .unwrap();
+        let mut operation = Some(lock_unit(&OPERATION));
+        let mut applied = Vec::new();
+        reconcile_with(
+            "id",
+            &mut operation,
+            &runtime_material,
+            &mut |workspace, material| {
+                applied.push(material[0].1.clone());
+                let _newer_save = lock_unit(&OPERATION);
+                update(|document| {
+                    document.secrets[0].value_id = format!("generation-{}", applied.len());
+                    if applied.len() == 3 {
+                        document.secrets[0]
+                            .errors
+                            .insert(workspace.into(), "Newer update failed.".into());
+                    }
+                    Ok(())
+                })?;
+                Ok(Vec::new())
+            },
+            &|| {},
+        )
+        .unwrap();
+        drop(operation);
+        assert_eq!(applied, ["initial-value", "rotation-1", "rotation-2"]);
+        let document = load().unwrap();
+        let secret = &document.secrets[0];
+        assert_eq!(secret.value_id, "generation-3");
+        assert_eq!(secret.affected, ["dev"]);
+        assert_eq!(
+            secret.errors.get("dev").map(String::as_str),
+            Some("Newer update failed.")
+        );
+        use_test_store(None);
+        use_test_vault(None);
     }
     #[test]
     fn reconcile_releases_the_operation_lock_while_a_vm_applies() {

@@ -520,6 +520,8 @@ struct Document {
     /// view. Kept after a policy is removed so a stale save cannot bring it back.
     #[serde(default)]
     policy_stamps: std::collections::BTreeMap<String, PolicyStamp>,
+    #[serde(flatten)]
+    extra: serde_json::Map<String, Value>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1072,6 +1074,13 @@ fn github(token: &str, path: &str) -> Result<Value, String> {
 }
 fn catalog(c: &Credential) -> Result<Vec<Value>, String> {
     Ok(catalog_installations(c)?.0)
+}
+fn catalog_with_retry(
+    c: &Credential,
+    fetch: impl FnOnce(&Credential) -> Result<Vec<Value>, String>,
+) -> Result<Vec<Value>, String> {
+    crate::github_http::reset_catalog_retries(&c.access_token);
+    fetch(c)
 }
 fn catalog_installations(c: &Credential) -> Result<(Vec<Value>, bool), String> {
     let slug = APP_SLUG.ok_or("GitHub App is not configured in this build.")?;
@@ -3010,9 +3019,8 @@ pub async fn refresh_github_repositories(
 ) -> Result<Value, String> {
     require_main(window.label())?;
     retry_credential_access();
-    crate::github_http::reset_retries();
     run(app, |app| {
-        let result = active_credential().and_then(|c| catalog(&c));
+        let result = active_credential().and_then(|c| catalog_with_retry(&c, catalog));
         let _state = serialize(&STATE);
         let mut d = load(app)?;
         match result {
@@ -3332,6 +3340,18 @@ pub async fn retry_github_configuration(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn repository_refresh_keeps_unrelated_token_operations_stopped() {
+        crate::github_http::assert_bearer_retry_isolated(|token| {
+            let credential = fixture_credential(token, super::now() + 3600);
+            let result = super::catalog_with_retry(&credential, |credential| {
+                assert_eq!(credential.access_token, token);
+                Ok(vec![serde_json::json!({"fixture": true})])
+            })
+            .unwrap();
+            assert_eq!(result, vec![serde_json::json!({"fixture": true})]);
+        });
+    }
+    #[test]
     fn a_panic_under_the_github_locks_does_not_block_updates_or_settings() {
         let _test_state = crate::test_support::global_state();
         for lock in [&super::OPERATION, &super::STATE] {
@@ -3592,6 +3612,52 @@ mod tests {
         json!({"workspace":name,"repositoryMode":if all {"all"} else {"selected"},"allRepositoriesAllowChanges":all,
             "repositories":[],"identity":{"name":"","email":"","apply":false}})
     }
+    #[test]
+    fn additive_github_preferences_survive_a_known_setting_change() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        let saved = json!({
+            "revision": 4,
+            "accessEnabled": false,
+            "account": "fixture-account",
+            "workspaces": [saved_policy("dev", false)],
+            "futurePreference": {"mode": "newer", "enabled": true}
+        });
+        let bytes = serde_json::to_vec(&saved).unwrap();
+        fs::write(&path, &bytes).unwrap();
+        let mut document = load_at(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        document.access_enabled = true;
+        save_at(&path, &document).unwrap();
+        let reloaded: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(reloaded["futurePreference"], saved["futurePreference"]);
+        assert_eq!(reloaded["workspaces"], saved["workspaces"]);
+        assert_eq!(reloaded["account"], saved["account"]);
+        assert!(load_at(&path).unwrap().access_enabled);
+    }
+
+    #[test]
+    fn legacy_github_preferences_keep_safe_defaults_after_save_and_reload() {
+        let _test_state = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github.json");
+        fs::write(&path, br#"{"revision":0,"accessEnabled":false}"#).unwrap();
+        let document = load_at(&path).unwrap();
+        assert!(!document.access_enabled);
+        assert!(document.account.is_none());
+        assert!(document.workspaces.is_empty());
+        assert!(document.policy_stamps.is_empty());
+        assert!(!document.grants_issued);
+        save_at(&path, &document).unwrap();
+        let reloaded = load_at(&path).unwrap();
+        assert!(!reloaded.access_enabled);
+        assert!(reloaded.account.is_none());
+        assert!(reloaded.workspaces.is_empty());
+        assert!(reloaded.policy_stamps.is_empty());
+        assert!(!reloaded.grants_issued);
+    }
+
     #[test]
     fn unsafe_saved_policy_revisions_are_refused_without_rewriting_the_document() {
         for revision in [9_007_199_254_740_992, u64::MAX] {

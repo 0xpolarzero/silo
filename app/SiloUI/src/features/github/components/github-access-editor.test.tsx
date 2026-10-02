@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react"
+import { fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -8,6 +8,49 @@ import type { ApplicationActions } from "@/features/application/model/applicatio
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
 
 describe("GitHubAccessEditor", () => {
+  it.each(["name", "email"])("does not commit Git %s while confirming an IME candidate", async (field) => {
+    const user = userEvent.setup()
+    const onCommit = vi.fn()
+    render(<GitHubAccessEditor
+      workspaces={[{ name: "dev" }]} connectionState="connected"
+      repositoryOptions={[]} workspaceSelections={{}}
+      workspaceIdentities={{ dev: { name: "Taylor", email: "taylor@example.com", apply: true } }}
+      currentHostGitIdentity={null} onConnect={vi.fn()}
+      onWorkspaceSelectionsChange={vi.fn()} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
+      onCommitWorkspaceIdentity={onCommit}
+    />)
+    const input = screen.getByRole("textbox", { name: `Git ${field} for dev` })
+    await user.click(input)
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true })
+    expect(input).toHaveFocus()
+    expect(onCommit).not.toHaveBeenCalled()
+    await user.keyboard("{Enter}")
+    expect(input).not.toHaveFocus()
+    expect(onCommit).toHaveBeenCalledOnce()
+  })
+
+  it.each(["ArrowDown", "ArrowUp", "Enter", "Escape"])("keeps repository selection unchanged for composing %s", async (key) => {
+    const user = userEvent.setup()
+    const onSelections = vi.fn()
+    render(<GitHubAccessEditor
+      workspaces={[{ name: "dev" }]} connectionState="connected"
+      repositoryOptions={["acme/first", "acme/second"]} workspaceSelections={{}} workspaceIdentities={{}}
+      currentHostGitIdentity={null} onConnect={vi.fn()}
+      onWorkspaceSelectionsChange={onSelections} onWorkspaceIdentityChange={vi.fn()} onResetWorkspaceIdentity={vi.fn()}
+    />)
+    const input = screen.getByRole("combobox", { name: "Add repository to dev" })
+    await user.click(input)
+    const active = input.getAttribute("aria-activedescendant")
+    const event = new KeyboardEvent("keydown", { key, isComposing: true, bubbles: true, cancelable: true })
+    fireEvent(input, event)
+    expect(event.defaultPrevented).toBe(key === "Escape")
+    expect(input).toHaveAttribute("aria-activedescendant", active)
+    expect(screen.getByRole("listbox")).toBeInTheDocument()
+    expect(onSelections).not.toHaveBeenCalled()
+    await user.keyboard("{ArrowDown}{Enter}")
+    expect(onSelections).toHaveBeenCalledExactlyOnceWith("dev", [{ repository: "acme/second", allowPushes: false }])
+  })
+
   it("does not rescan an unchanged catalog during unrelated renders and picks from a replacement catalog", async () => {
     const user = userEvent.setup()
     let catalogReads = 0

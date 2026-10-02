@@ -411,3 +411,42 @@ it("backs off failed computer snapshots independently and refreshes immediately 
     expect(reads("broken")).toBe(failedReads)
   } finally { store.dispose() }
 })
+
+
+it("backs off failed computer-list polling while local state stays fresh", async () => {
+  vi.useFakeTimers()
+  const local = applicationSourceForScenario("running")
+  let failing = false
+  const invoke = nativeBridgeMock({
+    ...initializationHandlers(),
+    read_application_state: () => local,
+    read_setup_activity: () => [],
+    remote_host_list: () => { if (failing) throw new Error("Unreadable list"); return [] },
+    remote_management_status: () => ({ enabled: false, hostId: "local", name: "Laptop", address: "user@laptop" }),
+    read_network_state: () => ({ workspaces: [] }),
+  })
+  const store = createProductionSource({ invoke, listen: async () => () => {} } as ProductionBridge)
+  const reads = (command: string) => invoke.mock.calls.filter(([name]) => name === command).length
+  try {
+    await store.initialize()
+    failing = true
+    await vi.advanceTimersByTimeAsync(10_000)
+    let calls = reads("remote_host_list")
+    expect(store.getSnapshot().source!.remoteComputersError).toContain("Unreadable list")
+    for (const delay of [20_000, 40_000, 60_000, 60_000]) {
+      const localReads = reads("read_application_state")
+      await vi.advanceTimersByTimeAsync(delay - 1)
+      expect(reads("remote_host_list")).toBe(calls)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(reads("remote_host_list")).toBe(++calls)
+      expect(reads("read_application_state")).toBe(localReads + delay / 10_000)
+    }
+    failing = false
+    window.dispatchEvent(new Event("focus"))
+    await vi.advanceTimersByTimeAsync(0)
+    expect(reads("remote_host_list")).toBe(++calls)
+    expect(store.getSnapshot().source!.remoteComputersError).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(reads("remote_host_list")).toBe(++calls)
+  } finally { store.dispose() }
+})

@@ -108,7 +108,20 @@ requires every attachment to be nonempty. Regressions reject both an extra empty
 attachment and an empty required package before download or publication. The
 complete reviewed draft still publishes in the fixture.
 
-## Verification
+## WORKFLOWS-10: P2 — Malformed optional feed fields disable update checks
+
+The final gate checked feed versions and platform mappings but accepted an
+invalid `pub_date` or non-string `notes`. The pinned updater's
+[`RemoteRelease` deserializer](../../../app/SiloUI/src-tauri/vendor/tauri-plugin-updater/src/updater.rs)
+requires optional string notes and an RFC3339 timestamp; invalid fields reject
+the whole feed before the release is offered. Five failing subcases retained
+matching draft checksums and still reached publication. The final gate now
+checks those optional fields, including calendar validity through Python's
+standard datetime parser. Valid generated timestamps, UTC `Z`, numeric offsets,
+and null optional fields remain accepted. Publication fixtures cover both
+rejection and acceptance; no live update feed was contacted.
+
+## Initial verification
 
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow`: 22 tests pass after the queue fix.
 - `PYTHONPATH=app/SiloUI/scripts python3 -m unittest test_guest_publication test_workflow_pins test_release_workflow test_release_publication test_publish_release test_linux_verification_release test_debian_release test_macos_release`: 66 tests pass on the integrated source, covering publication, Linux verification, Debian packaging, and macOS packaging fixtures.
@@ -118,6 +131,42 @@ complete reviewed draft still publishes in the fixture.
 - An anonymous, read-only request to the existing public GHCR package confirmed a nonexistent tag returns HTTP 404 with `MANIFEST_UNKNOWN`. No private credentials were used.
 - Failure evidence and release-test output remain under `/tmp/silo-codex-target/verification/workflows/`. No app, bundle, VM, authenticated release, or registry write was exercised.
 
-The follow-up review checked permission declarations, credential-bearing steps,
-artifact paths, source-ref handling, and required-job gates. Previously reported
-defects remain excluded; no additional defect was confirmed in those checks.
+## Continued fix loop, 2026-10-02
+
+Each defect had a failing regression before its fix, an atomic commit, and a
+separate successful fold into integration. All edits stayed in the dedicated
+`codex-fix-workflows` worktree. The continuation found these seven defects:
+
+| Finding | Fixed and folded commit |
+| --- | --- |
+| WORKFLOWS-4: final publication queue | `228f318c` |
+| WORKFLOWS-5: multi-architecture tag guard | `e6dc98a6` |
+| WORKFLOWS-6: failed export producer cleanup | `06a2aaec` |
+| WORKFLOWS-7: macOS executable archive mode | `9aa1c644` |
+| WORKFLOWS-8: public hardlink transfer | `e6ea69b7` |
+| WORKFLOWS-9: extra empty draft attachment | `a39598ab` |
+| WORKFLOWS-10: optional update-feed metadata | `467f8764` |
+
+Final integrated verification at `3cd38f12`:
+
+- The focused Python command ran 104 tests: 102 passed and two Linux-only
+  metadata cases skipped on this macOS host. Modules: `test_guest_publication`,
+  `test_workflow_pins`, `test_release_workflow`, `test_release_publication`,
+  `test_publish_release`, `test_release_runtime_transfer`, `test_release_cache`,
+  `test_release_metadata`, `test_linux_verification_release`,
+  `test_debian_release`, and `test_macos_release`.
+- `npm --prefix app/SiloUI run test:release`: 116 passed, 12 intentional skips.
+  This run preceded the last two Python-only changes, whose publication fixtures
+  were subsequently rerun in the final Python command.
+- Lint, typecheck, Rust formatting, touched Python syntax, audit-relative links,
+  and `git diff --check` passed. Actionlint validated all integrated workflows
+  with only the previously documented supported-queue diagnostic suppressed.
+- Evidence is local under `/tmp/silo-codex-target/verification/workflows/`,
+  including each new failure log and `continuation-python-final.log`.
+
+Permission declarations, credential-bearing steps, artifact paths, source-ref
+handling, and required-job gates were reviewed again. Previously reported
+findings remain excluded. The retired macOS 14 runner finding remains in the
+existing release review; qualifying a replacement needs an external execution
+environment. No application, VM, real credential, authenticated publication,
+or registry write was exercised in this continuation.

@@ -222,7 +222,7 @@ fn check_space(directory: &Path, required: u64) -> Result<(), String> {
     let available = (statistics.f_bavail as u64).saturating_mul(statistics.f_frsize as u64);
     if available < required {
         return Err(format!(
-            "Free at least {} MB to prepare Silo's bundled VM image, then retry.",
+            "Free at least {} MiB to prepare Silo's bundled VM image, then retry.",
             required.div_ceil(1024 * 1024)
         ));
     }

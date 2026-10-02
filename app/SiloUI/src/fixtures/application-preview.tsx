@@ -64,7 +64,7 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
     const target = workspaceTarget(w)
     const seeded = fixture.source.sshAccess?.workspaces.find(access => access.workspace === target)
     const settings = sshSettings.get(target) ?? seeded ?? { workspace: target, enabled: index === 0, port: 2222 + index, bindAddress: "127.0.0.1", keys: [] }
-    return { ...settings, state: !settings.enabled ? "disabled" : w.state === "running" ? "listening" : "waiting", message: null, fingerprint: settings.enabled ? "SHA256:fixtureHostKeyForVisualPreviewOnly" : null, computerName: seeded?.computerName ?? w.computer?.name ?? "Ada’s Mac mini", addresses: seeded?.addresses ?? ["127.0.0.1", "192.168.1.42"] }
+    return { ...settings, keys: settings.keys ?? [], state: !settings.enabled ? "disabled" : w.state === "running" ? "listening" : "waiting", message: null, fingerprint: settings.enabled ? "SHA256:fixtureHostKeyForVisualPreviewOnly" : null, computerName: seeded?.computerName ?? w.computer?.name ?? "Ada’s Mac mini", addresses: seeded?.addresses ?? ["127.0.0.1", "192.168.1.42"] }
   }) }
 
   const queryLogs = useMemo<LogLoader>(() => async request => {
@@ -89,7 +89,7 @@ function FixtureApplicationPreview({ source, actions, backupPreviewMode, initial
     backup={backup}
     actions={{
       ...inactiveApplicationActions,
-      saveSshAccess: async request => { setSshSettings(current => new Map(current).set(request.workspace, request)) },
+      saveSshAccess: async request => { setSshSettings(current => new Map(current).set(request.workspace, { ...request, keys: request.keys ?? current.get(request.workspace)?.keys ?? sshAccess.workspaces.find(access => access.workspace === request.workspace)?.keys ?? [] })) },
       createCheckpoint: fixture.createCheckpoint,
       forkCheckpoint: fixture.forkCheckpoint,
       restoreCheckpoint: fixture.restoreCheckpoint,

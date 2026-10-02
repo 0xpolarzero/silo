@@ -60,3 +60,17 @@ No app bundle was inspected or launched. Tests used temporary filesystem fixture
 - **Trigger and evidence:** `dismiss` saves a durable acknowledgement and then calls `acknowledge_failure`. That advisory update propagated corrupt-history errors, so the completed dismissal was reported as failed. Both the direct history-update regression and the crash-dismissal regression failed against the original helper.
 - **Correction:** Use the existing advisory-history warning and recording paths for acknowledgement, preserving unreadable bytes instead of overwriting them. The durable crash acknowledgement and lifecycle-intent checks remain authoritative.
 - **Verification:** Both regressions pass and verify preserved corrupt bytes plus an activity warning. All 19 tests from the actual `runtime_activity.rs` and `crash_acknowledgement.rs` modules passed in a standalone Rust 1.94.0 harness compiled with `-D warnings`; the harness supplies temporary-path metadata, inspect, setup-history and no-intent lifecycle adapters, so it does not prove the full native application build. Tests launch no app or VM.
+
+## RUNTIME-DIR-B-8: Queued steps retain a stale not-started decision
+
+- **Priority:** P2
+- **Trigger and evidence:** Two workers share a `StartCondition`. One waits for a busy VM while the other acquires a different VM, marking the request started. After its start condition lapses, the waiting worker still checks the original condition and returns `Abandoned`, contrary to the shared condition's once-started continuation contract. A two-worker regression failed before the fix.
+- **Correction:** Recheck the shared started flag both while polling a queued step and immediately before admission. Explicit wait predicates still apply to the step's own waiting policy.
+- **Verification:** The regression passes; all 40 tests from the actual gate module pass in the same standalone cached-library harness, with Rust 1.94.0 and `-D warnings`. This verifies concurrent admission behavior with in-process fixture workers, not a live remote workflow.
+
+## RUNTIME-DIR-B-9: A valid bounded prefix hides oversized activity corruption
+
+- **Priority:** P2
+- **Trigger and evidence:** The first 1 MiB of history contains a complete JSON array plus whitespace, with invalid trailing bytes beyond the limit. `from_reader(file.take(MAX_OUTPUT_BYTES))` accepted the prefix. The next lifecycle record replaced the original bytes, losing the damaged history instead of preserving it. The regression failed on that overwrite before the fix.
+- **Correction:** Read at most the limit plus one byte, reject overflow, and decode only a complete bounded file. Keep the existing advisory warning and nonblocking lifecycle behavior.
+- **Verification:** The regression now preserves the full oversized file and warns; a complete valid file exactly at the limit remains writable. All 21 activity/crash module tests pass in the documented standalone fixture harness with Rust 1.94.0 and `-D warnings`. Formatting and diff checks pass. No live data or app was used.

@@ -64,6 +64,9 @@ fn save_atomically(
     temporary
         .persist(destination)
         .map_err(|_| "Could not save the completed log export.")?;
+    std::fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "Could not save the completed log export.")?;
     Ok(true)
 }
 
@@ -117,9 +120,8 @@ fn export_with(
     query: impl FnMut(Query) -> Result<Page, String>,
     cancelled: impl Fn() -> bool,
 ) -> Result<bool, String> {
-    let _guard = EXPORT_LOCK
-        .try_lock()
-        .map_err(|_| "A log export is already in progress.")?;
+    let _guard = crate::sync::try_lock_or_recover(&EXPORT_LOCK, "log export")
+        .ok_or("A log export is already in progress.")?;
     if cancelled() {
         return Ok(false);
     }
@@ -203,6 +205,36 @@ pub(crate) fn write_requests(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn completed_export_reports_an_unreadable_parent_after_publication() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let directory = tempfile::tempdir().unwrap();
+        if std::fs::metadata(directory.path()).unwrap().uid() == 0 {
+            return; // Root bypasses the permission boundary exercised here.
+        }
+        let destination = directory.path().join("logs.jsonl");
+        std::fs::write(&destination, b"previous export").unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o300)).unwrap();
+        let result = save_atomically(
+            &destination,
+            |output| {
+                output
+                    .write_all(b"complete export")
+                    .map_err(|error| error.to_string())?;
+                Ok(true)
+            },
+            || false,
+        );
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"complete export");
+        assert!(
+            result.is_err(),
+            "an unsynchronized rename must not report success"
+        );
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
     #[test]
     fn cancellation_before_the_export_worker_starts_skips_the_picker_and_output() {
         let _isolation = crate::test_support::global_state();
@@ -253,6 +285,35 @@ mod tests {
                 .count(),
             3
         );
+    }
+
+    #[test]
+    fn a_panicked_export_does_not_block_the_next_export() {
+        let _isolation = crate::test_support::global_state();
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("logs.jsonl");
+        std::fs::write(&destination, b"previous export").unwrap();
+        let failure = std::panic::catch_unwind(|| {
+            export_with(
+                vec![Query::default()],
+                || Ok(Some(destination.clone())),
+                |_| panic!("simulated log-query panic"),
+                || false,
+            )
+        });
+        assert!(failure.is_err());
+        assert_eq!(std::fs::read(&destination).unwrap(), b"previous export");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        let retry = export_with(
+            vec![Query::default()],
+            || Ok(Some(destination.clone())),
+            |_| Ok(page(0, 1)),
+            || false,
+        );
+        let remained_poisoned = EXPORT_LOCK.is_poisoned();
+        EXPORT_LOCK.clear_poison();
+        assert!(retry.unwrap());
+        assert!(!remained_poisoned);
     }
 
     fn page(offset: usize, total: usize) -> Page {
