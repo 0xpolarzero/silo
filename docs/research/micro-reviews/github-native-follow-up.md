@@ -33,3 +33,12 @@ GitHub's [Get a repository parameters](https://docs.github.com/en/rest/repos/rep
 - **Test:** The production callback reader must return the complete request despite interruptions before the first fragment and between later fragments.
 
 Rust's [Read contract](https://doc.rust-lang.org/std/io/trait.Read.html#tymethod.read), checked 2026-10-02, defines interrupted reads as nonfatal and directs callers to retry them.
+
+## Fix-loop verification
+
+- Fixed and folded: GITHUB-NATIVE-1 (`fe0ee591`), GITHUB-NATIVE-2 (`9bf2577b`), GITHUB-NATIVE-3 (`027dba66`), GITHUB-NATIVE-5 (`676130a3`). Each user-visible fix has a patch changeset. GITHUB-NATIVE-4 remains skipped for the coordinated lock-boundary refactor.
+- Rust 1.94.0 compiled an extracted production-function harness with six new regression tests and four existing callback/push checks: **10 passed**. Each defect's failing output was preserved before fixing it. The harness uses synthetic document/state declarations and credential adapters; it does not test Tauri command transport, real secure storage, network requests, or VM attachment. Sources and logs remain under `/tmp/silo-github-native-*`.
+- `cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check` and `git diff --check`: passed.
+- `cargo +1.94.0 test --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked github::` and `cargo +1.94.0 clippy --manifest-path app/SiloUI/src-tauri/Cargo.toml --locked --bin silo-ui --tests --no-deps` used `/tmp/silo-codex-target` and explicit synthetic GitHub configuration. Both remained at the shared build locks and were stopped with SIGTERM after verifying their executable paths and ownership of this worktree. An earlier focused native attempt reached the build script and failed because generated runtime resources were absent; linking existing resources resolved that input issue, but no successful native compilation is claimed.
+- Temporary runtime/resource links were removed. No app bundle was inspected or launched, and no live data, VM, or credential store was used.
+- The host-push revision guard is conservative: any saved policy revision change during acquisition requires retry, including an edit to another sandbox. Issued scoped credentials are retired through the existing destructor path before rejected acquisition returns.
