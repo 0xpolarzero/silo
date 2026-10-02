@@ -21,11 +21,11 @@ RUN sh /tmp/silo-setup-github.sh \
 #     No mousepad (GTK 3.24's AT-SPI PasteText use-after-free crashes every GTK3
 #     text view); gnome-text-editor (GTK4) is the text editor. Includes the dconf
 #     stack and python3-pyatspi for the poller in src-tauri/guest/silo-accessibility.py.
-#  3. LCU SYSTEM_PACKAGES (checked against v0.8.4; identical since v0.8.1), a superset of the ChatGPT Linux
+#  3. LCU SYSTEM_PACKAGES (checked against v0.8.5, which adds libxres1), a superset of the ChatGPT Linux
 #     .deb's dependencies on Ubuntu 24.04, so LCU installs with --skip-system --offline.
 #     The LCU archive staged below is the lock's version (guest/lcu-lock.json); the
 #     published v4 image was built when the lock said 0.8.1.
-#     Source: https://github.com/0xpolarzero/lcu/blob/v0.8.4/scripts/install.py
+#     Source: https://github.com/0xpolarzero/lcu/blob/v0.8.5/scripts/install.py
 #     Packages already named in an earlier group are not repeated.
 #
 # The pinned Selkies .deb is downloaded, SHA-256 verified, installed and deleted
@@ -58,7 +58,7 @@ RUN --mount=type=bind,source=src-tauri/guest/desktop-streamer-lock.json,target=/
         libnspr4 libnss3 libpango-1.0-0 libssl3t64 libstdc++6 libtss2-esys-3.0.2-0t64 \
         libtss2-mu-4.0.1-0t64 libtss2-tcti-device0t64 libudev1 libusb-1.0-0 libx11-6 \
         libx11-xcb1 libxcb-dri3-0 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 \
-        libxi6 libxkbcommon0 libxrandr2 libxtst6 mesa-vulkan-drivers pulseaudio-utils \
+        libxi6 libxkbcommon0 libxrandr2 libxres1 libxtst6 mesa-vulkan-drivers pulseaudio-utils \
         xdg-utils xz-utils \
     && set -- $(python3 -c "import json,re,sys; a=json.load(open('/mnt/desktop-streamer-lock.json'))['assets'][sys.argv[1]]; assert a['url'].startswith('https://github.com/selkies-project/selkies/releases/download/2.0.0/') and re.fullmatch('[0-9a-f]{64}', a['sha256']); print(a['url'], a['sha256'])" "$TARGETARCH") \
     && url=$1 && sha256=$2 \

@@ -123,7 +123,7 @@ absolute).
   `--skip-system --offline`.
 - Pinned LCU release archive, hash-checked, staged for installation in the VM
   (done: `guest/lcu-lock.json`, `/usr/local/share/silo/lcu/`). The published v4 image
-  stages LCU 0.8.1; Silo now pins LCU 0.8.4 (below), which a VM downloads and
+  stages LCU 0.8.1; Silo now pins LCU 0.8.5 (below), which a VM downloads and
   verifies at setup until a new image stages it.
 - Accessibility: dconf `toolkit-accessibility=true` system default and an
   autostarted AT-SPI attribute poller for Chromium/Electron.
@@ -144,7 +144,7 @@ absolute).
 - Every computer does this itself at its own start, remote ones included; a
   controller never prepares an app for another computer.
 
-Done: lock (`lcuVersion` 0.8.4), download, verification, extraction and
+Done: lock (`lcuVersion` 0.8.5), download, verification, extraction and
 publication under `<app data>/chatgpt/published/`, started automatically at app
 start with retries (2026-10-02, replacing the one-time notice), cached status
 reads and a computer-level Retry. See [ChatGPT app](SiloUI-CHATGPT-APP.md).
@@ -455,6 +455,20 @@ running instance is up. During a wait the state is `preparing` ("Could not downl
 (network). Silo tries again automatically."); a boot, a switch change, a manual setup, a
 stop/restart or a deletion cancels it. After the last retry the failure stays until the next
 boot or a manual setup.
+
+### LCU 0.8.5 pin (2026-10-02)
+
+Silo pins LCU 0.8.5 (tag `v0.8.5`, commit 28a90d0; linux-arm64
+`3a0856210656207a1d80b08077888701a0278407343d5276b1f6607c637c3722`, linux-x64
+`0caa6e8fbbbfef8c6c8b9b7de9b2b5c123869c76023f9f75f2b7e5cbd3410f30`, verified by
+download). A review of 0.8.4 found that translated key holds could stay stuck and that a
+namespaced client's advertised PID could match an unrelated local process, so 0.8.5 narrows
+the feature: `key_down`/`key_up` are never translated (they pass to the original service as
+in Codex), every input and focus-changing call is serialized in one queue, and a window is
+translated only when the X server's own client PID (X-Resource `XResQueryClientIds`) equals
+its `_NET_WM_PID` on this host and PID namespace; anything else fails closed. That check needs
+`libxres1` and `python3`: the published v4 image already contains both, and the Dockerfile now
+lists `libxres1` explicitly. The section below describes the 0.8.4 pin it replaces.
 
 ### LCU 0.8.4 pin (2026-10-02)
 

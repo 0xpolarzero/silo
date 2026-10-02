@@ -55,11 +55,11 @@ source and redistribution review remain part of release preparation.
 Silo's guest image (v4 and later) stages an unextracted LCU release archive for the sandbox's built-in computer use. LCU is MIT-licensed; the license text is inside the archive. The image holds only the archive, in `/usr/local/share/silo/lcu/`; LCU itself is installed from it in the sandbox when computer use is set up.
 
 - Project: https://github.com/0xpolarzero/lcu
-- Release: https://github.com/0xpolarzero/lcu/releases/tag/v0.8.4
-- Linux ARM64 archive SHA-256: `f3ca87eea22a9c1c335bbe3a0c3df5c8b1be46ef96359b80fbd67ef9fc1f6f79`
-- Linux x86-64 archive SHA-256: `06b481b35073c43b4064f257a0603e7812f53aa3299db16df3f363e0f9f1059d`
+- Release: https://github.com/0xpolarzero/lcu/releases/tag/v0.8.5
+- Linux ARM64 archive SHA-256: `3a0856210656207a1d80b08077888701a0278407343d5276b1f6607c637c3722`
+- Linux x86-64 archive SHA-256: `0caa6e8fbbbfef8c6c8b9b7de9b2b5c123869c76023f9f75f2b7e5cbd3410f30`
 
-The pinned URL and hashes are in `app/SiloUI/src-tauri/guest/lcu-lock.json`. The published v4 image itself contains the LCU 0.8.1 archive (release v0.8.1, SHA-256s `441649e7afe14dc948caaa5bd94034567e4404fc8c0bb6a450bd692b73161806` arm64, `8b0934f8c0c79d40a5073f180db33db8f1568af00177befa4b8da677694731bc` x86-64); images built from the current lock stage 0.8.4. The image contains no ChatGPT application.
+The pinned URL and hashes are in `app/SiloUI/src-tauri/guest/lcu-lock.json`. The published v4 image itself contains the LCU 0.8.1 archive (release v0.8.1, SHA-256s `441649e7afe14dc948caaa5bd94034567e4404fc8c0bb6a450bd692b73161806` arm64, `8b0934f8c0c79d40a5073f180db33db8f1568af00177befa4b8da677694731bc` x86-64); images built from the current lock stage 0.8.5. The image contains no ChatGPT application.
 
 # Silo guest image: Selkies desktop streamer and codecs
 
