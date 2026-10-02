@@ -5,7 +5,7 @@ import { ProductionSurface } from "./production-surface"
 import type { ReactNode } from "react"
 
 vi.mock("./runtime-migration-boundary", () => ({ RuntimeMigrationBoundary: ({ children }: { children: ReactNode }) => children }))
-import { createMemorySettingsStore, SettingsProvider } from "@/features/preferences/settings-store"
+import { createMemorySettingsStore, createSettingsStore, SettingsProvider, type SettingsSnapshot } from "@/features/preferences/settings-store"
 import type { ProductionSource } from "./production-source"
 import { useUpdates } from "@/features/updates/update-store"
 
@@ -47,6 +47,66 @@ it("does not install if pending settings cannot be saved", async () => {
   expect(backend.install).not.toHaveBeenCalled()
   expect(screen.getByRole("button", { name: "Install test update" }).closest("[inert]")).toBeNull()
   expect(screen.queryByText("Preparing update…")).not.toBeInTheDocument()
+})
+it.each(["preferences", "onboarding draft"] as const)("keeps undelivered %s and installs once after delivery recovers", async (kind) => {
+  const user = userEvent.setup()
+  const errors = vi.spyOn(console, "error").mockImplementation(() => {})
+  let saved: SettingsSnapshot = { revision: 0, settings: { onboardingComplete: true, theme: "light" }, onboardingDraft: null, saveError: null }
+  let deliveryFails = true
+  const deliver = async (change: Partial<SettingsSnapshot>) => {
+    if (deliveryFails) throw new Error("settings delivery failed")
+    saved = { ...saved, ...change, revision: saved.revision + 1 }
+    return saved
+  }
+  const nativeFlush = vi.fn(async () => {})
+  const store = createSettingsStore({
+    read: async () => saved,
+    subscribe: async () => () => {},
+    updateSettings: (patch) => deliver({ settings: { ...saved.settings, ...patch } }),
+    updateOnboardingDraft: (draft) => deliver({ onboardingDraft: draft }),
+    flush: nativeFlush,
+  }, {}, saved)
+  const draft = { currentStep: "dependencies" as const, machines: [], unfinishedMachineEditor: null, workspaceSelections: {}, workspaceIdentities: {} }
+  if (kind === "preferences") await store.updateSettings({ theme: "dark" })
+  else await store.updateOnboardingDraft(draft)
+  render(<SettingsProvider store={store}><ProductionSurface source={source} dependencyStore={null} /></SettingsProvider>)
+  const install = await screen.findByRole("button", { name: "Install test update" })
+  await user.click(install)
+  expect(backend.install).not.toHaveBeenCalled()
+  expect(errors.mock.calls).toEqual([["Silo settings:", "settings delivery failed"], ["Silo settings:", "settings delivery failed"]])
+  errors.mockRestore()
+  expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish")
+  expect(store.getSnapshot().saveError).toBe("settings delivery failed")
+  expect(install.closest("[inert]")).toBeNull()
+  if (kind === "preferences") {
+    expect(store.getSnapshot().settings.theme).toBe("dark")
+    expect(saved.settings.theme).toBe("light")
+  } else {
+    expect(store.getSnapshot().onboardingDraft).toEqual(draft)
+    expect(saved.onboardingDraft).toBeNull()
+  }
+  deliveryFails = false
+  backend.install.mockImplementation(async () => {
+    expect(nativeFlush).toHaveBeenCalledOnce()
+    expect(store.getSnapshot().saveError).toBeNull()
+    if (kind === "preferences") expect(saved.settings.theme).toBe("dark")
+    else expect(saved.onboardingDraft).toEqual(draft)
+    return { phase: "installing" }
+  })
+  await user.click(install)
+  expect(backend.install).toHaveBeenCalledExactlyOnceWith(false)
+})
+it("does not install with write-protected settings", async () => {
+  const user = userEvent.setup()
+  const saved: SettingsSnapshot = { revision: 0, settings: { onboardingComplete: true }, onboardingDraft: null, saveError: "settings file is protected", writeProtected: true }
+  const store = createSettingsStore({
+    read: async () => saved, subscribe: async () => () => {},
+    updateSettings: async () => saved, updateOnboardingDraft: async () => saved, flush: async () => {},
+  }, {}, saved)
+  render(<SettingsProvider store={store}><ProductionSurface source={source} dependencyStore={null} /></SettingsProvider>)
+  await user.click(await screen.findByRole("button", { name: "Install test update" }))
+  expect(backend.install).not.toHaveBeenCalled()
+  expect(await screen.findByRole("alert")).toHaveTextContent("The update action could not finish")
 })
 it("blocks edits before flushing and keeps them blocked through native installation", async () => {
   const user = userEvent.setup()
