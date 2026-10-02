@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 import { TooltipProvider } from "@/components/ui/tooltip"
 import { MachineList } from "./machine-list"
+import { productionMachineDefaults } from "@/features/onboarding/model/machine-configuration"
+import { MachineEditor } from "./machine-editor"
 
 async function openNewSandbox() {
   const onMachinesChange = vi.fn()
@@ -14,6 +16,15 @@ async function openNewSandbox() {
 }
 
 describe("machine editor validation", () => {
+  it("shows a form error when retained configuration fields cannot be submitted", async () => {
+    const machine = { ...productionMachineDefaults[0], futurePolicy: { enabled: true } }
+    const onSave = vi.fn()
+    render(<MachineEditor editor={{ draft: machine, originalID: machine.id, insertAt: 0 }} machines={[machine]} focusRequest={0} created={true} running={false} onSave={onSave} onCancel={vi.fn()} onDraftChange={vi.fn()} />)
+    await userEvent.setup().click(screen.getByRole("button", { name: "Save" }))
+    expect(onSave).not.toHaveBeenCalled()
+    expect(screen.getByRole("alert")).toHaveTextContent("futurePolicy")
+  })
+
   it("links each error to its field and moves focus to the first invalid field", async () => {
     const { user, onMachinesChange } = await openNewSandbox()
     const name = screen.getByRole("textbox", { name: "Sandbox name" })
