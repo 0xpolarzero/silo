@@ -774,10 +774,14 @@ fn publish(app: &AppHandle, snapshot: &Snapshot) {
     // Native glass, titlebars, dialogs, and both webviews inherit app appearance.
     // None clears an explicit appearance so System follows the OS again.
     app.set_theme(snapshot.native_theme());
-    crate::status_panel::report(app.emit_to("main", "settings:changed", snapshot));
+    emit_snapshot(app, snapshot);
+}
+
+fn emit_snapshot<R: tauri::Runtime>(app: &AppHandle<R>, snapshot: &Snapshot) {
+    // Catch-all listeners receive targeted events too; drafts stay in authorized reads.
     let mut public = snapshot.clone();
     public.onboarding_draft = Value::Null;
-    crate::status_panel::report(app.emit_to("status", "settings:changed", public));
+    crate::status_panel::report(app.emit("settings:changed", public));
 }
 
 async fn change(
@@ -1586,6 +1590,34 @@ mod tests {
         }
         assert!(require_main("main").is_ok());
         assert!(require_main("status").is_err());
+    }
+
+    #[test]
+    fn settings_events_never_expose_onboarding_drafts_to_catch_all_listeners() {
+        use tauri::Listener;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .unwrap();
+        let (send, receive) = std::sync::mpsc::channel();
+        app.listen_any("settings:changed", move |event| {
+            send.send(serde_json::from_str::<Value>(event.payload()).unwrap())
+                .unwrap();
+        });
+        let mut store = SettingsStore::load(None);
+        store.update_draft(unfinished_draft()).unwrap();
+        let snapshot = store.snapshot();
+
+        emit_snapshot(app.handle(), &snapshot);
+
+        let events: Vec<_> = receive.try_iter().collect();
+        assert!(!events.is_empty());
+        for event in events {
+            assert!(event["onboardingDraft"].is_null());
+            assert_eq!(event["revision"], snapshot.revision);
+            assert_eq!(event["settings"], json!(snapshot.settings));
+        }
+        assert_eq!(snapshot.onboarding_draft, unfinished_draft());
     }
 
     fn unfinished_draft() -> Value {
