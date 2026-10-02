@@ -72,7 +72,7 @@ export function ActionsMenu({ label, items, onClose, disabled = false, ref, popo
       })}
     </DropdownMenu.Content></DropdownMenu.Portal>
     </DropdownMenu.Root>
-    <PopoverContent aria-label={panelAction?.accessibleLabel ?? panelAction?.label} align="end" className="w-64 p-3 text-xs" onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus() }}>
+    <PopoverContent aria-label={panelAction?.accessibleLabel ?? panelAction?.label ?? label} align="end" className="w-64 p-3 text-xs" onCloseAutoFocus={event => { event.preventDefault(); trigger.current?.focus() }}>
       {render?.(close)}
     </PopoverContent>
   </Popover>
