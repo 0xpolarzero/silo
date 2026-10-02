@@ -42,6 +42,16 @@ test("the recipe matches the version and never leaves package files in a layer",
   }
 })
 
+test("the release attaches every guest input the image build consumes", () => {
+  const dockerfile = readFileSync(new URL("../guest-image/Dockerfile", import.meta.url), "utf8")
+  const workflow = readFileSync(new URL("../../../.github/workflows/guest-image.yml", import.meta.url), "utf8")
+  const inputs = new Set([...dockerfile.replace(/^#.*$/gm, "").matchAll(/source=src-tauri\/guest\/([A-Za-z0-9._-]+)/g)].map((match) => match[1]))
+  assert.ok(inputs.has("lcu-lock.json"))
+  for (const input of inputs) {
+    assert.ok(workflow.includes(`cp app/SiloUI/src-tauri/guest/${input} guest-release/${input}`), input)
+  }
+})
+
 test("the pinned LCU archive is staged from one lock, hash-checked, and never installed in the image", () => {
   const dockerfile = readFileSync(new URL("../guest-image/Dockerfile", import.meta.url), "utf8")
   const code = dockerfile.replace(/^#.*$/gm, "")
