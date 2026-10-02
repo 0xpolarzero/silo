@@ -41,3 +41,11 @@ The standalone Rust verification extracts the production retry helper, failure c
 - Consequence: a bus outage keeps accessibility requests and error logging at the fastest polling interval.
 - Fix: treat a failed sweep as no observed content change so the existing idle backoff grows to its ten-second cap.
 - Verification: the actual worker runs with a synthetic bus and clock. The regression checks growing delays, repeated capped delays, and restored two-second polling when a new application appears. Existing fairness and hung-application controls remain covered.
+
+## Background VM health checks
+
+- Trigger: runtime inspection keeps failing after the health watcher observed a running VM.
+- Evidence: `HealthState::poll_interval` ignored the existing failure count. The regression against the extracted production health state returned ten seconds instead of the first twenty-second backoff.
+- Consequence: background runtime inspections continue every ten seconds through an outage, including while application windows are hidden.
+- Fix: double the active interval after each failed read, cap it at the existing five-minute idle fallback, and reset on a successful reading. Discarded reads leave the failure count unchanged.
+- Verification: all eleven production health-state tests pass in a standalone Rust harness, including delay growth, repeated caps, recovery, and preservation of the idle fallback. Only Tauri installation is omitted and notice data types are supplied locally; no app or VM is launched.
