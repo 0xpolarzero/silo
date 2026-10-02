@@ -1,6 +1,8 @@
-import { render, screen } from "@testing-library/react"
+import { act, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
+
+import { Menu } from "@tauri-apps/api/menu"
 
 import { remoteWorkspaceTarget } from "@/features/application/model/remote-computers"
 import { applicationSourceForScenario } from "@/fixtures/application-scenarios"
@@ -17,6 +19,29 @@ vi.mock("@tauri-apps/api/dpi", () => ({ LogicalPosition: class {} }))
 const { NativeWorkspaceMenu } = await import("./native-workspace-menu")
 
 describe("native workspace menu", () => {
+  beforeEach(() => { menus.length = 0 })
+
+  it("closes a late menu without showing it after its sandbox row disappears", async () => {
+    let finish!: (menu: Menu) => void
+    vi.mocked(Menu.new).mockReturnValueOnce(new Promise((resolve) => { finish = resolve }))
+    const popup = vi.fn().mockResolvedValue(undefined)
+    const close = vi.fn().mockResolvedValue(undefined)
+    const source = applicationSourceForScenario("complete")
+    const workspace = source.workspaces[0]!
+    const actions = {
+      listWorkspaceDirectory: fixtureDirectoryLoader(source.workspaces),
+      openSilo: vi.fn(), quit: vi.fn(), refresh: vi.fn(), pushRepository: vi.fn(), dismissRepositoryPush: vi.fn(),
+      startWorkspace: vi.fn(), stopWorkspace: vi.fn(), restartWorkspace: vi.fn(),
+      openTerminal: vi.fn(), openEditor: vi.fn(), openSite: vi.fn(),
+    } satisfies StatusBarActions
+    const view = render(<NativeWorkspaceMenu workspace={workspace} source={source} actions={actions} onFolders={vi.fn()} onConfirm={vi.fn()} />)
+    await userEvent.click(screen.getByRole("button", { name: `Actions for ${workspace.machine.name}` }))
+    view.unmount()
+    await act(async () => { finish({ popup, close } as unknown as Menu) })
+    expect(popup).not.toHaveBeenCalled()
+    expect(close).toHaveBeenCalledOnce()
+  })
+
   it("targets a remote sandbox by computer, not by its bare name", async () => {
     const base = applicationSourceForScenario("complete")
     const local = base.workspaces[0]!

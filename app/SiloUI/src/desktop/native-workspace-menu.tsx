@@ -49,6 +49,7 @@ export function NativeWorkspaceMenu({ workspace, source, actions, onFolders, onC
     let menu: Menu | undefined
     try {
       menu = await Menu.new({ items })
+      if (!button.isConnected) return
       await menu.popup(new LogicalPosition(bounds.left, bounds.bottom))
     } catch (error) {
       console.error("Silo status menu:", error)
