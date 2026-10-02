@@ -254,6 +254,24 @@ class Sync(Guest):
         cu.sync(approval='ask')
         self.assertEqual(self.receipt()['approval'], 'ask')
 
+    def test_a_delayed_older_approval_never_undoes_a_newer_one(self):
+        cu.sync(approval='auto', revision=5)
+        self.commands.clear()
+        # A boot sync launched earlier with the old mode arrives after the change to ask.
+        cu.sync(approval='ask', revision=7)
+        result = cu.sync(boot=True, approval='auto', revision=5)
+        self.assertEqual((result['approval'], result['approvalRevision']), ('ask', 7))
+        record = json.loads((self.state / 'approval.json').read_text())
+        self.assertEqual((record['approval'], record['revision']), ('ask', 7))
+        self.assertEqual(self.receipt()['approval'], 'ask')
+        # The same revision is idempotent; a newer one wins.
+        self.assertEqual(cu.sync(approval='ask', revision=7)['approvalRevision'], 7)
+        self.assertEqual(cu.sync(approval='auto', revision=8)['approval'], 'auto')
+
+    def test_an_unrevised_request_keeps_the_applied_revision(self):
+        cu.sync(approval='auto', revision=5)
+        self.assertEqual(cu.sync(approval='ask')['approvalRevision'], 5)
+
     def test_force_reruns_setup_for_agents_installed_later(self):
         cu.sync()
         self.commands.clear()

@@ -144,7 +144,11 @@ collection of unused versions. Decisions: the guest step is pushed and started
 by the host after every boot (`prepare_booted`) and when the app becomes ready
 while VMs run, rather than by a guest boot hook, so the helper always matches
 Silo; garbage collection runs at start and after a prepare, only while no VM
-runs.
+runs, and holds the computer-wide operation gate (which every VM start takes)
+from the inventory through the deletion, skipping when any operation is active.
+Pushing the helper happens on a host background thread, never inside Start: it
+first checks the VM is still the same running instance, then reads the approval
+policy at launch time.
 
 - New VMs are created with a stable per-computer folder mounted read-only at
   `/opt/silo/chatgpt`. That folder holds only verified, published version
@@ -215,4 +219,10 @@ Backend (Rust, guest scripts) and frontend implement this together.
   (`ask` or `auto`), `appVersion`, `runtimeVersion`, `lcuVersion`, `agents`.
   The legacy `lcu*` fields remain for VMs created before v4.
 - Per-VM approval mode is stored in VM metadata, default `ask`, and applied
-  with `lcu setup --approval`.
+  with `lcu setup --approval`. Approval changes carry a monotonically increasing
+  `revision` (clock-seeded, so it also exceeds what an imported guest applied
+  elsewhere), stored in the policy file separately from receipt observations;
+  every sync passes `--revision` and the guest helper ignores a request older
+  than the revision it applied (`approvalRevision` in its status). `computerUse`
+  reports `installing` with "Applying approval change…" while the guest lags the
+  policy, and `failed` when applying it failed.

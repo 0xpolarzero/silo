@@ -1131,7 +1131,7 @@ fn prepare_booted(paths: &RuntimePaths, workspace: &str) -> Result<(), RuntimeEr
         crate::ssh_access::reconcile(paths);
     } else {
         // Built-in computer use installs itself in the background; it never fails a boot.
-        crate::computer_use::after_boot(&Booted, paths, workspace);
+        let _ = crate::computer_use::after_boot(std::sync::Arc::new(Booted), paths, workspace);
     }
     prepared
 }
