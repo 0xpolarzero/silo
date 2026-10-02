@@ -171,6 +171,21 @@ describe("SecretsPage", () => {
     expect(screen.getByRole("form")).toBeVisible()
   })
 
+  it.each([
+    "Secret settings are too large. Reduce assignments or allowed domains and retry. No settings were overwritten.",
+    "A selected sandbox was removed while saving this secret. Select sandboxes again and retry.",
+  ])("preserves an actionable native save failure without discarding the draft: %s", async message => {
+    const user = userEvent.setup()
+    const save = vi.fn().mockRejectedValue(message)
+    render(<SecretsPage source={applicationSourceForScenario("running")} onSaveSecret={save} onRemoveSecret={vi.fn()} />)
+    await user.click(screen.getByRole("button", { name: "Edit PACKAGE_TOKEN" }))
+    await user.type(screen.getByLabelText("Replacement value"), "fixture-replacement")
+    await user.click(screen.getByRole("button", { name: "Save" }))
+    expect(screen.getByRole("alert")).toHaveTextContent(message)
+    expect(screen.getByLabelText("Replacement value")).toHaveValue("fixture-replacement")
+    expect(screen.getByRole("form")).toBeVisible()
+  })
+
   it("retries a failed removal without claiming the secret disappeared", async () => {
     const user = userEvent.setup()
     const remove = vi.fn().mockRejectedValueOnce(new Error("private failure")).mockResolvedValue(undefined)

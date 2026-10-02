@@ -232,7 +232,7 @@ export function OnboardingApp({
     setDraft(next)
     // A placeholder seed is not saved as the user's draft.
     if (authoritative) void updateOnboardingDraft(next)
-  }, [source, updateOnboardingDraft])
+  }, [source, draft.unfinishedMachineEditor, updateOnboardingDraft])
 
   useEffect(() => {
     if (completed || !repositoryPolicies) return

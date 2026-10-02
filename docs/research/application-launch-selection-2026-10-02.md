@@ -22,7 +22,7 @@ Before the fix, `linux_editor_command` accepted an absolute editor path without 
 
 The resolver now requires the final native CLI or Flatpak launcher to be an executable file. The regression transitions a temporary env-wrapped target through missing, non-executable, and executable states. Existing adapter tests now use actual temporary executable fixtures instead of nonexistent host paths.
 
-## APPLICATIONS-5: stale env-wrapped terminals remain suggested (P3, skipped)
+## APPLICATIONS-5: stale env-wrapped terminals remain suggested (P3, fixed in extended loop)
 
 - **File:line:** `app/SiloUI/src-tauri/src/applications/linux.rs:63–71`.
 - **Trigger:** A visible terminal entry has `Exec=/usr/bin/env A=b /removed/gnome-terminal` without `TryExec`, and its target has been removed or lost execute permission.
@@ -30,7 +30,7 @@ The resolver now requires the final native CLI or Flatpak launcher to be an exec
 - **Consequence:** The catalog still offers an unavailable terminal. Choosing it and opening a sandbox fails at process launch. That error is reported, so this is a stale suggestion, not false success.
 - **Suggested fix:** Require the resolved terminal target to be an executable file before including the entry.
 - **Regression:** On Linux, create an env-wrapped terminal entry and transition its target from executable to non-executable and removed; require `launchable_terminal` to become false in both failure states.
-- **Skipped:** This macOS host cannot execute the GIO desktop-entry regression. The fix loop prohibits launching a Linux VM; use the ordinary Linux native-test runner to complete the failing-test loop.
+- **Verification:** The extended loop extracted the existing executable-resolution policy into `launch::linux_terminal_program`, called by the Linux GIO adapter. Its temporary-file regression failed because a removed env-wrapped target was accepted, then passed after validating the resolved executable. It covers missing, executable, non-executable, and removed states. GIO discovery itself still requires the ordinary Linux native-test runner.
 
 ## Fix-loop results
 

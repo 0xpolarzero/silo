@@ -21,6 +21,19 @@ use tauri::{Emitter, Manager};
 struct Discovery {
     last: Option<(Instant, Result<Vec<Value>, String>)>,
     running: bool,
+    generation: u64,
+}
+impl Discovery {
+    fn invalidate(&mut self) {
+        self.last = None;
+        self.generation = self.generation.wrapping_add(1);
+    }
+    fn finish(&mut self, generation: u64, started: Instant, result: Result<Vec<Value>, String>) {
+        if generation == self.generation {
+            self.last = Some((started, result));
+        }
+        self.running = false;
+    }
 }
 type Discoveries = (Mutex<HashMap<String, Discovery>>, std::sync::Condvar);
 static DISCOVERIES: OnceLock<Discoveries> = OnceLock::new();
@@ -235,6 +248,7 @@ pub(crate) fn discover(
         }
         if !entry.running {
             entry.running = true;
+            let generation = entry.generation;
             let (paths, name, key) = (paths.clone(), name.to_owned(), key.clone());
             thread::spawn(move || {
                 let started = Instant::now();
@@ -245,8 +259,7 @@ pub(crate) fn discover(
                     entries.retain(|other, entry| entry.running || *other == key);
                 }
                 let entry = entries.entry(key).or_default();
-                entry.last = Some((started, result));
-                entry.running = false;
+                entry.finish(generation, started, result);
                 changed.notify_all();
             });
         }
@@ -1122,7 +1135,7 @@ printf '%s\n' "$commit"
         // The next state refresh reads the repository again.
         if let Ok(mut entries) = discoveries().0.lock() {
             if let Some(entry) = entries.get_mut(&format!("{}:{vm_id}", paths.home.display())) {
-                entry.last = None;
+                entry.invalidate();
             }
         }
         Ok(count)
@@ -1301,6 +1314,7 @@ mod tests {
             Discovery {
                 last: Some((Instant::now(), Ok(cached.clone()))),
                 running: false,
+                generation: 0,
             },
         );
         assert_eq!(discover(&paths, "dev", "vm-old", false).unwrap(), cached);
@@ -1334,6 +1348,7 @@ mod tests {
             Discovery {
                 last: Some((Instant::now(), Ok(cached.clone()))),
                 running: false,
+                generation: 0,
             },
         );
         assert_eq!(discover(&paths, "test", "vm-1", false).unwrap(), cached);
@@ -1417,6 +1432,37 @@ mod tests {
         assert_eq!(rows.len(), 216);
         assert_eq!(rows[0]["repository"], "Owner/Repo");
         assert_eq!(rows[0]["head"], head.trim());
+    }
+
+    #[test]
+    fn discovery_started_before_a_push_cannot_restore_stale_rows() {
+        let mut entry = Discovery {
+            running: true,
+            ..Discovery::default()
+        };
+        let generation = entry.generation;
+        let started = Instant::now();
+        entry.invalidate();
+        entry.finish(
+            generation,
+            started,
+            Ok(vec![json!({"path":"/workspace/repo","ahead":1})]),
+        );
+        assert!(
+            entry.last.is_none(),
+            "the pre-push discovery restored stale rows"
+        );
+        assert!(
+            !entry.running,
+            "the next refresh must be able to start a read"
+        );
+        entry.running = true;
+        entry.finish(
+            entry.generation,
+            Instant::now(),
+            Ok(vec![json!({"path":"/workspace/repo","ahead":0})]),
+        );
+        assert_eq!(entry.last.unwrap().1.unwrap()[0]["ahead"], 0);
     }
 
     /// A runtime whose guest runs the shell command `wait` during each discovery and

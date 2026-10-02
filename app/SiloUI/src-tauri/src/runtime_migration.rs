@@ -18,6 +18,7 @@ const FILE: &str = "runtime-migration.json";
 const GENERATION: &str = "runtime-generation.json";
 const CLEAN: &str = "runtime-checkpoints-clean";
 const CONVERTED: &str = "runtime-checkpoints-converted";
+const MISSING_GENERATION: &str = "Completed migration has no saved sandbox storage selection. Existing data was preserved. Report this problem before using sandboxes.";
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -210,6 +211,9 @@ fn initial(path: &Path, app_data: &Path) -> Result<MigrationState, String> {
         return Ok(state);
     }
     if let Some(mut state) = read(path)? {
+        if state.status == "complete" {
+            return Err(MISSING_GENERATION.into());
+        }
         if matches!(state.status.as_str(), "scanning" | "running") {
             state.status = "failed".into();
             state.stage = "Interrupted migration".into();
@@ -874,7 +878,11 @@ fn check_ready(writable: bool, status: &str) -> Result<(), String> {
 /// refuses every caller: the folder is a pre-upgrade backup, never a live runtime.
 fn usable_storage(app_data: &Path, writable: bool, status: &str) -> Result<PathBuf, String> {
     check_ready(writable, status)?;
-    selected_runtime_storage(app_data)
+    match generation(app_data)? {
+        Some(selected) => Ok(app_data.join(selected)),
+        None if status == "complete" => Err(MISSING_GENERATION.into()),
+        None => Ok(app_data.join("runtime")),
+    }
 }
 
 fn readiness(app: &AppHandle) -> Result<(Arc<Controller>, String), String> {
@@ -1403,6 +1411,58 @@ mod tests {
         assert_eq!(
             initial(&app_data.join(FILE), app_data).unwrap().status,
             "complete"
+        );
+    }
+
+    #[test]
+    fn completed_migration_never_falls_back_when_its_generation_marker_is_missing() {
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let path = app_data.join(FILE);
+        let metadata = one_vm("source", "fcfbc268-ae3f-40ff-8dfa-8af78911e52f");
+        for generation in ["runtime", CONVERTED] {
+            runtime::write_metadata(&app_data.join(generation).join("machines.json"), &metadata)
+                .unwrap();
+        }
+        fs::write(app_data.join("runtime/workspace.raw"), b"pre-upgrade").unwrap();
+        fs::write(app_data.join(CONVERTED).join("workspace.raw"), b"converted").unwrap();
+        let mut completed = fresh("complete", 1);
+        completed.migrated_count = 1;
+        write(&path, &completed).unwrap();
+        let before = fs::read(&path).unwrap();
+
+        assert!(initial(&path, app_data).is_err());
+        assert!(usable_storage(app_data, true, "complete").is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(
+            fs::read(app_data.join("runtime/workspace.raw")).unwrap(),
+            b"pre-upgrade"
+        );
+        assert_eq!(
+            fs::read(app_data.join(CONVERTED).join("workspace.raw")).unwrap(),
+            b"converted"
+        );
+
+        select_generation(app_data, CONVERTED).unwrap();
+        assert_eq!(initial(&path, app_data).unwrap().status, "complete");
+        assert_eq!(
+            usable_storage(app_data, true, "complete").unwrap(),
+            app_data.join(CONVERTED)
+        );
+        fs::remove_file(app_data.join(GENERATION)).unwrap();
+        assert!(usable_storage(app_data, true, "complete").is_err());
+    }
+
+    #[test]
+    fn an_unmigrated_install_keeps_the_original_generation_without_a_marker() {
+        let directory = tempfile::tempdir().unwrap();
+        let app_data = directory.path();
+        let path = app_data.join(FILE);
+        write(&path, &fresh("not-required", 0)).unwrap();
+        assert_eq!(initial(&path, app_data).unwrap().status, "not-required");
+        assert_eq!(
+            usable_storage(app_data, true, "not-required").unwrap(),
+            app_data.join("runtime")
         );
     }
 

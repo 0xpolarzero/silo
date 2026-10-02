@@ -94,3 +94,13 @@ harness afterward. ShellCheck, Dash syntax, formatting, and whitespace checks
 passed. These regressions use a temporary fake npm executable and make no
 network request or real package installation. Evidence remains under
 `/tmp/silo-harness-install-{failing,passing}.log`.
+
+The offline working-account live proof compared Git command substitutions
+directly and used `test -z "$(find ...)"` for ownership. Failed reads could compare
+as equal, and a failed ownership scan produced the same empty output as a clean
+scan. Checked assignments now precede those comparisons. Three Python fixture
+tests execute the actual probe with fake Git/find tools: individual and combined
+Git failures, ownership-scan failure, matching/mismatching commits, and correct/
+incorrect ownership. Four failure cases falsely passed before the fix; all three
+tests pass afterward. ShellCheck, Dash syntax, Python compilation, and whitespace
+checks passed. The tests do not run the opt-in proof, a VM, or a real repository.

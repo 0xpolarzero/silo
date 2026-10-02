@@ -151,3 +151,18 @@ it("observes work that starts while the queue listener is still registering", as
   expect(await screen.findByText("Waiting for Backing up sandboxes…")).toBeVisible()
   expect(screen.getByRole("button", { name: "Cancel and quit" })).toBeVisible()
 })
+
+it("recovers shutdown visibility on focus after initial event registration fails", async () => {
+  const logged = vi.spyOn(console, "error").mockImplementation(() => {})
+  native.listen.mockRejectedValueOnce(new Error("Event bridge not ready"))
+  native.invoke.mockImplementation(async (command: string) => command === "read_shutdown_state" ? true : { running: [], waiting: [] })
+  render(<ShutdownBoundary><button>Create VM</button></ShutdownBoundary>)
+  await vi.waitFor(() => expect(logged).toHaveBeenCalledWith("Silo shutdown status:", expect.any(Error)))
+  expect(screen.getByRole("button", { name: "Create VM" }).closest("[inert]")).toBeNull()
+  await act(async () => { window.dispatchEvent(new Event("focus")) })
+  expect(await screen.findByRole("dialog", { name: "Quitting Silo" })).toBeVisible()
+  expect(screen.getByText("Create VM").closest("[inert]")).not.toBeNull()
+  act(() => native.receive({ payload: false }))
+  expect(screen.queryByRole("dialog", { name: "Quitting Silo" })).not.toBeInTheDocument()
+  logged.mockRestore()
+})

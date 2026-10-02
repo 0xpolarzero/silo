@@ -224,13 +224,20 @@ export async function importProductionSettings({
   const warnings = []
   const copied = []
   const skipped = []
-  /** @type {{label: string, overwrites: boolean, apply: () => void}[]} */
+  /** @type {{label: string, overwrites: boolean, file?: string, apply: () => void}[]} */
   const actions = []
 
   const devFile = file => {
-    const inside = [target.config, target.data, target.state].some(root => file.startsWith(root + path.sep))
+    const root = [target.config, target.data, target.state].find(root => file.startsWith(root + path.sep))
     const inProduction = [source.config, source.data, source.state].some(root => file.startsWith(root + path.sep))
-    if (!inside || inProduction) throw new Error(`Refusing to write outside the ${DEVELOPMENT.productName} channel: ${file}`)
+    if (!root || inProduction) throw new Error(`Refusing to write outside the ${DEVELOPMENT.productName} channel: ${file}`)
+    const components = []
+    for (let current = file; current !== path.dirname(root); current = path.dirname(current)) components.unshift(current)
+    for (const current of components) {
+      if (fs.lstatSync(current, { throwIfNoEntry: false })?.isSymbolicLink()) {
+        throw new Error(`Refusing to write through a linked ${DEVELOPMENT.productName} destination: ${current}`)
+      }
+    }
     return file
   }
   const devKeychain = {
@@ -244,6 +251,7 @@ export async function importProductionSettings({
     const destination = devFile(file)
     actions.push({
       label,
+      file: destination,
       overwrites: fs.existsSync(destination),
       apply() {
         backup(destination, stamp, mode)
@@ -351,6 +359,9 @@ export async function importProductionSettings({
       return { copied, skipped, warnings, performed: false }
     }
   }
+  // Confirmation can remain open while destination entries change.
+  if (isDevRunning()) throw new Error(`${DEVELOPMENT.productName} is running. Quit it, then run this command again.`)
+  for (const action of actions) if (action.file) devFile(action.file)
   for (const action of actions) {
     action.apply()
     copied.push(action.label)
