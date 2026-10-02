@@ -127,15 +127,18 @@ VMs; restored backups also retain their guest systems.
 
 ## Guest image v3 publication
 
-The v3 recipe adds `sudo`, `python3` and `openssh-sftp-server`. Account setup
+This records the earlier v3 publication and account verification. The
+[current lock](../app/SiloUI/guest-image/image-lock.json) pins v4, described below.
+The v3 recipe added `sudo`, `python3` and `openssh-sftp-server`. Account setup
 uses these tools locally and refuses an image missing them. New-VM creation
-must not download or repair packages to establish the working account. The
-optional desktop retains its separate package and KasmVNC downloads.
+must not download or repair packages to establish the working account. At v3
+publication, the optional desktop used separate package and KasmVNC downloads;
+the [current desktop recipe](SiloUI-DESKTOP.md) uses Selkies.
 
 The public [v3 release](https://github.com/0xpolarzero/silo/releases/tag/guest-ubuntu-24.04-v3)
 was produced by [publication run 35546417121](https://github.com/0xpolarzero/silo/actions/runs/35546417121)
-from source `a9827c263df3daee28959b2c2073d85c6f980e9d`. The checked-in lock
-records these published archives:
+from source `a9827c263df3daee28959b2c2073d85c6f980e9d`. The v3 lock at publication
+recorded these archives:
 
 | Architecture | Compressed bytes | SHA-256 |
 | --- | ---: | --- |
