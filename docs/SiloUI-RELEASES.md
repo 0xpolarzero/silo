@@ -575,7 +575,10 @@ metadata. Cache misses follow the normal build path.
 
 The patched MicroSandbox executable key also includes the staging-script recipe
 digest and the requested `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS`,
-`CARGO_BUILD_RUSTFLAGS`, and target-specific `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`.
+`CARGO_BUILD_RUSTFLAGS`, target-specific `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, and
+`CARGO_PROFILE_RELEASE_*` overrides, including build-script overrides. Profile
+settings such as debug information and optimization change compiled bytes without
+changing the source pin or the runtime's capability probes.
 [Cargo documents these compiler inputs](https://doc.rust-lang.org/cargo/reference/environment-variables.html).
 Changing them rebuilds the executable even when a fallback public archive restores
 otherwise valid source, patch, compiler, and capability checks.
