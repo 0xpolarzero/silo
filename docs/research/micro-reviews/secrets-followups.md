@@ -21,3 +21,13 @@ Scope: secrets storage and runtime integration, plus the secrets editor and assi
 - **Evidence:** Five model fixtures failed because the client produced no error for native-invalid inputs. The page fixture also called Save with a 65,538-byte replacement instead of preserving the editor with a value error.
 - **Fix:** Apply the existing native byte and collection limits in the client. Count UTF-8 bytes rather than UTF-16 string length, and preserve the existing blank-replacement behavior.
 - **Regression:** Test both new and replacement values, ASCII and multi-byte boundaries, and 100/101 collection entries. Render an oversized replacement in the editor and assert no save call, an actionable field error, focus on the invalid field, and the retained draft.
+
+## SECRETS-5: Native capacity and deletion guidance becomes a generic Retry error
+
+- **Priority:** P2
+- **Location:** `app/SiloUI/src/features/application/components/secrets-manager.ts`, `operationFailure`.
+- **Trigger:** A save returns either of the fixed public capacity or sandbox-deletion errors added by SECRETS-1/2.
+- **Consequence:** The user sees only a generic Retry message. It hides the required capacity reduction or renewed sandbox selection; the unchanged draft still exceeds capacity, and a same-named replacement can make a later retry target a different sandbox.
+- **Evidence:** Both page fixtures expected the exact public corrective message and received `Could not save this secret. Your changes are still here. Retry.`
+- **Fix:** Allowlist the two fixed native messages alongside the existing credential-store guidance. Unexpected error text still uses the fallback and remains absent from the UI.
+- **Regression:** Reject saves with each fixed message and assert its guidance and retained draft. Existing arbitrary-private-error tests must continue to pass.

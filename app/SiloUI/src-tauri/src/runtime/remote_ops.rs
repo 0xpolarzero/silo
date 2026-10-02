@@ -540,7 +540,10 @@ mod tests {
 }
 
 pub(crate) fn local_vm_name(app: &AppHandle, id: &str) -> Result<String, String> {
-    let paths = runtime_paths(app)?;
+    local_vm_name_in(&runtime_paths(app)?, id)
+}
+
+pub(crate) fn local_vm_name_in(paths: &RuntimePaths, id: &str) -> Result<String, String> {
     read_metadata(&paths.metadata)
         .map_err(|e| e.to_string())?
         .machines

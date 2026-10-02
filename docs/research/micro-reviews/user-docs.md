@@ -80,7 +80,17 @@ Scope: `app/SiloUI/docs/silo-help.html`, checked against app code. The initial a
 - **Consequence:** Dev users are told that a check queries releases and can update the app, although that channel has no feed.
 - **Fix:** Qualify the instructions as production-only and state the Dev channel's update behavior.
 - **Test:** The new bundled-help regression failed before the qualification. Help and existing update-card tests cover the corrected instructions and the production update controls.
-- **Status:** Fixed in the accompanying `docs(help): qualify updates for the production build` commit.
+- **Status:** Fixed and folded, `d8508ef9`; 36 focused help/update-card tests passed, plus typecheck, focused lint and whitespace checks.
+
+## USER-DOCS-9 — P3 — Older desktop startup skips a required update
+
+- **File:line:** `app/SiloUI/docs/silo-help.html:38`.
+- **Trigger:** Open an installed, stopped legacy desktop whose state has `updateRequired: true`, then follow the help's manual startup instruction.
+- **Evidence:** `linux-desktop-viewer.tsx:34,49–50` replaces Start desktop with Update desktop in this state. `linux-desktop-native.test.tsx:263–284` verifies that updating makes Start desktop available without starting or attaching the desktop. `guest/setup-desktop.sh:156–158` requires the desktop session to be stopped, while `desktop.rs` executes the installer inside the running sandbox.
+- **Consequence:** The documented manual startup path is unavailable until an explicit update, and the help provides no update steps.
+- **Fix:** Explain the conditional update prerequisite, running-sandbox/stopped-desktop requirements, and the explicit Start desktop step afterward.
+- **Test:** A new help regression failed on the missing prerequisite; existing deterministic desktop-viewer tests verify required and optional update behavior.
+- **Status:** Fixed in the accompanying `docs(help): explain required legacy desktop updates` commit.
 
 Final verification used Node.js 24.11.1: `npm --prefix app/SiloUI test -- src/test/bundled-help.test.ts src/features/application/components/checkpoint-panel.test.tsx src/features/application/pages/network-page.test.tsx src/features/updates/updates.test.tsx --maxWorkers=1` passed all 76 tests. `npm --prefix app/SiloUI run typecheck`, focused oxlint for `src/test/bundled-help.test.ts`, and `git diff --check` passed. No Rust files changed, so Rust formatting and native tests were not applicable. No packaged bundle or live data was inspected.
 

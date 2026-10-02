@@ -78,4 +78,12 @@ Final normal macOS bundle was rebuilt and reopened at
 absent. Sandboxes > Files showed `dev` with “Start this VM to browse its files.”
 The VM remained stopped, and Silo was left open on Files for user testing.
 
-The directory command is declared in `src-tauri/build.rs` and granted only to the main window in `capabilities/preview.json`. Rust handler registration alone does not cover the app’s permission configuration. See [Tauri capabilities](https://v2.tauri.app/security/capabilities/). A permission regression test checks this boundary; verify the rebuilt native app against a running VM as mocked invokes cannot prove native access.
+The directory command is declared in [`src-tauri/build.rs`](../app/SiloUI/src-tauri/build.rs)
+and granted to the main window in [`capabilities/preview.json`](../app/SiloUI/src-tauri/capabilities/preview.json)
+and to the status picker in [`capabilities/status.json`](../app/SiloUI/src-tauri/capabilities/status.json).
+Rust handler registration alone does not grant access. See
+[Tauri capabilities](https://v2.tauri.app/security/capabilities/).
+The [native permission regression](../app/SiloUI/src/test/native-permissions.test.ts)
+checks registration, manifest entries and capability grants, including a snapshot
+of non-main grants. Verify a rebuilt Dev app against a disposable running VM
+separately; mocked invokes cannot prove native access.

@@ -266,13 +266,17 @@ pub(super) fn acknowledge_failure(
     paths: &RuntimePaths,
     machine_id: &str,
 ) -> Result<(), RuntimeError> {
-    if let Some(mut event) = events(paths)?
+    if let Some(mut event) = events(paths)
+        .unwrap_or_else(|error| {
+            warn(paths, &error.to_string());
+            Vec::new()
+        })
         .into_iter()
         .rev()
         .find(|event| event.machine_id == machine_id)
     {
         event.dismissed = true;
-        store(paths, &event).map_err(RuntimeError::Unavailable)?;
+        record(paths, &event);
     }
     Ok(())
 }
@@ -754,6 +758,21 @@ mod tests {
         let values = read(&paths).unwrap();
         assert_eq!(values[0]["tone"], "warning");
         assert_eq!(values[0]["status"], "completed");
+    }
+
+    #[test]
+    fn acknowledging_a_crash_does_not_fail_when_activity_history_is_corrupt() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = super::super::tests::paths(&dir);
+        let history = path(&paths);
+        let original = b"{unfinished activity history";
+        fs::write(&history, original).unwrap();
+
+        acknowledge_failure(&paths, "vm-1").unwrap();
+        assert_eq!(fs::read(&history).unwrap(), original);
+        assert!(read(&paths).unwrap().iter().any(|entry| {
+            entry["id"] == "sandbox-history-unavailable" && entry["tone"] == "warning"
+        }));
     }
 
     #[test]

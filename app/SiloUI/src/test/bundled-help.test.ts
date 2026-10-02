@@ -58,3 +58,11 @@ it("qualifies update instructions because Silo Dev has no release feed", () => {
   expect(instructions?.textContent).toMatch(/production Silo app/i)
   expect(instructions?.textContent).toMatch(/Silo Dev has no update feed/i)
 })
+
+it("explains the update prerequisite before starting an outdated legacy desktop", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.startsWith("Start desktop with sandbox"))
+  expect(instructions?.textContent).toMatch(/Update desktop.*then.*Start desktop/i)
+  expect(instructions?.textContent).toMatch(/sandbox running.*desktop stopped/i)
+  expect(instructions?.textContent).toMatch(/updating.*does not start.*automatically/i)
+})

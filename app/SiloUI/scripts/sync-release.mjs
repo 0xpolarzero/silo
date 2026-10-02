@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process"
-import { readFileSync, writeFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
+import { readFileSync, writeFileSync, existsSync, realpathSync, mkdirSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -109,7 +109,7 @@ export function versionRelease(root = app, { allowStable = false, run = (command
   return syncRelease(root, { allowStable })
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (process.argv[1] && existsSync(process.argv[1]) && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const options = { allowStable: process.argv.includes("--allow-stable") }
     const version = process.argv[2] === "version" ? versionRelease(app, options) : syncRelease(app, options)

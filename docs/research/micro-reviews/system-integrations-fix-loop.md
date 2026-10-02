@@ -72,3 +72,14 @@ then completed registration without emitting another event. Before the fix the
 overlay kept “Stopping local sandboxes…” and omitted Cancel and quit. The fix
 subscribes before its initial read; existing sequence checks still reject stale
 read responses. This uses DOM/native-bridge fixtures, with no app or real VM.
+
+## Follow-up: shutdown event registration never recovers
+
+`ShutdownBoundary` logged an initial shutdown-state listener failure, but its
+mount-only effect never retried it. Later native shutdowns could leave the main
+screen interactive without the Quit overlay for the rest of that mount. The
+regression rejects registration once, returns an active shutdown from the native
+fixture, and focuses the window. It failed to find the overlay before the fix.
+Focus now retries a failed connection, while a guard prevents duplicate in-flight
+registration and cleanup removes the focus listener. This follows the existing
+settings lifecycle's focus-recovery policy; no app or real VM is used.

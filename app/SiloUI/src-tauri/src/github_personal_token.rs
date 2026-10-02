@@ -223,10 +223,10 @@ pub(super) fn narrow(app: &tauri::AppHandle, d: &Document, errors: &mut NarrowEr
 fn changed(app: &tauri::AppHandle, removing: Option<bool>) -> Result<(), String> {
     let _state = serialize(&STATE);
     let mut d = load(app)?;
+    d.revision = next_policy_revision(d.revision)?;
     if let Some(removing) = removing {
         d.personal_token_removing = removing;
     }
-    d.revision += 1;
     let names: Vec<_> = d
         .workspaces
         .iter()

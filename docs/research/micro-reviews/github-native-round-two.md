@@ -35,3 +35,5 @@ The old `fs::read` allocated and read the entire file before checking the 16 MiB
 After the integration fixes to personal-token and workspace retries, Repository Refresh remained a caller of the global HTTP reset. It reopened stopped OAuth refreshes, token mints, and unrelated credentials. The transport now records the existing safe-request flag on failures and resets only safe, account-level failures for the selected bearer credential. Workspace-owned requests, unsafe writes, other credentials, and server floors remain intact. Reset occurs inside the serialized Refresh operation.
 
 The new transport regression failed under the old global reset because the ambiguous write became admissible. The real transport module is compiled directly in the synthetic test harness, with only the test-isolation mutex substituted; no external GitHub requests are used.
+
+The integration branch added the safe-request metadata and a safe-only Refresh reset concurrently. The resolved implementation keeps both regressions and additionally scopes Refresh to the active account and excludes workspace-owned reads, replacing the broader helper.

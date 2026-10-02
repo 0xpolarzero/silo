@@ -16,6 +16,28 @@ from unittest.mock import patch
 spec=importlib.util.spec_from_file_location('metadata',Path(__file__).with_name('verify-release-metadata.py'))
 metadata=importlib.util.module_from_spec(spec);spec.loader.exec_module(metadata)
 class MetadataTests(unittest.TestCase):
+    def test_appimage_requires_type_two_headers_before_reading_package_metadata(self):
+        for arch, machine, target in [('x64', 62, 'x86_64-unknown-linux-gnu'),
+                                      ('arm64', 183, 'aarch64-unknown-linux-gnu')]:
+            for magic in (b'\x00\x00\x00', b'AI\x01', b'AI\x03', b'AI\x02'):
+                with self.subTest(arch=arch, magic=magic), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    header = bytearray(64)
+                    header[:6] = b'\x7fELF\x02\x01'
+                    header[8:11] = magic
+                    struct.pack_into('<H', header, 18, machine)
+                    struct.pack_into('<Q', header, 40, 64)
+                    (root / f'Silo-linux-{arch}.AppImage').write_bytes(header + b'hsqs')
+                    with patch.object(metadata.subprocess, 'check_output',
+                                      return_value=json.dumps({'version': '0.1.0', 'target': target}).encode()) as extract:
+                        if magic == b'AI\x02':
+                            metadata.verify(root, '0.1.0')
+                            extract.assert_called_once()
+                        else:
+                            with self.assertRaisesRegex(RuntimeError, 'type 2 AppImage'):
+                                metadata.verify(root, '0.1.0')
+                            extract.assert_not_called()
+
     def test_macos_archive_rejects_other_roots_traversal_and_duplicate_entries(self):
         files = {
             'Info.plist': plistlib.dumps({'CFBundleShortVersionString': '0.1.0',
@@ -180,7 +202,7 @@ class MetadataTests(unittest.TestCase):
     def test_appimage_header_and_boundary(self):
         with tempfile.TemporaryDirectory() as directory:
             path=Path(directory,'image')
-            header=bytearray(64);header[:6]=b'\x7fELF\x02\x01';struct.pack_into('<H',header,18,183);struct.pack_into('<Q',header,40,64)
+            header=bytearray(64);header[:6]=b'\x7fELF\x02\x01';header[8:11]=b'AI\x02';struct.pack_into('<H',header,18,183);struct.pack_into('<Q',header,40,64)
             path.write_bytes(header+b'hsqs')
             self.assertEqual(metadata.appimage_offset(path,183),64)
             with self.assertRaises(RuntimeError):metadata.appimage_offset(path,62)
