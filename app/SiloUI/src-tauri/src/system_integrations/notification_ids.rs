@@ -2,7 +2,12 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 /// Coordinate server mutations with the IDs used to replace and withdraw notices.
-pub(super) struct NotificationIds(Mutex<Option<HashMap<String, u32>>>);
+pub(super) struct NotificationIds(Mutex<Option<HashMap<String, ServerId>>>);
+
+struct ServerId {
+    owner: String,
+    id: u32,
+}
 
 impl NotificationIds {
     pub(super) const fn new() -> Self {
@@ -11,23 +16,35 @@ impl NotificationIds {
 
     pub(super) fn deliver(
         &self,
+        owner: &str,
         key: &str,
         send: impl FnOnce(u32) -> Result<u32, String>,
     ) -> Result<(), String> {
         let mut guard = self.0.lock().unwrap_or_else(|error| error.into_inner());
         let ids = guard.get_or_insert_with(Default::default);
-        let replaces = ids.get(key).copied().unwrap_or(0);
+        let replaces = ids
+            .get(key)
+            .filter(|cached| cached.owner == owner)
+            .map_or(0, |cached| cached.id);
         let id = send(replaces)?;
-        ids.insert(key.into(), id);
+        ids.insert(
+            key.into(),
+            ServerId {
+                owner: owner.into(),
+                id,
+            },
+        );
         Ok(())
     }
 
-    pub(super) fn clear(&self, keys: &[String], mut close: impl FnMut(u32)) {
+    pub(super) fn clear(&self, owner: &str, keys: &[String], mut close: impl FnMut(u32)) {
         let mut guard = self.0.lock().unwrap_or_else(|error| error.into_inner());
         let Some(ids) = guard.as_mut() else { return };
         for key in keys {
-            if let Some(id) = ids.remove(key) {
-                close(id);
+            if let Some(cached) = ids.remove(key) {
+                if cached.owner == owner {
+                    close(cached.id);
+                }
             }
         }
     }
@@ -67,7 +84,7 @@ mod tests {
         let first_server = server.clone();
         let first = std::thread::spawn(move || {
             first_ids
-                .deliver("sandbox", |replaces| {
+                .deliver(":1.1", "sandbox", |replaces| {
                     entered.send(()).unwrap();
                     wait_release.recv().unwrap();
                     Ok(first_server.lock().unwrap().notify(replaces))
@@ -82,7 +99,7 @@ mod tests {
         let second = std::thread::spawn(move || {
             started.send(()).unwrap();
             second_ids
-                .deliver("sandbox", |replaces| {
+                .deliver(":1.1", "sandbox", |replaces| {
                     let id = second_server.lock().unwrap().notify(replaces);
                     sent.send(()).unwrap();
                     Ok(id)
@@ -99,9 +116,45 @@ mod tests {
             1,
             "same key must replace"
         );
-        ids.clear(&["sandbox".into()], |id| {
+        ids.clear(":1.1", &["sandbox".into()], |id| {
             server.lock().unwrap().active.remove(&id);
         });
         assert!(server.lock().unwrap().active.is_empty());
+    }
+
+    #[test]
+    fn clearing_an_old_key_after_server_restart_preserves_a_new_key() {
+        let ids = NotificationIds::new();
+        let mut old = Server::default();
+        ids.deliver(":1.1", "old", |replaces| Ok(old.notify(replaces)))
+            .unwrap();
+        let mut restarted = Server::default();
+        ids.deliver(":1.2", "other", |replaces| Ok(restarted.notify(replaces)))
+            .unwrap();
+        ids.clear(":1.2", &["old".into()], |id| {
+            restarted.active.remove(&id);
+        });
+        assert_eq!(
+            restarted.active.len(),
+            1,
+            "old server ID must not close another key"
+        );
+    }
+
+    #[test]
+    fn replacing_after_restart_allocates_an_id_in_the_new_server() {
+        let ids = NotificationIds::new();
+        let mut old = Server::default();
+        ids.deliver(":1.1", "sandbox", |replaces| Ok(old.notify(replaces)))
+            .unwrap();
+        let mut restarted = Server::default();
+        restarted.notify(0);
+        ids.deliver(":1.2", "sandbox", |replaces| Ok(restarted.notify(replaces)))
+            .unwrap();
+        assert_eq!(
+            restarted.active.len(),
+            2,
+            "old ID must not replace another notice"
+        );
     }
 }
