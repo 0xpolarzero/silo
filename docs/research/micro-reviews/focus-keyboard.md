@@ -115,6 +115,28 @@ Folding encountered an overlapping test insertion from integration's repository
 scrolling fix. Both independent regressions were preserved; the merged suites
 passed all 20 tests, and typecheck, lint, formatting, and whitespace checks passed.
 
+## Shortcut and native-menu Commands restore the prior field
+
+Opening Commands with Ctrl+K or a native open request while editing a field,
+then pressing Escape, focused the palette's Search or jump to button instead
+of the interrupted field. Both fixture regressions failed before the fix.
+Output is saved in
+`app/SiloUI/src-tauri/target/verification/focus-keyboard/command-restore-before.log`.
+
+The palette records focus before opening and restores that connected, enabled
+control on dismissal. Recording precedes mounting because the search input now
+autofocuses on mount. Commands that open another panel retain the existing
+focus handoff; Radix's trigger restoration remains the fallback when the old
+control has disappeared. The tests resume typing into the original draft after
+both opening paths, following the modal-dialog restoration guidance linked above.
+
+Checks: all four command-menu tests and seven palette integration tests passed;
+seven of eight native-menu request tests passed. The existing VM-draft focus
+assertion also fails with the command-menu source restored to HEAD, as recorded
+in the baseline log. Frontend typecheck, touched-file oxlint, Rust formatting,
+and diff whitespace checks passed. Fixtures exercised both opening paths;
+no app bundle was launched.
+
 ## Escape dismisses operation cancellation questions
 
 Integration already fixed focus restoration after Keep going, recorded in
