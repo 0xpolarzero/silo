@@ -1,5 +1,67 @@
 use super::*;
 
+const WORKSPACE_CHECKSUM: &str = r#"set -eu
+stage=$(mktemp -d "${TMPDIR:-/tmp}/silo-checksum.XXXXXXXX")
+trap 'rm -rf "$stage"' EXIT
+find /workspace -xdev -type f -exec sha256sum {} + > "$stage/files"
+LC_ALL=C sort "$stage/files" > "$stage/sorted"
+sha256sum < "$stage/sorted"
+"#;
+
+fn checksum_fixture(scan_status: u8, sort_status: u8, records: &str) -> std::process::Output {
+    let directory = tempfile::tempdir().unwrap();
+    crate::test_support::write_shell_script(
+        &directory.path().join("find"),
+        "printf '%s' \"$CHECKSUM_RECORDS\"; exit \"$SCAN_STATUS\"",
+    );
+    crate::test_support::write_shell_script(
+        &directory.path().join("sort"),
+        "[ \"$SORT_STATUS\" -eq 0 ] || exit \"$SORT_STATUS\"; exec /usr/bin/sort \"$@\"",
+    );
+    crate::test_support::write_shell_script(&directory.path().join("sha256sum"), "exec /bin/cat");
+    std::process::Command::new("/bin/sh")
+        .args(["-c", WORKSPACE_CHECKSUM])
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", directory.path().display()),
+        )
+        .env("TMPDIR", directory.path())
+        .env("SCAN_STATUS", scan_status.to_string())
+        .env("SORT_STATUS", sort_status.to_string())
+        .env("CHECKSUM_RECORDS", records)
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn workspace_checksum_rejects_failed_scan() {
+    let result = checksum_fixture(23, 0, "partial hash  /workspace/file\n");
+    assert_eq!(result.status.code(), Some(23));
+    assert!(result.stdout.is_empty());
+}
+
+#[test]
+fn workspace_checksum_rejects_failed_sort() {
+    let result = checksum_fixture(0, 17, "hash  /workspace/file\n");
+    assert_eq!(result.status.code(), Some(17));
+    assert!(result.stdout.is_empty());
+}
+
+#[test]
+fn workspace_checksum_preserves_sorted_and_empty_streams() {
+    for (records, expected) in [
+        (
+            "b  /workspace/b\na  /workspace/a\n",
+            "a  /workspace/a\nb  /workspace/b\n",
+        ),
+        ("", ""),
+    ] {
+        let result = checksum_fixture(0, 0, records);
+        assert!(result.status.success());
+        assert_eq!(result.stdout, expected.as_bytes());
+    }
+}
+
 fn fixture() -> (
     tempfile::TempDir,
     RuntimePaths,
@@ -629,8 +691,7 @@ fn live_reclaim_preserves_capacity_contents_and_reboots() {
     let disk = owned_disk(&paths, machine.name());
     let length = fs::metadata(&disk).unwrap().len();
     let host = host_resources().unwrap();
-    let checksum =
-        "set -eu; find /workspace -xdev -type f -exec sha256sum {} + | LC_ALL=C sort | sha256sum";
+    let checksum = WORKSPACE_CHECKSUM;
     let mut previous_instance = None;
     for _ in 0..2 {
         let result = (|| -> Result<(), RuntimeError> {
