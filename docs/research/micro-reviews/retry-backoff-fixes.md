@@ -23,3 +23,11 @@
 - Consequence: an action requested before shutdown can resume after the user began quitting, even though local retry sequences already stop across shutdown generations.
 - Fix: capture the shutdown generation and reject later attempts with the cancellation error code when it changes. Check admission before each send.
 - Verification: the native regression checks one send, typed cancellation, and reopened admission; existing tests check stable operation identities, retry caps, and terminal failures.
+
+## Desktop viewer health checks
+
+- Trigger: the desktop viewer stays open while its computer is unreachable.
+- Evidence: `NativeLinuxDesktopViewer` used an unconditional five-second interval. The fake-timer regression observed another failed health read before the first ten-second backoff deadline.
+- Consequence: repeated guest state reads or connection attempts continue at the normal health-check interval during an outage.
+- Fix: schedule reads after completion, double failure delays up to 30 seconds, and reset the delay after recovery. Visibility changes and effect cleanup cancel the pending schedule.
+- Verification: the regression checks growing and capped delays, successful recovery, and closure; the existing recovery test verifies that a retired transport reattaches when the guest state remains unchanged.
