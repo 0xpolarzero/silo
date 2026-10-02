@@ -97,6 +97,7 @@ pub(crate) fn linux_editor_command(
         });
     }
     let token = exec_program(argv).ok_or("The selected editor is unavailable.")?;
+    let index = argv.iter().position(|argument| argument == token).unwrap();
     let program = if Path::new(token).is_absolute() {
         PathBuf::from(token)
     } else {
@@ -117,7 +118,7 @@ pub(crate) fn linux_editor_command(
     };
     Ok(EditorCommand {
         program,
-        args: Vec::new(),
+        args: argv[index + 1..].iter().map(OsString::from).collect(),
         zed,
     })
 }
@@ -314,12 +315,42 @@ mod tests {
     }
 
     #[test]
+    fn native_editor_entries_keep_their_isolated_data_and_extensions() {
+        let directory = tempfile::tempdir().unwrap();
+        let electron = directory.path().join("code/code");
+        executable(&electron);
+        let cli = directory.path().join("code/bin/code");
+        executable(&cli);
+        std::fs::write(&cli, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").unwrap();
+        let argv = vec![
+            electron.to_str().unwrap().to_owned(),
+            "--user-data-dir=/tmp/isolated data".into(),
+            "--extensions-dir=/tmp/isolated extensions".into(),
+        ];
+        let command = linux_editor_command(&argv, None, &nowhere).unwrap();
+        let output = Command::new(command.program)
+            .args(command.args)
+            .args(["--profile", "Silo test", "fixture.code-workspace"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "--user-data-dir=/tmp/isolated data\n--extensions-dir=/tmp/isolated extensions\n--profile\nSilo test\nfixture.code-workspace\n"
+        );
+    }
+
+    #[test]
     fn snap_flatpak_and_zed_tarball_entries_are_launchable() {
         let snap = tokens("env BAMF_DESKTOP_FILE_HINT=x /snap/bin/code --force-user-env %F");
         let command = linux_editor_command(&snap, None, &nowhere).unwrap();
         assert_eq!(
-            (command.program, command.zed),
-            (PathBuf::from("/snap/bin/code"), false)
+            (command.program, command.args, command.zed),
+            (
+                PathBuf::from("/snap/bin/code"),
+                vec!["--force-user-env".into()],
+                false
+            )
         );
 
         let flatpak = |_: &str| Some(PathBuf::from("/usr/bin/flatpak"));
