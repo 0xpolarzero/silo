@@ -446,11 +446,13 @@ pub(super) fn recover_at_paths(
     let Some(journal) = load(paths)? else {
         return Ok(());
     };
-    let journal = normalize_desktop_intent(paths, journal)?;
     // Drain a surviving child before inspecting state. The caller holds the
     // operation gate (computer scope), which serializes the application-level
-    // recovery transaction against all other VM-changing work.
+    // recovery transaction against all other VM-changing work. This comes first: the
+    // normalization below asks the runtime which sandboxes already exist, and a creation
+    // that is still running would make that answer wrong.
     drop(command_lock(paths, MUTATION_TIMEOUT)?);
+    let journal = normalize_desktop_intent(runner, paths, journal)?;
     reconcile(runner, paths, &journal)?;
     verify_committed_edits(runner, paths, &journal, &journal.request)?;
     apply_whole_configuration_with_progress(
@@ -467,7 +469,15 @@ pub(super) fn recover_at_paths(
 /// A journal written by an older Silo has no desktop defaults. Apply the ones an explicit
 /// retry would, and re-save the intent atomically, so replay (which defaults the same way
 /// before `begin` compares with the journal) matches what is saved.
+///
+/// The defaults describe a sandbox that is still to be created from the current image. A
+/// creation that got as far as the runtime before the interruption made its sandbox from
+/// the image of its time (a 0.x journal means the v3 image, with no built-in desktop and no
+/// computer-use mount), and recovery adopts that sandbox as it is: its journaled settings
+/// are kept, so it is never promoted to built-in. The runtime is asked only when a default
+/// would change something.
 pub(super) fn normalize_desktop_intent(
+    runner: &dyn RuntimeRunner,
     paths: &RuntimePaths,
     mut journal: Journal,
 ) -> Result<Journal, RuntimeError> {
@@ -480,6 +490,18 @@ pub(super) fn normalize_desktop_intent(
     }
     let mut request = journal.request.clone();
     apply_desktop_defaults(paths, &known, &mut request);
+    if request == journal.request {
+        return Ok(journal);
+    }
+    let created: Vec<String> = list_managed(runner, paths)?
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    for (defaulted, original) in request.machines.iter_mut().zip(&journal.request.machines) {
+        if defaulted != original && created.iter().any(|name| name == original.name()) {
+            *defaulted = original.clone();
+        }
+    }
     if request != journal.request {
         journal.request = request;
         write(paths, &journal)?;

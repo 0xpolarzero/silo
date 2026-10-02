@@ -409,6 +409,13 @@ pub(crate) fn change_machine(
                 crate::desktop::configuration(&machines[index]),
             ) {
                 next.built_in = was.built_in;
+                // A built-in desktop always starts with its VM: computer use needs the
+                // session. A controller from before `builtIn` existed (the compatibility
+                // path) may still send `startWithSandbox: false`; only legacy VMs keep a
+                // manual choice.
+                if was.built_in {
+                    next.start_with_sandbox = true;
+                }
             }
             machines[index] = machine;
         }
@@ -7923,7 +7930,10 @@ esac
         let old = request(vec![vm()]);
         assert!(configuration_recovery::begin(&paths, &old).is_ok());
         let journal = configuration_recovery::load(&paths).unwrap().unwrap();
-        let journal = configuration_recovery::normalize_desktop_intent(&paths, journal).unwrap();
+        // No sandbox exists in the runtime yet: the creation is still to be done.
+        let runner = StubRunner::successful_json(vec![json!([])]);
+        let journal =
+            configuration_recovery::normalize_desktop_intent(&runner, &paths, journal).unwrap();
         assert!(crate::computer_use::is_built_in(
             &journal.request.machines[0]
         ));
@@ -7935,6 +7945,134 @@ esac
             .unwrap()
             .unwrap();
         assert_eq!(saved, replayed);
+    }
+
+    #[test]
+    fn recovery_keeps_the_settings_of_a_partially_created_sandbox_that_already_exists() {
+        let _test_state = crate::test_support::global_state();
+        let _v4 = guest_image::pin_test_version("ubuntu-24.04-v4");
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        // An older Silo started creating `dev` from the v3 image; its sandbox exists in
+        // the runtime, the metadata commit never happened, and the journal has no desktop.
+        let old = request(vec![vm()]);
+        configuration_recovery::begin(&paths, &old).unwrap();
+        let journal = configuration_recovery::load(&paths).unwrap().unwrap();
+        let runner = StubRunner::successful_json(vec![json!([
+            {"name":"dev","status":"Created","image":"ubuntu"}
+        ])]);
+        let journal =
+            configuration_recovery::normalize_desktop_intent(&runner, &paths, journal).unwrap();
+        // The v4 defaults are for creations still to be done: this one is adopted as it is.
+        assert_eq!(journal.request, old);
+        assert!(!crate::computer_use::is_built_in(
+            &journal.request.machines[0]
+        ));
+        assert_eq!(
+            configuration_recovery::pending_request(&paths).unwrap(),
+            Some(old.clone())
+        );
+        // With no sandbox in the runtime, creation is still necessary and the defaults apply.
+        let runner = StubRunner::successful_json(vec![json!([])]);
+        let journal = configuration_recovery::load(&paths).unwrap().unwrap();
+        let journal =
+            configuration_recovery::normalize_desktop_intent(&runner, &paths, journal).unwrap();
+        assert!(crate::computer_use::is_built_in(
+            &journal.request.machines[0]
+        ));
+    }
+
+    #[test]
+    fn recovery_adopts_a_partially_created_v3_sandbox_without_making_it_built_in() {
+        let _test_state = crate::test_support::global_state();
+        let _v4 = guest_image::pin_test_version("ubuntu-24.04-v4");
+        let gate = operation_gate::OperationGate::new();
+        let _guard = gate.computer("Recovering test configuration").unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let paths = paths(&directory);
+        let candidate = request(vec![vm()]);
+        configuration_recovery::begin(&paths, &candidate).unwrap();
+        configuration_recovery::claim(&paths, &vm()).unwrap();
+        let mut actual = inspect(&paths, "Created");
+        actual["config"]["labels"]["silo.machine-id"] = json!(vm().id());
+        let listed = json!([{"name":"dev","status":"Created","image":"ubuntu"}]);
+        let runner = StubRunner::successful_json(vec![
+            // The normalization asks which sandboxes exist, then reconciliation adopts.
+            listed.clone(),
+            listed,
+            actual.clone(),
+            actual.clone(),
+            json!(null),
+            actual,
+        ]);
+        configuration_recovery::recover_at_paths(&runner, &paths, &generous_host(), &|_, _, _| {})
+            .unwrap();
+        let committed = read_metadata(&paths.metadata).unwrap();
+        assert_eq!(committed, candidate);
+        assert!(!crate::computer_use::is_built_in(&committed.machines[0]));
+        assert!(!runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|args| args[0] == "create" || args[0] == "remove"));
+    }
+
+    #[test]
+    fn an_older_controller_cannot_stop_a_built_in_desktop_from_starting_with_its_vm() {
+        let built_in = |start| {
+            let mut machine = vm();
+            if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+                *desktop = Some(crate::desktop::DesktopConfiguration {
+                    start_with_sandbox: start,
+                    built_in: true,
+                });
+            }
+            machine
+        };
+        let legacy = |start| {
+            let mut machine = vm();
+            if let MachineConfiguration::Vm { desktop, .. } = &mut machine {
+                *desktop = Some(crate::desktop::DesktopConfiguration {
+                    start_with_sandbox: start,
+                    built_in: false,
+                });
+            }
+            machine
+        };
+        let started = |machines: &[MachineConfiguration]| {
+            crate::desktop::configuration(&machines[0]).map(|d| (d.start_with_sandbox, d.built_in))
+        };
+        // The older controller does not know `builtIn`: its expected and replacement carry
+        // `false` and `startWithSandbox: false`.
+        let mut machines = vec![built_in(true)];
+        change_machine(
+            &mut machines,
+            vm().id(),
+            Some(&legacy(true)),
+            Some(&legacy(false)),
+        )
+        .unwrap();
+        assert_eq!(started(&machines), Some((true, true)));
+        // A controller that knows the field cannot turn it off either.
+        change_machine(
+            &mut machines,
+            vm().id(),
+            Some(&built_in(true)),
+            Some(&built_in(false)),
+        )
+        .unwrap();
+        assert_eq!(started(&machines), Some((true, true)));
+        // A legacy VM keeps its manual choice.
+        let mut machines = vec![legacy(true)];
+        change_machine(
+            &mut machines,
+            vm().id(),
+            Some(&legacy(true)),
+            Some(&legacy(false)),
+        )
+        .unwrap();
+        assert_eq!(started(&machines), Some((false, false)));
     }
 
     #[test]
