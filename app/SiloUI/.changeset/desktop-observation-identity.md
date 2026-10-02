@@ -2,4 +2,4 @@
 "silo-ui": patch
 ---
 
-Reject desktop status and computer-use approval changes when the runtime sandbox no longer matches the selected sandbox.
+Reject desktop status and computer-use approval changes for a replaced sandbox instead of applying them to a new sandbox with the same name.
