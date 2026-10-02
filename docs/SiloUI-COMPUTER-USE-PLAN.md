@@ -150,7 +150,7 @@ by the host after every boot (`prepare_booted`) and when the app becomes ready
 while VMs run, rather than by a guest boot hook, so the helper always matches
 Silo; garbage collection runs at start and after a prepare, only while no VM
 runs, and holds the computer-wide operation gate (which every VM start takes)
-from the inventory through the deletion, skipping when any operation is active.
+from the inventory through the deletion, skipping when any operation is active or a download holds the storage lock (it never waits for either); a skipped pass stays pending and is retried every two minutes until it ran.
 Pushing the helper happens on a host background thread, never inside Start: it
 first checks the VM is still the same running instance, then reads the approval
 policy at launch time.
@@ -207,8 +207,8 @@ Backend (Rust, guest scripts) and frontend implement this together.
   download in one background worker (never two at once: an in-process slot plus
   the storage lock). A retryable failure (network, firewall, disk space) is
   retried after 30 s, 1, 2, 5, 10, 30 min, then hourly, until it succeeds or the
-  app quits; a failure retrying cannot fix (checksum mismatch, a pinned version
-  OpenAI no longer serves) stops the worker until Retry. Offline or metered
+  app quits; a failure retrying cannot fix (checksum mismatch, or HTTP 404/410 for the pinned
+  version; a 401/403 refusal by a proxy or filter is retried) stops the worker until Retry. Offline or metered
   connections only mean later attempts: nothing waits for the download, and VM
   creation, start and restore never depend on it (the mount folder exists,
   possibly empty). When the app becomes ready the worker syncs running built-in
@@ -228,8 +228,9 @@ Backend (Rust, guest scripts) and frontend implement this together.
   `computer.approval`. Removed: `chatgpt.accept`, `chatgpt.prepare` and the
   placeholder `silo-remote:<host>:<nil-uuid>` routing. An owner on an older Silo
   answers `chatgpt.retry` as unsupported and `chatgpt.status` with its own
-  consent-era states; the controller shows such a computer as `unknown`, not as
-  an error (`chatgpt_app_status` maps "unsupported" to `{"state":"unknown"}`,
+  consent-era states; the controller reads the owner's handshake capabilities
+  (cached for a minute) and shows a computer without `chatgpt.retry` as `unknown`
+  without asking its status, not as an error (`chatgpt_app_status` maps "unsupported" to `{"state":"unknown"}`,
   and the frontend maps any state it does not know to `unknown`).
 - `desktop.builtIn: boolean` in a VM's saved/reported `desktop` object marks a VM
   created from a v4 image. Silo decides it; a written value is ignored.
@@ -246,9 +247,16 @@ Backend (Rust, guest scripts) and frontend implement this together.
   The legacy `lcu*` fields remain for VMs created before v4.
 - Per-VM approval mode is stored in VM metadata, default `ask`, and applied
   with `lcu setup --approval`. Approval changes carry a monotonically increasing
-  `revision` (clock-seeded, so it also exceeds what an imported guest applied
-  elsewhere), stored in the policy file separately from receipt observations;
-  every sync passes `--revision` and the guest helper ignores a request older
-  than the revision it applied (`approvalRevision` in its status). `computerUse`
+  `revision`, stored in the policy file separately from receipt observations, and
+  the computer's owner id (a random UUID kept in `computer-use/owner`). Every sync
+  passes `--revision` and `--owner`; the guest helper orders revisions only within
+  one owner (`approvalRevision`, `approvalOwner` in its status): it ignores a
+  request older than the revision it applied for that owner, applies a request from
+  a new owner whatever its revision (an imported or transferred VM takes the
+  destination's choice even when the source clock was ahead), and resolves equal
+  revisions with different modes in favour of `ask`. A sync runs in the VM's
+  operation turn after confirming the runtime sandbox's `silo.machine-id` label and
+  instance, and at app start Silo launches the sync for running built-in VMs whose
+  guest lags the saved policy (a crash between saving and launching). `computerUse`
   reports `installing` with "Applying approval change…" while the guest lags the
   policy, and `failed` when applying it failed.

@@ -45,7 +45,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
     },
     time::{Duration, Instant},
@@ -500,6 +500,17 @@ struct RootLock(File);
 
 impl RootLock {
     fn take(root: &Path) -> Result<Self, Error> {
+        Self::acquire(root, true)?
+            .ok_or_else(|| Error::retry("Silo could not lock its ChatGPT app folder."))
+    }
+
+    /// Like `take`, but `None` at once when another holder (a download or extraction)
+    /// has the lock.
+    fn try_take(root: &Path) -> Result<Option<Self>, Error> {
+        Self::acquire(root, false)
+    }
+
+    fn acquire(root: &Path, wait: bool) -> Result<Option<Self>, Error> {
         let failed = || Error::retry("Silo could not lock its ChatGPT app folder.");
         let dir = Dir::open_root(root, true)
             .map_err(|_| Error::retry("Silo could not prepare its ChatGPT app folder."))?;
@@ -520,12 +531,21 @@ impl RootLock {
         if !meta.is_file() || meta.uid() != effective_uid() {
             return Err(failed());
         }
-        while unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+        let mode = if wait {
+            libc::LOCK_EX
+        } else {
+            libc::LOCK_EX | libc::LOCK_NB
+        };
+        while unsafe { libc::flock(file.as_raw_fd(), mode) } != 0 {
+            let error = std::io::Error::last_os_error();
+            if !wait && error.kind() == std::io::ErrorKind::WouldBlock {
+                return Ok(None);
+            }
+            if error.kind() != std::io::ErrorKind::Interrupted {
                 return Err(failed());
             }
         }
-        Ok(Self(file))
+        Ok(Some(Self(file)))
     }
 }
 
@@ -600,6 +620,22 @@ pub(crate) struct HttpDownloader {
     plain_http: bool,
 }
 
+/// What an unexpected HTTP status for the pinned package means. Only a confirmed removal
+/// (404 or 410) is final; a refusal (401 or 403, typically a proxy, a filtering network
+/// or a regional block that another network does not have) and every other answer are
+/// retried with the usual backoff.
+fn refusal(code: u16) -> Error {
+    match code {
+        404 | 410 => Error::fatal(format!(
+            "OpenAI no longer serves the pinned ChatGPT app (HTTP {code})."
+        )),
+        401 | 403 => Error::retry(format!(
+            "OpenAI's server refused the ChatGPT download (HTTP {code}). A proxy, firewall or network filter may be blocking it. Silo tries again, including after you switch networks."
+        )),
+        code => Error::retry(format!("OpenAI's server answered HTTP {code}.")),
+    }
+}
+
 impl Default for HttpDownloader {
     fn default() -> Self {
         Self {
@@ -655,16 +691,7 @@ impl HttpDownloader {
                 let _ = fs::remove_file(part);
                 return Err(Error::retry("The ChatGPT download restarted."));
             }
-            code if (400..500).contains(&code) && code != 408 && code != 429 => {
-                return Err(Error::fatal(format!(
-                    "OpenAI no longer serves the pinned ChatGPT app (HTTP {code})."
-                )))
-            }
-            code => {
-                return Err(Error::retry(format!(
-                    "OpenAI's server answered HTTP {code}."
-                )))
-            }
+            code => return Err(refusal(code)),
         };
         let mut file = open_part(part, append).map_err(|_| disk())?;
         let mut written = if append { have } else { 0 };
@@ -1738,6 +1765,18 @@ pub(crate) fn ensure_published_dir(root: &Path) -> Result<PathBuf, Error> {
     fs::canonicalize(published_path(root)).map_err(|_| failed())
 }
 
+/// `ensure_published_dir` for callers that must not wait: when a download or extraction
+/// holds the storage lock the folders already exist (it prepared them first), so the
+/// published folder is only resolved.
+pub(crate) fn ensure_published_dir_nowait(root: &Path) -> Result<PathBuf, Error> {
+    let failed = || Error::retry("Silo could not prepare its ChatGPT app folder.");
+    Dir::open_root(root, true).map_err(|_| failed())?;
+    if let Some(_lock) = RootLock::try_take(root)? {
+        open_storage(root, true).map_err(|_| failed())?;
+    }
+    fs::canonicalize(published_path(root)).map_err(|_| failed())
+}
+
 impl Dir {
     /// Whether `name` does not exist (without following it).
     fn absent_entry(&self, name: &str) -> bool {
@@ -1789,7 +1828,34 @@ pub(crate) fn collect_garbage(
     if fs::symlink_metadata(root).is_err() {
         return Ok(Vec::new());
     }
-    let _lock = RootLock::take(root)?;
+    let held = RootLock::take(root)?;
+    collect_garbage_locked(root, lock, arch, in_use, &held)
+}
+
+/// `collect_garbage` that never waits for the storage lock: `None` when a download or
+/// extraction holds it (the caller keeps the work pending and tries again later).
+fn try_collect_garbage(
+    root: &Path,
+    lock: &Lock,
+    arch: DebArch,
+    in_use: &HashSet<String>,
+) -> Result<Option<Vec<String>>, Error> {
+    if fs::symlink_metadata(root).is_err() {
+        return Ok(Some(Vec::new()));
+    }
+    let Some(held) = RootLock::try_take(root)? else {
+        return Ok(None);
+    };
+    collect_garbage_locked(root, lock, arch, in_use, &held).map(Some)
+}
+
+fn collect_garbage_locked(
+    root: &Path,
+    lock: &Lock,
+    arch: DebArch,
+    in_use: &HashSet<String>,
+    _held: &RootLock,
+) -> Result<Vec<String>, Error> {
     let list_failed = || Error::retry("Could not list ChatGPT app versions.");
     let (root_dir, published_dir) = open_storage(root, true).map_err(|_| list_failed())?;
     clean_staging(root, &root_dir);
@@ -1945,14 +2011,79 @@ pub(crate) fn refresh_status_blocking(app: &tauri::AppHandle) -> Status {
 /// VM start, restore and resume also takes, so no VM can begin booting from a version
 /// between the inventory and the deletion. Collection is skipped, not queued, while
 /// any operation runs; the next start or prepare tries again.
+///
+/// Collection never waits for the storage lock either: a download or extraction can hold
+/// it for minutes, and waiting while holding the computer-wide gate would stall every
+/// lifecycle operation and Quit behind it.
+///
+/// A skipped collection (an operation or VM running, or the storage busy) stays
+/// pending and is retried every `COLLECTION_RETRY` until it ran.
 pub(crate) fn collect_unused(app: &tauri::AppHandle) {
-    let Ok(root) = storage_root(app) else { return };
+    if COLLECTION.note(collect_unused_once(app)) {
+        let app = app.clone();
+        let _ = std::thread::Builder::new()
+            .name("chatgpt-app-gc".into())
+            .spawn(move || {
+                COLLECTION.run_retries(
+                    || collect_unused_once(&app),
+                    || std::thread::sleep(COLLECTION_RETRY),
+                )
+            });
+    }
+}
+
+fn collect_unused_once(app: &tauri::AppHandle) -> bool {
+    let Ok(root) = storage_root(app) else {
+        return true;
+    };
     let (Ok(lock), Ok(arch)) = (Lock::bundled(), DebArch::host()) else {
-        return;
+        return true;
     };
     collect_unused_gated(&crate::runtime::OPERATIONS, &root, &lock, arch, || {
         crate::runtime::update_recovery::running_names(app).is_ok_and(|names| names.is_empty())
-    });
+    })
+}
+
+const COLLECTION_RETRY: Duration = Duration::from_secs(120);
+static COLLECTION: Maintenance = Maintenance::new();
+
+/// Work that was skipped because the computer was busy and must run later.
+struct Maintenance {
+    pending: AtomicBool,
+    retrying: AtomicBool,
+}
+
+impl Maintenance {
+    const fn new() -> Self {
+        Self {
+            pending: AtomicBool::new(false),
+            retrying: AtomicBool::new(false),
+        }
+    }
+
+    /// Records the outcome of a pass; true when the caller must start the retry loop
+    /// (work is pending and no loop runs yet).
+    fn note(&self, done: bool) -> bool {
+        self.pending.store(!done, Ordering::SeqCst);
+        !done && !self.retrying.swap(true, Ordering::SeqCst)
+    }
+
+    /// The retry loop: waits, tries, repeats until the work ran.
+    fn run_retries(&self, mut attempt: impl FnMut() -> bool, mut wait: impl FnMut()) {
+        loop {
+            while self.pending.load(Ordering::SeqCst) {
+                wait();
+                if attempt() {
+                    self.pending.store(false, Ordering::SeqCst);
+                }
+            }
+            self.retrying.store(false, Ordering::SeqCst);
+            // A pass that was skipped between the last attempt and now started no loop.
+            if !self.pending.load(Ordering::SeqCst) || self.retrying.swap(true, Ordering::SeqCst) {
+                return;
+            }
+        }
+    }
 }
 
 /// Collects garbage while holding `gate` exclusively; `none_running` is evaluated
@@ -1970,7 +2101,11 @@ fn collect_unused_gated(
     if !none_running() {
         return false;
     }
-    collect_garbage(root, lock, arch, &HashSet::new()).is_ok()
+    // Never wait for the storage lock inside the gate (see `collect_unused`).
+    matches!(
+        try_collect_garbage(root, lock, arch, &HashSet::new()),
+        Ok(Some(_))
+    )
 }
 
 /// Downloads and publishes the pinned app (blocking), reporting progress. Returns the
@@ -1980,6 +2115,9 @@ fn run_prepare(app: &tauri::AppHandle) -> Result<Status, String> {
     let root = storage_root(app)?;
     let lock = Lock::bundled().map_err(|e| e.message)?;
     let arch = DebArch::host().map_err(|e| e.message)?;
+    // The folder VMs mount: prepared again here in case the start-up attempt failed.
+    // Preparation itself reports a real storage problem.
+    let _ = crate::computer_use::register_published(&root);
     if PREPARING
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -2067,6 +2205,10 @@ pub(crate) fn start_automatic(app: &tauri::AppHandle) {
     let status = refresh_status_blocking(app);
     collect_unused(app);
     if matches!(status, Status::Ready { .. }) {
+        // Nobody else syncs the running VMs now (the worker that does it when the app
+        // becomes ready has nothing to wait for): finish approval changes that were
+        // saved but never launched before the last quit.
+        crate::computer_use::reconcile(app);
         return;
     }
     // Let the app finish starting first; this is not urgent.
@@ -2119,6 +2261,26 @@ fn to_value(status: Status) -> Result<serde_json::Value, String> {
     serde_json::to_value(status).map_err(|_| "Could not encode the ChatGPT app status.".into())
 }
 
+/// Whether an owner serves the current integration. A consent-era Silo (it still answers
+/// `chatgpt.accept` and `chatgpt.prepare`) has no `chatgpt.retry`, and its `idle` means
+/// "consent given, nothing downloaded" with nothing that would start the download, so
+/// its statuses must not be shown as if the new automatic worker produced them.
+fn owner_is_current(capabilities: &[String]) -> bool {
+    capabilities.iter().any(|name| name == "chatgpt.retry")
+}
+
+/// A remote owner's status: `unknown` for an owner that is not current, else what it
+/// reports. Capabilities that cannot be read are a real failure (offline, disconnected).
+fn owner_status(
+    capabilities: Result<Vec<String>, String>,
+    status: impl FnOnce() -> Result<serde_json::Value, String>,
+) -> Result<serde_json::Value, String> {
+    if !owner_is_current(&capabilities?) {
+        return Ok(serde_json::json!({"state": "unknown"}));
+    }
+    remote_status(status())
+}
+
 /// A remote computer's status as the UI shows it: one running a Silo without computer use
 /// has no status to report, which is `unknown`, not an error. Real failures (offline,
 /// disconnected) stay errors.
@@ -2137,12 +2299,10 @@ pub(crate) async fn chatgpt_app_status(
     computer: Option<String>,
 ) -> Result<serde_json::Value, String> {
     blocking(move || match remote_host(computer.as_deref())? {
-        Some(host) => remote_status(call_owner(
-            &app,
-            &host,
-            "chatgpt.status",
-            serde_json::json!({}),
-        )),
+        Some(host) => owner_status(
+            crate::remote::host_capabilities(&app, &host).map_err(owner_error),
+            || call_owner(&app, &host, "chatgpt.status", serde_json::json!({})),
+        ),
         None => to_value(local_status(&app)?),
     })
     .await

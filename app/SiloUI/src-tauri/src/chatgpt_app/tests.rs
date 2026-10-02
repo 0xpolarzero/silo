@@ -1,6 +1,7 @@
 //! Synthetic packages only: no network and no process-wide Silo state, so these
 //! run in parallel without the shared isolation guard.
 use super::*;
+use std::cell::Cell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 enum Item<'a> {
@@ -824,4 +825,195 @@ fn collection_holds_the_computer_gate_so_a_start_cannot_slip_between_check_and_d
     assert!(!old.exists());
     let _starting = gate.vm(vm, "dev", "Starting dev").unwrap();
     assert!(root_dir.join("published").exists());
+}
+
+#[test]
+fn collection_never_waits_for_a_download_holding_the_storage_lock() {
+    use crate::runtime::operation_gate::OperationGate;
+    use std::sync::mpsc;
+    let dir = root();
+    let lock = lock_for(&deb(&good_items()));
+    let root_dir = dir.path().join("chatgpt");
+    let old = root_dir.join("published").join("0.9.0-arm64");
+    fs::create_dir_all(old.join("sub")).unwrap();
+    let gate = OperationGate::new();
+    let vm = "00000000-0000-4000-8000-000000000001";
+
+    // A download or extraction holds the storage lock.
+    let download = RootLock::take(&root_dir).unwrap();
+    let (done, finished) = mpsc::channel();
+    std::thread::scope(|scope| {
+        let (gate, root_dir, lock) = (&gate, &root_dir, &lock);
+        scope.spawn(move || {
+            done.send(collect_unused_gated(
+                gate,
+                root_dir,
+                lock,
+                DebArch::Arm64,
+                || true,
+            ))
+            .unwrap();
+        });
+        // A blocking implementation would hold the computer gate until the download ended.
+        let ran = finished
+            .recv_timeout(Duration::from_secs(10))
+            .expect("collection returned while the storage lock was busy");
+        assert!(!ran, "a skipped collection reports that it did not run");
+    });
+    assert!(old.exists(), "nothing was removed");
+    // The computer gate was released: lifecycle operations and Quit are not stuck behind it.
+    drop(
+        gate.vm(vm, "dev", "Starting dev")
+            .expect("the gate is free"),
+    );
+    assert!(gate.is_idle());
+
+    // Once the download ended, the next pass collects.
+    drop(download);
+    assert!(collect_unused_gated(
+        &gate,
+        &root_dir,
+        &lock,
+        DebArch::Arm64,
+        || true
+    ));
+    assert!(!old.exists());
+}
+
+#[test]
+fn a_busy_storage_lock_is_reported_not_waited_for() {
+    let dir = root();
+    let root_dir = dir.path().join("chatgpt");
+    let held = RootLock::take(&root_dir).unwrap();
+    assert!(RootLock::try_take(&root_dir).unwrap().is_none());
+    drop(held);
+    assert!(RootLock::try_take(&root_dir).unwrap().is_some());
+}
+
+#[test]
+fn skipped_maintenance_stays_pending_and_is_retried_until_it_ran() {
+    let maintenance = Maintenance::new();
+    // A pass that ran leaves nothing pending and starts no retry loop.
+    assert!(!maintenance.note(true));
+    // A skipped pass starts exactly one retry loop, however often it is skipped.
+    assert!(maintenance.note(false));
+    assert!(!maintenance.note(false));
+    assert!(maintenance.pending.load(Ordering::SeqCst));
+    // The loop keeps trying (waiting between attempts) until an attempt runs.
+    let attempts = AtomicUsize::new(0);
+    let waits = AtomicUsize::new(0);
+    maintenance.run_retries(
+        || attempts.fetch_add(1, Ordering::SeqCst) + 1 == 3,
+        || {
+            waits.fetch_add(1, Ordering::SeqCst);
+        },
+    );
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    assert_eq!(waits.load(Ordering::SeqCst), 3);
+    assert!(!maintenance.pending.load(Ordering::SeqCst));
+    // The loop ended, so a later skip starts a new one.
+    assert!(maintenance.note(false));
+    // A regular pass that ran meanwhile cancels the pending retry without an attempt.
+    assert!(!maintenance.note(true));
+    maintenance.run_retries(
+        || panic!("nothing is pending"),
+        || panic!("nothing is pending"),
+    );
+    assert!(
+        maintenance.note(false),
+        "the finished loop released its claim"
+    );
+}
+
+#[test]
+fn only_a_confirmed_removal_stops_the_automatic_retries() {
+    for code in [404, 410] {
+        let error = refusal(code);
+        assert!(!error.retryable, "{code}");
+        assert!(error.message.contains("no longer serves"), "{code}");
+    }
+    // A refusal by a proxy, a firewall or a regional filter may not repeat on another
+    // network, and any other answer is the server's trouble: all are retried.
+    for code in [401, 403, 400, 408, 429, 451, 500, 502, 503] {
+        assert!(refusal(code).retryable, "{code}");
+    }
+    let denied = refusal(403).message;
+    assert!(
+        denied.contains("HTTP 403") && denied.contains("network"),
+        "{denied}"
+    );
+    assert!(!denied.contains("no longer serves"));
+}
+
+#[test]
+fn an_access_denial_keeps_the_worker_retrying_until_another_network_works() {
+    let denials = Cell::new(0);
+    let waits = Cell::new(0);
+    let status = auto::settle(
+        || {
+            denials.set(denials.get() + 1);
+            if denials.get() < 4 {
+                refusal(403).status()
+            } else {
+                Status::Ready {
+                    path: "/chatgpt/1.2.3-arm64".into(),
+                    version: "1.2.3".into(),
+                }
+            }
+        },
+        |_| {
+            waits.set(waits.get() + 1);
+            false
+        },
+        || {},
+    );
+    assert!(matches!(status, Status::Ready { .. }));
+    assert_eq!((denials.get(), waits.get()), (4, 3));
+    // A removed package ends the worker at once.
+    let ended = auto::settle(|| refusal(404).status(), |_| panic!("no retry"), || {});
+    assert!(matches!(
+        ended,
+        Status::Failed {
+            retryable: false,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn consent_era_owners_report_unknown_not_a_status_that_never_progresses() {
+    let consent_era: Vec<String> = [
+        "handshake",
+        "chatgpt.status",
+        "chatgpt.accept",
+        "chatgpt.prepare",
+    ]
+    .map(String::from)
+    .into();
+    let current: Vec<String> = ["handshake", "chatgpt.status", "chatgpt.retry"]
+        .map(String::from)
+        .into();
+    assert!(!owner_is_current(&consent_era));
+    assert!(owner_is_current(&current));
+    // The old owner answers `idle` (consent accepted, no app): never passed through.
+    let idle = || Ok(serde_json::json!({"state": "idle"}));
+    let unreached = || -> Result<serde_json::Value, String> { panic!("not asked") };
+    assert_eq!(
+        owner_status(Ok(consent_era), unreached).unwrap(),
+        serde_json::json!({"state": "unknown"})
+    );
+    // A current owner's status passes through, including the automatic `idle`.
+    assert_eq!(
+        owner_status(Ok(current.clone()), idle).unwrap(),
+        serde_json::json!({"state": "idle"})
+    );
+    // A current owner without the status method is still `unknown`; real failures stay errors.
+    assert_eq!(
+        owner_status(Ok(current), || Err(UPDATE_OWNER.to_owned())).unwrap(),
+        serde_json::json!({"state": "unknown"})
+    );
+    assert_eq!(
+        owner_status(Err("This computer is offline.".into()), unreached).unwrap_err(),
+        "This computer is offline."
+    );
 }
