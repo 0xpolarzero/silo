@@ -31,6 +31,7 @@ export function WorkspaceBadge({ name, state, computer }: { name: string; state:
   return (
     <TooltipProvider delayDuration={150}><Tooltip><TooltipTrigger asChild><StatusBadge
       indicator={<WorkspaceStateDot state={state} />}
+      role="group"
       aria-label={`${name}, ${stateLabel}${computer ? `, on ${computer.name}` : ""}`}
       tabIndex={0}
       className="outline-none focus-visible:ring-2 focus-visible:ring-ring"
