@@ -464,6 +464,12 @@ fn backup_state(controller: &Controller) -> Result<BackupState, String> {
     })
 }
 
+fn selected_path_text(path: &Path) -> Result<String, String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        "Silo cannot use paths containing non-UTF-8 names. Rename the affected file or folder, then choose it again.".into()
+    })
+}
+
 #[tauri::command]
 pub(crate) async fn choose_backup_destination(
     app: AppHandle,
@@ -495,9 +501,10 @@ pub(crate) async fn choose_backup_destination(
         let path = selected.into_path().map_err(|error| error.to_string())?;
         let path = fs::canonicalize(&path)
             .map_err(|error| format!("Silo could not use the selected destination: {error}"))?;
+        let selected = selected_path_text(&path)?;
         remember_destination(&controller, path.clone());
         publish(&app, &controller);
-        Ok(Some(path.to_string_lossy().into_owned()))
+        Ok(Some(selected))
     })
     .await
     .map_err(|error| error.to_string())?
@@ -520,7 +527,7 @@ pub(crate) async fn choose_backup_archive(
         selected
             .map(|path| path.into_path().map_err(|error| error.to_string()))
             .transpose()
-            .map(|path| path.map(|path| path.to_string_lossy().into_owned()))
+            .and_then(|path| path.map(|path| selected_path_text(&path)).transpose())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -2295,6 +2302,25 @@ mod tests {
             sandboxes: vec!["dev".into()],
             checkpoint_name: None,
         }
+    }
+
+    #[test]
+    fn backup_picker_rejects_paths_that_would_select_a_different_file() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(std::ffi::OsString::from_vec(
+            b"/backups/sandbox-\xff.silo-backup".to_vec(),
+        ));
+        assert!(selected_path_text(&path).is_err());
+        assert!(selected_path_text(path.parent().unwrap()).is_ok());
+        let directory = PathBuf::from(std::ffi::OsString::from_vec(b"/backups/\xff".to_vec()));
+        assert!(selected_path_text(&directory).is_err());
+    }
+
+    #[test]
+    fn backup_picker_preserves_spaces_unicode_and_leading_dashes() {
+        let path = "/backups/日本語 dossier/-sandbox.silo-backup";
+        assert_eq!(selected_path_text(Path::new(path)).unwrap(), path);
     }
 
     #[test]
