@@ -70,10 +70,29 @@ pub(crate) fn linux_editor_command(
             "dev.zed.Zed" => true,
             _ => return Err(UNSUPPORTED_EDITOR.into()),
         };
-        let program = find_program("flatpak").ok_or("The selected editor is unavailable.")?;
+        let token = exec_program(argv).ok_or("The selected editor is unavailable.")?;
+        if file_name(Path::new(token)) != "flatpak" {
+            return Err("The selected editor is unavailable.".into());
+        }
+        let index = argv.iter().position(|argument| argument == token).unwrap();
+        let args = &argv[index + 1..];
+        if args.first().map(String::as_str) != Some("run")
+            || !args[1..].iter().any(|argument| argument == app)
+        {
+            return Err("The selected editor is unavailable.".into());
+        }
+        let program = if Path::new(token).is_absolute() {
+            PathBuf::from(token)
+        } else {
+            find_program(token).ok_or("The selected editor is unavailable.")?
+        };
         return Ok(EditorCommand {
             program,
-            args: vec!["run".into(), app.into()],
+            args: args
+                .iter()
+                .filter(|argument| argument.as_str() != "--file-forwarding")
+                .map(OsString::from)
+                .collect(),
             zed,
         });
     }
@@ -271,6 +290,30 @@ mod tests {
     }
 
     #[test]
+    fn flatpak_editor_preserves_the_selected_installation_and_command() {
+        let find = |_: &str| Some(PathBuf::from("/usr/bin/flatpak"));
+        for branch in ["stable", "beta"] {
+            let argv = tokens(&format!(
+                "/usr/bin/flatpak run --user --branch={branch} --arch=aarch64 --command=code --file-forwarding com.visualstudio.code @@ %F @@"
+            ));
+            let command =
+                linux_editor_command(&argv, Some("com.visualstudio.code"), &find).unwrap();
+            assert_eq!(
+                command.args,
+                [
+                    "run",
+                    "--user",
+                    &format!("--branch={branch}"),
+                    "--arch=aarch64",
+                    "--command=code",
+                    "com.visualstudio.code"
+                ]
+                .map(OsString::from)
+            );
+        }
+    }
+
+    #[test]
     fn snap_flatpak_and_zed_tarball_entries_are_launchable() {
         let snap = tokens("env BAMF_DESKTOP_FILE_HINT=x /snap/bin/code --force-user-env %F");
         let command = linux_editor_command(&snap, None, &nowhere).unwrap();
@@ -294,7 +337,12 @@ mod tests {
                 zed: true
             }
         );
-        let command = linux_editor_command(&[], Some("com.visualstudio.code"), &flatpak).unwrap();
+        let command = linux_editor_command(
+            &tokens("flatpak run com.visualstudio.code %F"),
+            Some("com.visualstudio.code"),
+            &flatpak,
+        )
+        .unwrap();
         assert_eq!(
             command.args,
             [

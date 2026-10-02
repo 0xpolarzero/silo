@@ -16,6 +16,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 POLICY = {'schemaVersion': 1, 'user': 'silo', 'home': '/home/silo'}
 RECORD = Path('/var/lib/silo/working-account.json')
@@ -134,10 +135,17 @@ def copy_home(source, destination):
             target.symlink_to(relocate(os.readlink(path)))
             shutil.copystat(path, target, follow_symlinks=False)
         else:
-            shutil.copy2(path, target)
-            updated = launcher_contents(path, path.relative_to(source))
-            if updated is not None:
-                target.write_text(updated)
+            with tempfile.NamedTemporaryFile(dir=target.parent, prefix='.silo-copy-', delete=False) as staged:
+                temporary = Path(staged.name)
+            try:
+                shutil.copy2(path, temporary)
+                updated = launcher_contents(path, path.relative_to(source))
+                if updated is not None:
+                    temporary.write_text(updated)
+                # Publish complete bytes without replacing an entry created during copying.
+                os.link(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
     for path, target, mode in reversed(copies):
         if stat.S_ISDIR(mode):
             shutil.copystat(path, target)

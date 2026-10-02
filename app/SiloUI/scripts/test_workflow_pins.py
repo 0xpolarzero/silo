@@ -8,6 +8,18 @@ USES = re.compile(r'^\s*(?:-\s+)?uses:\s*(\S+)(.*)$', re.M)
 
 
 class WorkflowPinTests(unittest.TestCase):
+    def test_qemu_installer_images_are_pinned_to_digests(self):
+        checked = 0
+        for path in GITHUB.glob('workflows/*.yml'):
+            steps = re.split(r'^\s{6}- ', path.read_text(), flags=re.M)
+            for step in steps:
+                if not re.search(r'^uses: docker/setup-qemu-action@', step):
+                    continue
+                checked += 1
+                with self.subTest(file=path.name):
+                    self.assertRegex(step, r'(?m)^\s+image: docker\.io/tonistiigi/binfmt@sha256:[0-9a-f]{64}\s*$')
+        self.assertGreater(checked, 0)
+
     def test_actions_are_pinned_to_commit_shas_with_version_comments(self):
         files = sorted([*GITHUB.glob('workflows/*.yml'), *GITHUB.glob('actions/*/action.yml')])
         self.assertTrue(files)

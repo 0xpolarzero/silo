@@ -49,8 +49,10 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
   const mounted = useRef(false)
   const inFlight = useRef(false)
   const generation = useRef(0)
+  const subscriptionFailed = useRef(false)
   useEffect(() => {
     mounted.current = true
+    subscriptionFailed.current = false
     let disposed = false
     let stop: (() => void) | undefined
     const receive = (next: UpdateSnapshot) => {
@@ -64,7 +66,10 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
         const next = await backend.read()
         if (!disposed && generation.current === before) receive(next)
       } catch {
-        if (!disposed) setConnectionError("Silo could not load updates. Try again.")
+        if (!disposed) {
+          subscriptionFailed.current = !stop
+          setConnectionError("Silo could not load updates. Try again.")
+        }
       }
     })()
     return () => { disposed = true; mounted.current = false; stop?.() }
@@ -74,6 +79,11 @@ export function UpdatesProvider({ backend, children }: { backend: UpdateBackend;
     let reading = false
     const refresh = async () => {
       if (reading || inFlight.current) return
+      if (subscriptionFailed.current) {
+        subscriptionFailed.current = false
+        setConnection((value) => value + 1)
+        return
+      }
       reading = true
       const before = generation.current
       try {

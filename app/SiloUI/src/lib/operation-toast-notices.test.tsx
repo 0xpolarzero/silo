@@ -96,3 +96,41 @@ describe("backend notices", () => {
     expect(delivered).not.toHaveBeenCalled()
   })
 })
+
+describe("toast sandbox ownership", () => {
+  it.each([false, true])("does not dismiss an unrelated replacement after deleting its old sandbox (dismissed: %s)", async (dismissed) => {
+    render(<Host />)
+    const id = `reused-transfer-${dismissed}`
+    act(() => showOperationSuccess(id, "Imported A", { sandbox: "imported-a", persist: true }))
+    await tick()
+    if (dismissed) {
+      act(() => dismissOperationToast(id))
+      await tick()
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    }
+    act(() => showOperationSuccess(id, "Exported B", { action: { label: "Reveal B", onClick: vi.fn() } }))
+    await tick()
+    expect(screen.getByRole("button", { name: "Reveal B" })).toBeInTheDocument()
+    act(() => dismissSandboxToasts("imported-a"))
+    await tick()
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(screen.getByRole("button", { name: "Reveal B" })).toBeInTheDocument()
+    dismissOperationToast(id)
+  })
+
+  it("replaces ownership when a toast moves to another sandbox", async () => {
+    render(<Host />)
+    act(() => showOperationFailure("moved-owner", "Failed A", { sandbox: "owner-a", native: false }))
+    await tick()
+    act(() => showOperationFailure("moved-owner", "Failed B", { sandbox: "owner-b", native: false }))
+    await tick()
+    act(() => dismissSandboxToasts("owner-a"))
+    await tick()
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(screen.getByText("Failed B")).toBeInTheDocument()
+    act(() => dismissSandboxToasts("owner-b"))
+    await tick()
+    await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    expect(screen.queryByText("Failed B")).not.toBeInTheDocument()
+  })
+})
