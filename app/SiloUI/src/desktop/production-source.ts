@@ -1820,7 +1820,8 @@ export function createProductionSource(native: ProductionBridge = bridge) {
           ? "Silo no longer reports this export's result. Check the export folder before relying on it."
           : "Silo stopped tracking this export before it finished.", operationId))
       }
-      exportWaiters.add(waiter)
+      if (disposed) waiter(null, readSequence)
+      else exportWaiters.add(waiter)
     })
   }
 
