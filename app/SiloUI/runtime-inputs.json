@@ -118,7 +118,7 @@
     },
     {
       "path": "patches/microsandbox-checkpoint-fs-state-0.7.6.patch",
-      "sha256": "72ac5399f1731fb0c582c9eb618f7b076e26669b135bdd136c088112c842c797"
+      "sha256": "6346dbdb79002a82526130a30c3c8f8cc17b061de4e9976636510f9f7eb2f885"
     }
   ]
 }
