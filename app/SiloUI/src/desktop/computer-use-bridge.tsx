@@ -73,6 +73,7 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
   const listeners = new Set<() => void>()
   let stopListening: (() => void) | null = null
   let timer: number | undefined
+  let stopVisibility: (() => void) | null = null
   // Every event bumps `events`; a read that began before one is older than it and is dropped.
   let events = 0
   let reads = 0
@@ -102,15 +103,24 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
     await refresh()
   }
   const schedule = (mine: number) => {
-    if (computer === undefined) return
+    window.clearTimeout(timer)
+    if (computer === undefined || document.visibilityState === "hidden") return
     timer = window.setTimeout(() => {
-      if (mine !== generation) return
+      if (mine !== generation || document.visibilityState === "hidden") return
       void refresh().finally(() => { if (mine === generation) schedule(mine) })
     }, working(snapshot.status) ? pollMs.busy : pollMs.idle)
   }
   const start = () => {
     const mine = ++generation
-    const begin = () => { void refresh().finally(() => { if (mine === generation) schedule(mine) }) }
+    const begin = () => {
+      if (computer !== undefined && document.visibilityState === "hidden") return
+      void refresh().finally(() => { if (mine === generation) schedule(mine) })
+    }
+    if (computer !== undefined) {
+      const visibility = () => { window.clearTimeout(timer); begin() }
+      document.addEventListener("visibilitychange", visibility)
+      stopVisibility = () => document.removeEventListener("visibilitychange", visibility)
+    }
     backend.listenStatus(payload => { if (mine === generation && computer === undefined) receive(payload) })
       .then(stop => {
         if (mine !== generation) { stop(); return }
@@ -125,7 +135,7 @@ function createChatGptAppStore(backend: ComputerUseBackend, computer: string | u
       if (listeners.size === 1) start()
       return () => {
         listeners.delete(listener)
-        if (listeners.size === 0) { generation += 1; stopListening?.(); stopListening = null; window.clearTimeout(timer) }
+        if (listeners.size === 0) { generation += 1; stopListening?.(); stopListening = null; stopVisibility?.(); stopVisibility = null; window.clearTimeout(timer) }
       }
     },
     getSnapshot: () => snapshot,
@@ -165,6 +175,6 @@ export function useComputerUseBridge() { return useContext(ComputerUseContext) }
 const emptySnapshot: ChatGptAppSnapshot = { status: null, busy: false, error: null, loadError: null }
 const noopSubscribe = () => () => {}
 const emptyStore = () => emptySnapshot
-export function useChatGptApp(store: ChatGptAppStore | undefined): ChatGptAppSnapshot {
-  return useSyncExternalStore(store ? store.subscribe : noopSubscribe, store ? store.getSnapshot : emptyStore)
+export function useChatGptApp(store: ChatGptAppStore | undefined, active = true): ChatGptAppSnapshot {
+  return useSyncExternalStore(store && active ? store.subscribe : noopSubscribe, store ? store.getSnapshot : emptyStore)
 }
