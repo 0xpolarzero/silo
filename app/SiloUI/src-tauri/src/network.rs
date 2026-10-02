@@ -312,6 +312,20 @@ fn socket_path(paths: &RuntimePaths, workspace: &str) -> std::path::PathBuf {
         .join(&digest[..24])
         .join("control.sock")
 }
+/// Forget saved forwarding intent before a deleted sandbox's name becomes reusable.
+pub(crate) fn workspace_removed(paths: &RuntimePaths, workspace: &str) -> Result<(), String> {
+    let forwarding = forwarding_lock(workspace);
+    let _forwarding = hold(&forwarding);
+    let _data = network_lock();
+    let mut config = read_config(paths)?;
+    let before = config.mappings.len();
+    config.mappings.retain(|m| m.workspace != workspace);
+    if config.mappings.len() != before {
+        write_config(paths, &config)?;
+    }
+    Ok(())
+}
+
 /// Observe one workspace's saved forwards with a single enabled mapping for `port`.
 #[cfg(test)]
 pub(crate) fn observe_saved_port_for_test(
