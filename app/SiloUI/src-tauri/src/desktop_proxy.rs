@@ -480,7 +480,7 @@ mod tests {
         if response {
             relay(incoming, outgoing, stop, ended, None);
         } else {
-            forward_body(incoming, outgoing, 7, stop, ended);
+            forward_body(incoming, outgoing, 7, stop, ended, None);
         }
         let mut received = Vec::new();
         receiver.read_to_end(&mut received).unwrap();
