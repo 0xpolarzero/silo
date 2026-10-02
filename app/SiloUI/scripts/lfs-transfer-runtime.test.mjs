@@ -23,14 +23,18 @@ const probeCompiler = async (program, args, options) => {
 }
 
 async function compiledFixture(directory, identity = buildIdentity) {
-  await mkdir(join(directory, 'licenses'), { recursive: true })
+  await mkdir(join(directory, 'licenses/example-module'), { recursive: true })
   const binary = Buffer.from('cached executable fixture')
   await writeFile(join(directory, 'git-lfs-transfer'), binary)
   await writeFile(join(directory, 'LICENSE-MIT.txt'), 'MIT')
   await writeFile(join(directory, 'licenses/Go-LICENSE'), 'Go')
+  await writeFile(join(directory, 'licenses/example-module/LICENSE'), 'Module license')
   await writeFile(join(directory, 'manifest.json'), JSON.stringify({
     schemaVersion: identity ? 2 : 1, commit: LFS_TRANSFER_COMMIT, sourceSha256: LFS_TRANSFER_SOURCE_SHA256,
-    architecture: 'arm64', binarySha256: digest(binary), ...(identity ? { buildIdentity: identity } : {}),
+    architecture: 'arm64', binarySha256: digest(binary), licenseSha256: {
+      'LICENSE-MIT.txt': digest('MIT'), 'licenses/Go-LICENSE': digest('Go'),
+      'licenses/example-module/LICENSE': digest('Module license'),
+    }, ...(identity ? { buildIdentity: identity } : {}),
   }))
 }
 
@@ -159,6 +163,8 @@ test('cached module licenses stay writable across repeated native resource copie
   await writeFile(join(cache, 'manifest.json'), JSON.stringify({
     schemaVersion: 2, commit: LFS_TRANSFER_COMMIT, sourceSha256: LFS_TRANSFER_SOURCE_SHA256, architecture: 'arm64', buildIdentity,
     binarySha256: createHash('sha256').update(binary).digest('hex'),
+    licenseSha256: { 'LICENSE-MIT.txt': digest('MIT'), 'licenses/Go-LICENSE': digest('Go'),
+      'licenses/example-module/LICENSE': digest('Module license') },
   }))
   const options = { appRoot, targetTriple: 'aarch64-apple-darwin', run: probeCompiler,
     fetchStream: async () => { throw new Error('A valid compiled cache needs no download') } }
@@ -171,3 +177,20 @@ test('cached module licenses stay writable across repeated native resource copie
   await writeFile(notice, 'Simulated repeated native resource copy')
   assert.equal((await stat(notice)).mode & 0o777, 0o644)
 })
+
+
+for (const location of ['runtime/lfs-transfer', `target/runtime-cache/git-lfs-transfer/${LFS_TRANSFER_COMMIT}/builds/linux-arm64`]) {
+  for (const failure of ['missing', 'changed']) {
+    test(`${failure} dependency license invalidates ${location}`, async t => {
+      const appRoot = await mkdtemp(join(tmpdir(), 'silo-lfs-notice-integrity-'))
+      t.after(() => rm(appRoot, { recursive: true, force: true }))
+      const directory = join(appRoot, 'src-tauri', location)
+      await compiledFixture(directory)
+      const notice = join(directory, 'licenses/example-module/LICENSE')
+      if (failure === 'missing') await rm(notice)
+      else await writeFile(notice, 'Truncated license')
+      await assert.rejects(stageLfsTransferRuntime({ appRoot, targetTriple: 'aarch64-apple-darwin', run: probeCompiler,
+        fetchStream: async () => { throw new Error('Rebuild required for damaged notices') } }), /Rebuild required for damaged notices/)
+    })
+  }
+}
