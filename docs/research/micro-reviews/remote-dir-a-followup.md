@@ -31,3 +31,15 @@ The full application Cargo test and Cargo Clippy requests never progressed beyon
 - **Consequence:** The controller reports unexpected shell output and loses a valid remote result despite receiving a reply within the documented allowance. Repeated NULs can reach this false rejection below 64 KiB.
 - **Fix:** Count the mismatched byte as skipped only when it does not begin the next match. Preserve the frame and shell-output limits.
 - **Regression:** Both an ordinary 64 KiB banner ending in NUL and a 64 KiB NUL banner must round-trip through a seven-byte buffer. A NUL banner one byte over the allowance must still fail. Both parser tests pass after correction. The disposable harness copies the source functions and test bodies; it replaces only the unused process-wide test guard. Rust 1.94.0 module Clippy, Cargo formatting, and whitespace checks pass; no live SSH session, app, or VM is involved.
+
+## REMOTE-DIR-A-4: Malformed reply envelopes report successful remote actions
+
+- **Priority:** P2.
+- **Location:** `app/SiloUI/src-tauri/src/remote.rs`, final response decoding in `run_exchange` and initial handshake decoding in `run_remote_stream`.
+- **Trigger:** The remote transport receives valid framed JSON with no result or string error, such as `{}` or `{"error":{"message":"failed"}}`. An envelope containing both result and error is also ambiguous.
+- **Evidence:** `run_exchange` indexed `response["result"]`, which produces JSON null when the field is absent, after the optional error decoder returned none. A disposable child emitted the production reply framing for `{}`; the unchanged exchange accepted it as `Ok(Null)`, failing `exchange_rejects_malformed_reply_envelopes`. The stream adapter similarly checked only whether `error` was a string before accepting its handshake.
+- **Consequence:** An invalid remote response can be reported as a successful action or SSH handshake without any explicit successful result. This is a protocol-boundary failure, not evidence that the current owner normally emits malformed replies.
+- **Fix:** Use one decoder in both real adapters. Require exactly one top-level result or valid error; keep explicit null results, modern error codes, legacy string errors, and unknown supplemental fields compatible.
+- **Regression:** Actual framed replies from a bounded disposable child exercise empty/array replies, non-string errors, and conflicting result/error fields. Positive cases preserve explicit null and modern/legacy reported errors. The tests use the unchanged transport and framing source with cached dependencies and the relevant bridge-error code. No live SSH session, app, production data, or VM is used.
+
+The envelope regressions pass after correction (2 passed), including modern and legacy error compatibility. Focused Rust 1.94.0 Clippy reports no warnings; Cargo formatting and whitespace checks pass. This validates the extracted transport module and controlled child protocol, not a full native app build or a live stream session.
