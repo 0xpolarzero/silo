@@ -124,6 +124,20 @@ it("does not submit an incomplete author edit with repository changes", async ()
   expect(github.getByLabelText("Git name for dev")).toHaveValue("")
 })
 
+it.each(["name", "email"] as const)("saves an explicit Git identity disable even when its %s is unfinished", async (field) => {
+  const source = applicationSourceForScenario("running")
+  const { actions, user } = renderGitHub("running", source)
+  await user.clear(screen.getByLabelText(`Git ${field} for dev`))
+  expect(actions.saveGitHubConfiguration).not.toHaveBeenCalled()
+
+  await user.click(screen.getByRole("checkbox", { name: "Apply Git identity to dev" }))
+
+  expect(screen.getByRole("checkbox", { name: "Apply Git identity to dev" })).not.toBeChecked()
+  expect(actions.saveGitHubConfiguration).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    workspaces: [expect.objectContaining({ workspace: "dev", identity: expect.objectContaining({ [field]: "", apply: false }) })],
+  }))
+})
+
 
 
 it("saves only the edited sandbox against the shown revision and never turns access on", async () => {
