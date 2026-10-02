@@ -3,14 +3,11 @@ import { CircleAlert, TriangleAlert } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Switch } from "@/components/ui/switch"
-import { useChatGptApp, useComputerUseBridge, type ChatGptAppSnapshot, type ChatGptAppStore } from "./computer-use-bridge"
+import { computerOfWorkspace, useChatGptApp, useComputerUseBridge, type ChatGptAppStore } from "./computer-use-bridge"
 import type { ChatGptAppStatus, ComputerUseApproval, ComputerUseState, LinuxDesktopState } from "./linux-desktop-state"
-
-export const OPENAI_TERMS_URL = "https://openai.com/policies/terms-of-use/"
 
 const stateLabels: Record<ComputerUseState["state"], string> = {
   unavailable: "Unavailable",
-  "needs-consent": "Waiting for your approval to download ChatGPT for Linux",
   preparing: "Preparing…",
   installing: "Installing…",
   ready: "Ready",
@@ -31,22 +28,27 @@ function ErrorLine({ message, actionLabel, onAction, onDismiss, busy }: { messag
   </div>
 }
 
-/** The one-time notice before Silo downloads the official ChatGPT app for Linux. */
-export function ChatGptNotice({ busy, error, onAccept, onNotNow, onDismissError }: { busy: boolean; error?: string | null; onAccept: () => void; onNotNow?: () => void; onDismissError?: () => void }) {
-  const titleId = useId()
-  return <div role="group" aria-labelledby={titleId} className="grid gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
-    <p id={titleId} className="font-medium">Download ChatGPT for Linux?</p>
-    <p className="text-muted-foreground">Silo will download the official ChatGPT app for Linux from OpenAI (about 450 MB, about 1.5 GB on disk, once per computer) so agents in your sandboxes can use the Linux desktop. It is shared by your sandboxes and never installed in them. <a className="underline underline-offset-2" href={OPENAI_TERMS_URL} target="_blank" rel="noreferrer">OpenAI terms of use</a></p>
-    {error && <ErrorLine message={error} onDismiss={onDismissError} />}
-    <div className="flex justify-end gap-1.5">
-      {onNotNow && <Button type="button" size="xs" variant="ghost" disabled={busy} onClick={onNotNow}>Not now</Button>}
-      <Button type="button" size="xs" disabled={busy} onClick={onAccept}>Accept</Button>
-    </div>
-  </div>
+/** What Silo tells the user about the ChatGPT app. It downloads it by itself: nothing to accept. */
+export const CHATGPT_DOWNLOAD_NOTE = "Silo downloads ChatGPT for Linux from OpenAI so agents in your sandboxes can use the Linux desktop."
+
+/** The one-line state of a computer's ChatGPT app, for lists. */
+export function chatGptStatusText(status: ChatGptAppStatus | null) {
+  switch (status?.state) {
+    case "ready": return status.version ? `Ready ${status.version}` : "Ready"
+    case "downloading": {
+      const total = status.totalBytes ?? 0
+      return total > 0 ? `Downloading ${Math.min(100, Math.round(status.receivedBytes / total * 100))}%` : "Downloading"
+    }
+    case "verifying": return "Verifying the download"
+    case "extracting": return "Unpacking"
+    case "idle": return "Waiting to download"
+    case "failed": return "Failed"
+    default: return "Unknown"
+  }
 }
 
-/** Progress and result of preparing the ChatGPT app. Renders nothing before consent or when idle. */
-export function ChatGptAppProgress({ status, busy, onRetry }: { status: ChatGptAppStatus; busy: boolean; onRetry: () => void }) {
+/** Progress and result of preparing the ChatGPT app, read-only: a Retry button appears only with `onRetry`. */
+export function ChatGptAppProgress({ status, busy = false, onRetry }: { status: ChatGptAppStatus; busy?: boolean; onRetry?: () => void }) {
   switch (status.state) {
     case "downloading": {
       const total = status.totalBytes ?? 0
@@ -61,46 +63,19 @@ export function ChatGptAppProgress({ status, busy, onRetry }: { status: ChatGptA
     case "failed": return <div role="alert" className="flex items-start gap-1.5 text-xs text-destructive">
       <CircleAlert aria-hidden="true" className="mt-0.5 size-3.5 shrink-0" />
       <span className="min-w-0 flex-1 break-words">{status.reason}</span>
-      {status.retryable && <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onRetry}>Retry</Button>}
+      {onRetry && <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onRetry}>Retry</Button>}
     </div>
-    case "idle": return <div className="flex items-center justify-between gap-2 text-xs">
-      <span className="text-muted-foreground">ChatGPT for Linux has not been downloaded yet.</span>
-      <Button type="button" size="xs" variant="outline" disabled={busy} onClick={onRetry}>Download</Button>
-    </div>
+    case "idle": return <p role="status" className="text-xs text-muted-foreground">ChatGPT for Linux will download shortly.</p>
     default: return null
   }
 }
 
-/** The notice and download progress of one computer, driven by its shared ChatGPT app store.
- * `showReady` is for the sandbox creation form, which confirms an app that is already in place. */
-export function ChatGptAppFlow({ store, dismissable = true, showReady = false }: { store: ChatGptAppStore | undefined; dismissable?: boolean; showReady?: boolean }) {
-  const snapshot = useChatGptApp(store)
-  return <ChatGptAppFlowView snapshot={snapshot} showReady={showReady}
-    onAccept={() => { void store?.accept() }} onNotNow={dismissable ? () => store?.dismiss() : undefined} onRetry={() => { void store?.prepare() }}
-    onReload={() => { void store?.refresh() }} onDismissError={() => store?.dismissError()} />
-}
-
-export function ChatGptAppFlowView({ snapshot, showReady, onAccept, onNotNow, onRetry, onReload, onDismissError }: { snapshot: ChatGptAppSnapshot; showReady: boolean; onAccept: () => void; onNotNow?: () => void; onRetry: () => void; onReload: () => void; onDismissError: () => void }) {
-  const { status, busy, error, loadError, dismissed } = snapshot
-  // Errors never depend on the status: a failed read or request is shown whatever came before it.
-  const loadFailure = loadError ? <ErrorLine message={loadError} actionLabel="Try again" onAction={onReload} /> : null
-  if (!status) return loadFailure
-  if (status.state === "notConsented") return <>
-    {dismissed
-      ? <>
-        <p className="text-xs text-muted-foreground">Computer use needs ChatGPT for Linux. Silo asks again from the sandbox's details.</p>
-        {error && <ErrorLine message={error} onDismiss={onDismissError} />}
-      </>
-      : <ChatGptNotice busy={busy} error={error} onAccept={onAccept} onNotNow={onNotNow} onDismissError={onDismissError} />}
-    {loadFailure}
-  </>
-  return <>
-    {status.state === "ready"
-      ? showReady ? <p role="status" className="text-xs text-muted-foreground">ChatGPT for Linux is ready{status.version ? ` (${status.version})` : ""}.</p> : null
-      : <ChatGptAppProgress status={status} busy={busy} onRetry={onRetry} />}
-    {error && <ErrorLine message={error} onDismiss={onDismissError} />}
-    {loadFailure}
-  </>
+/** The progress of the ChatGPT download of a sandbox's computer, read-only. Settings → Computers has Retry. */
+export function ChatGptAppStatusView({ store }: { store: ChatGptAppStore | undefined }) {
+  const { status, loadError } = useChatGptApp(store)
+  if (!status) return loadError ? <ErrorLine message={loadError} /> : null
+  if (status.state === "ready" || status.state === "unknown") return null
+  return <ChatGptAppProgress status={status} />
 }
 
 /** Presentational: the state of one VM's built-in computer use. */
@@ -115,7 +90,7 @@ export function ComputerUsePanel({ computerUse, running, busy, error, loadError,
   loadError?: string | null
   onDismissError?: () => void
   onReload?: () => void
-  /** The ChatGPT download notice or its progress, while the app is not ready. */
+  /** The ChatGPT download progress, read-only, while the app is not ready. */
   chatGpt?: ReactNode
   onApproval: (mode: ComputerUseApproval) => void
   onSetup: () => void
@@ -213,10 +188,10 @@ export function ComputerUseSection({ workspace, pollMs = 5000 }: { workspace: st
   const computerUse = state.computerUse
   // A loaded state without computerUse is a sandbox from before it was built in.
   if (!computerUse) return null
-  const needsApp = computerUse.state === "needs-consent" || computerUse.state === "preparing"
+  const needsApp = computerUse.state === "preparing"
   return <ComputerUsePanel computerUse={computerUse} running={state.state === "running"} busy={busy} error={error} loadError={loadError}
     onDismissError={() => setError(null)} onReload={() => { void refresh() }}
-    chatGpt={needsApp ? <ChatGptAppFlow store={bridge.chatGptFor(workspace)} dismissable={false} /> : undefined}
+    chatGpt={needsApp ? <ChatGptAppStatusView store={bridge.chatGptFor(computerOfWorkspace(workspace))} /> : undefined}
     onApproval={mode => { void run(() => bridge.setApproval(workspace, mode), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, approval: mode } : current.computerUse })) }}
     onSetup={() => { void run(() => bridge.setup(workspace), current => ({ ...current, computerUse: current.computerUse ? { ...current.computerUse, state: "installing", reason: null } : current.computerUse })) }} />
 }

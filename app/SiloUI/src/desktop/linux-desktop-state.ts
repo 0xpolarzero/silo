@@ -4,7 +4,7 @@ const desktopSessionStateSchema = z.enum(["stopped", "starting", "running", "fai
 
 // Built-in computer use (v4 VMs). Every field tolerates a newer or malformed value,
 // so a diagnostic detail can never make the desktop state unreadable.
-export const computerUseStates = ["unavailable", "needs-consent", "preparing", "installing", "ready", "failed"] as const
+export const computerUseStates = ["unavailable", "preparing", "installing", "ready", "failed"] as const
 export const computerUseSchema = z.object({
   state: z.enum(computerUseStates).catch("unavailable"),
   reason: z.string().nullish().catch(null),
@@ -21,9 +21,11 @@ export type ComputerUseState = z.infer<typeof computerUseSchema>
 /** The modes a user can set; `ComputerUseState.approval` adds "unknown" for an unreadable policy. */
 export type ComputerUseApproval = Exclude<ComputerUseState["approval"], "unknown">
 
-// The official ChatGPT Linux app, downloaded once per computer after a notice.
+// The official ChatGPT Linux app, downloaded automatically by every computer that runs Silo.
+// "unknown" is a computer whose status cannot be read (an older Silo, or a newer state this
+// one does not know): it is never an error.
 export const chatGptAppStatusSchema = z.discriminatedUnion("state", [
-  z.object({ state: z.literal("notConsented") }),
+  z.object({ state: z.literal("unknown") }),
   z.object({ state: z.literal("idle") }),
   z.object({ state: z.literal("downloading"), receivedBytes: z.number().nonnegative().catch(0), totalBytes: z.number().nonnegative().nullish().catch(null) }),
   z.object({ state: z.literal("verifying") }),
@@ -32,6 +34,15 @@ export const chatGptAppStatusSchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("failed"), reason: z.string().catch("The download did not finish."), retryable: z.boolean().catch(false) }),
 ])
 export type ChatGptAppStatus = z.infer<typeof chatGptAppStatusSchema>
+
+/** A status the schema knows, `unknown` for any other tagged state (an older Silo's
+ * `notConsented`, a newer one's addition), and null for a value that is not a status. */
+export function parseChatGptAppStatus(value: unknown): ChatGptAppStatus | null {
+  const parsed = chatGptAppStatusSchema.safeParse(value)
+  if (parsed.success) return parsed.data
+  const state = typeof value === "object" && value !== null ? (value as { state?: unknown }).state : undefined
+  return typeof state === "string" ? { state: "unknown" } : null
+}
 
 export const linuxDesktopStateSchema = z.object({
   installed: z.boolean(),
