@@ -153,14 +153,14 @@ fn require_openssh_at(ssh: &Path, keygen: &Path, purpose: &str) -> Result<(), St
 
 fn validate_path(path: &str) -> Result<(), String> {
     if path.len() > 4096
-        || path.contains('\0')
+        || path.bytes().any(|byte| byte.is_ascii_control())
         || !(path == "/workspace"
             || path.strip_prefix("/workspace/").is_some_and(|tail| {
                 tail.split('/')
                     .all(|part| !part.is_empty() && part != "." && part != "..")
             }))
     {
-        return Err("Choose a folder inside /workspace.".into());
+        return Err("Choose a folder inside /workspace with no control characters.".into());
     }
     Ok(())
 }
@@ -1139,6 +1139,15 @@ mod tests {
             assert!(validate_path(invalid).is_err());
         }
     }
+    #[test]
+    fn control_characters_cannot_change_the_requested_editor_folder() {
+        for path in ["/workspace/a\tb", "/workspace/a\nb", "/workspace/a\rb"] {
+            assert!(validate_path(path).is_err());
+            assert!(remote_uri("silo-test-dev", path, true).is_err());
+            assert!(remote_uri("silo-test-dev", path, false).is_err());
+        }
+    }
+
     #[test]
     fn literal_percent_sequences_keep_the_guest_folder_identity() {
         for (path, encoded) in [
