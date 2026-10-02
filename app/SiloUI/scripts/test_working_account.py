@@ -80,6 +80,19 @@ class WorkingAccountTests(unittest.TestCase):
         self.assertFalse((destination / 'agent.pipe').exists())
         self.assertEqual((destination / 'saved').read_text(), 'saved work')
 
+    def test_utf8_decodable_binary_in_bin_is_copied_without_path_relocation(self):
+        source, destination = self.root / 'root', self.root / 'silo'
+        (source / '.local/bin').mkdir(parents=True)
+        # A WebAssembly module with a custom section holding an old home path.
+        binary = b'\x00asm\x01\x00\x00\x00\x00\x0f\x04path/root/tool'
+        binary.decode('utf-8')
+        original = source / '.local/bin/tool.wasm'
+        original.write_bytes(binary)
+        for _ in range(2):
+            guest.copy_home(source, destination)
+            self.assertEqual((destination / '.local/bin/tool.wasm').read_bytes(), binary)
+        self.assertEqual(original.read_bytes(), binary)
+
     def test_two_home_merge_preserves_external_directory_link_target(self):
         root, desktop, home, external = [self.root / name for name in ('root', 'desktop', 'home', 'external')]
         root.mkdir()
