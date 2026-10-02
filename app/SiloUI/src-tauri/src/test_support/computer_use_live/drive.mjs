@@ -3,6 +3,9 @@
 // `live_lcu_drives_the_desktop_without_a_model`. Prints `MARK <name> <value>` lines the test
 // checks; the saved files are verified independently by the test, not by this script.
 //
+// DRIVE_MODE=bare speaks raw MCP to `lcu` with no `_meta` at all (a client that knows
+// nothing about Codex's sandbox-state meta) and takes a screenshot and lists windows
+// through the `js` tool: the case LCU 0.8.2 fixes (it supplies that meta by default).
 // DRIVE_MODE=probe only reports whether the default configuration can reach the X server.
 // E2E_NO_SANDBOX=1 starts LCU's server without the node_repl sandbox (see the test).
 import { createCuaClient } from '/opt/lcu/current/adapters/client.mjs';
@@ -11,6 +14,40 @@ import { existsSync, readdirSync, rmSync } from 'node:fs';
 
 const mark = (name, value) => console.log(`MARK ${name} ${value}`);
 const noSandbox = process.env.E2E_NO_SANDBOX === '1';
+if (process.env.DRIVE_MODE === 'bare') {
+  const child = spawn('/opt/lcu/current/bin/lcu', [], { cwd: '/home/silo', stdio: ['pipe', 'pipe', 'inherit'] });
+  const pending = new Map();
+  let buffer = '';
+  child.stdout.on('data', chunk => {
+    buffer += chunk;
+    for (let i = buffer.indexOf('\n'); i >= 0; i = buffer.indexOf('\n')) {
+      const line = buffer.slice(0, i); buffer = buffer.slice(i + 1);
+      try { const m = JSON.parse(line); if (m.id !== undefined && pending.has(m.id)) pending.get(m.id)(m); } catch {}
+    }
+  });
+  let next = 1;
+  const rpc = (method, params) => new Promise(resolve => {
+    const id = next++; pending.set(id, resolve);
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+  });
+  await rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'bare', version: '0' } });
+  child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+  const bare = async code => {
+    const r = await rpc('tools/call', { name: 'js', arguments: { code } }); // no _meta
+    return JSON.stringify(r.result ?? r.error);
+  };
+  const windowsOut = await bare('nodeRepl.write(JSON.stringify((await cua.listWindows({ emit: false })).map(x => [x.id, x.app, x.title])));');
+  console.log('--- bare list-windows\n' + windowsOut.slice(-700));
+  const found = /\[\[\d+,/.test(windowsOut);
+  const shotOut = await bare("const w = (await cua.listWindows({ emit: false }))[0]; const a = await cua.getApp({ windowId: w.id }); const shot = await a.getScreenshot({ emit: false }); nodeRepl.write('screenshot ' + shot.length);");
+  console.log('--- bare screenshot\n' + shotOut.slice(-700));
+  mark('bare-windows', found ? 'yes' : 'no');
+  mark('bare-screenshot', /screenshot \d{4,}/.test(shotOut) ? 'yes' : 'no');
+  mark('bare-denied', /Operation not permitted|Could not connect to X11/.test(windowsOut + shotOut) ? 'yes' : 'no');
+  child.kill();
+  process.exit(0);
+}
+
 const client = createCuaClient({
   command: ['/opt/lcu/current/bin/lcu'],
   cwd: '/home/silo',

@@ -424,3 +424,16 @@ network by default), verifies the hash and installs 0.8.2 in place over an exist
 Offline consequence: until a new image stages 0.8.2, computer use setup needs
 network once per VM (the earlier install keeps running meanwhile). Guest tests cover
 mismatch, download, install and upgrade of an existing install.
+
+Live check (macOS arm64, Silo main plus this pin, MicroSandbox 0.7.6 `msb` ad-hoc signed with
+`Entitlements.plist`, published v4 image `ubuntu-24.04-v4-arm64`, ChatGPT 26.928.31416; fixture home
+under `/tmp`, `e2e-lcu` sandbox, no packaged app). A new built-in VM, created and started through
+Silo's own paths, found a staged archive that does not match the lock, downloaded the locked 0.8.2
+URL, verified it and installed it: `lcu status --json` reported `lcu_version` 0.8.2 and compatibility
+`tested`, `lcu doctor` reported ready, and a bare MCP client with no `_meta` at all listed windows and
+took a screenshot through the `js` tool (`DRIVE_MODE=bare` in
+`test_support/computer_use_live/drive.mjs`). The full drive (GNOME Text Editor, Save As, per-key typing)
+now passes in LCU's default configuration, without the previous `E2E_NO_SANDBOX` workaround. One earlier
+attempt ended `computer use failed` (`lcu-archive-unavailable`) because the guest's first download over
+the host network returned an empty reply; the retry succeeded. The upgrade of an existing 0.8.1
+install is covered by the guest unit tests only, not live.
