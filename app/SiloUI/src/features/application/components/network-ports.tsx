@@ -28,10 +28,10 @@ export function NetworkPortForm({ controller, fieldID, hideSandbox = false, clas
     event.preventDefault()
     const request: NetworkPortRequest = { workspace: draft.workspace, port: Number(draft.port), hostPort: draft.hostPort ? Number(draft.hostPort) : null, scheme: draft.scheme === "tcp" ? null : draft.scheme as "http" | "https" }
     const validPort = (port: number) => Number.isInteger(port) && port >= 1 && port <= 65535
-    const errors = { port: validPort(request.port) ? undefined : "Enter a port from 1 to 65535.", hostPort: request.hostPort === null || validPort(request.hostPort) ? undefined : "Enter a port from 1 to 65535." }
+    const workspace = localWorkspaces.find(workspace => workspaceTarget(workspace) === draft.workspace && workspace.machine.id === draft.sandboxId)
+    const errors = { workspace: workspace ? undefined : "This sandbox changed. Cancel this form and open its current Ports section.", port: validPort(request.port) ? undefined : "Enter a port from 1 to 65535.", hostPort: request.hostPort === null || validPort(request.hostPort) ? undefined : "Enter a port from 1 to 65535." }
     setFieldErrors(errors)
-    if (errors.port || errors.hostPort) return
-    const workspace = localWorkspaces.find(workspace => workspaceTarget(workspace) === draft.workspace)
+    if (errors.port || errors.hostPort || errors.workspace) return
     if (actions.saveNetworkPort && workspace) {
       const identity = { computer: workspace.computer, sandboxId: workspace.machine.id, displayName: workspace.machine.name }
       const verb = draft.editing ? "edit" : "add"
@@ -45,7 +45,8 @@ export function NetworkPortForm({ controller, fieldID, hideSandbox = false, clas
     <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Protocol<select aria-label="Protocol" className="h-8 rounded-md border border-input bg-background px-2 text-foreground" disabled={busy} value={draft.scheme} onChange={e => setDraft({ ...draft, scheme: e.target.value })}><option value="http">HTTP</option><option value="https">HTTPS</option><option value="tcp">TCP</option></select></label></div>
     {hideSandbox
       ? <input type="hidden" value={draft.workspace} readOnly />
-      : <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Sandbox<select aria-label="Sandbox" className="h-8 min-w-24 rounded-md border border-input bg-background px-2 text-foreground" value={draft.workspace} disabled={busy || draft.editing} onChange={e => setDraft({ ...draft, workspace: e.target.value })}>{localWorkspaces.filter(w => w.state === "running" || workspaceTarget(w) === draft.workspace).map(w => <option key={w.machine.id} value={workspaceTarget(w)}>{w.machine.name}{w.computer ? ` · ${w.computer.name}` : ""}{w.state === "running" ? "" : " (stopped)"}</option>)}</select></label></div>}
+      : <div role="cell"><label className="grid gap-1 text-xs text-muted-foreground">Sandbox<select aria-label="Sandbox" className="h-8 min-w-24 rounded-md border border-input bg-background px-2 text-foreground" value={draft.workspace} disabled={busy || draft.editing} onChange={e => { setDraft({ ...draft, workspace: e.target.value, sandboxId: localWorkspaces.find(workspace => workspaceTarget(workspace) === e.target.value)?.machine.id ?? "" }); setFieldErrors(current => ({ ...current, workspace: undefined })) }}>{localWorkspaces.filter(w => w.state === "running" || workspaceTarget(w) === draft.workspace).map(w => <option key={w.machine.id} value={workspaceTarget(w)}>{w.machine.name}{w.computer ? ` · ${w.computer.name}` : ""}{w.state === "running" ? "" : " (stopped)"}</option>)}</select></label></div>}
+    {fieldErrors.workspace && <p role="alert" className="col-span-full text-xs text-destructive">{fieldErrors.workspace}</p>}
     <div role="cell" className="flex justify-end gap-1"><Tooltip><TooltipTrigger asChild><Button type="button" variant="ghost" size="icon-xs" aria-label="Cancel" disabled={busy} onClick={() => controller.cancelDraft()}><X /></Button></TooltipTrigger><TooltipContent>Cancel</TooltipContent></Tooltip><Tooltip><TooltipTrigger asChild><Button type="submit" variant="ghost" size="icon-xs" aria-label={draft.editing ? "Save" : "Add"} disabled={busy}>{busy ? <LoaderCircle className="animate-spin" /> : <Check />}</Button></TooltipTrigger><TooltipContent>{draft.editing ? "Save" : "Add"}</TooltipContent></Tooltip></div>
   </form>
 }

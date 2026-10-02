@@ -54,12 +54,18 @@ struct Intent {
     local_port: u16,
     scheme: Option<String>,
 }
+#[derive(Debug)]
+struct Reconnect {
+    key: Key,
+    intent: Intent,
+    remote_port: u16,
+}
 #[derive(Default)]
 struct Tunnels {
     live: HashMap<Key, Tunnel>,
     intents: HashMap<Key, Intent>,
-    /// Keys a background reconnect is opening right now.
-    connecting: HashSet<Key>,
+    /// Each worker owns one attempt; replacement invalidates the previous worker.
+    connecting: HashMap<Key, Arc<Reconnect>>,
     saves: HashMap<Key, Arc<()>>,
     revisions: HashMap<String, Arc<()>>,
 }
@@ -74,14 +80,14 @@ impl Tunnels {
         self.live.contains_key(key)
             || self.intents.contains_key(key)
             || self.saves.contains_key(key)
-            || self.connecting.contains(key)
+            || self.connecting.contains_key(key)
     }
     fn connection_count(&self) -> usize {
         self.live
             .keys()
             .chain(self.intents.keys())
             .chain(self.saves.keys())
-            .chain(self.connecting.iter())
+            .chain(self.connecting.keys())
             .collect::<HashSet<_>>()
             .len()
     }
@@ -108,6 +114,7 @@ impl PendingSave {
             return Err("Close an unused connection before opening another port.".into());
         }
         tunnels.changed(&key.0);
+        tunnels.connecting.remove(&key);
         tunnels.saves.insert(key.clone(), token.clone());
         Ok(Self { key, token })
     }
@@ -207,8 +214,8 @@ fn read(app: &AppHandle, host: &str) -> Result<Value, BridgeError> {
         reconnect,
     } = projection;
     drop(closed);
-    for (key, intent, remote_port) in reconnect {
-        reconnect_in_background(app.clone(), key, intent, remote_port);
+    for request in reconnect {
+        reconnect_in_background(app.clone(), request);
     }
     Ok(value)
 }
@@ -217,8 +224,8 @@ struct Projection {
     value: Value,
     /// Tunnels to stop, dropped after the lock is released.
     closed: Vec<Tunnel>,
-    /// Intended tunnels to open again: key, intent, the owner's current endpoint.
-    reconnect: Vec<(Key, Intent, u16)>,
+    /// Intended tunnels to open again on the owner's current endpoint.
+    reconnect: Vec<Arc<Reconnect>>,
 }
 fn project_observed(
     value: Value,
@@ -268,6 +275,7 @@ fn project_ports(
     // Reject the whole response before changing tunnel ownership or scheduling workers.
     validate_remote_ports(&value)?;
     let mut observed = HashSet::new();
+    let mut failed_vms = HashSet::new();
     let mut closed = Vec::new();
     let mut reconnect = Vec::new();
     for row in value["workspaces"]
@@ -278,6 +286,9 @@ fn project_ports(
             .as_str()
             .ok_or("Missing remote VM identity.")?
             .to_owned();
+        if row["error"].as_str().is_some() {
+            failed_vms.insert(vm.clone());
+        }
         let name = row["workspace"].as_str().unwrap_or("").to_owned();
         row["host"] = json!(crate::network::sandbox_host(&name, &vm));
         row["workspace"] = json!(format!("silo-remote:{host}:{vm}"));
@@ -322,9 +333,20 @@ fn project_ports(
                     if let Some(endpoint) = endpoint {
                         port["state"] = json!("waiting");
                         port["message"] = json!("Reconnecting to the other computer…");
-                        if tunnels.connecting.insert(key.clone()) {
-                            reconnect.push((key, intent, endpoint));
+                        let unchanged = tunnels.connecting.get(&key).is_some_and(|request| {
+                            request.remote_port == endpoint && request.intent == intent
+                        });
+                        if !unchanged {
+                            let request = Arc::new(Reconnect {
+                                key: key.clone(),
+                                intent,
+                                remote_port: endpoint,
+                            });
+                            tunnels.connecting.insert(key, request.clone());
+                            reconnect.push(request);
                         }
+                    } else {
+                        tunnels.connecting.remove(&key);
                     }
                 }
                 (None, None) => {
@@ -336,17 +358,18 @@ fn project_ports(
             }
         }
     }
-    // Ports or sandboxes the owner no longer has are forgotten here too.
+    // Missing ports imply deletion only when their VM was observed successfully.
     let gone: Vec<Key> = tunnels
         .live
         .keys()
         .chain(tunnels.intents.keys())
-        .filter(|key| key.0 == host && !observed.contains(*key))
+        .filter(|key| key.0 == host && !observed.contains(*key) && !failed_vms.contains(&key.1))
         .cloned()
         .collect();
     for key in gone {
         closed.extend(tunnels.live.remove(&key));
         tunnels.intents.remove(&key);
+        tunnels.connecting.remove(&key);
     }
     Ok(Projection {
         value,
@@ -435,35 +458,46 @@ fn control_ready(
     result
 }
 
-fn reconnect_in_background(app: AppHandle, key: Key, intent: Intent, remote_port: u16) {
+fn reconnect_in_background(app: AppHandle, request: Arc<Reconnect>) {
     std::thread::spawn(move || {
         let opened = runtime::shutdown::ensure_accepting_operations().and_then(|()| {
             open_tunnel(
-                |local, socket| remote::ssh_tunnel_commands(&key.0, local, remote_port, socket),
-                Some(intent.local_port),
-                remote_port,
+                |local, socket| {
+                    remote::ssh_tunnel_commands(&request.key.0, local, request.remote_port, socket)
+                },
+                Some(request.intent.local_port),
+                request.remote_port,
                 READY_WITHIN,
             )
         });
-        let unused = {
-            let mut tunnels = tunnels();
-            tunnels.connecting.remove(&key);
-            match opened {
-                // Only while the user still wants this port and nothing else reopened it.
-                Ok(tunnel)
-                    if tunnels.intents.get(&key) == Some(&intent)
-                        && !tunnels.live.contains_key(&key) =>
-                {
-                    tunnels.live.insert(key, tunnel);
-                    None
-                }
-                Ok(tunnel) => Some(tunnel),
-                Err(_) => None,
-            }
-        };
+        let unused = finish_reconnect(&request, opened);
         drop(unused);
         let _ = app.emit("silo://network-state-changed", ());
     });
+}
+
+fn finish_reconnect(request: &Arc<Reconnect>, opened: Result<Tunnel, String>) -> Option<Tunnel> {
+    let mut tunnels = tunnels();
+    let current = tunnels
+        .connecting
+        .get(&request.key)
+        .is_some_and(|pending| Arc::ptr_eq(pending, request));
+    if !current {
+        return opened.ok();
+    }
+    tunnels.connecting.remove(&request.key);
+    match opened {
+        Ok(tunnel)
+            if runtime::shutdown::ensure_accepting_operations().is_ok()
+                && tunnels.intents.get(&request.key) == Some(&request.intent)
+                && !tunnels.live.contains_key(&request.key) =>
+        {
+            tunnels.live.insert(request.key.clone(), tunnel);
+            None
+        }
+        Ok(tunnel) => Some(tunnel),
+        Err(_) => None,
+    }
 }
 
 /// Opens (or replaces) the tunnel for `key` and records the intent. The lock is taken only
@@ -674,7 +708,12 @@ fn row_host<'a>(state: &'a Value, target: &str) -> Option<&'a str> {
 }
 /// Closes every tunnel (quit).
 pub(crate) fn close_all() {
-    let closed: Vec<Tunnel> = tunnels().live.drain().map(|(_, tunnel)| tunnel).collect();
+    let closed: Vec<Tunnel> = {
+        let mut tunnels = tunnels();
+        tunnels.saves.clear();
+        tunnels.connecting.clear();
+        tunnels.live.drain().map(|(_, tunnel)| tunnel).collect()
+    };
     drop(closed);
 }
 /// Closes a computer's live tunnels but keeps their intents, so they reopen on the same
@@ -682,6 +721,7 @@ pub(crate) fn close_all() {
 pub(crate) fn disconnect_host(host: &str) {
     let closed: Vec<Tunnel> = {
         let mut tunnels = tunnels();
+        tunnels.connecting.retain(|key, _| key.0 != host);
         let keys: Vec<Key> = tunnels
             .live
             .keys()
@@ -701,7 +741,7 @@ pub(crate) fn close_host(host: &str) {
         tunnels.revisions.remove(host);
         tunnels.saves.retain(|key, _| key.0 != host);
         tunnels.intents.retain(|key, _| key.0 != host);
-        tunnels.connecting.retain(|key| key.0 != host);
+        tunnels.connecting.retain(|key, _| key.0 != host);
         let keys: Vec<Key> = tunnels
             .live
             .keys()
@@ -747,6 +787,20 @@ mod tests {
     }
     fn port(result: &Projection) -> &Value {
         &result.value["workspaces"][0]["ports"][0]
+    }
+
+    fn reconnect_targets(projection: &Projection) -> Vec<(Key, Intent, u16)> {
+        projection
+            .reconnect
+            .iter()
+            .map(|request| {
+                (
+                    request.key.clone(),
+                    request.intent.clone(),
+                    request.remote_port,
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -801,7 +855,10 @@ mod tests {
         // The VM restarted and the owner published the port on a new endpoint.
         let result = project_ports(observed(Some(32001)), "office", &mut tunnels).unwrap();
         assert_eq!(result.closed.len(), 1);
-        assert_eq!(result.reconnect, [(key("office"), intent(43000), 32001)]);
+        assert_eq!(
+            reconnect_targets(&result),
+            [(key("office"), intent(43000), 32001)]
+        );
         assert_eq!(port(&result)["configuredHostPort"], 43000);
         assert_eq!(port(&result)["state"], "waiting");
         // A reconnect already under way is not started twice.
@@ -816,7 +873,10 @@ mod tests {
         dead.child.wait().unwrap();
         tunnels.live.insert(key("office"), dead);
         let result = project_ports(observed(Some(32001)), "office", &mut tunnels).unwrap();
-        assert_eq!(result.reconnect, [(key("office"), intent(43000), 32001)]);
+        assert_eq!(
+            reconnect_targets(&result),
+            [(key("office"), intent(43000), 32001)]
+        );
     }
 
     #[test]
@@ -853,6 +913,117 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_observation_error_does_not_forget_its_connections() {
+        let mut state = Tunnels::default();
+        state.live.insert(key("office"), tunnel(43000, 32000));
+        state.intents.insert(key("office"), intent(43000));
+        let failed = json!({"workspaces":[{"workspace":"dev","vmId":"vm","ports":[],"error":"Could not read network settings."}]});
+        let result = project_ports(failed, "office", &mut state).unwrap();
+        assert!(
+            result.closed.is_empty(),
+            "a partial observation closed a working tunnel"
+        );
+        assert!(state.intents.contains_key(&key("office")));
+        let recovered = project_ports(observed(Some(32000)), "office", &mut state).unwrap();
+        assert_eq!(port(&recovered)["hostPort"], 43000);
+        assert!(recovered.reconnect.is_empty());
+        let deleted = project_ports(
+            json!({"workspaces":[{"vmId":"vm","ports":[],"error":null}]}),
+            "office",
+            &mut state,
+        )
+        .unwrap();
+        assert_eq!(deleted.closed.len(), 1);
+        assert!(!state.intents.contains_key(&key("office")));
+    }
+
+    #[test]
+    fn an_observation_error_preserves_only_that_workspaces_intents() {
+        let mut state = Tunnels::default();
+        state.intents.insert(key("office"), intent(43000));
+        let healthy_key = ("office".into(), "healthy".into(), 3000);
+        state.intents.insert(healthy_key.clone(), intent(43001));
+        let partial = json!({"workspaces":[
+            {"vmId":"vm","ports":[],"error":"Read failed"},
+            {"vmId":"healthy","ports":[],"error":null}
+        ]});
+        project_ports(partial, "office", &mut state).unwrap();
+        assert!(
+            state.intents.contains_key(&key("office")),
+            "an uncertain row was treated as deletion"
+        );
+        assert!(!state.intents.contains_key(&healthy_key));
+    }
+
+    #[test]
+    fn a_reconnect_cannot_restore_a_tunnel_after_close_all() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        tunnels().intents.insert(key(&host), intent(43000));
+        let request = project_ports(observed(Some(32000)), &host, &mut tunnels())
+            .unwrap()
+            .reconnect
+            .pop()
+            .unwrap();
+        close_all();
+        let unused = finish_reconnect(&request, Ok(tunnel(43000, request.remote_port)));
+        let restored = tunnels().live.contains_key(&key(&host));
+        close_host(&host);
+        assert!(
+            unused.is_some(),
+            "cleanup did not invalidate the pending reconnect"
+        );
+        assert!(!restored, "a reconnect restored a tunnel after cleanup");
+    }
+
+    #[test]
+    fn an_older_reconnect_cannot_clear_a_newer_attempt() {
+        let _guard = crate::test_support::global_state();
+        let host = uuid::Uuid::new_v4().to_string();
+        tunnels().intents.insert(key(&host), intent(43000));
+        let old = project_ports(observed(Some(32000)), &host, &mut tunnels())
+            .unwrap()
+            .reconnect
+            .pop()
+            .unwrap();
+        forget_port(&key(&host));
+        tunnels().intents.insert(key(&host), intent(43000));
+        let newer = project_ports(observed(Some(32001)), &host, &mut tunnels())
+            .unwrap()
+            .reconnect
+            .pop()
+            .unwrap();
+        let unused = finish_reconnect(&old, Ok(tunnel(43000, old.remote_port)));
+        let marked = tunnels().connecting.contains_key(&key(&host));
+        let stale = tunnels().live.contains_key(&key(&host));
+        let valid = finish_reconnect(&newer, Ok(tunnel(43000, newer.remote_port)));
+        let endpoint = tunnels()
+            .live
+            .get(&key(&host))
+            .map(|tunnel| tunnel.remote_port);
+        close_host(&host);
+        assert!(unused.is_some(), "an obsolete reconnect was committed");
+        assert!(marked, "the older worker cleared a newer attempt's marker");
+        assert!(!stale);
+        assert!(valid.is_none());
+        assert_eq!(endpoint, Some(32001));
+    }
+
+    #[test]
+    fn an_endpoint_change_replaces_the_pending_reconnect() {
+        let mut state = Tunnels::default();
+        state.intents.insert(key("office"), intent(43000));
+        let first = project_ports(observed(Some(32000)), "office", &mut state).unwrap();
+        assert_eq!(first.reconnect.len(), 1);
+        let second = project_ports(observed(Some(32001)), "office", &mut state).unwrap();
+        assert_eq!(
+            second.reconnect.len(),
+            1,
+            "a new endpoint waited for the obsolete attempt"
+        );
+    }
+
+    #[test]
     fn an_invalid_snapshot_cannot_strand_a_reconnect() {
         let mut state = Tunnels::default();
         state.intents.insert(key("office"), intent(43000));
@@ -863,11 +1034,14 @@ mod tests {
             .push(json!({"workspace":"bad","ports":[]}));
         assert!(project_ports(invalid, "office", &mut state).is_err());
         assert!(
-            !state.connecting.contains(&key("office")),
+            !state.connecting.contains_key(&key("office")),
             "no worker was started for the rejected snapshot"
         );
         let next = project_ports(observed(Some(32000)), "office", &mut state).unwrap();
-        assert_eq!(next.reconnect, [(key("office"), intent(43000), 32000)]);
+        assert_eq!(
+            reconnect_targets(&next),
+            [(key("office"), intent(43000), 32000)]
+        );
     }
 
     #[test]

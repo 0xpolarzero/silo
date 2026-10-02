@@ -841,6 +841,16 @@ Storage lists it with **Show** and **Delete now** until it is gone.
   one. A record that is damaged or has another `version` is kept untouched;
   the backup is still offered and can be deleted by hand, but Silo never
   deletes it automatically.
+- **Date bounds.** A saved start whose 14-day deadline or UTC conversion exceeds
+  the supported date range follows the damaged-record policy above. The reader
+  uses the `time` crate's [checked date addition](https://docs.rs/time/0.3.55/time/struct.OffsetDateTime.html#method.checked_add)
+  and [checked offset conversion](https://docs.rs/time/0.3.55/time/struct.OffsetDateTime.html#method.checked_to_offset).
+  Regressions cover overflow at `9999-12-31`, UTC overflow from a negative
+  offset, and a valid deadline at the end of year 9999. All use temporary data;
+  no app or VM is launched. The focused native suite passed all 28 tests on
+  2026-10-02, compiled directly with Rust 1.94.0 and the shared cached dependencies
+  while Cargo waited for its build lock. Formatting, frontend typechecking, and
+  lint also passed; this did not build or inspect an app bundle.
 - **Schedule.** Checked at launch and then hourly while Silo runs. A backup
   that came due while Silo was closed is deleted at the next launch. Hourly
   rather than daily because the sleep does not count time the computer spent
@@ -905,6 +915,15 @@ check. Frontend tests cover the migration screen, the Settings row, the confirma
 failure and retry against fixtures, and the native JSON contract. None of this
 deleted a real migrated install or booted a converted VM after deleting its
 backup.
+
+Migration-state reads and async runtime command admission wait on the progress
+mutex on Tauri's blocking pool. The
+writer retains that mutex while it commits the progress file and synchronizes the
+file and directory; a slow commit therefore cannot stall the main thread through
+a progress read. A held-lock regression requires an independent future to run
+before the writer releases the mutex and checks that the snapshot stays unchanged.
+This follows [Tauri's async command execution](https://v2.tauri.app/develop/calling-rust/#async-commands)
+and [Tokio's blocking-work boundary](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
 
 ### Editor connections after the migration (2026-10-01)
 

@@ -32,3 +32,22 @@ Scope: `app/SiloUI/src/features/github/`. Tests use mocked callbacks and determi
 - **Status:** Fixed; component regressions pass.
 
 Verification: 18 GitHub component tests pass. The token and GitHub-page notification suites pass all 14 tests after the owned-toast cleanup correction. The initial broader run hit a 5-second timeout in the existing interleaved repository/identity test under host contention; that test passes in isolation with one worker and a 15-second timeout. Focused lint, TypeScript checking, Rust formatting, and whitespace checks were run for the fixes. No native build or live-state validation was performed.
+
+## FE-GITHUB-4 — P2 — Disabling an incomplete Git identity is never saved
+
+- **File:line at review base `2df5bc93`:** `app/SiloUI/src/features/application/pages/github-page.tsx:295–296`.
+- **Trigger:** Clear the Git name or email for a sandbox whose identity is applied, then turn off Apply.
+- **Evidence:** Both field variants fail a page-level behavior test because `saveGitHubConfiguration` is never called. `commitIdentity` rejects empty author fields before considering `apply`. Native `github.rs` validation requires nonempty fields only when `identity.apply` is true; `github-failure.ts` also instructs users to turn off Apply instead of supplying an author. Exact failing output: `/tmp/silo-fe-github-identity-off-red.log`.
+- **Consequence:** The checkbox shows Apply off while the saved policy still applies the previous Git identity.
+- **Suggested fix:** Require name and email only when applying an identity, retaining the existing incomplete-edit guard when Apply is on.
+- **Regression:** Two parameterized page tests clear each field, disable Apply, inspect the save, and verify the state survives an authoritative snapshot.
+- **Status:** Fixed and folded in `f7e252ef`; five focused identity/retry regressions pass, along with typecheck, focused lint, and formatting checks.
+
+## FE-GITHUB-5 — P2 — Token users cannot toggle global access without OAuth
+
+- **File:line at review base `5d20324a`:** `app/SiloUI/src/features/application/pages/github-page.tsx:347–358`, `:394`; `app/SiloUI/src/features/github/components/github-access-editor.tsx:304`.
+- **Trigger:** Connect a personal token while OAuth is disconnected or connecting, with global GitHub access either disabled or enabled. Disconnecting OAuth sets `access_enabled` to false in native `disconnect_github`; connecting a personal token does not reset it.
+- **Evidence:** Four page-level tests covering both OAuth states and both access values fail because Enable/Disable access is absent. The toggle is passed only through `connectedActions`, rendered only for connected OAuth. Native `set_github_access_enabled` supports the global switch independently, and personal-token attachment explicitly requires `access_enabled`. Exact failing output: `/tmp/silo-fe-github-token-access-red.log`.
+- **Consequence:** Token users cannot enable sandbox token access after disconnecting OAuth or use the global kill switch while OAuth is unavailable.
+- **Suggested fix:** Show the same global access control whenever a personal token is connected, independent of OAuth's connection state.
+- **Regression:** Four page tests toggle access with token authentication, verify no OAuth connection is initiated, and check the button updates from an authoritative snapshot.

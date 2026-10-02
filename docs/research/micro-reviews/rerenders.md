@@ -58,3 +58,93 @@ focused computer-use, polling and desktop-viewer tests pass. Poll scheduling,
 backoff and event/read ordering remain independent of notification suppression.
 The same React external-store identity contract above applies. Only deterministic
 frontend data was used; no app bundle or real computer was inspected.
+
+## Repeated repository catalog scans
+
+Fixed in `features/github/components/github-access-editor.tsx`. Every repository
+picker previously filtered its whole catalog on each render, including while
+closed. An absent sandbox selection also supplied a new empty array each render,
+invalidating the selected-name cache.
+
+The `does not rescan an unchanged catalog during unrelated renders and picks from
+a replacement catalog` regression counts catalog-entry reads through a Proxy.
+With 1,000 repositories and ten unrelated notice changes, the old code read
+10,000 catalog entries. Cached search results and a stable empty selection reduce
+that to zero. A replacement catalog remains selectable with the keyboard.
+All 30 focused editor, GitHub-page and onboarding-GitHub tests pass, covering
+search, selected repository identity, and catalog replacement.
+
+React's [useMemo contract](https://react.dev/reference/react/useMemo) caches pure
+calculations while their dependencies retain identity. Consulted 2026-10-02.
+Filtering depends on the catalog, selected-name set, and query, and event-driven
+search still computes fresh results for new text. The measured result concerns
+catalog reads; option element construction and large-list DOM costs remain.
+
+Merge verification: all 34 editor, GitHub-page and onboarding-GitHub tests pass
+with `--maxWorkers=1 --testTimeout=15000`. The default five-second limit timed
+out twice in the existing identity-edit interaction; the isolated interaction
+completed in 8.2 seconds with the longer limit. Original failures remain in
+`/tmp/silo-catalog-rerenders-merge*.log`. Typecheck, touched-file lint, formatting,
+and whitespace checks pass. The merge preserves own-property checks for sandbox
+names such as `constructor` alongside the stable empty-selection fallback.
+
+## Unchanged sandbox computer-use state
+
+Fixed in `desktop/computer-use-panel.tsx`. The sandbox's own five-second health
+read previously replaced panel state even when approval, readiness and details
+were unchanged. This is separate from the computer's download-status store.
+
+The `does not commit the computer-use panel for equal reads but shows changed
+approval` regression profiles the real panel with deterministic native replies.
+Ten equal polls caused ten React commits before the fix and zero after it.
+Changing approval to Auto on the following poll still checks the switch and
+produces one commit. All 125 focused computer-use and polling tests pass, including
+optimistic commands, errors, retries, stale reads, backoff and hidden views.
+The equality check only affects successful background reads; error clearance,
+revision guards and explicit actions retain their independent behavior. No
+latency, live sandbox or installed-app claim follows from these fixture counts.
+
+## Final combined verification
+
+At `c6f5ffd0`, all 386 tests across the 14 suites below pass. Node 24.11.1 was
+selected through the installed nvm path. The longer per-test timeout accounts for
+the existing onboarding interaction described above. All five fixes include
+patch changesets and have been folded into `codex/integration`.
+
+```sh
+npm --prefix app/SiloUI test -- \
+  src/desktop/production-source-state.test.ts \
+  src/desktop/production-source.test.ts \
+  src/desktop/production-source-transfer.test.ts \
+  src/desktop/production-lifecycle.test.ts \
+  src/features/updates/update-store-rerenders.test.tsx \
+  src/features/updates/updates.test.tsx \
+  src/features/updates/update-commands.test.tsx \
+  src/desktop/production-updates.test.tsx \
+  src/desktop/computer-use-polling.test.tsx \
+  src/desktop/computer-use.test.tsx \
+  src/desktop/linux-desktop-viewer.test.tsx \
+  src/features/github/components/github-access-editor.test.tsx \
+  src/features/application/pages/github-page.test.tsx \
+  src/features/onboarding/onboarding-github.test.tsx \
+  --maxWorkers=2 --testTimeout=15000
+npm --prefix app/SiloUI run typecheck
+app/SiloUI/node_modules/.bin/oxlint \
+  app/SiloUI/src/desktop/production-source.ts \
+  app/SiloUI/src/desktop/production-source-state.test.ts \
+  app/SiloUI/src/features/updates/update-store.tsx \
+  app/SiloUI/src/features/updates/update-store-rerenders.test.tsx \
+  app/SiloUI/src/desktop/computer-use-bridge.ts \
+  app/SiloUI/src/desktop/computer-use-panel.tsx \
+  app/SiloUI/src/desktop/computer-use-polling.test.tsx \
+  app/SiloUI/src/features/github/components/github-access-editor.tsx \
+  app/SiloUI/src/features/github/components/github-access-editor.test.tsx
+cargo +1.94.0 fmt --manifest-path app/SiloUI/src-tauri/Cargo.toml --check
+git diff --check
+```
+
+All checks pass and the working tree is clean. Combined output is retained in
+`/tmp/silo-rerenders-final.log`; pre-fix failures are in the corresponding
+`/tmp/silo-*-rerenders-before.log` files. No native build, installed bundle,
+production data, live sandbox or remote computer was used. The existing log
+ordering/clipboard opportunity O-05 was excluded under the theme brief.

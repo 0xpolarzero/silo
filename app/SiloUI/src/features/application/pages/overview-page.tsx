@@ -10,7 +10,7 @@ import type { SandboxCommandRequest } from "../components/application-commands"
 import { LifecycleControl } from "../components/lifecycle-control"
 import { lifecycleGuard, type LifecycleAction, type LifecycleGuard } from "../model/lifecycle-guard"
 import { ComputerBadge } from "@/features/sandboxes/components/computer-badge"
-import { workspaceTarget } from "../model/remote-computers"
+import { parseRemoteWorkspaceTarget, workspaceTarget } from "../model/remote-computers"
 import { ConnectComputerForm } from "../components/remote-computers-settings"
 import { SandboxDetailPage, type SandboxDetailControls, type SandboxDetailEditing } from "./sandbox-detail-page"
 import type { ApplicationInitialRoute } from "@/features/application/model/use-application-navigation"
@@ -332,8 +332,9 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
   }
   const configurationOperation = source.sandboxConfigurationOperation
   const configurationLocked = readOnly || configurationOperation !== null
-  const localMachines = machines.filter(machine => !workspaces.get(machine.id)?.computer)
-  const localOnly = (list: readonly SetupMachineConfiguration[]) => list.filter(machine => !workspaces.get(machine.id)?.computer)
+  const getMachineComputerId = (machine: SetupMachineConfiguration) => parseRemoteWorkspaceTarget(machine.id)?.hostId ?? workspaces.get(machine.id)?.computer?.id
+  const localOnly = (list: readonly SetupMachineConfiguration[]) => list.filter(machine => !getMachineComputerId(machine))
+  const localMachines = localOnly(machines)
 
   // Return to the list if the open sandbox disappeared (deleted, or removed by a refresh).
   // Controlled navigation replaces its history entries in place (the app forgets missing
@@ -356,7 +357,6 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
 
   // The sandbox editing callbacks, shared by the list and the detail page's in-place editor
   // and delete dialog so both commit, delete, and validate through exactly the same paths.
-  const getMachineComputerId = (machine: SetupMachineConfiguration) => workspaces.get(machine.id)?.computer?.id
   // This computer's own order of the list, local and remote sandboxes alike.
   const { settings: { sandboxOrder }, updateSettings } = useSettings()
   const orderRanks = sandboxOrderRanks(sandboxOrder)
@@ -500,11 +500,12 @@ export function OverviewPage({ active = true, readOnly = false, notifyOperations
 
   // A deleted sandbox takes its notifications with it: their actions (Open, Retry…) would
   // otherwise point at something that no longer exists.
-  const knownSandboxes = useRef(new Map<string, { name: string; computerId: string; target: string }>())
+  const knownSandboxes = useRef(new Map<string, { id: string; name: string; computerId: string; target: string }>())
   useEffect(() => {
-    const current = new Map(source.workspaces.map(workspace => [`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, { name: workspace.machine.name, computerId: workspace.computer?.id ?? "", target: workspaceTarget(workspace) }]))
+    const current = new Map(source.workspaces.map(workspace => [`${workspace.computer?.id ?? ""}:${workspace.machine.id}`, { id: workspace.machine.id, name: workspace.machine.name, computerId: workspace.computer?.id ?? "", target: workspaceTarget(workspace) }]))
     for (const [key, known] of knownSandboxes.current) {
       if (current.has(key)) continue
+      dismissSandboxToasts(known.id)
       if (known.computerId) dismissSandboxToasts(known.target)
       dismissOperationToast(`lifecycle:${key}`)
       // A name shared with a sandbox that still exists (e.g. on another computer) keeps its notifications.

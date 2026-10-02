@@ -1072,6 +1072,7 @@ struct QuitConfirmation(Mutex<QuitRequests>);
 #[derive(Default)]
 struct QuitRequests {
     enabled: bool,
+    session_ending: bool,
     pending: Option<u64>,
     next: u64,
 }
@@ -1094,7 +1095,7 @@ impl QuitConfirmation {
     /// `None` exits now: nothing runs, or no UI can answer.
     fn ask(&self, running: Result<Vec<String>, String>) -> Option<QuitRequest> {
         let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
-        if !state.enabled {
+        if !state.enabled || state.session_ending {
             return None;
         }
         let sandboxes = match running {
@@ -1120,10 +1121,9 @@ impl QuitConfirmation {
     }
     /// The session is ending: the open prompt no longer applies.
     fn close(&self) {
-        self.0
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .pending = None;
+        let mut state = self.0.lock().unwrap_or_else(|error| error.into_inner());
+        state.session_ending = true;
+        state.pending = None;
     }
     /// Returns whether Silo should exit.
     fn answer(&self, request_id: u64, confirmed: bool) -> Result<bool, String> {
@@ -2158,10 +2158,16 @@ mod tests {
             quit.answer(request.request_id, false).is_err(),
             "a late Cancel cannot keep Silo open"
         );
-        assert_ne!(
-            quit.ask(Ok(vec!["dev".into()])).unwrap().request_id,
-            request.request_id
-        );
+        assert_eq!(quit.ask(Ok(vec!["dev".into()])), None);
+    }
+
+    #[test]
+    fn a_late_quit_status_read_cannot_reopen_the_session_end_prompt() {
+        let quit = QuitConfirmation::default();
+        quit.0.lock().unwrap().enabled = true;
+        quit.close();
+        assert_eq!(quit.ask(Ok(vec!["dev".into()])), None);
+        assert_eq!(quit.ask(Err("status unavailable".into())), None);
     }
 
     #[test]

@@ -21,3 +21,33 @@ it("qualifies copying diagnostics because some Details sections have no copy con
   const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Read the operation's error"))
   expect(instructions?.textContent).toMatch(/copy control when.*offered/i)
 })
+
+it("distinguishes reclaimed host allocation from unchanged workspace capacity", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Reclaim unused space"))
+  expect(instructions?.textContent).toMatch(/reclamation.*allocated space.*on this computer/i)
+  expect(instructions?.textContent).toMatch(/workspace capacity.*stay.*same/i)
+})
+
+it("qualifies duplicated desktop settings for new sandboxes with built-in computer use", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Duplicate settings"))
+  expect(instructions?.textContent).toMatch(/built-in computer use.*desktop.*starts automatically/i)
+  expect(instructions?.textContent).toMatch(/even if.*original.*manual/i)
+})
+
+it("directs system-issue recovery through the displayed instructions and Retry checks", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Read the operation's error"))
+  expect(instructions?.textContent).toMatch(/System issue.*recovery instructions.*Retry checks/i)
+  expect(instructions?.textContent).not.toMatch(/relaunch Silo to rerun startup checks/i)
+})
+
+it("explains checkpoint deletion blockers and cleanup when dependencies are removed", () => {
+  const help = new DOMParser().parseFromString(readFileSync("docs/silo-help.html", "utf8"), "text/html")
+  const instructions = [...help.querySelectorAll("p")].find(paragraph => paragraph.textContent?.includes("Delete checkpoint data"))
+  expect(instructions?.textContent).toMatch(/latest state.*builds on/i)
+  expect(instructions?.textContent).toMatch(/later checkpoints/i)
+  expect(instructions?.textContent).toMatch(/dependencies.*removed/i)
+  expect(instructions?.textContent).not.toMatch(/until its last dependent sandbox is deleted/i)
+})

@@ -57,3 +57,44 @@ looks up stored entries and returns `undefined` for missing keys, so all unknown
 triggers use the existing Automatic label. The actual storage panel regressions
 failed for the three prototype names before the fix. They also cover an ordinary
 future name and all five existing labels; history results stay readable.
+
+## Configuration review fields
+
+Fixed: `rebaseMachineDraft` cast configuration objects to open records and built
+its result with indexed assignments. A newer configuration's own `__proto__`
+field disappeared through that object's inherited setter. An absent
+`constructor` or `toString` field read a function from the prototype instead of
+an absent value, so removing the field could adopt that function. The field-label
+record also returned prototype objects/functions under its declared string type;
+the editor renders conflict labels as React children.
+
+Keep both input field dictionaries, the merged fields, and labels in typed maps.
+Convert the final entries with
+[Object.fromEntries](https://tc39.es/ecma262/2023/multipage/fundamental-objects.html#sec-object.fromentries),
+which creates own data properties even for `__proto__`. The configuration kind
+check and choice of complete typed inputs remain unchanged. Six adoption/conflict
+regressions failed before the fix; removal cases also protect against inherited
+values. Existing CPU/memory/desktop conflict and removal cases remain covered.
+
+The upstream `divergentMachineFields` comparison also needs own field values:
+an inherited function serialized like `null`, hiding the user's removal of a
+null-valued field. Two concurrent-edit regressions failed after the initial
+rebase fix and passed only after correcting this comparison and distinguishing
+an absent value from `null`. The model tests passed 22 cases; typecheck, focused
+oxlint, and `git diff --check` passed on Node 24.11.1.
+
+## Machine validation error fields
+
+Fixed: `validateMachine` asserted every string issue path was a displayed error
+field and dropped issues whose path was empty. A retained future configuration
+field produces a root `unrecognized_keys` issue under the strict submission
+schema. The editor then called Save despite that invalid configuration. Invalid
+IDs instead produced an `errors.id` value with no corresponding editor control
+or alert, silently blocking submission.
+
+Use a type guard for the fields the editor displays and route every other issue
+to its existing form alert. Zod's [error documentation](https://zod.dev/error-customization)
+defines structured issue paths, including empty paths for root errors. The
+submission contract stays strict and retained configuration fields stay intact.
+Two model regressions and one editor regression failed before the fix. The
+editor regression checks both the visible alert and that Save does not run.

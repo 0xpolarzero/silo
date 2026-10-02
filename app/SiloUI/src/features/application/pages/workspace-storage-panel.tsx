@@ -7,7 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/comp
 
 type ReclaimEntry = WorkspaceStorageState['history'][number]
 
-function date(at: number) { return new Date(at * 1000).toLocaleString('en', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) }
+function date(at: number) { return new Date(at * 1000).toLocaleString('en', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) }
 const reclaimTriggerLabels = new Map([
   ['manual', 'Manual'], ['scheduled', 'Scheduled'], ['beforeStop', 'Before stop'],
   ['afterStart', 'After start'], ['legacy', 'Previous reclaim'],

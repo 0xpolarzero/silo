@@ -39,3 +39,10 @@ Six regression tests were added. The actual `image_cache.rs` module was compiled
 A focused native Cargo test used `/tmp/silo-codex-target` and the release guide's three explicit synthetic GitHub values. After waiting for the shared artifact lock, its first attempt stopped in the build script because the new worktree lacked `binaries/msb-aarch64-apple-darwin`. Existing generated `binaries` and `runtime` resources from the main checkout were temporarily linked into this worktree for a retry; that retry remained queued on the shared lock and was cancelled with SIGINT after verifying its Cargo executable, exact test arguments, and worktree directory. Its exit status was 130. Those temporary resource links were removed. Native Cargo validation remains incomplete; the successful module tests do not prove application packaging or live VM behavior.
 
 No app bundle was inspected or launched. Tests used temporary filesystem fixtures only. All three fixes include patch changesets; no version or release was published.
+
+## RUNTIME-DIR-B-5: Local extent paths hide missing image files
+
+- **Priority:** P2
+- **Trigger and evidence:** A descriptor already points into the current cache, but one of those files has disappeared. `rebind` skipped existence checks on local paths. The filesystem regression returned `Ok(0)` before the fix, while preserving a descriptor that cannot boot.
+- **Correction:** Require local extent paths to identify files before accepting the descriptor. Leave a broken descriptor untouched and report the missing image file; restoring the file makes the same descriptor pass without rewriting it.
+- **Verification:** The new regression failed before the fix, then all 12 tests in the actual `image_cache.rs` module passed with Rust 1.94.0 and `-D warnings`. No app or VM was launched.

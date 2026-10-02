@@ -37,3 +37,23 @@ The test `keeps a failed update connection visible when focus returns during lis
 - **Evidence:** The regression test `cancels queued directory reads when the folder picker closes` queued `/workspace/c`, unmounted, completed `/workspace/a`, and observed a new loader call for `/workspace/c`. The directory store already supports canceling queued work through `invalidateWorkspace()`.
 - **Suggested fix:** Invalidate the picker's workspace requests on unmount or target replacement. Keep the store reusable through StrictMode's cleanup replay rather than permanently disposing it during that replay.
 - **Regression tests:** Navigate cached folders until a read queues, unmount, settle an active read, and assert the queued path is never requested. Under StrictMode, assert folders still load and opening becomes enabled after setup replays.
+
+## fe-status-storage-updates-6: Overlapping backup Retry reports success before deletion finishes
+
+- **Severity:** P2
+- **Location:** `app/SiloUI/src/features/storage/pre-upgrade-backup.tsx:110`.
+- **Trigger:** A deletion fails and leaves a Retry toast. The user starts another deletion through the row, then clicks the old toast's Retry while that deletion is pending.
+- **Consequence:** The duplicate call resolves immediately through the boolean guard, so its operation toast claims the backup was deleted even if the active deletion later fails.
+- **Evidence:** `does not report deletion success when an old toast retries an unfinished deletion` reproduced the visible success toast before the deferred backend deletion settled. Only one backend deletion ran.
+- **Suggested fix:** Store and return the active deletion promise so every caller waits for the real result, while retaining single backend admission.
+- **Regression test:** Fail one deletion, start a deferred second attempt, click the old Retry, and assert no success appears. Reject the active attempt; both callers must report failure and the backup remains visible.
+
+## fe-status-storage-updates-7: Disposed backup observers still read native state during registration
+
+- **Severity:** P3
+- **Locations:** `app/SiloUI/src/features/storage/pre-upgrade-backup.tsx:85`; `app/SiloUI/src/features/application/model/transfer-result-notice.ts:68`.
+- **Trigger:** The view closes while native listener registration is pending, then the registered handler receives an event before the unsubscribe handle becomes available.
+- **Consequence:** Both observers invoke another native state read for a closed view. The storage observer also dispatches through the mutable refresh ref, so an obsolete subscription can invoke a replacement observer's reader.
+- **Evidence:** The new storage test and extended transfer-notice cleanup test each observed one backend read after unmount. Tauri's installed `@tauri-apps/api/event.js` passes `transformCallback(handler)` to the listen invocation before its promise resolves with the unsubscribe handle.
+- **Suggested fix:** Check the subscription effect's lifetime before invoking its refresh handler, rather than guarding only publication after the read.
+- **Regression tests:** Keep registration unresolved, unmount, deliver an event, then finish registration. Assert no backend read occurs and the late unsubscribe handle is released once.

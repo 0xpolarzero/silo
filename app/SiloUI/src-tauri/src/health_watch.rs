@@ -59,7 +59,7 @@ impl HealthState {
         match reading {
             Reading::Discarded => Vec::new(),
             Reading::Unavailable => {
-                self.failures += 1;
+                self.failures = self.failures.saturating_add(1);
                 if self.failures >= FAILURES_BEFORE_UNAVAILABLE && !self.reported_unavailable {
                     self.reported_unavailable = true;
                     return vec![runtime_notice(
@@ -133,6 +133,8 @@ impl HealthState {
     fn poll_interval(&self) -> Duration {
         if self.any_running {
             ACTIVE_INTERVAL
+                .saturating_mul(1u32 << self.failures.min(5))
+                .min(IDLE_FALLBACK)
         } else {
             IDLE_FALLBACK
         }
@@ -388,6 +390,23 @@ mod tests {
         assert!(state.observe(reading(vec![])).is_empty());
         // The failure count reset, so one more failure is again below the threshold.
         assert!(state.observe(Reading::Unavailable).is_empty());
+    }
+
+    #[test]
+    fn failed_active_health_reads_back_off_to_the_idle_cap_and_reset_on_success() {
+        let mut state = HealthState::default();
+        state.observe(reading(vec![vm("a", "Running", 0, true)]));
+        for seconds in [20, 40, 80, 160, 300, 300] {
+            state.observe(Reading::Unavailable);
+            assert_eq!(state.poll_interval(), Duration::from_secs(seconds));
+        }
+        state.observe(Reading::Discarded);
+        assert_eq!(state.poll_interval(), IDLE_FALLBACK);
+        state.observe(reading(vec![vm("a", "Running", 0, true)]));
+        assert_eq!(state.poll_interval(), ACTIVE_INTERVAL);
+        state.observe(reading(vec![vm("a", "Stopped", 0, true)]));
+        state.observe(Reading::Unavailable);
+        assert_eq!(state.poll_interval(), IDLE_FALLBACK);
     }
 
     #[test]

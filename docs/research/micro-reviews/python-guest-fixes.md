@@ -81,3 +81,39 @@ decode the stream as UTF-8 with replacement, matching the guest computer-use
 command helper's existing treatment of diagnostic output.
 The dependency-tool suite passed 33 tests on Python 3.12 with
 `ResourceWarning` promoted to an error.
+
+## Build CLI signal statuses wrap into unrelated exit codes
+
+Both dependency build wrappers returned the negative `Popen.wait()` status
+directly to `sys.exit`. A child terminating itself with SIGTERM made each CLI
+exit 241 instead of 143. The
+[Python subprocess contract](https://docs.python.org/3.12/library/subprocess.html#subprocess.Popen.returncode)
+defines `-N` as termination by signal N; the shell convention is 128 + N.
+
+Use the same conversion already used by `measure-command.py` and
+`retry-bundle.py`. Keep the benchmark report's raw subprocess status intact.
+CLI regressions run temporary self-terminating executables, assert exit 143,
+and check benchmark `exitCode: -15`. Both failed with actual exit 241 before the
+fix. The tests neither identify nor signal an external process.
+The dependency-tool group passed 35 tests on Python 3.12 with resource warnings
+treated as errors; the release-workflow group passed nine tests. Format,
+typecheck, lint, and whitespace checks also passed before each fix commit.
+
+## Checkout source validation assumes input order
+
+The final merged-tree Python run executed 397 tests and found one failure:
+`test_all_checkout_jobs_use_validated_source` extracted zero of four checkouts
+after credential hardening inserted `persist-credentials: false` before `ref`.
+The regular expression required `ref` to be the first input, although input
+order does not change a checkout's selected revision.
+The [YAML mapping-order contract](https://yaml.org/spec/1.2.2/#3221-mapping-key-order)
+makes key order a serialization detail.
+
+Allow preceding inputs within the same indented `with` block. Keep the existing
+assertions that every checkout has a ref and that all refs match their validated
+source. The regression exercises four release and three platform checkouts;
+it failed before the change and passed afterwards. The full run's other 382
+executed tests passed and 14 were skipped. All tests use fixtures; no app,
+installed bundle, guest VM, or release publication was exercised.
+The focused source-validation and release-workflow groups passed five and ten
+tests on Python 3.12; Node 24 typecheck/lint and Rust formatting passed.

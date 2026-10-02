@@ -104,7 +104,10 @@ export async function buildGuestImage(architecture) {
     const exited = new Promise((resolve, reject) => { save.on("error", reject); save.on("exit", code => code === 0 ? resolve() : reject(new Error(`docker save exited ${code}`))) })
     save.stdout.on("data", chunk => { unpackedBytes += chunk.length })
     const outcomes = await Promise.allSettled([
-      pipeline(save.stdout, createGzip({ level: 9 }), createWriteStream(archive)), exited,
+      pipeline(save.stdout, createGzip({ level: 9 }), createWriteStream(archive)).catch(error => {
+        save.kill("SIGTERM")
+        throw error
+      }), exited,
     ])
     for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason
     const hash = createHash("sha256")

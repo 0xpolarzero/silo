@@ -18,6 +18,19 @@ function notice(store: SettingsStore, backend: Backend) {
 const region = { name: "Add a line to your SSH configuration" }
 const otherLine = 'Include "/Users/ada/.silo/a81e55c0d2f4/ssh/*.conf"'
 
+it("shows a repair notice created before native listener registration finishes", async () => {
+  const backend = createFixtureEditorInclude(null)
+  let register!: () => void
+  const registration = new Promise<void>(resolve => { register = resolve })
+  const subscribe = backend.subscribe
+  backend.subscribe = async handler => { await registration; return subscribe(handler) }
+  render(notice(createMemorySettingsStore(), backend))
+  await act(async () => {})
+  backend.set(fixtureEditorIncludeLine)
+  await act(async () => register())
+  expect(await screen.findByRole("region", region)).toHaveTextContent(fixtureEditorIncludeLine)
+})
+
 it("keeps a corrected SSH configuration hidden when an older read finishes later", async () => {
   const backend = createFixtureEditorInclude()
   let finish!: (line: string | null) => void
@@ -34,30 +47,39 @@ it("keeps a corrected SSH configuration hidden when an older read finishes later
   expect(await screen.findByRole("region", region)).toHaveTextContent(otherLine)
 })
 
-it("ignores a replaced backend's pending read and releases its late subscription", async () => {
+it("ignores a replaced backend's pending read", async () => {
   const first = createFixtureEditorInclude()
   let finishRead!: (line: string | null) => void
-  let finishSubscribe!: (stop: () => void) => void
   first.read = vi.fn(() => new Promise<string | null>(resolve => { finishRead = resolve }))
-  first.subscribe = vi.fn(() => new Promise<() => void>(resolve => { finishSubscribe = resolve }))
   const store = createMemorySettingsStore()
   const view = render(notice(store, first))
+  await waitFor(() => expect(first.read).toHaveBeenCalledOnce())
   const second = createFixtureEditorInclude(otherLine)
   view.rerender(notice(store, second))
   expect(await screen.findByRole("region", region)).toHaveTextContent(otherLine)
-
-  const stop = vi.fn()
-  await act(async () => {
-    finishRead(fixtureEditorIncludeLine)
-    finishSubscribe(stop)
-  })
-  expect(stop).toHaveBeenCalledOnce()
+  await act(async () => finishRead(fixtureEditorIncludeLine))
   expect(screen.getByRole("region", region)).toHaveTextContent(otherLine)
   expect(screen.getByRole("region", region)).not.toHaveTextContent(fixtureEditorIncludeLine)
 
   fireEvent.focus(window)
   await waitFor(() => expect(second.calls).toEqual(["read", "read"]))
   expect(first.read).toHaveBeenCalledOnce()
+})
+
+it("releases a replaced backend's late subscription without starting a read", async () => {
+  const first = createFixtureEditorInclude()
+  let finishSubscribe!: (stop: () => void) => void
+  first.read = vi.fn(async () => fixtureEditorIncludeLine)
+  first.subscribe = vi.fn(() => new Promise<() => void>(resolve => { finishSubscribe = resolve }))
+  const store = createMemorySettingsStore()
+  const view = render(notice(store, first))
+  view.rerender(notice(store, createFixtureEditorInclude(otherLine)))
+  expect(await screen.findByRole("region", region)).toHaveTextContent(otherLine)
+  const stop = vi.fn()
+  await act(async () => finishSubscribe(stop))
+  expect(stop).toHaveBeenCalledOnce()
+  expect(first.read).not.toHaveBeenCalled()
+  expect(screen.getByRole("region", region)).toHaveTextContent(otherLine)
 })
 
 it("shows the line to add with its explanation and a copy button, until dismissed", async () => {

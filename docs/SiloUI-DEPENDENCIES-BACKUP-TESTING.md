@@ -180,15 +180,21 @@ Recovery removes indexed members of that group, including an import interrupted
 before sandbox settings were saved. A failed cleanup keeps that ownership journal
 for another launch. Other groups and completed imports remain intact.
 
-The [pinned runtime's archive loader](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/snapshot/archive/batch.rs#L263)
-creates random `.msb-snapshot-import-*` folders in its snapshot store and
-`snapshot-import-*` folders in `cache/tmp`. These folders carry no destination
-group or Silo operation identity. A normal failed or cancelled load removes its
-new snapshot and cache stages; a process crash before publication can leave unattributed
-snapshot or cache stages. Startup preserves them because it cannot prove which
-operation owns them. Complete crash cleanup requires the runtime to expose or
-journal its exact stage paths before writing them; Silo does not run an age or
-prefix sweep.
+The current [import-stage patch](../app/SiloUI/patches/microsandbox-import-stage-id-0.7.6.patch)
+adds `snapshot load --stage-id`. Silo journals `silo-import-<id>` before load
+starts, then passes its suffix as the stage ID. The loader uses
+`snapshots/.msb-snapshot-load-<id>` and `cache/tmp/snapshot-load-<id>` under the
+selected runtime home. [Launch recovery](../app/SiloUI/src-tauri/src/backup_controller/recovery.rs)
+removes only that journaled group's indexed members and its two stage roots,
+including after a crash before sandbox identity allocation. Cleanup respects the
+existing worker lock, rejects symlinked stage paths, and retains the journal on failure.
+
+The older [MicroSandbox 0.7.2 archive loader](https://github.com/superradcompany/microsandbox/blob/60d4dc8a436fb9365491567ec21d073e924e3c6d/sdk/rust/lib/backend/local/snapshot/archive/batch.rs#L263)
+used random `.msb-snapshot-import-*` and `snapshot-import-*` directories without
+operation ownership. Recovery still preserves those unattributed legacy stages
+and other operations' stages. It does not use an age or prefix sweep. See the
+[import cleanup design and evidence](SiloUI-REVIEW-DESIGN-NOTES.md#e-03-checkpoint-deletion-with-fork-dependencies-and-native-snapshot-cleanup)
+for the recorded patch qualification and its limits.
 
 ## Recorded evidence, 2026-09-08
 
@@ -463,3 +469,14 @@ After reopening the rebuilt production app, the existing three-VM draft showed
 **Not started · Continue to start this step**, **Continue to create sandboxes**,
 and **0 of 6 operations complete**. The user's draft was not submitted during
 verification. Screenshot: `src-tauri/target/ui-evidence/setup-draft-idle.jpg`.
+
+## Export folder picker execution
+
+The export picker reads its saved folder inside its existing blocking worker.
+Backup-state reads hold the view mutex while reading the recovery journal, so the
+picker can wait for filesystem I/O even though the destination itself is cached.
+The blocking worker covers that lock wait as well as the native dialog and path
+validation, following [Tauri's async command execution](https://v2.tauri.app/develop/calling-rust/#async-commands)
+and [Tokio's blocking-work boundary](https://docs.rs/tokio/latest/tokio/task/fn.spawn_blocking.html).
+The destination persistence and picker path regressions cover the retained data
+behavior; they do not exercise a live native dialog.

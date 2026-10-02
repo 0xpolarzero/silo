@@ -40,3 +40,12 @@ Fixed and folded in `5d6c4346`. All 11 module tests, Rust formatting, module Cli
 - **Consequence:** The abandoned upgraded connection retains its handler and active connection slot until the guest closes or the entire proxy is dropped; repeated disconnects can exhaust the 48-slot limit.
 - **Fix:** Set the shared `ended` flag when the WebSocket writer returns so the response relay also stops. Do not do this for completed ordinary HTTP bodies, which still need their response.
 - **Regression:** `websocket_client_disconnect_releases_silent_upstream` requires an idle upgraded connection to survive beyond the configured HTTP deadline, then requires handler completion and guest EOF after client disconnect without dropping Proxy or closing the guest socket.
+
+## DESKTOP-PROXY-5 · P3 · Unicode trimming changes the meaning of forwarded framing fields
+
+- **Location:** `app/SiloUI/src-tauri/src/desktop_proxy.rs`, `request_header` field-value and cookie-part trimming.
+- **Trigger:** An authenticated request contains `Content-Length: \u{00a0}1`, where the prefix is a UTF-8 nonbreaking space, or a typed field ends in another Unicode whitespace character.
+- **Evidence:** `str::trim` removes Unicode whitespace, so the proxy accepts the field as a body length of one, but `kept.push(line)` forwards the original bytes. The regression failed on that exact Content-Length input. A disposable Python standard-library `http.client.parse_headers` diagnostic interpreted those bytes as `Â\u{00a0}1`; integer parsing rejected them. This proves a parser mismatch, not an observed failure in the live guest. [RFC 9110 section 5.6.3](https://httpwg.org/specs/rfc9110.html#whitespace) defines HTTP optional whitespace as space or horizontal tab.
+- **Consequence:** Proxy framing validation accepts a different value from the one sent upstream. Similar trimming accepts malformed Upgrade, Host, Origin, and native cookie fields. No native-cookie bypass or request-smuggling exploit was established.
+- **Fix:** Trim only space and horizontal tab when interpreting field values and native-cookie parts.
+- **Regression:** `unicode_whitespace_cannot_disguise_typed_header_values` rejects nonbreaking/em/ideographic spaces around framing, upgrade, origin, host, and authentication values; valid space/tab-delimited Content-Length still forwards its declared body length.
